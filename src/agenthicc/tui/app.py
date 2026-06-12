@@ -237,6 +237,13 @@ class InlineRenderer:
                 except Exception:
                     pass
 
+        def _flush_history() -> None:
+            if _rl is not None and self._history_file:
+                try:
+                    _rl.write_history_file(self._history_file)
+                except Exception:
+                    pass
+
         # ── SIGINT handler ────────────────────────────────────────────────
         _ctrl_c_count = [0]
 
@@ -257,6 +264,7 @@ class InlineRenderer:
                     else "`agenthicc --continue`"
                 )
                 self.console.print(f"\n[dim]To resume, run {hint}[/dim]\n")
+                _flush_history()   # os._exit bypasses finally — save now
                 _restore_tty()
                 _os._exit(0)
 
@@ -293,6 +301,10 @@ class InlineRenderer:
                 if not text:
                     continue
 
+                # Persist history after every submission so a crash or kill
+                # cannot erase entries from this or any resumed session.
+                _flush_history()
+
                 handled = SlashCommandHandler(renderer=self).handle(text, self.model, self.console)
                 if not handled:
                     self.on_intent_submitted()
@@ -306,12 +318,8 @@ class InlineRenderer:
                 loop.remove_signal_handler(_sig.SIGINT)
             except (NotImplementedError, OSError):
                 pass
+            _flush_history()
             _restore_tty()
-            if _rl is not None and self._history_file:
-                try:
-                    _rl.write_history_file(self._history_file)
-                except Exception:
-                    pass
 
     def _print_status(self) -> None:
         """Print status line + top border of the input area."""
