@@ -20,8 +20,10 @@ from prompt_toolkit.completion import (
     merge_completers,
 )
 from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import AnyFormattedText
 from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.shortcuts import CompleteStyle
 
 __all__ = [
     "AtMentionCompleter",
@@ -219,15 +221,14 @@ class InputBarSession:
         self._session: PromptSession = PromptSession(
             completer=self._completer,
             complete_while_typing=True,
+            complete_style=CompleteStyle.MULTI_COLUMN,  # dropdown below the cursor
             key_bindings=kb,
             history=history,
             enable_history_search=True,
             prompt_continuation="  ",
-            # refresh_interval=0.05 is set externally by InlineRenderer.run()
-            # so that _prompt_message (the status wave) re-evaluates every 50ms.
         )
 
-    async def prompt_async(self, prefix: str = "> ") -> str:
+    async def prompt_async(self, prefix: AnyFormattedText = "> ") -> str:
         """Await user input; returns the full string, possibly containing ``\\n``."""
         result = await self._session.prompt_async(prefix)
         return result or ""

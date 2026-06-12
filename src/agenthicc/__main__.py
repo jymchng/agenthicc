@@ -9,7 +9,6 @@ import os
 import sys
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -527,18 +526,6 @@ async def _run_agent_turn(
     spin_task = asyncio.create_task(_spin())
     ctrlO_task = asyncio.create_task(_watch_ctrlO())
 
-    # Install a named ThreadPoolExecutor as the event loop's default executor.
-    # asyncio.to_thread() inside every @tool() implementation resolves to
-    # loop.run_in_executor(None, ...) which uses this pool, so all blocking
-    # I/O from concurrent tool calls runs on clearly-named threads.
-    _loop = asyncio.get_running_loop()
-    _prev_executor = _loop._default_executor
-    _tool_pool = ThreadPoolExecutor(
-        max_workers=max_agent_turns and 8,  # generous cap; tune via config if needed
-        thread_name_prefix="agenthicc-tool",
-    )
-    _loop.set_default_executor(_tool_pool)
-
     try:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
         _cfg = _AgentConfig(
@@ -572,8 +559,6 @@ async def _run_agent_turn(
         live.stop()
         renderer._status.active = False
         renderer._status.completed_agents += 1
-        _loop.set_default_executor(_prev_executor)
-        _tool_pool.shutdown(wait=False)
 
     # Only append prose if there's something to say
     if content:

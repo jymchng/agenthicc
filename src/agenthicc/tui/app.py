@@ -172,154 +172,72 @@ class InlineRenderer:
     # ── main loop ─────────────────────────────────────────────────────────
 
     async def run(self, on_input: Any) -> None:
-        """Pure asyncio input/output loop — no prompt_toolkit.
+        """Async input loop using prompt_toolkit for rich completions.
 
-        ``on_input`` is an **async** callable.  We ``await`` it so the agent
-        response arrives, the transcript is flushed, and the idle status is
-        shown before the next prompt appears — no "reply one message late".
+        Replaces the old readline + asyncio.to_thread approach so that:
 
-        Ctrl+C handling
-        ---------------
-        We own SIGINT via ``loop.add_signal_handler`` so that the count is
-        authoritative and there is no race between the event-loop handler and
-        the readline thread.  asyncio sets SA_RESTART on the signal, so
-        readline's blocking read() is NOT interrupted — it keeps waiting for
-        input.  On the first press the signal handler clears the current
-        readline line, prints the message, and reprints ``❯`` so the user
-        sees a clean prompt and knows they can keep typing.  On the second
-        press we call ``os._exit(0)`` which kills the process immediately
-        (no thread-join wait); no third press is ever needed.
-
-        ECHOCTL
-        -------
-        We clear the terminal's ``ECHOCTL`` flag so that Ctrl+C is not echoed
-        as the two-character sequence ``^C`` into the input line.  The flag is
-        restored in the ``finally`` block and also just before ``os._exit(0)``
-        so the terminal is never left in a broken state.
+        * ``@`` file-mention autocomplete appears as a dropdown below the
+          cursor in real time (no TAB required).
+        * ``/command`` completions work the same way.
+        * History is managed by prompt_toolkit's ``FileHistory`` (persists
+          across sessions in ``.agenthicc/history``).
+        * Ctrl+C is raised as ``KeyboardInterrupt`` from ``prompt_async()``
+          — first press warns, second press exits cleanly.
         """
-        import inspect, os as _os, shutil as _sh, signal as _sig, sys as _sys  # noqa: PLC0415
+        import inspect, os as _os, shutil as _sh  # noqa: PLC0415
+        from prompt_toolkit.formatted_text import FormattedText  # noqa: PLC0415
+        from agenthicc.tui.input_bar import InputBarSession  # noqa: PLC0415
 
         _is_async = inspect.iscoroutinefunction(on_input)
 
-        # ── readline history ──────────────────────────────────────────────
-        _rl = None
-        try:
-            import readline as _rl  # noqa: PLC0415
-            _rl.set_history_length(1000)
-            if self._history_file:
-                import pathlib as _pl  # noqa: PLC0415
-                _pl.Path(self._history_file).parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    _rl.read_history_file(self._history_file)
-                except OSError:
-                    pass  # file missing, unreadable, or wrong format — start fresh
-        except Exception:
-            _rl = None  # readline unavailable or broken on this platform
+        session = InputBarSession(
+            base_path=self._base_path,
+            history_file=self._history_file,
+        )
 
-        # ── suppress ^C echo via termios.ECHOCTL ─────────────────────────
-        _old_tty: list | None = None
-        _tty_fd = -1
-        try:
-            import termios as _termios  # noqa: PLC0415
-            _tty_fd = _sys.stdin.fileno()
-            _old_tty = _termios.tcgetattr(_tty_fd)
-            _new_tty = list(_old_tty)
-            _new_tty[3] = _new_tty[3] & ~_termios.ECHOCTL
-            _termios.tcsetattr(_tty_fd, _termios.TCSANOW, _new_tty)
-        except Exception:
-            pass  # non-tty stdin (tests, pipes, Windows) — ignore
+        # Styled ❯ prompt rendered by prompt_toolkit (not Rich markup).
+        _prompt = FormattedText([("bold ansigreen", "❯"), ("", " ")])
 
-        def _restore_tty() -> None:
-            if _old_tty is not None:
-                try:
-                    import termios as _t  # noqa: PLC0415
-                    _t.tcsetattr(_tty_fd, _t.TCSANOW, _old_tty)
-                except Exception:
-                    pass
-
-        def _flush_history() -> None:
-            if _rl is not None and self._history_file:
-                try:
-                    _rl.write_history_file(self._history_file)
-                except Exception:
-                    pass
-
-        # ── SIGINT handler ────────────────────────────────────────────────
         _ctrl_c_count = [0]
 
-        def _sigint() -> None:
-            _ctrl_c_count[0] += 1
-            if _ctrl_c_count[0] == 1:
-                # readline is still active (SA_RESTART keeps it alive).
-                # Clear the current line (which shows ❯ + any partial input),
-                # print the message, then reprint ❯ so the user sees a prompt.
-                _sys.stdout.write("\r\x1b[2K")
-                _sys.stdout.flush()
-                self.console.print("[dim]Press Ctrl+C again to exit.[/dim]")
-                self.console.print("[bold green]❯[/bold green] ", end="")
-            else:
+        while True:
+            self._flush_new_lines()
+            self._print_status()
+
+            try:
+                text = await session.prompt_async(_prompt)
+                _ctrl_c_count[0] = 0
+            except KeyboardInterrupt:
+                _ctrl_c_count[0] += 1
+                if _ctrl_c_count[0] == 1:
+                    self.console.print("[dim]Press Ctrl+C again to exit.[/dim]")
+                    continue
                 rid = self._status.resume_id or ""
                 hint = (
                     f"`agenthicc --resume {rid}`" if rid
                     else "`agenthicc --continue`"
                 )
                 self.console.print(f"\n[dim]To resume, run {hint}[/dim]\n")
-                _flush_history()   # os._exit bypasses finally — save now
-                _restore_tty()
                 _os._exit(0)
+            except EOFError:
+                break
 
-        loop = asyncio.get_running_loop()
-        try:
-            loop.add_signal_handler(_sig.SIGINT, _sigint)
-        except (NotImplementedError, OSError):
-            pass  # Windows — falls back to default KeyboardInterrupt behaviour
+            text = text.strip()
+            if not text:
+                continue
 
-        # ── main loop ─────────────────────────────────────────────────────
-        try:
-            while True:
+            self.console.print(
+                f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
+            )
+
+            handled = SlashCommandHandler(renderer=self).handle(text, self.model, self.console)
+            if not handled:
+                self.on_intent_submitted()
+                if _is_async:
+                    await on_input(text)
+                else:
+                    on_input(text)
                 self._flush_new_lines()
-                self._print_status()
-
-                text = await asyncio.to_thread(self._get_line)
-
-                if text is self._EOF:
-                    break
-
-                if text is None:
-                    # KeyboardInterrupt caught inside the readline thread
-                    # (only happens if SA_RESTART is not in effect, e.g. Windows).
-                    # Signal handler already printed the message; loop for new prompt.
-                    continue
-
-                # Divider only on real input — not on Ctrl+C / Ctrl+D.
-                self.console.print(
-                    f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
-                )
-
-                _ctrl_c_count[0] = 0  # real input resets the Ctrl+C counter
-                text = text.strip()
-                if not text:
-                    continue
-
-                # Persist history after every submission so a crash or kill
-                # cannot erase entries from this or any resumed session.
-                _flush_history()
-
-                handled = SlashCommandHandler(renderer=self).handle(text, self.model, self.console)
-                if not handled:
-                    self.on_intent_submitted()
-                    if _is_async:
-                        await on_input(text)
-                    else:
-                        on_input(text)
-                    self._flush_new_lines()
-        finally:
-            try:
-                loop.remove_signal_handler(_sig.SIGINT)
-            except (NotImplementedError, OSError):
-                pass
-            _flush_history()
-            _restore_tty()
 
     def _print_status(self) -> None:
         """Print status line + top border of the input area."""
