@@ -442,26 +442,39 @@ async def _run_agent_turn(
     from agenthicc.tui.transcript import TranscriptModel as _TM  # noqa: PLC0415
     _MAX_VISIBLE_CALLS = _TM.MAX_VISIBLE_TOOL_CALLS
 
-    # CTRL+O (^O, \x0f) toggles expanded/collapsed tool-call list in the spinner.
+    # CTRL+O toggles expanded/collapsed; ↑/↓ scroll in expanded mode.
     _expanded = [False]
+    _scroll_offset = [0]  # first visible call_line index when expanded
 
     async def _watch_ctrlO() -> None:
-        """Poll stdin for CTRL+O (^O) while the agent is thinking."""
+        """Poll stdin for CTRL+O and arrow keys while the agent is thinking."""
         import select as _sel, tty as _tty, termios as _tm  # noqa: PLC0415
         fd = sys.stdin.fileno()
         try:
             old = _tm.tcgetattr(fd)
-            _tty.setcbreak(fd)          # single-char reads, no Enter needed
+            _tty.setcbreak(fd)
         except Exception:
             return
         try:
             while True:
                 await asyncio.sleep(0.05)
                 r, _, _ = _sel.select([fd], [], [], 0)
-                if r:
-                    ch = os.read(fd, 1)
-                    if ch == b"\x0f":   # CTRL+O
-                        _expanded[0] = not _expanded[0]
+                if not r:
+                    continue
+                ch = os.read(fd, 1)
+                if ch == b"\x0f":           # CTRL+O — toggle and reset scroll
+                    _expanded[0] = not _expanded[0]
+                    _scroll_offset[0] = 0
+                elif ch == b"\x1b":         # possible escape sequence (arrow keys)
+                    r2, _, _ = _sel.select([fd], [], [], 0.05)
+                    if r2:
+                        rest = os.read(fd, 2)
+                        seq = ch + rest
+                        if _expanded[0]:
+                            if seq == b"\x1b[A":    # up arrow
+                                _scroll_offset[0] = max(0, _scroll_offset[0] - 1)
+                            elif seq == b"\x1b[B":  # down arrow
+                                _scroll_offset[0] += 1  # clamped in _spin()
         except asyncio.CancelledError:
             pass
         finally:
@@ -471,6 +484,7 @@ async def _run_agent_turn(
                 pass
 
     async def _spin() -> None:
+        import shutil as _sh  # noqa: PLC0415
         from rich.markup import render as _mk  # noqa: PLC0415
         while True:
             elapsed = time.monotonic() - renderer._status.intent_started_at
@@ -513,7 +527,22 @@ async def _run_agent_turn(
                     call_lines.append(
                         f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  [dim]…[/dim]"
                     )
-            if not _expanded[0] and len(call_lines) > _MAX_VISIBLE_CALLS:
+            if _expanded[0]:
+                # Compute how many lines fit below the header row.
+                rows = _sh.get_terminal_size((80, 24)).lines
+                viewport = max(4, rows - 3)   # reserve header + indicator + slack
+                total = len(call_lines)
+                # Clamp scroll so we never scroll past the last entry.
+                _scroll_offset[0] = min(_scroll_offset[0], max(0, total - viewport))
+                off = _scroll_offset[0]
+                visible = call_lines[off : off + viewport]
+                end = min(off + viewport, total)
+                indicator = (
+                    f"   [dim]{off + 1}–{end} of {total}"
+                    f"  ↑↓ to scroll  ctrl+O to collapse[/dim]"
+                )
+                call_lines = visible + [indicator]
+            elif len(call_lines) > _MAX_VISIBLE_CALLS:
                 hidden = len(call_lines) - _MAX_VISIBLE_CALLS
                 call_lines = call_lines[:_MAX_VISIBLE_CALLS] + [
                     f"   [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}  "
