@@ -184,21 +184,42 @@ class InlineRenderer:
             4. await on_input(text)  ← agent runs + spinner here
             5. repeat
         """
-        import inspect  # noqa: PLC0415
+        import inspect, shutil as _sh  # noqa: PLC0415
 
         # Support both sync and async on_input for backward compat with tests
         _is_async = inspect.iscoroutinefunction(on_input)
+
+        _ctrl_c_count = 0   # consecutive Ctrl+C presses without input between them
+        _exited_clean = False
 
         while True:
             self._flush_new_lines()
             self._print_status()
 
             text = await asyncio.to_thread(self._get_line)
-            # Always print bottom border — whether input was empty or not
-            import shutil as _sh  # noqa: PLC0415
+            # Always print bottom border
             self.console.print(f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]")
+
+            # _get_line returns None for Ctrl+C; _last_interrupted distinguishes
+            # Ctrl+C from EOF so we can handle them differently.
             if text is None:
-                break
+                if self._last_interrupted:
+                    _ctrl_c_count += 1
+                    if _ctrl_c_count == 1:
+                        self.console.print(
+                            "[dim]Press Ctrl+C again to exit.[/dim]"
+                        )
+                        continue
+                    else:
+                        # Second consecutive Ctrl+C — exit cleanly
+                        _exited_clean = True
+                        break
+                else:
+                    # EOF (Ctrl+D) — exit silently
+                    break
+
+            # Any real input resets the Ctrl+C counter
+            _ctrl_c_count = 0
             text = text.strip()
             if not text:
                 continue
@@ -207,11 +228,20 @@ class InlineRenderer:
             if not handled:
                 self.on_intent_submitted()
                 if _is_async:
-                    await on_input(text)   # awaited: agent finishes before next prompt
+                    await on_input(text)
                 else:
-                    on_input(text)         # sync fallback (tests)
-                # Flush agent response lines immediately after agent returns
+                    on_input(text)
                 self._flush_new_lines()
+
+        if _exited_clean:
+            sid = self._status.session_id or ""
+            resume_hint = (
+                f"`agenthicc --resume {sid}`" if sid
+                else "`agenthicc --continue`"
+            )
+            self.console.print(
+                f"\n[dim]To resume, run {resume_hint}[/dim]\n"
+            )
 
     def _print_status(self) -> None:
         """Print status line + top border of the input area."""
@@ -237,11 +267,21 @@ class InlineRenderer:
         # Top border of input area — plain horizontal rule
         self.console.print(f"[dim]{'─' * cols}[/dim]")
 
+    _last_interrupted: bool = False  # set True when KeyboardInterrupt caught
+
     def _get_line(self) -> str | None:
-        """Blocking Rich console input — runs in a thread via asyncio.to_thread."""
+        """Blocking Rich console input — runs in a thread via asyncio.to_thread.
+
+        Sets ``_last_interrupted=True`` for Ctrl+C, ``False`` for EOF/normal,
+        so the caller can distinguish between the two ``None`` return cases.
+        """
+        self._last_interrupted = False
         try:
             return self.console.input("[bold green]❯[/bold green] ")
-        except (EOFError, KeyboardInterrupt):
+        except KeyboardInterrupt:
+            self._last_interrupted = True
+            return None
+        except EOFError:
             return None
 
     # ── render loop ───────────────────────────────────────────────────────
