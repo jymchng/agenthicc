@@ -129,7 +129,8 @@ class StatusState:
     output_tokens: int = 0
     session_cost_usd: float = 0.0
     completed_agents: int = 0
-    session_id: str = ""
+    session_id: str = ""    # display label, e.g. "anthropic/claude-sonnet-4-6"
+    resume_id: str = ""     # actual UUID used in --resume hint
 
 
 # ── InlineRenderer ────────────────────────────────────────────────────────
@@ -181,17 +182,45 @@ class InlineRenderer:
         ---------------
         We own SIGINT via ``loop.add_signal_handler`` so that the count is
         authoritative and there is no race between the event-loop handler and
-        the readline thread.
+        the readline thread.  asyncio sets SA_RESTART on the signal, so
+        readline's blocking read() is NOT interrupted — it keeps waiting for
+        input.  On the first press the signal handler clears the current
+        readline line, prints the message, and reprints ``❯`` so the user
+        sees a clean prompt and knows they can keep typing.  On the second
+        press we call ``os._exit(0)`` which kills the process immediately
+        (no thread-join wait); no third press is ever needed.
 
-        * Press 1 — print "Press Ctrl+C again to exit."
-        * Press 2 — print resume hint, then ``os._exit(0)``.
-
-        ``os._exit`` bypasses Python's shutdown sequence and kills the blocked
-        ``asyncio.to_thread(input)`` thread immediately; no third press needed.
+        ECHOCTL
+        -------
+        We clear the terminal's ``ECHOCTL`` flag so that Ctrl+C is not echoed
+        as the two-character sequence ``^C`` into the input line.  The flag is
+        restored in the ``finally`` block and also just before ``os._exit(0)``
+        so the terminal is never left in a broken state.
         """
-        import inspect, os as _os, shutil as _sh, signal as _sig  # noqa: PLC0415
+        import inspect, os as _os, shutil as _sh, signal as _sig, sys as _sys  # noqa: PLC0415
 
         _is_async = inspect.iscoroutinefunction(on_input)
+
+        # ── suppress ^C echo via termios.ECHOCTL ─────────────────────────
+        _old_tty: list | None = None
+        _tty_fd = -1
+        try:
+            import termios as _termios  # noqa: PLC0415
+            _tty_fd = _sys.stdin.fileno()
+            _old_tty = _termios.tcgetattr(_tty_fd)
+            _new_tty = list(_old_tty)
+            _new_tty[3] = _new_tty[3] & ~_termios.ECHOCTL
+            _termios.tcsetattr(_tty_fd, _termios.TCSANOW, _new_tty)
+        except Exception:
+            pass  # non-tty stdin (tests, pipes, Windows) — ignore
+
+        def _restore_tty() -> None:
+            if _old_tty is not None:
+                try:
+                    import termios as _t  # noqa: PLC0415
+                    _t.tcsetattr(_tty_fd, _t.TCSANOW, _old_tty)
+                except Exception:
+                    pass
 
         # ── SIGINT handler ────────────────────────────────────────────────
         _ctrl_c_count = [0]
@@ -199,14 +228,21 @@ class InlineRenderer:
         def _sigint() -> None:
             _ctrl_c_count[0] += 1
             if _ctrl_c_count[0] == 1:
-                self.console.print("\n[dim]Press Ctrl+C again to exit.[/dim]")
+                # readline is still active (SA_RESTART keeps it alive).
+                # Clear the current line (which shows ❯ + any partial input),
+                # print the message, then reprint ❯ so the user sees a prompt.
+                _sys.stdout.write("\r\x1b[2K")
+                _sys.stdout.flush()
+                self.console.print("[dim]Press Ctrl+C again to exit.[/dim]")
+                self.console.print("[bold green]❯[/bold green] ", end="")
             else:
-                sid = self._status.session_id or ""
+                rid = self._status.resume_id or ""
                 hint = (
-                    f"`agenthicc --resume {sid}`" if sid
+                    f"`agenthicc --resume {rid}`" if rid
                     else "`agenthicc --continue`"
                 )
                 self.console.print(f"\n[dim]To resume, run {hint}[/dim]\n")
+                _restore_tty()
                 _os._exit(0)
 
         loop = asyncio.get_running_loop()
@@ -222,19 +258,20 @@ class InlineRenderer:
                 self._print_status()
 
                 text = await asyncio.to_thread(self._get_line)
-                self.console.print(
-                    f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
-                )
 
                 if text is self._EOF:
-                    # Ctrl+D / EOF — exit silently
                     break
 
                 if text is None:
-                    # Ctrl+C caught inside the readline thread.
-                    # The signal handler already printed the message (or exited).
-                    # Just loop back so the user stays at a fresh prompt.
+                    # KeyboardInterrupt caught inside the readline thread
+                    # (only happens if SA_RESTART is not in effect, e.g. Windows).
+                    # Signal handler already printed the message; loop for new prompt.
                     continue
+
+                # Divider only on real input — not on Ctrl+C / Ctrl+D.
+                self.console.print(
+                    f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
+                )
 
                 _ctrl_c_count[0] = 0  # real input resets the Ctrl+C counter
                 text = text.strip()
@@ -254,6 +291,7 @@ class InlineRenderer:
                 loop.remove_signal_handler(_sig.SIGINT)
             except (NotImplementedError, OSError):
                 pass
+            _restore_tty()
 
     def _print_status(self) -> None:
         """Print status line + top border of the input area."""

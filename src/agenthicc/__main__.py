@@ -544,6 +544,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     renderer._status.session_id = (
         f"{cfg.execution.provider}/{cfg.execution.effective_model()}"
     )
+    renderer._status.resume_id = session_id
 
     # Build the lauren-ai runner that calls the LLM
     agent_runner = _build_agent_runner(llm_cfg, transcript=model)

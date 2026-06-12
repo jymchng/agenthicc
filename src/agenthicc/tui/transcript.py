@@ -239,9 +239,7 @@ class TranscriptModel:
     def render(self) -> list[str]:
         """Render the transcript to plain-text lines (PRD-06 §5.1)."""
         out: list[str] = []
-        for i, turn in enumerate(self.turns):
-            if i > 0:
-                out.append(SEPARATOR)
+        for turn in self.turns:
             out.append(turn.header())
             # Tool calls rendered FIRST — they happened before the prose reply
             for tc in turn.tool_calls:
