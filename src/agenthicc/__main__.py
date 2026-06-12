@@ -382,8 +382,10 @@ async def _run_agent_turn(
         renderer._status.active = False
         renderer._status.completed_agents += 1
 
-    for line in content.splitlines() or [content]:
-        transcript.append_line(agent_id, line)
+    # Store entire response as one sentinel-prefixed line so _flush_new_lines
+    # can render it through rich.markdown.Markdown for beautiful formatting.
+    from agenthicc.tui.app import InlineRenderer  # noqa: PLC0415
+    transcript.append_line(agent_id, InlineRenderer._MD_SENTINEL + content)
 
     await processor.emit(
         Event.create("IntentStatusChanged", {"intent_id": intent_id, "status": "complete"})

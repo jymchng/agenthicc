@@ -25,7 +25,7 @@ __all__ = [
 #: Braille spinner cycle (PRD-06 §5.2).
 SPINNER_FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
 
-SEPARATOR = "[dim]" + "─" * 60 + "[/dim]"
+SEPARATOR = ""  # no separator line between turns; blank line provides spacing
 
 
 class ToolCallState(Enum):
@@ -243,10 +243,12 @@ class TranscriptModel:
             if i > 0:
                 out.append(SEPARATOR)
             out.append(turn.header())
-            for line in turn.lines:
-                out.append(f"  {line}")
+            # Tool calls rendered FIRST — they happened before the prose reply
             for tc in turn.tool_calls:
                 out.append(tc.render())
+            # Prose lines — markdown lines carry the "\x00md\x00" sentinel prefix
+            for line in turn.lines:
+                out.append(line)  # sentinel already embedded by _run_agent_turn
             footer = turn.footer()
             if footer is not None:
                 out.append(footer)

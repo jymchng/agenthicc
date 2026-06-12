@@ -194,15 +194,14 @@ class InlineRenderer:
             self._print_status()
 
             text = await asyncio.to_thread(self._get_line)
+            # Always print bottom border — whether input was empty or not
+            import shutil as _sh  # noqa: PLC0415
+            self.console.print(f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]")
             if text is None:
                 break
             text = text.strip()
             if not text:
                 continue
-
-            # Bottom border of input area
-            import shutil as _sh  # noqa: PLC0415
-            self.console.print(f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]")
 
             handled = SlashCommandHandler(renderer=self).handle(text, self.model, self.console)
             if not handled:
@@ -241,7 +240,7 @@ class InlineRenderer:
     def _get_line(self) -> str | None:
         """Blocking Rich console input — runs in a thread via asyncio.to_thread."""
         try:
-            return self.console.input("  [bold green]❯[/bold green] ")
+            return self.console.input("[bold green]❯[/bold green] ")
         except (EOFError, KeyboardInterrupt):
             return None
 
@@ -258,12 +257,23 @@ class InlineRenderer:
             self.model.advance_spinner()
             self._status.spinner_frame += 1
 
+    _MD_SENTINEL = "\x00md\x00"
+
     def _flush_new_lines(self) -> None:
-        """Print lines from model.render() not yet printed."""
+        """Print lines from model.render() not yet printed.
+
+        Lines prefixed with ``_MD_SENTINEL`` are agent prose rendered through
+        Rich's ``Markdown`` class; all other lines use standard Rich markup.
+        """
         lines = self.model.render()
         new = lines[self._printed_count:]
         for line in new:
-            self.console.print(line, markup=True, highlight=False)
+            if line.startswith(self._MD_SENTINEL):
+                from rich.markdown import Markdown  # noqa: PLC0415
+                md_text = line[len(self._MD_SENTINEL):]
+                self.console.print(Markdown(md_text), highlight=False)
+            else:
+                self.console.print(line, markup=True, highlight=False)
         if new:
             self._printed_count = len(lines)
 
