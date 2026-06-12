@@ -41,6 +41,11 @@ where = ["src"]
 lauren-ai = { path = "../lauren-all/lauren-ai", editable = true }
 lauren = { path = "../lauren-all/lauren-framework", editable = true }
 
+[tool.uv.workspace]
+members = [
+    "python-password-generator",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
