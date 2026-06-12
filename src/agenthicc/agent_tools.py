@@ -101,6 +101,20 @@ async def grep_files(pattern: str, path: str = ".") -> dict:
 
 
 @tool()
+async def shell(command: str, timeout: float = 30.0) -> dict:
+    """Execute a shell command and return stdout/stderr.
+
+    Args:
+        command: Shell command string to execute.
+        timeout: Maximum seconds to wait (default 30).
+    """
+    from agenthicc.tools.exec import RunBashTool  # noqa: PLC0415
+    return await RunBashTool().execute(
+        {"command": command, "timeout": timeout}, {"workspace_root": os.getcwd()}
+    )
+
+
+@tool()
 async def run_bash(command: str, timeout: float = 30.0) -> dict:
     """Execute a bash shell command.
 
@@ -187,7 +201,8 @@ AGENT_TOOLS = [
     write_file,
     search_files,
     grep_files,
-    run_bash,
+    shell,        # primary shell tool — models often call it "shell"
+    run_bash,     # alias
     run_command,
     run_python,
     git_status,

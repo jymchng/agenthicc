@@ -177,71 +177,83 @@ class InlineRenderer:
         response arrives, the transcript is flushed, and the idle status is
         shown before the next prompt appears — no "reply one message late".
 
-        Cycle:
-            1. flush transcript → print new agent lines
-            2. print idle status line
-            3. Console.input("  > ") in thread (event loop free while typing)
-            4. await on_input(text)  ← agent runs + spinner here
-            5. repeat
-        """
-        import inspect, shutil as _sh  # noqa: PLC0415
+        Ctrl+C handling
+        ---------------
+        We own SIGINT via ``loop.add_signal_handler`` so that the count is
+        authoritative and there is no race between the event-loop handler and
+        the readline thread.
 
-        # Support both sync and async on_input for backward compat with tests
+        * Press 1 — print "Press Ctrl+C again to exit."
+        * Press 2 — print resume hint, then ``os._exit(0)``.
+
+        ``os._exit`` bypasses Python's shutdown sequence and kills the blocked
+        ``asyncio.to_thread(input)`` thread immediately; no third press needed.
+        """
+        import inspect, os as _os, shutil as _sh, signal as _sig  # noqa: PLC0415
+
         _is_async = inspect.iscoroutinefunction(on_input)
 
-        _ctrl_c_count = 0   # consecutive Ctrl+C presses without input between them
-        _exited_clean = False
+        # ── SIGINT handler ────────────────────────────────────────────────
+        _ctrl_c_count = [0]
 
-        while True:
-            self._flush_new_lines()
-            self._print_status()
+        def _sigint() -> None:
+            _ctrl_c_count[0] += 1
+            if _ctrl_c_count[0] == 1:
+                self.console.print("\n[dim]Press Ctrl+C again to exit.[/dim]")
+            else:
+                sid = self._status.session_id or ""
+                hint = (
+                    f"`agenthicc --resume {sid}`" if sid
+                    else "`agenthicc --continue`"
+                )
+                self.console.print(f"\n[dim]To resume, run {hint}[/dim]\n")
+                _os._exit(0)
 
-            text = await asyncio.to_thread(self._get_line)
-            # Always print bottom border
-            self.console.print(f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]")
+        loop = asyncio.get_running_loop()
+        try:
+            loop.add_signal_handler(_sig.SIGINT, _sigint)
+        except (NotImplementedError, OSError):
+            pass  # Windows — falls back to default KeyboardInterrupt behaviour
 
-            # _get_line returns None for Ctrl+C; _last_interrupted distinguishes
-            # Ctrl+C from EOF so we can handle them differently.
-            if text is None:
-                if self._last_interrupted:
-                    _ctrl_c_count += 1
-                    if _ctrl_c_count == 1:
-                        self.console.print(
-                            "[dim]Press Ctrl+C again to exit.[/dim]"
-                        )
-                        continue
-                    else:
-                        # Second consecutive Ctrl+C — exit cleanly
-                        _exited_clean = True
-                        break
-                else:
-                    # EOF (Ctrl+D) — exit silently
+        # ── main loop ─────────────────────────────────────────────────────
+        try:
+            while True:
+                self._flush_new_lines()
+                self._print_status()
+
+                text = await asyncio.to_thread(self._get_line)
+                self.console.print(
+                    f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
+                )
+
+                if text is self._EOF:
+                    # Ctrl+D / EOF — exit silently
                     break
 
-            # Any real input resets the Ctrl+C counter
-            _ctrl_c_count = 0
-            text = text.strip()
-            if not text:
-                continue
+                if text is None:
+                    # Ctrl+C caught inside the readline thread.
+                    # The signal handler already printed the message (or exited).
+                    # Just loop back so the user stays at a fresh prompt.
+                    continue
 
-            handled = SlashCommandHandler(renderer=self).handle(text, self.model, self.console)
-            if not handled:
-                self.on_intent_submitted()
-                if _is_async:
-                    await on_input(text)
-                else:
-                    on_input(text)
-                self._flush_new_lines()
+                _ctrl_c_count[0] = 0  # real input resets the Ctrl+C counter
+                text = text.strip()
+                if not text:
+                    continue
 
-        if _exited_clean:
-            sid = self._status.session_id or ""
-            resume_hint = (
-                f"`agenthicc --resume {sid}`" if sid
-                else "`agenthicc --continue`"
-            )
-            self.console.print(
-                f"\n[dim]To resume, run {resume_hint}[/dim]\n"
-            )
+                handled = SlashCommandHandler(renderer=self).handle(text, self.model, self.console)
+                if not handled:
+                    self.on_intent_submitted()
+                    if _is_async:
+                        await on_input(text)
+                    else:
+                        on_input(text)
+                    self._flush_new_lines()
+        finally:
+            try:
+                loop.remove_signal_handler(_sig.SIGINT)
+            except (NotImplementedError, OSError):
+                pass
 
     def _print_status(self) -> None:
         """Print status line + top border of the input area."""
@@ -267,22 +279,23 @@ class InlineRenderer:
         # Top border of input area — plain horizontal rule
         self.console.print(f"[dim]{'─' * cols}[/dim]")
 
-    _last_interrupted: bool = False  # set True when KeyboardInterrupt caught
+    # Sentinel returned by _get_line on EOF (Ctrl+D) — distinct from None (Ctrl+C).
+    _EOF: object = object()
 
-    def _get_line(self) -> str | None:
+    def _get_line(self) -> str | None | object:
         """Blocking Rich console input — runs in a thread via asyncio.to_thread.
 
-        Sets ``_last_interrupted=True`` for Ctrl+C, ``False`` for EOF/normal,
-        so the caller can distinguish between the two ``None`` return cases.
+        Returns:
+            str    — the typed line (may be empty string)
+            None   — Ctrl+C (KeyboardInterrupt); signal handler owns counting/exit
+            _EOF   — Ctrl+D / EOF; caller should break the loop
         """
-        self._last_interrupted = False
         try:
             return self.console.input("[bold green]❯[/bold green] ")
         except KeyboardInterrupt:
-            self._last_interrupted = True
             return None
         except EOFError:
-            return None
+            return self._EOF
 
     # ── render loop ───────────────────────────────────────────────────────
 

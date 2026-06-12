@@ -278,6 +278,7 @@ async def _run_agent_turn(
     renderer: Any,
     processor: Any,
     session_memory: Any = None,
+    max_agent_turns: int = 200,
 ) -> None:
     """Run one agent turn: call LLM, stream response into transcript, show Rich spinner."""
     import re as _re  # noqa: PLC0415
@@ -320,6 +321,58 @@ async def _run_agent_turn(
     renderer._status.input_tokens = 0
     renderer._status.output_tokens = 0
 
+    # Wire ModelCallComplete signal → live token count updates in the spinner.
+    # Fires once per LLM turn so counts accumulate in real-time during multi-turn runs.
+    _signals = getattr(runner, "_signals", None)
+
+    # Live tool call list shown inside the spinner block while the agent is thinking.
+    # Each entry: {"id": str, "name": str, "args": str, "done": bool, "ok": bool, "ms": float|None}
+    _live_calls: list[dict] = []
+
+    if _signals is not None:
+        from lauren_ai._signals import ModelCallComplete as _MCC  # noqa: PLC0415
+        from lauren_ai._signals import ToolCallStarted as _TCS, ToolCallComplete as _TCC  # noqa: PLC0415
+
+        @_signals.on(_MCC)
+        async def _on_model_complete(sig: Any) -> None:
+            usage = getattr(sig, "usage", None)
+            if usage:
+                renderer._status.input_tokens += getattr(usage, "input_tokens", 0)
+                renderer._status.output_tokens += getattr(usage, "output_tokens", 0)
+            renderer._status.session_cost_usd += getattr(sig, "cost_usd", 0.0) or 0.0
+
+        @_signals.on(_TCS)
+        async def _on_tool_started(sig: Any) -> None:
+            args = dict(getattr(sig, "input", {}) or {})
+            # Format args as Claude Code style: first value only if single, else key=val pairs
+            items = list(args.items())
+            if len(items) == 1:
+                args_str = repr(items[0][1])[:50]
+            elif items:
+                args_str = ", ".join(f"{k}={repr(v)[:25]}" for k, v in items[:3])
+                if len(items) > 3:
+                    args_str += ", …"
+            else:
+                args_str = ""
+            _live_calls.append({
+                "id": getattr(sig, "tool_use_id", ""),
+                "name": getattr(sig, "tool_name", ""),
+                "args": args_str,
+                "done": False,
+                "ok": True,
+                "ms": None,
+            })
+
+        @_signals.on(_TCC)
+        async def _on_tool_complete(sig: Any) -> None:
+            tid = getattr(sig, "tool_use_id", "")
+            for entry in _live_calls:
+                if entry["id"] == tid:
+                    entry["done"] = True
+                    entry["ok"] = bool(getattr(sig, "success", True))
+                    entry["ms"] = getattr(sig, "duration_ms", None)
+                    break
+
     # Build the agent class with tools so it can actually DO things
     @agent_decorator(
         model=model_id,
@@ -345,34 +398,58 @@ async def _run_agent_turn(
     live.start()
 
     async def _spin() -> None:
+        from rich.markup import render as _mk  # noqa: PLC0415
         while True:
             elapsed = time.monotonic() - renderer._status.intent_started_at
             frame = _thinking_wave(renderer._status.spinner_frame)
-            live.update(Text(
-                f" {frame}  {elapsed:.1f}s"
-                f"  ↑ {renderer._status.input_tokens:,}"
-                f"  ↓ {renderer._status.output_tokens:,}"
-            ))
+            parts = [
+                f" {frame}  [dim]{elapsed:.1f}s  │[/dim]"
+                f"  [cyan]↑ {renderer._status.input_tokens:,}[/cyan]"
+                f"  [green]↓ {renderer._status.output_tokens:,}[/green]"
+            ]
+            for call in _live_calls:
+                name = call["name"]
+                args = call["args"]
+                if call["done"]:
+                    icon = "[green]✓[/green]" if call["ok"] else "[red]✗[/red]"
+                    ms = f"  [dim]{call['ms']:.0f}ms[/dim]" if call["ms"] else ""
+                    parts.append(
+                        f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  {icon}{ms}"
+                    )
+                else:
+                    parts.append(
+                        f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  [dim]…[/dim]"
+                    )
+            live.update(_mk("\n".join(parts)))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)
 
     spin_task = asyncio.create_task(_spin())
 
     try:
+        from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
+        _cfg = _AgentConfig(
+            max_turns=max_agent_turns,
+            parallel_tool_calls=True,
+        )
         response = await _active_runner.run(
             _agent_instance,
             text,
-            memory=session_memory,   # pass the shared memory → conversation history
+            memory=session_memory,
+            config_override=_cfg,
         )
-        content = response.content or "(no response)"
+        content = response.content or ""
         # Strip any residual XML that slipped through
         content = _re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=_re.DOTALL)
         content = _re.sub(r"<[^>]+>", "", content)
-        content = content.strip() or "(no response)"
-        usage = response.total_usage
-        renderer._status.input_tokens += usage.input_tokens
-        renderer._status.output_tokens += usage.output_tokens
-        renderer._status.session_cost_usd += usage.cost_usd(model_id)
+        content = content.strip()
+        # If the model completed its work via tool calls and has nothing to add,
+        # skip the prose block entirely rather than printing "(no response)".
+        if not content and response.tool_calls_made:
+            content = ""   # will be skipped below
+        elif not content:
+            content = "(no response)"
+        # Token counts + cost already accumulated via ModelCallComplete signal handler above
     except Exception as exc:
         content = f"⚠ Error: {exc}"
     finally:
@@ -382,10 +459,10 @@ async def _run_agent_turn(
         renderer._status.active = False
         renderer._status.completed_agents += 1
 
-    # Store entire response as one sentinel-prefixed line so _flush_new_lines
-    # can render it through rich.markdown.Markdown for beautiful formatting.
-    from agenthicc.tui.app import InlineRenderer  # noqa: PLC0415
-    transcript.append_line(agent_id, InlineRenderer._MD_SENTINEL + content)
+    # Only append prose if there's something to say
+    if content:
+        from agenthicc.tui.app import InlineRenderer  # noqa: PLC0415
+        transcript.append_line(agent_id, InlineRenderer._MD_SENTINEL + content)
 
     await processor.emit(
         Event.create("IntentStatusChanged", {"intent_id": intent_id, "status": "complete"})
@@ -476,9 +553,11 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     _session_memory = ShortTermMemory(max_tokens=32_000)
 
     async def on_intent(text: str) -> None:
-        # Pass _session_memory so conversation history accumulates
-        await _run_agent_turn(text, agent_runner, model, renderer, processor,
-                              session_memory=_session_memory)
+        await _run_agent_turn(
+            text, agent_runner, model, renderer, processor,
+            session_memory=_session_memory,
+            max_agent_turns=cfg.execution.max_agent_turns,
+        )
 
     proc_task = asyncio.create_task(processor.run())
     try:

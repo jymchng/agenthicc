@@ -100,6 +100,7 @@ class ExecutionSettings:
     max_concurrent_intents: int = 8
     max_parallel_tasks: int = 4
     agent_pool_size: int = 16
+    max_agent_turns: int = 200      # max agentic-loop iterations per intent
     # LLM provider selection
     provider: str = "anthropic"
     model: str = ""            # empty → use PROVIDER_DEFAULT_MODELS[provider]
@@ -325,6 +326,7 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
         max_concurrent_intents=ex.get("max_concurrent_intents", 8),
         max_parallel_tasks=ex.get("max_parallel_tasks", 4),
         agent_pool_size=ex.get("agent_pool_size", 16),
+        max_agent_turns=int(ex.get("max_agent_turns", 200)),
         provider=str(ex.get("provider", "anthropic")),
         model=str(ex.get("model", "")),
         api_key=str(ex.get("api_key", "")),
