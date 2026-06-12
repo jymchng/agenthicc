@@ -86,6 +86,7 @@ SLASH_HELP = {
     "/models":  "List available providers",
     "/expand":  "Expand tool call output  (e.g. /expand abc12345)",
     "/help":    "Show this help table",
+    "/skills":  "List available skills",
 }
 
 
@@ -195,6 +196,11 @@ class InlineRenderer:
             history_file=self._history_file,
         )
 
+        # Register skill slash-command completions
+        from agenthicc.tui.input_bar import CommandSpec  # noqa: PLC0415
+        for slug, skill in getattr(self, "_skills", {}).items():
+            session.register_command(CommandSpec(name=f"/{slug}", description=skill.description or skill.name))
+
         # Styled ❯ prompt rendered by prompt_toolkit (not Rich markup).
         _prompt = FormattedText([("bold ansigreen", "❯"), ("", " ")])
 
@@ -230,8 +236,17 @@ class InlineRenderer:
                 f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
             )
 
-            handled = SlashCommandHandler(renderer=self).handle(text, self.model, self.console)
-            if not handled:
+            handled = SlashCommandHandler(renderer=self, skills=getattr(self, "_skills", {})).handle(text, self.model, self.console)
+            pending = getattr(self, "_pending_skill", None)
+            if pending:
+                self._pending_skill = None
+                self.on_intent_submitted()
+                if _is_async:
+                    await on_input(pending)
+                else:
+                    on_input(pending)
+                self._flush_new_lines()
+            elif not handled:
                 self.on_intent_submitted()
                 if _is_async:
                     await on_input(text)
@@ -433,9 +448,10 @@ class InlineRenderer:
 class SlashCommandHandler:
     """Renders slash-command output as Rich Panels/Tables inline."""
 
-    def __init__(self, renderer: Any = None) -> None:
+    def __init__(self, renderer: Any = None, skills: Any = None) -> None:
         # Optional back-reference to InlineRenderer for live config mutations
         self._renderer = renderer
+        self._skills = skills or {}
 
     def handle(self, text: str, model: TranscriptModel, console: Any) -> bool:
         """Dispatch *text* to a slash-command renderer.  Returns True if handled."""
@@ -457,6 +473,13 @@ class SlashCommandHandler:
             return True
         if first == "/help":
             self._help(console)
+            return True
+        if first == "/skills":
+            self._list_skills(console)
+            return True
+        slug = first[1:] if first.startswith("/") else ""
+        if slug and slug in self._skills:
+            self._invoke_skill(stripped, console)
             return True
         return False
 
@@ -615,6 +638,49 @@ class SlashCommandHandler:
         for cmd, desc in SLASH_HELP.items():
             table.add_row(cmd, desc)
         console.print(table)
+
+    def _list_skills(self, console: Any) -> None:
+        if not RICH_AVAILABLE:
+            return
+        table = Table(title="Available Skills", box=rich_box.SIMPLE)
+        table.add_column("Command", style="bold cyan")
+        table.add_column("Name")
+        table.add_column("Description")
+        if not self._skills:
+            table.add_row("—", "(no skills found)", "")
+        else:
+            for slug, skill in sorted(self._skills.items()):
+                table.add_row(f"/{slug}", skill.name, skill.description[:80] or "—")
+        console.print(table)
+
+    def _invoke_skill(self, cmd: str, console: Any) -> None:
+        import os as _os  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+        from agenthicc.skills.runner import process_skill_body  # noqa: PLC0415
+
+        parts = cmd.split()
+        slug = parts[0][1:]
+        args = parts[1:]
+        skill = self._skills.get(slug)
+        if not skill:
+            console.print(f"[red]Skill {slug!r} not found.[/red]")
+            return
+        session_id = ""
+        if self._renderer is not None:
+            session_id = getattr(self._renderer._status, "resume_id", "") or ""
+        helper = skill.path / "helper.py"
+        if helper.exists():
+            console.print(f"  [dim]helper.py available at {helper}[/dim]")
+        body = process_skill_body(skill, args=args, cwd=Path(_os.getcwd()), session_id=session_id)
+        # Wrap with an explicit instruction frame so the LLM treats the skill
+        # body as directives to execute, not as content to discuss.
+        framed = (
+            f"[Skill /{slug} — execute the following instructions:]\n\n"
+            f"{body}"
+        )
+        if self._renderer is not None:
+            self._renderer._pending_skill = framed
+        console.print(f"  [bold cyan]⚡[/bold cyan] [dim]Invoking skill [bold]/{slug}[/bold][/dim]")
 
 
 # ── run_inline ────────────────────────────────────────────────────────────

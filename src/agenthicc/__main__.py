@@ -415,6 +415,17 @@ async def _run_agent_turn(
                 except Exception:
                     pass
 
+    # ── skills auto-triggering ────────────────────────────────────────
+    from agenthicc.skills.runner import find_matching_skills, process_skill_body  # noqa: PLC0415
+    _matched_skills = find_matching_skills(text, getattr(renderer, "_skills", {}) or {})
+    _skill_suffix = ""
+    if _matched_skills:
+        _addenda = "\n\n".join(
+            f"## Skill: {s.name}\n{process_skill_body(s, args=[], cwd=Path(os.getcwd()))}"
+            for s in _matched_skills
+        )
+        _skill_suffix = f"\n\n---\n\n{_addenda}"
+
     # Build the agent class with tools so it can actually DO things
     @agent_decorator(
         model=model_id,
@@ -423,6 +434,7 @@ async def _run_agent_turn(
             "and git tools. Use them directly to complete tasks. "
             "Give concise responses. Show command output when relevant. "
             "Never invent file contents — always read them first."
+            + _skill_suffix
         ),
     )
     @use_tools(*AGENT_TOOLS)
@@ -654,6 +666,14 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
         f"{cfg.execution.provider}/{cfg.execution.effective_model()}"
     )
     renderer._status.resume_id = session_id
+
+    # ── skills discovery ──────────────────────────────────────────────
+    from agenthicc.skills.loader import discover_skills as _discover_skills
+    _skills = _discover_skills(
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
+    )
+    renderer._skills = _skills
 
     # ── conversation store + memory ───────────────────────────────────────
     from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
