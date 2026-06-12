@@ -200,6 +200,10 @@ class InlineRenderer:
             if not text:
                 continue
 
+            # Bottom border of input area
+            import shutil as _sh  # noqa: PLC0415
+            self.console.print(f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]")
+
             handled = SlashCommandHandler(renderer=self).handle(text, self.model, self.console)
             if not handled:
                 self.on_intent_submitted()
@@ -211,9 +215,11 @@ class InlineRenderer:
                 self._flush_new_lines()
 
     def _print_status(self) -> None:
-        """Print one status line to the console (no ANSI strings — Rich markup only)."""
-        import time as _t  # noqa: PLC0415
+        """Print status line + top border of the input area."""
+        import shutil as _sh, time as _t  # noqa: PLC0415
         s = self._status
+        cols = _sh.get_terminal_size((80, 24)).columns
+
         if s.active:
             wave = _thinking_wave(s.spinner_frame)
             elapsed = _t.monotonic() - s.intent_started_at if s.intent_started_at else 0.0
@@ -224,18 +230,18 @@ class InlineRenderer:
             )
         else:
             sid = s.session_id or "session"
+            turns = s.completed_agents
             self.console.print(
-                f" [dim]{sid}  │  {s.completed_agents} turn{'s' if s.completed_agents != 1 else ''}  │  ${s.session_cost_usd:.3f}[/dim]"
+                f" [dim]{sid}  │  {turns} turn{'s' if turns != 1 else ''}  │  ${s.session_cost_usd:.3f}[/dim]"
             )
 
-    def _get_line(self) -> str | None:
-        """Blocking Rich console input — runs in a thread via asyncio.to_thread.
+        # Top border of input area — plain horizontal rule
+        self.console.print(f"[dim]{'─' * cols}[/dim]")
 
-        Uses ``Console.input()`` so the prompt is styled with Rich markup and
-        honours the same output stream as the rest of the TUI.
-        """
+    def _get_line(self) -> str | None:
+        """Blocking Rich console input — runs in a thread via asyncio.to_thread."""
         try:
-            return self.console.input("  [bold]>[/bold] ")
+            return self.console.input("  [bold green]❯[/bold green] ")
         except (EOFError, KeyboardInterrupt):
             return None
 

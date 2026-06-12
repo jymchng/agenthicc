@@ -277,12 +277,15 @@ async def _run_agent_turn(
     transcript: Any,
     renderer: Any,
     processor: Any,
+    session_memory: Any = None,
 ) -> None:
     """Run one agent turn: call LLM, stream response into transcript, show Rich spinner."""
     import re as _re  # noqa: PLC0415
-    from lauren_ai._agents import agent as agent_decorator  # noqa: PLC0415
+    from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
+    from lauren_ai.testing import _build_runner_for_agent  # noqa: PLC0415
     from agenthicc.kernel import Event  # noqa: PLC0415
     from agenthicc.tui.app import _thinking_wave  # noqa: PLC0415
+    from agenthicc.agent_tools import AGENT_TOOLS  # noqa: PLC0415
     from rich.live import Live  # noqa: PLC0415
     from rich.text import Text  # noqa: PLC0415
 
@@ -317,17 +320,26 @@ async def _run_agent_turn(
     renderer._status.input_tokens = 0
     renderer._status.output_tokens = 0
 
+    # Build the agent class with tools so it can actually DO things
     @agent_decorator(
         model=model_id,
         system=(
-            "You are a helpful, concise assistant. "
-            "Respond in plain conversational prose only. "
-            "Never output XML, tool-call tags, angle brackets, JSON, "
-            "code fences, or any markup syntax. "
-            "Never describe your own tools or capabilities."
+            "You are a capable AI assistant with access to filesystem, shell, "
+            "and git tools. Use them directly to complete tasks. "
+            "Give concise responses. Show command output when relevant. "
+            "Never invent file contents — always read them first."
         ),
     )
+    @use_tools(*AGENT_TOOLS)
     class _AgenthiccAgent: ...
+
+    # Use _build_runner_for_agent so tools are resolved correctly from @use_tools metadata
+    _agent_instance = _AgenthiccAgent()
+    _active_runner = _build_runner_for_agent(
+        _agent_instance,
+        runner._transport,
+        signals=getattr(runner, "_signals", None),
+    )
 
     live = Live(refresh_per_second=12, transient=True)
     live.start()
@@ -347,7 +359,11 @@ async def _run_agent_turn(
     spin_task = asyncio.create_task(_spin())
 
     try:
-        response = await runner.run(_AgenthiccAgent(), text)
+        response = await _active_runner.run(
+            _agent_instance,
+            text,
+            memory=session_memory,   # pass the shared memory → conversation history
+        )
         content = response.content or "(no response)"
         # Strip any residual XML that slipped through
         content = _re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=_re.DOTALL)
@@ -453,9 +469,14 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     # Build the lauren-ai runner that calls the LLM
     agent_runner = _build_agent_runner(llm_cfg, transcript=model)
 
+    # Single ShortTermMemory shared across all turns in this session
+    from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
+    _session_memory = ShortTermMemory(max_tokens=32_000)
+
     async def on_intent(text: str) -> None:
-        # Awaited by renderer.run() — response arrives before the next prompt
-        await _run_agent_turn(text, agent_runner, model, renderer, processor)
+        # Pass _session_memory so conversation history accumulates
+        await _run_agent_turn(text, agent_runner, model, renderer, processor,
+                              session_memory=_session_memory)
 
     proc_task = asyncio.create_task(processor.run())
     try:
