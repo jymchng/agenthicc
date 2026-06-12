@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -328,6 +329,10 @@ async def _run_agent_turn(
     # Live tool call list shown inside the spinner block while the agent is thinking.
     # Each entry: {"id": str, "name": str, "args": str, "done": bool, "ok": bool, "ms": float|None}
     _live_calls: list[dict] = []
+    # Keyed by tool_use_id: (relative_path, original_content) captured before the call.
+    _file_snapshots: dict[str, tuple[str, str]] = {}
+    # File-editing tool names that warrant a unified diff in the transcript.
+    _FILE_EDIT_TOOLS = {"write_file", "patch_file", "append_file"}
 
     if _signals is not None:
         from lauren_ai._signals import ModelCallComplete as _MCC  # noqa: PLC0415
@@ -344,6 +349,8 @@ async def _run_agent_turn(
         @_signals.on(_TCS)
         async def _on_tool_started(sig: Any) -> None:
             args = dict(getattr(sig, "input", {}) or {})
+            tool_name = getattr(sig, "tool_name", "")
+            tid = getattr(sig, "tool_use_id", "")
             # Format args as Claude Code style: first value only if single, else key=val pairs
             items = list(args.items())
             if len(items) == 1:
@@ -355,16 +362,29 @@ async def _run_agent_turn(
             else:
                 args_str = ""
             _live_calls.append({
-                "id": getattr(sig, "tool_use_id", ""),
-                "name": getattr(sig, "tool_name", ""),
+                "id": tid,
+                "name": tool_name,
                 "args": args_str,
                 "done": False,
                 "ok": True,
                 "ms": None,
             })
+            # Snapshot file content before write/patch so we can produce a diff later.
+            if tool_name in _FILE_EDIT_TOOLS:
+                rel_path = args.get("path", "")
+                if rel_path:
+                    full = os.path.join(os.getcwd(), rel_path) if not os.path.isabs(rel_path) else rel_path
+                    try:
+                        original = await asyncio.to_thread(
+                            lambda p=full: open(p).read() if os.path.exists(p) else ""
+                        )
+                        _file_snapshots[tid] = (rel_path, original)
+                    except Exception:
+                        pass
 
         @_signals.on(_TCC)
         async def _on_tool_complete(sig: Any) -> None:
+            import difflib as _dl  # noqa: PLC0415
             tid = getattr(sig, "tool_use_id", "")
             for entry in _live_calls:
                 if entry["id"] == tid:
@@ -372,6 +392,29 @@ async def _run_agent_turn(
                     entry["ok"] = bool(getattr(sig, "success", True))
                     entry["ms"] = getattr(sig, "duration_ms", None)
                     break
+            # Generate unified diff for file-editing tools and store as transcript output.
+            if tid in _file_snapshots:
+                rel_path, original = _file_snapshots.pop(tid)
+                full = os.path.join(os.getcwd(), rel_path) if not os.path.isabs(rel_path) else rel_path
+                try:
+                    new_content = await asyncio.to_thread(
+                        lambda p=full: open(p).read() if os.path.exists(p) else ""
+                    )
+                    diff = "".join(_dl.unified_diff(
+                        original.splitlines(keepends=True),
+                        new_content.splitlines(keepends=True),
+                        fromfile=f"a/{rel_path}",
+                        tofile=f"b/{rel_path}",
+                        lineterm="",
+                    ))
+                    if diff:
+                        transcript.finish_tool_call(tool_use_id=tid, output=diff)
+                        for entry in _live_calls:
+                            if entry["id"] == tid:
+                                entry["diff"] = diff
+                                break
+                except Exception:
+                    pass
 
     # Build the agent class with tools so it can actually DO things
     @agent_decorator(
@@ -400,6 +443,34 @@ async def _run_agent_turn(
     from agenthicc.tui.transcript import TranscriptModel as _TM  # noqa: PLC0415
     _MAX_VISIBLE_CALLS = _TM.MAX_VISIBLE_TOOL_CALLS
 
+    # CTRL+O (^O, \x0f) toggles expanded/collapsed tool-call list in the spinner.
+    _expanded = [False]
+
+    async def _watch_ctrlO() -> None:
+        """Poll stdin for CTRL+O (^O) while the agent is thinking."""
+        import select as _sel, tty as _tty, termios as _tm  # noqa: PLC0415
+        fd = sys.stdin.fileno()
+        try:
+            old = _tm.tcgetattr(fd)
+            _tty.setcbreak(fd)          # single-char reads, no Enter needed
+        except Exception:
+            return
+        try:
+            while True:
+                await asyncio.sleep(0.05)
+                r, _, _ = _sel.select([fd], [], [], 0)
+                if r:
+                    ch = os.read(fd, 1)
+                    if ch == b"\x0f":   # CTRL+O
+                        _expanded[0] = not _expanded[0]
+        except asyncio.CancelledError:
+            pass
+        finally:
+            try:
+                _tm.tcsetattr(fd, _tm.TCSADRAIN, old)
+            except Exception:
+                pass
+
     async def _spin() -> None:
         from rich.markup import render as _mk  # noqa: PLC0415
         while True:
@@ -420,20 +491,53 @@ async def _run_agent_turn(
                     call_lines.append(
                         f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  {icon}{ms}"
                     )
+                    diff_text = call.get("diff", "")
+                    if diff_text:
+                        diff_lines_all = diff_text.splitlines()
+                        diff_preview = diff_lines_all[:8]
+                        for dl in diff_preview:
+                            if dl.startswith("+++") or dl.startswith("---"):
+                                call_lines.append(f"      [dim]{dl}[/dim]")
+                            elif dl.startswith("@@"):
+                                call_lines.append(f"      [dim cyan]{dl}[/dim cyan]")
+                            elif dl.startswith("+"):
+                                call_lines.append(f"      [green]{dl}[/green]")
+                            elif dl.startswith("-"):
+                                call_lines.append(f"      [red]{dl}[/red]")
+                            else:
+                                call_lines.append(f"      [dim]{dl}[/dim]")
+                        if len(diff_lines_all) > 8:
+                            call_lines.append(
+                                f"      [dim]… {len(diff_lines_all) - 8} more diff lines[/dim]"
+                            )
                 else:
                     call_lines.append(
                         f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  [dim]…[/dim]"
                     )
-            if len(call_lines) > _MAX_VISIBLE_CALLS:
+            if not _expanded[0] and len(call_lines) > _MAX_VISIBLE_CALLS:
                 hidden = len(call_lines) - _MAX_VISIBLE_CALLS
                 call_lines = call_lines[:_MAX_VISIBLE_CALLS] + [
-                    f"   [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}[/dim]"
+                    f"   [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}  "
+                    f"[ctrl+O to expand][/dim]"
                 ]
             live.update(_mk("\n".join([header] + call_lines)))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)
 
     spin_task = asyncio.create_task(_spin())
+    ctrlO_task = asyncio.create_task(_watch_ctrlO())
+
+    # Install a named ThreadPoolExecutor as the event loop's default executor.
+    # asyncio.to_thread() inside every @tool() implementation resolves to
+    # loop.run_in_executor(None, ...) which uses this pool, so all blocking
+    # I/O from concurrent tool calls runs on clearly-named threads.
+    _loop = asyncio.get_running_loop()
+    _prev_executor = _loop._default_executor
+    _tool_pool = ThreadPoolExecutor(
+        max_workers=max_agent_turns and 8,  # generous cap; tune via config if needed
+        thread_name_prefix="agenthicc-tool",
+    )
+    _loop.set_default_executor(_tool_pool)
 
     try:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
@@ -463,10 +567,13 @@ async def _run_agent_turn(
         content = f"⚠ Error: {exc}"
     finally:
         spin_task.cancel()
-        await asyncio.gather(spin_task, return_exceptions=True)
+        ctrlO_task.cancel()
+        await asyncio.gather(spin_task, ctrlO_task, return_exceptions=True)
         live.stop()
         renderer._status.active = False
         renderer._status.completed_agents += 1
+        _loop.set_default_executor(_prev_executor)
+        _tool_pool.shutdown(wait=False)
 
     # Only append prose if there's something to say
     if content:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import uuid4
 
@@ -24,26 +23,6 @@ TOOL_ENTITY = "tool"
 PermissionChecker = Callable[[str, dict[str, Any], dict[str, Any]], bool | None]
 
 
-class _BridgedEmitter:
-    """Proxies EventProcessor.emit() from a worker thread to the main event loop.
-
-    Worker threads run their own event loops and cannot await coroutines on
-    the main loop directly.  This class wraps ``emit()`` so that each call
-    is submitted to the main loop via ``run_coroutine_threadsafe`` and the
-    calling thread blocks until the main loop has processed it.
-    """
-
-    def __init__(self, real_events: EventProcessor | None, main_loop: asyncio.AbstractEventLoop) -> None:
-        self._real = real_events
-        self._loop = main_loop
-
-    async def emit(self, event: Event) -> None:
-        if self._real is None:
-            return
-        fut = asyncio.run_coroutine_threadsafe(self._real.emit(event), self._loop)
-        fut.result(timeout=10.0)
-
-
 class AgenthiccToolExecutor:
     """Dispatches tool calls through the full PRD-04 pipeline:
 
@@ -51,10 +30,6 @@ class AgenthiccToolExecutor:
     after-hooks (on success) / error-hooks with recovery (on failure),
     emitting ``ToolCallStarted`` / ``ToolCallComplete`` / ``PermissionDenied``
     events to the kernel :class:`EventProcessor`.
-
-    Parallel calls are dispatched via a :class:`~concurrent.futures.ThreadPoolExecutor`
-    so each tool call runs in its own OS thread.  Event emission from worker
-    threads is bridged back to the main event loop transparently.
     """
 
     def __init__(
@@ -65,21 +40,12 @@ class AgenthiccToolExecutor:
         tool_call_budget: int = 8,
         *,
         timeout_seconds: float = 30.0,
-        max_workers: int | None = None,
     ) -> None:
         self._events = event_processor
         self._hooks = hook_runner or HookRunner()
         self._permission_checker = permission_checker
         self._budget = tool_call_budget
         self._timeout_seconds = timeout_seconds
-        self._thread_pool = ThreadPoolExecutor(
-            max_workers=max_workers if max_workers is not None else tool_call_budget,
-            thread_name_prefix="agenthicc-tool",
-        )
-
-    def shutdown(self, wait: bool = True) -> None:
-        """Shut down the backing thread pool."""
-        self._thread_pool.shutdown(wait=wait)
 
     # ------------------------------------------------------------------
     # Public API
@@ -162,40 +128,15 @@ class AgenthiccToolExecutor:
         calls: list[tuple[Tool, dict[str, Any]]],
         ctx: dict[str, Any],
     ) -> list[ToolResultEnvelope]:
-        """Fan out independent calls via a :class:`~concurrent.futures.ThreadPoolExecutor`.
-
-        Each call runs in its own OS thread with a fresh event loop.  Event
-        emission is bridged back to the main loop so the kernel queue stays
-        on one loop.  Calls beyond ``tool_call_budget`` are not run and
-        receive ``budget_exceeded`` error envelopes.
-        """
-        loop = asyncio.get_running_loop()
+        """Fan out independent calls via ``asyncio.gather``, capped by the
+        per-turn ``tool_call_budget``.  Calls beyond the budget are not run
+        and receive ``budget_exceeded`` error envelopes."""
         within = calls[: self._budget]
         excess = calls[self._budget :]
 
-        def _run_in_thread(tool: Tool, args: dict[str, Any]) -> ToolResultEnvelope:
-            thread_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(thread_loop)
-            # Local executor shares hooks/permissions but bridges emit() to main loop.
-            local = AgenthiccToolExecutor(
-                event_processor=None,
-                hook_runner=self._hooks,
-                permission_checker=self._permission_checker,
-                tool_call_budget=self._budget,
-                timeout_seconds=self._timeout_seconds,
-            )
-            local._events = _BridgedEmitter(self._events, loop)
-            try:
-                return thread_loop.run_until_complete(local.execute(tool, args, ctx))
-            finally:
-                thread_loop.close()
-
-        futures = [
-            loop.run_in_executor(self._thread_pool, _run_in_thread, tool, args)
-            for tool, args in within
-        ]
-        results: list[ToolResultEnvelope] = list(await asyncio.gather(*futures))
-
+        results: list[ToolResultEnvelope] = list(
+            await asyncio.gather(*(self.execute(tool, args, ctx) for tool, args in within))
+        )
         for tool, _args in excess:
             results.append(
                 ToolResultEnvelope(
