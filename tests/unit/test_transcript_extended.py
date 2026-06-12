@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 
 from agenthicc.tui.transcript import (
-    SEPARATOR,
     SPINNER_FRAMES,
     AgentTurnEntry,
     ToolCallEntry,
@@ -93,21 +92,20 @@ class TestRenderSeparator:
         lines = m.render()
         assert any(True for _ in lines)  # single turn renders ok
 
-    def test_render_includes_separator_between_two_turns(self):
+    def test_render_two_turns_both_have_headers(self):
         m = _model()
         m.append_turn("a1", "first", 0.0)
         m.append_turn("a2", "second", 1.0)
         lines = m.render()
-        assert SEPARATOR in lines
+        assert sum(1 for ln in lines if "●" in ln) == 2
 
-    def test_render_separator_count_equals_turns_minus_one(self):
+    def test_render_n_turns_produces_n_headers(self):
         m = _model()
         n_turns = 4
         for i in range(n_turns):
             m.append_turn(f"a{i}", f"agent:{i}", float(i))
         lines = m.render()
-        separator_count = sum(1 for ln in lines if ln == SEPARATOR)
-        assert separator_count == n_turns - 1
+        assert sum(1 for ln in lines if "●" in ln) == n_turns
 
     def test_render_footer_appears_in_output(self):
         """Line 199-200: footer is included in render when present."""

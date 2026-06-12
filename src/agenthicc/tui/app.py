@@ -201,6 +201,21 @@ class InlineRenderer:
 
         _is_async = inspect.iscoroutinefunction(on_input)
 
+        # ── readline history ──────────────────────────────────────────────
+        _rl = None
+        try:
+            import readline as _rl  # noqa: PLC0415
+            _rl.set_history_length(1000)
+            if self._history_file:
+                import pathlib as _pl  # noqa: PLC0415
+                _pl.Path(self._history_file).parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    _rl.read_history_file(self._history_file)
+                except OSError:
+                    pass  # file missing, unreadable, or wrong format — start fresh
+        except Exception:
+            _rl = None  # readline unavailable or broken on this platform
+
         # ── suppress ^C echo via termios.ECHOCTL ─────────────────────────
         _old_tty: list | None = None
         _tty_fd = -1
@@ -292,6 +307,11 @@ class InlineRenderer:
             except (NotImplementedError, OSError):
                 pass
             _restore_tty()
+            if _rl is not None and self._history_file:
+                try:
+                    _rl.write_history_file(self._history_file)
+                except Exception:
+                    pass
 
     def _print_status(self) -> None:
         """Print status line + top border of the input area."""
@@ -320,16 +340,22 @@ class InlineRenderer:
     # Sentinel returned by _get_line on EOF (Ctrl+D) — distinct from None (Ctrl+C).
     _EOF: object = object()
 
+    # Readline-safe prompt: \x01 / \x02 bracket ANSI codes so readline excludes
+    # them from its display-width calculation.  Without these delimiters readline
+    # thinks the prompt is wider than it is and lets the cursor drift left into
+    # the ❯ glyph when the user presses ← at position 0.
+    _PROMPT = "\x01\x1b[1;32m\x02❯\x01\x1b[0m\x02 "
+
     def _get_line(self) -> str | None | object:
-        """Blocking Rich console input — runs in a thread via asyncio.to_thread.
+        """Blocking input — runs in a thread via asyncio.to_thread.
 
         Returns:
             str    — the typed line (may be empty string)
-            None   — Ctrl+C (KeyboardInterrupt); signal handler owns counting/exit
+            None   — Ctrl+C; signal handler owns the count / exit logic
             _EOF   — Ctrl+D / EOF; caller should break the loop
         """
         try:
-            return self.console.input("[bold green]❯[/bold green] ")
+            return input(self._PROMPT)
         except KeyboardInterrupt:
             return None
         except EOFError:
