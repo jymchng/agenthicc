@@ -1,5 +1,24 @@
 # AGENTS.md — Agent guidance for agenthicc
 
+
+## LLM Environment Variables
+
+Agenthicc needs an LLM provider API key to run agents. Set before launching:
+
+| Provider | Environment Variable | Notes |
+|----------|---------------------|-------|
+| Anthropic (default) | `ANTHROPIC_API_KEY` | `export ANTHROPIC_API_KEY="sk-ant-..."` |
+| OpenAI | `OPENAI_API_KEY` | Also set `execution.provider = "openai"` in config |
+| Ollama | — | No key needed; set `execution.provider = "ollama"` |
+
+The default model is `claude-opus-4-6`. Override with `--set execution.model=claude-sonnet-4-6`
+or in `.agenthicc/agenthicc.toml`:
+
+```toml
+[execution]
+model = "claude-sonnet-4-6"
+```
+
 ## File ownership
 
 | Path | Owns what |

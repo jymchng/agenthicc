@@ -444,7 +444,7 @@ class TestRunTui:
         # Ensure _find_latest_session_for_cwd returns None (no sessions registered)
         monkeypatch.setattr(m, "_find_latest_session_for_cwd", lambda: None)
 
-        async def noop_tui_session(resume_id=None):
+        async def noop_tui_session(resume_id=None, **kwargs):
             pass
 
         monkeypatch.setattr(m, "_run_tui_session", noop_tui_session)
@@ -469,7 +469,7 @@ class TestRunTui:
         resume_id_used = []
         args = argparse.Namespace(headless=False, continue_session=False, resume="myresumeid", command=None)
 
-        async def capturing_tui_session(resume_id=None):
+        async def capturing_tui_session(resume_id=None, **kwargs):
             resume_id_used.append(resume_id)
 
         monkeypatch.setattr(m, "_run_tui_session", capturing_tui_session)

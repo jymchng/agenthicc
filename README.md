@@ -134,6 +134,45 @@ pip install "agenthicc[api]"
 
 ---
 
+
+## Environment Variables — Running with an LLM
+
+Agenthicc uses **[lauren-ai](https://github.com/lauren-framework/lauren-ai)** for
+all LLM calls. You must set at least one provider API key before agents can run.
+
+### Anthropic Claude (default)
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+That's the only required variable. The default model is `claude-opus-4-6`.
+
+### OpenAI
+
+```bash
+export OPENAI_API_KEY="sk-..."
+# then set provider in config:
+# [execution]
+# provider = "openai"
+# model = "gpt-4o"
+```
+
+### Ollama (local, no key)
+
+```bash
+# No API key needed — just have Ollama running
+# [execution]
+# provider = "ollama"
+# model = "llama3.2"
+```
+
+### Override model at launch
+
+```bash
+agenthicc --set execution.model=claude-haiku-4-5
+```
+
 ## Quick Start
 
 **1. Install**

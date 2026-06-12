@@ -9,14 +9,18 @@ description = "State-driven agent operating system for autonomous software engin
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "lauren-ai",
+    "lauren-ai[all]",
     "anyio>=4.0",
     "typing-extensions>=4.11",
+    "prompt_toolkit>=3.0",
+    "rich>=13.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "websockets>=12.0",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
-tui = ["prompt_toolkit>=3.0", "rich>=13.0"]
-api = ["fastapi>=0.110", "uvicorn>=0.29", "websockets>=12.0"]
 cloud = ["aiohttp>=3.9", "keyring>=25.0"]
 dev = [
     "pytest>=8.0",

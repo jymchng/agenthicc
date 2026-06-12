@@ -20,7 +20,6 @@ from prompt_toolkit.completion import (
     merge_completers,
 )
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 
@@ -44,6 +43,8 @@ class CommandSpec:
 
 BUILTIN_COMMANDS: list[CommandSpec] = [
     CommandSpec("/status",   "Show running agents and their tasks"),
+    CommandSpec("/model",    "Show or switch LLM provider/model  (e.g. /model openai gpt-4o)"),
+    CommandSpec("/models",   "List all available LLM providers"),
     CommandSpec("/approve",  "Review and approve pending HITL tool calls"),
     CommandSpec("/history",  "Browse the event log (last 20 entries)"),
     CommandSpec("/settings", "View current configuration"),
@@ -152,26 +153,26 @@ class AtMentionCompleter(Completer):
 def _build_key_bindings() -> KeyBindings:
     """Build key bindings for the input bar.
 
-    * ``escape`` + ``enter`` — Meta/Alt+Enter: insert ``\\n`` (multi-line)
-    * ``c-j``                — Ctrl+J (ASCII linefeed): insert ``\\n``
+    * ``escape`` + ``enter`` — Meta/Alt+Enter: insert ``\\n`` (multi-line entry)
     * ``\\x1b[13;2~``        — xterm/VTE Shift+Enter (opt-in, guarded)
 
-    Plain ``Enter`` submits the buffer via prompt_toolkit's default handler.
-    Ctrl+C behaviour is handled by :class:`prompt_toolkit.PromptSession`
-    (raises :class:`KeyboardInterrupt`).
+    Plain ``Enter`` **always submits** — never intercepted here.
+    ``c-j`` (Ctrl+J / linefeed) is intentionally NOT bound because many
+    terminals send it for Enter, which would cause Enter to insert a newline
+    instead of submitting.
     """
     kb = KeyBindings()
 
     def _insert_newline(event: Any) -> None:
         event.current_buffer.insert_text("\n")
 
-    # Meta+Enter (Alt+Enter) — most reliable cross-terminal binding.
+    # Meta+Enter (Alt+Enter): insert newline without submitting.
+    # This is the only supported "Shift+Enter" equivalent that is
+    # reliably cross-terminal without conflicting with plain Enter.
     kb.add("escape", "enter")(_insert_newline)
-    # Ctrl+J (ASCII linefeed) — universal fallback.
-    kb.add("c-j")(_insert_newline)
 
-    # Attempt to bind the xterm Shift+Enter escape sequence; silently skip
-    # if this prompt_toolkit version does not recognise the key.
+    # Attempt xterm/VTE Shift+Enter escape sequence; silently skip if
+    # this prompt_toolkit build does not recognise it.
     try:
         kb.add("\x1b[13;2~")(_insert_newline)
     except (ValueError, KeyError):
@@ -214,8 +215,6 @@ class InputBarSession:
         else:
             history = InMemoryHistory()
 
-        # Capture self in a cell so the Condition lambda avoids a forward ref.
-        _self = self
 
         self._session: PromptSession = PromptSession(
             completer=self._completer,
@@ -223,16 +222,9 @@ class InputBarSession:
             key_bindings=kb,
             history=history,
             enable_history_search=True,
-            # multiline is active whenever the current buffer contains a '\n'.
-            multiline=Condition(
-                lambda: "\n"
-                in (
-                    _self._session.app.current_buffer.text
-                    if _self._session.app
-                    else ""
-                )
-            ),
-            prompt_continuation="... ",
+            prompt_continuation="  ",
+            # refresh_interval=0.05 is set externally by InlineRenderer.run()
+            # so that _prompt_message (the status wave) re-evaluates every 50ms.
         )
 
     async def prompt_async(self, prefix: str = "> ") -> str:

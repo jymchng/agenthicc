@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass, field
 from typing import Any, Callable, TextIO
 
 from .transcript import TranscriptModel, ToolCallState
@@ -25,6 +26,7 @@ __all__ = [
     "PROMPT_TOOLKIT_AVAILABLE",
     "RICH_AVAILABLE",
     "SlashCommandHandler",
+    "StatusState",
     "build_app",
     "detect_slash_command",
     "render_frame_ansi",
@@ -78,15 +80,56 @@ MENU_COMMANDS = {
 
 #: Help text for the /help slash command.
 SLASH_HELP = {
-    "/status": "Show active agent turn table (agent_id, name, cost, tokens)",
-    "/history": "Print the last 20 lines of the transcript scroll buffer",
-    "/help": "Show this help table",
+    "/status":  "Show active agent turn table",
+    "/history": "Print last 20 transcript lines",
+    "/model":   "Show or switch LLM provider/model  (e.g. /model openai gpt-4o)",
+    "/models":  "List available providers",
+    "/expand":  "Expand tool call output  (e.g. /expand abc12345)",
+    "/help":    "Show this help table",
 }
 
 
 def detect_slash_command(text: str) -> str | None:
     """Return the menu name for *text* if it is a menu slash command."""
     return MENU_COMMANDS.get(text.strip())
+
+
+# ── Thinking... wave animation ────────────────────────────────────────────
+
+_THINKING_TEXT = "Thinking..."
+_THINKING_LEN = len(_THINKING_TEXT)
+
+
+def _thinking_wave(frame: int) -> str:
+    """Return 'Thinking...' with one bold character sweeping L→R then R→L."""
+    cycle = 2 * (_THINKING_LEN - 1)
+    pos = frame % cycle
+    if pos >= _THINKING_LEN:
+        pos = cycle - pos
+    result = ""
+    for i, ch in enumerate(_THINKING_TEXT):
+        if i == pos:
+            result += f"\x1b[1m{ch}\x1b[22m"   # bold on → bold off
+        else:
+            result += ch
+    return result
+
+
+# ── StatusState ───────────────────────────────────────────────────────────
+
+
+@dataclass
+class StatusState:
+    """Mutable state for the Status Bar (PRD-20)."""
+
+    active: bool = False
+    spinner_frame: int = 0
+    intent_started_at: float = 0.0  # time.monotonic() when intent submitted
+    input_tokens: int = 0
+    output_tokens: int = 0
+    session_cost_usd: float = 0.0
+    completed_agents: int = 0
+    session_id: str = ""
 
 
 # ── InlineRenderer ────────────────────────────────────────────────────────
@@ -113,7 +156,7 @@ class InlineRenderer:
             # force_terminal=True: Rich detects patch_stdout()'s wrapped stdout as
             # non-terminal and strips ANSI codes; this forces proper escape sequences.
             self.console = console or Console(
-                highlight=False, markup=False, force_terminal=True
+                highlight=False, markup=True, force_terminal=True
             )
         else:  # pragma: no cover
             self.console = console
@@ -123,62 +166,78 @@ class InlineRenderer:
         self._history_file = history_file
         # processor ref for interrupt/cancel; set externally or via adapter
         self._processor = getattr(adapter, "_processor", None) if adapter else None
+        self._status = StatusState()
 
     # ── main loop ─────────────────────────────────────────────────────────
 
-    async def run(self, on_input: Callable[[str], None]) -> None:
-        """Start the render loop and prompt until Ctrl-C / EOF."""
-        from prompt_toolkit.patch_stdout import patch_stdout
-        # raw=True: pass bytes through the stdout proxy unchanged so Rich's
-        # ANSI escape sequences (\x1b[…) are not mangled into "?[…".
+    async def run(self, on_input: Any) -> None:
+        """Pure asyncio input/output loop — no prompt_toolkit.
 
-        # Use InputBarSession (slash-command + @-mention completers, Meta+Enter multi-line)
-        # when available; fall back to plain PromptSession otherwise.
-        try:
-            from agenthicc.tui.input_bar import InputBarSession
-            session = InputBarSession(
-                base_path=self._base_path,
-                history_file=self._history_file,
+        ``on_input`` is an **async** callable.  We ``await`` it so the agent
+        response arrives, the transcript is flushed, and the idle status is
+        shown before the next prompt appears — no "reply one message late".
+
+        Cycle:
+            1. flush transcript → print new agent lines
+            2. print idle status line
+            3. Console.input("  > ") in thread (event loop free while typing)
+            4. await on_input(text)  ← agent runs + spinner here
+            5. repeat
+        """
+        import inspect  # noqa: PLC0415
+
+        # Support both sync and async on_input for backward compat with tests
+        _is_async = inspect.iscoroutinefunction(on_input)
+
+        while True:
+            self._flush_new_lines()
+            self._print_status()
+
+            text = await asyncio.to_thread(self._get_line)
+            if text is None:
+                break
+            text = text.strip()
+            if not text:
+                continue
+
+            handled = SlashCommandHandler(renderer=self).handle(text, self.model, self.console)
+            if not handled:
+                self.on_intent_submitted()
+                if _is_async:
+                    await on_input(text)   # awaited: agent finishes before next prompt
+                else:
+                    on_input(text)         # sync fallback (tests)
+                # Flush agent response lines immediately after agent returns
+                self._flush_new_lines()
+
+    def _print_status(self) -> None:
+        """Print one status line to the console (no ANSI strings — Rich markup only)."""
+        import time as _t  # noqa: PLC0415
+        s = self._status
+        if s.active:
+            wave = _thinking_wave(s.spinner_frame)
+            elapsed = _t.monotonic() - s.intent_started_at if s.intent_started_at else 0.0
+            self.console.print(
+                f" {wave}  [dim]{elapsed:.1f}s  │[/dim]"
+                f"  [cyan]↑ {s.input_tokens:,}[/cyan]"
+                f"  [green]↓ {s.output_tokens:,}[/green]"
             )
-        except ImportError:
-            from prompt_toolkit import PromptSession
-            session = PromptSession(INPUT_PROMPT)  # type: ignore[assignment]
+        else:
+            sid = s.session_id or "session"
+            self.console.print(
+                f" [dim]{sid}  │  {s.completed_agents} turn{'s' if s.completed_agents != 1 else ''}  │  ${s.session_cost_usd:.3f}[/dim]"
+            )
 
-        render_task: asyncio.Task | None = None
-        _running_intent: list[bool] = [False]
+    def _get_line(self) -> str | None:
+        """Blocking Rich console input — runs in a thread via asyncio.to_thread.
 
-        with patch_stdout(raw=True):
-            render_task = asyncio.create_task(self._render_loop())
-            try:
-                while True:
-                    try:
-                        text = await session.prompt_async()
-                    except EOFError:
-                        break
-                    except KeyboardInterrupt:
-                        # Cancel running intent rather than exiting when work is in flight
-                        if _running_intent[0] and self._processor is not None:
-                            from agenthicc.kernel import Event
-                            await self._processor.emit(Event.create("IntentCancelled", {}))
-                            self.console.print("[dim]intent cancelled[/dim]", markup=True)
-                            _running_intent[0] = False
-                            continue
-                        break
-                    text = text.strip()
-                    if not text:
-                        continue
-                    handled = SlashCommandHandler().handle(text, self.model, self.console)
-                    if not handled:
-                        _running_intent[0] = True
-                        on_input(text)
-                        _running_intent[0] = False
-            finally:
-                if render_task is not None:
-                    render_task.cancel()
-                    await asyncio.gather(render_task, return_exceptions=True)
-                if self._live is not None:
-                    self._live.stop()
-                    self._live = None
+        Uses ``Console.input()`` so the prompt is styled with Rich markup and
+        honours the same output stream as the rest of the TUI.
+        """
+        try:
+            return self.console.input("  [bold]>[/bold] ")
+        except (EOFError, KeyboardInterrupt):
+            return None
 
     # ── render loop ───────────────────────────────────────────────────────
 
@@ -191,13 +250,14 @@ class InlineRenderer:
             self._flush_new_lines()
             self._update_spinner()
             self.model.advance_spinner()
+            self._status.spinner_frame += 1
 
     def _flush_new_lines(self) -> None:
         """Print lines from model.render() not yet printed."""
         lines = self.model.render()
         new = lines[self._printed_count:]
         for line in new:
-            self.console.print(line, markup=False, highlight=False)
+            self.console.print(line, markup=True, highlight=False)
         if new:
             self._printed_count = len(lines)
 
@@ -241,6 +301,72 @@ class InlineRenderer:
         """Return True if any tool call is currently in the RUNNING state."""
         return self._build_spinner_panel() is not None
 
+    # ── Status Bar lifecycle hooks ────────────────────────────────────────
+
+    def on_intent_submitted(self) -> None:
+        """Call when user submits an intent. Activates the status spinner."""
+        self._status.active = True
+        self._status.intent_started_at = time.monotonic()
+        self._status.input_tokens = 0
+        self._status.output_tokens = 0
+
+    def on_model_call_complete(
+        self, input_tokens: int, output_tokens: int, cost_usd: float = 0.0
+    ) -> None:
+        """Update token counts after each LLM turn completes."""
+        self._status.input_tokens += input_tokens
+        self._status.output_tokens += output_tokens
+        self._status.session_cost_usd += cost_usd
+
+    def on_agent_run_complete(self) -> None:
+        """Deactivate spinner when agent run finishes (if no more running tools)."""
+        if not self.has_running_tools():
+            self._status.active = False
+            self._status.completed_agents += 1
+
+    # ── Status Bar rendering ──────────────────────────────────────────────
+
+    def _render_status_panel(self) -> Any:
+        """Build the Status Bar panel. Active: spinner+tokens. Idle: session summary."""
+        if not RICH_AVAILABLE:  # pragma: no cover
+            return None
+        from .transcript import SPINNER_FRAMES  # noqa: PLC0415
+
+        s = self._status
+        if s.active:
+            elapsed = (
+                time.monotonic() - s.intent_started_at if s.intent_started_at else 0.0
+            )
+            frame = SPINNER_FRAMES[s.spinner_frame % len(SPINNER_FRAMES)]
+            text = Text.assemble(
+                (frame + " Thinking...  ", "bold"),
+                (f"{elapsed:.1f}s", "dim"),
+                ("  │  ", "dim"),
+                ("↑ ", "dim"),
+                (f"{s.input_tokens:,} tok", "cyan"),
+                ("  ↓ ", "dim"),
+                (f"{s.output_tokens:,} tok", "green"),
+            )
+        else:
+            cost = f"${s.session_cost_usd:.3f}"
+            sid = s.session_id[:12] if s.session_id else "session"
+            completed = s.completed_agents
+            text = Text.assemble(
+                (f" {sid}", "dim"),
+                ("  │  ", "dim"),
+                (f"{completed} agent{'s' if completed != 1 else ''} completed", "dim"),
+                ("  │  ", "dim"),
+                (cost, "dim"),
+            )
+        return Panel(text, box=rich_box.DOUBLE, padding=(0, 1), style="dim")
+
+    def _render_input_panel(self, input_text: str = "") -> Any:
+        """Build the Input Bar panel with a double-line border."""
+        if not RICH_AVAILABLE:  # pragma: no cover
+            return None
+        content = Text(INPUT_PROMPT + input_text + "▌", style="bold white")
+        return Panel(content, box=rich_box.DOUBLE, padding=(0, 1))
+
 
 # ── SlashCommandHandler ───────────────────────────────────────────────────
 
@@ -248,16 +374,29 @@ class InlineRenderer:
 class SlashCommandHandler:
     """Renders slash-command output as Rich Panels/Tables inline."""
 
+    def __init__(self, renderer: Any = None) -> None:
+        # Optional back-reference to InlineRenderer for live config mutations
+        self._renderer = renderer
+
     def handle(self, text: str, model: TranscriptModel, console: Any) -> bool:
         """Dispatch *text* to a slash-command renderer.  Returns True if handled."""
-        cmd = text.strip()
-        if cmd == "/status":
+        stripped = text.strip()
+        # Route on the first token so "/model anthropic claude-haiku" works
+        first = stripped.split()[0] if stripped.split() else stripped
+
+        if first == "/status":
             self._status(model, console)
             return True
-        if cmd == "/history":
+        if first == "/history":
             self._history(model, console)
             return True
-        if cmd == "/help":
+        if first in ("/model", "/models"):
+            self._model(stripped, console)
+            return True
+        if first == "/expand":
+            self._expand(stripped, model, console)
+            return True
+        if first == "/help":
             self._help(console)
             return True
         return False
@@ -291,6 +430,122 @@ class SlashCommandHandler:
                 title="/history — last 20 lines",
             )
         )
+
+    def _model(self, cmd: str, console: Any) -> None:
+        """Handle /model and /models commands."""
+        if not RICH_AVAILABLE:  # pragma: no cover
+            return
+        from agenthicc.config import (  # noqa: PLC0415
+            PROVIDER_API_KEY_ENVVAR,
+            PROVIDER_DEFAULT_MODELS,
+            SUPPORTED_PROVIDERS,
+            load_config,
+        )
+        import os  # noqa: PLC0415
+
+        parts = cmd.split()
+        # /models — list all providers
+        if parts[0] == "/models" or len(parts) == 1:
+            cfg = load_config()
+            current_provider = cfg.execution.provider
+            current_model = cfg.execution.effective_model()
+
+            table = Table(title="LLM Providers", box=rich_box.SIMPLE)
+            table.add_column("Provider", style="cyan")
+            table.add_column("Default Model")
+            table.add_column("API Key Env")
+            table.add_column("Status")
+
+            for provider in SUPPORTED_PROVIDERS:
+                env_var = PROVIDER_API_KEY_ENVVAR.get(provider, "—")
+                key_set = "✓ set" if (
+                    provider == "ollama" or os.environ.get(env_var)
+                ) else "✗ not set"
+                key_style = "green" if "✓" in key_set else "dim red"
+                active = "◀ active" if provider == current_provider else ""
+                table.add_row(
+                    f"[bold]{provider}[/bold]" if active else provider,
+                    PROVIDER_DEFAULT_MODELS.get(provider, "—"),
+                    env_var,
+                    Text(key_set, style=key_style),
+                )
+            console.print(table, markup=True)
+            console.print(
+                Text.assemble(
+                    ("Active: ", "dim"), (current_provider, "cyan bold"),
+                    (" / ", "dim"), (current_model, "bold"),
+                )
+            )
+            console.print(
+                Text(
+                    "  Set provider: /model <provider> [model]\n"
+                    "  Example:  /model anthropic claude-sonnet-4-6\n"
+                    "  Example:  /model openai gpt-4o-mini\n"
+                    "  Example:  /model ollama llama3.2",
+                    style="dim",
+                )
+            )
+            return
+
+        # /model <provider> [model] — switch provider/model
+        provider = parts[1].lower() if len(parts) > 1 else ""
+        model_override = parts[2] if len(parts) > 2 else ""
+
+        if provider not in SUPPORTED_PROVIDERS:
+            console.print(
+                Text(
+                    f"Unknown provider: {provider!r}\n"
+                    f"Supported: {', '.join(SUPPORTED_PROVIDERS)}",
+                    style="red",
+                )
+            )
+            return
+
+        # Push the change back to the renderer's status state for display
+        env_var = PROVIDER_API_KEY_ENVVAR.get(provider)
+        if provider != "ollama" and env_var and not os.environ.get(env_var):
+            console.print(
+                Text(
+                    f"Warning: {env_var} is not set — agent calls will fail.\n"
+                    f"  export {env_var}=\"your-api-key\"",
+                    style="yellow",
+                )
+            )
+
+        effective_model = model_override or PROVIDER_DEFAULT_MODELS.get(provider, "")
+        console.print(
+            Text.assemble(
+                ("Switched to ", "dim"),
+                (provider, "cyan bold"),
+                (" / ", "dim"),
+                (effective_model, "bold"),
+                (
+                    "\n  Add to .agenthicc/agenthicc.toml to persist:\n"
+                    f"  [execution]\n  provider = \"{provider}\"\n"
+                    f"  model = \"{effective_model}\"",
+                    "dim",
+                ),
+            )
+        )
+
+        # Mutate the renderer's live status if available
+        if self._renderer is not None:
+            self._renderer._status.session_id = f"{provider}/{effective_model}"
+
+    def _expand(self, cmd: str, model: TranscriptModel, console: Any) -> None:
+        """Toggle expanded output for a tool call by ID prefix."""
+        parts = cmd.split()
+        prefix = parts[1] if len(parts) > 1 else ""
+        found = 0
+        for turn in model.turns:
+            for tc in turn.tool_calls:
+                if not prefix or tc.tool_use_id.startswith(prefix):
+                    tc.expanded = True
+                    found += 1
+        if found:
+            console.print(f"[dim]Expanded {found} tool call{'s' if found > 1 else ''}.[/dim]")
+        else:
+            console.print(f"[dim]No tool call found matching {prefix!r}[/dim]")
 
     def _help(self, console: Any) -> None:
         if not RICH_AVAILABLE:  # pragma: no cover
@@ -371,19 +626,21 @@ def render_frame_ansi(
     rows: int,
     input_text: str = "",
     menu_lines: list[str] | None = None,
+    status_state: "StatusState | None" = None,
 ) -> str:
     """Compose a full ANSI frame the way the prompt_toolkit layout does.
 
     Row layout (1-indexed ANSI rows):
-      rows 1 .. rows-2   transcript (auto-scrolled to the tail)
-      row  rows-1        status line
+      rows 1 .. rows-3   transcript (auto-scrolled to the tail)
+      row  rows-2        status bar (spinner when active, summary when idle)
+      row  rows-1        session status line
       row  rows          input bar  (ALWAYS the last row)
 
     A menu overlay, when present, is painted over the transcript region
     anchored 2 rows above the terminal bottom — i.e. its last row sits just
-    above the status line and it never touches the input bar.
+    above the status bar and it never touches the input bar.
     """
-    transcript_rows = max(rows - 2, 0)
+    transcript_rows = max(rows - 3, 0)
     lines = model.render()
     visible = lines[-transcript_rows:] if transcript_rows else []
 
@@ -394,12 +651,30 @@ def render_frame_ansi(
     for i, line in enumerate(visible):
         buf.append(f"\x1b[{i + 1};1H{clip(line)}")
 
-    # menu overlay floats above the status line (bottom=2 anchor)
+    # menu overlay floats above the status bar (bottom=3 anchor)
     if menu_lines:
-        overlay_end = rows - 2  # last overlay row (1-indexed)
+        overlay_end = rows - 3  # last overlay row (1-indexed)
         overlay_start = max(overlay_end - len(menu_lines) + 1, 1)
         for i, line in enumerate(menu_lines[: overlay_end - overlay_start + 1]):
             buf.append(f"\x1b[{overlay_start + i};1H{clip(line)}")
+
+    # Status bar line (new row rows-2)
+    if status_state is not None and status_state.active:
+        from .transcript import SPINNER_FRAMES  # noqa: PLC0415
+
+        frame = SPINNER_FRAMES[status_state.spinner_frame % len(SPINNER_FRAMES)]
+        elapsed = (
+            time.monotonic() - status_state.intent_started_at
+            if status_state.intent_started_at
+            else 0.0
+        )
+        status_bar = (
+            f" {frame} Thinking...  {elapsed:.1f}s"
+            f"  ↑{status_state.input_tokens:,} ↓{status_state.output_tokens:,}"
+        )
+    else:
+        status_bar = ""
+    buf.append(f"\x1b[{rows - 2};1H{clip(status_bar)}")
 
     agents = len({t.agent_id for t in model.turns})
     status = (

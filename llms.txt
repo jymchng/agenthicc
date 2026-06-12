@@ -123,3 +123,34 @@ port = 8000
 - `EventProcessor.drain()` blocks unless the processor `run()` task is already started
 - Use `_build_runner_for_agent(agent, mock, signals=bus)` from `lauren_ai.testing` to resolve tools
 - pyte buffer: row index is 0-based; input bar is at `screen.buffer[ROWS - 1]`
+
+## LLM Setup — Provider Selection
+
+```toml
+# .agenthicc/agenthicc.toml
+[execution]
+provider = "anthropic"         # anthropic | openai | ollama | litellm
+model    = "claude-sonnet-4-6" # leave empty for provider default
+```
+
+| Provider | Env var | Default model |
+|----------|---------|--------------|
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-4-8` |
+| `openai` | `OPENAI_API_KEY` | `gpt-4o` |
+| `ollama` | — | `llama3.2` |
+| `litellm` | varies | `anthropic/claude-opus-4-8` |
+
+Quick start:
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."   # Anthropic
+# OR
+export OPENAI_API_KEY="sk-..."          # OpenAI (+ set provider=openai)
+# OR just run `ollama serve`            # Ollama (no key)
+
+agenthicc
+```
+
+Switch provider at runtime: `/models` to list, `/model openai gpt-4o-mini` to switch.
+
+Override at launch: `agenthicc --set execution.provider=openai --set execution.model=gpt-4o`
+

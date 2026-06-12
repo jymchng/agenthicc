@@ -274,3 +274,96 @@ cfg.security.network_allow_list   # ["api.github.com"]  (user value added)
 **Scalars and lists in user file replace project file values. Nested tables are
 merged key-by-key.** `deep_merge` is exported from `agenthicc.config` for
 programmatic use.
+
+---
+
+## LLM / Model Configuration
+
+Agenthicc uses **[lauren-ai](https://github.com/lauren-framework/lauren-ai)** as its
+LLM layer. You can use any supported provider — Anthropic, OpenAI, Ollama (local), or
+LiteLLM — by setting `provider` and `model` in your config.
+
+### Provider configuration
+
+```toml
+# .agenthicc/agenthicc.toml
+[execution]
+provider = "anthropic"             # anthropic | openai | ollama | litellm
+model    = "claude-sonnet-4-6"     # empty → uses provider default
+api_key  = ""                      # empty → reads from env var (see below)
+base_url = ""                      # only needed for Ollama or self-hosted
+```
+
+### Provider reference
+
+| Provider | `provider` value | Required env var | Default model |
+|----------|-----------------|------------------|--------------|
+| Anthropic | `"anthropic"` | `ANTHROPIC_API_KEY` | `claude-opus-4-8` |
+| OpenAI | `"openai"` | `OPENAI_API_KEY` | `gpt-4o` |
+| Ollama (local) | `"ollama"` | — (no key needed) | `llama3.2` |
+| LiteLLM | `"litellm"` | `ANTHROPIC_API_KEY` (or provider's key) | `anthropic/claude-opus-4-8` |
+
+### Quick setup by provider
+
+=== "Anthropic (default)"
+
+    ```bash
+    export ANTHROPIC_API_KEY="sk-ant-api03-..."
+    agenthicc
+    ```
+
+=== "OpenAI"
+
+    ```bash
+    export OPENAI_API_KEY="sk-..."
+    agenthicc --set execution.provider=openai --set execution.model=gpt-4o
+    ```
+
+=== "Ollama (local)"
+
+    ```bash
+    # 1. Start Ollama
+    ollama serve
+    ollama pull llama3.2
+
+    # 2. Run agenthicc
+    agenthicc --set execution.provider=ollama --set execution.model=llama3.2
+    ```
+
+=== "LiteLLM"
+
+    ```bash
+    pip install litellm
+    export ANTHROPIC_API_KEY="sk-ant-..."   # or whichever backend litellm routes to
+    agenthicc --set execution.provider=litellm --set execution.model=anthropic/claude-sonnet-4-6
+    ```
+
+### Changing provider/model at runtime
+
+Use the `/model` slash command in the TUI:
+
+```
+> /models                              # list all providers + API key status
+> /model openai gpt-4o-mini            # switch to OpenAI gpt-4o-mini
+> /model anthropic claude-sonnet-4-6   # switch to Anthropic Sonnet
+> /model ollama llama3.2               # switch to local Ollama
+```
+
+Or via CLI:
+
+```bash
+agenthicc --set execution.provider=openai --set execution.model=gpt-4o-mini
+```
+
+### Persisting your provider choice
+
+Add to `.agenthicc/agenthicc.toml`:
+
+```toml
+[execution]
+provider = "openai"
+model    = "gpt-4o-mini"
+```
+
+User config (`~/.agenthicc/agenthicc.toml`) overrides project config — set your
+personal default provider there and it will apply across all projects.

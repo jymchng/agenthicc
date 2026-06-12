@@ -25,7 +25,7 @@ __all__ = [
 #: Braille spinner cycle (PRD-06 §5.2).
 SPINNER_FRAMES = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
 
-SEPARATOR = "─" * 60
+SEPARATOR = "[dim]" + "─" * 60 + "[/dim]"
 
 
 class ToolCallState(Enum):
@@ -46,6 +46,9 @@ _STATE_SYMBOLS = {
 class ToolCallEntry:
     tool_use_id: str
     name: str
+    args: dict = field(default_factory=dict)
+    output_lines: list[str] = field(default_factory=list)
+    expanded: bool = False
     state: ToolCallState = ToolCallState.PENDING
     duration_ms: float | None = None
     error: str | None = None
@@ -58,15 +61,36 @@ class ToolCallEntry:
         return _STATE_SYMBOLS[self.state]
 
     def render(self) -> str:
-        """Render this tool call as a single transcript line."""
-        line = f"    [tool] {self.name}  {self.symbol}"
+        """Render tool call as ToolName(args) with optional output preview."""
+        # Build call signature: ToolName(key=val, ...)
+        args_str = ", ".join(
+            f"{k}={repr(v)[:40]}" for k, v in (self.args or {}).items()
+        )
+        call_line = f"  [bold]{self.name}[/bold][dim]({args_str})[/dim]"
+
         if self.state is ToolCallState.RUNNING:
-            line += " running..."
-        elif self.state is ToolCallState.SUCCESS and self.duration_ms is not None:
-            line += f"  {self.duration_ms:.0f}ms"
-        elif self.state is ToolCallState.FAILURE and self.error:
-            line += f"  {self.error}"
-        return line
+            frame = SPINNER_FRAMES[self.spinner_frame % len(SPINNER_FRAMES)]
+            return f"{call_line}  {frame}"
+
+        if self.state is ToolCallState.SUCCESS:
+            dur = f"  [dim]{self.duration_ms:.0f}ms[/dim]" if self.duration_ms else ""
+            parts = [f"{call_line}  [green]✓[/green]{dur}"]
+            if self.output_lines:
+                preview = self.output_lines if self.expanded else self.output_lines[:2]
+                for ln in preview:
+                    parts.append(f"    [dim]{ln[:120]}[/dim]")
+                if not self.expanded and len(self.output_lines) > 2:
+                    extra = len(self.output_lines) - 2
+                    short_id = self.tool_use_id[:8]
+                    parts.append(f"    [dim](+{extra} more — /expand {short_id})[/dim]")
+            return "\n".join(parts)
+
+        if self.state is ToolCallState.PENDING:
+            return f"{call_line}  [dim].[/dim]"
+
+        # FAILURE
+        err = f": {self.error}" if self.error else ""
+        return f"{call_line}  [red]✗[/red][dim]{err}[/dim]"
 
 
 @dataclass
@@ -81,7 +105,7 @@ class AgentTurnEntry:
 
     def header(self) -> str:
         hhmmss = time.strftime("%H:%M:%S", time.localtime(self.timestamp))
-        return f"● agent:{self.agent_name}  {hhmmss}"
+        return f"[bold cyan]●[/] [bold]{self.agent_name}[/]  [dim]{hhmmss}[/dim]"
 
     def footer(self) -> str | None:
         if self.cost_usd is None and self.tokens is None:
@@ -133,11 +157,39 @@ class TranscriptModel:
         agent_id: str,
         tool_use_id: str,
         name: str,
+        args: dict | None = None,
         state: ToolCallState = ToolCallState.RUNNING,
     ) -> ToolCallEntry:
-        entry = ToolCallEntry(tool_use_id=tool_use_id, name=name, state=state)
+        entry = ToolCallEntry(
+            tool_use_id=tool_use_id,
+            name=name,
+            args=args or {},
+            state=state,
+        )
         self._turn_for(agent_id).tool_calls.append(entry)
         self._tool_index[tool_use_id] = entry
+        return entry
+
+    def finish_tool_call(
+        self,
+        tool_use_id: str,
+        success: bool = True,
+        duration_ms: float | None = None,
+        error: str | None = None,
+        output: Any = None,
+    ) -> ToolCallEntry | None:
+        """Mark a tool call complete and optionally record its output."""
+        entry = self._tool_index.get(tool_use_id)
+        if entry is None:
+            return None
+        entry.state = ToolCallState.SUCCESS if success else ToolCallState.FAILURE
+        if duration_ms is not None:
+            entry.duration_ms = duration_ms
+        if error is not None:
+            entry.error = str(error)
+        if output is not None:
+            raw = str(output) if not isinstance(output, str) else output
+            entry.output_lines = raw.splitlines()
         return entry
 
     def update_tool_call(
@@ -192,7 +244,7 @@ class TranscriptModel:
                 out.append(SEPARATOR)
             out.append(turn.header())
             for line in turn.lines:
-                out.append(f"  > {line}")
+                out.append(f"  {line}")
             for tc in turn.tool_calls:
                 out.append(tc.render())
             footer = turn.footer()

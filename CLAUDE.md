@@ -19,6 +19,25 @@ engineering built on top of lauren-ai.  It provides:
 - **Full-screen TUI** — `prompt_toolkit` HSplit; transcript viewport auto-scrolls;
   input bar always pinned to the last terminal row.
 
+
+## LLM Configuration
+
+Agenthicc uses lauren-ai for LLM calls. The only required env var is:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."  # for Anthropic Claude (default)
+export OPENAI_API_KEY="sk-..."         # for OpenAI (set provider = "openai")
+# Ollama needs no key — just have it running locally
+```
+
+Override the model:
+```bash
+agenthicc --set execution.model=claude-sonnet-4-6
+# or in .agenthicc/agenthicc.toml:
+# [execution]
+# model = "claude-sonnet-4-6"
+```
+
 ## Essential commands
 
 ```bash

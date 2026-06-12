@@ -7,6 +7,31 @@ summary: Complete guide to the Agenthicc interactive TUI — layout, key binding
 
 # Skill: Running the TUI
 
+
+## Required: LLM API Key
+
+Before running, set your LLM provider API key:
+
+```bash
+# Anthropic Claude (default — recommended)
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+
+# OpenAI (also set provider in config)
+export OPENAI_API_KEY="sk-..."
+
+# Ollama (local, no key needed)
+# Just have `ollama serve` running
+```
+
+To pin a model, add to `.agenthicc/agenthicc.toml`:
+
+```toml
+[execution]
+model = "claude-sonnet-4-6"   # faster/cheaper than opus
+```
+
+Or override at launch: `agenthicc --set execution.model=claude-haiku-4-5`
+
 ## When to use this skill
 
 Use this skill when you need to:

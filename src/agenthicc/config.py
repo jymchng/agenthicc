@@ -1,10 +1,12 @@
-"""TOML configuration loading and merging for Agenthicc (PRD-07).
+"""TOML configuration loading and merging for Agenthicc (PRD-07, PRD-21).
 
 Merge order (later sources override earlier ones):
 
 1. Hardcoded defaults (lowest priority)
-2. ``agenthicc.toml`` (project root)
-3. ``~/.agenthicc.toml`` (user home, highest priority)
+2. ~/.agenthicc/agenthicc.toml (user global)
+3. .agenthicc/agenthicc.toml (project local) or ./agenthicc.toml / ./.agenthicc.toml
+4. Environment variables AGENTHICC_* prefix
+5. CLI --set section.key=value overrides (highest priority)
 
 Scalars are overwritten, lists are replaced, tables are merged recursively.
 """
@@ -23,17 +25,74 @@ __all__ = [
     "ApiSettings",
     "ExecutionSettings",
     "MemorySettings",
+    "PROVIDER_API_KEY_ENVVAR",
+    "PROVIDER_DEFAULT_MODELS",
+    "PROVIDER_ENV_SHORTCUTS",
     "SecuritySettings",
+    "SUPPORTED_PROVIDERS",
     "ToolSettings",
+    "build_llm_config",
     "deep_merge",
     "load_config",
+    "PROJECT_CONFIG_CANDIDATES",
+    "USER_CONFIG_CANDIDATES",
+    "_coerce_env",
+    "_find_config_file",
 ]
 
 PROJECT_FILE = "agenthicc.toml"
 USER_FILE = ".agenthicc.toml"
 
+# Config file search order — first found wins
+PROJECT_CONFIG_CANDIDATES = [
+    Path(".agenthicc") / "agenthicc.toml",
+    Path(".agenthicc") / ".agenthicc.toml",
+    Path("agenthicc.toml"),
+    Path(".agenthicc.toml"),
+]
+
+USER_CONFIG_CANDIDATES = [
+    Path.home() / ".agenthicc" / "agenthicc.toml",
+    Path.home() / ".agenthicc" / ".agenthicc.toml",
+    Path.home() / ".agenthicc.toml",
+]
+
 
 # ── settings dataclasses ─────────────────────────────────────────────────
+
+
+SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "litellm")
+
+# Default models per provider
+PROVIDER_DEFAULT_MODELS: dict[str, str] = {
+    "anthropic": "claude-opus-4-8",
+    "openai": "gpt-4o",
+    "ollama": "llama3.2",
+    "litellm": "anthropic/claude-opus-4-8",
+}
+
+# Environment variables read per provider (when api_key not explicit)
+PROVIDER_API_KEY_ENVVAR: dict[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai":    "OPENAI_API_KEY",
+    "litellm":   "ANTHROPIC_API_KEY",   # litellm can delegate to any backend
+}
+
+# Provider-specific shorthand env vars (read in addition to AGENTHICC_* vars).
+# Setting e.g. OPENAI_MODEL automatically sets execution.model and infers provider=openai.
+# Setting OPENAI_BASE_URL enables any OpenAI-compatible endpoint (poolside, Together, etc.)
+PROVIDER_ENV_SHORTCUTS: dict[str, tuple[str, str]] = {
+    # OpenAI and OpenAI-compatible endpoints
+    "OPENAI_MODEL":    ("execution", "model"),
+    "OPENAI_BASE_URL": ("execution", "base_url"),
+    # Anthropic
+    "ANTHROPIC_MODEL": ("execution", "model"),
+    # Ollama
+    "OLLAMA_MODEL":    ("execution", "model"),
+    "OLLAMA_HOST":     ("execution", "base_url"),    # e.g. http://remote:11434
+    # LiteLLM
+    "LITELLM_MODEL":   ("execution", "model"),
+}
 
 
 @dataclass
@@ -41,6 +100,21 @@ class ExecutionSettings:
     max_concurrent_intents: int = 8
     max_parallel_tasks: int = 4
     agent_pool_size: int = 16
+    # LLM provider selection
+    provider: str = "anthropic"
+    model: str = ""            # empty → use PROVIDER_DEFAULT_MODELS[provider]
+    api_key: str = ""          # empty → read from PROVIDER_API_KEY_ENVVAR
+    base_url: str = ""         # Ollama / self-hosted endpoint override
+
+    def effective_model(self) -> str:
+        return self.model or PROVIDER_DEFAULT_MODELS.get(self.provider, self.model)
+
+    def effective_api_key(self) -> str | None:
+        import os  # noqa: PLC0415
+        if self.api_key:
+            return self.api_key
+        env_var = PROVIDER_API_KEY_ENVVAR.get(self.provider)
+        return os.environ.get(env_var, "") or None if env_var else None
 
 
 @dataclass
@@ -128,6 +202,114 @@ def _flatten_hooks(data: dict[str, Any], prefix: str = "") -> dict[str, list[str
     return flat
 
 
+# ── config file discovery helpers ─────────────────────────────────────────
+
+
+def _find_config_file(candidates: list[Path]) -> Path | None:
+    """Return the first candidate path that exists, or None."""
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_toml_safe(path: Path) -> dict[str, Any]:
+    """Load TOML file; return {} on error, warn on invalid syntax."""
+    import warnings  # noqa: PLC0415
+
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (FileNotFoundError, PermissionError):
+        return {}
+    except tomllib.TOMLDecodeError as exc:
+        warnings.warn(f"Invalid TOML in {path}: {exc}", stacklevel=3)
+        return {}
+
+
+# ── environment / CLI override helpers ───────────────────────────────────
+
+
+def _coerce_env(value: str) -> Any:
+    """Coerce an env var string to int / bool / float / str."""
+    if value.lower() in ("true", "1", "yes"):
+        return True
+    if value.lower() in ("false", "0", "no"):
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
+    """Apply AGENTHICC_<SECTION>_<KEY> environment variables and provider shortcuts."""
+    import os  # noqa: PLC0415
+
+    # 1. AGENTHICC_* namespace (explicit, always applied)
+    for key, value in os.environ.items():
+        if not key.startswith("AGENTHICC_"):
+            continue
+        remainder = key[len("AGENTHICC_"):].lower()
+        parts = remainder.split("_", 1)
+        if len(parts) != 2:
+            continue
+        section, field_name = parts
+        config.setdefault(section, {})[field_name] = _coerce_env(value)
+
+    # 2. Provider-specific shorthand env vars (OPENAI_MODEL, OPENAI_BASE_URL, etc.)
+    #    These only set execution.model / execution.base_url; they also infer the
+    #    provider if no explicit AGENTHICC_EXECUTION_PROVIDER was set.
+    explicit_provider = config.get("execution", {}).get("provider")
+    inferred_provider: str | None = None
+
+    for env_var, (section, field_name) in PROVIDER_ENV_SHORTCUTS.items():
+        value = os.environ.get(env_var)
+        if not value:
+            continue
+        # Only set the field if not already overridden by an AGENTHICC_* var
+        existing = config.get(section, {}).get(field_name)
+        if not existing:
+            config.setdefault(section, {})[field_name] = value
+        # Infer provider from which shorthand var was set (e.g. OPENAI_MODEL → openai)
+        if inferred_provider is None:
+            prefix = env_var.split("_")[0].lower()   # "OPENAI_MODEL" → "openai"
+            if prefix in SUPPORTED_PROVIDERS:
+                inferred_provider = prefix
+
+    # 3. Auto-infer provider from API key env vars if still unset
+    if inferred_provider is None and not explicit_provider:
+        for provider, api_key_var in PROVIDER_API_KEY_ENVVAR.items():
+            if os.environ.get(api_key_var):
+                inferred_provider = provider
+                break   # first match wins (ANTHROPIC_API_KEY checked first)
+
+    # Apply inferred provider only when no explicit provider was set
+    if inferred_provider and not explicit_provider:
+        config.setdefault("execution", {}).setdefault("provider", inferred_provider)
+
+    return config
+
+
+def _apply_cli_overrides(config: dict[str, Any], overrides: list[str]) -> dict[str, Any]:
+    """Apply --set section.key=value overrides (highest priority)."""
+    for override in overrides:
+        if "=" not in override:
+            continue
+        key_path, _, value_str = override.partition("=")
+        parts = key_path.strip().split(".", 1)
+        if len(parts) != 2:
+            continue
+        section, field_name = parts
+        config.setdefault(section, {})[field_name] = _coerce_env(value_str)
+    return config
+
+
 # ── loading ──────────────────────────────────────────────────────────────
 
 
@@ -136,12 +318,17 @@ def _read_toml(path: Path) -> dict[str, Any]:
         return tomllib.load(f)
 
 
-def _build_config(data: dict[str, Any]) -> AgenthiccConfig:
+def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
+    """Build an AgenthiccConfig from a merged dict."""
     ex = data.get("execution", {})
     execution = ExecutionSettings(
         max_concurrent_intents=ex.get("max_concurrent_intents", 8),
         max_parallel_tasks=ex.get("max_parallel_tasks", 4),
         agent_pool_size=ex.get("agent_pool_size", 16),
+        provider=str(ex.get("provider", "anthropic")),
+        model=str(ex.get("model", "")),
+        api_key=str(ex.get("api_key", "")),
+        base_url=str(ex.get("base_url", "")),
     )
 
     hooks = _flatten_hooks(data.get("hooks", {}))
@@ -187,23 +374,123 @@ def _build_config(data: dict[str, Any]) -> AgenthiccConfig:
     )
 
 
+# Keep _build_config as an alias for backward compatibility
+_build_config = _dict_to_config
+
+
 def load_config(
     project_path: str | Path | None = None,
     user_path: str | Path | None = None,
+    env_overrides: bool = True,
+    cli_overrides: list[str] | None = None,
 ) -> AgenthiccConfig:
     """Load and merge configuration into a typed :class:`AgenthiccConfig`.
 
-    ``project_path`` defaults to ``./agenthicc.toml`` and ``user_path`` to
-    ``~/.agenthicc.toml``. Missing files are skipped; user settings override
-    project settings, which override the hardcoded defaults. Invalid TOML
-    raises :class:`tomllib.TOMLDecodeError`.
+    Precedence (lowest → highest):
+
+    1. Hardcoded defaults (lowest)
+    2. Project config: .agenthicc/agenthicc.toml (or agenthicc.toml, etc.)
+    3. Environment variables AGENTHICC_*
+    4. User config: ~/.agenthicc/agenthicc.toml — wins over env vars
+    5. CLI --set overrides (highest)
+
+    When ``project_path`` or ``user_path`` are given explicitly, the file must
+    exist and be valid TOML (raises :class:`tomllib.TOMLDecodeError` on invalid
+    syntax). When paths are auto-discovered, bad files produce a warning and
+    are skipped.
     """
-    project_file = Path(project_path) if project_path is not None else Path(PROJECT_FILE)
-    user_file = Path(user_path) if user_path is not None else Path.home() / USER_FILE
-
+    # 1. Start with defaults
     merged: dict[str, Any] = {}
-    for path in (project_file, user_file):
-        if path.is_file():
-            merged = deep_merge(merged, _read_toml(path))
 
-    return _build_config(merged)
+    # Precedence (lowest → highest): global defaults → project → env vars → user
+    # User config wins over everything, including environment variables.
+
+    # 2. Project config (.agenthicc/agenthicc.toml or agenthicc.toml)
+    if project_path is not None:
+        project_file: Path | None = Path(project_path)
+        if project_file.is_file():
+            merged = deep_merge(merged, _read_toml(project_file))
+    else:
+        project_file = _find_config_file(PROJECT_CONFIG_CANDIDATES)
+        if project_file is not None:
+            merged = deep_merge(merged, _load_toml_safe(project_file))
+
+    # 3. Environment variable overrides (AGENTHICC_*) — override project config
+    if env_overrides:
+        merged = _apply_env_overrides(merged)
+
+    # 4. User config (~/.agenthicc/agenthicc.toml) — highest priority; wins over env vars
+    if user_path is not None:
+        user_file: Path | None = Path(user_path)
+        if user_file.is_file():
+            merged = deep_merge(merged, _read_toml(user_file))
+    else:
+        user_file = _find_config_file(USER_CONFIG_CANDIDATES)
+        if user_file is not None:
+            merged = deep_merge(merged, _load_toml_safe(user_file))
+
+    # 5. CLI --set overrides (highest of all)
+    if cli_overrides:
+        merged = _apply_cli_overrides(merged, cli_overrides)
+
+    return _dict_to_config(merged)
+
+
+# ── LLM transport builder ─────────────────────────────────────────────────
+
+
+def build_llm_config(execution: ExecutionSettings) -> "Any":
+    """Build a :class:`~lauren_ai._config.LLMConfig` from agenthicc execution settings.
+
+    Supports all providers that lauren-ai knows about:
+    ``anthropic``, ``openai``, ``ollama``, ``litellm``.
+
+    :param execution: The resolved execution settings (provider, model, api_key, base_url).
+    :raises ValueError: When the provider string is not recognised.
+    :returns: A ``LLMConfig`` instance ready to pass to ``_build_transport()``.
+    """
+    import os  # noqa: PLC0415
+    from lauren_ai._config import LLMConfig  # noqa: PLC0415
+
+    provider = execution.provider.lower()
+    model = execution.effective_model()
+    api_key = execution.effective_api_key()
+    # base_url: explicit config wins; then OPENAI_BASE_URL / OLLAMA_HOST env vars
+    base_url = (
+        execution.base_url
+        or (os.environ.get("OPENAI_BASE_URL") if provider == "openai" else None)
+        or (os.environ.get("OLLAMA_HOST") if provider == "ollama" else None)
+        or None
+    )
+
+    if provider == "anthropic":
+        kwargs: dict[str, Any] = {"model": model, "api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        return LLMConfig.for_anthropic(**kwargs)
+
+    if provider == "openai":
+        # LLMConfig.for_openai passes base_url to OpenAI client, enabling any
+        # OpenAI-compatible endpoint (poolside, Together, Groq, local vLLM, etc.)
+        kwargs = {"model": model, "api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        return LLMConfig.for_openai(**kwargs)
+
+    if provider == "ollama":
+        kwargs = {"model": model}
+        if base_url:
+            kwargs["base_url"] = base_url
+        return LLMConfig.for_ollama(**kwargs)
+
+    if provider == "litellm":
+        kwargs = {"provider": "litellm", "model": model, "api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        return LLMConfig(**kwargs)
+
+    supported = ", ".join(f"'{p}'" for p in SUPPORTED_PROVIDERS)
+    raise ValueError(
+        f"Unknown LLM provider: {provider!r}. Supported: {supported}. "
+        f"Set in config: [execution] provider = \"openai\""
+    )

@@ -1819,3 +1819,60 @@ class SkillRegistry:
 Built-in skills: `"web_search"` (requires `api_key`), `"docker"`, `"database"`
 (requires `connection_string`). Broken skills log and return `False` without
 raising.
+
+---
+
+## Provider Selection (PRD-21 + config.py)
+
+### build_llm_config
+
+```python
+def build_llm_config(execution: ExecutionSettings) -> LLMConfig: ...
+```
+
+Builds a `lauren_ai.LLMConfig` from agenthicc execution settings.
+Reads `api_key` from the appropriate env var when not set in config.
+
+```python
+from agenthicc.config import build_llm_config, load_config
+cfg = load_config()
+llm = build_llm_config(cfg.execution)
+# → LLMConfig(provider="anthropic", model="claude-opus-4-8", ...)
+```
+
+### SUPPORTED_PROVIDERS
+
+```python
+SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "litellm")
+```
+
+### PROVIDER_DEFAULT_MODELS
+
+```python
+PROVIDER_DEFAULT_MODELS: dict[str, str]
+# {"anthropic": "claude-opus-4-8", "openai": "gpt-4o", ...}
+```
+
+### PROVIDER_API_KEY_ENVVAR
+
+```python
+PROVIDER_API_KEY_ENVVAR: dict[str, str]
+# {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", ...}
+```
+
+### ExecutionSettings (updated)
+
+```python
+@dataclass
+class ExecutionSettings:
+    max_concurrent_intents: int = 8
+    max_parallel_tasks: int = 4
+    agent_pool_size: int = 16
+    provider: str = "anthropic"     # which LLM provider to use
+    model: str = ""                 # empty → PROVIDER_DEFAULT_MODELS[provider]
+    api_key: str = ""               # empty → PROVIDER_API_KEY_ENVVAR[provider]
+    base_url: str = ""              # Ollama / custom endpoint
+
+    def effective_model(self) -> str: ...    # resolves empty model to default
+    def effective_api_key(self) -> str | None: ...  # reads from env if empty
+```

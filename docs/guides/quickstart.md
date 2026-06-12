@@ -4,6 +4,19 @@ Get agenthicc running in under five minutes.
 
 ---
 
+## Step 0 — Set your LLM API key
+
+Agenthicc needs an LLM provider to run agents. Set the API key before launching:
+
+```bash
+# Anthropic Claude (default — required unless using Ollama)
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+```
+
+For OpenAI or Ollama, see the [Configuration guide](configuration.md#llm--model-configuration).
+
+---
+
 ## Prerequisites
 
 | Requirement | Minimum version | Notes |
