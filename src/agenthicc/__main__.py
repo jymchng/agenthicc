@@ -397,30 +397,39 @@ async def _run_agent_turn(
     live = Live(refresh_per_second=12, transient=True)
     live.start()
 
+    from agenthicc.tui.transcript import TranscriptModel as _TM  # noqa: PLC0415
+    _MAX_VISIBLE_CALLS = _TM.MAX_VISIBLE_TOOL_CALLS
+
     async def _spin() -> None:
         from rich.markup import render as _mk  # noqa: PLC0415
         while True:
             elapsed = time.monotonic() - renderer._status.intent_started_at
             frame = _thinking_wave(renderer._status.spinner_frame)
-            parts = [
+            header = (
                 f" {frame}  [dim]{elapsed:.1f}s  │[/dim]"
                 f"  [cyan]↑ {renderer._status.input_tokens:,}[/cyan]"
                 f"  [green]↓ {renderer._status.output_tokens:,}[/green]"
-            ]
+            )
+            call_lines: list[str] = []
             for call in _live_calls:
                 name = call["name"]
                 args = call["args"]
                 if call["done"]:
                     icon = "[green]✓[/green]" if call["ok"] else "[red]✗[/red]"
                     ms = f"  [dim]{call['ms']:.0f}ms[/dim]" if call["ms"] else ""
-                    parts.append(
+                    call_lines.append(
                         f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  {icon}{ms}"
                     )
                 else:
-                    parts.append(
+                    call_lines.append(
                         f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  [dim]…[/dim]"
                     )
-            live.update(_mk("\n".join(parts)))
+            if len(call_lines) > _MAX_VISIBLE_CALLS:
+                hidden = len(call_lines) - _MAX_VISIBLE_CALLS
+                call_lines = call_lines[:_MAX_VISIBLE_CALLS] + [
+                    f"   [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}[/dim]"
+                ]
+            live.update(_mk("\n".join([header] + call_lines)))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)
 
@@ -477,6 +486,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     from agenthicc.tui.events import TUIEventAdapter
     from agenthicc.tui.app import InlineRenderer
     from agenthicc.config import load_config, build_llm_config
+    from agenthicc.conversation_store import ConversationStore  # noqa: PLC0415
 
     session_id = resume_id or uuid.uuid4().hex
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
@@ -502,28 +512,6 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     adapter = TUIEventAdapter(model)
     adapter.subscribe_to(processor)
 
-    # Re-render tail of resumed session
-    if resume_id:
-        from rich.console import Console
-        from rich.rule import Rule
-        con = Console()
-        con.print(Rule(f"[dim]resumed session {resume_id[:12]}[/dim]"))
-        for line in model.render()[-25:]:
-            con.print(line, markup=False, highlight=False)
-
-    # Start ad rotator for free-tier authenticated users
-    ad_task: asyncio.Task | None = None
-    try:
-        from agenthicc.auth import AuthClient, NotLoggedInError
-        from agenthicc.ads import AdRotator
-        auth_client = AuthClient()
-        bundle = auth_client.current_bundle()
-        if bundle is not None and not bundle.is_pro:
-            rotator = AdRotator(auth_client=auth_client, processor=processor)
-            ad_task = asyncio.create_task(rotator.run())
-    except Exception:
-        pass  # ads never block startup
-
     # Load config and build LLM transport for agent runs
     cfg = load_config(cli_overrides=cli_overrides or [])
     try:
@@ -546,19 +534,80 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     )
     renderer._status.resume_id = session_id
 
+    # ── conversation store + memory ───────────────────────────────────────
+    from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
+    _session_memory = ShortTermMemory(max_tokens=32_000)
+    conv_store = ConversationStore()
+    _turn_index = [conv_store.next_turn_index(session_id)]
+
+    # On resume: replay history into the transcript and restore LLM memory
+    if resume_id:
+        import shutil as _sh  # noqa: PLC0415
+        from rich.console import Console as _Con  # noqa: PLC0415
+        from rich.markdown import Markdown as _Md  # noqa: PLC0415
+        from rich.rule import Rule  # noqa: PLC0415
+        _con = _Con(highlight=False, markup=True)
+        _cols = _sh.get_terminal_size((80, 24)).columns
+        _con.print(Rule(f"[dim]resumed session {resume_id[:12]}[/dim]"))
+        past_turns = conv_store.load_turns(resume_id)
+        for turn in past_turns[-20:]:  # display last 20 Q&A pairs
+            if "user" in turn:
+                _con.print(f"[dim]❯ {turn['user']}[/dim]")
+                _con.print(f"[dim]{'─' * _cols}[/dim]")
+            if "assistant" in turn:
+                ms = turn.get("model_short", "assistant")
+                ts = turn.get("timestamp", time.time())
+                hhmmss = time.strftime("%H:%M:%S", time.localtime(ts))
+                _con.print(
+                    f"[bold cyan]●[/] [bold]assistant ({ms})[/]  [dim]{hhmmss}[/dim]"
+                )
+                _con.print(_Md(turn["assistant"]), highlight=False)
+        # Restore LLM context so the agent remembers past turns
+        snapshot = conv_store.load_memory_snapshot(resume_id)
+        if snapshot:
+            _session_memory.restore(snapshot)
+
     # Build the lauren-ai runner that calls the LLM
     agent_runner = _build_agent_runner(llm_cfg, transcript=model)
 
-    # Single ShortTermMemory shared across all turns in this session
-    from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
-    _session_memory = ShortTermMemory(max_tokens=32_000)
+    _MD_SENTINEL = InlineRenderer._MD_SENTINEL
 
     async def on_intent(text: str) -> None:
+        idx = _turn_index[0]
+        conv_store.save_turn(session_id, idx, "user", text, time.time())
+        turns_before = len(model.turns)
+
         await _run_agent_turn(
             text, agent_runner, model, renderer, processor,
             session_memory=_session_memory,
             max_agent_turns=cfg.execution.max_agent_turns,
         )
+
+        # Capture the assistant response just added to the transcript
+        if len(model.turns) > turns_before:
+            last = model.turns[-1]
+            content = "\n".join(
+                ln.replace(_MD_SENTINEL, "") for ln in last.lines
+            ).strip()
+            ms = last.agent_name.replace("assistant (", "").rstrip(")")
+            conv_store.save_turn(session_id, idx, "assistant", content, time.time(), model_short=ms)
+
+        # Persist memory so the next resume sees full context
+        conv_store.save_memory_snapshot(session_id, _session_memory.snapshot())
+        _turn_index[0] += 1
+
+    # Start ad rotator for free-tier authenticated users
+    ad_task: asyncio.Task | None = None
+    try:
+        from agenthicc.auth import AuthClient, NotLoggedInError  # noqa: PLC0415
+        from agenthicc.ads import AdRotator  # noqa: PLC0415
+        auth_client = AuthClient()
+        bundle = auth_client.current_bundle()
+        if bundle is not None and not bundle.is_pro:
+            rotator = AdRotator(auth_client=auth_client, processor=processor)
+            ad_task = asyncio.create_task(rotator.run())
+    except Exception:
+        pass  # ads never block startup
 
     proc_task = asyncio.create_task(processor.run())
     try:
@@ -568,6 +617,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
         if ad_task is not None:
             ad_task.cancel()
         await asyncio.gather(proc_task, *(([ad_task] if ad_task else [])), return_exceptions=True)
+        conv_store.close()
 
 
 def _run_tui(args: argparse.Namespace) -> None:
