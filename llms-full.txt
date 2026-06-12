@@ -1,0 +1,1821 @@
+# agenthicc — complete API reference
+
+> Auto-generated from source. One `### SymbolName` section per public symbol.
+> Covers all symbols exported from `agenthicc.kernel`, `agenthicc.workflow`,
+> `agenthicc.runtime`, `agenthicc.tools`, `agenthicc.memory`, `agenthicc.tui`,
+> `agenthicc.api`, and `agenthicc.config`.
+
+---
+
+## Kernel — `agenthicc.kernel`
+
+### AppState
+
+```python
+@dataclass(frozen=True)
+class AppState:
+    session_id: str
+    run_id: str
+    intents: dict[str, Intent]
+    workflows: dict[str, Workflow]
+    tasks: dict[str, Task]
+    agents: dict[str, AgentInstance]
+    tools: dict[str, ToolRegistration]
+    hooks: dict[str, dict[str, Any]]
+    snapshot_index: int
+    settings: SystemSettings
+    policy: SecurityPolicy
+    agent_types: dict[str, type] = field(default_factory=dict)
+```
+
+Immutable kernel state. All fields are frozen; use `with_*` copy-on-write helpers
+to produce updated copies that share unchanged sub-dicts by reference.
+
+**Factory**: `AppState.create(settings=None, policy=None) -> AppState` — returns
+a fresh state with empty dicts and new `uuid4` session/run IDs.
+
+**Common error**: `FrozenInstanceError` — attempting to mutate a field directly;
+always use `with_*` helpers or `dataclasses.replace`.
+
+---
+
+### AppState.with_intent
+
+```python
+def with_intent(self, intent: Intent) -> AppState
+```
+
+Returns a new `AppState` with `intent` inserted or replaced in `intents`.
+Shares all other sub-dicts by reference.
+
+---
+
+### AppState.with_workflow
+
+```python
+def with_workflow(self, workflow: Workflow) -> AppState
+```
+
+Returns a new `AppState` with `workflow` inserted or replaced in `workflows`.
+
+---
+
+### AppState.with_task
+
+```python
+def with_task(self, task: Task) -> AppState
+```
+
+Returns a new `AppState` with `task` inserted or replaced in `tasks`.
+
+---
+
+### AppState.with_agent
+
+```python
+def with_agent(self, agent: AgentInstance) -> AppState
+```
+
+Returns a new `AppState` with `agent` inserted or replaced in `agents`.
+
+---
+
+### AppState.with_tool
+
+```python
+def with_tool(self, tool: ToolRegistration) -> AppState
+```
+
+Returns a new `AppState` with `tool` inserted or replaced in `tools`; keyed by
+`tool.name`.
+
+---
+
+### AppState.with_hook
+
+```python
+def with_hook(self, hook_id: str, hook_spec: dict[str, Any]) -> AppState
+```
+
+Returns a new `AppState` with `hook_spec` inserted into `hooks` under `hook_id`.
+
+---
+
+### Event
+
+```python
+@dataclass(frozen=True)
+class Event:
+    event_id: str
+    event_type: str
+    payload: dict[str, Any]
+    timestamp: float
+    source_agent_id: str | None = None
+```
+
+Immutable event record. Every change to `AppState` starts here.
+
+**Factory**: `Event.create(event_type, payload, *, source_agent_id=None) -> Event`
+— generates a `uuid4` event_id and `time.time()` timestamp.
+
+**Serialisation**: `event.to_dict() -> dict` / `Event.from_dict(d) -> Event`.
+
+**Common error**: `KeyError` from `from_dict` when `event_type` is absent; corrupt
+log lines raise `json.JSONDecodeError` and are skipped by `restore_from_log`.
+
+---
+
+### Effect
+
+```python
+@dataclass
+class Effect:
+    effect_type: EffectType
+    payload: dict[str, Any]
+```
+
+Side-effect descriptor emitted by the reducer alongside the new state. Effects are
+executed by `EffectExecutor.execute` outside the state-update critical section so
+they do not block the queue.
+
+**Return**: produced in the second element of the `(new_state, effects)` tuple
+returned by `root_reducer`.
+
+---
+
+### EffectType
+
+```python
+class EffectType(str, Enum):
+    spawn_agent = "spawn_agent"
+    deliver_message = "deliver_message"
+    schedule_task = "schedule_task"
+```
+
+Enum of recognised effect kinds understood by the runtime effect executors.
+
+---
+
+### EventProcessor
+
+```python
+class EventProcessor:
+    def __init__(
+        self,
+        initial_state: AppState,
+        reducer: ReducerFn = root_reducer,
+        effect_executor: EffectExecutor | None = None,
+        persist: bool = True,
+    ) -> None: ...
+```
+
+Multi-producer single-consumer event loop. Producers call `emit`; a single `run`
+task dequeues events, applies the reducer, persists to the JSON-lines log, notifies
+subscribers, and schedules effects.
+
+**Common error**: `RuntimeError` from `drain` if the processor `run()` task has not
+been started; start it with `asyncio.create_task(processor.run())` before emitting.
+
+---
+
+### EventProcessor.emit
+
+```python
+async def emit(self, event: Event) -> None
+```
+
+Put `event` on the internal queue. Clears the idle event so `drain()` will wait.
+Non-blocking — returns immediately after enqueuing.
+
+---
+
+### EventProcessor.drain
+
+```python
+async def drain(self, timeout: float = 5.0) -> None
+```
+
+Wait until the queue is empty and the idle event is set (i.e. the last event was
+applied by the run loop). Raises `asyncio.TimeoutError` if the queue does not drain
+within `timeout` seconds.
+
+---
+
+### EventProcessor.subscribe
+
+```python
+def subscribe(self) -> asyncio.Queue[AppState]
+```
+
+Register a subscriber queue. After each event is processed the new `AppState` is
+pushed (non-blocking, dropped if the queue is full at `maxsize=100`). Returns the
+`asyncio.Queue` to read from.
+
+---
+
+### EventProcessor.unsubscribe
+
+```python
+def unsubscribe(self, q: asyncio.Queue[AppState]) -> None
+```
+
+Remove `q` from the subscriber list. Safe to call after the queue is already closed;
+silently ignores `ValueError` if `q` is not registered.
+
+---
+
+### EventProcessor.run
+
+```python
+async def run(self) -> None
+```
+
+The main event loop coroutine. Run as a background task. Reads events from the
+queue, applies the reducer, persists to `event_log_path`, notifies subscribers,
+and schedules effects. Exits when `stop()` is called.
+
+---
+
+### EventProcessor.stop
+
+```python
+async def stop(self) -> None
+```
+
+Signal the run loop to exit after processing the current event. Does not cancel
+the task; await the task after calling `stop()` to ensure clean shutdown.
+
+---
+
+### EventProcessor.get_state
+
+```python
+def get_state(self) -> AppState
+```
+
+Return the current `AppState` snapshot. May be stale if events are in the queue;
+call `drain()` first for a consistent read.
+
+---
+
+### restore_from_log
+
+```python
+async def restore_from_log(
+    log_path: str,
+    initial_state: AppState,
+    reducer: ReducerFn = root_reducer,
+) -> AppState
+```
+
+Rebuild `AppState` by replaying the JSON-lines event log at `log_path`. Corrupt
+trailing lines (from a crash mid-write) are skipped with a `WARNING` log. Returns
+`initial_state` unchanged if the file does not exist.
+
+**Common error**: Corrupt log entries are silently skipped; check the `WARNING`
+log output to identify data-loss scenarios.
+
+---
+
+### root_reducer
+
+```python
+def root_reducer(state: AppState, event: Event) -> tuple[AppState, list[Effect]]
+```
+
+Pure top-level reducer. Dispatches to sub-reducers by `event.event_type`. Unknown
+event types return `(state, [])` unchanged. Handled types: `IntentCreated`,
+`IntentStatusUpdated`, `WorkflowCreated`, `WorkflowNodeAdded`, `WorkflowNodeRemoved`,
+`WorkflowNodeStatusUpdated`, `TaskCreated`, `TaskAssigned`, `TaskStatusUpdated`,
+`AgentSpawnRequest`, `AgentMessageSent`, `ToolRegistered`, `HookRegistered`,
+`ApplicationLog`, `UIUpdate`.
+
+**Return**: `(new_state, effects)` — both must be used; discarding effects silently
+drops side-effect scheduling.
+
+---
+
+### Intent
+
+```python
+@dataclass(frozen=True)
+class Intent:
+    intent_id: str
+    raw_text: str
+    status: IntentStatus
+    workflow_id: str | None
+    created_at: float
+    metadata: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+```
+
+An operator-submitted intent in its current lifecycle stage.
+
+---
+
+### IntentStatus
+
+```python
+class IntentStatus(str, Enum):
+    pending = "pending"
+    validating = "validating"
+    planning = "planning"
+    running = "running"
+    complete = "complete"
+    failed = "failed"
+    rejected = "rejected"
+```
+
+---
+
+### Workflow
+
+```python
+@dataclass(frozen=True)
+class Workflow:
+    workflow_id: str
+    intent_id: str
+    nodes: dict[str, WorkflowNode]
+    status: NodeStatus
+    created_at: float
+```
+
+A DAG of `WorkflowNode` records associated with a single `Intent`.
+
+---
+
+### WorkflowNode
+
+```python
+@dataclass(frozen=True)
+class WorkflowNode:
+    node_id: str
+    task_id: str
+    label: str
+    dependencies: frozenset[str]
+    status: NodeStatus
+    agent_id: str | None = None
+    result: Any = None
+    error: str | None = None
+```
+
+A single node in the workflow DAG. `dependencies` is a frozenset of `node_id`
+strings that must be `NodeStatus.complete` before this node is eligible.
+
+---
+
+### NodeStatus
+
+```python
+class NodeStatus(str, Enum):
+    pending = "pending"
+    running = "running"
+    complete = "complete"
+    failed = "failed"
+    skipped = "skipped"
+```
+
+---
+
+### Task
+
+```python
+@dataclass(frozen=True)
+class Task:
+    task_id: str
+    workflow_id: str
+    node_id: str
+    description: str
+    status: NodeStatus
+    assigned_agent_id: str | None
+    created_at: float
+    result: Any = None
+```
+
+A unit of work assigned to an agent. Mirrors the corresponding `WorkflowNode`.
+
+---
+
+### AgentInstance
+
+```python
+@dataclass(frozen=True)
+class AgentInstance:
+    agent_id: str
+    agent_type: str
+    status: AgentStatus
+    current_task_id: str | None
+    parent_agent_id: str | None
+    created_at: float
+    metadata: dict[str, Any] = field(default_factory=dict)
+```
+
+Runtime record for a live or recently-terminated agent.
+
+---
+
+### AgentStatus
+
+```python
+class AgentStatus(str, Enum):
+    idle = "idle"
+    busy = "busy"
+    terminated = "terminated"
+```
+
+---
+
+### ToolRegistration
+
+```python
+@dataclass(frozen=True)
+class ToolRegistration:
+    tool_id: str
+    name: str
+    description: str
+    parameters_schema: dict[str, Any]
+    is_builtin: bool = False
+    source_agent_id: str | None = None
+```
+
+Metadata record for a registered tool. `source_agent_id` identifies the agent
+that dynamically registered the tool via `tool_define`.
+
+---
+
+### SecurityPolicy
+
+```python
+@dataclass(frozen=True)
+class SecurityPolicy:
+    permission_rules: tuple[PermissionRule, ...] = ()
+    default_action: str = "deny"
+```
+
+Ordered list of `fnmatch`-style permission rules. Evaluated top-to-bottom; first
+match wins. Falls back to `default_action` (default: `"deny"`) when no rule matches.
+
+---
+
+### PermissionRule
+
+```python
+@dataclass(frozen=True)
+class PermissionRule:
+    tool_pattern: str
+    action: str  # "allow" | "deny" | "require_confirmation"
+    conditions: dict[str, Any] = field(default_factory=dict)
+```
+
+A single rule. `tool_pattern` supports `fnmatch` wildcards (e.g. `"file_*"`).
+
+---
+
+### SystemSettings
+
+```python
+@dataclass(frozen=True)
+class SystemSettings:
+    max_concurrent_intents: int = 10
+    max_parallel_tasks: int = 20
+    agent_pool_size: int = 30
+    snapshot_every_n_events: int = 100
+    event_log_path: str = ".agenthicc/events.jsonl"
+    snapshot_path: str = ".agenthicc/snapshot.json"
+```
+
+Kernel tuning parameters. Reflected from `AgenthiccConfig.execution` via
+`AgenthiccConfig.to_system_settings()`.
+
+---
+
+## Workflow Engine — `agenthicc.workflow`
+
+### find_ready_nodes
+
+```python
+def find_ready_nodes(workflow: Workflow) -> list[WorkflowNode]
+```
+
+Return all nodes in `workflow` whose status is `NodeStatus.pending` and whose
+every dependency node has status `NodeStatus.complete`. O(n) scan.
+
+**Return**: possibly empty list; never raises.
+
+---
+
+### detect_cycle
+
+```python
+def detect_cycle(graph: dict[str, set[str]]) -> bool
+```
+
+Iterative three-color DFS cycle check over a `{node_id: {dep_id, ...}}` adjacency
+dict. Returns `True` if a cycle exists, `False` otherwise.
+
+**Common error**: does not raise; use `CycleError` from `topological_sort` if you
+need the cycle path.
+
+---
+
+### topological_sort
+
+```python
+def topological_sort(graph: dict[str, set[str]]) -> list[str]
+```
+
+Kahn's algorithm topological sort. Returns node IDs in dependency order (leaves
+first). Raises `CycleError` if the graph contains a cycle.
+
+**Common error**: `CycleError` — raised when the graph is not a DAG.
+
+---
+
+### CycleError
+
+```python
+class CycleError(Exception): ...
+```
+
+Raised by `topological_sort` and by `WorkflowModifier`/`CommunicationTools.workflow_modify`
+when an `add_node` operation would introduce a cycle.
+
+---
+
+### DAGExecutor
+
+```python
+class DAGExecutor:
+    def __init__(
+        self,
+        processor: EventProcessor,
+        agent_runner_factory: Callable[[str], AgentRunnerBase],
+        max_parallel: int = 4,
+    ) -> None: ...
+```
+
+Parallel asyncio DAG runner. Discovers ready nodes, acquires a semaphore slot,
+launches the agent runner, and re-checks after each completion. The semaphore is
+`asyncio.Semaphore(max_parallel)`.
+
+---
+
+### DAGExecutor.start_ready_nodes
+
+```python
+async def start_ready_nodes(self, workflow_id: str) -> list[asyncio.Task]
+```
+
+Find all `NodeStatus.pending` nodes in the workflow that are ready to run, acquire
+a semaphore slot for each, launch them as asyncio tasks, and return the task list.
+Does not await completion.
+
+---
+
+### DAGExecutor.run_workflow
+
+```python
+async def run_workflow(self, workflow_id: str) -> None
+```
+
+Drive the workflow to completion: repeatedly call `start_ready_nodes`, await any
+running task, re-check, and exit when all nodes are `complete` or `failed`.
+
+**Common error**: `KeyError` if `workflow_id` does not exist in the current state;
+emit `WorkflowCreated` before calling.
+
+---
+
+### IntentParser
+
+```python
+class IntentParser:
+    async def parse(self, raw_text: str) -> dict[str, Any]
+```
+
+Extract structured intent fields (verb, target, constraints) from freeform text.
+Returns a dict suitable for passing to `IntentValidator`.
+
+---
+
+### IntentValidator
+
+```python
+class IntentValidator:
+    async def validate(self, parsed: dict[str, Any]) -> bool
+```
+
+Validate a parsed intent. Returns `True` if valid; emits `IntentStatusUpdated`
+with `status=rejected` and raises `Rejection` on failure.
+
+---
+
+### StaticPlanner
+
+```python
+class StaticPlanner:
+    async def plan(self, intent: Intent) -> Workflow
+```
+
+Build a workflow from a pre-defined template matched against the intent verb.
+Falls back to `LlmPlanner` if no template matches.
+
+---
+
+### LlmPlanner
+
+```python
+class LlmPlanner:
+    async def plan(self, intent: Intent) -> Workflow
+```
+
+Build a workflow by running an LLM completion via `AgentRunnerBase.run_until_done`.
+Parses the completion output as JSON task specifications using `parse_task_json`.
+
+**Common error**: `ValueError` from `parse_task_json` if the LLM output is not
+valid JSON or missing required keys.
+
+---
+
+### parse_task_json
+
+```python
+def parse_task_json(raw: str) -> list[dict[str, Any]]
+```
+
+Parse a JSON string containing a list of task specification dicts. Each dict must
+have `description` (str) and optionally `dependencies` (list of node IDs).
+
+**Common error**: `ValueError` — raised on invalid JSON or missing `description`.
+
+---
+
+### WorkflowModifier
+
+```python
+class WorkflowModifier:
+    async def add_node(
+        self,
+        workflow_id: str,
+        node_id: str,
+        label: str,
+        dependencies: list[str],
+    ) -> None
+
+    async def remove_node(self, workflow_id: str, node_id: str) -> None
+```
+
+Safe DAG mutation. `add_node` checks for cycles before emitting
+`WorkflowNodeAdded`; `remove_node` rejects nodes with status `running` or
+`complete`. Raises `CycleError` or `ValueError` respectively.
+
+---
+
+## Runtime — `agenthicc.runtime`
+
+### CommunicationTools
+
+```python
+class CommunicationTools:
+    def __init__(
+        self,
+        processor: EventProcessor,
+        pool: AgentPool,
+        message_bus: Any | None = None,
+    ) -> None: ...
+```
+
+The sole write path for agents. All nine methods emit kernel events and return
+plain dicts. Never mutate `AppState` directly.
+
+---
+
+### CommunicationTools.agent_spawn
+
+```python
+async def agent_spawn(
+    self,
+    agent_type: str,
+    config: dict[str, Any] | None = None,
+    parent_agent_id: str | None = None,
+) -> dict[str, Any]
+```
+
+Spawn a new agent. Emits `AgentSpawnRequest` and registers the agent in the pool.
+
+**Return**: `{"agent_id": str, "agent_type": str}`
+
+---
+
+### CommunicationTools.agent_send_message
+
+```python
+async def agent_send_message(
+    self,
+    to_agent_id: str,
+    message: Any,
+    from_agent_id: str | None = None,
+) -> dict[str, Any]
+```
+
+Send `message` to another agent. Uses the `message_bus` for delivery if configured;
+always records an `AgentMessageSent` event for auditability.
+
+**Return**: `{"message_id": str, "to_agent_id": str, "delivered": bool}`
+
+---
+
+### CommunicationTools.task_create
+
+```python
+async def task_create(
+    self,
+    description: str,
+    workflow_id: str,
+    dependencies: list[str] | None = None,
+    node_id: str | None = None,
+) -> dict[str, Any]
+```
+
+Create a pending task and its corresponding workflow node. Emits `WorkflowNodeAdded`
+then `TaskCreated`.
+
+**Return**: `{"task_id": str, "node_id": str, "workflow_id": str, "status": "pending"}`
+
+---
+
+### CommunicationTools.task_assign
+
+```python
+async def task_assign(self, task_id: str, agent_id: str) -> dict[str, Any]
+```
+
+Explicitly assign an existing task to an agent. Emits `TaskAssigned`.
+
+**Return**: `{"task_id": str, "agent_id": str, "assigned": True}`
+
+---
+
+### CommunicationTools.workflow_modify
+
+```python
+async def workflow_modify(
+    self,
+    workflow_id: str,
+    action: str,
+    node_id: str,
+    label: str | None = None,
+    dependencies: list[str] | None = None,
+) -> dict[str, Any]
+```
+
+Add or remove a node in a workflow DAG. `action` must be `"add_node"` or
+`"remove_node"`. `add_node` is rejected with `ValueError` if it would introduce
+a cycle; `remove_node` is rejected for `running` or `complete` nodes.
+
+**Return**: `{"workflow_id": str, "action": str, "node_id": str, "applied": True}`
+
+**Common error**: `ValueError` — cycle detected or node is running/complete.
+
+---
+
+### CommunicationTools.application_log
+
+```python
+async def application_log(
+    self,
+    level: str,
+    message: str,
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]
+```
+
+Append a structured log entry to the event log. `level` must be one of `DEBUG`,
+`INFO`, `WARNING`, `ERROR`, `CRITICAL` (case-insensitive).
+
+**Return**: `{"log_id": str, "level": str, "accepted": True}`
+
+**Common error**: `ValueError` — invalid log level string.
+
+---
+
+### CommunicationTools.application_ui_update
+
+```python
+async def application_ui_update(
+    self,
+    content: Any,
+    ui_type: str = "message",
+) -> dict[str, Any]
+```
+
+Push a UI update onto the event log for the TUI adapter to render.
+
+**Return**: `{"update_id": str, "ui_type": str, "queued": True}`
+
+---
+
+### CommunicationTools.tool_define
+
+```python
+async def tool_define(
+    self,
+    name: str,
+    description: str,
+    source_code: str,
+    parameters_schema: dict[str, Any],
+) -> dict[str, Any]
+```
+
+Register a dynamically defined tool. Validates that `name` is a valid Python
+identifier and that `source_code` compiles without `SyntaxError`.
+
+**Return**: `{"tool_id": str, "name": str, "registered": True}`
+
+**Common error**: `ValueError` — invalid identifier or compile error.
+
+---
+
+### CommunicationTools.hook_register
+
+```python
+async def hook_register(
+    self,
+    entity_type: str,
+    stage: str,
+    handler_dotpath: str,
+) -> dict[str, Any]
+```
+
+Register a lifecycle hook handler by dotted import path (e.g.
+`"myapp.hooks.AuditHook"`). Emits `HookRegistered`.
+
+**Return**: `{"hook_id": str, "entity_type": str, "stage": str, "registered": True}`
+
+---
+
+### AgentPool
+
+```python
+class AgentPool:
+    def __init__(self, maxsize: int = 32) -> None: ...
+```
+
+Thread-safe asyncio agent pool with separate idle and busy queues.
+
+---
+
+### AgentPool.add
+
+```python
+def add(self, record: AgentRecord) -> None
+```
+
+Register a new agent record into the idle queue.
+
+---
+
+### AgentPool.acquire
+
+```python
+async def acquire(self) -> AgentRecord
+```
+
+Wait for an idle agent and move it to the busy set. Blocks until one is available.
+
+---
+
+### AgentPool.release
+
+```python
+def release(self, agent_id: str) -> None
+```
+
+Return an agent from busy back to idle. Raises `KeyError` if `agent_id` is not
+in the busy set.
+
+---
+
+### Scheduler
+
+```python
+class Scheduler:
+    def __init__(self, pool: AgentPool, processor: EventProcessor) -> None: ...
+```
+
+Matches pending tasks from the kernel state to idle agents.
+
+---
+
+### Scheduler.assign_next
+
+```python
+async def assign_next(self) -> tuple[str, str] | None
+```
+
+Dequeue one pending task, acquire an idle agent, emit `TaskAssigned`, and return
+`(task_id, agent_id)`. Returns `None` if no pending tasks exist.
+
+---
+
+### Scheduler.release_agent
+
+```python
+def release_agent(self, agent_id: str) -> None
+```
+
+Return `agent_id` to the idle pool after task completion.
+
+---
+
+## Tools — `agenthicc.tools`
+
+### Tool
+
+```python
+@dataclass
+class Tool:
+    name: str
+    description: str
+    parameters_schema: dict[str, Any]
+    fn: Callable[..., Awaitable[Any]]
+    timeout_seconds: float = 30.0
+    max_retries: int = 0
+    fallback: Callable[..., Awaitable[Any]] | None = None
+```
+
+Typed tool descriptor consumed by `AgenthiccToolExecutor`.
+
+---
+
+### ToolResultEnvelope
+
+```python
+@dataclass
+class ToolResultEnvelope:
+    tool_use_id: str
+    name: str
+    result: Any
+    error: str | None
+    duration_ms: float
+    retries: int = 0
+```
+
+Returned by `AgenthiccToolExecutor.execute`. `error` is non-None on failure.
+
+---
+
+### LifecycleHook
+
+```python
+class LifecycleHook(ABC):
+    async def pre_execute(self, tool: Tool, inputs: dict) -> dict
+    async def post_execute(self, tool: Tool, inputs: dict, result: Any) -> Any
+    async def on_error(self, tool: Tool, inputs: dict, error: Exception) -> RecoveryAction
+```
+
+Abstract base for lifecycle hooks. Subclass and implement the stages you care about.
+`pre_execute` returns a (possibly modified) inputs dict. `on_error` returns a
+`RecoveryAction` controlling retry/fallback/abort/ignore behaviour.
+
+---
+
+### RecoveryAction
+
+```python
+class RecoveryAction(str, Enum):
+    retry = "retry"
+    fallback = "fallback"
+    abort = "abort"
+    ignore = "ignore"
+```
+
+Return value from `LifecycleHook.on_error`.
+
+---
+
+### Rejection
+
+```python
+class Rejection(Exception):
+    def __init__(self, reason: str) -> None: ...
+```
+
+Raised by hooks or validators to reject a tool call or intent. Carries the
+human-readable `reason` string.
+
+---
+
+### HookRegistry
+
+```python
+class HookRegistry:
+    def register(self, entity_type: str, stage: str, handler_dotpath: str) -> None
+    def get(self, entity_type: str, stage: str) -> list[str]
+```
+
+Maps `(entity_type, stage)` pairs to lists of handler dotpaths. `entity_type` is
+typically a tool name or `"*"` (wildcard).
+
+---
+
+### HookRunner
+
+```python
+class HookRunner:
+    def __init__(self, registry: HookRegistry) -> None: ...
+
+    async def run_pre(self, tool: Tool, inputs: dict) -> dict
+    async def run_post(self, tool: Tool, inputs: dict, result: Any) -> Any
+    async def run_error(self, tool: Tool, inputs: dict, error: Exception) -> RecoveryAction
+```
+
+Loads hook classes by dotpath and runs all registered hooks for a stage in parallel
+via `asyncio.gather`. Pre-stage hooks run sequentially (each modifies inputs for
+the next); post and error hooks run in parallel.
+
+---
+
+### LaurenToolHookAdapter
+
+```python
+class LaurenToolHookAdapter(LifecycleHook):
+    def __init__(self, lauren_hook: Any) -> None: ...
+```
+
+Wraps a lauren-ai `@tool()` hook object into the `LifecycleHook` interface,
+forwarding calls to the underlying lauren hook's `before_call` / `after_call`
+/ `on_error` methods.
+
+---
+
+### AgenthiccToolExecutor
+
+```python
+class AgenthiccToolExecutor:
+    def __init__(
+        self,
+        permission_checker: PermissionChecker,
+        hook_runner: HookRunner,
+    ) -> None: ...
+```
+
+Orchestrates permission check → pre-hooks → execute → post-hooks → retry/fallback
+on error. All stages are timed; duration is recorded in `ToolResultEnvelope`.
+
+---
+
+### AgenthiccToolExecutor.execute
+
+```python
+async def execute(
+    self,
+    tool: Tool,
+    inputs: dict[str, Any],
+    tool_use_id: str,
+    agent_id: str | None = None,
+) -> ToolResultEnvelope
+```
+
+Execute a single tool call with the full permission/hook/timeout pipeline.
+
+**Return**: `ToolResultEnvelope` — check `.error` for failure.
+
+**Common error**: `Rejection` from permission checker or hooks; `asyncio.TimeoutError`
+wrapped in the envelope rather than re-raised.
+
+---
+
+### AgenthiccToolExecutor.execute_parallel
+
+```python
+async def execute_parallel(
+    self,
+    calls: list[tuple[Tool, dict, str]],
+    agent_id: str | None = None,
+) -> list[ToolResultEnvelope]
+```
+
+Execute multiple `(tool, inputs, tool_use_id)` triples concurrently via
+`asyncio.gather`. Returns results in the same order as `calls`.
+
+---
+
+### WorkspaceView
+
+```python
+class WorkspaceView:
+    def __init__(self, root: str | Path) -> None: ...
+```
+
+Path-prefix sandbox. All operations are restricted to paths under `root`.
+
+---
+
+### WorkspaceView.resolve
+
+```python
+def resolve(self, path: str | Path) -> Path
+```
+
+Resolve `path` relative to the workspace root. Raises `PermissionError` if the
+resolved path escapes the root (symlink attacks included).
+
+---
+
+### WorkspaceView.read_text
+
+```python
+def read_text(self, path: str | Path, encoding: str = "utf-8") -> str
+```
+
+Read a file inside the workspace. Raises `PermissionError` for out-of-bounds paths,
+`FileNotFoundError` if the file does not exist.
+
+---
+
+### WorkspaceView.write_text
+
+```python
+def write_text(self, path: str | Path, text: str, encoding: str = "utf-8") -> None
+```
+
+Write text to a file inside the workspace. Creates parent directories as needed.
+Raises `PermissionError` for out-of-bounds paths.
+
+---
+
+### NetworkGuard
+
+```python
+class NetworkGuard:
+    def __init__(self, allow_list: list[str]) -> None: ...
+
+    def check(self, url: str) -> None
+```
+
+Domain allow-list enforcer. Parses the URL's `netloc` and raises `PermissionError`
+if the host is not in `allow_list`. An empty `allow_list` blocks all hosts.
+
+---
+
+## Memory — `agenthicc.memory`
+
+### SessionMemoryLayer
+
+```python
+class SessionMemoryLayer:
+    def __init__(self, maxsize: int = 256, ttl_seconds: int = 86400) -> None: ...
+```
+
+In-process LRU + TTL cache for fast session-scoped reads.
+
+---
+
+### SessionMemoryLayer.get
+
+```python
+def get(self, key: str) -> Any | None
+```
+
+Return the value for `key` or `None` if absent or expired.
+
+---
+
+### SessionMemoryLayer.set
+
+```python
+def set(self, key: str, value: Any) -> None
+```
+
+Store `value` under `key` with a TTL starting now.
+
+---
+
+### SessionMemoryLayer.delete
+
+```python
+def delete(self, key: str) -> None
+```
+
+Remove `key` from the cache. No-op if absent.
+
+---
+
+### SessionMemoryLayer.prune_expired
+
+```python
+def prune_expired(self) -> int
+```
+
+Remove all expired entries and return the count removed.
+
+---
+
+### ProjectMemoryLayer
+
+```python
+class ProjectMemoryLayer:
+    def __init__(self, db_path: str | Path) -> None: ...
+```
+
+SQLite-backed persistent store for project-scoped data and artifacts.
+
+---
+
+### ProjectMemoryLayer.get
+
+```python
+def get(self, key: str) -> Any | None
+```
+
+Return the deserialised value for `key` or `None` if absent.
+
+---
+
+### ProjectMemoryLayer.set
+
+```python
+def set(self, key: str, value: Any) -> None
+```
+
+Serialise and store `value` under `key`. Upserts on conflict.
+
+---
+
+### ProjectMemoryLayer.delete
+
+```python
+def delete(self, key: str) -> None
+```
+
+Remove `key`. No-op if absent.
+
+---
+
+### ProjectMemoryLayer.publish_artifact
+
+```python
+def publish_artifact(self, workflow_id: str, name: str, data: bytes) -> None
+```
+
+Store a binary artifact keyed by `(workflow_id, name)`. Upserts on conflict.
+
+---
+
+### ProjectMemoryLayer.get_artifact
+
+```python
+def get_artifact(self, workflow_id: str, name: str) -> bytes | None
+```
+
+Retrieve a binary artifact or `None` if not found.
+
+---
+
+### MemoryRouter
+
+```python
+class MemoryRouter:
+    def __init__(
+        self,
+        session: SessionMemoryLayer,
+        project: ProjectMemoryLayer,
+        global_: GlobalMemoryLayer | None = None,
+    ) -> None: ...
+```
+
+Three-tier router. Dispatches `read`/`write` by key prefix:
+`session:` → `SessionMemoryLayer`, `project:` → `ProjectMemoryLayer`,
+`global:` → `GlobalMemoryLayer` (falls back to project if absent).
+
+---
+
+### MemoryRouter.read
+
+```python
+def read(self, key: str) -> Any | None
+```
+
+Route to the appropriate tier by prefix and return the value or `None`.
+
+---
+
+### MemoryRouter.write
+
+```python
+def write(self, key: str, value: Any) -> None
+```
+
+Route to the appropriate tier by prefix and write the value.
+
+---
+
+### MemoryRouter.publish_artifact
+
+```python
+def publish_artifact(self, workflow_id: str, name: str, data: bytes) -> None
+```
+
+Publish `data` as a named artifact on the project tier.
+
+---
+
+### MemoryRouter.read_artifact
+
+```python
+def read_artifact(self, workflow_id: str, name: str) -> bytes | None
+```
+
+Read a named artifact from the project tier. Returns `None` if not found.
+
+---
+
+## TUI — `agenthicc.tui`
+
+### TranscriptModel
+
+```python
+class TranscriptModel:
+    def __init__(self) -> None: ...
+    turns: list[AgentTurnEntry]
+```
+
+Mutable, pure-Python transcript state. Thread-unsafe; drive mutations from a single
+asyncio task. All rendering is side-effect-free.
+
+---
+
+### TranscriptModel.append_turn
+
+```python
+def append_turn(
+    self,
+    agent_id: str,
+    agent_name: str | None = None,
+    timestamp: float | None = None,
+) -> AgentTurnEntry
+```
+
+Add a new `AgentTurnEntry` for `agent_id` and return it. `agent_name` defaults to
+`agent_id` if omitted.
+
+---
+
+### TranscriptModel.append_line
+
+```python
+def append_line(self, agent_id: str, text: str) -> None
+```
+
+Append a text line to the most recent turn for `agent_id`. Creates a new turn if
+none exists.
+
+---
+
+### TranscriptModel.add_tool_call
+
+```python
+def add_tool_call(
+    self,
+    agent_id: str,
+    tool_use_id: str,
+    name: str,
+    state: ToolCallState = ToolCallState.RUNNING,
+) -> ToolCallEntry
+```
+
+Register a new tool call on the current turn and return the `ToolCallEntry`. The
+entry is indexed by `tool_use_id` for fast `update_tool_call` lookups.
+
+---
+
+### TranscriptModel.update_tool_call
+
+```python
+def update_tool_call(
+    self,
+    tool_use_id: str,
+    state: ToolCallState | None = None,
+    duration_ms: float | None = None,
+    error: str | None = None,
+    spinner_frame: int | None = None,
+) -> ToolCallEntry | None
+```
+
+Update fields on an existing `ToolCallEntry` by `tool_use_id`. Returns the entry
+or `None` if `tool_use_id` is not registered.
+
+---
+
+### TranscriptModel.advance_spinner
+
+```python
+def advance_spinner(self) -> None
+```
+
+Increment the spinner frame on all `RUNNING` tool calls. Call from a 100ms timer
+task to animate the Braille spinner.
+
+---
+
+### TranscriptModel.render
+
+```python
+def render(self) -> list[str]
+```
+
+Render the full transcript to a plain-text line list. Between turns a 60-char
+`─` separator is inserted. Each turn renders: header, lines prefixed `  > `,
+tool call lines, and an optional footer with token/cost stats.
+
+---
+
+### TranscriptModel.total_cost_usd
+
+```python
+@property
+def total_cost_usd(self) -> float
+```
+
+Sum of `cost_usd` across all turns that have a non-None value.
+
+---
+
+### TranscriptModel.total_tokens
+
+```python
+@property
+def total_tokens(self) -> int
+```
+
+Sum of `tokens` across all turns that have a non-None value.
+
+---
+
+### TranscriptModel.has_running_tools
+
+```python
+def has_running_tools(self) -> bool
+```
+
+Return `True` if any registered `ToolCallEntry` is in state `RUNNING`.
+
+---
+
+### diff_lines
+
+```python
+def diff_lines(old: list[str], new: list[str]) -> list[tuple[str, str]]
+```
+
+Minimal line diff between two `render()` outputs using `SequenceMatcher`.
+Returns `[(op, line), ...]` where `op` is `"keep"`, `"add"`, or `"remove"`,
+in document order. Useful for incremental TUI redraws.
+
+---
+
+### TUIEventAdapter
+
+```python
+class TUIEventAdapter:
+    def __init__(self, model: TranscriptModel) -> None: ...
+```
+
+Bridges kernel `AppState` snapshots to `TranscriptModel` mutations. Subscribe to
+`EventProcessor` and feed state snapshots to `apply`.
+
+---
+
+### TUIEventAdapter.apply
+
+```python
+def apply(self, state: AppState) -> None
+```
+
+Compute the diff between the previous and current state and call the appropriate
+`TranscriptModel` mutation methods.
+
+---
+
+### TUIEventAdapter.subscribe_to
+
+```python
+def subscribe_to(self, processor: EventProcessor) -> None
+```
+
+Register an `asyncio.Queue` subscriber on `processor` and start a background task
+that reads from the queue and calls `apply`.
+
+---
+
+### TUIEventAdapter.sync
+
+```python
+async def sync(self) -> None
+```
+
+Await until the adapter has processed all queued state snapshots.
+
+---
+
+### TUIEventAdapter.consume
+
+```python
+async def consume(self) -> None
+```
+
+Long-running consumer coroutine: read from the subscriber queue indefinitely and
+call `apply` for each snapshot.
+
+---
+
+### render_frame_ansi
+
+```python
+def render_frame_ansi(
+    model: TranscriptModel,
+    cols: int,
+    rows: int,
+    input_text: str = "",
+    menu_lines: list[str] | None = None,
+) -> str
+```
+
+Compose a full ANSI frame string matching the prompt_toolkit layout. Row layout
+(1-indexed): rows 1..rows-2 = transcript (tail-clipped), row rows-1 = status line,
+row rows = input bar with `INPUT_PROMPT` prefix (always last row). Menu overlay
+is painted over the transcript anchored two rows above the bottom when provided.
+
+**Return**: ANSI escape sequence string starting with clear-screen + home cursor.
+Suitable for pyte e2e tests and headless screenshot generation.
+
+---
+
+### build_app
+
+```python
+def build_app(model: TranscriptModel, on_input: Callable[[str], None]) -> Any
+```
+
+Build the prompt_toolkit `Application`. Layout: `FloatContainer` wrapping an
+`HSplit([transcript_window, status_window, input_window])` with a menu overlay
+`Float(bottom=2, right=0)`. Key bindings: `Escape` dismisses the menu overlay;
+`Ctrl-C` exits. `on_input` is called with the submitted text when the input is
+not a slash command.
+
+**Return**: `prompt_toolkit.Application` instance. Raises `RuntimeError` if
+`prompt_toolkit` is not installed; use `run_headless()` instead.
+
+---
+
+## Config — `agenthicc.config`
+
+### load_config
+
+```python
+def load_config(
+    project_path: str | Path | None = None,
+    user_path: str | Path | None = None,
+) -> AgenthiccConfig
+```
+
+Load and deep-merge TOML configuration. Merge order (later overrides earlier):
+hardcoded defaults → `agenthicc.toml` (project) → `~/.agenthicc.toml` (user).
+Missing files are skipped. Invalid TOML raises `tomllib.TOMLDecodeError`.
+
+---
+
+### AgenthiccConfig
+
+```python
+@dataclass
+class AgenthiccConfig:
+    execution: ExecutionSettings
+    hooks: dict[str, list[str]]
+    tools: ToolSettings
+    memory: MemorySettings
+    security: SecuritySettings
+    api: ApiSettings
+
+    def to_system_settings(self) -> SystemSettings: ...
+    def to_security_policy(self) -> SecurityPolicy: ...
+```
+
+Top-level typed configuration. `to_system_settings()` reflects execution settings
+into the kernel. `to_security_policy()` builds a `SecurityPolicy` from security
+settings via `build_policy_from_config`.
+
+---
+
+### PermissionChecker
+
+```python
+class PermissionChecker:
+    def __init__(self, policy: SecurityPolicy) -> None: ...
+
+    def check(self, tool_name: str, agent_id: str | None = None) -> str
+```
+
+Evaluate `tool_name` against `policy.permission_rules` top-to-bottom using
+`fnmatch`. Returns the matching action string (`"allow"`, `"deny"`,
+`"require_confirmation"`). Falls back to `policy.default_action` if no rule
+matches. Raises `Rejection` when the action is `"deny"`.
+
+---
+
+## API — `agenthicc.api`
+
+### create_app
+
+```python
+def create_app(processor: EventProcessor, api_key: str | None = None) -> FastAPI
+```
+
+Build the headless FastAPI app. The lifespan context manager starts
+`processor.run()` on startup and calls `processor.stop()` on shutdown. When
+`api_key` is provided every HTTP endpoint requires `Authorization: Bearer <key>`
+(401 on mismatch); the WebSocket endpoint checks the same header and closes with
+code 1008 on mismatch.
+
+**Endpoints**:
+
+- `POST /v1/intents` — body: `{"text": str}`; response: `{"intent_id": str}`
+- `GET /v1/intents/{intent_id}` — response: intent fields + status; 404 if not found
+- `GET /v1/state/summary` — response: `{"intents": int, "workflows": int, "agents": int, "last_event": str | None}`
+- `WS /v1/ws` — streams `_summarize` dicts after each kernel event
+
+**Common error**: `HTTPException(401)` — missing or incorrect `Authorization`
+header. WebSocket closes with code 1008 on auth failure.
+
+---
+
+## Plugin System (PRD-13)
+
+### AgenthiccPlugin
+
+```python
+class AgenthiccPlugin(abc.ABC):
+    @property
+    @abc.abstractmethod
+    def name(self) -> str: ...
+    @property
+    def version(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @abc.abstractmethod
+    def on_load(self, registry: PluginRegistry, config: dict = {}) -> None: ...
+    def on_unload(self) -> None: ...
+    def on_session_start(self, session_id: str) -> None: ...
+    def on_session_end(self, session_id: str) -> None: ...
+```
+
+Base class for all agenthicc plugins. Declare as Python entry point under
+`agenthicc.plugins` group. `on_load` is called at startup with config from
+`[plugins.name]` TOML section.
+
+### PluginRegistry
+
+```python
+class PluginRegistry:
+    def __init__(self, event_processor=None, hook_runner=None, input_bar_session=None)
+    def discover(self, plugin_names=None) -> list[PluginManifest]
+    def load(self, name: str, config=None) -> PluginManifest
+    def reload(self, name: str, config=None) -> PluginManifest
+    def load_all(self, names: list[str], configs=None) -> None
+    def register_tool(self, tool: Tool) -> None
+    def register_hook(self, entity_type: str, stage: str, hook) -> None
+    def register_command(self, spec) -> None
+    def register_agent_type(self, name: str, cls: type) -> None
+    def register_event_handler(self, event_type: str, handler_fn) -> None
+    @property
+    def tools(self) -> list[Tool]: ...
+    @property
+    def agent_types(self) -> dict[str, type]: ...
+    @property
+    def manifests(self) -> list[PluginManifest]: ...
+```
+
+Common error: `PluginLoadError` — call `discover()` before `load()`.
+
+---
+
+## Per-Agent Permissions (PRD-19)
+
+### AgentCapabilityScope
+
+```python
+@dataclass(frozen=True)
+class AgentCapabilityScope:
+    allowed_tools: frozenset[str] | None = None
+    denied_tools: frozenset[str] = frozenset()
+    max_tool_call_budget: int = 100
+    max_spawn_depth: int = 3
+
+    def is_tool_allowed(self, tool_name: str) -> bool: ...
+    def restrict(self, other: AgentCapabilityScope) -> AgentCapabilityScope: ...
+    @classmethod
+    def from_dict(cls, data: dict) -> AgentCapabilityScope: ...
+    def to_dict(self) -> dict: ...
+```
+
+`restrict()` returns the intersection — always more restrictive, never more
+permissive. `allowed_tools=None` means all tools allowed.
+
+### ScopeManager
+
+```python
+class ScopeManager:
+    def register(self, agent_id: str, scope, parent_id=None) -> None
+    def get_scope(self, agent_id: str) -> AgentCapabilityScope | None
+    def get_depth(self, agent_id: str) -> int
+    def update_scope(self, agent_id: str, new_scope: AgentCapabilityScope) -> None
+    def can_spawn(self, parent_id: str) -> bool
+```
+
+---
+
+## Filesystem Tools (PRD-14) — `agenthicc.tools.fs`
+
+### FsToolKit
+
+```python
+class FsToolKit:
+    def tools(self, workspace_root: str = ".") -> list[Tool]: ...
+    # Returns 14 tools: read_file, write_file, append_file, delete_file,
+    # move_file, copy_file, list_directory, make_directory, file_exists,
+    # search_files, grep_files, get_file_info, read_lines, patch_file
+```
+
+All tools use `WorkspaceView` to enforce path-prefix sandbox. Traversal
+attempts return `{"ok": False, "error": "permission_denied: ..."}`.
+
+---
+
+## Git Tools (PRD-15) — `agenthicc.tools.git`
+
+### GitToolKit
+
+```python
+class GitToolKit:
+    def tools(self) -> list[Tool]: ...
+    # Returns 11 tools: git_status, git_diff, git_log, git_show,
+    # git_add, git_commit, git_checkout, git_branch, git_stash,
+    # git_blame, git_grep
+```
+
+All commands run `git -C {workspace_root} ...` via `asyncio.create_subprocess_exec`.
+Non-zero exit codes become `{"ok": False, "error": stderr}`.
+
+---
+
+## Exec/Command Tools (PRD-16) — `agenthicc.tools.exec`
+
+### ExecToolKit
+
+```python
+class ExecToolKit:
+    def tools(self) -> list[Tool]: ...
+    # Returns 5 tools: run_bash, run_command, run_python, run_python_expr, run_tests
+```
+
+`run_bash` uses `asyncio.create_subprocess_shell`. Timeouts kill the process
+group via `os.killpg`. Output capped at 64 KB with `[... truncated]` suffix.
+
+---
+
+## Outlook Tools (PRD-17) — `agenthicc.tools.outlook`
+
+### OutlookToolKit
+
+```python
+class OutlookToolKit:
+    def __init__(self, backend="auto", token=None, tenant_id=None)
+    def tools(self) -> list[Tool]: ...
+    # Returns 9 tools: outlook_list_emails, outlook_read_email, outlook_send_email,
+    # outlook_reply_email, outlook_search_emails, outlook_move_email,
+    # outlook_list_folders, outlook_calendar_events, outlook_create_event
+```
+
+Uses `GraphApiOutlookBackend` (Microsoft Graph REST API via httpx).
+Token from constructor arg or `MSGRAPH_TOKEN` env var.
+
+---
+
+## Skills System (PRD-18) — `agenthicc.skills`
+
+### SkillRegistry
+
+```python
+class SkillRegistry:
+    def load(self, name: str, config=None) -> bool
+    def load_all(self, names: list[str], configs=None) -> None
+    @property
+    def tools(self) -> list[Tool]: ...
+    @property
+    def system_prompt_suffix(self) -> str: ...
+```
+
+Built-in skills: `"web_search"` (requires `api_key`), `"docker"`, `"database"`
+(requires `connection_string`). Broken skills log and return `False` without
+raising.

@@ -1,0 +1,87 @@
+site_name: Agenthicc
+site_description: >-
+  A state-driven agent operating system for autonomous software engineering —
+  runs in your terminal, thinks in parallel, audits everything.
+site_url: https://docs.agenthicc.dev
+repo_url: https://github.com/agenthicc/agenthicc
+repo_name: agenthicc/agenthicc
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Guides:
+      - TUI Guide: guides/tui.md
+      - Configuration: guides/configuration.md
+      - Architecture: guides/architecture.md
+  - Reference:
+      - API: reference/api.md
+      - Communication Tools: reference/communication-tools.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/agenthicc/agenthicc
+
+copyright: Copyright &copy; 2025 Agenthicc Contributors — MIT License

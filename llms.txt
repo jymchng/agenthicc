@@ -1,0 +1,125 @@
+# agenthicc
+
+> A state-driven agent operating system — event-sourced kernel, parallel DAG
+> execution, tool-only inter-agent communication, prompt_toolkit TUI with input
+> bar always pinned at the bottom.
+
+## What is agenthicc?
+
+`agenthicc` is an agent OS for autonomous software engineering that runs in your
+terminal. It accepts natural-language intents, decomposes them into parallel
+workflow DAGs, assigns nodes to agents from a pool, and executes them concurrently
+while rendering live progress in a Claude-Code-style transcript TUI.
+
+Everything is event-sourced: every state change is an immutable `Event` applied by
+a pure reducer to an immutable `AppState`. The append-only event log enables full
+crash recovery (`restore_from_log`), deterministic replay, and complete auditability.
+Agents communicate exclusively through tool calls — never by calling each other's
+methods or touching state directly — which makes every interaction observable and
+permission-checked.
+
+## Quick start
+
+```bash
+pip install agenthicc[tui,api]
+
+cat > agenthicc.toml << 'TOML'
+[execution]
+max_parallel_tasks = 10
+agent_pool_size = 20
+TOML
+
+agenthicc                        # launch TUI
+# or
+agenthicc --headless             # JSON-lines to stdout
+```
+
+## TUI layout
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  ● agent:planner  12:34:01                               │  ← transcript
+│    Planning Argon2 refactor...                           │    viewport
+│                                                          │    (scrollable)
+│  ● agent:refactor  12:34:03                              │
+│    [tool] read_file auth/hashing.py          ✓  12ms    │
+│    [tool] write_file auth/hashing.py         ✓   8ms    │
+│                                                          │
+│  ● agent:tester  12:34:05                               │
+│    [tool] run_tests tests/test_auth.py       ⣾ running… │
+├──────────────────────────────────────────────────────────┤
+│  session-abc | 3 agents | 12 tool calls | $0.008        │  ← status
+├──────────────────────────────────────────────────────────┤
+│  > _                                                     │  ← input bar (fixed)
+└──────────────────────────────────────────────────────────┘
+```
+
+The input bar is **always** on the last row — it never scrolls off-screen.
+
+## Core concepts
+
+- **AppState** — immutable frozen dataclass, copy-on-write. All mutations via events.
+- **EventProcessor** — MPSC asyncio queue; applies `root_reducer` sequentially; logs events to disk.
+- **DAGExecutor** — launches ready workflow nodes concurrently via `asyncio.Semaphore`.
+- **CommunicationTools** — 9 async methods; agents call these instead of touching state.
+- **TranscriptModel** — pure Python TUI model; renders to a list of strings; no terminal deps.
+
+## Communication tools
+
+| Tool | What it does | Return key |
+|------|-------------|------------|
+| `agent_spawn` | Spawn new agent | `agent_id` |
+| `agent_send_message` | Send message to another agent | `message_id` |
+| `task_create` | Create workflow node + task | `task_id`, `node_id` |
+| `task_assign` | Assign task to agent | `assigned` |
+| `workflow_modify` | Add/remove DAG node (raises on cycle) | `applied` |
+| `application_log` | Emit structured log to TUI | `accepted`, `log_id` |
+| `application_ui_update` | Push UI message | `queued`, `update_id` |
+| `tool_define` | Register new tool from source | `tool_id`, `registered` |
+| `hook_register` | Register lifecycle hook | `hook_id`, `registered` |
+
+## Key types by module
+
+| Symbol | Module | Description |
+|--------|--------|-------------|
+| `AppState` | `kernel.state` | Immutable kernel state dataclass |
+| `Event` | `kernel.events` | Immutable event with type + payload |
+| `EventProcessor` | `kernel.processor` | MPSC reducer loop |
+| `root_reducer` | `kernel.reducer` | Pure reducer dispatcher |
+| `DAGExecutor` | `workflow.executor` | Concurrent node runner |
+| `CommunicationTools` | `runtime.comm_tools` | All 9 agent comm tools |
+| `AgentPool` | `runtime.pool` | Idle/busy agent queue |
+| `MemoryRouter` | `memory.router` | 3-tier memory interface |
+| `TranscriptModel` | `tui.transcript` | Pure TUI model |
+| `render_frame_ansi` | `tui.app` | Full ANSI frame with pinned input bar |
+| `create_app` | `api.server` | FastAPI headless server |
+| `load_config` | `config` | TOML config loader |
+| `PermissionChecker` | `security` | fnmatch rule evaluator |
+
+## Config (agenthicc.toml)
+
+```toml
+[execution]
+max_parallel_tasks = 20
+max_concurrent_intents = 10
+agent_pool_size = 30
+
+[memory]
+project_memory_path = ".agenthicc/memory"
+
+[security]
+default_action = "deny"
+
+[api]
+host = "127.0.0.1"
+port = 8000
+```
+
+## Common pitfalls
+
+- `pool.add(record)` is **synchronous** — do not `await` it
+- `workflow_modify(action="add_node")` **raises** `ValueError` on cycle — does not return `{"ok": False}`
+- `application_log` returns `"accepted"` key, not `"logged"`
+- `EventProcessor.drain()` blocks unless the processor `run()` task is already started
+- Use `_build_runner_for_agent(agent, mock, signals=bus)` from `lauren_ai.testing` to resolve tools
+- pyte buffer: row index is 0-based; input bar is at `screen.buffer[ROWS - 1]`
