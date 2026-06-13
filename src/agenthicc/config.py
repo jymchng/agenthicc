@@ -41,6 +41,7 @@ __all__ = [
     "USER_CONFIG_CANDIDATES",
     "_coerce_env",
     "_find_config_file",
+    "_parse_mcp_servers",
 ]
 
 PROJECT_FILE = "agenthicc.toml"
@@ -213,6 +214,15 @@ class AgenthiccConfig:
         return build_policy_from_config(self)
 
 
+def _parse_mcp_servers(raw_list: list[dict]) -> list[Any]:
+    """Convert raw TOML dicts to McpServerConfig objects (graceful if mcp.py unavailable)."""
+    try:
+        from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
+        return [McpServerConfig.from_dict(d) for d in raw_list]
+    except ImportError:
+        return list(raw_list)  # fall back to raw dicts
+
+
 # ── merging ──────────────────────────────────────────────────────────────
 
 
@@ -376,8 +386,9 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
     hooks = _flatten_hooks(data.get("hooks", {}))
 
     to = data.get("tools", {})
+    tools_raw = to
     tools = ToolSettings(
-        mcp_servers=list(to.get("mcp_servers", [])),
+        mcp_servers=_parse_mcp_servers(tools_raw.get("mcp_servers", [])),
         plugins=list(to.get("plugins", [])),
         allowed=list(to.get("allowed", to.get("allowed_tools", []))),
         denied=list(to.get("denied", to.get("denied_tools", []))),

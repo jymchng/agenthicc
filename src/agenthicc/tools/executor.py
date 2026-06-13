@@ -114,7 +114,15 @@ class AgenthiccToolExecutor:
                 elif action is RecoveryAction.SKIP:
                     env = envelope(True, value=None)
                 else:  # ESCALATE or no recovery suggested
-                    env = envelope(False, error=f"{type(exc).__name__}: {exc}")
+                    try:
+                        from agenthicc.tools.mcp import McpToolCallError  # noqa: PLC0415
+                        if isinstance(exc, McpToolCallError):
+                            error_str = str(exc)  # already has human-readable message
+                        else:
+                            error_str = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+                    except ImportError:
+                        error_str = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+                    env = envelope(False, error=error_str)
                 await self._emit_complete(env)
                 return env
             else:

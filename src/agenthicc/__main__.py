@@ -428,9 +428,13 @@ async def _run_agent_turn(
 
     # Build the agent class with tools so it can actually DO things
     from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
+    _mcp_tools = []
+    _mcp_reg = getattr(renderer, "_mcp_registry", None)
+    if _mcp_reg is not None:
+        _mcp_tools = _mcp_reg.all_tools()
     _registry = build_registry(
         agent_name=getattr(renderer, "_active_agent", None) or "default",
-        project_plugin_tools=getattr(renderer, "_project_plugin_tools", None),
+        project_plugin_tools=(getattr(renderer, "_project_plugin_tools", None) or []) + _mcp_tools,
     )
     _tool_description = _registry.describe()
 
@@ -698,6 +702,23 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
         _C().print(f"[dim]Loaded {len(_project_plugins.all_tools)} plugin "
                    f"tool(s) from .agenthicc/tools/[/dim]")
 
+    # ── MCP server initialisation ─────────────────────────────────────────
+    _mcp_registry = None
+    if cfg.tools.mcp_servers:
+        try:
+            from agenthicc.tools.mcp import McpToolRegistry  # noqa: PLC0415
+            _mcp_registry = McpToolRegistry(event_processor=processor)
+            for srv_cfg in cfg.tools.mcp_servers:
+                _mcp_registry.register_server(srv_cfg)
+            discovered = await _mcp_registry.discover_all()
+            if discovered:
+                from rich.console import Console as _Con  # noqa: PLC0415
+                _Con().print(f"[dim]MCP: {len(discovered)} tool(s) from {len(cfg.tools.mcp_servers)} server(s)[/dim]")
+            renderer._mcp_registry = _mcp_registry
+        except Exception as exc:  # noqa: BLE001
+            import logging as _log  # noqa: PLC0415
+            _log.getLogger(__name__).error("MCP init failed: %s", exc)
+
     # ── conversation store + memory ───────────────────────────────────────
     from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
     _session_memory = ShortTermMemory(max_tokens=32_000)
@@ -782,6 +803,8 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
             ad_task.cancel()
         await asyncio.gather(proc_task, *(([ad_task] if ad_task else [])), return_exceptions=True)
         conv_store.close()
+        if _mcp_registry is not None:
+            await _mcp_registry.shutdown()
 
 
 def _run_tui(args: argparse.Namespace) -> None:

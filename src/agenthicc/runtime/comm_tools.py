@@ -22,6 +22,18 @@ from .pool import AgentPool, AgentRecord
 __all__ = ["CommunicationTools"]
 
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+_VALID_TRANSPORTS = frozenset({"stdio", "ws", "websocket", "streamable", "http", "streamable_http"})
+
+
+def _auto_name(url: str) -> str:
+    """Generate a slug from a URL for use as MCP server name."""
+    import re, urllib.parse  # noqa: PLC0415
+    try:
+        parsed = urllib.parse.urlparse(url)
+        base = parsed.netloc or (url.split()[-1] if url.split() else "server")
+        return re.sub(r"[^a-z0-9-]", "-", base.lower()).strip("-")[:32] or "mcp-server"
+    except Exception:  # noqa: BLE001
+        return "mcp-server"
 
 
 def _has_cycle(graph: dict[str, set[str]]) -> bool:
@@ -83,10 +95,12 @@ class CommunicationTools:
         processor: EventProcessor,
         pool: AgentPool,
         message_bus: Any | None = None,
+        mcp_registry: Any | None = None,
     ) -> None:
         self._processor = processor
         self._pool = pool
         self._bus = message_bus
+        self._mcp_registry = mcp_registry
 
     # ── helpers ──────────────────────────────────────────────────────────
 
@@ -350,6 +364,36 @@ class CommunicationTools:
             },
         )
         return {"tool_id": tool_id, "name": name, "registered": True}
+
+    async def mcp_connect(
+        self,
+        url: str,
+        transport: str = "stdio",
+        name: str | None = None,
+        token: str | None = None,
+    ) -> dict[str, Any]:
+        """Connect to an MCP server at runtime and register its tools.
+
+        Args:
+            url: Command (stdio) or server URL (ws/streamable).
+            transport: One of stdio, ws, streamable.
+            name: Optional server slug; auto-generated from URL if omitted.
+            token: Bearer token for authenticated servers.
+        """
+        transport_key = transport.lower()
+        if transport_key not in _VALID_TRANSPORTS:
+            return {"ok": False, "error": f"Unknown transport {transport!r}. Use: {sorted(_VALID_TRANSPORTS)}"}
+        if self._mcp_registry is None:
+            return {"ok": False, "error": "McpToolRegistry not available in this session"}
+        server_name = name or _auto_name(url)
+        try:
+            from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
+            cfg = McpServerConfig(name=server_name, url=url, transport=transport_key, token=token or "", auto_connect=True)
+            self._mcp_registry.register_server(cfg)
+            tools = await self._mcp_registry.connect_server(server_name)
+            return {"ok": True, "server_name": server_name, "tool_count": len(tools), "tools": [t.name for t in tools]}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
 
     async def hook_register(
         self,

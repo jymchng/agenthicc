@@ -128,7 +128,7 @@ class TestLoadConfig:
 
             [[tools.mcp_servers]]
             name = "filesystem"
-            command = ["npx", "server-filesystem"]
+            url = "npx server-filesystem"
         """)
         config = load_config(
             project_path=project, user_path=tmp_path / "missing.toml"
@@ -138,7 +138,10 @@ class TestLoadConfig:
         assert config.tools.plugins == ["myproj.tools:Plugin"]
         assert config.tools.allowed == ["read_*"]
         assert config.tools.denied == ["shell_exec"]
-        assert config.tools.mcp_servers[0]["name"] == "filesystem"
+        mcp_entry = config.tools.mcp_servers[0]
+        # mcp_servers entries are McpServerConfig objects; fall back to dict access for compat
+        name = mcp_entry.name if hasattr(mcp_entry, "name") else mcp_entry["name"]
+        assert name == "filesystem"
 
 
 class TestConverters:
