@@ -468,6 +468,16 @@ def read_line_with_mention(
                     prev_dropdown_lines = _redraw(
                         prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None
                     )
+                    # If no dropdown item was selected (user typed command + args
+                    # without space to auto-select), submit the completed line now
+                    # rather than requiring a second Enter.
+                    if item is None and buf:
+                        result = "".join(buf)
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        if result:
+                            history.append(result)
+                        return result
 
                 elif key == Key.BACKSPACE:
                     if fragment:
@@ -506,6 +516,31 @@ def read_line_with_mention(
                         char_to_add = ch
                     else:
                         char_to_add = None
+
+                    # Space after a command name: auto-select if there is an
+                    # exact match or only one option left so the user can type
+                    # arguments without needing a second Enter.
+                    # e.g. "/gen " auto-selects /gen and exits trigger mode.
+                    if char_to_add == " " and fragment and matches:
+                        exact = next(
+                            (m for m in matches if m.value == active_handler.char + fragment),
+                            matches[0] if len(matches) == 1 else None,
+                        )
+                        if exact is not None:
+                            buf = active_handler.on_select(exact, fragment, buf)
+                            buf.append(" ")
+                            active_handler = None
+                            fragment = ""
+                            matches = []
+                            current_hint = None
+                            prev_dropdown_lines = _redraw(
+                                prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None
+                            )
+                            # Reset ctrl_c_count and continue with normal editing.
+                            if key != Key.CTRL_C:
+                                ctrl_c_count = 0
+                            continue
+
                     if char_to_add is not None:
                         fragment += char_to_add
                         matches = active_handler.get_matches(fragment, _ctx)
