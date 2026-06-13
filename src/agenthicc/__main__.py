@@ -562,6 +562,9 @@ async def _run_agent_turn(
                 f"  [cyan]↑ {renderer._status.input_tokens:,}[/cyan]"
                 f"  [green]↓ {renderer._status.output_tokens:,}[/green]"
             )
+            # Current streaming text (partial turn, cleared at turn boundary).
+            _live_text = _streaming_text[0] if _streaming_text else ""
+
             # Build one entry (list of lines) per tool call so that diff lines
             # are grouped with their parent call, not counted as extra calls.
             entries: list[list[str]] = []
@@ -631,12 +634,29 @@ async def _run_agent_turn(
                 elif n_entries > 0:
                     # Always show the hint even when all calls fit on screen.
                     call_lines.append("   [dim](ctrl+O to expand)[/dim]")
+            # Prepend partial streaming text above tool calls when the model is
+            # generating prose (cleared as soon as the turn boundary arrives).
+            if _live_text:
+                cols = _sh.get_terminal_size((80, 24)).columns
+                _display = _live_text.replace("\n", " ")
+                if len(_display) > cols - 4:
+                    _display = _display[:cols - 7] + "…"
+                call_lines = [f"   [dim]{_display}[/dim]"] + call_lines
             live.update(_mk("\n".join([header] + call_lines)))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)
 
+    # Live-streaming text shared with _spin() so partial text appears in the
+    # spinner as the model generates it.  Cleared at each turn boundary.
+    _streaming_text: list[str] = [""]   # [0] = current partial turn text
+
     spin_task = asyncio.create_task(_spin())
     ctrlO_task = asyncio.create_task(_watch_ctrlO())
+
+    # Per-turn text accumulation (run_stream yields chunks across all turns)
+    _current_turn: list[str] = []
+    _all_turn_texts: list[str] = []     # one entry per LLM turn that produced text
+    content = ""
 
     try:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
@@ -644,31 +664,45 @@ async def _run_agent_turn(
             max_turns=max_agent_turns,
             parallel_tool_calls=True,
         )
-        response = await _active_runner.run(
+        _stream = await _active_runner.run_stream(
             _agent_instance,
             _agent_text,
             memory=session_memory,
             config_override=_cfg,
         )
-        content = response.content or ""
+        async for _chunk in _stream:
+            # Accumulate text delta into the current turn buffer.
+            if _chunk.delta:
+                _current_turn.append(_chunk.delta)
+                _streaming_text[0] = "".join(_current_turn)
+
+            # A chunk with stop_reason marks the end of one LLM turn.
+            if _chunk.stop_reason is not None:
+                _turn_text = "".join(_current_turn).strip()
+                if _turn_text:
+                    _all_turn_texts.append(_turn_text)
+                _current_turn = []
+                _streaming_text[0] = ""
+
+        # Build final content from the last turn (replaces response.content).
+        content = _all_turn_texts[-1] if _all_turn_texts else ""
         # Strip any residual XML that slipped through
         content = _re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=_re.DOTALL)
-        content = _re.sub(r"<[^>]+>", "", content)
-        content = content.strip()
-        # If the model completed its work via tool calls and has nothing to add,
-        # skip the prose block entirely rather than printing "(no response)".
-        if not content and response.tool_calls_made:
-            content = ""   # will be skipped below
-        elif not content:
+        content = _re.sub(r"<[^>]+>", "", content).strip()
+        # If tools ran but the final turn produced no prose, that's fine — skip it.
+        if not content and not _live_calls:
             content = "(no response)"
-        # Token counts + cost already accumulated via ModelCallComplete signal handler above
+
     except (asyncio.CancelledError, KeyboardInterrupt):
         # Ctrl+C pressed while the agent was running.  Clean exit — nothing to
         # append to the transcript; the input loop will resume normally.
         content = ""
+        _all_turn_texts = []
     except Exception as exc:
         content = f"⚠ Error: {exc}"
+        _all_turn_texts = []
     finally:
+        _streaming_text[0] = ""
         spin_task.cancel()
         ctrlO_task.cancel()
         # Protect the cleanup await: if this task is being cancelled a second
@@ -681,9 +715,14 @@ async def _run_agent_turn(
         renderer._status.active = False
         renderer._status.completed_agents += 1
 
-    # Only append prose if there's something to say
+    from agenthicc.tui.app import InlineRenderer  # noqa: PLC0415
+
+    # Render intermediate turn texts (all but the last, which is `content`).
+    for _itext in _all_turn_texts[:-1]:
+        transcript.append_line(agent_id, InlineRenderer._MD_SENTINEL + _itext)
+
+    # Final turn text (same position in transcript as before).
     if content:
-        from agenthicc.tui.app import InlineRenderer  # noqa: PLC0415
         transcript.append_line(agent_id, InlineRenderer._MD_SENTINEL + content)
 
     await processor.emit(
