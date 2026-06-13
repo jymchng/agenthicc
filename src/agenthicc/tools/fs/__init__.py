@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import fnmatch
-import os
 import re
 import shutil
 import stat

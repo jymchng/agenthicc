@@ -443,7 +443,13 @@ class TestLoadConfigCliOverride:
 # ---------------------------------------------------------------------------
 
 class TestConfigPrecedenceOrder:
-    """Precedence (lowest → highest): global < project < env vars < user < CLI."""
+    """Precedence (lowest → highest): user-global < project < env vars < CLI.
+
+    ~/.agenthicc/agenthicc.toml  = user-global (shared defaults, identity)
+    .agenthicc/agenthicc.toml    = per-project (always wins over user-global)
+    AGENTHICC_*                  = env vars (CI convenience, beats both files)
+    --set                        = CLI overrides (highest)
+    """
 
     def test_cli_highest_priority(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -464,10 +470,40 @@ class TestConfigPrecedenceOrder:
             pytest.skip("New load_config parameters not yet available")
         assert config.execution.max_parallel_tasks == 99  # CLI wins all
 
-    def test_user_beats_env(
+    def test_project_beats_user_global(self, tmp_path: Path) -> None:
+        """Per-project config overrides user-global config."""
+        user_cfg = tmp_path / "user.toml"
+        proj_cfg = tmp_path / "project.toml"
+        user_cfg.write_text("[execution]\nmax_parallel_tasks = 50\n")
+        proj_cfg.write_text("[execution]\nmax_parallel_tasks = 77\n")
+        try:
+            config = load_config(
+                project_path=str(proj_cfg),
+                user_path=str(user_cfg),
+                env_overrides=False,
+            )
+        except TypeError:
+            pytest.skip("New load_config parameters not yet available")
+        assert config.execution.max_parallel_tasks == 77  # project beats user-global
+
+    def test_user_global_supplies_defaults(self, tmp_path: Path) -> None:
+        """User-global config value is used when project does not override it."""
+        user_cfg = tmp_path / "user.toml"
+        user_cfg.write_text("[execution]\nmax_parallel_tasks = 42\n")
+        try:
+            config = load_config(
+                project_path=str(tmp_path / "missing.toml"),
+                user_path=str(user_cfg),
+                env_overrides=False,
+            )
+        except TypeError:
+            pytest.skip("New load_config parameters not yet available")
+        assert config.execution.max_parallel_tasks == 42  # user-global used as default
+
+    def test_env_beats_user_global(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """User config wins over environment variables."""
+        """Environment variables override user-global config."""
         user_cfg = tmp_path / "user.toml"
         user_cfg.write_text("[execution]\nmax_parallel_tasks = 77\n")
         monkeypatch.setenv("AGENTHICC_EXECUTION_MAX_PARALLEL_TASKS", "20")
@@ -479,7 +515,7 @@ class TestConfigPrecedenceOrder:
             )
         except TypeError:
             pytest.skip("New load_config parameters not yet available")
-        assert config.execution.max_parallel_tasks == 77  # user beats env
+        assert config.execution.max_parallel_tasks == 20  # env beats user-global
 
     def test_env_beats_project(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -3,10 +3,16 @@
 Merge order (later sources override earlier ones):
 
 1. Hardcoded defaults (lowest priority)
-2. ~/.agenthicc/agenthicc.toml (user global)
-3. .agenthicc/agenthicc.toml (project local) or ./agenthicc.toml / ./.agenthicc.toml
-4. Environment variables AGENTHICC_* prefix
+2. ~/.agenthicc/agenthicc.toml  — user-global defaults (identity, credentials,
+                                   preferred model, personal tool/mode plugins)
+3. .agenthicc/agenthicc.toml    — per-project overrides (project model, paths,
+                                   project-specific tools/modes/commands)
+4. Environment variables AGENTHICC_* prefix  (CI / dev convenience)
 5. CLI --set section.key=value overrides (highest priority)
+
+Project config always wins over user-global config.  User-global config supplies
+shared defaults that any project can override.  This mirrors the Git
+~/.gitconfig / .git/config layering model.
 
 Scalars are overwritten, lists are replaced, tables are merged recursively.
 """
@@ -491,23 +497,33 @@ def load_config(
     Precedence (lowest → highest):
 
     1. Hardcoded defaults (lowest)
-    2. Project config: .agenthicc/agenthicc.toml (or agenthicc.toml, etc.)
-    3. Environment variables AGENTHICC_*
-    4. User config: ~/.agenthicc/agenthicc.toml — wins over env vars
-    5. CLI --set overrides (highest)
+    2. User-global: ``~/.agenthicc/agenthicc.toml``   — identity, credentials,
+                    preferred model, personal plugins/modes
+    3. Per-project: ``.agenthicc/agenthicc.toml``      — project-specific overrides
+    4. Environment variables ``AGENTHICC_*``            — CI / dev convenience
+    5. CLI ``--set section.key=value`` overrides (highest)
+
+    Project config always wins over user-global config — this mirrors the Git
+    ``~/.gitconfig`` / ``.git/config`` layering model.
 
     When ``project_path`` or ``user_path`` are given explicitly, the file must
     exist and be valid TOML (raises :class:`tomllib.TOMLDecodeError` on invalid
-    syntax). When paths are auto-discovered, bad files produce a warning and
+    syntax).  When paths are auto-discovered, bad files produce a warning and
     are skipped.
     """
-    # 1. Start with defaults
     merged: dict[str, Any] = {}
 
-    # Precedence (lowest → highest): global defaults → project → env vars → user
-    # User config wins over everything, including environment variables.
+    # 2. User-global config (~/.agenthicc/agenthicc.toml) — shared defaults
+    if user_path is not None:
+        user_file: Path | None = Path(user_path)
+        if user_file.is_file():
+            merged = deep_merge(merged, _read_toml(user_file))
+    else:
+        user_file = _find_config_file(USER_CONFIG_CANDIDATES)
+        if user_file is not None:
+            merged = deep_merge(merged, _load_toml_safe(user_file))
 
-    # 2. Project config (.agenthicc/agenthicc.toml or agenthicc.toml)
+    # 3. Per-project config (.agenthicc/agenthicc.toml) — overrides user-global
     if project_path is not None:
         project_file: Path | None = Path(project_path)
         if project_file.is_file():
@@ -517,19 +533,9 @@ def load_config(
         if project_file is not None:
             merged = deep_merge(merged, _load_toml_safe(project_file))
 
-    # 3. Environment variable overrides (AGENTHICC_*) — override project config
+    # 4. Environment variable overrides (AGENTHICC_*) — override both config files
     if env_overrides:
         merged = _apply_env_overrides(merged)
-
-    # 4. User config (~/.agenthicc/agenthicc.toml) — highest priority; wins over env vars
-    if user_path is not None:
-        user_file: Path | None = Path(user_path)
-        if user_file.is_file():
-            merged = deep_merge(merged, _read_toml(user_file))
-    else:
-        user_file = _find_config_file(USER_CONFIG_CANDIDATES)
-        if user_file is not None:
-            merged = deep_merge(merged, _load_toml_safe(user_file))
 
     # 5. CLI --set overrides (highest of all)
     if cli_overrides:
