@@ -33,7 +33,8 @@ class TestDeepMerge:
 
 
 class TestLoadConfig:
-    def test_user_overrides_project(self, tmp_path):
+    def test_project_overrides_user_global(self, tmp_path):
+        """Per-project config wins over user-global config (Git-style layering)."""
         project = tmp_path / "agenthicc.toml"
         user = tmp_path / ".agenthicc.toml"
         _write(project, """
@@ -46,7 +47,29 @@ class TestLoadConfig:
             max_concurrent_intents = 16
         """)
         config = load_config(project_path=project, user_path=user)
-        assert config.execution.max_concurrent_intents == 16
+        # project value wins
+        assert config.execution.max_concurrent_intents == 4
+        # project value also present
+        assert config.execution.max_parallel_tasks == 2
+
+    def test_user_global_supplies_defaults(self, tmp_path):
+        """User-global config supplies defaults when project does not override them."""
+        project = tmp_path / "agenthicc.toml"
+        user = tmp_path / ".agenthicc.toml"
+        _write(project, """
+            [execution]
+            max_concurrent_intents = 4
+        """)
+        _write(user, """
+            [execution]
+            max_concurrent_intents = 16
+            max_parallel_tasks = 99
+        """)
+        config = load_config(project_path=project, user_path=user)
+        # project overrides user-global for this key
+        assert config.execution.max_concurrent_intents == 4
+        # user-global value used for key not set in project
+        assert config.execution.max_parallel_tasks == 99
 
     def test_partial_override_preserves_siblings(self, tmp_path):
         project = tmp_path / "agenthicc.toml"
@@ -65,12 +88,12 @@ class TestLoadConfig:
             max_concurrent_intents = 16
         """)
         config = load_config(project_path=project, user_path=user)
-        # overridden
-        assert config.execution.max_concurrent_intents == 16
-        # siblings from project untouched
+        # project value wins
+        assert config.execution.max_concurrent_intents == 4
+        # siblings from project present
         assert config.execution.max_parallel_tasks == 2
         assert config.execution.agent_pool_size == 32
-        # other table from project untouched
+        # other table from project present
         assert config.api.port == 9000
 
     def test_defaults_when_no_files(self, tmp_path):
@@ -100,7 +123,8 @@ class TestLoadConfig:
         with pytest.raises(tomllib.TOMLDecodeError):
             load_config(project_path=bad, user_path=tmp_path / "missing.toml")
 
-    def test_lists_replaced_by_user_file(self, tmp_path):
+    def test_project_list_overrides_user_global_list(self, tmp_path):
+        """Project list replaces user-global list entirely (lists are not merged)."""
         project = tmp_path / "agenthicc.toml"
         user = tmp_path / ".agenthicc.toml"
         _write(project, """
@@ -112,7 +136,8 @@ class TestLoadConfig:
             allowed_paths = ["/home/user/project"]
         """)
         config = load_config(project_path=project, user_path=user)
-        assert config.security.allowed_paths == ["/home/user/project"]
+        # project list wins; user-global list replaced
+        assert config.security.allowed_paths == ["/workspace", "/data"]
 
     def test_hooks_and_tools_sections(self, tmp_path):
         project = tmp_path / "agenthicc.toml"

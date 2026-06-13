@@ -562,14 +562,17 @@ async def _run_agent_turn(
                 f"  [cyan]↑ {renderer._status.input_tokens:,}[/cyan]"
                 f"  [green]↓ {renderer._status.output_tokens:,}[/green]"
             )
-            call_lines: list[str] = []
+            # Build one entry (list of lines) per tool call so that diff lines
+            # are grouped with their parent call, not counted as extra calls.
+            entries: list[list[str]] = []
             for call in _live_calls:
                 name = call["name"]
                 args = call["args"]
+                entry: list[str] = []
                 if call["done"]:
                     icon = "[green]✓[/green]" if call["ok"] else "[red]✗[/red]"
                     ms = f"  [dim]{call['ms']:.0f}ms[/dim]" if call["ms"] else ""
-                    call_lines.append(
+                    entry.append(
                         f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  {icon}{ms}"
                     )
                     diff_text = call.get("diff", "")
@@ -578,44 +581,56 @@ async def _run_agent_turn(
                         diff_preview = diff_lines_all[:8]
                         for dl in diff_preview:
                             if dl.startswith("+++") or dl.startswith("---"):
-                                call_lines.append(f"      [dim]{dl}[/dim]")
+                                entry.append(f"      [dim]{dl}[/dim]")
                             elif dl.startswith("@@"):
-                                call_lines.append(f"      [dim cyan]{dl}[/dim cyan]")
+                                entry.append(f"      [dim cyan]{dl}[/dim cyan]")
                             elif dl.startswith("+"):
-                                call_lines.append(f"      [green]{dl}[/green]")
+                                entry.append(f"      [green]{dl}[/green]")
                             elif dl.startswith("-"):
-                                call_lines.append(f"      [red]{dl}[/red]")
+                                entry.append(f"      [red]{dl}[/red]")
                             else:
-                                call_lines.append(f"      [dim]{dl}[/dim]")
+                                entry.append(f"      [dim]{dl}[/dim]")
                         if len(diff_lines_all) > 8:
-                            call_lines.append(
+                            entry.append(
                                 f"      [dim]… {len(diff_lines_all) - 8} more diff lines[/dim]"
                             )
                 else:
-                    call_lines.append(
+                    entry.append(
                         f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  [dim]…[/dim]"
                     )
+                entries.append(entry)
+
+            n_entries = len(entries)
             if _expanded[0]:
-                # Compute how many lines fit below the header row.
+                # Flatten all entries; apply viewport scroll.
+                call_lines = [ln for e in entries for ln in e]
                 rows = _sh.get_terminal_size((80, 24)).lines
-                viewport = max(4, rows - 3)   # reserve header + indicator + slack
+                viewport = max(4, rows - 3)
                 total = len(call_lines)
-                # Clamp scroll so we never scroll past the last entry.
                 _scroll_offset[0] = min(_scroll_offset[0], max(0, total - viewport))
                 off = _scroll_offset[0]
-                visible = call_lines[off : off + viewport]
                 end = min(off + viewport, total)
                 indicator = (
                     f"   [dim]{off + 1}–{end} of {total}"
                     f"  ↑↓ to scroll  ctrl+O to collapse[/dim]"
                 )
-                call_lines = visible + [indicator]
-            elif len(call_lines) > _MAX_VISIBLE_CALLS:
-                hidden = len(call_lines) - _MAX_VISIBLE_CALLS
-                call_lines = call_lines[:_MAX_VISIBLE_CALLS] + [
-                    f"   [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}  "
-                    f"[ctrl+O to expand][/dim]"
-                ]
+                call_lines = call_lines[off:end] + [indicator]
+            else:
+                # Truncate at the call-entry level so diff lines don't inflate
+                # the "hidden" count — a call with a 10-line diff is still 1 call.
+                visible_entries = entries[:_MAX_VISIBLE_CALLS]
+                hidden = n_entries - len(visible_entries)
+                call_lines = [ln for e in visible_entries for ln in e]
+                if hidden > 0:
+                    # Use parentheses, not square brackets — Rich interprets [] as
+                    # markup tags and silently drops unrecognised ones like [ctrl+O].
+                    call_lines.append(
+                        f"   [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}"
+                        f"  (ctrl+O to expand)[/dim]"
+                    )
+                elif n_entries > 0:
+                    # Always show the hint even when all calls fit on screen.
+                    call_lines.append("   [dim](ctrl+O to expand)[/dim]")
             live.update(_mk("\n".join([header] + call_lines)))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)
