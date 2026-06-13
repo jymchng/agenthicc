@@ -32,6 +32,8 @@ It intentionally does not attempt VM-level sandboxing (too complex, breaks
 | G6 | `[plugins] timeout_seconds` sets a per-call timeout for plugin tools (default 30 s) |
 | G7 | `[plugins] disabled = ["weather_tools"]` prevents specific plugin files from loading |
 | G8 | A plugin that raises `SecurityViolation` returns a tool error and logs the event |
+| G9 | Missing dependencies are surfaced with a clear install hint; `auto_install = true` installs them silently |
+| G10 | An interactive install prompt (`[I]nstall  [S]kip  [Q]uit`) is shown for missing deps when not in auto mode |
 
 ## Non-Goals
 - Full process-level sandboxing (future: `seccomp`, `bwrap`, WebAssembly)
@@ -90,6 +92,131 @@ auto_trust = true    # skip trust prompts; load all discovered plugins
 
 Intended for CI pipelines or fully-controlled environments.  A warning is
 printed at session startup when `auto_trust = true`.
+
+---
+
+## 1b. Dependency Install Prompt
+
+When a plugin declares `DEPENDENCIES` (or the AST scan infers missing imports)
+and `auto_install = false`, the user sees an interactive prompt **before** the
+file is skipped — giving them the option to install right now without restarting:
+
+```
+⚠  Plugin .agenthicc/tools/weather_tools.py requires missing packages:
+     httpx>=0.27
+
+   [I]nstall now  [S]kip this plugin  [Q]uit  > _
+```
+
+- **Install now** — runs `pip install httpx>=0.27` in the current environment,
+  then retries loading the file.  If install succeeds, the plugin loads normally
+  for this session.  The installed package persists (no cleanup); the dependency
+  will be satisfied on future runs without prompting.
+- **Skip** — the plugin is not loaded; session continues without it.
+- **Quit** — exits agenthicc.
+
+When `auto_install = true`, the prompt is skipped and install runs silently with
+a log line:
+
+```
+[plugins] auto_install enabled — installing httpx>=0.27 for weather_tools.py
+```
+
+When `interactive = false` (headless / `--headless` mode), missing deps cause
+the plugin to be skipped with a warning; no prompt, no auto-install (even if
+`auto_install = true`).  This prevents CI pipelines from hanging on a prompt
+or mutating their environment unexpectedly.
+
+### Implementation
+
+```python
+# src/agenthicc/plugins/deps.py  (new file, companion to trust.py)
+
+from __future__ import annotations
+
+import logging
+import subprocess
+import sys
+from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+
+def prompt_install(
+    path: Path,
+    missing: list[str],
+    *,
+    auto_install: bool = False,
+    install_target: str = "venv",
+    interactive: bool = True,
+) -> bool:
+    """Handle missing dependencies for *path*.
+
+    Returns True if the caller should retry loading (deps installed),
+    False if the plugin should be skipped.
+    """
+    if not missing:
+        return True
+
+    if not interactive:
+        log.warning(
+            "Plugin %s skipped — missing: %s  (headless mode, skipping install)",
+            path, missing,
+        )
+        return False
+
+    if auto_install:
+        log.info("[plugins] auto_install — installing %s for %s", missing, path.name)
+        _run_install(missing, target=install_target)
+        return True
+
+    # Interactive prompt
+    deps_str = " ".join(missing)
+    print(
+        f"\n⚠  Plugin {path} requires missing packages:\n"
+        f"     {', '.join(missing)}\n"
+    )
+    while True:
+        choice = input("   [I]nstall now  [S]kip  [Q]uit  > ").strip().upper()
+        if choice == "I":
+            _run_install(missing, target=install_target)
+            return True   # caller retries _load_plugin_file
+        if choice == "S":
+            return False
+        if choice == "Q":
+            raise SystemExit(0)
+
+
+def _run_install(requirements: list[str], target: str = "venv") -> None:
+    flags = ["--user"] if target == "user" else []
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--quiet", *flags, *requirements]
+    )
+```
+
+### Updated `_scan_directory()` flow
+
+```python
+from agenthicc.plugins.deps import prompt_install
+
+def _scan_directory(root, cfg=None):
+    cfg = cfg or PluginSettings()
+    for py_file in sorted(root.rglob("*.py")):
+        if py_file.name.startswith("_") or py_file.stem in cfg.disabled:
+            continue
+        result = _load_plugin_file(py_file, auto_install=False)  # never auto-install here
+        if result.missing_deps:
+            retry = prompt_install(
+                py_file,
+                result.missing_deps,
+                auto_install=cfg.auto_install,
+                install_target=cfg.install_target,
+                interactive=True,
+            )
+            if retry:
+                result = _load_plugin_file(py_file, auto_install=False)  # retry after install
+        ...  # log errors, append result
+```
 
 ---
 
@@ -318,6 +445,8 @@ def _restricted_import(allowed: frozenset[str]):
 ```toml
 [plugins]
 auto_trust = false                          # require explicit trust prompts
+auto_install = false                        # auto-install missing deps via pip
+install_target = "venv"                     # "venv" (current env) or "user" (--user flag)
 allowed_modules = []                        # empty = no restriction
 timeout_seconds = 30.0                      # per-call timeout for plugin tools
 disabled = ["old_crm_tools", "broken_api"] # file stems to skip entirely
@@ -336,6 +465,8 @@ from dataclasses import dataclass, field
 @dataclass
 class PluginSettings:
     auto_trust: bool = False
+    auto_install: bool = False          # pip-install missing deps without prompting
+    install_target: str = "venv"        # "venv" or "user"
     allowed_modules: list[str] = field(default_factory=list)
     timeout_seconds: float = 30.0
     disabled: list[str] = field(default_factory=list)
@@ -449,6 +580,72 @@ def test_record_call_writes_jsonl(tmp_path):
     record = json.loads(lines[0])
     assert record["tool"] == "search_arxiv"
     assert record["ok"] is True
+
+
+# tests/unit/test_plugin_deps.py
+
+from unittest.mock import patch, MagicMock
+from pathlib import Path
+from agenthicc.plugins.deps import prompt_install
+
+pytestmark = pytest.mark.unit
+
+
+def test_prompt_install_headless_skips(tmp_path):
+    """Headless mode must never block or install."""
+    result = prompt_install(
+        tmp_path / "t.py",
+        ["httpx>=0.27"],
+        auto_install=True,   # even with auto_install=True ...
+        interactive=False,   # ... headless wins
+    )
+    assert result is False   # skip
+
+
+def test_prompt_install_auto_install_calls_pip(tmp_path):
+    with patch("agenthicc.plugins.deps._run_install") as mock_install:
+        result = prompt_install(
+            tmp_path / "t.py",
+            ["httpx>=0.27"],
+            auto_install=True,
+            interactive=True,
+        )
+    assert result is True
+    mock_install.assert_called_once_with(["httpx>=0.27"], target="venv")
+
+
+def test_prompt_install_interactive_install_choice(tmp_path):
+    with patch("builtins.input", return_value="I"), \
+         patch("agenthicc.plugins.deps._run_install") as mock_install:
+        result = prompt_install(
+            tmp_path / "t.py",
+            ["requests"],
+            auto_install=False,
+            interactive=True,
+        )
+    assert result is True
+    mock_install.assert_called_once()
+
+
+def test_prompt_install_interactive_skip_choice(tmp_path):
+    with patch("builtins.input", return_value="S"):
+        result = prompt_install(
+            tmp_path / "t.py",
+            ["requests"],
+            auto_install=False,
+            interactive=True,
+        )
+    assert result is False
+
+
+def test_prompt_install_quit_raises_system_exit(tmp_path):
+    with patch("builtins.input", return_value="Q"), pytest.raises(SystemExit):
+        prompt_install(
+            tmp_path / "t.py",
+            ["requests"],
+            auto_install=False,
+            interactive=True,
+        )
 ```
 
 ---

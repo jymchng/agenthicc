@@ -22,9 +22,12 @@ from agenthicc.kernel import SecurityPolicy, SystemSettings
 
 __all__ = [
     "AgenthiccConfig",
+    "AgentSettings",
+    "AgentsSettings",
     "ApiSettings",
     "ExecutionSettings",
     "MemorySettings",
+    "PluginSettings",
     "PROVIDER_API_KEY_ENVVAR",
     "PROVIDER_DEFAULT_MODELS",
     "PROVIDER_ENV_SHORTCUTS",
@@ -150,6 +153,41 @@ class ApiSettings:
 
 
 @dataclass
+class PluginSettings:
+    """[plugins] section — tool plugin security and dependency settings."""
+    auto_trust: bool = False
+    auto_install: bool = False
+    install_target: str = "venv"
+    allowed_modules: list[str] = field(default_factory=list)
+    timeout_seconds: float = 30.0
+    disabled: list[str] = field(default_factory=list)
+    trust_file: str = ".agenthicc/trusted_plugins.json"
+    audit_file: str = ".agenthicc/plugin_audit.jsonl"
+
+
+@dataclass
+class AgentSettings:
+    """Per-agent TOML metadata (supplementary to filesystem discovery)."""
+    description: str = ""
+    model: str = ""
+    max_turns: int = 200
+
+
+@dataclass
+class AgentsSettings:
+    """[agents] section — keyed by agent slug."""
+    agents: dict[str, AgentSettings] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "AgentsSettings":
+        fields = {f for f in AgentSettings.__dataclass_fields__}
+        return cls(agents={
+            name: AgentSettings(**{k: v for k, v in cfg.items() if k in fields})
+            for name, cfg in d.items()
+        })
+
+
+@dataclass
 class AgenthiccConfig:
     execution: ExecutionSettings = field(default_factory=ExecutionSettings)
     hooks: dict[str, list[str]] = field(default_factory=dict)
@@ -157,6 +195,8 @@ class AgenthiccConfig:
     memory: MemorySettings = field(default_factory=MemorySettings)
     security: SecuritySettings = field(default_factory=SecuritySettings)
     api: ApiSettings = field(default_factory=ApiSettings)
+    plugins: PluginSettings = field(default_factory=PluginSettings)
+    agents: AgentsSettings = field(default_factory=AgentsSettings)
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""

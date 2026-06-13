@@ -75,14 +75,22 @@ Personal (user-global) equivalents mirror these paths under `~/.agenthicc/`.
 
 Every plugin Python file **must** expose a module-level list named `TOOLS`
 containing zero or more callables decorated with `@tool()` from
-`lauren_ai._tools`:
+`lauren_ai._tools`.
+
+It **should** also declare a `DEPENDENCIES` list of PEP-508 requirement
+strings for any third-party packages it needs.  agenthicc reads `DEPENDENCIES`
+**before** importing the file, checks which packages are missing, and either
+installs them automatically or prints a clear fix hint — keeping
+`ImportError` out of the load pipeline entirely.
 
 ```python
 # .agenthicc/tools/weather_tools.py
 
 from __future__ import annotations
-import httpx
 from lauren_ai._tools import tool
+
+# Declare third-party deps so agenthicc can check/install them before loading.
+DEPENDENCIES = ["httpx>=0.27"]
 
 
 @tool()
@@ -93,6 +101,7 @@ async def get_current_weather(city: str, units: str = "metric") -> dict:
         city: City name (e.g. "London").
         units: Unit system — "metric" or "imperial".
     """
+    import httpx  # deferred import: only runs after deps are confirmed present
     async with httpx.AsyncClient() as client:
         resp = await client.get(
             "https://api.open-meteo.com/v1/forecast",
@@ -112,7 +121,16 @@ async def list_supported_cities() -> list[str]:
 TOOLS = [get_current_weather, list_supported_cities]
 ```
 
-Files that do not export `TOOLS` are silently skipped.
+**Conventions:**
+- `DEPENDENCIES` is optional but strongly recommended for any plugin that uses
+  third-party packages.
+- Third-party imports inside tool functions (deferred `import`) are
+  preferred over top-level imports; they are skipped until the tool is called,
+  which avoids `ImportError` at load time even without `DEPENDENCIES`.
+- Files that do not export `TOOLS` are silently skipped.
+- A sidecar `<stem>.requirements.txt` next to the `.py` file is treated as an
+  implicit `DEPENDENCIES` list (one requirement per line) when `DEPENDENCIES`
+  is absent.
 
 ---
 
@@ -142,10 +160,11 @@ class LoadResult:
     path: Path
     tools: list[PluginTool] = field(default_factory=list)
     error: str | None = None
+    missing_deps: list[str] = field(default_factory=list)  # unprovided requirements
 
     @property
     def ok(self) -> bool:
-        return self.error is None
+        return self.error is None and not self.missing_deps
 
 
 @dataclass
@@ -174,8 +193,125 @@ class PluginToolSet:
 # src/agenthicc/plugins/discovery.py  (continued)
 
 
-def _load_plugin_file(path: Path) -> LoadResult:
-    """Import a single plugin file; extract its TOOLS list."""
+## Dependency Checking
+
+Three signals are tried in order to determine a plugin's requirements:
+
+1. **`DEPENDENCIES` list** in the plugin file (preferred — explicit, version-aware).
+2. **Sidecar `<stem>.requirements.txt`** in the same directory (for multi-file
+   plugins that keep deps in a separate file).
+3. **AST import scan** (last resort, best-effort — only catches top-level
+   `import` / `from … import` statements; misses dynamic imports).
+
+```python
+import ast
+import importlib.metadata
+import importlib.util
+import re
+import subprocess
+import sys
+
+
+def _requirements_from_sidecar(path: Path) -> list[str]:
+    """Read <stem>.requirements.txt next to *path* if it exists."""
+    req_file = path.with_suffix("").with_suffix(".requirements.txt")
+    # e.g. weather_tools.requirements.txt
+    req_file = path.parent / (path.stem + ".requirements.txt")
+    if req_file.exists():
+        return [
+            line.strip()
+            for line in req_file.read_text().splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+    return []
+
+
+def _ast_scan_imports(path: Path) -> list[str]:
+    """Return top-level imported package names from *path* via AST."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return []
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.append(node.module.split(".")[0])
+    return list(dict.fromkeys(names))  # deduplicated, order-preserving
+
+
+def _check_missing(requirements: list[str]) -> list[str]:
+    """Return the subset of *requirements* that are not currently satisfied."""
+    missing = []
+    for req in requirements:
+        try:
+            importlib.metadata.requires(req)  # raises if not installed/wrong version
+            pkg = re.split(r"[>=<!~\[]", req)[0].strip()
+            importlib.metadata.version(pkg)   # raises PackageNotFoundError if absent
+        except Exception:
+            missing.append(req)
+    return missing
+
+
+def _infer_missing_from_ast(path: Path) -> list[str]:
+    """AST-scan fallback: return import roots not found on sys.path."""
+    names = _ast_scan_imports(path)
+    stdlib = set(sys.stdlib_module_names)
+    missing = []
+    for name in names:
+        if name in stdlib:
+            continue
+        if importlib.util.find_spec(name) is None:
+            missing.append(name)
+    return missing
+
+
+def _install_deps(requirements: list[str], target: str = "user") -> None:
+    """Install *requirements* via pip into the current environment."""
+    flags = ["--user"] if target == "user" else []
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "--quiet", *flags, *requirements]
+    )
+```
+
+### Dependency resolution in `_load_plugin_file()`
+
+```python
+def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
+    """Import a single plugin file; check/install deps first, then extract TOOLS."""
+
+    # ── Step 1: read DEPENDENCIES without full exec ───────────────────────
+    # Probe-import the file to read DEPENDENCIES cheaply; if it fails at this
+    # stage the real exec below will also fail and capture the error properly.
+    declared_deps: list[str] = []
+    try:
+        probe_spec = importlib.util.spec_from_file_location("_dep_probe", path)
+        if probe_spec and probe_spec.loader:
+            probe_mod = importlib.util.module_from_spec(probe_spec)
+            probe_spec.loader.exec_module(probe_mod)  # type: ignore[union-attr]
+            declared_deps = list(getattr(probe_mod, "DEPENDENCIES", []))
+    except Exception:
+        pass  # will be caught properly in Step 3
+
+    if not declared_deps:
+        declared_deps = _requirements_from_sidecar(path)
+
+    # ── Step 2: check / install missing deps ─────────────────────────────
+    missing = _check_missing(declared_deps)
+    if missing:
+        if auto_install:
+            log.info("Auto-installing missing deps for %s: %s", path, missing)
+            try:
+                _install_deps(missing)
+                missing = _check_missing(missing)   # verify install succeeded
+            except Exception as exc:
+                log.error("Auto-install failed for %s: %s", path, exc)
+        if missing:
+            # Surface clear hint; do NOT attempt to exec the file.
+            return LoadResult(path=path, missing_deps=missing)
+
+    # ── Step 3: full import ───────────────────────────────────────────────
     module_name = f"_agenthicc_plugin_{path.stem}_{abs(hash(str(path)))}"
     try:
         spec = importlib.util.spec_from_file_location(module_name, path)
@@ -184,6 +320,12 @@ def _load_plugin_file(path: Path) -> LoadResult:
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)  # type: ignore[union-attr]
+    except ImportError as exc:
+        # No DEPENDENCIES declared; fall back to AST scan for a better hint.
+        inferred = _infer_missing_from_ast(path)
+        if inferred:
+            return LoadResult(path=path, missing_deps=inferred)
+        return LoadResult(path=path, error=f"ImportError: {exc}")
     except Exception as exc:
         return LoadResult(path=path, error=f"{type(exc).__name__}: {exc}")
 
@@ -203,7 +345,10 @@ def _load_plugin_file(path: Path) -> LoadResult:
     return LoadResult(path=path, tools=valid)
 
 
-def _scan_directory(root: Path) -> list[LoadResult]:
+def _scan_directory(
+    root: Path,
+    auto_install: bool = False,
+) -> list[LoadResult]:
     """Recursively load all *.py files under *root*."""
     if not root.is_dir():
         return []
@@ -211,8 +356,16 @@ def _scan_directory(root: Path) -> list[LoadResult]:
     for py_file in sorted(root.rglob("*.py")):
         if py_file.name.startswith("_"):
             continue   # skip __init__.py, private helpers
-        result = _load_plugin_file(py_file)
-        if result.error:
+        result = _load_plugin_file(py_file, auto_install=auto_install)
+        if result.missing_deps:
+            deps_str = " ".join(result.missing_deps)
+            log.warning(
+                "Plugin %s skipped — missing dependencies: %s\n"
+                "  Fix: pip install %s\n"
+                "  Or set [plugins] auto_install = true in agenthicc.toml",
+                py_file, result.missing_deps, deps_str,
+            )
+        elif result.error:
             log.error(
                 "Tool plugin load failed: %s — %s (skipping)",
                 py_file,
@@ -368,6 +521,41 @@ def test_scan_directory_skips_private(tmp_path):
 def test_scan_missing_directory_returns_empty(tmp_path):
     results = _scan_directory(tmp_path / "nonexistent")
     assert results == []
+
+
+def test_load_plugin_missing_dep_no_auto_install(tmp_path):
+    f = tmp_path / "needs_dep.py"
+    f.write_text(
+        "DEPENDENCIES = ['this-package-does-not-exist-xyz']\n"
+        "from lauren_ai._tools import tool\n"
+        "@tool()\nasync def t() -> None: pass\nTOOLS = [t]\n"
+    )
+    result = _load_plugin_file(f, auto_install=False)
+    assert not result.ok
+    assert result.missing_deps  # surfaced, not a generic error
+
+
+def test_load_plugin_importerror_triggers_ast_scan(tmp_path):
+    f = tmp_path / "undeclared.py"
+    f.write_text(
+        "import this_package_does_not_exist_xyz\n"
+        "from lauren_ai._tools import tool\n"
+        "@tool()\nasync def t() -> None: pass\nTOOLS = [t]\n"
+    )
+    result = _load_plugin_file(f, auto_install=False)
+    assert not result.ok
+    # AST scan should have caught "this_package_does_not_exist_xyz"
+    assert "this_package_does_not_exist_xyz" in result.missing_deps
+
+
+def test_sidecar_requirements_txt(tmp_path):
+    req = tmp_path / "my_tools.requirements.txt"
+    req.write_text("this-package-does-not-exist-xyz\n")
+    f = tmp_path / "my_tools.py"
+    f.write_text("TOOLS = []\n")
+    result = _load_plugin_file(f, auto_install=False)
+    assert not result.ok
+    assert result.missing_deps
 ```
 
 ---

@@ -427,6 +427,13 @@ async def _run_agent_turn(
         _skill_suffix = f"\n\n---\n\n{_addenda}"
 
     # Build the agent class with tools so it can actually DO things
+    from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
+    _registry = build_registry(
+        agent_name=getattr(renderer, "_active_agent", None) or "default",
+        project_plugin_tools=getattr(renderer, "_project_plugin_tools", None),
+    )
+    _tool_description = _registry.describe()
+
     @agent_decorator(
         model=model_id,
         system=(
@@ -434,10 +441,11 @@ async def _run_agent_turn(
             "and git tools. Use them directly to complete tasks. "
             "Give concise responses. Show command output when relevant. "
             "Never invent file contents — always read them first."
-            + _skill_suffix
+            + (_skill_suffix if _skill_suffix else "")
+            + (f"\n\n{_tool_description}" if _tool_description else "")
         ),
     )
-    @use_tools(*AGENT_TOOLS)
+    @use_tools(*_registry.tools)
     class _AgenthiccAgent: ...
 
     # Use _build_runner_for_agent so tools are resolved correctly from @use_tools metadata
@@ -667,6 +675,8 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     )
     renderer._status.resume_id = session_id
 
+    renderer._active_agent = "default"
+
     # ── skills discovery ──────────────────────────────────────────────
     from agenthicc.skills.loader import discover_skills as _discover_skills
     _skills = _discover_skills(
@@ -674,6 +684,19 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
         user_dir=Path.home() / ".agenthicc",
     )
     renderer._skills = _skills
+
+    # ── tool plugin discovery ─────────────────────────────────────────────
+    from agenthicc.plugins.discovery import discover_project_tools, warn_conflicts  # noqa: PLC0415
+    _project_plugins = discover_project_tools(
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
+    )
+    warn_conflicts(_project_plugins)
+    renderer._project_plugin_tools = _project_plugins.all_tools
+    if _project_plugins.all_tools:
+        from rich.console import Console as _C  # noqa: PLC0415
+        _C().print(f"[dim]Loaded {len(_project_plugins.all_tools)} plugin "
+                   f"tool(s) from .agenthicc/tools/[/dim]")
 
     # ── conversation store + memory ───────────────────────────────────────
     from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415

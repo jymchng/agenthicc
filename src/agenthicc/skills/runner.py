@@ -55,9 +55,7 @@ def substitute_args(
 
     def _replace_index(match: re.Match) -> str:
         idx = int(match.group(1))
-        # Leave {n} in place when arg not provided so the instruction
-        # stays readable ("in {0} format" rather than "in  format").
-        return args[idx] if idx < len(args) else match.group(0)
+        return args[idx] if idx < len(args) else ""
 
     body = re.sub(r"\{(\d+)\}", _replace_index, body)
     return body
