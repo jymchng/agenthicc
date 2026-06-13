@@ -134,6 +134,35 @@ def _make_skill_handler(slug: str, skill: object, renderer: object) -> object:
     return _handler
 
 
+def _cmd_mode(ctx: CommandContext) -> bool:
+    mode_manager = getattr(ctx.renderer, "_mode_manager", None)
+    mode_registry = getattr(ctx.renderer, "_mode_registry", None)
+    if mode_manager is None:
+        ctx.console.print("[dim]Mode system not available.[/dim]")
+        return True
+    args = (ctx.args or "").strip()
+    if not args:
+        from rich.table import Table  # noqa: PLC0415
+        from rich import box as _rbox  # noqa: PLC0415
+        table = Table(title="Modes", box=_rbox.SIMPLE)
+        table.add_column("Mode")
+        table.add_column("Label")
+        table.add_column("Description")
+        modes = mode_registry.all_modes() if mode_registry else mode_manager._registry.all_modes()
+        for m in modes:
+            marker = " < active" if m.name == mode_manager.active_name else ""
+            table.add_row(m.name, m.label, m.description + marker)
+        ctx.console.print(table)
+        ctx.console.print("  [dim]Use Shift+Tab to cycle, or /mode <name>[/dim]")
+    else:
+        new_mode = mode_manager.set(args)
+        if new_mode:
+            ctx.console.print(f"  {new_mode.badge} [dim]Switched to {new_mode.name} mode.[/dim]")
+        else:
+            ctx.console.print(f"  [red]Unknown mode: {args!r}[/red]")
+    return True
+
+
 # ── built-in command list ─────────────────────────────────────────────────────
 
 BUILTIN_COMMANDS: list[Command] = [
@@ -202,6 +231,13 @@ BUILTIN_COMMANDS: list[Command] = [
         name="/status",
         description="Show running agents and their tasks",
         handler=_cmd_status,
+    ),
+    Command(
+        name="/mode",
+        description="Show or switch operational mode",
+        argument_hint="[Auto|Plan|Ask|Review|Safe|Debug]",
+        group="Built-in",
+        handler=_cmd_mode,
     ),
 ]
 

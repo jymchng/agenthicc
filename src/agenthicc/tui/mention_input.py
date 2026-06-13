@@ -34,10 +34,13 @@ import sys
 from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
-from typing import Generator
+from typing import TYPE_CHECKING, Generator
+
+if TYPE_CHECKING:
+    from agenthicc.modes import ModeManager
 
 from agenthicc.tui.trigger import TriggerRegistry, TriggerHandler, TriggerContext, MatchItem
-from agenthicc.tui.menu import MenuDriver, MenuResult, MenuResultKind, MenuWidget
+from agenthicc.tui.menu import MenuDriver, MenuResultKind, MenuWidget
 
 __all__ = ["read_line_with_mention", "Key"]
 
@@ -104,6 +107,7 @@ class Key(str, Enum):
     CTRL_C    = "CTRL_C"
     CTRL_D    = "CTRL_D"
     CTRL_U    = "CTRL_U"
+    SHIFT_TAB = "SHIFT_TAB"
     AT        = "AT"
     CHAR      = "CHAR"
 
@@ -149,6 +153,8 @@ def _read_key(fd: int) -> tuple[Key, str]:
             return (Key.RIGHT, "")
         if b3 == b"D":
             return (Key.LEFT, "")
+        if b3 == b"Z":
+            return (Key.SHIFT_TAB, "")
         if b3 == b"3":
             # Delete key: ESC [ 3 ~ — consume the trailing ~
             r2, _, _ = select.select([fd], [], [], 0.05)
@@ -258,6 +264,7 @@ def _redraw(
     in_trigger: bool,
     hint: str | None = None,
     trigger_char: str = "@",
+    mode_line: str | None = None,
 ) -> int:
     """Erase old dropdown, redraw the input line, render new dropdown.
 
@@ -277,6 +284,16 @@ def _redraw(
     # Step 2: redraw the input line.
     mention_suffix = (trigger_char + fragment) if in_trigger else ""
     out.write("\r\x1b[2K" + prompt_str + "".join(buf) + mention_suffix)
+
+    # Step 2b — permanent mode footer (truncated to one terminal row)
+    n_base = 0
+    if mode_line is not None:
+        # 2 leading spaces + content must fit within terminal width so it never
+        # wraps to a second row (which would miscount n_base and break cursor maths).
+        _footer_max = max(8, shutil.get_terminal_size((80, 24)).columns - 4)
+        _safe_line = _truncate_to_cols(mode_line, _footer_max)
+        out.write(f"\n\r\x1b[2K  \x1b[2m{_safe_line}\x1b[0m")
+        n_base = 1
 
     # Step 3: render dropdown if in trigger mode with matches.
     if in_trigger and matches:
@@ -313,7 +330,7 @@ def _redraw(
         elif scroll > 0:
             lines.append(f"\r\x1b[2K  \x1b[2m↑ {scroll} more above\x1b[0m")
 
-        new_n_lines = len(lines)
+        new_n_lines = n_base + len(lines)
         out.write("\n" + "\n".join(lines))
         out.write(f"\x1b[{new_n_lines}A")  # cursor back up to input row
         # Reposition cursor at end of input content.
@@ -324,8 +341,46 @@ def _redraw(
         out.flush()
         return new_n_lines
 
+    if n_base:
+        out.write(f"\x1b[{n_base}A")
+        out.write("\r" + prompt_str + "".join(buf) + mention_suffix)
     out.flush()
-    return 0
+    return n_base
+
+
+def _truncate_to_cols(text: str, max_visible: int) -> str:
+    """Return *text* truncated to at most *max_visible* displayed characters.
+
+    ANSI CSI colour sequences (ESC [ … m) are preserved verbatim but not counted
+    toward the visible width.  Any other character (including multi-byte UTF-8
+    already decoded) counts as one column.  Appends ESC[0m reset on truncation.
+    """
+    visible = 0
+    in_esc = False
+    for i, ch in enumerate(text):
+        if ch == "\x1b":
+            in_esc = True
+        elif in_esc and ch == "m":
+            in_esc = False
+        elif not in_esc:
+            visible += 1
+            if visible > max_visible:
+                return text[:i] + "\x1b[0m"
+    return text
+
+
+def _erase_below(n: int) -> None:
+    """Erase n rows below the current cursor and return the cursor to its original row.
+
+    Called before every submit/exit write so the footer (and any open dropdown)
+    are wiped cleanly before the terminal scrolls past them.
+    """
+    if n > 0:
+        out = sys.stdout
+        for _ in range(n):
+            out.write("\n\r\x1b[2K")
+        out.write(f"\x1b[{n}A")
+        out.flush()
 
 
 # ── Layer 5: Main state machine ───────────────────────────────────────────────
@@ -337,6 +392,7 @@ def read_line_with_mention(
     registry: TriggerRegistry | None = None,
     initial_menu: "MenuWidget | None" = None,
     resume_id: str = "",
+    mode_manager: "ModeManager | None" = None,
 ) -> str | None:
     """Read one line of input with trigger-dropdown support.
 
@@ -389,23 +445,36 @@ def read_line_with_mention(
     saved_buf: list[str] = []
     ctrl_c_count: int = 0
 
+    from typing import Any as _Any  # noqa: PLC0415
+    _mode_notification: list[_Any] = [None]
+
+    def _get_mode_line() -> str:
+        notif = _mode_notification[0]
+        if notif is not None:
+            _mode_notification[0] = None
+            return f"❖ Switched to {notif.name} mode"
+        if mode_manager is None:
+            return "⏵⏵ Auto  (shift+tab to cycle)"
+        m = mode_manager.active
+        if m.name == "Auto":
+            return "⏵⏵ Auto  (shift+tab to cycle)"
+        return f"⏵⏵ {m.badge}\x1b[2m {m.name}  (shift+tab to cycle)"
+
     with _raw_mode(fd):
         while True:
             # Determine what to show in the input bar.
             if driver.active and driver.widget.edit_field_value is not None:
                 display_buf = list(driver.widget.edit_field_value)
-                trigger_ch_display = ""
             elif active_handler is not None:
                 display_buf = buf
-                trigger_ch_display = active_handler.char
             else:
                 display_buf = buf
-                trigger_ch_display = ""
 
             prev_dropdown_lines = _redraw(
                 prompt_str, display_buf, fragment, matches, selected,
                 prev_dropdown_lines, active_handler is not None, current_hint,
                 active_handler.char if active_handler else "@",
+                mode_line=_get_mode_line(),
             )
             if driver.active:
                 driver._prev_lines = driver.widget.render(prompt_str, display_buf, driver._prev_lines)
@@ -432,6 +501,7 @@ def read_line_with_mention(
                     fragment = ""
                     matches = []
                     current_hint = None
+                    _erase_below(prev_dropdown_lines)
                     prev_dropdown_lines = 0
                     ctrl_c_count += 1
                     if ctrl_c_count == 1:
@@ -452,7 +522,8 @@ def read_line_with_mention(
                     current_hint = None
                     # Erase dropdown immediately.
                     prev_dropdown_lines = _redraw(
-                        prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None
+                        prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None,
+                        mode_line=_get_mode_line(),
                     )
 
                 elif key in (Key.ENTER, Key.TAB):
@@ -466,13 +537,15 @@ def read_line_with_mention(
                     current_hint = None
                     # Erase dropdown immediately on selection.
                     prev_dropdown_lines = _redraw(
-                        prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None
+                        prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None,
+                        mode_line=_get_mode_line(),
                     )
                     # If no dropdown item was selected (user typed command + args
                     # without space to auto-select), submit the completed line now
                     # rather than requiring a second Enter.
                     if item is None and buf:
                         result = "".join(buf)
+                        _erase_below(prev_dropdown_lines)
                         sys.stdout.write("\n")
                         sys.stdout.flush()
                         if result:
@@ -495,7 +568,8 @@ def read_line_with_mention(
                         current_hint = None
                         # Erase dropdown immediately.
                         prev_dropdown_lines = _redraw(
-                            prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None
+                            prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None,
+                            mode_line=_get_mode_line(),
                         )
 
                 elif key == Key.UP:
@@ -534,7 +608,8 @@ def read_line_with_mention(
                             matches = []
                             current_hint = None
                             prev_dropdown_lines = _redraw(
-                                prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None
+                                prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None,
+                                mode_line=_get_mode_line(),
                             )
                             # Reset ctrl_c_count and continue with normal editing.
                             if key != Key.CTRL_C:
@@ -555,6 +630,8 @@ def read_line_with_mention(
             # ── NOT in trigger mode ──────────────────────────────────────────
             if key == Key.CTRL_C:
                 ctrl_c_count += 1
+                _erase_below(prev_dropdown_lines)
+                prev_dropdown_lines = 0
                 if ctrl_c_count == 1:
                     sys.stdout.write(_MSG_WARN)
                     sys.stdout.flush()
@@ -568,12 +645,14 @@ def read_line_with_mention(
             ctrl_c_count = 0
 
             if key == Key.CTRL_D:
+                _erase_below(prev_dropdown_lines)
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 return None if not buf else "".join(buf)
 
             elif key == Key.ENTER:
                 result = "".join(buf)
+                _erase_below(prev_dropdown_lines)
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 if result:
@@ -603,6 +682,11 @@ def read_line_with_mention(
                 elif hist_idx == len(history) - 1:
                     hist_idx = len(history)
                     buf = list(saved_buf)
+
+            elif key == Key.SHIFT_TAB:
+                if mode_manager is not None:
+                    new_mode = mode_manager.cycle()
+                    _mode_notification[0] = new_mode
 
             elif (key == Key.AT and "@" in _registry.chars) or (
                 key == Key.CHAR and ch and ch in _registry.chars

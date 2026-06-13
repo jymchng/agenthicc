@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, TextIO
 
 from .transcript import TranscriptModel, ToolCallState
@@ -96,6 +96,11 @@ def _thinking_wave(frame: int) -> str:
     return result
 
 
+def _make_prompt(mode_manager: Any) -> str:
+    """Build the prompt string. Mode is shown in the footer line only, never here."""
+    return "\x1b[1;32m❯\x1b[0m "
+
+
 # ── StatusState ───────────────────────────────────────────────────────────
 
 
@@ -161,7 +166,9 @@ class InlineRenderer:
         * No prompt_toolkit dependency in the hot path.
         """
         import asyncio as _asyncio  # noqa: PLC0415
-        import inspect, os as _os, shutil as _sh  # noqa: PLC0415
+        import inspect
+        import os as _os
+        import shutil as _sh  # noqa: PLC0415
         from pathlib import Path as _Path  # noqa: PLC0415
         from agenthicc.tui.mention_input import read_line_with_mention  # noqa: PLC0415
 
@@ -206,7 +213,6 @@ class InlineRenderer:
         for slug, skill in getattr(self, "_skills", {}).items():
             def _make_skill_handler(s=skill, sl=slug):
                 def _h(ctx):
-                    import os as _os
                     from pathlib import Path as _P
                     from agenthicc.skills.runner import process_skill_body as _psb
                     args = ctx.args.split() if ctx.args.strip() else []
@@ -241,6 +247,19 @@ class InlineRenderer:
         _trigger_registry.register(AtMentionTrigger())
         _trigger_registry.register(SlashCommandTrigger(_cmd_registry))  # UnifiedCommandRegistry
 
+        from agenthicc.modes import build_default_registry as _build_mode_registry, ModeManager  # noqa: PLC0415
+        from agenthicc.modes.plugin_loader import discover_mode_plugins as _discover_modes  # noqa: PLC0415
+        _mode_registry = _build_mode_registry()
+        _mode_plugins = _discover_modes(
+            project_dir=_Path(".agenthicc"),
+            user_dir=_Path.home() / ".agenthicc",
+        )
+        for _mp in _mode_plugins.all_modes:
+            _mode_registry.register(_mp)
+        _mode_manager = ModeManager(_mode_registry, default_name="Auto")
+        self._mode_manager = _mode_manager
+        self._mode_registry = _mode_registry
+
         try:
             while True:
                 self._flush_new_lines()
@@ -252,9 +271,10 @@ class InlineRenderer:
 
                 try:
                     text = await _asyncio.to_thread(
-                        read_line_with_mention, "❯ ", _cwd, _history,
+                        read_line_with_mention, _make_prompt(_mode_manager), _cwd, _history,
                         _trigger_registry, _initial_menu,
-                        self._status.resume_id,   # always passed so exit hint is correct
+                        self._status.resume_id,
+                        _mode_manager,
                     )
                 except KeyboardInterrupt:
                     # Safety net: ISIG is cleared inside _raw_mode so this
@@ -298,7 +318,8 @@ class InlineRenderer:
 
     def _print_status(self) -> None:
         """Print status line + top border of the input area."""
-        import shutil as _sh, time as _t  # noqa: PLC0415
+        import shutil as _sh
+        import time as _t  # noqa: PLC0415
         s = self._status
         cols = _sh.get_terminal_size((80, 24)).columns
 
@@ -313,8 +334,12 @@ class InlineRenderer:
         else:
             sid = s.session_id or "session"
             turns = s.completed_agents
+            mode_manager = getattr(self, "_mode_manager", None)
+            mode_badge = ""
+            if mode_manager is not None and mode_manager.active_name != "Auto":
+                mode_badge = mode_manager.active.badge + "  "
             self.console.print(
-                f" [dim]{sid}  │  {turns} turn{'s' if turns != 1 else ''}  │  ${s.session_cost_usd:.3f}[/dim]"
+                f" {mode_badge}[dim]{sid}  |  {turns} turn{'s' if turns != 1 else ''}  |  ${s.session_cost_usd:.3f}[/dim]"
             )
 
         # Top border of input area — plain horizontal rule
