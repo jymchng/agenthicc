@@ -93,12 +93,14 @@ class DropdownWidget:
         n = min(_MAX_VISIBLE, len(self._matches))
         scroll = max(0, min(self._selected - n + 1, len(self._matches) - n))
         visible = self._matches[scroll : scroll + n]
+        _max_entry = max(cols - 6, 8)  # "  ▶ + " prefix = 6 chars
         lines: list[str] = []
 
         for i, item in enumerate(visible):
             actual = scroll + i
             indicator = "▶" if actual == self._selected else " "
-            name = f"+ {item.display}"
+            raw = f"+ {item.display}"
+            name = raw if len(raw) <= _max_entry else raw[:_max_entry - 1] + "…"
             if actual == self._selected:
                 lines.append(f"\r\x1b[2K  \x1b[7m{indicator} {name}\x1b[0m")
             else:

@@ -254,6 +254,7 @@ class InlineRenderer:
                     text = await _asyncio.to_thread(
                         read_line_with_mention, "❯ ", _cwd, _history,
                         _trigger_registry, _initial_menu,
+                        self._status.resume_id,   # always passed so exit hint is correct
                     )
                 except KeyboardInterrupt:
                     # Safety net: ISIG is cleared inside _raw_mode so this

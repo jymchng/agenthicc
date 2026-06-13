@@ -44,6 +44,23 @@ __all__ = ["read_line_with_mention", "Key"]
 _MAX_VISIBLE = 8
 _PROMPT_STYLE = "\x1b[1;32m❯\x1b[0m "  # bold green ❯ + space
 
+# ── Exit messages — centralised here so they can never be lost ────────────────
+
+_MSG_WARN = "\n\x1b[2mPress Ctrl+C again to exit.\x1b[0m\n"
+
+
+def _show_exit_hint(resume_id: str = "") -> None:
+    """Print the resume hint and flush.  Called on every clean exit path."""
+    if resume_id:
+        hint = (
+            f"  To resume: \x1b[1magenthicc --resume {resume_id}\x1b[0m\n"
+            f"  Or in the same directory: \x1b[1magenthicc --continue\x1b[0m"
+        )
+    else:
+        hint = "  To resume: \x1b[1magenthicc --continue\x1b[0m  (in the same directory)"
+    sys.stdout.write(f"\n\x1b[2m{hint}\x1b[0m\n\n")
+    sys.stdout.flush()
+
 
 # ── Layer 1: TerminalRawMode context manager ──────────────────────────────────
 
@@ -263,6 +280,11 @@ def _redraw(
 
     # Step 3: render dropdown if in trigger mode with matches.
     if in_trigger and matches:
+        cols = shutil.get_terminal_size((80, 24)).columns
+        # Max visible chars per row: total cols minus the prefix "  ▶ + " (6 chars).
+        # Truncating prevents line-wrapping which breaks the cursor-up row count.
+        _max_entry = max(cols - 6, 8)
+
         n = min(_MAX_VISIBLE, len(matches))
         # Scroll offset: keep the selected row inside the visible window.
         scroll = max(0, min(selected - n + 1, len(matches) - n))
@@ -271,7 +293,8 @@ def _redraw(
         for i, item in enumerate(visible):
             actual = scroll + i          # global index in matches
             indicator = "▶" if actual == selected else " "
-            name = f"+ {item.display}"
+            raw = f"+ {item.display}"
+            name = raw if len(raw) <= _max_entry else raw[:_max_entry - 1] + "…"
             if actual == selected:
                 line = f"\r\x1b[2K  \x1b[7m{indicator} {name}\x1b[0m"
             else:
@@ -313,6 +336,7 @@ def read_line_with_mention(
     history: list[str],
     registry: TriggerRegistry | None = None,
     initial_menu: "MenuWidget | None" = None,
+    resume_id: str = "",
 ) -> str | None:
     """Read one line of input with trigger-dropdown support.
 
@@ -410,14 +434,12 @@ def read_line_with_mention(
                     current_hint = None
                     prev_dropdown_lines = 0
                     ctrl_c_count += 1
-                    # Show warning on first press, exit on second.
                     if ctrl_c_count == 1:
-                        sys.stdout.write("\n\x1b[2mPress Ctrl+C again to exit.\x1b[0m\n")
+                        sys.stdout.write(_MSG_WARN)
                         sys.stdout.flush()
                         buf = []
                     else:
-                        sys.stdout.write("\n")
-                        sys.stdout.flush()
+                        _show_exit_hint(resume_id)
                         return None
                     continue
 
@@ -499,12 +521,11 @@ def read_line_with_mention(
             if key == Key.CTRL_C:
                 ctrl_c_count += 1
                 if ctrl_c_count == 1:
-                    sys.stdout.write("\n\x1b[2mPress Ctrl+C again to exit.\x1b[0m\n")
+                    sys.stdout.write(_MSG_WARN)
                     sys.stdout.flush()
                     buf = []
                 else:
-                    sys.stdout.write("\n")
-                    sys.stdout.flush()
+                    _show_exit_hint(resume_id)
                     return None
                 continue
 

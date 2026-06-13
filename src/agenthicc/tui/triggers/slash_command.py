@@ -16,7 +16,10 @@ class SlashCommandTrigger:
         cmds = self._registry.matches(partial)
         results = []
         for cmd in cmds:
-            display = f"{cmd.name:<24} {cmd.description}"
+            # Keep description short so the full row fits in one terminal line.
+            # The renderer also truncates, but trimming here keeps display clean.
+            desc = cmd.description[:36] + "…" if len(cmd.description) > 36 else cmd.description
+            display = f"{cmd.name:<22} {desc}"
             hint = self._format_hint(cmd)
             results.append(MatchItem(display=display, value=cmd.name, hint=hint))
         return results
