@@ -274,69 +274,68 @@ def _redraw(
     import shutil
 
     out = sys.stdout
+    cols = shutil.get_terminal_size((80, 24)).columns
 
-    # Step 1: erase old dropdown rows (move down, clear each, move back up).
-    if prev_n_lines > 0:
-        for _ in range(prev_n_lines):
-            out.write("\n\r\x1b[2K")
-        out.write(f"\x1b[{prev_n_lines}A")
+    # Step 1: erase old content below (and the input line itself).
+    #
+    # Architectural note: we use ESC[0J ("erase from cursor to end of screen")
+    # rather than a counted loop of ESC[2K lines.  The counted approach breaks
+    # whenever any line wraps (footer text too wide, wide Unicode, etc.) because
+    # prev_n_lines represents *logical* writes, not *terminal rows*.  ESC[0J
+    # clears everything below the cursor unconditionally — no row-counting needed.
+    #
+    # Invariant: _redraw always leaves the cursor ON the input line (see step 5).
+    # So \r moves to column 0 of the input line; ESC[0J then clears it and all
+    # rows below in a single escape.
+    out.write("\r\x1b[0J")
 
     # Step 2: redraw the input line.
     mention_suffix = (trigger_char + fragment) if in_trigger else ""
-    out.write("\r\x1b[2K" + prompt_str + "".join(buf) + mention_suffix)
+    out.write(prompt_str + "".join(buf) + mention_suffix)
 
-    # Step 2b — permanent mode footer (truncated to one terminal row)
+    # Step 2b — permanent mode footer (truncated so it never wraps)
     n_base = 0
     if mode_line is not None:
-        # 2 leading spaces + content must fit within terminal width so it never
-        # wraps to a second row (which would miscount n_base and break cursor maths).
-        _footer_max = max(8, shutil.get_terminal_size((80, 24)).columns - 4)
-        _safe_line = _truncate_to_cols(mode_line, _footer_max)
-        out.write(f"\n\r\x1b[2K  \x1b[2m{_safe_line}\x1b[0m")
+        _safe_line = _truncate_to_cols(mode_line, max(8, cols - 4))
+        out.write(f"\n\r  \x1b[2m{_safe_line}\x1b[0m")
         n_base = 1
 
     # Step 3: render dropdown if in trigger mode with matches.
+    # Lines are already blank (cleared by ESC[0J in step 1) so no per-line
+    # ESC[2K needed; just move down and write content.
     if in_trigger and matches:
-        cols = shutil.get_terminal_size((80, 24)).columns
-        # Max visible chars per row: total cols minus the prefix "  ▶ + " (6 chars).
-        # Truncating prevents line-wrapping which breaks the cursor-up row count.
         _max_entry = max(cols - 6, 8)
 
         n = min(_MAX_VISIBLE, len(matches))
-        # Scroll offset: keep the selected row inside the visible window.
         scroll = max(0, min(selected - n + 1, len(matches) - n))
         visible = matches[scroll : scroll + n]
         lines: list[str] = []
         for i, item in enumerate(visible):
-            actual = scroll + i          # global index in matches
+            actual = scroll + i
             indicator = "▶" if actual == selected else " "
             raw = f"+ {item.display}"
             name = raw if len(raw) <= _max_entry else raw[:_max_entry - 1] + "…"
             if actual == selected:
-                line = f"\r\x1b[2K  \x1b[7m{indicator} {name}\x1b[0m"
+                line = f"\r  \x1b[7m{indicator} {name}\x1b[0m"
             else:
-                line = f"\r\x1b[2K  {indicator} {name}"
+                line = f"\r  {indicator} {name}"
             lines.append(line)
 
         if hint is not None:
-            cols = shutil.get_terminal_size((80, 24)).columns
             sep = "─" * min(cols - 4, 60)
-            lines.append(f"\r\x1b[2K  \x1b[2m{sep}\x1b[0m")
-            lines.append(f"\r\x1b[2K  \x1b[2m{hint[:cols - 4]}\x1b[0m")
+            lines.append(f"\r  \x1b[2m{sep}\x1b[0m")
+            lines.append(f"\r  \x1b[2m{hint[:cols - 4]}\x1b[0m")
 
         below = len(matches) - (scroll + n)
         if below > 0:
-            lines.append(f"\r\x1b[2K  \x1b[2m… {below} more ↓\x1b[0m")
+            lines.append(f"\r  \x1b[2m… {below} more ↓\x1b[0m")
         elif scroll > 0:
-            lines.append(f"\r\x1b[2K  \x1b[2m↑ {scroll} more above\x1b[0m")
+            lines.append(f"\r  \x1b[2m↑ {scroll} more above\x1b[0m")
 
+        # Step 5a (dropdown path): cursor back up to input row and reposition.
         new_n_lines = n_base + len(lines)
         out.write("\n" + "\n".join(lines))
-        out.write(f"\x1b[{new_n_lines}A")  # cursor back up to input row
-        # Reposition cursor at end of input content.
-        # After the cursor-up, the column equals that of the last menu row,
-        # not the end of the input text.  Writing the same content again is
-        # idempotent visually but moves the cursor to the correct column.
+        out.write(f"\x1b[{new_n_lines}A")
         out.write("\r" + prompt_str + "".join(buf) + mention_suffix)
         out.flush()
         return new_n_lines
@@ -369,18 +368,20 @@ def _truncate_to_cols(text: str, max_visible: int) -> str:
     return text
 
 
-def _erase_below(n: int) -> None:
-    """Erase n rows below the current cursor and return the cursor to its original row.
+def _erase_below() -> None:
+    """Erase the footer/dropdown rows before a submit or exit write.
 
-    Called before every submit/exit write so the footer (and any open dropdown)
-    are wiped cleanly before the terminal scrolls past them.
+    Architectural note: uses ESC[0J ("erase from cursor to end of screen")
+    rather than a counted loop.  The cursor is always on the input line when
+    this is called (invariant maintained by _redraw).  We step down exactly
+    one row (into the footer area), erase everything from there to the bottom
+    of the screen unconditionally, then step back up.  No row count needed —
+    immune to line-wrap and wide-character miscounting.
     """
-    if n > 0:
-        out = sys.stdout
-        for _ in range(n):
-            out.write("\n\r\x1b[2K")
-        out.write(f"\x1b[{n}A")
-        out.flush()
+    out = sys.stdout
+    out.write("\n\r\x1b[0J")   # step down 1 row, CR, erase to bottom
+    out.write("\x1b[1A")        # step back up to input line
+    out.flush()
 
 
 # ── Layer 5: Main state machine ───────────────────────────────────────────────
@@ -501,7 +502,7 @@ def read_line_with_mention(
                     fragment = ""
                     matches = []
                     current_hint = None
-                    _erase_below(prev_dropdown_lines)
+                    _erase_below()
                     prev_dropdown_lines = 0
                     ctrl_c_count += 1
                     if ctrl_c_count == 1:
@@ -545,7 +546,7 @@ def read_line_with_mention(
                     # rather than requiring a second Enter.
                     if item is None and buf:
                         result = "".join(buf)
-                        _erase_below(prev_dropdown_lines)
+                        _erase_below()
                         sys.stdout.write("\n")
                         sys.stdout.flush()
                         if result:
@@ -630,7 +631,7 @@ def read_line_with_mention(
             # ── NOT in trigger mode ──────────────────────────────────────────
             if key == Key.CTRL_C:
                 ctrl_c_count += 1
-                _erase_below(prev_dropdown_lines)
+                _erase_below()
                 prev_dropdown_lines = 0
                 if ctrl_c_count == 1:
                     sys.stdout.write(_MSG_WARN)
@@ -645,14 +646,14 @@ def read_line_with_mention(
             ctrl_c_count = 0
 
             if key == Key.CTRL_D:
-                _erase_below(prev_dropdown_lines)
+                _erase_below()
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 return None if not buf else "".join(buf)
 
             elif key == Key.ENTER:
                 result = "".join(buf)
-                _erase_below(prev_dropdown_lines)
+                _erase_below()
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 if result:
