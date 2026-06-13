@@ -681,6 +681,12 @@ async def _run_agent_turn(
                 _turn_text = "".join(_current_turn).strip()
                 if _turn_text:
                     _all_turn_texts.append(_turn_text)
+                    # Add text to transcript NOW — before _stream_loop() executes
+                    # tools for this turn.  ToolCallStarted/Complete signals fire
+                    # after this yield, so the transcript order becomes:
+                    #   turn-1 text → turn-1 tools → turn-2 text → turn-2 tools …
+                    from agenthicc.tui.app import InlineRenderer as _IR  # noqa: PLC0415
+                    transcript.append_line(agent_id, _IR._MD_SENTINEL + _turn_text)
                 _current_turn = []
                 _streaming_text[0] = ""
 
@@ -717,12 +723,10 @@ async def _run_agent_turn(
 
     from agenthicc.tui.app import InlineRenderer  # noqa: PLC0415
 
-    # Render intermediate turn texts (all but the last, which is `content`).
-    for _itext in _all_turn_texts[:-1]:
-        transcript.append_line(agent_id, InlineRenderer._MD_SENTINEL + _itext)
-
-    # Final turn text (same position in transcript as before).
-    if content:
+    # Turn texts were added to the transcript at each stop_reason (inside the
+    # stream loop above) so they interleave correctly with tool call signals.
+    # The only case we still need to append here is the synthetic "(no response)".
+    if content == "(no response)":
         transcript.append_line(agent_id, InlineRenderer._MD_SENTINEL + content)
 
     await processor.emit(

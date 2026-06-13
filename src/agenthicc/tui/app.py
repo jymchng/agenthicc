@@ -413,6 +413,7 @@ class InlineRenderer:
                 mode_badge = mode_manager.active.badge + "  "
             self.console.print(
                 f" {mode_badge}[dim]{sid}  |  {turns} turn{'s' if turns != 1 else ''}  |  ${s.session_cost_usd:.3f}[/dim]"
+                f"  [cyan]↑ {s.input_tokens:,}[/cyan]  [green]↓ {s.output_tokens:,}[/green]"
             )
 
         # Top border of input area — plain horizontal rule

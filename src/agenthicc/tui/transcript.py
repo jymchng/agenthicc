@@ -99,6 +99,9 @@ class AgentTurnEntry:
     timestamp: float = field(default_factory=time.time)
     lines: list[str] = field(default_factory=list)
     tool_calls: list[ToolCallEntry] = field(default_factory=list)
+    # Insertion-ordered events: {"type":"text","line":str} | {"type":"tool_call","tc":ToolCallEntry}
+    # Populated so render() can interleave text and tool calls in the order they occurred.
+    ordered_events: list[dict] = field(default_factory=list)
     cost_usd: float | None = None
     tokens: int | None = None
 
@@ -161,7 +164,9 @@ class TranscriptModel:
 
     def append_line(self, agent_id: str, text: str) -> None:
         """Append a line of model/log text to the latest turn of *agent_id*."""
-        self._turn_for(agent_id).lines.append(text)
+        turn = self._turn_for(agent_id)
+        turn.lines.append(text)
+        turn.ordered_events.append({"type": "text", "line": text})
 
     def add_tool_call(
         self,
@@ -177,7 +182,9 @@ class TranscriptModel:
             args=args or {},
             state=state,
         )
-        self._turn_for(agent_id).tool_calls.append(entry)
+        turn = self._turn_for(agent_id)
+        turn.tool_calls.append(entry)
+        turn.ordered_events.append({"type": "tool_call", "tc": entry})
         self._tool_index[tool_use_id] = entry
         return entry
 
@@ -264,45 +271,67 @@ class TranscriptModel:
     MAX_VISIBLE_TOOL_CALLS = 5
 
     def render(self) -> list[str]:
-        """Render the transcript to plain-text lines (PRD-06 §5.1)."""
+        """Render the transcript to plain-text lines (PRD-06 §5.1).
+
+        When ``ordered_events`` is populated (streaming mode), text and tool
+        calls are rendered in insertion order so they interleave correctly:
+
+            "I'll read the files…"      ← turn-1 text (added at stop_reason)
+              ⎿ read_file(...)  ✓       ← tool calls (signals fire after text)
+            "Based on the results…"     ← turn-2 text
+              ⎿ list_directory(...)  ✓  ← turn-2 tool calls
+            "Here's the summary…"       ← final turn text
+
+        Turns without ``ordered_events`` fall back to the old rendering order
+        (tool calls first, then prose) for backward compatibility.
+        """
         out: list[str] = []
         for turn in self.turns:
             out.append(turn.header())
-            # Tool calls rendered FIRST — they happened before the prose reply
-            calls = turn.tool_calls
-            visible = calls[: self.MAX_VISIBLE_TOOL_CALLS]
-            hidden = len(calls) - len(visible)
-            for tc in visible:
-                out.append(tc.render())
-            if hidden:
-                out.append(
-                    f"  [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}[/dim]"
+
+            if turn.ordered_events:
+                # ── interleaved rendering ────────────────────────────────────
+                total_calls = sum(
+                    1 for e in turn.ordered_events if e["type"] == "tool_call"
                 )
-            # @mention chips — rendered after tool calls, before prose
-            for chip in getattr(turn, "mention_chips", []):
-                if chip.ok:
-                    meta = f"  [dim]{chip.display_size}[/dim]" if chip.display_size else ""
-                    line = (
-                        f"  [dim]⎿[/dim] [bold cyan]{chip.raw}[/bold cyan]"
-                        f"  [green]✓[/green]{meta}"
+                calls_shown = 0
+                hidden = max(0, total_calls - self.MAX_VISIBLE_TOOL_CALLS)
+
+                # @mention chips before any events (they have no ordering info)
+                for chip in getattr(turn, "mention_chips", []):
+                    _render_chip(out, chip, turn)
+
+                _banner_shown = False
+                for event in turn.ordered_events:
+                    if event["type"] == "text":
+                        out.append(event["line"])
+                    elif event["type"] == "tool_call":
+                        if calls_shown < self.MAX_VISIBLE_TOOL_CALLS:
+                            out.append(event["tc"].render())
+                            calls_shown += 1
+                        elif not _banner_shown and hidden > 0:
+                            # Emit the banner right after the last visible call,
+                            # before any subsequent text events.
+                            out.append(
+                                f"  [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}[/dim]"
+                            )
+                            _banner_shown = True
+            else:
+                # ── legacy rendering (tool calls first, then prose) ──────────
+                calls = turn.tool_calls
+                visible = calls[: self.MAX_VISIBLE_TOOL_CALLS]
+                hidden_count = len(calls) - len(visible)
+                for tc in visible:
+                    out.append(tc.render())
+                if hidden_count:
+                    out.append(
+                        f"  [dim]… and {hidden_count} more tool call{'s' if hidden_count != 1 else ''}[/dim]"
                     )
-                else:
-                    line = (
-                        f"  [dim]⎿[/dim] [bold red]{chip.raw}[/bold red]"
-                        f"  [red]✗[/red]  [dim]{chip.error}[/dim]"
-                    )
-                out.append(line)
-                if chip.expanded and hasattr(turn, "mention_content"):
-                    content = getattr(turn, "mention_content", {}).get(chip.raw, "")
-                    for ln in content.splitlines()[:50]:
-                        out.append(f"    [dim]{ln[:120]}[/dim]")
-                    if len(content.splitlines()) > 50:
-                        out.append(
-                            f"    [dim](… {len(content.splitlines()) - 50} more lines)[/dim]"
-                        )
-            # Prose lines — markdown lines carry the "\x00md\x00" sentinel prefix
-            for line in turn.lines:
-                out.append(line)  # sentinel already embedded by _run_agent_turn
+                for chip in getattr(turn, "mention_chips", []):
+                    _render_chip(out, chip, turn)
+                for line in turn.lines:
+                    out.append(line)
+
             footer = turn.footer()
             if footer is not None:
                 out.append(footer)
@@ -326,6 +355,27 @@ class TranscriptModel:
         text = self._current_ad.text[:120]
         url = getattr(self._current_ad, "cta_url", "")
         return f"[Sponsored] {text}" + (f"  {url}" if url else "")
+
+
+def _render_chip(out: list[str], chip: Any, turn: Any) -> None:
+    """Append Rich-markup lines for one @mention chip to *out*."""
+    if chip.ok:
+        meta = f"  [dim]{chip.display_size}[/dim]" if chip.display_size else ""
+        out.append(
+            f"  [dim]⎿[/dim] [bold cyan]{chip.raw}[/bold cyan]"
+            f"  [green]✓[/green]{meta}"
+        )
+    else:
+        out.append(
+            f"  [dim]⎿[/dim] [bold red]{chip.raw}[/bold red]"
+            f"  [red]✗[/red]  [dim]{chip.error}[/dim]"
+        )
+    if chip.expanded and hasattr(turn, "mention_content"):
+        content = getattr(turn, "mention_content", {}).get(chip.raw, "")
+        for ln in content.splitlines()[:50]:
+            out.append(f"    [dim]{ln[:120]}[/dim]")
+        if len(content.splitlines()) > 50:
+            out.append(f"    [dim](… {len(content.splitlines()) - 50} more lines)[/dim]")
 
 
 def diff_lines(old: list[str], new: list[str]) -> list[tuple[str, str]]:
