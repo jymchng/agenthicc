@@ -415,6 +415,50 @@ async def _run_agent_turn(
                 except Exception:
                     pass
 
+    # ── @mention injection ────────────────────────────────────────────
+    from agenthicc.mentions.injector import build_context_prefix, InjectionConfig  # noqa: PLC0415
+    from agenthicc.mentions.parser import parse_mentions as _parse_mentions  # noqa: PLC0415
+    from agenthicc.tui.transcript import MentionChip  # noqa: PLC0415
+    _exec_cfg = getattr(renderer, "_exec_cfg", None)
+    _mention_cfg = InjectionConfig(
+        mention_token_budget=getattr(_exec_cfg, "mention_token_budget", 32_000),
+        max_file_chars=getattr(_exec_cfg, "mention_max_file_chars", 16_000),
+        max_glob_files=getattr(_exec_cfg, "mention_max_glob_files", 20),
+        cwd=Path(os.getcwd()),
+    )
+    _mention_cache_ref = getattr(renderer, "_mention_cache", None)
+    _mention_prefix, _injected = await build_context_prefix(
+        text,
+        cwd=_mention_cfg.cwd,
+        cfg=_mention_cfg,
+        cache=_mention_cache_ref,
+        current_turn=renderer._status.completed_agents,
+    )
+    _agent_text = _mention_prefix + text if _mention_prefix else text
+
+    # Add @mention chips to transcript
+    if _injected:
+        from agenthicc.mentions.parser import MentionKind as _MK  # noqa: PLC0415
+        for r in _injected:
+            if r.mention.kind == _MK.FILE:
+                chip = MentionChip(raw=r.mention.raw, kind="file",
+                                   display_size=f"{r.chars_used/1024:.1f} KB", ok=r.ok, error=r.error)
+            elif r.mention.kind == _MK.DIRECTORY:
+                chip = MentionChip(raw=r.mention.raw, kind="dir", display_size="", ok=r.ok)
+            elif r.mention.kind == _MK.GLOB:
+                count = r.block.count("<file ")
+                chip = MentionChip(raw=r.mention.raw, kind="glob",
+                                   display_size=f"→ {count} file{'s' if count!=1 else ''}", ok=r.ok)
+            elif r.mention.kind == _MK.URL:
+                chip = MentionChip(raw=r.mention.raw, kind="url",
+                                   display_size=f"{r.chars_used:,} chars" if r.ok else "", ok=r.ok)
+            else:
+                chip = MentionChip(raw=r.mention.raw, kind="unresolved",
+                                   display_size="", ok=False, error="not found")
+            transcript.add_mention_chips(agent_id, [chip])
+            if r.block and r.ok:
+                transcript.set_mention_content(agent_id, r.mention.raw, r.block)
+
     # ── skills auto-triggering ────────────────────────────────────────
     from agenthicc.skills.runner import find_matching_skills, process_skill_body  # noqa: PLC0415
     _matched_skills = find_matching_skills(text, getattr(renderer, "_skills", {}) or {})
@@ -587,7 +631,7 @@ async def _run_agent_turn(
         )
         response = await _active_runner.run(
             _agent_instance,
-            text,
+            _agent_text,
             memory=session_memory,
             config_override=_cfg,
         )
@@ -680,6 +724,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     renderer._status.resume_id = session_id
 
     renderer._active_agent = "default"
+    renderer._exec_cfg = cfg.execution  # expose to _run_agent_turn for @mention config
 
     # ── skills discovery ──────────────────────────────────────────────
     from agenthicc.skills.loader import discover_skills as _discover_skills
@@ -718,6 +763,11 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
         except Exception as exc:  # noqa: BLE001
             import logging as _log  # noqa: PLC0415
             _log.getLogger(__name__).error("MCP init failed: %s", exc)
+
+    # ── @mention cache ────────────────────────────────────────────────────
+    from agenthicc.mentions.cache import MentionCache  # noqa: PLC0415
+    _mention_cache = MentionCache()
+    renderer._mention_cache = _mention_cache
 
     # ── conversation store + memory ───────────────────────────────────────
     from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
@@ -810,11 +860,10 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
 def _run_tui(args: argparse.Namespace) -> None:
     try:
         from rich.console import Console  # noqa: F401
-        from prompt_toolkit import PromptSession  # noqa: F401
     except ImportError:
         print(
-            "error: TUI requires rich and prompt_toolkit:\n"
-            "  pip install agenthicc[tui]\n"
+            "error: TUI requires rich:\n"
+            "  pip install agenthicc\n"
             "Or run headless: agenthicc --headless",
             file=sys.stderr,
         )

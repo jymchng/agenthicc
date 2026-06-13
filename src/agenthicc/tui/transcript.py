@@ -16,6 +16,7 @@ from typing import Any
 __all__ = [
     "SPINNER_FRAMES",
     "AgentTurnEntry",
+    "MentionChip",
     "ToolCallEntry",
     "ToolCallState",
     "TranscriptModel",
@@ -114,6 +115,18 @@ class AgentTurnEntry:
         if self.cost_usd is not None:
             parts.append(f"cost: ${self.cost_usd:.3f}")
         return "  → " + "  ".join(parts)
+
+
+@dataclass
+class MentionChip:
+    """Compact representation of a resolved @mention for transcript display."""
+
+    raw: str            # "@src/auth.py"
+    kind: str           # "file" | "dir" | "glob" | "url" | "unresolved"
+    display_size: str   # "1.2 KB" or "12 files" or ""
+    ok: bool            # False → red error chip
+    error: str | None = None
+    expanded: bool = False  # toggle via /expand
 
 
 class TranscriptModel:
@@ -217,6 +230,20 @@ class TranscriptModel:
             if entry.state is ToolCallState.RUNNING:
                 entry.spinner_frame = (entry.spinner_frame + 1) % len(SPINNER_FRAMES)
 
+    def add_mention_chips(self, agent_id: str, chips: list[MentionChip]) -> None:
+        """Attach resolved @mention chips to the latest turn of *agent_id*."""
+        turn = self._turn_for(agent_id)
+        if not hasattr(turn, "mention_chips"):
+            turn.mention_chips = []
+        turn.mention_chips.extend(chips)
+
+    def set_mention_content(self, agent_id: str, raw: str, content: str) -> None:
+        """Store the full injected content for a mention (used by /expand)."""
+        turn = self._turn_for(agent_id)
+        if not hasattr(turn, "mention_content"):
+            turn.mention_content = {}
+        turn.mention_content[raw] = content
+
     # ── derived state ────────────────────────────────────────────────────
 
     @property
@@ -251,6 +278,28 @@ class TranscriptModel:
                 out.append(
                     f"  [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}[/dim]"
                 )
+            # @mention chips — rendered after tool calls, before prose
+            for chip in getattr(turn, "mention_chips", []):
+                if chip.ok:
+                    meta = f"  [dim]{chip.display_size}[/dim]" if chip.display_size else ""
+                    line = (
+                        f"  [dim]⎿[/dim] [bold cyan]{chip.raw}[/bold cyan]"
+                        f"  [green]✓[/green]{meta}"
+                    )
+                else:
+                    line = (
+                        f"  [dim]⎿[/dim] [bold red]{chip.raw}[/bold red]"
+                        f"  [red]✗[/red]  [dim]{chip.error}[/dim]"
+                    )
+                out.append(line)
+                if chip.expanded and hasattr(turn, "mention_content"):
+                    content = getattr(turn, "mention_content", {}).get(chip.raw, "")
+                    for ln in content.splitlines()[:50]:
+                        out.append(f"    [dim]{ln[:120]}[/dim]")
+                    if len(content.splitlines()) > 50:
+                        out.append(
+                            f"    [dim](… {len(content.splitlines()) - 50} more lines)[/dim]"
+                        )
             # Prose lines — markdown lines carry the "\x00md\x00" sentinel prefix
             for line in turn.lines:
                 out.append(line)  # sentinel already embedded by _run_agent_turn

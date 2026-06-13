@@ -424,7 +424,7 @@ class TestRunTui:
         real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
         def fake_import(name, *a, **kw):
-            if name in ("rich.console", "prompt_toolkit"):
+            if name in ("rich.console",):
                 raise ImportError(f"No module named '{name}'")
             return real_import(name, *a, **kw)
 
@@ -454,7 +454,7 @@ class TestRunTui:
             coro.close()
 
         # Patch rich and prompt_toolkit so the import check passes
-        with patch.dict("sys.modules", {"rich.console": MagicMock(), "prompt_toolkit": MagicMock()}):
+        with patch.dict("sys.modules", {"rich.console": MagicMock()}):
             with patch("agenthicc.__main__.asyncio.run", side_effect=consuming_asyncio_run):
                 m._run_tui(args)
 
@@ -474,7 +474,7 @@ class TestRunTui:
 
         monkeypatch.setattr(m, "_run_tui_session", capturing_tui_session)
 
-        with patch.dict("sys.modules", {"rich.console": MagicMock(), "prompt_toolkit": MagicMock()}):
+        with patch.dict("sys.modules", {"rich.console": MagicMock()}):
             with patch("agenthicc.__main__.asyncio.run", side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro)):
                 m._run_tui(args)
 
@@ -493,7 +493,7 @@ class TestRunTui:
             coro.close()  # prevent unawaited-coroutine warning
             raise RuntimeError("boom")
 
-        with patch.dict("sys.modules", {"rich.console": MagicMock(), "prompt_toolkit": MagicMock()}):
+        with patch.dict("sys.modules", {"rich.console": MagicMock()}):
             with patch("agenthicc.__main__.asyncio.run", side_effect=raising_asyncio_run):
                 with pytest.raises(SystemExit) as exc_info:
                     m._run_tui(args)

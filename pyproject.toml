@@ -12,7 +12,6 @@ dependencies = [
     "lauren-ai[all]",
     "anyio>=4.0",
     "typing-extensions>=4.11",
-    "prompt_toolkit>=3.0",
     "rich>=13.0",
     "fastapi>=0.110",
     "uvicorn>=0.29",

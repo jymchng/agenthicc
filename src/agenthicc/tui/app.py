@@ -2,7 +2,7 @@
 
 The preferred entry point is :func:`run_inline`, which renders agent output
 directly into the normal terminal scroll buffer using :mod:`rich` and reads
-user input via a :class:`~prompt_toolkit.shortcuts.PromptSession`.
+user input via :mod:`agenthicc.tui.mention_input` (no prompt_toolkit).
 
 :func:`render_frame_ansi` and :func:`run_headless` are unchanged for
 backward-compatibility with pyte E2E tests and headless CI pipelines.
@@ -23,7 +23,6 @@ __all__ = [
     "INPUT_PROMPT",
     "InlineRenderer",
     "MENU_COMMANDS",
-    "PROMPT_TOOLKIT_AVAILABLE",
     "RICH_AVAILABLE",
     "SlashCommandHandler",
     "StatusState",
@@ -35,25 +34,6 @@ __all__ = [
 ]
 
 # ── optional-dependency guards ────────────────────────────────────────────
-
-try:  # pragma: no cover - exercised implicitly by import
-    from prompt_toolkit.application import Application
-    from prompt_toolkit.buffer import Buffer
-    from prompt_toolkit.filters import Condition
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import (
-        ConditionalContainer,
-        Float,
-        FloatContainer,
-        HSplit,
-        Layout,
-        Window,
-    )
-    from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
-
-    PROMPT_TOOLKIT_AVAILABLE = True
-except Exception:  # pragma: no cover
-    PROMPT_TOOLKIT_AVAILABLE = False
 
 try:
     from rich.console import Console, Group as RichGroup
@@ -84,7 +64,7 @@ SLASH_HELP = {
     "/history": "Print last 20 transcript lines",
     "/model":   "Show or switch LLM provider/model  (e.g. /model openai gpt-4o)",
     "/models":  "List available providers",
-    "/expand":  "Expand tool call output  (e.g. /expand abc12345)",
+    "/expand":  "Expand tool output or @mention  (/expand abc12345 or /expand @path)",
     "/help":    "Show this help table",
     "/skills":  "List available skills",
 }
@@ -173,86 +153,94 @@ class InlineRenderer:
     # ── main loop ─────────────────────────────────────────────────────────
 
     async def run(self, on_input: Any) -> None:
-        """Async input loop using prompt_toolkit for rich completions.
+        """Input loop using a custom CBREAK reader with Rich @mention dropdown.
 
-        Replaces the old readline + asyncio.to_thread approach so that:
-
-        * ``@`` file-mention autocomplete appears as a dropdown below the
-          cursor in real time (no TAB required).
-        * ``/command`` completions work the same way.
-        * History is managed by prompt_toolkit's ``FileHistory`` (persists
-          across sessions in ``.agenthicc/history``).
-        * Ctrl+C is raised as ``KeyboardInterrupt`` from ``prompt_async()``
-          — first press warns, second press exits cleanly.
+        * Typing ``@`` immediately opens an inline file picker below the prompt.
+        * History (↑/↓) is maintained in memory and persisted to the history file.
+        * Ctrl+C: first press warns, second press exits.
+        * No prompt_toolkit dependency in the hot path.
         """
+        import asyncio as _asyncio  # noqa: PLC0415
         import inspect, os as _os, shutil as _sh  # noqa: PLC0415
-        from prompt_toolkit.formatted_text import FormattedText  # noqa: PLC0415
-        from agenthicc.tui.input_bar import InputBarSession  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+        from agenthicc.tui.mention_input import read_line_with_mention  # noqa: PLC0415
 
         _is_async = inspect.iscoroutinefunction(on_input)
 
-        session = InputBarSession(
-            base_path=self._base_path,
-            history_file=self._history_file,
-        )
-
-        # Register skill slash-command completions
-        from agenthicc.tui.input_bar import CommandSpec  # noqa: PLC0415
-        for slug, skill in getattr(self, "_skills", {}).items():
-            session.register_command(CommandSpec(name=f"/{slug}", description=skill.description or skill.name))
-
-        # Styled ❯ prompt rendered by prompt_toolkit (not Rich markup).
-        _prompt = FormattedText([("bold ansigreen", "❯"), ("", " ")])
-
-        _ctrl_c_count = [0]
-
-        while True:
-            self._flush_new_lines()
-            self._print_status()
-
+        # ── history ───────────────────────────────────────────────────────
+        _history: list[str] = []
+        if self._history_file:
             try:
-                text = await session.prompt_async(_prompt)
-                _ctrl_c_count[0] = 0
-            except KeyboardInterrupt:
-                _ctrl_c_count[0] += 1
-                if _ctrl_c_count[0] == 1:
-                    self.console.print("[dim]Press Ctrl+C again to exit.[/dim]")
+                _history = [
+                    ln.strip()
+                    for ln in _Path(self._history_file).read_text(encoding="utf-8").splitlines()
+                    if ln.strip()
+                ]
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+
+        def _save_history() -> None:
+            if self._history_file and _history:
+                try:
+                    _Path(self._history_file).parent.mkdir(parents=True, exist_ok=True)
+                    _Path(self._history_file).write_text(
+                        "\n".join(_history[-1000:]) + "\n", encoding="utf-8"
+                    )
+                except Exception:
+                    pass
+
+        _cwd = _Path(self._base_path).resolve()
+
+        try:
+            while True:
+                self._flush_new_lines()
+                self._print_status()
+
+                try:
+                    text = await _asyncio.to_thread(
+                        read_line_with_mention, "❯ ", _cwd, _history
+                    )
+                except KeyboardInterrupt:
+                    # Safety net: ISIG is cleared inside _raw_mode so this
+                    # should never fire during normal input, but if a SIGINT
+                    # arrives from outside (e.g. a subprocess) we exit cleanly.
+                    break
+
+                if text is None:
+                    # Ctrl+C / Ctrl+D handled inside read_line_with_mention.
+                    break
+
+                text = text.strip()
+                if not text:
                     continue
-                rid = self._status.resume_id or ""
-                hint = (
-                    f"`agenthicc --resume {rid}`" if rid
-                    else "`agenthicc --continue`"
+
+                self.console.print(
+                    f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
                 )
-                self.console.print(f"\n[dim]To resume, run {hint}[/dim]\n")
-                _os._exit(0)
-            except EOFError:
-                break
 
-            text = text.strip()
-            if not text:
-                continue
-
-            self.console.print(
-                f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
-            )
-
-            handled = SlashCommandHandler(renderer=self, skills=getattr(self, "_skills", {})).handle(text, self.model, self.console)
-            pending = getattr(self, "_pending_skill", None)
-            if pending:
-                self._pending_skill = None
-                self.on_intent_submitted()
-                if _is_async:
-                    await on_input(pending)
-                else:
-                    on_input(pending)
-                self._flush_new_lines()
-            elif not handled:
-                self.on_intent_submitted()
-                if _is_async:
-                    await on_input(text)
-                else:
-                    on_input(text)
-                self._flush_new_lines()
+                handled = SlashCommandHandler(
+                    renderer=self, skills=getattr(self, "_skills", {})
+                ).handle(text, self.model, self.console)
+                pending = getattr(self, "_pending_skill", None)
+                if pending:
+                    self._pending_skill = None
+                    self.on_intent_submitted()
+                    if _is_async:
+                        await on_input(pending)
+                    else:
+                        on_input(pending)
+                    self._flush_new_lines()
+                elif not handled:
+                    self.on_intent_submitted()
+                    if _is_async:
+                        await on_input(text)
+                    else:
+                        on_input(text)
+                    self._flush_new_lines()
+        finally:
+            _save_history()
 
     def _print_status(self) -> None:
         """Print status line + top border of the input area."""
@@ -615,7 +603,7 @@ class SlashCommandHandler:
             self._renderer._status.session_id = f"{provider}/{effective_model}"
 
     def _expand(self, cmd: str, model: TranscriptModel, console: Any) -> None:
-        """Toggle expanded output for a tool call by ID prefix."""
+        """Toggle expanded output for a tool call by ID prefix, or an @mention chip."""
         parts = cmd.split()
         prefix = parts[1] if len(parts) > 1 else ""
         found = 0
@@ -624,10 +612,16 @@ class SlashCommandHandler:
                 if not prefix or tc.tool_use_id.startswith(prefix):
                     tc.expanded = True
                     found += 1
+        if prefix.startswith("@"):
+            for turn in model.turns:
+                for chip in getattr(turn, "mention_chips", []):
+                    if chip.raw.startswith(prefix) or chip.raw == prefix:
+                        chip.expanded = True
+                        found += 1
         if found:
-            console.print(f"[dim]Expanded {found} tool call{'s' if found > 1 else ''}.[/dim]")
+            console.print(f"[dim]Expanded {found} item{'s' if found > 1 else ''}.[/dim]")
         else:
-            console.print(f"[dim]No tool call found matching {prefix!r}[/dim]")
+            console.print(f"[dim]No item found matching {prefix!r}[/dim]")
 
     def _help(self, console: Any) -> None:
         if not RICH_AVAILABLE:  # pragma: no cover
