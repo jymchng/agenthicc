@@ -36,6 +36,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Generator
 
+from agenthicc.tui.trigger import TriggerRegistry, TriggerHandler, TriggerContext, MatchItem
+
 __all__ = ["read_line_with_mention", "Key"]
 
 _MAX_VISIBLE = 8
@@ -232,16 +234,20 @@ def _redraw(
     prompt_str: str,
     buf: list[str],
     fragment: str,
-    matches: list[tuple[str, str]],
+    matches: list[MatchItem],
     selected: int,
     prev_n_lines: int,
-    in_mention: bool,
+    in_trigger: bool,
+    hint: str | None = None,
+    trigger_char: str = "@",
 ) -> int:
     """Erase old dropdown, redraw the input line, render new dropdown.
 
     Returns the number of dropdown lines now visible (caller stores this as
     *prev_n_lines* for the next iteration).
     """
+    import shutil
+
     out = sys.stdout
 
     # Step 1: erase old dropdown rows (move down, clear each, move back up).
@@ -251,24 +257,37 @@ def _redraw(
         out.write(f"\x1b[{prev_n_lines}A")
 
     # Step 2: redraw the input line.
-    mention_suffix = ("@" + fragment) if in_mention else ""
+    mention_suffix = (trigger_char + fragment) if in_trigger else ""
     out.write("\r\x1b[2K" + prompt_str + "".join(buf) + mention_suffix)
 
-    # Step 3: render dropdown if in mention mode with matches.
-    if in_mention and matches:
-        visible = matches[:_MAX_VISIBLE]
+    # Step 3: render dropdown if in trigger mode with matches.
+    if in_trigger and matches:
+        n = min(_MAX_VISIBLE, len(matches))
+        # Scroll offset: keep the selected row inside the visible window.
+        scroll = max(0, min(selected - n + 1, len(matches) - n))
+        visible = matches[scroll : scroll + n]
         lines: list[str] = []
-        for i, (path, _meta) in enumerate(visible):
-            indicator = "▶" if i == selected else " "
-            name = f"+ {path}"
-            if i == selected:
+        for i, item in enumerate(visible):
+            actual = scroll + i          # global index in matches
+            indicator = "▶" if actual == selected else " "
+            name = f"+ {item.display}"
+            if actual == selected:
                 line = f"\r\x1b[2K  \x1b[7m{indicator} {name}\x1b[0m"
             else:
                 line = f"\r\x1b[2K  {indicator} {name}"
             lines.append(line)
-        if len(matches) > _MAX_VISIBLE:
-            extra = len(matches) - _MAX_VISIBLE
-            lines.append(f"\r\x1b[2K  \x1b[2m… and {extra} more\x1b[0m")
+
+        if hint is not None:
+            cols = shutil.get_terminal_size((80, 24)).columns
+            sep = "─" * min(cols - 4, 60)
+            lines.append(f"\r\x1b[2K  \x1b[2m{sep}\x1b[0m")
+            lines.append(f"\r\x1b[2K  \x1b[2m{hint[:cols - 4]}\x1b[0m")
+
+        below = len(matches) - (scroll + n)
+        if below > 0:
+            lines.append(f"\r\x1b[2K  \x1b[2m… {below} more ↓\x1b[0m")
+        elif scroll > 0:
+            lines.append(f"\r\x1b[2K  \x1b[2m↑ {scroll} more above\x1b[0m")
 
         new_n_lines = len(lines)
         out.write("\n" + "\n".join(lines))
@@ -286,8 +305,9 @@ def read_line_with_mention(
     prompt_str: str,
     cwd: Path,
     history: list[str],
+    registry: TriggerRegistry | None = None,
 ) -> str | None:
-    """Read one line of input with @-mention dropdown support.
+    """Read one line of input with trigger-dropdown support.
 
     If stdin is not a TTY, falls back to plain ``input()``.
 
@@ -295,6 +315,8 @@ def read_line_with_mention(
         prompt_str: The prompt string to display (may contain ANSI codes).
         cwd: Working directory used to resolve @-mention file paths.
         history: Mutable list; successfully entered lines are appended in-place.
+        registry: Optional :class:`TriggerRegistry`; defaults to one containing
+            :class:`~agenthicc.tui.triggers.at_mention.AtMentionTrigger`.
 
     Returns:
         The entered string, or ``None`` on Ctrl+C (double) / Ctrl+D.
@@ -309,14 +331,22 @@ def read_line_with_mention(
         except (EOFError, KeyboardInterrupt):
             return None
 
+    from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+    _registry = registry
+    if _registry is None:
+        _registry = TriggerRegistry()
+        _registry.register(AtMentionTrigger())
+    _ctx = TriggerContext(cwd=cwd, history=history)
+
     fd = sys.stdin.fileno()
 
     # State variables
     buf: list[str] = []
-    in_mention: bool = False
+    active_handler: TriggerHandler | None = None
     fragment: str = ""
-    matches: list[tuple[str, str]] = []
+    matches: list[MatchItem] = []
     selected: int = 0
+    current_hint: str | None = None
     prev_dropdown_lines: int = 0
     hist_idx: int = len(history)
     saved_buf: list[str] = []
@@ -327,19 +357,21 @@ def read_line_with_mention(
             # Redraw first, then read.
             prev_dropdown_lines = _redraw(
                 prompt_str, buf, fragment, matches, selected,
-                prev_dropdown_lines, in_mention,
+                prev_dropdown_lines, active_handler is not None, current_hint,
+                active_handler.char if active_handler else "@",
             )
 
             key, ch = _read_key(fd)
 
-            # ── IN mention mode ──────────────────────────────────────────────
-            if in_mention:
+            # ── IN trigger mode ──────────────────────────────────────────────
+            if active_handler is not None:
                 if key == Key.CTRL_C:
-                    # Cancel mention; let normal CTRL_C logic handle next iter.
-                    in_mention = False
-                    buf += ["@"] + list(fragment)
+                    # Cancel trigger; let normal CTRL_C logic handle next iter.
+                    buf = active_handler.on_cancel(fragment, buf)
+                    active_handler = None
                     fragment = ""
                     matches = []
+                    current_hint = None
                     prev_dropdown_lines = 0
                     ctrl_c_count += 1
                     # Show warning on first press, exit on second.
@@ -354,72 +386,80 @@ def read_line_with_mention(
                     continue
 
                 elif key == Key.ESC:
-                    # Cancel mention — restore "@fragment" into buf.
-                    in_mention = False
-                    buf += ["@"] + list(fragment)
+                    # Cancel trigger — restore trigger+fragment into buf.
+                    buf = active_handler.on_cancel(fragment, buf)
+                    active_handler = None
                     fragment = ""
                     matches = []
-                    # Erase dropdown immediately (pass current prev_dropdown_lines so
-                    # _redraw knows how many lines to clear, then reset to 0).
+                    current_hint = None
+                    # Erase dropdown immediately.
                     prev_dropdown_lines = _redraw(
-                        prompt_str, buf, fragment, [], 0, prev_dropdown_lines, False
+                        prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None
                     )
 
                 elif key in (Key.ENTER, Key.TAB):
-                    if matches:
-                        buf += list("@" + matches[selected][0])
-                    else:
-                        buf += ["@"] + list(fragment)
-                    if key == Key.TAB:
+                    item = matches[selected] if matches else None
+                    buf = active_handler.on_select(item, fragment, buf)
+                    if key == Key.TAB and buf and buf[-1] != " ":
                         buf.append(" ")
-                    in_mention = False
+                    active_handler = None
                     fragment = ""
                     matches = []
+                    current_hint = None
                     # Erase dropdown immediately on selection.
                     prev_dropdown_lines = _redraw(
-                        prompt_str, buf, fragment, [], 0, prev_dropdown_lines, False
+                        prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None
                     )
 
                 elif key == Key.BACKSPACE:
                     if fragment:
                         fragment = fragment[:-1]
-                        matches = _get_matches(fragment, cwd)
+                        matches = active_handler.get_matches(fragment, _ctx)
                         selected = 0
+                        current_hint = active_handler.get_hint(matches[selected] if matches else None)
                     else:
-                        # Backspace past the @ — cancel mention, drop the @.
-                        in_mention = False
-                        matches = []
+                        # Backspace past the trigger char — cancel, drop the trigger char.
+                        buf = active_handler.on_cancel(fragment, buf)
+                        buf.pop()  # remove the trigger char that on_cancel restored
+                        active_handler = None
                         fragment = ""
+                        matches = []
+                        current_hint = None
                         # Erase dropdown immediately.
                         prev_dropdown_lines = _redraw(
-                            prompt_str, buf, fragment, [], 0, prev_dropdown_lines, False
+                            prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None
                         )
 
                 elif key == Key.UP:
                     if matches:
-                        selected = (selected - 1) % min(len(matches), _MAX_VISIBLE)
+                        selected = (selected - 1) % len(matches)
+                        current_hint = active_handler.get_hint(matches[selected])
 
                 elif key == Key.DOWN:
                     if matches:
-                        selected = (selected + 1) % min(len(matches), _MAX_VISIBLE)
+                        selected = (selected + 1) % len(matches)
+                        current_hint = active_handler.get_hint(matches[selected])
 
-                elif key == Key.AT:
-                    # Treat a second @ as a literal character appended to fragment.
-                    fragment += "@"
-                    matches = _get_matches(fragment, cwd)
-                    selected = 0
-
-                elif key == Key.CHAR and ch:
-                    fragment += ch
-                    matches = _get_matches(fragment, cwd)
-                    selected = 0
+                else:
+                    # CHAR (including the trigger char itself typed again — append to fragment).
+                    if key == Key.AT:
+                        char_to_add = "@"
+                    elif key == Key.CHAR and ch:
+                        char_to_add = ch
+                    else:
+                        char_to_add = None
+                    if char_to_add is not None:
+                        fragment += char_to_add
+                        matches = active_handler.get_matches(fragment, _ctx)
+                        selected = 0
+                        current_hint = active_handler.get_hint(matches[selected] if matches else None)
 
                 # Reset ctrl_c_count on any key except CTRL_C.
                 if key != Key.CTRL_C:
                     ctrl_c_count = 0
                 continue
 
-            # ── NOT in mention mode ──────────────────────────────────────────
+            # ── NOT in trigger mode ──────────────────────────────────────────
             if key == Key.CTRL_C:
                 ctrl_c_count += 1
                 if ctrl_c_count == 1:
@@ -472,12 +512,18 @@ def read_line_with_mention(
                     hist_idx = len(history)
                     buf = list(saved_buf)
 
-            elif key == Key.AT:
-                # Enter mention mode.
-                in_mention = True
-                fragment = ""
-                matches = _get_matches("", cwd)
-                selected = 0
+            elif (key == Key.AT and "@" in _registry.chars) or (
+                key == Key.CHAR and ch and ch in _registry.chars
+            ):
+                trigger_ch = "@" if key == Key.AT else ch
+                active_handler = _registry.get(trigger_ch)
+                if active_handler:
+                    fragment = ""
+                    matches = active_handler.get_matches("", _ctx)
+                    selected = 0
+                    current_hint = active_handler.get_hint(matches[selected] if matches else None)
+                else:
+                    buf.append(trigger_ch)
 
             elif key == Key.CHAR and ch:
                 buf.append(ch)

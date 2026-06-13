@@ -14,9 +14,11 @@ from typing import Iterable
 __all__ = [
     "AtMentionCompleter",
     "BUILTIN_COMMANDS",
+    "CommandRegistry",
     "CommandSpec",
     "SlashCommandCompleter",
     "_entry_meta",
+    "build_default_registry",
 ]
 
 # ── slash-command registry ────────────────────────────────────────────────────
@@ -29,18 +31,24 @@ class CommandSpec:
     name: str           # e.g. "/status"
     description: str    # e.g. "Show running agents and their tasks"
     aliases: tuple[str, ...] = ()
+    argument_hint: str = ""      # e.g. "[provider] [model]"  (PRD-37)
+    group: str = "Built-in"      # "Built-in" | "Skills" | "Plugins" | "MCP"  (PRD-38)
 
 
 BUILTIN_COMMANDS: list[CommandSpec] = [
     CommandSpec("/status",   "Show running agents and their tasks"),
-    CommandSpec("/model",    "Show or switch LLM provider/model  (e.g. /model openai gpt-4o)"),
+    CommandSpec("/model",    "Show or switch LLM provider/model",
+                argument_hint="[provider] [model]"),
     CommandSpec("/models",   "List all available LLM providers"),
-    CommandSpec("/approve",  "Review and approve pending HITL tool calls"),
-    CommandSpec("/history",  "Browse the event log (last 20 entries)"),
-    CommandSpec("/settings", "View current configuration"),
+    CommandSpec("/skills",   "List available skills"),
+    CommandSpec("/expand",   "Expand tool output or @mention",
+                argument_hint="[tool-id-or-@path]"),
+    CommandSpec("/history",  "Browse the event log"),
     CommandSpec("/help",     "List available commands"),
     CommandSpec("/cancel",   "Cancel the currently running intent"),
     CommandSpec("/clear",    "Clear the transcript display"),
+    CommandSpec("/mcp",      "Show MCP server status",
+                argument_hint="[connect <url> [transport]]", group="MCP"),
 ]
 
 _SLASH_RE = re.compile(r"(?:^|\s)(\/\S*)$")
@@ -74,6 +82,64 @@ class SlashCommandCompleter:
         if m is None:
             return []
         return self.matches(m.group(1))
+
+
+class CommandRegistry:
+    """Centralised registry of slash commands (PRD-38)."""
+
+    def __init__(self) -> None:
+        self._commands: dict[str, CommandSpec] = {}
+        self._aliases: dict[str, str] = {}
+
+    def register(self, spec: CommandSpec) -> None:
+        self._commands[spec.name] = spec
+        for alias in spec.aliases:
+            self._aliases[alias] = spec.name
+
+    def register_many(self, specs: list[CommandSpec]) -> None:
+        for spec in specs:
+            self.register(spec)
+
+    def unregister(self, name: str) -> None:
+        canonical = self._aliases.pop(name, name)
+        spec = self._commands.pop(canonical, None)
+        if spec:
+            for alias in spec.aliases:
+                self._aliases.pop(alias, None)
+
+    def get(self, name: str) -> CommandSpec | None:
+        canonical = self._aliases.get(name, name)
+        return self._commands.get(canonical)
+
+    def all_commands(self) -> list[CommandSpec]:
+        return sorted(self._commands.values(), key=lambda c: c.name)
+
+    def commands_for_group(self, group: str) -> list[CommandSpec]:
+        return sorted((c for c in self._commands.values() if c.group == group), key=lambda c: c.name)
+
+    def groups(self) -> list[str]:
+        order = ["Built-in", "Skills", "Plugins", "MCP"]
+        seen = {c.group for c in self._commands.values()}
+        return [g for g in order if g in seen] + sorted(seen - set(order))
+
+    def matches(self, partial: str) -> list[CommandSpec]:
+        result = []
+        for cmd in self._commands.values():
+            for candidate in (cmd.name,) + cmd.aliases:
+                if candidate.startswith(partial):
+                    result.append(cmd)
+                    break
+        return sorted(result, key=lambda c: c.name)
+
+    def __len__(self) -> int:
+        return len(self._commands)
+
+
+def build_default_registry() -> CommandRegistry:
+    """Create a CommandRegistry pre-loaded with BUILTIN_COMMANDS."""
+    reg = CommandRegistry()
+    reg.register_many(BUILTIN_COMMANDS)
+    return reg
 
 
 # ── @-mention file helper ─────────────────────────────────────────────────────

@@ -193,6 +193,25 @@ class InlineRenderer:
 
         _cwd = _Path(self._base_path).resolve()
 
+        # ── trigger registry ──────────────────────────────────────────────────
+        from agenthicc.tui.trigger import TriggerRegistry  # noqa: PLC0415
+        from agenthicc.tui.triggers.at_mention import AtMentionTrigger  # noqa: PLC0415
+        from agenthicc.tui.triggers.slash_command import SlashCommandTrigger  # noqa: PLC0415
+        from agenthicc.tui.input_bar import build_default_registry, CommandSpec as _CS  # noqa: PLC0415
+        _cmd_registry = build_default_registry()
+        self._command_registry = _cmd_registry
+        # Register skills as slash commands
+        for slug, skill in getattr(self, "_skills", {}).items():
+            _cmd_registry.register(_CS(
+                name=f"/{slug}",
+                description=getattr(skill, "description", "") or getattr(skill, "name", slug),
+                argument_hint=getattr(skill, "argument_hint", ""),
+                group="Skills",
+            ))
+        _trigger_registry = TriggerRegistry()
+        _trigger_registry.register(AtMentionTrigger())
+        _trigger_registry.register(SlashCommandTrigger(_cmd_registry))
+
         try:
             while True:
                 self._flush_new_lines()
@@ -200,7 +219,7 @@ class InlineRenderer:
 
                 try:
                     text = await _asyncio.to_thread(
-                        read_line_with_mention, "❯ ", _cwd, _history
+                        read_line_with_mention, "❯ ", _cwd, _history, _trigger_registry
                     )
                 except KeyboardInterrupt:
                     # Safety net: ISIG is cleared inside _raw_mode so this
@@ -626,6 +645,18 @@ class SlashCommandHandler:
     def _help(self, console: Any) -> None:
         if not RICH_AVAILABLE:  # pragma: no cover
             return
+        registry = getattr(self._renderer, "_command_registry", None) if self._renderer else None
+        if registry is not None:
+            for group in registry.groups():
+                table = Table(title=group, box=rich_box.SIMPLE)
+                table.add_column("Command", style="bold")
+                table.add_column("Arguments", style="dim")
+                table.add_column("Description")
+                for cmd in registry.commands_for_group(group):
+                    table.add_row(cmd.name, cmd.argument_hint or "", cmd.description)
+                console.print(table)
+            return
+        # Fallback: use SLASH_HELP dict
         table = Table(title="Slash Commands", box=rich_box.SIMPLE)
         table.add_column("Command", style="bold")
         table.add_column("Description")
