@@ -260,6 +260,68 @@ class InlineRenderer:
         self._mode_manager = _mode_manager
         self._mode_registry = _mode_registry
 
+        # ── filesystem backend router ────────────────────────────────────────
+        from agenthicc.tools.fs.router import BackendRouter as _BackendRouter  # noqa: PLC0415
+        from agenthicc.tools.fs.linux import LinuxFilesystemBackend as _LinuxBE  # noqa: PLC0415
+        from agenthicc.tools.fs.agent_tools import configure_router as _configure_fs_router  # noqa: PLC0415
+        _fs_router = _BackendRouter(_LinuxBE(_cwd))
+        # Wire S3 backend if configured
+        cfg = getattr(self, "_loaded_config", None)
+        _s3_cfg = getattr(getattr(cfg, "storage", None), "s3", None)
+        if _s3_cfg is not None and getattr(_s3_cfg, "configured", False):
+            try:
+                from agenthicc.tools.fs.s3 import S3FilesystemBackend as _S3BE  # noqa: PLC0415
+                _s3_be = _S3BE(
+                    bucket=_s3_cfg.bucket, prefix=_s3_cfg.prefix,
+                    region=_s3_cfg.region,
+                    access_key_id=_s3_cfg.access_key_id,
+                    secret_access_key=_s3_cfg.secret_access_key,
+                    endpoint_url=_s3_cfg.endpoint_url,
+                    profile=_s3_cfg.profile,
+                )
+                _fs_router.register("s3://", _s3_be)
+                self.console.print(f"[dim]S3 backend: s3://{_s3_cfg.bucket}/{_s3_cfg.prefix}[/dim]")
+            except ImportError as _e:
+                self.console.print(f"[yellow]S3 backend unavailable: {_e}[/yellow]")
+        _configure_fs_router(_fs_router)
+        self._fs_router = _fs_router
+
+        # ── SIGINT → task cancellation during agent turns ────────────────────
+        # While read_line_with_mention runs, ISIG is cleared so Ctrl+C delivers
+        # \x03 to the input reader and never reaches the OS signal layer.
+        # Between input cycles (during agent execution) ISIG is NOT cleared, so
+        # SIGINT fires normally.  We install an asyncio SIGINT handler that
+        # cancels the active agent task instead of letting KeyboardInterrupt
+        # propagate and crash the process.
+        import signal as _sig  # noqa: PLC0415
+
+        _loop = _asyncio.get_event_loop()
+        self._current_agent_task: _asyncio.Task | None = None
+        _sigint_installed = False
+
+        def _sigint_agent_cancel() -> None:
+            t = self._current_agent_task
+            if t is not None and not t.done():
+                t.cancel()
+
+        try:
+            _loop.add_signal_handler(_sig.SIGINT, _sigint_agent_cancel)
+            _sigint_installed = True
+        except (NotImplementedError, RuntimeError):
+            pass  # Windows / no running loop — falls back to KeyboardInterrupt catch below
+
+        async def _run_agent(coro: Any) -> None:
+            """Run *coro* as a cancellable task; catch interrupt cleanly."""
+            self._current_agent_task = _asyncio.ensure_future(coro)
+            try:
+                await self._current_agent_task
+            except (_asyncio.CancelledError, KeyboardInterrupt):
+                # Agent turn was interrupted — status already reset by _run_agent_turn
+                # (which catches the same exceptions and sets renderer._status.active = False).
+                pass
+            finally:
+                self._current_agent_task = None
+
         try:
             while True:
                 self._flush_new_lines()
@@ -302,19 +364,30 @@ class InlineRenderer:
                     self._pending_skill = None
                     self.on_intent_submitted()
                     if _is_async:
-                        await on_input(pending)
+                        await _run_agent(on_input(pending))
                     else:
-                        on_input(pending)
+                        try:
+                            on_input(pending)
+                        except (KeyboardInterrupt, _asyncio.CancelledError):
+                            self._status.active = False
                     self._flush_new_lines()
                 elif not handled:
                     self.on_intent_submitted()
                     if _is_async:
-                        await on_input(text)
+                        await _run_agent(on_input(text))
                     else:
-                        on_input(text)
+                        try:
+                            on_input(text)
+                        except (KeyboardInterrupt, _asyncio.CancelledError):
+                            self._status.active = False
                     self._flush_new_lines()
         finally:
             _save_history()
+            if _sigint_installed:
+                try:
+                    _loop.remove_signal_handler(_sig.SIGINT)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _print_status(self) -> None:
         """Print status line + top border of the input area."""

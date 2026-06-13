@@ -647,12 +647,21 @@ async def _run_agent_turn(
         elif not content:
             content = "(no response)"
         # Token counts + cost already accumulated via ModelCallComplete signal handler above
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        # Ctrl+C pressed while the agent was running.  Clean exit — nothing to
+        # append to the transcript; the input loop will resume normally.
+        content = ""
     except Exception as exc:
         content = f"⚠ Error: {exc}"
     finally:
         spin_task.cancel()
         ctrlO_task.cancel()
-        await asyncio.gather(spin_task, ctrlO_task, return_exceptions=True)
+        # Protect the cleanup await: if this task is being cancelled a second
+        # time the gather itself could raise CancelledError mid-flight.
+        try:
+            await asyncio.gather(spin_task, ctrlO_task, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
         live.stop()
         renderer._status.active = False
         renderer._status.completed_agents += 1

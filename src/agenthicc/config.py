@@ -32,6 +32,8 @@ __all__ = [
     "PROVIDER_DEFAULT_MODELS",
     "PROVIDER_ENV_SHORTCUTS",
     "SecuritySettings",
+    "StorageS3Settings",
+    "StorageSettings",
     "SUPPORTED_PROVIDERS",
     "ToolSettings",
     "build_llm_config",
@@ -189,6 +191,31 @@ class AgentsSettings:
 
 
 @dataclass
+class StorageS3Settings:
+    """S3/S3-compatible storage credentials and configuration."""
+    bucket: str = ""
+    region: str = "us-east-1"
+    prefix: str = ""
+    access_key_id: str = ""
+    secret_access_key: str = ""
+    endpoint_url: str = ""
+    profile: str = ""
+    path_style: bool = False
+    mounts: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.bucket)
+
+
+@dataclass
+class StorageSettings:
+    """Top-level storage configuration (S3 and future backends)."""
+    s3: StorageS3Settings = field(default_factory=StorageS3Settings)
+    default_backend: str = "linux"
+
+
+@dataclass
 class AgenthiccConfig:
     execution: ExecutionSettings = field(default_factory=ExecutionSettings)
     hooks: dict[str, list[str]] = field(default_factory=dict)
@@ -198,6 +225,7 @@ class AgenthiccConfig:
     api: ApiSettings = field(default_factory=ApiSettings)
     plugins: PluginSettings = field(default_factory=PluginSettings)
     agents: AgentsSettings = field(default_factory=AgentsSettings)
+    storage: StorageSettings = field(default_factory=StorageSettings)
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""
@@ -417,6 +445,26 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
         api_key_env=ap.get("api_key_env", "AGENTHICC_API_KEY"),
     )
 
+    # Parse [storage] and [storage.s3] sections
+    raw_storage = dict(data.get("storage", {}))
+    raw_s3 = dict(raw_storage.pop("s3", {}))
+    raw_mounts = raw_s3.pop("mounts", {})
+    s3_settings = StorageS3Settings(
+        bucket=raw_s3.get("bucket", ""),
+        region=raw_s3.get("region", "us-east-1"),
+        prefix=raw_s3.get("prefix", ""),
+        access_key_id=raw_s3.get("access_key_id", ""),
+        secret_access_key=raw_s3.get("secret_access_key", ""),
+        endpoint_url=raw_s3.get("endpoint_url", ""),
+        profile=raw_s3.get("profile", ""),
+        path_style=raw_s3.get("path_style", False),
+        mounts=raw_mounts,
+    )
+    storage_settings = StorageSettings(
+        s3=s3_settings,
+        default_backend=raw_storage.get("default_backend", "linux"),
+    )
+
     return AgenthiccConfig(
         execution=execution,
         hooks=hooks,
@@ -424,6 +472,7 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
         memory=memory,
         security=security,
         api=api,
+        storage=storage_settings,
     )
 
 

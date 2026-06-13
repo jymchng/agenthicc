@@ -442,6 +442,9 @@ class PatchFileTool(Tool):
 class FsToolKit:
     """Factory that returns all 14 filesystem tools."""
 
+    def __init__(self, backend: Any = None) -> None:
+        self._backend = backend
+
     def tools(self, workspace_root: str = ".") -> list[Tool]:
         return [
             ReadFileTool(), WriteFileTool(), AppendFileTool(), DeleteFileTool(),
@@ -449,3 +452,8 @@ class FsToolKit:
             FileExistsTool(), SearchFilesTool(), GrepFilesTool(), GetFileInfoTool(),
             ReadLinesTool(), PatchFileTool(),
         ]
+
+    def all_agent_tools(self) -> list:
+        """Return all 24 @tool()-decorated agent tools (14 original + 10 new)."""
+        from agenthicc.tools.fs.agent_tools import FS_AGENT_TOOLS  # noqa: PLC0415
+        return FS_AGENT_TOOLS
