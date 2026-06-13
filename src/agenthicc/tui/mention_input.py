@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Generator
 
 from agenthicc.tui.trigger import TriggerRegistry, TriggerHandler, TriggerContext, MatchItem
+from agenthicc.tui.menu import MenuDriver, MenuResult, MenuResultKind, MenuWidget
 
 __all__ = ["read_line_with_mention", "Key"]
 
@@ -292,6 +293,11 @@ def _redraw(
         new_n_lines = len(lines)
         out.write("\n" + "\n".join(lines))
         out.write(f"\x1b[{new_n_lines}A")  # cursor back up to input row
+        # Reposition cursor at end of input content.
+        # After the cursor-up, the column equals that of the last menu row,
+        # not the end of the input text.  Writing the same content again is
+        # idempotent visually but moves the cursor to the correct column.
+        out.write("\r" + prompt_str + "".join(buf) + mention_suffix)
         out.flush()
         return new_n_lines
 
@@ -306,6 +312,7 @@ def read_line_with_mention(
     cwd: Path,
     history: list[str],
     registry: TriggerRegistry | None = None,
+    initial_menu: "MenuWidget | None" = None,
 ) -> str | None:
     """Read one line of input with trigger-dropdown support.
 
@@ -317,6 +324,9 @@ def read_line_with_mention(
         history: Mutable list; successfully entered lines are appended in-place.
         registry: Optional :class:`TriggerRegistry`; defaults to one containing
             :class:`~agenthicc.tui.triggers.at_mention.AtMentionTrigger`.
+        initial_menu: Optional :class:`~agenthicc.tui.menu.MenuWidget` to open
+            immediately at the start of this input cycle (e.g. a command menu
+            opened by the previous ``/config`` submission).
 
     Returns:
         The entered string, or ``None`` on Ctrl+C (double) / Ctrl+D.
@@ -337,6 +347,9 @@ def read_line_with_mention(
         _registry = TriggerRegistry()
         _registry.register(AtMentionTrigger())
     _ctx = TriggerContext(cwd=cwd, history=history)
+    driver = MenuDriver()
+    if initial_menu is not None:
+        driver.open(initial_menu)
 
     fd = sys.stdin.fileno()
 
@@ -354,14 +367,37 @@ def read_line_with_mention(
 
     with _raw_mode(fd):
         while True:
-            # Redraw first, then read.
+            # Determine what to show in the input bar.
+            if driver.active and driver.widget.edit_field_value is not None:
+                display_buf = list(driver.widget.edit_field_value)
+                trigger_ch_display = ""
+            elif active_handler is not None:
+                display_buf = buf
+                trigger_ch_display = active_handler.char
+            else:
+                display_buf = buf
+                trigger_ch_display = ""
+
             prev_dropdown_lines = _redraw(
-                prompt_str, buf, fragment, matches, selected,
+                prompt_str, display_buf, fragment, matches, selected,
                 prev_dropdown_lines, active_handler is not None, current_hint,
                 active_handler.char if active_handler else "@",
             )
+            if driver.active:
+                driver._prev_lines = driver.widget.render(prompt_str, display_buf, driver._prev_lines)
 
             key, ch = _read_key(fd)
+
+            # ── MenuDriver dispatch ──────────────────────────────────────────
+            if driver.active:
+                result = driver.handle_key(key, ch)
+                if result.kind == MenuResultKind.CANCEL:
+                    pass  # menu closed, back to normal editing
+                elif result.kind == MenuResultKind.DONE:
+                    # Command menus: result.data may be None (side-effects already applied)
+                    pass
+                ctrl_c_count = 0  # any menu interaction resets ctrl_c_count
+                continue
 
             # ── IN trigger mode ──────────────────────────────────────────────
             if active_handler is not None:

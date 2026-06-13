@@ -212,14 +212,29 @@ class InlineRenderer:
         _trigger_registry.register(AtMentionTrigger())
         _trigger_registry.register(SlashCommandTrigger(_cmd_registry))
 
+        # ── command menu registry ─────────────────────────────────────────
+        from agenthicc.tui.menu import CommandMenuRegistry, RendererContext  # noqa: PLC0415
+        from agenthicc.tui.widgets.config_menu import ConfigurationMenu  # noqa: PLC0415
+        _menu_registry = CommandMenuRegistry()
+        _menu_registry.register(
+            "/config",
+            lambda ctx: ConfigurationMenu(ctx.config, ctx.console),
+        )
+        self._menu_registry = _menu_registry
+
         try:
             while True:
                 self._flush_new_lines()
                 self._print_status()
 
+                _initial_menu = getattr(self, "_pending_menu", None)
+                if _initial_menu is not None:
+                    self._pending_menu = None
+
                 try:
                     text = await _asyncio.to_thread(
-                        read_line_with_mention, "❯ ", _cwd, _history, _trigger_registry
+                        read_line_with_mention, "❯ ", _cwd, _history,
+                        _trigger_registry, _initial_menu,
                     )
                 except KeyboardInterrupt:
                     # Safety net: ISIG is cleared inside _raw_mode so this
@@ -465,6 +480,25 @@ class SlashCommandHandler:
         stripped = text.strip()
         # Route on the first token so "/model anthropic claude-haiku" works
         first = stripped.split()[0] if stripped.split() else stripped
+
+        # Check CommandMenuRegistry for commands that open interactive menus (PRD-42)
+        menu_registry = (
+            getattr(self._renderer, "_menu_registry", None)
+            if self._renderer else None
+        )
+        if menu_registry is not None:
+            from agenthicc.tui.menu import RendererContext  # noqa: PLC0415
+            factory = menu_registry.get(first)
+            if factory is not None:
+                ctx = RendererContext(
+                    config=getattr(self._renderer, "_loaded_config", None),
+                    console=console,
+                    session_id=getattr(getattr(self._renderer, "_status", None), "session_id", ""),
+                )
+                widget = factory(ctx)
+                self._renderer._pending_menu = widget
+                console.print(f"  [dim]Opening {first} menu…[/dim]")
+                return True
 
         if first == "/status":
             self._status(model, console)

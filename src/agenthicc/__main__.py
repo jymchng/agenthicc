@@ -722,6 +722,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
         f"{cfg.execution.provider}/{cfg.execution.effective_model()}"
     )
     renderer._status.resume_id = session_id
+    renderer._loaded_config = cfg   # used by ConfigurationMenu
 
     renderer._active_agent = "default"
     renderer._exec_cfg = cfg.execution  # expose to _run_agent_turn for @mention config
