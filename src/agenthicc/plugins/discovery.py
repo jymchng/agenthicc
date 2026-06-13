@@ -32,6 +32,7 @@ class LoadResult:
     tools: list[PluginTool] = field(default_factory=list)
     error: str | None = None
     missing_deps: list[str] = field(default_factory=list)
+    commands: list = field(default_factory=list)  # list[Command] from COMMANDS export
 
     @property
     def ok(self) -> bool:
@@ -48,6 +49,11 @@ class PluginToolSet:
     def all_tools(self) -> list[PluginTool]:
         """Flat list of every successfully loaded tool callable."""
         return [t for r in self.results for t in r.tools]
+
+    @property
+    def all_commands(self) -> list:
+        """Flat list of all Command objects from plugin files that exported COMMANDS."""
+        return [cmd for r in self.results for cmd in r.commands]
 
     @property
     def failed(self) -> list[LoadResult]:
@@ -173,18 +179,30 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
 
     tools = getattr(module, "TOOLS", None)
     if tools is None:
-        return LoadResult(path=path, tools=[])
-    if not isinstance(tools, (list, tuple)):
+        valid = []
+    elif not isinstance(tools, (list, tuple)):
         return LoadResult(path=path, error="TOOLS must be a list of callables")
+    else:
+        valid = []
+        for t in tools:
+            if callable(t):
+                valid.append(t)
+            else:
+                log.warning("Plugin %s: non-callable item in TOOLS skipped: %r", path, t)
 
-    valid: list[PluginTool] = []
-    for t in tools:
-        if callable(t):
-            valid.append(t)
-        else:
-            log.warning("Plugin %s: non-callable item in TOOLS skipped: %r", path, t)
+    # Also extract optional COMMANDS list (PRD-45)
+    raw_commands = getattr(module, "COMMANDS", None)
+    if raw_commands is not None:
+        valid_cmds = []
+        for item in (raw_commands if isinstance(raw_commands, (list, tuple)) else []):
+            # Validate lazily — just collect non-None items; full validation in plugin_loader
+            if item is not None:
+                valid_cmds.append(item)
+        result_commands = valid_cmds
+    else:
+        result_commands = []
 
-    return LoadResult(path=path, tools=valid)
+    return LoadResult(path=path, tools=valid, commands=result_commands)
 
 
 # ---------------------------------------------------------------------------

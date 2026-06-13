@@ -196,6 +196,8 @@ class ConfigurationMenu:
             self._activate()
         elif key == Key.LEFT:
             self._collapse_section()
+        elif key == Key.CHAR and ch == "s":
+            self._save()
 
         return MenuResult.continue_()
 

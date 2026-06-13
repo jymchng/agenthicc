@@ -197,30 +197,49 @@ class InlineRenderer:
         from agenthicc.tui.trigger import TriggerRegistry  # noqa: PLC0415
         from agenthicc.tui.triggers.at_mention import AtMentionTrigger  # noqa: PLC0415
         from agenthicc.tui.triggers.slash_command import SlashCommandTrigger  # noqa: PLC0415
-        from agenthicc.tui.input_bar import build_default_registry, CommandSpec as _CS  # noqa: PLC0415
-        _cmd_registry = build_default_registry()
-        self._command_registry = _cmd_registry
-        # Register skills as slash commands
+        # ── unified command registry (PRD-44) ────────────────────────────
+        from agenthicc.commands import build_builtin_registry, CommandDispatcher, Command as _Cmd  # noqa: PLC0415
+        from agenthicc.commands.plugin_loader import discover_command_plugins  # noqa: PLC0415
+        _cmd_registry = build_builtin_registry()
+        self._cmd_registry = _cmd_registry
+        # Skills auto-register (PRD-45)
         for slug, skill in getattr(self, "_skills", {}).items():
-            _cmd_registry.register(_CS(
+            def _make_skill_handler(s=skill, sl=slug):
+                def _h(ctx):
+                    import os as _os
+                    from pathlib import Path as _P
+                    from agenthicc.skills.runner import process_skill_body as _psb
+                    args = ctx.args.split() if ctx.args.strip() else []
+                    sid = getattr(getattr(self._status, "resume_id", None), "__str__", lambda: "")() or ""
+                    body = _psb(s, args=args, cwd=_P(_os.getcwd()), session_id=sid)
+                    self._pending_skill = body
+                    ctx.console.print(f"  [dim]Invoking skill [bold]/{sl}[/bold][/dim]")
+                    return True
+                return _h
+            _cmd_registry.register(_Cmd(
                 name=f"/{slug}",
                 description=getattr(skill, "description", "") or getattr(skill, "name", slug),
-                argument_hint=getattr(skill, "argument_hint", ""),
                 group="Skills",
+                argument_hint=getattr(skill, "argument_hint", ""),
+                source_id=f"skill:{slug}",
+                handler=_make_skill_handler(),
             ))
+        # Command plugins auto-register (PRD-46)
+        _cmd_plugins = discover_command_plugins(
+            project_dir=_Path(".agenthicc"),
+            user_dir=_Path.home() / ".agenthicc",
+        )
+        for cmd in _cmd_plugins.all_commands:
+            _cmd_registry.register(cmd)
+        if _cmd_plugins.all_commands:
+            from rich.console import Console as _RC
+            names = ", ".join(c.name for c in _cmd_plugins.all_commands)
+            _RC().print(f"[dim]Loaded {len(_cmd_plugins.all_commands)} command plugin(s): {names}[/dim]")
+        _dispatcher = CommandDispatcher(_cmd_registry)
+        self._dispatcher = _dispatcher
         _trigger_registry = TriggerRegistry()
         _trigger_registry.register(AtMentionTrigger())
-        _trigger_registry.register(SlashCommandTrigger(_cmd_registry))
-
-        # ── command menu registry ─────────────────────────────────────────
-        from agenthicc.tui.menu import CommandMenuRegistry, RendererContext  # noqa: PLC0415
-        from agenthicc.tui.widgets.config_menu import ConfigurationMenu  # noqa: PLC0415
-        _menu_registry = CommandMenuRegistry()
-        _menu_registry.register(
-            "/config",
-            lambda ctx: ConfigurationMenu(ctx.config, ctx.console),
-        )
-        self._menu_registry = _menu_registry
+        _trigger_registry.register(SlashCommandTrigger(_cmd_registry))  # UnifiedCommandRegistry
 
         try:
             while True:
@@ -476,53 +495,48 @@ class SlashCommandHandler:
         self._skills = skills or {}
 
     def handle(self, text: str, model: TranscriptModel, console: Any) -> bool:
-        """Dispatch *text* to a slash-command renderer.  Returns True if handled."""
+        """Dispatch to UnifiedCommandRegistry via CommandDispatcher."""
+        from agenthicc.commands import CommandContext, CommandDispatcher  # noqa: PLC0415
         stripped = text.strip()
-        # Route on the first token so "/model anthropic claude-haiku" works
         first = stripped.split()[0] if stripped.split() else stripped
+        if not first.startswith("/"):
+            return False
 
-        # Check CommandMenuRegistry for commands that open interactive menus (PRD-42)
+        ctx = CommandContext(
+            text=stripped,
+            args=" ".join(stripped.split()[1:]),
+            model=model,
+            console=console,
+            renderer=self._renderer,
+            config=getattr(self._renderer, "_loaded_config", None) if self._renderer else None,
+            session_id=getattr(getattr(self._renderer, "_status", None), "session_id", ""),
+        )
+
+        # Prefer the renderer's real CommandDispatcher when available.
+        renderer_dispatcher = (
+            getattr(self._renderer, "_dispatcher", None) if self._renderer else None
+        )
+        if isinstance(renderer_dispatcher, CommandDispatcher):
+            return renderer_dispatcher.dispatch(stripped, ctx)
+
+        # If the renderer exposes a _menu_registry, try that first for menu
+        # commands (e.g. /config → ConfigurationMenu).
         menu_registry = (
-            getattr(self._renderer, "_menu_registry", None)
-            if self._renderer else None
+            getattr(self._renderer, "_menu_registry", None) if self._renderer else None
         )
         if menu_registry is not None:
-            from agenthicc.tui.menu import RendererContext  # noqa: PLC0415
-            factory = menu_registry.get(first)
+            factory = menu_registry.get(first) if hasattr(menu_registry, "get") else None
             if factory is not None:
-                ctx = RendererContext(
-                    config=getattr(self._renderer, "_loaded_config", None),
-                    console=console,
-                    session_id=getattr(getattr(self._renderer, "_status", None), "session_id", ""),
-                )
                 widget = factory(ctx)
-                self._renderer._pending_menu = widget
-                console.print(f"  [dim]Opening {first} menu…[/dim]")
+                if self._renderer is not None:
+                    self._renderer._pending_menu = widget
                 return True
 
-        if first == "/status":
-            self._status(model, console)
-            return True
-        if first == "/history":
-            self._history(model, console)
-            return True
-        if first in ("/model", "/models"):
-            self._model(stripped, console)
-            return True
-        if first == "/expand":
-            self._expand(stripped, model, console)
-            return True
-        if first == "/help":
-            self._help(console)
-            return True
-        if first == "/skills":
-            self._list_skills(console)
-            return True
-        slug = first[1:] if first.startswith("/") else ""
-        if slug and slug in self._skills:
-            self._invoke_skill(stripped, console)
-            return True
-        return False
+        # Fallback: use the built-in command registry so that /status, /history,
+        # /help etc. work even when no renderer (or no real dispatcher) is set.
+        from agenthicc.commands import build_builtin_registry  # noqa: PLC0415
+        fallback = CommandDispatcher(build_builtin_registry())
+        return fallback.dispatch(stripped, ctx)
 
     def _status(self, model: TranscriptModel, console: Any) -> None:
         if not RICH_AVAILABLE:  # pragma: no cover
@@ -679,7 +693,10 @@ class SlashCommandHandler:
     def _help(self, console: Any) -> None:
         if not RICH_AVAILABLE:  # pragma: no cover
             return
-        registry = getattr(self._renderer, "_command_registry", None) if self._renderer else None
+        registry = (
+            getattr(self._renderer, "_cmd_registry", None)
+            or getattr(self._renderer, "_command_registry", None)
+        ) if self._renderer else None
         if registry is not None:
             for group in registry.groups():
                 table = Table(title=group, box=rich_box.SIMPLE)

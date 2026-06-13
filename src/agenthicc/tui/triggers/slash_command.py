@@ -7,7 +7,7 @@ class SlashCommandTrigger:
     char = "/"
 
     def __init__(self, registry=None) -> None:
-        self._registry = registry  # CommandRegistry | None
+        self._registry = registry  # UnifiedCommandRegistry | None (PRD-44)
 
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
         if self._registry is None:
