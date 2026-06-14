@@ -304,12 +304,14 @@ def _redraw(
     mention_suffix = (trigger_char + fragment) if in_trigger else ""
     out.write(prompt_str + "".join(buf) + mention_suffix)
 
-    # Step 2b — permanent mode footer (truncated so it never wraps)
+    # Step 2b — border + permanent mode footer (truncated so it never wraps)
     n_base = 0
     if mode_line is not None:
+        _rule = "─" * cols
         _safe_line = _truncate_to_cols(mode_line, max(8, cols - 4))
+        out.write(f"\n\r\x1b[2m{_rule}\x1b[0m")
         out.write(f"\n\r  \x1b[2m{_safe_line}\x1b[0m")
-        n_base = 1
+        n_base = 2
 
     # Step 3: render dropdown if in trigger mode with matches.
     # Lines are already blank (cleared by ESC[0J in step 1) so no per-line
