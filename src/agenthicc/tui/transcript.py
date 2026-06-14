@@ -268,7 +268,7 @@ class TranscriptModel:
 
     # ── rendering ────────────────────────────────────────────────────────
 
-    MAX_VISIBLE_TOOL_CALLS = 5
+    MAX_VISIBLE_TOOL_CALLS = 10_000  # effectively unlimited — no "… and N more" banner
 
     def render(self) -> list[str]:
         """Render the transcript to plain-text lines (PRD-06 §5.1).

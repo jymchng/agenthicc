@@ -102,14 +102,17 @@ class AgenthiccTUI:
         self.transcript.set_model(model)
 
         # Convenience aliases to the component states
-        self.status_state  = self.live_panel.status
-        self.footer_state  = self.live_panel.footer
+        self.status_state    = self.live_panel.status
+        self.footer_state    = self.live_panel.footer
         self.input_bar_state = self.live_panel.input_bar
-        self.spinner_state = self.live_panel.spinner
+        self.spinner_state   = self.live_panel.spinner
 
         self._wire_bus()
         self._status = _StatusShim(self.status_state, self.footer_state)
         self._current_agent_task: Any = None
+
+        # StreamingInput is created lazily in run() once pending_queue exists.
+        self._streaming_input: Any = None
 
     # ── EventBus wiring ───────────────────────────────────────────────────────
 
@@ -136,28 +139,41 @@ class AgenthiccTUI:
     def _on_user_message(self, e: UserMessageEvent) -> None:
         self.transcript.print_user(e.text)
 
-    def _on_assistant_start(self, e: AssistantStartEvent) -> None:
-        self.transcript.print_assistant_header(e.model_short)
+    def _on_assistant_start(self, _: AssistantStartEvent) -> None:
+        pass  # TranscriptModel.render() already outputs the ● assistant header
 
     def _on_assistant_chunk(self, e: AssistantChunkEvent) -> None:
         self.spinner_state.set_streaming_text(e.chunk)
 
     def _on_assistant_complete(self, _: AssistantCompleteEvent) -> None:
-        self.spinner_state.set_streaming_text("")
+        # Flush whatever was just appended to the transcript (text + any completed
+        # tool calls) to the scroll buffer before clearing the spinner, so the user
+        # always sees completed work above the live panel.
         self.transcript.flush_from_model()
+        # Clear the spinner so the next batch of tool calls renders fresh.
+        # The scroll buffer retains the full history; only the live view resets.
+        self.spinner_state.set_streaming_text("")
+        self.spinner_state.clear()
 
     def _on_thinking_step(self, e: ThinkingStepEvent) -> None:
         self.transcript.print_thinking_step(e.step, e.done)
 
     def _on_tool_start(self, e: ToolStartEvent) -> None:
+        # Clear any streaming-text preview before adding the new tool row.
+        # If the LLM streamed prose between two tool groups, that text would
+        # otherwise appear as a dim separator line between them.
+        self.spinner_state.set_streaming_text("")
         self.spinner_state.add_call(e.tool_use_id, e.name, e.args)
         self.status_state.tool  = e.name
         self.status_state.state = "running"
         self.footer_state.mode  = "running"
 
     def _on_tool_complete(self, e: ToolCompleteEvent) -> None:
+        # Update the spinner only — do NOT print to stdout yet.
+        # The live panel is active; printing to stdout at the same time creates
+        # a duplicate "group 1 / border / group 2" split.  The transcript will
+        # be flushed via _flush_new_lines() once live_panel.stop() is called.
         self.spinner_state.complete_call(e.tool_use_id, e.success, e.duration_ms, e.diff)
-        self.transcript.print_tool_complete(e.name, e.success, e.duration_ms, e.diff)
         self.status_state.state = "thinking"
         self.status_state.tool  = ""
 
@@ -254,6 +270,12 @@ class AgenthiccTUI:
         self._mode_manager = _mode_manager
         _cwd = _Path(self._base_path).resolve()
         _dispatcher = CommandDispatcher(_cmd_registry)
+
+        # StreamingInput — queues messages typed during agent turns.
+        from agenthicc.tui.streaming_input import StreamingInput  # noqa: PLC0415
+        _pending_queue: list[str] = []
+        _streaming_input = StreamingInput(self.input_bar_state, _pending_queue, self.console)
+        self._streaming_input = _streaming_input
         _loop = _a.get_event_loop()
         _current_task: _a.Task | None = None
 
@@ -320,6 +342,7 @@ class AgenthiccTUI:
 
                 self.on_intent_submitted()
                 self.live_panel.start()
+                _streaming_input.start()
                 if _is_async:
                     await _run_agent(on_input(text))
                 else:
@@ -327,9 +350,26 @@ class AgenthiccTUI:
                         on_input(text)
                     except (KeyboardInterrupt, _a.CancelledError):
                         self._status.active = False
+                _streaming_input.stop()
                 self.live_panel.stop()
                 self._flush_new_lines()
+                # Drain any messages queued while the agent was running.
+                while _pending_queue:
+                    next_text = _pending_queue.pop(0)
+                    self.console.print(
+                        f"[bold green]❯[/bold green] {next_text}",
+                        markup=True, highlight=False,
+                    )
+                    self.on_intent_submitted()
+                    self.live_panel.start()
+                    _streaming_input.start()
+                    if _is_async:
+                        await _run_agent(on_input(next_text))
+                    _streaming_input.stop()
+                    self.live_panel.stop()
+                    self._flush_new_lines()
         finally:
+            _streaming_input.stop()
             tick_task.cancel()
             try:
                 _loop.remove_signal_handler(_sig.SIGINT)

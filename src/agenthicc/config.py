@@ -333,10 +333,15 @@ def _coerce_env(value: str) -> Any:
 
 
 def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
-    """Apply AGENTHICC_<SECTION>_<KEY> environment variables and provider shortcuts."""
+    """Apply AGENTHICC_<SECTION>_<KEY> environment variables and provider shortcuts.
+
+    Env vars always override both user-global and per-project config files.
+    Within env vars, ``AGENTHICC_*`` takes priority over provider shorthands.
+    """
     import os  # noqa: PLC0415
 
-    # 1. AGENTHICC_* namespace (explicit, always applied)
+    # 1. AGENTHICC_* namespace — highest env priority, always overrides config files.
+    agenthicc_set: set[tuple[str, str]] = set()
     for key, value in os.environ.items():
         if not key.startswith("AGENTHICC_"):
             continue
@@ -346,10 +351,11 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
             continue
         section, field_name = parts
         config.setdefault(section, {})[field_name] = _coerce_env(value)
+        agenthicc_set.add((section, field_name))
 
     # 2. Provider-specific shorthand env vars (OPENAI_MODEL, OPENAI_BASE_URL, etc.)
-    #    These only set execution.model / execution.base_url; they also infer the
-    #    provider if no explicit AGENTHICC_EXECUTION_PROVIDER was set.
+    #    These override per-project config — env vars win over config files.
+    #    They yield only to an explicit AGENTHICC_* var (already applied above).
     explicit_provider = config.get("execution", {}).get("provider")
     inferred_provider: str | None = None
 
@@ -357,10 +363,10 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         value = os.environ.get(env_var)
         if not value:
             continue
-        # Only set the field if not already overridden by an AGENTHICC_* var
-        existing = config.get(section, {}).get(field_name)
-        if not existing:
-            config.setdefault(section, {})[field_name] = value
+        # Skip only if an AGENTHICC_* var already set this exact field.
+        if (section, field_name) in agenthicc_set:
+            continue
+        config.setdefault(section, {})[field_name] = value
         # Infer provider from which shorthand var was set (e.g. OPENAI_MODEL → openai)
         if inferred_provider is None:
             prefix = env_var.split("_")[0].lower()   # "OPENAI_MODEL" → "openai"
@@ -500,11 +506,14 @@ def load_config(
     2. User-global: ``~/.agenthicc/agenthicc.toml``   — identity, credentials,
                     preferred model, personal plugins/modes
     3. Per-project: ``.agenthicc/agenthicc.toml``      — project-specific overrides
-    4. Environment variables ``AGENTHICC_*``            — CI / dev convenience
+    4a. Provider shorthand env vars (``OPENAI_MODEL``, ``ANTHROPIC_API_KEY``, …)
+    4b. ``AGENTHICC_<SECTION>_<KEY>`` env vars         — always override config files;
+                                                          win over 4a shorthands
     5. CLI ``--set section.key=value`` overrides (highest)
 
-    Project config always wins over user-global config — this mirrors the Git
-    ``~/.gitconfig`` / ``.git/config`` layering model.
+    Environment variables always override both config files (user-global and
+    per-project).  This lets CI/CD and shell profiles reliably control
+    credentials and model selection without touching checked-in config.
 
     When ``project_path`` or ``user_path`` are given explicitly, the file must
     exist and be valid TOML (raises :class:`tomllib.TOMLDecodeError` on invalid

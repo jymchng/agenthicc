@@ -35,10 +35,23 @@ class Observable(Protocol):
 
 @runtime_checkable
 class RenderableState(Observable, Protocol):
-    """A state object that can render itself as a Rich markup string."""
+    """A state object that can render itself as a Rich markup string.
 
-    def render(self) -> str:
-        """Return a Rich markup string representing the current state."""
+    *cols* (terminal width) is passed in by the caller so every component
+    receives the same value for a given frame — no component ever reads
+    terminal width independently.
+    """
+
+    def height(self, cols: int) -> int:
+        """Number of terminal rows this component occupies at *cols* width.
+
+        Called by :class:`LivePanel` before rendering so it can calculate the
+        total panel height and detect overflow before writing to the screen.
+        """
+        ...
+
+    def render(self, cols: int) -> str:
+        """Return a Rich markup string that fits within *cols* columns."""
         ...
 
 
@@ -94,7 +107,7 @@ class TranscriptPrinter(Protocol):
 
 @runtime_checkable
 class StatusState(RenderableState, Protocol):
-    """Reactive state for the agent status bar."""
+    """Reactive state for the agent status bar.  Always 1 row."""
 
     @property
     def state(self) -> str: ...

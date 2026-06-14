@@ -95,7 +95,11 @@ class StatusBarState(_Observable):
                 self._elapsed = elapsed
                 self._notify()
 
-    def render(self) -> str:
+    def height(self, cols: int) -> int:  # noqa: ARG002
+        """Status bar is always exactly 1 row."""
+        return 1
+
+    def render(self, cols: int = 80) -> str:  # noqa: ARG002
         color = self._STATE_COLOR.get(self._state, "dim")
         label = self._state.title()
         parts: list[str] = [f"[{color}]Agent: {label}[/{color}]"]
@@ -151,7 +155,11 @@ class FooterState(_Observable):
         self._notification = text
         self._notify()
 
-    def render(self) -> str:
+    def height(self, cols: int) -> int:  # noqa: ARG002
+        """Footer is always exactly 1 row."""
+        return 1
+
+    def render(self, cols: int = 80) -> str:  # noqa: ARG002
         if self._notification:
             return f"[dim]{self._notification}[/dim]"
         raw = self.HINTS.get(self._mode, self.HINTS["idle"])
@@ -222,7 +230,30 @@ class InputBarState(_Observable):
         object.__setattr__(self, "_rp_paste_label", "")
         self._notify()
 
-    # ── rendering ─────────────────────────────────────────────────────────────
+    # ── height + rendering ────────────────────────────────────────────────────
+
+    def height(self, cols: int) -> int:
+        """Number of terminal rows the prompt occupies at *cols* width.
+
+        When paste is condensed the display is a single label line regardless
+        of how many lines the original content had.  When expanded (or for
+        normal typing) every logical line (split at ``\\n``) is counted plus
+        any terminal wrapping caused by long lines.
+        """
+        if self.paste_condensed:
+            # Condensed: one label line, regardless of original content size.
+            return 1
+
+        _FIRST_OVERHEAD = 2   # "❯ "
+        _REST_OVERHEAD  = 2   # "  "
+        logical_lines = "".join(self.buf).split("\n") if self.buf else [""]
+        total = 0
+        for i, line in enumerate(logical_lines):
+            overhead = _FIRST_OVERHEAD if i == 0 else _REST_OVERHEAD
+            usable = max(1, cols - overhead)
+            # ceil(len / usable), minimum 1 row even for empty lines
+            total += max(1, (len(line) + usable - 1) // usable)
+        return total
 
     def render_prompt(self) -> str:
         """Rich markup: ❯ <typed text> ▌ at the cursor position."""
@@ -316,6 +347,15 @@ class SpinnerState(_Observable):
         self._calls.clear()
         self._streaming_text = ""
         self._frame = 0
+
+    def height(self, cols: int) -> int:  # noqa: ARG002
+        """One row per tool call plus one row for streaming text preview (if any)."""
+        call_rows = sum(
+            1 + (min(6, len(c.get("diff", "").splitlines())) if c.get("diff") else 0)
+            for c in self._calls.values()
+        )
+        streaming_row = 1 if self._streaming_text else 0
+        return call_rows + streaming_row
 
     def render_calls(self) -> list[str]:
         lines: list[str] = []
