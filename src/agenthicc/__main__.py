@@ -710,7 +710,22 @@ async def _run_agent_turn(
             input_bar = f"[bold green]❯[/bold green] {_typed}"
             _q_count = len(pending_queue) if pending_queue is not None else 0
             _hdr = header + (f"  [dim]({_q_count} queued)[/dim]" if _q_count else "")
-            live.update(_mk("\n".join([top_rule] + call_lines + [_hdr, bot_rule, input_bar])))
+            # Mirror the real _redraw layout: border + mode line below the ❯ bar.
+            _mm = getattr(renderer, "_mode_manager", None)
+            if _mm is not None:
+                _m = _mm.active
+                _mode_str = (
+                    f"⏵⏵ {_m.badge} {_m.name}  (shift+tab to cycle)"
+                    if _m.name != "Auto"
+                    else "⏵⏵ Auto  (shift+tab to cycle)"
+                )
+            else:
+                _mode_str = "⏵⏵ Auto  (shift+tab to cycle)"
+            mode_border = "[dim]" + "─" * cols + "[/dim]"
+            mode_line = f"  [dim]{_mode_str}[/dim]"
+            live.update(_mk("\n".join(
+                [top_rule] + call_lines + [_hdr, bot_rule, input_bar, mode_border, mode_line]
+            )))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)
 
