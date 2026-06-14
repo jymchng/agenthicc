@@ -90,7 +90,8 @@ def test_redraw_mode_line_none_no_extra_output(capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_redraw_mode_line_text_returns_one(capsys):
+def test_redraw_mode_line_text_returns_two(capsys):
+    # mode_line now produces 2 rows: the border rule + the text line.
     result = _redraw(
         prompt_str="> ",
         buf=[],
@@ -101,11 +102,11 @@ def test_redraw_mode_line_text_returns_one(capsys):
         in_trigger=False,
         mode_line="some text",
     )
-    assert result == 1
+    assert result == 2
 
 
-def test_redraw_mode_line_empty_string_returns_one(capsys):
-    """An empty-string mode_line still counts as 1 extra line."""
+def test_redraw_mode_line_empty_string_returns_two(capsys):
+    """An empty-string mode_line still produces 2 extra lines (border + text)."""
     result = _redraw(
         prompt_str="> ",
         buf=[],
@@ -116,7 +117,7 @@ def test_redraw_mode_line_empty_string_returns_one(capsys):
         in_trigger=False,
         mode_line="",
     )
-    assert result == 1
+    assert result == 2
 
 
 def test_redraw_mode_line_text_appears_in_stdout(capsys):
@@ -167,7 +168,7 @@ def test_redraw_mode_line_with_one_match(capsys):
         in_trigger=True,
         mode_line="some text",
     )
-    assert result == 1 + min(8, 1)  # == 2
+    assert result == 2 + min(8, 1)  # == 3
 
 
 def test_redraw_mode_line_with_three_matches(capsys):
@@ -181,7 +182,7 @@ def test_redraw_mode_line_with_three_matches(capsys):
         in_trigger=True,
         mode_line="some text",
     )
-    assert result == 1 + min(8, 3)  # == 4
+    assert result == 2 + min(8, 3)  # == 5
 
 
 def test_redraw_mode_line_with_eight_matches(capsys):
@@ -195,11 +196,11 @@ def test_redraw_mode_line_with_eight_matches(capsys):
         in_trigger=True,
         mode_line="some text",
     )
-    assert result == 1 + min(8, 8)  # == 9
+    assert result == 2 + min(8, 8)  # == 10
 
 
 def test_redraw_mode_line_with_five_matches_formula(capsys):
-    """Return value equals 1 + min(8, len(matches)) for any n <= 8."""
+    """Return value equals 2 + min(8, len(matches)) for any n <= 8 (border counts as +1)."""
     for n in range(1, 9):
         result = _redraw(
             prompt_str="> ",
@@ -211,7 +212,7 @@ def test_redraw_mode_line_with_five_matches_formula(capsys):
             in_trigger=True,
             mode_line="mode",
         )
-        assert result == 1 + min(8, n), f"n={n}: expected {1 + min(8, n)}, got {result}"
+        assert result == 2 + min(8, n), f"n={n}: expected {2 + min(8, n)}, got {result}"
         capsys.readouterr()  # drain captured output between iterations
 
 

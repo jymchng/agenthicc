@@ -279,6 +279,7 @@ async def _run_agent_turn(
     processor: Any,
     session_memory: Any = None,
     max_agent_turns: int = 200,
+    pending_queue: list | None = None,
 ) -> None:
     """Run one agent turn: call LLM, stream response into transcript, show Rich spinner."""
     import re as _re  # noqa: PLC0415
@@ -513,10 +514,21 @@ async def _run_agent_turn(
     # CTRL+O toggles expanded/collapsed; ↑/↓ scroll in expanded mode.
     _expanded = [False]
     _scroll_offset = [0]  # first visible call_line index when expanded
+    _queue_input_buf: list[str] = []  # chars typed in the Live block input bar
 
-    async def _watch_ctrlO() -> None:
-        """Poll stdin for CTRL+O and arrow keys while the agent is thinking."""
+    async def _watch_input() -> None:
+        """Read keystrokes during agent streaming.
+
+        Preserves CTRL+O expand/collapse and arrow-key scroll.  Adds full
+        text-entry support so the user can compose and queue messages while
+        the agent is running:
+          - Printable / UTF-8 chars → _queue_input_buf
+          - Backspace (0x7f/0x08)   → pop from _queue_input_buf
+          - Ctrl+U (0x15)           → clear _queue_input_buf
+          - Enter (0x0d/0x0a)       → submit to pending_queue + print indicator
+        """
         import select as _sel, tty as _tty, termios as _tm  # noqa: PLC0415
+        from rich.markup import escape as _markup_escape  # noqa: PLC0415
         fd = sys.stdin.fileno()
         try:
             old = _tm.tcgetattr(fd)
@@ -529,20 +541,64 @@ async def _run_agent_turn(
                 r, _, _ = _sel.select([fd], [], [], 0)
                 if not r:
                     continue
-                ch = os.read(fd, 1)
-                if ch == b"\x0f":           # CTRL+O — toggle and reset scroll
+                b = os.read(fd, 1)
+
+                if b == b"\x0f":                    # CTRL+O — toggle expand
                     _expanded[0] = not _expanded[0]
                     _scroll_offset[0] = 0
-                elif ch == b"\x1b":         # possible escape sequence (arrow keys)
+
+                elif b == b"\x1b":                  # escape sequence
                     r2, _, _ = _sel.select([fd], [], [], 0.05)
                     if r2:
                         rest = os.read(fd, 2)
-                        seq = ch + rest
+                        seq = b + rest
                         if _expanded[0]:
                             if seq == b"\x1b[A":    # up arrow
                                 _scroll_offset[0] = max(0, _scroll_offset[0] - 1)
                             elif seq == b"\x1b[B":  # down arrow
                                 _scroll_offset[0] += 1  # clamped in _spin()
+
+                elif b in (b"\r", b"\n"):           # Enter — submit
+                    typed = "".join(_queue_input_buf).strip()
+                    _queue_input_buf.clear()
+                    if typed:
+                        if pending_queue is not None:
+                            pending_queue.append(typed)
+                        renderer.console.print(
+                            f"[dim]❯ {_markup_escape(typed)}  ⌛ Queued[/dim]",
+                            markup=True, highlight=False,
+                        )
+                        renderer._flush_new_lines()
+
+                elif b in (b"\x7f", b"\x08"):       # Backspace
+                    if _queue_input_buf:
+                        _queue_input_buf.pop()
+
+                elif b == b"\x15":                  # Ctrl+U — clear input
+                    _queue_input_buf.clear()
+
+                else:                               # printable / multi-byte UTF-8
+                    raw = b
+                    first = b[0]
+                    if first & 0b11100000 == 0b11000000:
+                        n_extra = 1
+                    elif first & 0b11110000 == 0b11100000:
+                        n_extra = 2
+                    elif first & 0b11111000 == 0b11110000:
+                        n_extra = 3
+                    else:
+                        n_extra = 0
+                    for _ in range(n_extra):
+                        r3, _, _ = _sel.select([fd], [], [], 0.05)
+                        if r3:
+                            raw += os.read(fd, 1)
+                    try:
+                        ch = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        ch = ""
+                    if ch and ch.isprintable():
+                        _queue_input_buf.append(ch)
+
         except asyncio.CancelledError:
             pass
         finally:
@@ -648,8 +704,13 @@ async def _run_agent_turn(
             # Bottom rule + ❯ is the persistent input bar pinned at the bottom.
             top_rule = "[dim]" + "─" * cols + "[/dim]"
             bot_rule = "[dim]" + "─" * cols + "[/dim]"
-            input_bar = "[bold green]❯[/bold green] "
-            live.update(_mk("\n".join([top_rule] + call_lines + [header, bot_rule, input_bar])))
+            _typed = "".join(_queue_input_buf)
+            if len(_typed) > cols - 4:
+                _typed = _typed[:cols - 7] + "…"
+            input_bar = f"[bold green]❯[/bold green] {_typed}"
+            _q_count = len(pending_queue) if pending_queue is not None else 0
+            _hdr = header + (f"  [dim]({_q_count} queued)[/dim]" if _q_count else "")
+            live.update(_mk("\n".join([top_rule] + call_lines + [_hdr, bot_rule, input_bar])))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)
 
@@ -658,7 +719,7 @@ async def _run_agent_turn(
     _streaming_text: list[str] = [""]   # [0] = current partial turn text
 
     spin_task = asyncio.create_task(_spin())
-    ctrlO_task = asyncio.create_task(_watch_ctrlO())
+    input_task = asyncio.create_task(_watch_input())
 
     # Per-turn text accumulation (run_stream yields chunks across all turns)
     _current_turn: list[str] = []
@@ -723,11 +784,11 @@ async def _run_agent_turn(
     finally:
         _streaming_text[0] = ""
         spin_task.cancel()
-        ctrlO_task.cancel()
+        input_task.cancel()
         # Protect the cleanup await: if this task is being cancelled a second
         # time the gather itself could raise CancelledError mid-flight.
         try:
-            await asyncio.gather(spin_task, ctrlO_task, return_exceptions=True)
+            await asyncio.gather(spin_task, input_task, return_exceptions=True)
         except asyncio.CancelledError:
             pass
         live.stop()
@@ -887,30 +948,50 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     agent_runner = _build_agent_runner(llm_cfg, transcript=model)
 
     _MD_SENTINEL = InlineRenderer._MD_SENTINEL
+    _pending_queue: list[str] = []   # FIFO queue for messages submitted while agent runs
 
     async def on_intent(text: str) -> None:
-        idx = _turn_index[0]
-        conv_store.save_turn(session_id, idx, "user", text, time.time())
-        turns_before = len(model.turns)
+        from rich.markup import escape as _markup_escape  # noqa: PLC0415
 
-        await _run_agent_turn(
-            text, agent_runner, model, renderer, processor,
-            session_memory=_session_memory,
-            max_agent_turns=cfg.execution.max_agent_turns,
-        )
+        async def _run_one(user_text: str, turn_idx: int) -> None:
+            """Save user turn, run agent, save assistant turn for one message."""
+            conv_store.save_turn(session_id, turn_idx, "user", user_text, time.time())
+            turns_before = len(model.turns)
+            await _run_agent_turn(
+                user_text, agent_runner, model, renderer, processor,
+                session_memory=_session_memory,
+                max_agent_turns=cfg.execution.max_agent_turns,
+                pending_queue=_pending_queue,
+            )
+            if len(model.turns) > turns_before:
+                last = model.turns[-1]
+                content = "\n".join(
+                    ln.replace(_MD_SENTINEL, "") for ln in last.lines
+                ).strip()
+                ms = last.agent_name.replace("assistant (", "").rstrip(")")
+                conv_store.save_turn(session_id, turn_idx, "assistant", content,
+                                     time.time(), model_short=ms)
 
-        # Capture the assistant response just added to the transcript
-        if len(model.turns) > turns_before:
-            last = model.turns[-1]
-            content = "\n".join(
-                ln.replace(_MD_SENTINEL, "") for ln in last.lines
-            ).strip()
-            ms = last.agent_name.replace("assistant (", "").rstrip(")")
-            conv_store.save_turn(session_id, idx, "assistant", content, time.time(), model_short=ms)
-
-        # Persist memory so the next resume sees full context
-        conv_store.save_memory_snapshot(session_id, _session_memory.snapshot())
+        await _run_one(text, _turn_index[0])
         _turn_index[0] += 1
+
+        # Drain messages that arrived while the agent was running, one at a time.
+        try:
+            while _pending_queue:
+                next_text = _pending_queue.pop(0)
+                renderer.console.print(
+                    f"[bold green]❯[/bold green] {_markup_escape(next_text)}",
+                    markup=True, highlight=False,
+                )
+                renderer._flush_new_lines()
+                await _run_one(next_text, _turn_index[0])
+                _turn_index[0] += 1
+        except asyncio.CancelledError:
+            _pending_queue.clear()  # discard unprocessed messages on interrupt
+            raise
+
+        # Persist memory once after the whole burst is drained (not per-turn).
+        conv_store.save_memory_snapshot(session_id, _session_memory.snapshot())
 
     # Start ad rotator for free-tier authenticated users
     ad_task: asyncio.Task | None = None
