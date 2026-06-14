@@ -27,7 +27,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     from agenthicc.kernel.processor import restore_from_log
     from agenthicc.tui.transcript import TranscriptModel
     from agenthicc.tui.events import TUIEventAdapter
-    from agenthicc.tui.app import InlineRenderer
+    from agenthicc.tui.app import AgenthiccApp
     from agenthicc.config import load_config, build_llm_config
     from agenthicc.conversation_store import ConversationStore  # noqa: PLC0415
 
@@ -66,7 +66,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
                         markup=True)
         llm_cfg = None
 
-    renderer = InlineRenderer(
+    renderer = AgenthiccApp(
         model, adapter,
         base_path=os.getcwd(),
         history_file=".agenthicc/history",
@@ -160,7 +160,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     # Build the lauren-ai runner that calls the LLM
     agent_runner = _build_agent_runner(llm_cfg, transcript=model)
 
-    _MD_SENTINEL = InlineRenderer._MD_SENTINEL
+    _MD_SENTINEL = "\x00md\x00"
     _pending_queue: list[str] = []   # FIFO queue for messages submitted while agent runs
 
     async def on_intent(text: str) -> None:

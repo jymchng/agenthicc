@@ -1,0 +1,111 @@
+/* theme.css — Textual CSS for AgenthiccApp (PRD-55 Phase 1)
+   All layout, colours, and display toggles for the full app.
+*/
+
+/* ── CSS variables ────────────────────────────────────────────────────────── */
+
+$primary: #00d4aa;
+$primary-darken: #00a87a;
+$background: #1a1a2e;
+$surface: #16213e;
+$text: #e0e0e0;
+$text-muted: #888888;
+$accent: #7c3aed;
+
+/* ── Root App ─────────────────────────────────────────────────────────────── */
+
+App {
+    background: $background;
+    layers: below above;
+}
+
+/* ── TranscriptView ──────────────────────────────────────────────────────── */
+
+TranscriptView {
+    height: 1fr;
+    overflow-y: scroll;
+    padding: 0 1;
+}
+
+.agent-header {
+    color: $primary;
+    text-style: bold;
+    padding-top: 1;
+}
+
+.tool-call {
+    padding-left: 3;
+    color: $text;
+}
+
+.tool-call.running {
+    color: $text-muted;
+}
+
+.tool-call.success {
+    color: $primary;
+}
+
+.tool-call.failure {
+    color: red;
+}
+
+/* ── InputPanel ─────────────────────────────────────────────────────────── */
+
+InputPanel {
+    height: auto;
+    max-height: 30vh;
+    border-top: heavy $primary;
+    border-bottom: heavy $primary-darken;
+}
+
+/* ── ModeFooter ─────────────────────────────────────────────────────────── */
+
+ModeFooter {
+    height: 1;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+/* ── StatusBar ──────────────────────────────────────────────────────────── */
+
+StatusBar {
+    height: 1;
+    background: $surface;
+    color: $primary;
+    dock: top;
+    display: none;
+}
+
+StatusBar.active {
+    display: block;
+}
+
+/* ── SpinnerPanel ───────────────────────────────────────────────────────── */
+
+SpinnerPanel {
+    padding-left: 2;
+    color: $text;
+}
+
+/* ── TriggerMenu ────────────────────────────────────────────────────────── */
+
+TriggerMenu {
+    background: $surface;
+    border: round $primary;
+    max-height: 10;
+    display: none;
+}
+
+TriggerMenu.visible {
+    display: block;
+}
+
+/* ── CommandModal ───────────────────────────────────────────────────────── */
+
+CommandModal {
+    width: 80%;
+    height: 80%;
+    background: $surface;
+    border: thick $primary;
+}

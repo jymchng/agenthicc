@@ -24,7 +24,7 @@ class CommandContext:
     args: str        # everything after the command name, e.g. "anthropic gpt-4o"
     model: Any       # TranscriptModel
     console: Any     # Rich Console
-    renderer: Any    # InlineRenderer
+    renderer: Any    # AgenthiccApp or similar renderer
     config: Any      # AgenthiccConfig (live, mutable)
     session_id: str = ""
 

@@ -134,7 +134,7 @@ def test_agent_runner_sees_config_change_from_command():
     cfg = AgenthiccConfig()
     assert cfg.execution.provider == "anthropic"
 
-    # Simulate what InlineRenderer would do: use a live mutable cfg object
+    # Simulate what the renderer would do: use a live mutable cfg object
     mock_runner = MagicMock()
     mock_runner._transport = MagicMock()
     mock_runner._transport._config = MagicMock()
