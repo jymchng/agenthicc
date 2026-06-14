@@ -291,7 +291,10 @@ async def _run_agent_turn(
                     if r2:
                         rest = os.read(fd, 2)
                         seq = b + rest
-                        if _expanded[0]:
+                        if len(rest) == 1 and rest in (b"\r", b"\n"):
+                            # Alt+Enter — insert newline for multi-line queued input.
+                            _queue_input_buf.append("\n")
+                        elif _expanded[0]:
                             if seq == b"\x1b[A":    # up arrow
                                 _scroll_offset[0] = max(0, _scroll_offset[0] - 1)
                             elif seq == b"\x1b[B":  # down arrow

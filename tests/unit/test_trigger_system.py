@@ -308,17 +308,21 @@ def test_registry_repr_contains_chars():
 # ── can_activate contract ─────────────────────────────────────────────────────
 
 
-def test_slash_command_trigger_activates_only_on_empty_buf():
-    """SlashCommandTrigger must refuse to activate mid-buffer.
+def test_slash_command_trigger_activates_on_empty_buf_or_after_newline():
+    """SlashCommandTrigger activates on an empty buffer or after a newline.
 
     Regression: typing '@docs/index.md', backspacing to '@docs', then pressing
     '/' triggered the slash-command dropdown instead of inserting a literal '/'.
+    Multi-line extension: '/cmd' at the start of a new line in a multi-line
+    input should also open the command picker.
     """
     from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
     t = SlashCommandTrigger()
-    assert t.can_activate([]) is True                      # empty buf → command
-    assert t.can_activate(list("@docs")) is False          # mid-buffer → literal
-    assert t.can_activate(list("hello world")) is False    # mid-buffer → literal
+    assert t.can_activate([]) is True                        # empty buf → command
+    assert t.can_activate(["\n"]) is True                    # after newline → command
+    assert t.can_activate(list("first line\n")) is True      # after newline → command
+    assert t.can_activate(list("@docs")) is False            # mid-buffer → literal
+    assert t.can_activate(list("hello world")) is False      # mid-buffer → literal
 
 
 def test_at_mention_trigger_activates_after_whitespace_or_at_start():

@@ -120,6 +120,7 @@ class Key(str, Enum):
     HOME      = "HOME"
     END       = "END"
     ENTER     = "ENTER"
+    ALT_ENTER = "ALT_ENTER"   # insert newline (multi-line input)
     TAB       = "TAB"
     ESC       = "ESC"
     BACKSPACE = "BACKSPACE"
@@ -160,6 +161,9 @@ def _read_key(fd: int) -> tuple[Key, str]:
         if not r:
             return (Key.ESC, "")
         b2 = os.read(fd, 1)
+        if b2 in (b"\r", b"\n"):
+            # Alt+Enter — insert a newline in multi-line input.
+            return (Key.ALT_ENTER, "")
         if b2 != b"[":
             # Malformed or alt-key — treat as ESC
             return (Key.ESC, "")
@@ -317,10 +321,14 @@ def _redraw(
     # rows below in a single escape.
     out.write("\r\x1b[0J")
 
-    # Step 2: redraw the input line with ▌ cursor at the insertion point.
+    # Step 2: redraw the (possibly multiline) input.
     mention_suffix = (trigger_char + fragment) if in_trigger else ""
     from agenthicc.tui.input_area import prompt_ansi as _ia_prompt_ansi  # noqa: PLC0415
-    out.write(_ia_prompt_ansi(buf, mention_suffix, cursor, in_trigger))
+    _prompt_content = _ia_prompt_ansi(buf, mention_suffix, cursor, in_trigger)
+    # Count extra input rows so steps 5a/5b can move the cursor back correctly.
+    _prompt_parts = _prompt_content.split("\n\r")
+    _n_input_extra = len(_prompt_parts) - 1  # 0 for single-line
+    out.write(_prompt_content)  # cursor ends on last input row
 
     # Step 2b — border + permanent mode footer (truncated so it never wraps)
     n_base = 0
@@ -364,21 +372,28 @@ def _redraw(
         elif scroll > 0:
             lines.append(f"\r  \x1b[2m↑ {scroll} more above\x1b[0m")
 
-        # Step 5a (dropdown path): cursor back up to input row and reposition.
-        new_n_lines = n_base + len(lines)
+        # Step 5a (dropdown path): move cursor back up to first input row.
+        # _n_input_extra accounts for any extra rows in a multiline input.
+        new_n_lines = n_base + _n_input_extra + len(lines)
         out.write("\n" + "\n".join(lines))
         out.write(f"\x1b[{new_n_lines}A")
-        out.write("\r" + _ia_prompt_ansi(buf, mention_suffix, cursor, in_trigger))
+        out.write("\r" + _prompt_content)  # rewrite all input lines
+        if _n_input_extra:
+            out.write(f"\x1b[{_n_input_extra}A")  # back to first input row
         _apply_cursor(out, buf, in_trigger, cursor)
         out.flush()
         return new_n_lines
 
-    if n_base:
-        out.write(f"\x1b[{n_base}A")
-        out.write("\r" + _ia_prompt_ansi(buf, mention_suffix, cursor, in_trigger))
+    # Step 5b (no dropdown): move cursor back up to first input row.
+    _total_up = _n_input_extra + n_base
+    if _total_up:
+        out.write(f"\x1b[{_total_up}A")
+        out.write("\r" + _prompt_content)  # rewrite all input lines
+        if _n_input_extra:
+            out.write(f"\x1b[{_n_input_extra}A")  # back to first input row
     _apply_cursor(out, buf, in_trigger, cursor)
     out.flush()
-    return n_base
+    return _total_up
 
 
 def _apply_cursor(
@@ -451,19 +466,39 @@ def _find_trigger_tail(
     return None  # no activatable trigger char in the non-whitespace suffix
 
 
-def _erase_below() -> None:
-    """Erase the footer/dropdown rows before a submit or exit write.
+def _scrub_cursor(buf: list[str], n_input_rows: int) -> None:
+    """Rewrite all input lines without the ▌ cursor so it does not persist in
+    the scroll buffer after the user submits.
 
-    Architectural note: uses ESC[0J ("erase from cursor to end of screen")
-    rather than a counted loop.  The cursor is always on the input line when
-    this is called (invariant maintained by _redraw).  We step down exactly
-    one row (into the footer area), erase everything from there to the bottom
-    of the screen unconditionally, then step back up.  No row count needed —
-    immune to line-wrap and wide-character miscounting.
+    The cursor is assumed to be on the first input line (the invariant
+    maintained by _redraw).  Each line is overwritten with ``\\r`` + plain text
+    + ``\\x1b[0K`` (erase to end of terminal row) to remove any leftover ▌.
+    The cursor is returned to the first input line at the end.
+    """
+    from agenthicc.tui.input_area import PROMPT_CHAR  # noqa: PLC0415
+    _INDENT = "  "
+    out = sys.stdout
+    lines = "".join(buf).split("\n")
+    out.write(f"\r\x1b[1;32m{PROMPT_CHAR}\x1b[0m {lines[0]}\x1b[0K")
+    for _line in lines[1:]:
+        out.write(f"\n\r{_INDENT}{_line}\x1b[0K")
+    if n_input_rows > 1:
+        out.write(f"\x1b[{n_input_rows - 1}A")  # back to first input row
+    out.flush()
+
+
+def _erase_below(n_input_rows: int = 1) -> None:
+    """Erase footer/dropdown rows before a submit or exit write.
+
+    Steps down past all *n_input_rows* input lines, erases to end of screen,
+    then steps back up to the first input line.  ``n_input_rows`` defaults to
+    1 for single-line input; pass ``max(1, buf_text.count('\\n') + 1)`` for
+    multiline buffers so that lines 2+ are not accidentally cleared.
     """
     out = sys.stdout
-    out.write("\n\r\x1b[0J")   # step down 1 row, CR, erase to bottom
-    out.write("\x1b[1A")        # step back up to input line
+    out.write("\n" * n_input_rows)  # step past all input rows
+    out.write("\r\x1b[0J")          # erase from here to bottom
+    out.write(f"\x1b[{n_input_rows}A")  # step back to first input line
     out.flush()
 
 
@@ -594,6 +629,8 @@ def read_line_with_mention(
                         buf = []
                         cursor = 0
                     else:
+                        _n_rows = max(1, "".join(buf).count("\n") + 1)
+                        _erase_below(_n_rows)
                         _show_exit_hint(resume_id)
                         return None
                     continue
@@ -719,7 +756,8 @@ def read_line_with_mention(
             # ── NOT in trigger mode ──────────────────────────────────────────
             if key == Key.CTRL_C:
                 ctrl_c_count += 1
-                _erase_below()
+                _n_rows = max(1, "".join(buf).count("\n") + 1)
+                _erase_below(_n_rows)
                 prev_dropdown_lines = 0
                 if ctrl_c_count == 1:
                     # Warning is rendered by _get_mode_line() on next _redraw.
@@ -734,19 +772,28 @@ def read_line_with_mention(
             ctrl_c_count = 0
 
             if key == Key.CTRL_D:
-                _erase_below()
-                sys.stdout.write("\n")
+                _n_rows = max(1, "".join(buf).count("\n") + 1)
+                _scrub_cursor(buf, _n_rows)
+                _erase_below(_n_rows)
+                sys.stdout.write("\n" * _n_rows)
                 sys.stdout.flush()
                 return None if not buf else "".join(buf)
 
             elif key == Key.ENTER:
                 result = "".join(buf)
-                _erase_below()
-                sys.stdout.write("\n")
+                _n_rows = max(1, result.count("\n") + 1)
+                _scrub_cursor(buf, _n_rows)
+                _erase_below(_n_rows)
+                sys.stdout.write("\n" * _n_rows)
                 sys.stdout.flush()
                 if result:
                     history.append(result)
                 return result
+
+            elif key == Key.ALT_ENTER:
+                # Insert a newline at the cursor for multi-line input.
+                buf.insert(cursor, "\n")
+                cursor += 1
 
             elif key == Key.LEFT:
                 cursor = max(0, cursor - 1)
@@ -755,10 +802,16 @@ def read_line_with_mention(
                 cursor = min(len(buf), cursor + 1)
 
             elif key == Key.HOME:
-                cursor = 0
+                # Move to start of the current line (not the whole buffer).
+                text_before = "".join(buf[:cursor])
+                last_nl = text_before.rfind("\n")
+                cursor = last_nl + 1  # 0 when no '\n' found (rfind returns -1)
 
             elif key == Key.END:
-                cursor = len(buf)
+                # Move to end of the current line (not the whole buffer).
+                rest = "".join(buf[cursor:])
+                next_nl = rest.find("\n")
+                cursor = len(buf) if next_nl == -1 else cursor + next_nl
 
             elif key == Key.BACKSPACE:
                 # Re-enter trigger mode only when the cursor is at the end of
@@ -786,24 +839,54 @@ def read_line_with_mention(
                 cursor = 0
 
             elif key == Key.UP:
-                # History navigation: go back.
-                if hist_idx == len(history):
-                    saved_buf = list(buf)
-                if hist_idx > 0:
-                    hist_idx -= 1
-                    buf = list(history[hist_idx])
-                    cursor = len(buf)
+                # Within multiline: move to the same column on the previous line.
+                # Fall back to history navigation when already on the first line.
+                _text = "".join(buf)
+                _before = _text[:cursor]
+                _all_lines = _text.split("\n")
+                _lines_before = _before.split("\n")
+                _curr_line = len(_lines_before) - 1
+                _curr_col  = len(_lines_before[-1])
+                if _curr_line > 0:
+                    _prev_len = len(_all_lines[_curr_line - 1])
+                    _target_col = min(_curr_col, _prev_len)
+                    cursor = (
+                        sum(len(_all_lines[i]) + 1 for i in range(_curr_line - 1))
+                        + _target_col
+                    )
+                else:
+                    if hist_idx == len(history):
+                        saved_buf = list(buf)
+                    if hist_idx > 0:
+                        hist_idx -= 1
+                        buf = list(history[hist_idx])
+                        cursor = len(buf)
 
             elif key == Key.DOWN:
-                # History navigation: go forward.
-                if hist_idx < len(history) - 1:
-                    hist_idx += 1
-                    buf = list(history[hist_idx])
-                    cursor = len(buf)
-                elif hist_idx == len(history) - 1:
-                    hist_idx = len(history)
-                    buf = list(saved_buf)
-                    cursor = len(buf)
+                # Within multiline: move to the same column on the next line.
+                # Fall back to history navigation when already on the last line.
+                _text = "".join(buf)
+                _before = _text[:cursor]
+                _all_lines = _text.split("\n")
+                _lines_before = _before.split("\n")
+                _curr_line = len(_lines_before) - 1
+                _curr_col  = len(_lines_before[-1])
+                if _curr_line < len(_all_lines) - 1:
+                    _next_len = len(_all_lines[_curr_line + 1])
+                    _target_col = min(_curr_col, _next_len)
+                    cursor = (
+                        sum(len(_all_lines[i]) + 1 for i in range(_curr_line + 1))
+                        + _target_col
+                    )
+                else:
+                    if hist_idx < len(history) - 1:
+                        hist_idx += 1
+                        buf = list(history[hist_idx])
+                        cursor = len(buf)
+                    elif hist_idx == len(history) - 1:
+                        hist_idx = len(history)
+                        buf = list(saved_buf)
+                        cursor = len(buf)
 
             elif key == Key.SHIFT_TAB:
                 if mode_manager is not None:

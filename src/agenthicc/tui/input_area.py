@@ -45,12 +45,23 @@ def get_mode_str(mode_manager: Any | None) -> str:
 
 
 def prompt_markup(typed: str, cols: int) -> str:
-    """Rich markup prompt line: ``❯ <text>▌``."""
-    display = typed[:cols - 7] + "…" if len(typed) > cols - 4 else typed
-    return (
-        f"[bold green]{PROMPT_CHAR}[/bold green] "
-        f"{display}[bold]{CURSOR_CHAR}[/bold]"
-    )
+    """Rich markup prompt — handles multiline (``typed`` may contain ``\\n``).
+
+    First line is prefixed with ``❯``.  Subsequent lines are indented by two
+    spaces (aligning their content under the first-line text).  ``▌`` appears
+    on the last line so it always stays at the end of what the user has typed.
+    """
+    _INDENT = "  "
+    lines = typed.split("\n")
+    parts: list[str] = []
+    for i, line in enumerate(lines):
+        is_last = i == len(lines) - 1
+        content = line + (f"[bold]{CURSOR_CHAR}[/bold]" if is_last else "")
+        if i == 0:
+            parts.append(f"[bold green]{PROMPT_CHAR}[/bold green] {content}")
+        else:
+            parts.append(f"{_INDENT}{content}")
+    return "\n".join(parts)
 
 
 def footer_markup(mode_str: str, cols: int) -> tuple[str, str]:
@@ -69,24 +80,66 @@ def prompt_ansi(
     cursor: int | None,
     in_trigger: bool,
 ) -> str:
-    """ANSI prompt line: bold-green ❯, buffer text, bold ▌ cursor.
+    """ANSI prompt — handles multiline (``buf`` may contain ``'\\n'`` chars).
 
-    In trigger mode (picker open) ▌ follows the trigger fragment so the user
-    always sees the cursor at the end of the current input.
-    In normal mode ▌ is placed at ``cursor`` within ``buf``; when ``cursor``
-    is ``None`` it defaults to the end of the buffer.
+    Lines are joined with ``\\n\\r`` so each is written at column 0.  The
+    first line is prefixed with the bold-green ``❯``; subsequent lines are
+    indented by two spaces so their text aligns under the first-line content.
+    ``▌`` is placed at the cursor position (``cursor`` defaults to end of
+    buffer).
 
-    The real terminal cursor should be hidden (``\\x1b[?25l``) before calling
-    this so the OS cursor and ▌ do not both appear at the same spot.
+    In trigger mode ``▌`` is appended after the trigger fragment and no line
+    splitting is applied (fragments are always single-line).
+
+    The real terminal cursor must be hidden (``\\x1b[?25l``) before calling
+    this so the OS cursor and ``▌`` do not appear simultaneously.
     """
+    _INDENT = "  "
     pos = len(buf) if cursor is None else cursor
+
     if in_trigger:
         content = "".join(buf) + mention_suffix + f"\x1b[1m{CURSOR_CHAR}\x1b[0m"
-    else:
-        pre = "".join(buf[:pos])
-        post = "".join(buf[pos:])
-        content = f"{pre}\x1b[1m{CURSOR_CHAR}\x1b[0m{post}"
-    return f"\x1b[1;32m{PROMPT_CHAR}\x1b[0m {content}"
+        return f"\x1b[1;32m{PROMPT_CHAR}\x1b[0m {content}"
+
+    # Split buf into visual lines at each '\n' boundary.
+    raw_lines: list[list[str]] = []
+    current: list[str] = []
+    for ch in buf:
+        if ch == "\n":
+            raw_lines.append(current)
+            current = []
+        else:
+            current.append(ch)
+    raw_lines.append(current)
+
+    # Locate which line and column the cursor sits on.
+    cumulative = 0
+    cursor_line = len(raw_lines) - 1  # default: last line
+    cursor_col = len(raw_lines[-1])
+    for i, ln in enumerate(raw_lines):
+        if cumulative + len(ln) >= pos:
+            cursor_line = i
+            cursor_col = pos - cumulative
+            break
+        cumulative += len(ln) + 1  # +1 for the '\n'
+
+    # Render each visual line.
+    rendered: list[str] = []
+    for i, ln in enumerate(raw_lines):
+        if i == cursor_line:
+            col = cursor_col
+            line_text = (
+                "".join(ln[:col])
+                + f"\x1b[1m{CURSOR_CHAR}\x1b[0m"
+                + "".join(ln[col:])
+            )
+        else:
+            line_text = "".join(ln)
+
+        prefix = f"\x1b[1;32m{PROMPT_CHAR}\x1b[0m " if i == 0 else _INDENT
+        rendered.append(prefix + line_text)
+
+    return "\n\r".join(rendered)
 
 
 def footer_ansi(mode_str: str, cols: int) -> tuple[str, str]:

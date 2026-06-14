@@ -38,9 +38,11 @@ class SlashCommandTrigger:
         return buf + ["/"] + list(fragment)
 
     def can_activate(self, buf: list[str]) -> bool:
-        # Commands are always top-level: only activate on an empty buffer.
-        # A '/' typed mid-sentence (e.g. inside '@docs/') is a literal character.
-        return not buf
+        # Activate on an empty buffer OR immediately after a newline so that
+        # '/cmd' works both at the very start and at the start of a new line
+        # within a multi-line input.  A '/' elsewhere (e.g. inside '@docs/')
+        # is treated as a literal character.
+        return not buf or buf[-1] == "\n"
 
     def get_hint(self, item) -> str | None:
         return item.hint if item and item.hint else None
