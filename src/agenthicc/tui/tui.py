@@ -114,6 +114,12 @@ class AgenthiccTUI:
         self._status = _StatusShim(self.status_state, self.footer_state)
         self._current_agent_task: Any = None
 
+        # Tracks how many text events from the current agent turn have been
+        # printed to the scroll buffer.  Reset on each new intent so that
+        # _on_assistant_complete only prints the NEW text events from the
+        # current sub-turn, not everything again.
+        self._text_events_printed: int = 0
+
         # StreamingInput is created lazily in run() once pending_queue exists.
         self._streaming_input: Any = None
 
@@ -142,15 +148,40 @@ class AgenthiccTUI:
     def _on_user_message(self, e: UserMessageEvent) -> None:
         self.transcript.print_user(e.text)
 
-    def _on_assistant_start(self, _: AssistantStartEvent) -> None:
-        pass  # TranscriptModel.render() already outputs the ● assistant header
+    def _on_assistant_start(self, e: AssistantStartEvent) -> None:
+        # Print the turn header immediately so it appears above tool calls in
+        # the scroll buffer.  We do NOT use flush_from_model() here because that
+        # would print only the header line but advance _printed_count, conflicting
+        # with our per-event printing approach below.
+        self.console.print(
+            f"[bold cyan]●[/bold cyan] [bold]{e.model_short}[/bold]  "
+            f"[dim]{__import__('time').strftime('%H:%M:%S')}[/dim]",
+            markup=True, highlight=False,
+        )
+        # Reset the text-event counter for this new turn.
+        self._text_events_printed = 0
 
-    def _on_assistant_chunk(self, e: AssistantChunkEvent) -> None:
-        pass  # Streaming text shown via status_state "Thinking" animation.
+    def _on_assistant_chunk(self, _: AssistantChunkEvent) -> None:
+        pass  # Streaming text shown via "Thinking" animation in status bar.
 
-    def _on_assistant_complete(self, _: AssistantCompleteEvent) -> None:
-        # Flush transcript (LLM text + tool results) to the scroll buffer.
-        self.transcript.flush_from_model()
+    def _on_assistant_complete(self, e: AssistantCompleteEvent) -> None:
+        # Print any NEW LLM text events from the current turn's ordered_events.
+        # Tool calls are already in the scroll buffer from _on_tool_complete, so
+        # we skip them here to avoid duplicates and the MAX_VISIBLE_TOOL_CALLS cap.
+        model = self.transcript._model
+        if model is None:
+            return
+        # Find the most recent turn for this agent.
+        turn = next(
+            (t for t in reversed(model.turns) if t.agent_id == e.agent_id),
+            None,
+        )
+        if turn is None:
+            return
+        text_events = [ev for ev in turn.ordered_events if ev["type"] == "text"]
+        for ev in text_events[self._text_events_printed:]:
+            self.transcript.print_markup(ev["line"])
+        self._text_events_printed = len(text_events)
 
     def _on_thinking_step(self, e: ThinkingStepEvent) -> None:
         self.transcript.print_thinking_step(e.step, e.done)
@@ -163,29 +194,25 @@ class AgenthiccTUI:
         self.footer_state.mode  = "running"
 
     def _on_tool_complete(self, e: ToolCompleteEvent) -> None:
-        # Print the completed call directly to the scroll buffer while the Live
-        # block is active.  Rich's Console.print() inserts above the Live block
-        # automatically — this gives the "tool calls scroll upward" effect the
-        # user wants, and keeps the Live block at a constant height so the
-        # status bar and input bar never shift position.
-        from rich.markup import escape as _esc  # noqa: PLC0415
-        icon  = "[green]✓[/green]" if e.success else "[red]✗[/red]"
-        dur   = f"  [dim]{e.duration_ms:.0f}ms[/dim]" if e.duration_ms else ""
-        name  = e.name or ""
-        self.console.print(
-            f"   [dim]⎿[/dim] [bold]{_esc(name)}[/bold]  {icon}{dur}",
-            markup=True, highlight=False,
-        )
-        if e.diff:
-            for dl in e.diff.splitlines()[:6]:
-                if dl.startswith("+"):
-                    self.console.print(f"      [green]{_esc(dl)}[/green]", markup=True, highlight=False)
-                elif dl.startswith("-"):
-                    self.console.print(f"      [red]{_esc(dl)}[/red]", markup=True, highlight=False)
-                elif dl.startswith("@@"):
-                    self.console.print(f"      [dim cyan]{_esc(dl)}[/dim cyan]", markup=True, highlight=False)
-                else:
-                    self.console.print(f"      [dim]{_esc(dl)}[/dim]", markup=True, highlight=False)
+        # Print the completed call to the scroll buffer using ToolCallEntry.render()
+        # which already formats: name(args)  ✓/✗  Nms  [output preview].
+        # This avoids duplicating the transcript model's rendering logic and
+        # ensures args are always shown.
+        model = self.transcript._model
+        tc = model._tool_index.get(e.tool_use_id) if model else None
+        if tc is not None:
+            # render() returns a Rich-markup string (possibly multiline for output)
+            for line in tc.render().splitlines():
+                self.console.print(line, markup=True, highlight=False)
+        else:
+            # Fallback: no transcript entry — print name + status only
+            from rich.markup import escape as _esc  # noqa: PLC0415
+            icon = "[green]✓[/green]" if e.success else "[red]✗[/red]"
+            dur  = f"  [dim]{e.duration_ms:.0f}ms[/dim]" if e.duration_ms else ""
+            self.console.print(
+                f"  [dim]⎿[/dim] [bold]{_esc(e.name or '')}[/bold]  {icon}{dur}",
+                markup=True, highlight=False,
+            )
         self.status_state.state = "thinking"
         self.status_state.tool  = ""
 
@@ -229,6 +256,7 @@ class AgenthiccTUI:
         self._status.intent_started_at = time.monotonic()
         self._status.input_tokens = 0
         self._status.output_tokens = 0
+        self._text_events_printed = 0   # reset for the new agent turn
         self.status_state.start_run()
         self.footer_state.mode = "thinking"
 
@@ -248,7 +276,11 @@ class AgenthiccTUI:
         self.footer_state.notify_text(None)
 
     def _flush_new_lines(self) -> None:
-        self.transcript.flush_from_model()
+        # No-op: all content (header, tool calls, LLM text) is written directly
+        # to the scroll buffer by the event handlers _on_assistant_start,
+        # _on_tool_complete, and _on_assistant_complete.  flush_from_model()
+        # would re-render the full transcript creating duplicates.
+        pass
 
     # ── Tick loop ─────────────────────────────────────────────────────────────
 
