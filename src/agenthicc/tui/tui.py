@@ -201,9 +201,11 @@ class AgenthiccTUI:
         self.input_bar_state.update(e.buf, e.cursor, e.paste_condensed, e.paste_label)
 
     def _on_mode_changed(self, _: ModeChangedEvent) -> None:
-        from agenthicc.tui.input_area import get_mode_str  # noqa: PLC0415
+        from agenthicc.tui.mention_input import _get_mode_str as get_mode_str  # noqa: PLC0415  (re-exported from mention_input)
         if self._mode_manager:
-            self.input_bar_state.mode_str = get_mode_str(self._mode_manager)
+            s = get_mode_str(self._mode_manager)
+            self.input_bar_state.mode_str = s
+            self.footer_state.mode_str = s
 
     def _on_notification(self, e: NotificationEvent) -> None:
         self.footer_state.notify_text(e.text)
@@ -272,9 +274,18 @@ class AgenthiccTUI:
         _dispatcher = CommandDispatcher(_cmd_registry)
 
         # StreamingInput — queues messages typed during agent turns.
-        from agenthicc.tui.streaming_input import StreamingInput  # noqa: PLC0415
+        # Pass live_panel + trigger_registry so the full @/slash picker works
+        # during streaming (Live block is briefly paused for the picker session).
+        from agenthicc.tui.input.streaming import StreamingSession as StreamingInput  # noqa: PLC0415
         _pending_queue: list[str] = []
-        _streaming_input = StreamingInput(self.input_bar_state, _pending_queue, self.console)
+        _streaming_input = StreamingInput(
+            self.input_bar_state,
+            _pending_queue,
+            self.console,
+            live_panel=self.live_panel,
+            trigger_registry=_registry,
+            cwd=_cwd,
+        )
         self._streaming_input = _streaming_input
         _loop = _a.get_event_loop()
         _current_task: _a.Task | None = None
@@ -283,15 +294,24 @@ class AgenthiccTUI:
             if _current_task and not _current_task.done():
                 _current_task.cancel()
 
-        try:
-            _loop.add_signal_handler(_sig.SIGINT, _sigint_cancel)
-        except (NotImplementedError, RuntimeError):
-            pass
+        # SIGINT handling strategy:
+        #   Idle mode   — asyncio handler NOT registered so Python's default
+        #                 SIGINT→KeyboardInterrupt path is active.  The idle
+        #                 input loop also handles \x03 (Ctrl+C with ISIG cleared)
+        #                 via the double-press _ctrl_c_sequence, giving two exit
+        #                 paths: single SIGINT/KeyboardInterrupt OR double \x03.
+        #   Agent mode  — asyncio handler registered so SIGINT cancels the agent
+        #                 task instead of crashing the event loop.
 
         tick_task = _a.create_task(self._tick_loop())
 
         async def _run_agent(coro: Any) -> None:
             nonlocal _current_task
+            # Register SIGINT handler only for the duration of the agent run.
+            try:
+                _loop.add_signal_handler(_sig.SIGINT, _sigint_cancel)
+            except (NotImplementedError, RuntimeError):
+                pass
             _current_task = _a.ensure_future(coro)
             try:
                 await _current_task
@@ -302,6 +322,10 @@ class AgenthiccTUI:
                 self.on_agent_run_complete()
             finally:
                 _current_task = None
+                try:
+                    _loop.remove_signal_handler(_sig.SIGINT)
+                except Exception:  # noqa: BLE001
+                    pass
 
         try:
             while True:
@@ -318,6 +342,7 @@ class AgenthiccTUI:
                         _mode_manager,
                     )
                 except KeyboardInterrupt:
+                    # Single Ctrl+C during idle (SIGINT with default handler).
                     break
 
                 if text is None:
@@ -371,10 +396,6 @@ class AgenthiccTUI:
         finally:
             _streaming_input.stop()
             tick_task.cancel()
-            try:
-                _loop.remove_signal_handler(_sig.SIGINT)
-            except Exception:  # noqa: BLE001
-                pass
 
     def _print_idle_status(self) -> None:
         import shutil  # noqa: PLC0415

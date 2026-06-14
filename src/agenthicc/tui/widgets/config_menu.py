@@ -179,7 +179,7 @@ class ConfigurationMenu:
 
     def handle_key(self, key: Any, ch: str) -> MenuResult:
         """Dispatch a keypress to the appropriate state handler."""
-        from agenthicc.tui.mention_input import Key  # noqa: PLC0415 — lazy import
+        from agenthicc.tui.cbreak_reader import Key  # noqa: PLC0415 — lazy import
 
         if self._state == "EDIT":
             return self._handle_edit_key(key, ch)
@@ -215,7 +215,7 @@ class ConfigurationMenu:
 
     def _handle_edit_key(self, key: Any, ch: str) -> MenuResult:
         """Handle a keypress while in EDIT state."""
-        from agenthicc.tui.mention_input import Key  # noqa: PLC0415
+        from agenthicc.tui.cbreak_reader import Key  # noqa: PLC0415
 
         if key == Key.ESC:
             # Cancel the edit without applying anything.

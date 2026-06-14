@@ -137,7 +137,7 @@ class DropdownWidget:
         to avoid a circular import (``mention_input`` imports from ``trigger``,
         which this module also imports).
         """
-        from agenthicc.tui.mention_input import Key  # noqa: PLC0415
+        from agenthicc.tui.cbreak_reader import Key  # noqa: PLC0415
 
         if key == Key.ESC:
             buf_suffix = self._handler.on_cancel(self._fragment, [])

@@ -57,12 +57,6 @@ class ToolStartEvent(Event):
 
 
 @dataclass
-class ToolProgressEvent(Event):
-    tool_use_id: str
-    text: str
-
-
-@dataclass
 class ToolCompleteEvent(Event):
     tool_use_id: str
     name: str
@@ -75,17 +69,6 @@ class ToolCompleteEvent(Event):
 @dataclass
 class FileModifiedEvent(Event):
     path: str
-
-
-@dataclass
-class ApprovalRequestEvent(Event):
-    prompt: str
-    command: str
-
-
-@dataclass
-class ApprovalResponseEvent(Event):
-    approved: bool
 
 
 @dataclass

@@ -25,6 +25,10 @@ class StatusBarState(_Observable):
         "approval": "yellow", "error": "red", "complete": "green",
     }
 
+    # Flower icons that cycle on each tick while the agent is active.
+    _FLOWERS: tuple[str, ...] = ("✿", "❀", "❁", "❃", "✾", "❋", "✽", "❊")
+    _THINKING_WORD = "Thinking"
+
     def __init__(self) -> None:
         super().__init__()
         self._state = "idle"
@@ -36,6 +40,8 @@ class StatusBarState(_Observable):
         self._start_time: float = 0.0
         self._session_id = ""
         self._completed_agents = 0
+        self._thinking_frame = 0   # scanner position for the bold-char wave
+        self._flower_frame = 0     # index into _FLOWERS
 
     # ── reactive properties ───────────────────────────────────────────────────
 
@@ -81,6 +87,8 @@ class StatusBarState(_Observable):
         self._input_tokens = 0
         self._output_tokens = 0
         self._elapsed = 0.0
+        self._thinking_frame = 0
+        self._flower_frame = 0
         self.state = "thinking"
 
     def finish_run(self) -> None:
@@ -93,53 +101,109 @@ class StatusBarState(_Observable):
             elapsed = time.monotonic() - self._start_time
             if abs(elapsed - self._elapsed) >= 0.1:
                 self._elapsed = elapsed
+                self._thinking_frame += 1
+                self._flower_frame = (self._flower_frame + 1) % len(self._FLOWERS)
                 self._notify()
 
-    def height(self, cols: int) -> int:  # noqa: ARG002
-        """Status bar is always exactly 1 row."""
-        return 1
+    def _thinking_markup(self) -> str:
+        """Return Rich markup for the thinking word with one bold char bouncing."""
+        word = self._THINKING_WORD
+        n = len(word)
+        # Bounce: 0→n-1→0 with period 2*(n-1)
+        cycle = 2 * (n - 1)
+        frame = self._thinking_frame % cycle if cycle > 0 else 0
+        pos = frame if frame < n else cycle - frame
+        return "".join(
+            f"[bold]{ch}[/bold]" if i == pos else ch
+            for i, ch in enumerate(word)
+        )
 
-    def render(self, cols: int = 80) -> str:  # noqa: ARG002
+    def height(self, cols: int) -> int:
+        """Number of rows: 2 when a model name is present, else 1."""
+        return 2 if self._session_id else 1
+
+    def render(self, cols: int = 80) -> str:
+        """Rich markup — potentially two lines when a model name is set.
+
+        Layout::
+
+            {flower} {state_animation} │ Runtime: mm:ss │ {tool}
+            {model_name} │ Tokens: xxk │ $0.xxxx
+        """
+        from agenthicc.tui.rendering import visible_len, fit  # noqa: PLC0415
+        from rich.markup import escape as _e  # noqa: PLC0415
+
+        flower = self._FLOWERS[self._flower_frame % len(self._FLOWERS)]
         color = self._STATE_COLOR.get(self._state, "dim")
-        label = self._state.title()
-        parts: list[str] = [f"[{color}]Agent: {label}[/{color}]"]
+
+        if self._state in ("thinking", "running"):
+            state_text = self._thinking_markup()
+        else:
+            state_text = self._state.title()
+
+        # ── Line 1: state animation + runtime + active tool ───────────────────
+        line1_parts: list[str] = [f"{flower} [{color}]{state_text}[/{color}]"]
+        if self._elapsed > 0:
+            m, s2 = divmod(int(self._elapsed), 60)
+            line1_parts.append(f"[dim] │ Runtime:[/dim] {m:02d}:{s2:02d}")
         if self._tool:
-            parts.append(f"[dim] │[/dim] [bold]{self._tool}[/bold]")
+            line1_parts.append(f"[dim] │[/dim] [bold]{_e(self._tool)}[/bold]")
+        # Truncate line 1 if it's still too wide.
+        while len(line1_parts) > 1 and visible_len("".join(line1_parts)) > cols:
+            line1_parts.pop()
+        line1 = "".join(line1_parts)
+        if visible_len(line1) > cols:
+            line1 = fit(line1, cols)
+
+        if not self._session_id:
+            return line1
+
+        # ── Line 2: model name + tokens + cost ───────────────────────────────
+        line2_parts: list[str] = [f"[dim]{_e(self._session_id)}[/dim]"]
         tok = self._input_tokens + self._output_tokens
         if tok:
             s = f"{tok / 1000:.0f}k" if tok >= 1000 else str(tok)
-            parts.append(f"[dim] │ Tokens:[/dim] {s}")
+            line2_parts.append(f"[dim] │ Tokens:[/dim] {s}")
         if self._cost_usd:
-            parts.append(f"[dim] │ ${self._cost_usd:.4f}[/dim]")
-        if self._elapsed > 0:
-            m, s2 = divmod(int(self._elapsed), 60)
-            parts.append(f"[dim] │ Runtime:[/dim] {m:02d}:{s2:02d}")
-        if self._session_id:
-            parts.append(f"[dim] │ {self._session_id[:20]}[/dim]")
-        return "".join(parts)
+            line2_parts.append(f"[dim] │ ${self._cost_usd:.4f}[/dim]")
+        # Drop low-priority parts from line 2 until it fits.
+        while len(line2_parts) > 1 and visible_len("".join(line2_parts)) > cols:
+            line2_parts.pop()
+        line2 = "".join(line2_parts)
+        if visible_len(line2) > cols:
+            line2 = fit(line2, cols)
+
+        return line1 + "\n" + line2
 
 
 # ── FooterState ───────────────────────────────────────────────────────────────
 
 class FooterState(_Observable):
-    """Reactive state for the context-sensitive footer key-hint bar.
+    """Reactive state for the footer: mode line + context-sensitive key hints.
+
+    Renders as two rows:
+      Row 1 — mode string (e.g. "⏵⏵ Auto  (shift+tab to cycle)  │  ctrl+j = ↵")
+      Row 2 — key hints for the current mode (e.g. "Esc Interrupt  │  Ctrl+Z …")
 
     Implements :class:`~agenthicc.tui.protocols.FooterStateProtocol`.
     """
 
+    _DEFAULT_MODE_STR = "⏵⏵ Auto  (shift+tab to cycle)  │  ctrl+j = ↵"
+
     HINTS: dict[str, str] = {
-        "idle":     "Enter Submit  Ctrl+J Newline  /cmd  @Mention  Ctrl+L Clear  Esc Menu",
-        "thinking": "Ctrl+C Interrupt  Esc Menu",
-        "running":  "Ctrl+C Interrupt  Ctrl+Z Background  Esc Hide Logs",
+        "idle":     "Enter Submit  Ctrl+J Newline  /cmd  @Mention  Ctrl+L Clear",
+        "thinking": "Esc Interrupt",
+        "running":  "Esc Interrupt  Ctrl+Z Background",
         "approval": "Y Approve  N Reject  A Approve All  Esc Cancel",
         "error":    "R Retry  L View Logs  Esc Dismiss",
-        "complete": "Enter New Task  F2 History  Ctrl+L Clear  Esc Menu",
+        "complete": "Enter New Task  F2 History  Ctrl+L Clear",
     }
 
     def __init__(self) -> None:
         super().__init__()
         self._mode = "idle"
         self._notification: str | None = None
+        self._mode_str = self._DEFAULT_MODE_STR
 
     @property
     def mode(self) -> str:
@@ -151,27 +215,56 @@ class FooterState(_Observable):
             self._mode = v
             self._notify()
 
+    @property
+    def mode_str(self) -> str:
+        return self._mode_str
+
+    @mode_str.setter
+    def mode_str(self, v: str) -> None:
+        if v != self._mode_str:
+            self._mode_str = v
+            self._notify()
+
     def notify_text(self, text: str | None) -> None:
         self._notification = text
         self._notify()
 
     def height(self, cols: int) -> int:  # noqa: ARG002
-        """Footer is always exactly 1 row."""
-        return 1
+        """Footer is always exactly 2 rows: mode line + hints line."""
+        return 2
 
-    def render(self, cols: int = 80) -> str:  # noqa: ARG002
+    def _hints_line(self, cols: int) -> str:
+        """Build the key-hints line for the current mode, fitting *cols*."""
+        from agenthicc.tui.rendering import visible_len, fit  # noqa: PLC0415
         if self._notification:
-            return f"[dim]{self._notification}[/dim]"
+            notif = f"[dim]{self._notification}[/dim]"
+            return fit(notif, cols) if visible_len(notif) > cols else notif
         raw = self.HINTS.get(self._mode, self.HINTS["idle"])
         parts = [h.strip() for h in raw.split("  ") if h.strip()]
         segs: list[str] = []
         for p in parts:
             words = p.split()
             if len(words) >= 2:
-                segs.append(f"[bold]{words[0]}[/bold] [dim]{' '.join(words[1:])}[/dim]")
+                segs.append(
+                    f"[bold]{words[0]}[/bold] [dim]{' '.join(words[1:])}[/dim]"
+                )
             else:
                 segs.append(f"[dim]{p}[/dim]")
-        return "  [dim]│[/dim]  ".join(segs)
+        sep = "  [dim]│[/dim]  "
+        while len(segs) > 1 and visible_len(sep.join(segs)) > cols:
+            segs.pop()
+        result = sep.join(segs)
+        if visible_len(result) > cols:
+            return fit(result, cols)
+        return result
+
+    def render(self, cols: int = 80) -> str:
+        """Return a two-line Rich markup string: mode str then key hints."""
+        from agenthicc.tui.rendering import visible_len, fit  # noqa: PLC0415
+        mode_line_raw = f"  [dim]{self._mode_str}[/dim]"
+        mode_line = fit(mode_line_raw, cols) if visible_len(mode_line_raw) > cols else mode_line_raw
+        hints_line = self._hints_line(cols)
+        return mode_line + "\n" + hints_line
 
 
 # ── InputBarState ─────────────────────────────────────────────────────────────
@@ -255,8 +348,15 @@ class InputBarState(_Observable):
             total += max(1, (len(line) + usable - 1) // usable)
         return total
 
-    def render_prompt(self) -> str:
-        """Rich markup: ❯ <typed text> ▌ at the cursor position."""
+    def render_prompt(self, cols: int = 80) -> str:
+        """Rich markup: ❯ <typed text> ▌ at the cursor position.
+
+        Lines that would exceed *cols* are truncated with an ellipsis so the
+        Rich Live block never wraps and desynchronises its cursor tracking.
+        """
+        from rich.markup import escape as _e  # noqa: PLC0415
+        from agenthicc.tui.rendering import fit, visible_len  # noqa: PLC0415
+
         display = list(self.paste_label) if self.paste_condensed else self.buf
         pos = len(display) if self.paste_condensed else self.cursor
         raw_lines: list[list[str]] = []
@@ -275,21 +375,20 @@ class InputBarState(_Observable):
                 cursor_line, cursor_col = i, pos - cumulative
                 break
             cumulative += len(ln) + 1
-        from rich.markup import escape as _e  # noqa: PLC0415
         parts: list[str] = []
         for i, ln in enumerate(raw_lines):
             text = "".join(ln)
+            prefix = f"[bold green]{self.PROMPT_CHAR}[/bold green] " if i == 0 else self._INDENT
             if i == cursor_line:
                 col = cursor_col
                 content = _e(text[:col]) + f"[bold]{self.CURSOR_CHAR}[/bold]" + _e(text[col:])
             else:
                 content = _e(text)
-            prefix = f"[bold green]{self.PROMPT_CHAR}[/bold green] " if i == 0 else self._INDENT
-            parts.append(prefix + content)
+            line = prefix + content
+            if visible_len(line) > cols:
+                line = fit(line, cols)
+            parts.append(line)
         return "\n".join(parts)
-
-    def render_mode(self) -> str:
-        return f"  [dim]{self.mode_str}[/dim]"
 
 
 # ── SpinnerState ──────────────────────────────────────────────────────────────
@@ -357,31 +456,38 @@ class SpinnerState(_Observable):
         streaming_row = 1 if self._streaming_text else 0
         return call_rows + streaming_row
 
-    def render_calls(self) -> list[str]:
+    def render_calls(self, cols: int = 80) -> list[str]:
+        """Return one Rich markup string per tool call row, each fitting *cols*."""
+        from agenthicc.tui.rendering import fit, visible_len  # noqa: PLC0415
+        from rich.markup import escape as _e  # noqa: PLC0415
+
+        def _safe(line: str) -> str:
+            return fit(line, cols) if visible_len(line) > cols else line
+
         lines: list[str] = []
         for c in self._calls.values():
             name, args = c["name"], c["args"]
             if c["done"]:
                 icon = "[green]✓[/green]" if c["ok"] else "[red]✗[/red]"
                 ms_str = f"  [dim]{c['ms']:.0f}ms[/dim]" if c["ms"] else ""
-                lines.append(
-                    f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  {icon}{ms_str}"
-                )
+                lines.append(_safe(
+                    f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({_e(args)})[/dim]  {icon}{ms_str}"
+                ))
                 if c.get("diff"):
                     for dl in c["diff"].splitlines()[:6]:
                         if dl.startswith("+"):
-                            lines.append(f"      [green]{dl}[/green]")
+                            lines.append(_safe(f"      [green]{_e(dl)}[/green]"))
                         elif dl.startswith("-"):
-                            lines.append(f"      [red]{dl}[/red]")
+                            lines.append(_safe(f"      [red]{_e(dl)}[/red]"))
                         elif dl.startswith("@@"):
-                            lines.append(f"      [dim cyan]{dl}[/dim cyan]")
+                            lines.append(_safe(f"      [dim cyan]{_e(dl)}[/dim cyan]"))
                         else:
-                            lines.append(f"      [dim]{dl}[/dim]")
+                            lines.append(_safe(f"      [dim]{_e(dl)}[/dim]"))
             else:
-                lines.append(
-                    f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  [dim]…[/dim]"
-                )
+                lines.append(_safe(
+                    f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({_e(args)})[/dim]  [dim]…[/dim]"
+                ))
         if self._streaming_text:
-            preview = self._streaming_text.replace("\n", " ")[:72]
-            lines.append(f"   [dim]{preview}[/dim]")
+            preview = self._streaming_text.replace("\n", " ")
+            lines.append(_safe(f"   [dim]{_e(preview)}[/dim]"))
         return lines
