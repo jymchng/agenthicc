@@ -100,6 +100,8 @@ class Key(str, Enum):
     DOWN      = "DOWN"
     LEFT      = "LEFT"
     RIGHT     = "RIGHT"
+    HOME      = "HOME"
+    END       = "END"
     ENTER     = "ENTER"
     TAB       = "TAB"
     ESC       = "ESC"
@@ -153,14 +155,22 @@ def _read_key(fd: int) -> tuple[Key, str]:
             return (Key.RIGHT, "")
         if b3 == b"D":
             return (Key.LEFT, "")
+        if b3 == b"H":
+            return (Key.HOME, "")
+        if b3 == b"F":
+            return (Key.END, "")
         if b3 == b"Z":
             return (Key.SHIFT_TAB, "")
-        if b3 == b"3":
-            # Delete key: ESC [ 3 ~ — consume the trailing ~
+        # Sequences of the form ESC [ <digit> ~ — consume the trailing ~
+        if b3 in (b"1", b"3", b"4"):
             r2, _, _ = select.select([fd], [], [], 0.05)
             if r2:
-                os.read(fd, 1)
-            return (Key.CHAR, "")  # ignore Delete
+                os.read(fd, 1)  # consume ~
+            if b3 == b"1":
+                return (Key.HOME, "")
+            if b3 == b"4":
+                return (Key.END, "")
+            return (Key.CHAR, "")  # b"3" = Delete — ignore
         # Unknown sequence
         return (Key.ESC, "")
 
@@ -265,6 +275,7 @@ def _redraw(
     hint: str | None = None,
     trigger_char: str = "@",
     mode_line: str | None = None,
+    cursor: int | None = None,
 ) -> int:
     """Erase old dropdown, redraw the input line, render new dropdown.
 
@@ -337,14 +348,33 @@ def _redraw(
         out.write("\n" + "\n".join(lines))
         out.write(f"\x1b[{new_n_lines}A")
         out.write("\r" + prompt_str + "".join(buf) + mention_suffix)
+        _apply_cursor(out, buf, in_trigger, cursor)
         out.flush()
         return new_n_lines
 
     if n_base:
         out.write(f"\x1b[{n_base}A")
         out.write("\r" + prompt_str + "".join(buf) + mention_suffix)
+    _apply_cursor(out, buf, in_trigger, cursor)
     out.flush()
     return n_base
+
+
+def _apply_cursor(
+    out: "Any", buf: list[str], in_trigger: bool, cursor: int | None
+) -> None:
+    """Move the terminal cursor to *cursor* within the buffer if needed.
+
+    Called at the end of every _redraw code path, just before flush.  In
+    trigger mode the cursor always sits at the end of the fragment so no
+    adjustment is required.  In normal mode we move left by
+    ``len(buf) - cursor`` columns when cursor is not already at the end.
+    """
+    if in_trigger or cursor is None or cursor >= len(buf):
+        return
+    cols_left = len(buf) - cursor
+    if cols_left > 0:
+        out.write(f"\x1b[{cols_left}D")
 
 
 def _truncate_to_cols(text: str, max_visible: int) -> str:
@@ -468,6 +498,7 @@ def read_line_with_mention(
 
     # State variables
     buf: list[str] = []
+    cursor: int = 0          # insertion point within buf; kept at len(buf) for "end"
     active_handler: TriggerHandler | None = None
     fragment: str = ""
     matches: list[MatchItem] = []
@@ -508,6 +539,7 @@ def read_line_with_mention(
                 prev_dropdown_lines, active_handler is not None, current_hint,
                 active_handler.char if active_handler else "@",
                 mode_line=_get_mode_line(),
+                cursor=cursor,
             )
             if driver.active:
                 driver._prev_lines = driver.widget.render(prompt_str, display_buf, driver._prev_lines)
@@ -534,6 +566,7 @@ def read_line_with_mention(
                     fragment = ""
                     matches = []
                     current_hint = None
+                    cursor = len(buf)
                     _erase_below()
                     prev_dropdown_lines = 0
                     ctrl_c_count += 1
@@ -541,6 +574,7 @@ def read_line_with_mention(
                         sys.stdout.write(_MSG_WARN)
                         sys.stdout.flush()
                         buf = []
+                        cursor = 0
                     else:
                         _show_exit_hint(resume_id)
                         return None
@@ -553,6 +587,7 @@ def read_line_with_mention(
                     fragment = ""
                     matches = []
                     current_hint = None
+                    cursor = len(buf)
                     # Erase dropdown immediately.
                     prev_dropdown_lines = _redraw(
                         prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None,
@@ -568,6 +603,7 @@ def read_line_with_mention(
                     fragment = ""
                     matches = []
                     current_hint = None
+                    cursor = len(buf)
                     # Erase dropdown immediately on selection.
                     prev_dropdown_lines = _redraw(
                         prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None,
@@ -599,6 +635,7 @@ def read_line_with_mention(
                         fragment = ""
                         matches = []
                         current_hint = None
+                        cursor = len(buf)
                         # Erase dropdown immediately.
                         prev_dropdown_lines = _redraw(
                             prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None,
@@ -640,6 +677,7 @@ def read_line_with_mention(
                             fragment = ""
                             matches = []
                             current_hint = None
+                            cursor = len(buf)
                             prev_dropdown_lines = _redraw(
                                 prompt_str, buf, "", [], 0, prev_dropdown_lines, False, None,
                                 mode_line=_get_mode_line(),
@@ -692,15 +730,26 @@ def read_line_with_mention(
                     history.append(result)
                 return result
 
+            elif key == Key.LEFT:
+                cursor = max(0, cursor - 1)
+
+            elif key == Key.RIGHT:
+                cursor = min(len(buf), cursor + 1)
+
+            elif key == Key.HOME:
+                cursor = 0
+
+            elif key == Key.END:
+                cursor = len(buf)
+
             elif key == Key.BACKSPACE:
-                # Check for a trigger tail BEFORE popping so the first
-                # backspace on a committed token (e.g. @docs/README.md)
-                # re-enters the picker at the FULL fragment.  Subsequent
-                # presses peel characters away inside trigger-mode's own
-                # backspace handler.  If no tail is found, fall through to
-                # a normal pop.
-                _tail = _find_trigger_tail(buf, _registry)
+                # Re-enter trigger mode only when the cursor is at the end of
+                # the buffer — mid-buffer backspace is always a literal delete.
+                _tail = _find_trigger_tail(buf, _registry) if cursor == len(buf) else None
                 if _tail is not None:
+                    # First backspace on a committed token: open picker at full
+                    # fragment without consuming the character (subsequent presses
+                    # in trigger mode peel away fragment chars normally).
                     _tch, _tpre, _tfrag = _tail
                     active_handler = _registry.get(_tch)
                     buf = _tpre
@@ -710,11 +759,13 @@ def read_line_with_mention(
                     current_hint = active_handler.get_hint(
                         matches[selected] if matches else None
                     )
-                elif buf:
-                    buf.pop()
+                elif cursor > 0:
+                    del buf[cursor - 1]
+                    cursor -= 1
 
             elif key == Key.CTRL_U:
                 buf.clear()
+                cursor = 0
 
             elif key == Key.UP:
                 # History navigation: go back.
@@ -723,15 +774,18 @@ def read_line_with_mention(
                 if hist_idx > 0:
                     hist_idx -= 1
                     buf = list(history[hist_idx])
+                    cursor = len(buf)
 
             elif key == Key.DOWN:
                 # History navigation: go forward.
                 if hist_idx < len(history) - 1:
                     hist_idx += 1
                     buf = list(history[hist_idx])
+                    cursor = len(buf)
                 elif hist_idx == len(history) - 1:
                     hist_idx = len(history)
                     buf = list(saved_buf)
+                    cursor = len(buf)
 
             elif key == Key.SHIFT_TAB:
                 if mode_manager is not None:
@@ -742,9 +796,9 @@ def read_line_with_mention(
                 key == Key.CHAR and ch and ch in _registry.chars
             ):
                 trigger_ch = "@" if key == Key.AT else ch
-                # If the buffer already ends with a trigger tail, extend that
-                # token rather than starting a new trigger from scratch.
-                _tail = _find_trigger_tail(buf, _registry)
+                # Trigger-tail re-entry only applies when the cursor is at the
+                # end of the buffer — mid-buffer typing is always a literal insert.
+                _tail = _find_trigger_tail(buf, _registry) if cursor == len(buf) else None
                 if _tail is not None:
                     _tch, _tpre, _tfrag = _tail
                     active_handler = _registry.get(_tch)
@@ -757,7 +811,7 @@ def read_line_with_mention(
                     )
                 else:
                     _handler = _registry.get(trigger_ch)
-                    if _handler and _handler.can_activate(buf):
+                    if _handler and _handler.can_activate(buf[:cursor]):
                         active_handler = _handler
                         fragment = ""
                         matches = active_handler.get_matches("", _ctx)
@@ -766,13 +820,16 @@ def read_line_with_mention(
                             matches[selected] if matches else None
                         )
                     else:
-                        buf.append(trigger_ch)
+                        buf.insert(cursor, trigger_ch)
+                        cursor += 1
 
             elif key == Key.CHAR and ch:
                 # Space terminates a token — never re-enter trigger mode for it.
-                # For all other chars, extend an existing trigger tail if present
-                # rather than appending as a plain character.
-                _tail = None if ch.isspace() else _find_trigger_tail(buf, _registry)
+                # Trigger-tail re-entry only when cursor is at end of buffer.
+                _tail = (
+                    None if ch.isspace() or cursor < len(buf)
+                    else _find_trigger_tail(buf, _registry)
+                )
                 if _tail is not None:
                     _tch, _tpre, _tfrag = _tail
                     active_handler = _registry.get(_tch)
@@ -784,4 +841,5 @@ def read_line_with_mention(
                         matches[selected] if matches else None
                     )
                 else:
-                    buf.append(ch)
+                    buf.insert(cursor, ch)
+                    cursor += 1
