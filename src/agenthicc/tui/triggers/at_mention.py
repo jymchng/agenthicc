@@ -101,6 +101,11 @@ class AtMentionTrigger:
             return buf + ["@"] + list(fragment)
         return buf + list("@" + item.value)
 
+    def can_activate(self, buf: list[str]) -> bool:
+        # Activate at position 0 or immediately after whitespace.
+        # Prevents '@' mid-word (e.g. in an email address) from opening the picker.
+        return not buf or buf[-1].isspace()
+
     def on_cancel(self, fragment: str, buf: list[str]) -> list[str]:
         """Restore the literal ``@fragment`` text into *buf* on ESC."""
         return buf + ["@"] + list(fragment)

@@ -368,6 +368,38 @@ def _truncate_to_cols(text: str, max_visible: int) -> str:
     return text
 
 
+def _find_trigger_tail(
+    buf: list[str], registry: TriggerRegistry
+) -> "tuple[str, list[str], str] | None":
+    """Return (trigger_char, pre_buf, fragment) when buf ends with a trigger token.
+
+    Scans backward from the end of *buf* for a registered trigger character
+    with no whitespace between it and the end.  When found, checks that the
+    handler would activate at the position of *pre_buf* (i.e. can_activate
+    passes).
+
+    Returns None if no activatable trigger tail is found — either because the
+    scan hit whitespace first, or because can_activate declined.
+
+    This lets the state machine re-enter trigger mode whenever the user types
+    into or backspaces back to an existing ``@…`` or ``/…`` token.
+    """
+    for i in range(len(buf) - 1, -1, -1):
+        ch = buf[i]
+        if ch.isspace():
+            return None  # whitespace terminates the scan
+        if ch in registry.chars:
+            pre_buf = buf[:i]
+            fragment = "".join(buf[i + 1:])
+            handler = registry.get(ch)
+            if handler is not None and handler.can_activate(pre_buf):
+                return (ch, pre_buf, fragment)
+            # This trigger char can't activate here — keep scanning left.
+            # Example: '/' in '@docs/index' can't activate SlashCommandTrigger
+            # (buf is not empty), but '@' at the start can activate AtMentionTrigger.
+    return None  # no activatable trigger char in the non-whitespace suffix
+
+
 def _erase_below() -> None:
     """Erase the footer/dropdown rows before a submit or exit write.
 
@@ -663,6 +695,20 @@ def read_line_with_mention(
             elif key == Key.BACKSPACE:
                 if buf:
                     buf.pop()
+                # After popping, re-enter trigger mode if the buffer now ends
+                # with an activatable trigger tail (e.g. user backspaced into
+                # a previously-committed @mention or /command token).
+                _tail = _find_trigger_tail(buf, _registry)
+                if _tail is not None:
+                    _tch, _tpre, _tfrag = _tail
+                    active_handler = _registry.get(_tch)
+                    buf = _tpre
+                    fragment = _tfrag
+                    matches = active_handler.get_matches(fragment, _ctx)
+                    selected = 0
+                    current_hint = active_handler.get_hint(
+                        matches[selected] if matches else None
+                    )
 
             elif key == Key.CTRL_U:
                 buf.clear()
@@ -693,14 +739,45 @@ def read_line_with_mention(
                 key == Key.CHAR and ch and ch in _registry.chars
             ):
                 trigger_ch = "@" if key == Key.AT else ch
-                active_handler = _registry.get(trigger_ch)
-                if active_handler:
-                    fragment = ""
-                    matches = active_handler.get_matches("", _ctx)
+                # If the buffer already ends with a trigger tail, extend that
+                # token rather than starting a new trigger from scratch.
+                _tail = _find_trigger_tail(buf, _registry)
+                if _tail is not None:
+                    _tch, _tpre, _tfrag = _tail
+                    active_handler = _registry.get(_tch)
+                    buf = _tpre
+                    fragment = _tfrag + trigger_ch
+                    matches = active_handler.get_matches(fragment, _ctx)
                     selected = 0
-                    current_hint = active_handler.get_hint(matches[selected] if matches else None)
+                    current_hint = active_handler.get_hint(
+                        matches[selected] if matches else None
+                    )
                 else:
-                    buf.append(trigger_ch)
+                    _handler = _registry.get(trigger_ch)
+                    if _handler and _handler.can_activate(buf):
+                        active_handler = _handler
+                        fragment = ""
+                        matches = active_handler.get_matches("", _ctx)
+                        selected = 0
+                        current_hint = active_handler.get_hint(
+                            matches[selected] if matches else None
+                        )
+                    else:
+                        buf.append(trigger_ch)
 
             elif key == Key.CHAR and ch:
-                buf.append(ch)
+                # For non-trigger chars, extend an existing trigger tail if
+                # present rather than appending as a plain character.
+                _tail = _find_trigger_tail(buf, _registry)
+                if _tail is not None:
+                    _tch, _tpre, _tfrag = _tail
+                    active_handler = _registry.get(_tch)
+                    buf = _tpre
+                    fragment = _tfrag + ch
+                    matches = active_handler.get_matches(fragment, _ctx)
+                    selected = 0
+                    current_hint = active_handler.get_hint(
+                        matches[selected] if matches else None
+                    )
+                else:
+                    buf.append(ch)

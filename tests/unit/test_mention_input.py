@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agenthicc.tui.mention_input import Key, _get_matches, _read_key, read_line_with_mention
+from agenthicc.tui.mention_input import Key, _get_matches, _read_key, _find_trigger_tail, read_line_with_mention
 
 pytestmark = pytest.mark.unit
 
@@ -849,3 +849,94 @@ class TestRawTtyStateMachine:
             read_line_with_mention("❯ ", Path("."), [])
 
         assert raw_mode_calls == ["enter", "exit"]
+
+
+# ── _find_trigger_tail ────────────────────────────────────────────────────────
+
+
+class TestFindTriggerTail:
+    """Tests for the _find_trigger_tail helper.
+
+    Uses a minimal TriggerRegistry with AtMentionTrigger (@) and
+    SlashCommandTrigger (/) to cover the real activation rules.
+    """
+
+    def _registry(self):
+        from agenthicc.tui.trigger import TriggerRegistry
+        from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+        from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+        reg = TriggerRegistry()
+        reg.register(AtMentionTrigger())
+        reg.register(SlashCommandTrigger())
+        return reg
+
+    def test_empty_buf_returns_none(self):
+        assert _find_trigger_tail([], self._registry()) is None
+
+    def test_plain_text_returns_none(self):
+        assert _find_trigger_tail(list("hello"), self._registry()) is None
+
+    def test_at_token_at_start_detected(self):
+        buf = list("@docs")
+        result = _find_trigger_tail(buf, self._registry())
+        assert result is not None
+        tch, pre, frag = result
+        assert tch == "@"
+        assert pre == []
+        assert frag == "docs"
+
+    def test_at_token_after_space_detected(self):
+        buf = list("some text @docs")
+        result = _find_trigger_tail(buf, self._registry())
+        assert result is not None
+        tch, pre, frag = result
+        assert tch == "@"
+        assert "".join(pre) == "some text "
+        assert frag == "docs"
+
+    def test_slash_token_at_start_detected(self):
+        buf = list("/stat")
+        result = _find_trigger_tail(buf, self._registry())
+        assert result is not None
+        tch, pre, frag = result
+        assert tch == "/"
+        assert pre == []
+        assert frag == "stat"
+
+    def test_slash_mid_buffer_continues_scan_to_at(self):
+        # '/' inside '@docs/index' can't activate SlashCommandTrigger (pre_buf not
+        # empty), so the scan continues left and finds the activatable '@' instead.
+        buf = list("@docs/index")
+        result = _find_trigger_tail(buf, self._registry())
+        assert result is not None
+        tch, pre, frag = result
+        assert tch == "@"
+        assert pre == []
+        assert frag == "docs/index"  # full path fragment, '/' included
+
+    def test_whitespace_before_token_stops_scan(self):
+        # Whitespace terminates the scan; no trigger found before it
+        buf = list("text @src but ")   # trailing space before end
+        result = _find_trigger_tail(buf, self._registry())
+        assert result is None
+
+    def test_at_mid_word_not_detected(self):
+        # '@' after non-whitespace — AtMentionTrigger.can_activate returns False
+        buf = list("user@host")
+        result = _find_trigger_tail(buf, self._registry())
+        assert result is None
+
+    def test_regression_backspace_to_at_docs_then_slash(self):
+        """Regression: @docs/index.md → backspace to @docs → '/' re-enters @mention."""
+        # After selecting @docs/index.md and backspacing to @docs,
+        # the buffer is ['@','d','o','c','s'].
+        buf = list("@docs")
+        result = _find_trigger_tail(buf, self._registry())
+        assert result is not None
+        tch, pre, frag = result
+        assert tch == "@"
+        assert pre == []
+        assert frag == "docs"
+        # Pressing '/' should extend the fragment to 'docs/' inside AtMentionTrigger,
+        # NOT open SlashCommandTrigger.  The state machine uses frag + '/' = 'docs/'.
+        assert frag + "/" == "docs/"

@@ -71,6 +71,20 @@ class TriggerHandler(Protocol):
         """
         ...
 
+    def can_activate(self, buf: list[str]) -> bool:
+        """Return True if this trigger should open given the current buffer.
+
+        Called immediately before the state machine switches into trigger mode.
+        When this returns False the trigger character is appended to the buffer
+        as a literal character instead of opening a dropdown.
+
+        The default implementation always returns True (activate unconditionally).
+        Override to restrict activation to specific cursor contexts — for example,
+        a slash-command handler should only activate on an empty buffer, while an
+        @-mention handler should only activate after whitespace or at position 0.
+        """
+        return True
+
     def get_hint(self, item: MatchItem | None) -> str | None:
         """Optional one-line hint shown below the dropdown for the highlighted item.
 

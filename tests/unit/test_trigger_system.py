@@ -35,6 +35,9 @@ class EchoTrigger:
     def get_hint(self, item):
         return f"echo: {item.value}" if item else None
 
+    def can_activate(self, buf):
+        return True
+
 
 # ── TriggerRegistry ───────────────────────────────────────────────────────────
 
@@ -300,3 +303,37 @@ def test_registry_repr_contains_chars():
     r = repr(reg)
     assert "!" in r
     assert "TriggerRegistry" in r
+
+
+# ── can_activate contract ─────────────────────────────────────────────────────
+
+
+def test_slash_command_trigger_activates_only_on_empty_buf():
+    """SlashCommandTrigger must refuse to activate mid-buffer.
+
+    Regression: typing '@docs/index.md', backspacing to '@docs', then pressing
+    '/' triggered the slash-command dropdown instead of inserting a literal '/'.
+    """
+    from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+    t = SlashCommandTrigger()
+    assert t.can_activate([]) is True                      # empty buf → command
+    assert t.can_activate(list("@docs")) is False          # mid-buffer → literal
+    assert t.can_activate(list("hello world")) is False    # mid-buffer → literal
+
+
+def test_at_mention_trigger_activates_after_whitespace_or_at_start():
+    """AtMentionTrigger activates at position 0 or after whitespace only."""
+    from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+    t = AtMentionTrigger()
+    assert t.can_activate([]) is True               # start of line
+    assert t.can_activate([" "]) is True            # after space
+    assert t.can_activate(list("word ")) is True    # after trailing space
+    assert t.can_activate(list("word")) is False    # mid-word → literal '@'
+    assert t.can_activate(list("foo/")) is False    # path context → literal '@'
+
+
+def test_echo_trigger_default_can_activate():
+    """EchoTrigger (test stub) uses the always-True default."""
+    t = EchoTrigger()
+    assert t.can_activate([]) is True
+    assert t.can_activate(list("anything")) is True

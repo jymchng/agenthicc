@@ -37,5 +37,10 @@ class SlashCommandTrigger:
     def on_cancel(self, fragment, buf):
         return buf + ["/"] + list(fragment)
 
+    def can_activate(self, buf: list[str]) -> bool:
+        # Commands are always top-level: only activate on an empty buffer.
+        # A '/' typed mid-sentence (e.g. inside '@docs/') is a literal character.
+        return not buf
+
     def get_hint(self, item) -> str | None:
         return item.hint if item and item.hint else None
