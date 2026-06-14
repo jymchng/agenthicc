@@ -268,7 +268,7 @@ class TranscriptModel:
 
     # ── rendering ────────────────────────────────────────────────────────
 
-    MAX_VISIBLE_TOOL_CALLS = 10_000  # effectively unlimited — no "… and N more" banner
+    MAX_VISIBLE_TOOL_CALLS = 5
 
     def render(self) -> list[str]:
         """Render the transcript to plain-text lines (PRD-06 §5.1).
@@ -291,31 +291,48 @@ class TranscriptModel:
 
             if turn.ordered_events:
                 # ── interleaved rendering ────────────────────────────────────
-                total_calls = sum(
-                    1 for e in turn.ordered_events if e["type"] == "tool_call"
-                )
-                calls_shown = 0
-                hidden = max(0, total_calls - self.MAX_VISIBLE_TOOL_CALLS)
+                # The cap (MAX_VISIBLE_TOOL_CALLS) resets at each text event so
+                # every LLM response group gets its own independent budget of 5
+                # visible calls.  "… and N more" only appears within a group that
+                # exceeds the cap, not across the whole turn.
 
-                # @mention chips before any events (they have no ordering info)
                 for chip in getattr(turn, "mention_chips", []):
                     _render_chip(out, chip, turn)
 
-                _banner_shown = False
-                for event in turn.ordered_events:
+                calls_in_group = 0   # resets after each text event
+                banner_shown = False
+                # pre-count calls after the next text boundary for the banner
+                def _calls_after(idx: int) -> int:
+                    n = 0
+                    for e in turn.ordered_events[idx:]:
+                        if e["type"] == "text":
+                            break
+                        if e["type"] == "tool_call":
+                            n += 1
+                    return n
+
+                i = 0
+                events = turn.ordered_events
+                while i < len(events):
+                    event = events[i]
                     if event["type"] == "text":
                         out.append(event["line"])
+                        # New response group — reset the per-group counter.
+                        calls_in_group = 0
+                        banner_shown = False
                     elif event["type"] == "tool_call":
-                        if calls_shown < self.MAX_VISIBLE_TOOL_CALLS:
+                        if calls_in_group < self.MAX_VISIBLE_TOOL_CALLS:
                             out.append(event["tc"].render())
-                            calls_shown += 1
-                        elif not _banner_shown and hidden > 0:
-                            # Emit the banner right after the last visible call,
-                            # before any subsequent text events.
+                            calls_in_group += 1
+                        elif not banner_shown:
+                            # Count remaining hidden calls in this group.
+                            hidden = _calls_after(i) - (self.MAX_VISIBLE_TOOL_CALLS - calls_in_group)
+                            hidden = max(0, hidden + 1)  # +1 for this call
                             out.append(
                                 f"  [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}[/dim]"
                             )
-                            _banner_shown = True
+                            banner_shown = True
+                    i += 1
             else:
                 # ── legacy rendering (tool calls first, then prose) ──────────
                 calls = turn.tool_calls
