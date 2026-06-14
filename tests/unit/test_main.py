@@ -21,9 +21,9 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(autouse=True)
 def isolated_sessions(tmp_path, monkeypatch):
-    import agenthicc.__main__ as m
-    monkeypatch.setattr(m, "_SESSION_INDEX", tmp_path / "sessions.json")
-    monkeypatch.setattr(m, "_SESSIONS_DIR", tmp_path / "sessions")
+    import agenthicc.sessions as s
+    monkeypatch.setattr(s, "_SESSION_INDEX", tmp_path / "sessions.json")
+    monkeypatch.setattr(s, "_SESSIONS_DIR", tmp_path / "sessions")
 
 
 # ---------------------------------------------------------------------------
@@ -33,22 +33,22 @@ def isolated_sessions(tmp_path, monkeypatch):
 class TestSessionIndex:
     def test_load_empty_index(self, tmp_path):
         """_SESSION_INDEX doesn't exist → returns {}"""
-        from agenthicc.__main__ import _load_session_index
+        from agenthicc.sessions import _load_session_index
         result = _load_session_index()
         assert result == {}
 
     def test_load_corrupt_json_returns_empty(self, tmp_path, monkeypatch):
         """A corrupt JSON file in _SESSION_INDEX returns {} instead of raising."""
-        import agenthicc.__main__ as m
+        import agenthicc.sessions as s
         # Write invalid JSON to the session index file
-        m._SESSION_INDEX.parent.mkdir(parents=True, exist_ok=True)
-        m._SESSION_INDEX.write_text("{not valid json!!!")
-        result = m._load_session_index()
+        s._SESSION_INDEX.parent.mkdir(parents=True, exist_ok=True)
+        s._SESSION_INDEX.write_text("{not valid json!!!")
+        result = s._load_session_index()
         assert result == {}
 
     def test_register_and_load(self, tmp_path):
         """_register_session saves an entry with cwd and log_path."""
-        from agenthicc.__main__ import _register_session, _load_session_index
+        from agenthicc.sessions import _register_session, _load_session_index
         session_id = uuid.uuid4().hex
         _register_session(session_id)
 
@@ -61,7 +61,7 @@ class TestSessionIndex:
 
     def test_find_latest_for_cwd(self, tmp_path):
         """Register two sessions for this cwd → _find_latest returns the more recent one."""
-        from agenthicc.__main__ import (
+        from agenthicc.sessions import (
             _register_session,
             _touch_session,
             _find_latest_session_for_cwd,
@@ -74,7 +74,6 @@ class TestSessionIndex:
 
         _register_session(sid_old)
         # Force older last_used by adjusting the index directly
-        import agenthicc.__main__ as m
         index = _load_session_index()
         index[sid_old]["last_used"] = time.time() - 100
         _save_session_index(index)
@@ -86,20 +85,20 @@ class TestSessionIndex:
 
     def test_find_latest_returns_none_if_no_match(self, monkeypatch):
         """cwd doesn't match any entry → returns None."""
-        from agenthicc.__main__ import _find_latest_session_for_cwd, _save_session_index
+        from agenthicc.sessions import _find_latest_session_for_cwd, _save_session_index
 
         # Populate index with a different cwd
         _save_session_index({
             "abc": {"cwd": "/some/other/directory", "last_used": time.time(), "log_path": "/x"}
         })
         # Mock os.getcwd to something that won't match
-        monkeypatch.setattr("agenthicc.__main__.os.getcwd", lambda: "/nonexistent/cwd/xyz")
+        monkeypatch.setattr("agenthicc.sessions.os.getcwd", lambda: "/nonexistent/cwd/xyz")
         result = _find_latest_session_for_cwd()
         assert result is None
 
     def test_touch_updates_last_used(self):
         """Register, touch, verify last_used updated."""
-        from agenthicc.__main__ import (
+        from agenthicc.sessions import (
             _register_session,
             _touch_session,
             _load_session_index,
@@ -120,14 +119,14 @@ class TestSessionIndex:
 
     def test_touch_unknown_session_is_noop(self):
         """_touch_session on unknown id silently does nothing."""
-        from agenthicc.__main__ import _touch_session, _load_session_index
+        from agenthicc.sessions import _touch_session, _load_session_index
         _touch_session("does-not-exist")
         # Should not raise and index should remain empty
         assert _load_session_index() == {}
 
     def test_get_session_log_path(self):
         """Registered session → returns Path; unknown → None."""
-        from agenthicc.__main__ import (
+        from agenthicc.sessions import (
             _register_session,
             _get_session_log_path,
         )
@@ -144,11 +143,10 @@ class TestSessionIndex:
 
     def test_sessions_saved_as_json(self, tmp_path):
         """File is valid JSON after _register_session."""
-        import agenthicc.__main__ as m
-        from agenthicc.__main__ import _register_session
+        import agenthicc.sessions as s
         sid = uuid.uuid4().hex
-        _register_session(sid)
-        raw = m._SESSION_INDEX.read_text()
+        s._register_session(sid)
+        raw = s._SESSION_INDEX.read_text()
         parsed = json.loads(raw)
         assert isinstance(parsed, dict)
         assert sid in parsed
@@ -161,56 +159,56 @@ class TestSessionIndex:
 class TestMainParseArgs:
     def test_headless_flag(self):
         with patch("sys.argv", ["agenthicc", "--headless"]):
-            from agenthicc.__main__ import _parse_args
+            from agenthicc.cli.parser import _parse_args
             args = _parse_args()
         assert args.headless is True
 
     def test_continue_flag(self):
         with patch("sys.argv", ["agenthicc", "--continue"]):
-            from agenthicc.__main__ import _parse_args
+            from agenthicc.cli.parser import _parse_args
             args = _parse_args()
         assert args.continue_session is True
 
     def test_resume_flag(self):
         with patch("sys.argv", ["agenthicc", "--resume", "abc123"]):
-            from agenthicc.__main__ import _parse_args
+            from agenthicc.cli.parser import _parse_args
             args = _parse_args()
         assert args.resume == "abc123"
 
     def test_version(self):
         with patch("sys.argv", ["agenthicc", "--version"]):
-            from agenthicc.__main__ import _parse_args
+            from agenthicc.cli.parser import _parse_args
             with pytest.raises(SystemExit) as exc_info:
                 _parse_args()
         assert exc_info.value.code == 0
 
     def test_login_command(self):
         with patch("sys.argv", ["agenthicc", "login"]):
-            from agenthicc.__main__ import _parse_args
+            from agenthicc.cli.parser import _parse_args
             args = _parse_args()
         assert args.command == "login"
 
     def test_logout_command(self):
         with patch("sys.argv", ["agenthicc", "logout"]):
-            from agenthicc.__main__ import _parse_args
+            from agenthicc.cli.parser import _parse_args
             args = _parse_args()
         assert args.command == "logout"
 
     def test_whoami_command(self):
         with patch("sys.argv", ["agenthicc", "whoami"]):
-            from agenthicc.__main__ import _parse_args
+            from agenthicc.cli.parser import _parse_args
             args = _parse_args()
         assert args.command == "whoami"
 
     def test_sessions_command(self):
         with patch("sys.argv", ["agenthicc", "sessions"]):
-            from agenthicc.__main__ import _parse_args
+            from agenthicc.cli.parser import _parse_args
             args = _parse_args()
         assert args.command == "sessions"
 
     def test_no_args_default_values(self):
         with patch("sys.argv", ["agenthicc"]):
-            from agenthicc.__main__ import _parse_args
+            from agenthicc.cli.parser import _parse_args
             args = _parse_args()
         assert args.headless is False
         assert args.continue_session is False
@@ -367,14 +365,14 @@ class TestDoWhoami:
 class TestDoSessions:
     def test_no_sessions(self, capsys):
         """Empty index → prints 'No saved sessions.'"""
-        from agenthicc.__main__ import _do_sessions
+        from agenthicc.sessions import _do_sessions
         _do_sessions()
         captured = capsys.readouterr()
         assert "No saved sessions." in captured.out
 
     def test_shows_sessions(self, capsys):
         """Index with two entries → both session IDs appear in output."""
-        from agenthicc.__main__ import _register_session, _do_sessions
+        from agenthicc.sessions import _register_session, _do_sessions
         sid_a = uuid.uuid4().hex
         sid_b = uuid.uuid4().hex
         _register_session(sid_a)
@@ -389,7 +387,7 @@ class TestDoSessions:
 
     def test_current_cwd_marked_with_asterisk(self, capsys):
         """A session whose cwd matches the current directory is marked with *."""
-        from agenthicc.__main__ import _register_session, _do_sessions, _save_session_index
+        from agenthicc.sessions import _register_session, _do_sessions, _save_session_index
         # Register a session for a different cwd
         _save_session_index({
             "aabbccddeeff": {
@@ -436,18 +434,18 @@ class TestRunTui:
 
     def test_tui_continue_no_previous_session_prints_message(self, capsys, monkeypatch):
         """--continue with no prior session prints 'No previous session found'."""
-        import agenthicc.__main__ as m
+        import agenthicc.runners.tui_session as ts
         import argparse
 
         args = argparse.Namespace(headless=False, continue_session=True, resume=None, command=None)
 
         # Ensure _find_latest_session_for_cwd returns None (no sessions registered)
-        monkeypatch.setattr(m, "_find_latest_session_for_cwd", lambda: None)
+        monkeypatch.setattr(ts, "_find_latest_session_for_cwd", lambda: None)
 
         async def noop_tui_session(resume_id=None, **kwargs):
             pass
 
-        monkeypatch.setattr(m, "_run_tui_session", noop_tui_session)
+        monkeypatch.setattr(ts, "_run_tui_session", noop_tui_session)
 
         def consuming_asyncio_run(coro):
             # Close the coroutine to avoid unawaited-coroutine warning
@@ -455,15 +453,15 @@ class TestRunTui:
 
         # Patch rich and prompt_toolkit so the import check passes
         with patch.dict("sys.modules", {"rich.console": MagicMock()}):
-            with patch("agenthicc.__main__.asyncio.run", side_effect=consuming_asyncio_run):
-                m._run_tui(args)
+            with patch("agenthicc.runners.tui_session.asyncio.run", side_effect=consuming_asyncio_run):
+                ts._run_tui(args)
 
         captured = capsys.readouterr()
         assert "No previous session found" in captured.out
 
     def test_tui_resume_sets_resume_id(self, monkeypatch):
         """--resume <id> passes the id to _run_tui_session."""
-        import agenthicc.__main__ as m
+        import agenthicc.runners.tui_session as ts
         import argparse
 
         resume_id_used = []
@@ -472,31 +470,31 @@ class TestRunTui:
         async def capturing_tui_session(resume_id=None, **kwargs):
             resume_id_used.append(resume_id)
 
-        monkeypatch.setattr(m, "_run_tui_session", capturing_tui_session)
+        monkeypatch.setattr(ts, "_run_tui_session", capturing_tui_session)
 
         with patch.dict("sys.modules", {"rich.console": MagicMock()}):
-            with patch("agenthicc.__main__.asyncio.run", side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro)):
-                m._run_tui(args)
+            with patch("agenthicc.runners.tui_session.asyncio.run", side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro)):
+                ts._run_tui(args)
 
         assert resume_id_used == ["myresumeid"]
 
     def test_tui_exception_exits_with_code_1(self, monkeypatch, capsys):
         """If asyncio.run raises, _run_tui exits with code 1."""
-        import agenthicc.__main__ as m
+        import agenthicc.runners.tui_session as ts
         import argparse
 
         args = argparse.Namespace(headless=False, continue_session=False, resume=None, command=None)
 
-        monkeypatch.setattr(m, "_find_latest_session_for_cwd", lambda: None)
+        monkeypatch.setattr(ts, "_find_latest_session_for_cwd", lambda: None)
 
         def raising_asyncio_run(coro):
             coro.close()  # prevent unawaited-coroutine warning
             raise RuntimeError("boom")
 
         with patch.dict("sys.modules", {"rich.console": MagicMock()}):
-            with patch("agenthicc.__main__.asyncio.run", side_effect=raising_asyncio_run):
+            with patch("agenthicc.runners.tui_session.asyncio.run", side_effect=raising_asyncio_run):
                 with pytest.raises(SystemExit) as exc_info:
-                    m._run_tui(args)
+                    ts._run_tui(args)
 
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
