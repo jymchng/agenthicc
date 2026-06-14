@@ -72,6 +72,7 @@ class StreamingSession:
         # trigger_registry and cwd reserved for P2-4 streaming trigger handoff
         trigger_registry: Any = None,
         cwd: Path | None = None,
+        on_interrupt: Any = None,
     ) -> None:
         self._state = input_bar_state
         self._queue = pending_queue
@@ -79,6 +80,7 @@ class StreamingSession:
         self._live_panel = live_panel
         self._registry = trigger_registry
         self._cwd = cwd or Path(".")
+        self._on_interrupt = on_interrupt   # called when user presses Ctrl+C or Esc
         self._buf = InputBuffer()
         self._task: asyncio.Task | None = None
 
@@ -126,6 +128,16 @@ class StreamingSession:
             key, ch = result
 
             match key:
+                case Key.CTRL_C | Key.ESC:
+                    # Cancel the running agent.  The on_interrupt callback is
+                    # _sigint_cancel from tui.py, which calls _current_task.cancel().
+                    # We clear the pending input so the cancelled turn leaves no
+                    # half-typed text.
+                    self._buf.clear()
+                    self._push()
+                    if self._on_interrupt is not None:
+                        self._on_interrupt()
+
                 case Key.ENTER:
                     text = self._buf.text.strip()
                     self._buf.clear()
@@ -154,4 +166,4 @@ class StreamingSession:
                     self._push()
 
                 case _:
-                    pass   # arrow keys, Esc, etc. — ignored during streaming
+                    pass   # arrow keys and other sequences — ignored

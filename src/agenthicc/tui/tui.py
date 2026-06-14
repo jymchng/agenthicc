@@ -273,9 +273,16 @@ class AgenthiccTUI:
         _cwd = _Path(self._base_path).resolve()
         _dispatcher = CommandDispatcher(_cmd_registry)
 
+        # _current_task and _sigint_cancel must be defined BEFORE _streaming_input
+        # is created because it captures _sigint_cancel as on_interrupt.
+        _loop = _a.get_event_loop()
+        _current_task: _a.Task | None = None
+
+        def _sigint_cancel() -> None:
+            if _current_task and not _current_task.done():
+                _current_task.cancel()
+
         # StreamingInput — queues messages typed during agent turns.
-        # Pass live_panel + trigger_registry so the full @/slash picker works
-        # during streaming (Live block is briefly paused for the picker session).
         from agenthicc.tui.input.streaming import StreamingSession as StreamingInput  # noqa: PLC0415
         _pending_queue: list[str] = []
         _streaming_input = StreamingInput(
@@ -285,14 +292,9 @@ class AgenthiccTUI:
             live_panel=self.live_panel,
             trigger_registry=_registry,
             cwd=_cwd,
+            on_interrupt=_sigint_cancel,
         )
         self._streaming_input = _streaming_input
-        _loop = _a.get_event_loop()
-        _current_task: _a.Task | None = None
-
-        def _sigint_cancel() -> None:
-            if _current_task and not _current_task.done():
-                _current_task.cancel()
 
         # SIGINT handling strategy:
         #   Idle mode   — asyncio handler NOT registered so Python's default
