@@ -50,19 +50,29 @@ _PROMPT_STYLE = f"\x1b[1;32m{PROMPT_CHAR}\x1b[0m "  # bold green ❯ + space
 
 # ── Exit messages — centralised here so they can never be lost ────────────────
 
-_MSG_WARN = "\n\x1b[2mPress Ctrl+C again to exit.\x1b[0m\n"
-
-
 def _show_exit_hint(resume_id: str = "") -> None:
-    """Print the resume hint and flush.  Called on every clean exit path."""
+    """Render the resume hint below the input bar border and flush."""
+    import shutil as _sh  # noqa: PLC0415
+    cols = _sh.get_terminal_size((80, 24)).columns
+    border = "\x1b[2m" + "─" * cols + "\x1b[0m"
     if resume_id:
-        hint = (
-            f"  To resume: \x1b[1magenthicc --resume {resume_id}\x1b[0m\n"
-            f"  Or in the same directory: \x1b[1magenthicc --continue\x1b[0m"
-        )
+        hint_lines = [
+            f"  \x1b[2mTo resume:\x1b[0m "
+            f"\x1b[1magenthicc --resume {resume_id}\x1b[0m",
+            f"  \x1b[2mOr in the same directory:\x1b[0m "
+            f"\x1b[1magenthicc --continue\x1b[0m",
+        ]
     else:
-        hint = "  To resume: \x1b[1magenthicc --continue\x1b[0m  (in the same directory)"
-    sys.stdout.write(f"\n\x1b[2m{hint}\x1b[0m\n\n")
+        hint_lines = [
+            f"  \x1b[2mTo resume:\x1b[0m "
+            f"\x1b[1magenthicc --continue\x1b[0m"
+            f"\x1b[2m  (in the same directory)\x1b[0m",
+        ]
+    out = "\n\r" + border
+    for line in hint_lines:
+        out += "\n\r" + line
+    out += "\n\n"
+    sys.stdout.write(out)
     sys.stdout.flush()
 
 
@@ -529,6 +539,8 @@ def read_line_with_mention(
         if notif is not None:
             _mode_notification[0] = None
             return f"❖ Switched to {notif.name} mode"
+        if ctrl_c_count > 0:
+            return "Press Ctrl+C again to exit."
         return _ia_mode_str(mode_manager)
 
     with _raw_mode(fd):
@@ -578,8 +590,7 @@ def read_line_with_mention(
                     prev_dropdown_lines = 0
                     ctrl_c_count += 1
                     if ctrl_c_count == 1:
-                        sys.stdout.write(_MSG_WARN)
-                        sys.stdout.flush()
+                        # Warning is rendered by _get_mode_line() on next _redraw.
                         buf = []
                         cursor = 0
                     else:
@@ -711,9 +722,9 @@ def read_line_with_mention(
                 _erase_below()
                 prev_dropdown_lines = 0
                 if ctrl_c_count == 1:
-                    sys.stdout.write(_MSG_WARN)
-                    sys.stdout.flush()
+                    # Warning is rendered by _get_mode_line() on next _redraw.
                     buf = []
+                    cursor = 0
                 else:
                     _show_exit_hint(resume_id)
                     return None
