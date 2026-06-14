@@ -501,8 +501,7 @@ async def _run_agent_turn(
                     # tools for this turn.  ToolCallStarted/Complete signals fire
                     # after this yield, so the transcript order becomes:
                     #   turn-1 text → turn-1 tools → turn-2 text → turn-2 tools …
-                    from agenthicc.tui.app import InlineRenderer as _IR  # noqa: PLC0415
-                    transcript.append_line(agent_id, _IR._MD_SENTINEL + _turn_text)
+                    transcript.append_line(agent_id, "\x00md\x00" + _turn_text)
                     # Immediately print the completed turn text to the scroll buffer
                     # so it persists above the tool-call Live block.
                     renderer._flush_new_lines()
@@ -543,13 +542,8 @@ async def _run_agent_turn(
         renderer._status.active = False
         renderer._status.completed_agents += 1
 
-    from agenthicc.tui.app import InlineRenderer  # noqa: PLC0415
-
-    # Turn texts were added to the transcript at each stop_reason (inside the
-    # stream loop above) so they interleave correctly with tool call signals.
-    # The only case we still need to append here is the synthetic "(no response)".
     if content == "(no response)":
-        transcript.append_line(agent_id, InlineRenderer._MD_SENTINEL + content)
+        transcript.append_line(agent_id, "\x00md\x00" + content)
 
     await processor.emit(
         Event.create("IntentStatusChanged", {"intent_id": intent_id, "status": "complete"})

@@ -27,7 +27,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     from agenthicc.kernel.processor import restore_from_log
     from agenthicc.tui.transcript import TranscriptModel
     from agenthicc.tui.events import TUIEventAdapter
-    from agenthicc.tui.app import InlineRenderer
+    from agenthicc.tui.tui import AgenthiccTUI as InlineRenderer
     from agenthicc.config import load_config, build_llm_config
     from agenthicc.conversation_store import ConversationStore  # noqa: PLC0415
 
