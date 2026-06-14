@@ -693,11 +693,12 @@ def read_line_with_mention(
                 return result
 
             elif key == Key.BACKSPACE:
-                if buf:
-                    buf.pop()
-                # After popping, re-enter trigger mode if the buffer now ends
-                # with an activatable trigger tail (e.g. user backspaced into
-                # a previously-committed @mention or /command token).
+                # Check for a trigger tail BEFORE popping so the first
+                # backspace on a committed token (e.g. @docs/README.md)
+                # re-enters the picker at the FULL fragment.  Subsequent
+                # presses peel characters away inside trigger-mode's own
+                # backspace handler.  If no tail is found, fall through to
+                # a normal pop.
                 _tail = _find_trigger_tail(buf, _registry)
                 if _tail is not None:
                     _tch, _tpre, _tfrag = _tail
@@ -709,6 +710,8 @@ def read_line_with_mention(
                     current_hint = active_handler.get_hint(
                         matches[selected] if matches else None
                     )
+                elif buf:
+                    buf.pop()
 
             elif key == Key.CTRL_U:
                 buf.clear()
@@ -766,9 +769,10 @@ def read_line_with_mention(
                         buf.append(trigger_ch)
 
             elif key == Key.CHAR and ch:
-                # For non-trigger chars, extend an existing trigger tail if
-                # present rather than appending as a plain character.
-                _tail = _find_trigger_tail(buf, _registry)
+                # Space terminates a token — never re-enter trigger mode for it.
+                # For all other chars, extend an existing trigger tail if present
+                # rather than appending as a plain character.
+                _tail = None if ch.isspace() else _find_trigger_tail(buf, _registry)
                 if _tail is not None:
                     _tch, _tpre, _tfrag = _tail
                     active_handler = _registry.get(_tch)
