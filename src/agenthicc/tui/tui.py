@@ -392,6 +392,16 @@ class AgenthiccTUI:
                 _streaming_input.stop()
                 self.live_panel.stop()
                 self._flush_new_lines()
+                # Drain pending asyncio task cancellations (particularly
+                # StreamingSession's raw_mode cleanup) before the next idle
+                # session captures terminal settings.  Without this there is a
+                # race: the thread pool can start InputSession.run() — which
+                # calls tcgetattr() to save "old" — before the event loop
+                # processes the streaming task's CancelledError and calls
+                # tcsetattr() to restore ECHO.  If the thread wins the race,
+                # "old" captures CBREAK (ECHO=off), and the idle session's
+                # _restore() permanently disables ECHO on exit.
+                await _a.sleep(0)
                 # Drain any messages queued while the agent was running.
                 # Do NOT echo them again — the user already saw "[dim]❯ … ⌛ Queued[/dim]"
                 # during streaming.  Printing another "❯ text" line here creates
@@ -406,6 +416,7 @@ class AgenthiccTUI:
                     _streaming_input.stop()
                     self.live_panel.stop()
                     self._flush_new_lines()
+                    await _a.sleep(0)  # same race fix for queued messages
         finally:
             _streaming_input.stop()
             tick_task.cancel()

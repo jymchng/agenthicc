@@ -72,6 +72,19 @@ def raw_mode(fd: int) -> Generator[int, None, None]:
     import sys       # noqa: PLC0415
     import tty       # noqa: PLC0415
 
+    # Belt-and-suspenders: if ECHO is already off when we enter raw_mode it
+    # means a previous raw_mode context hasn't finished its cleanup yet (race
+    # condition between asyncio task cancellation and thread-pool startup).
+    # Re-enable ECHO + ICANON BEFORE capturing "old" so that _restore() will
+    # always put the terminal back to a usable state.
+    try:
+        _pre = termios.tcgetattr(fd)
+        if not (_pre[3] & termios.ECHO):
+            _pre[3] |= termios.ECHO | termios.ICANON
+            termios.tcsetattr(fd, termios.TCSANOW, _pre)
+    except Exception:  # noqa: BLE001
+        pass
+
     old = termios.tcgetattr(fd)
 
     def _restore() -> None:
@@ -80,11 +93,15 @@ def raw_mode(fd: int) -> Generator[int, None, None]:
         Called both from the normal ``finally`` path and (as a safety net) from
         ``atexit`` in case the thread is killed before ``finally`` runs — e.g.
         when the main asyncio thread catches ``KeyboardInterrupt`` and exits
-        while this worker thread is still alive.  ``TCSAFLUSH`` (vs ``TCSADRAIN``)
-        discards any buffered input so the terminal is immediately usable.
+        while this worker thread is still alive.  ``TCSAFLUSH`` discards
+        buffered input so the terminal is immediately usable.
         """
         try:
-            sys.stdout.write("\x1b[?2004l\x1b[?25h")  # bracketed paste OFF + show cursor
+            sys.stdout.write(
+                "\x1b[m"           # reset all SGR attributes (colour, bold, dim…)
+                "\x1b[?2004l"      # bracketed paste OFF
+                "\x1b[?25h"        # show cursor
+            )
             sys.stdout.flush()
         except Exception:  # noqa: BLE001
             pass

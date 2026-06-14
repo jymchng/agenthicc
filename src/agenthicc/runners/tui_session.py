@@ -10,6 +10,36 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+def _reset_terminal_on_exit() -> None:
+    """Unconditionally reset the terminal to a usable state at TUI exit.
+
+    This is a last-resort cleanup that runs after ``asyncio.run()`` returns,
+    covering edge cases where ``cbreak_reader.raw_mode``'s ``_restore()``
+    was not called (race conditions, process signals, unhandled exceptions).
+
+    What we reset:
+      * SGR attributes (colour, bold, dim, etc.) via ``\\x1b[m``
+      * Bracketed paste mode OFF via ``\\x1b[?2004l``
+      * Cursor visibility ON via ``\\x1b[?25h``
+      * ECHO and ICANON re-enabled via termios (so typed text is visible)
+    """
+    try:
+        import sys as _sys
+        _sys.stdout.write("\x1b[m\x1b[?2004l\x1b[?25h")
+        _sys.stdout.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import termios as _tm
+        fd = 0  # stdin
+        settings = _tm.tcgetattr(fd)
+        # Re-enable ECHO, ICANON, ISIG so the terminal is fully interactive.
+        settings[3] |= _tm.ECHO | _tm.ICANON | _tm.ISIG
+        _tm.tcsetattr(fd, _tm.TCSAFLUSH, settings)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 from agenthicc.sessions import (
     _SESSIONS_DIR,
     _find_latest_session_for_cwd,
@@ -259,3 +289,10 @@ def _run_tui(args: argparse.Namespace) -> None:
     except Exception as exc:
         print(f"TUI error: {exc}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        # Final-exit terminal reset — runs regardless of how the TUI exited.
+        # This is the last line of defence against any raw_mode cleanup that
+        # didn't finish (race conditions, exceptions, signal delivery order).
+        # We explicitly re-enable ECHO + ICANON and reset all terminal attributes
+        # so the user's original shell session is completely usable.
+        _reset_terminal_on_exit()
