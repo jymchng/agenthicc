@@ -707,7 +707,7 @@ async def _run_agent_turn(
             _typed = "".join(_queue_input_buf)
             if len(_typed) > cols - 4:
                 _typed = _typed[:cols - 7] + "…"
-            input_bar = f"[bold green]❯[/bold green] {_typed}"
+            input_bar = f"[bold green]❯[/bold green] {_typed}[bold]▌[/bold]"
             _q_count = len(pending_queue) if pending_queue is not None else 0
             _hdr = header + (f"  [dim]({_q_count} queued)[/dim]" if _q_count else "")
             # Mirror the real _redraw layout: border + mode line below the ❯ bar.
