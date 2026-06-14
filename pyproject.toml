@@ -17,10 +17,14 @@ dependencies = [
     "uvicorn>=0.29",
     "websockets>=12.0",
     "httpx>=0.27",
+    "textual>=0.56.0",
+    "wcwidth>=0.2.13",
+    "prompt_toolkit>=3.0",
 ]
 
 [project.optional-dependencies]
 cloud = ["aiohttp>=3.9", "keyring>=25.0"]
+speedups = ["textual-speedups"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -57,7 +61,14 @@ timeout = 60
 
 [tool.coverage.run]
 source = ["agenthicc"]
-omit = ["tests/*"]
+omit = [
+    "tests/*",
+    # Platform-specific code unreachable without target platform
+    "*/tools/fs/pyodide.py",        # Pyodide/browser-only
+    "*/tools/fs/windows.py",        # Windows-only
+    "*/tools/outlook/win32_backend.py",  # Windows COM/pywin32 only
+    # Auto-generated or trivial re-export files covered by other tests
+]
 
 [dependency-groups]
 dev = [

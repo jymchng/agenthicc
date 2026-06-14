@@ -493,8 +493,8 @@ def _tty_drive(
     def fake_raw_mode(fd: int) -> Generator[int, None, None]:
         yield fd
 
-    def fake_redraw(*args, **kwargs) -> int:
-        return 0
+    def fake_redraw(*args, **kwargs) -> tuple[int, int]:
+        return (0, 1)
 
     stdin_mock = MagicMock()
     stdin_mock.isatty.return_value = True
@@ -545,6 +545,9 @@ def _down() -> tuple[Key, str]:
 def _tab() -> tuple[Key, str]:
     return (Key.TAB, "")
 
+def _newline() -> tuple[Key, str]:
+    return (Key.NEWLINE, "")
+
 
 class TestRawTtyStateMachine:
 
@@ -557,6 +560,27 @@ class TestRawTtyStateMachine:
     def test_enter_on_empty_returns_empty_string(self) -> None:
         result, _ = _tty_drive([_enter()])
         assert result == ""
+
+    def test_newline_key_inserts_literal_newline(self) -> None:
+        # Alt+Enter (NEWLINE) inserts a newline and stays in editing mode.
+        result, _ = _tty_drive(
+            [_char("a"), _newline(), _char("b"), _enter()]
+        )
+        assert result == "a\nb"
+
+    def test_backslash_enter_inserts_newline(self) -> None:
+        # Typing "\" then Enter continues on the next line instead of submitting.
+        result, _ = _tty_drive(
+            [_char("a"), _char("\\"), _enter(), _char("b"), _enter()]
+        )
+        assert result == "a\nb"
+
+    def test_backslash_enter_then_submit(self) -> None:
+        # A plain Enter (no trailing backslash) still submits the multi-line buffer.
+        result, _ = _tty_drive(
+            [_char("x"), _newline(), _char("y"), _newline(), _char("z"), _enter()]
+        )
+        assert result == "x\ny\nz"
 
     def test_non_empty_enter_adds_to_history(self) -> None:
         _, history = _tty_drive([_char("h"), _char("i"), _enter()])
@@ -682,7 +706,7 @@ class TestRawTtyStateMachine:
             patch("sys.stdout"),
             patch("agenthicc.tui.mention_input._raw_mode", fake_raw_mode),
             patch("agenthicc.tui.mention_input._read_key", fake_read_key),
-            patch("agenthicc.tui.mention_input._redraw", return_value=0),
+            patch("agenthicc.tui.mention_input._redraw", return_value=(0, 1)),
         ):
             result = read_line_with_mention("❯ ", tmp_path, history)
 
@@ -732,7 +756,7 @@ class TestRawTtyStateMachine:
             patch("sys.stdout"),
             patch("agenthicc.tui.mention_input._raw_mode", fake_raw_mode),
             patch("agenthicc.tui.mention_input._read_key", fake_read_key),
-            patch("agenthicc.tui.mention_input._redraw", return_value=0),
+            patch("agenthicc.tui.mention_input._redraw", return_value=(0, 1)),
         ):
             result = read_line_with_mention("❯ ", tmp_path, history)
 
@@ -780,7 +804,7 @@ class TestRawTtyStateMachine:
             patch("sys.stdout"),
             patch("agenthicc.tui.mention_input._raw_mode", fake_raw_mode),
             patch("agenthicc.tui.mention_input._read_key", fake_read_key),
-            patch("agenthicc.tui.mention_input._redraw", return_value=0),
+            patch("agenthicc.tui.mention_input._redraw", return_value=(0, 1)),
         ):
             result = read_line_with_mention("❯ ", tmp_path, history)
 
@@ -809,7 +833,7 @@ class TestRawTtyStateMachine:
             patch("sys.stdout"),
             patch("agenthicc.tui.mention_input._raw_mode", fake_raw_mode),
             patch("agenthicc.tui.mention_input._read_key", fake_read_key),
-            patch("agenthicc.tui.mention_input._redraw", return_value=0),
+            patch("agenthicc.tui.mention_input._redraw", return_value=(0, 1)),
         ):
             result = read_line_with_mention("❯ ", tmp_path, history)
 
@@ -844,7 +868,7 @@ class TestRawTtyStateMachine:
             patch("sys.stdout"),
             patch("agenthicc.tui.mention_input._raw_mode", tracking_raw_mode),
             patch("agenthicc.tui.mention_input._read_key", fake_read_key),
-            patch("agenthicc.tui.mention_input._redraw", return_value=0),
+            patch("agenthicc.tui.mention_input._redraw", return_value=(0, 1)),
         ):
             read_line_with_mention("❯ ", Path("."), [])
 

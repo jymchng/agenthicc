@@ -1,15 +1,11 @@
-# src/agenthicc/tui/input_bar.py
-"""Slash-command and @-file mention types used by the TUI (PRD-10).
-
-No prompt_toolkit dependency.  The actual interactive input loop lives in
-:mod:`agenthicc.tui.mention_input`.
-"""
+"""input_bar.py — CommandRegistry and CommandSpec for slash-command system."""
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Any
 
 __all__ = [
     "AtMentionCompleter",
@@ -21,198 +17,194 @@ __all__ = [
     "build_default_registry",
 ]
 
-# ── slash-command registry ────────────────────────────────────────────────────
+_GROUP_ORDER = ["Built-in", "Skills", "MCP", "Plugins"]
 
 
-@dataclass(frozen=True)
+@dataclass
 class CommandSpec:
-    """Specification for a slash command shown in the completion menu."""
-
-    name: str           # e.g. "/status"
-    description: str    # e.g. "Show running agents and their tasks"
-    aliases: tuple[str, ...] = ()
-    argument_hint: str = ""      # e.g. "[provider] [model]"  (PRD-37)
-    group: str = "Built-in"      # "Built-in" | "Skills" | "Plugins" | "MCP"  (PRD-38)
-
-
-BUILTIN_COMMANDS: list[CommandSpec] = [
-    CommandSpec("/status",   "Show running agents and their tasks"),
-    CommandSpec("/model",    "Show or switch LLM provider/model",
-                argument_hint="[provider] [model]"),
-    CommandSpec("/models",   "List all available LLM providers"),
-    CommandSpec("/skills",   "List available skills"),
-    CommandSpec("/expand",   "Expand tool output or @mention",
-                argument_hint="[tool-id-or-@path]"),
-    CommandSpec("/history",  "Browse the event log"),
-    CommandSpec("/help",     "List available commands"),
-    CommandSpec("/cancel",   "Cancel the currently running intent"),
-    CommandSpec("/clear",    "Clear the transcript display"),
-    CommandSpec("/mcp",      "Show MCP server status",
-                argument_hint="[connect <url> [transport]]", group="MCP"),
-]
-
-_SLASH_RE = re.compile(r"(?:^|\s)(\/\S*)$")
-
-
-class SlashCommandCompleter:
-    """Matches /commands from a registered list.
-
-    Returns :class:`CommandSpec` matches for a partial ``/``-prefixed token.
-    """
-
-    def __init__(self, commands: list[CommandSpec] | None = None) -> None:
-        self._commands: list[CommandSpec] = list(commands or BUILTIN_COMMANDS)
-
-    def add(self, spec: CommandSpec) -> None:
-        self._commands.append(spec)
-
-    def matches(self, partial: str) -> list[CommandSpec]:
-        """Return all commands whose name or alias starts with *partial*."""
-        result: list[CommandSpec] = []
-        for cmd in self._commands:
-            for candidate in (cmd.name,) + cmd.aliases:
-                if candidate.startswith(partial):
-                    result.append(cmd)
-                    break
-        return result
-
-    def get_match_for_line(self, line: str) -> list[CommandSpec]:
-        """Extract the trailing /token from *line* and return matches."""
-        m = _SLASH_RE.search(line)
-        if m is None:
-            return []
-        return self.matches(m.group(1))
+    name: str
+    description: str
+    group: str = "Built-in"
+    argument_hint: str = ""
+    aliases: tuple[str, ...] = field(default_factory=tuple)
 
 
 class CommandRegistry:
-    """Centralised registry of slash commands (PRD-38)."""
+    """Registry of slash commands."""
 
     def __init__(self) -> None:
+        # name -> CommandSpec (canonical names)
         self._commands: dict[str, CommandSpec] = {}
-        self._aliases: dict[str, str] = {}
+        # alias -> canonical name
+        self._alias_map: dict[str, str] = {}
 
     def register(self, spec: CommandSpec) -> None:
+        # Remove any old aliases for the same name (overwrite)
+        if spec.name in self._commands:
+            old_spec = self._commands[spec.name]
+            for alias in old_spec.aliases:
+                self._alias_map.pop(alias, None)
         self._commands[spec.name] = spec
         for alias in spec.aliases:
-            self._aliases[alias] = spec.name
+            self._alias_map[alias] = spec.name
 
     def register_many(self, specs: list[CommandSpec]) -> None:
         for spec in specs:
             self.register(spec)
 
     def unregister(self, name: str) -> None:
-        canonical = self._aliases.pop(name, name)
-        spec = self._commands.pop(canonical, None)
-        if spec:
+        spec = self._commands.pop(name, None)
+        if spec is not None:
             for alias in spec.aliases:
-                self._aliases.pop(alias, None)
+                self._alias_map.pop(alias, None)
 
     def get(self, name: str) -> CommandSpec | None:
-        canonical = self._aliases.get(name, name)
-        return self._commands.get(canonical)
+        if name in self._commands:
+            return self._commands[name]
+        canonical = self._alias_map.get(name)
+        if canonical:
+            return self._commands.get(canonical)
+        return None
+
+    def matches(self, prefix: str) -> list[CommandSpec]:
+        """Return commands whose name or alias starts with *prefix*."""
+        results: dict[str, CommandSpec] = {}
+        for name, spec in self._commands.items():
+            if name.startswith(prefix):
+                results[name] = spec
+        for alias, canonical in self._alias_map.items():
+            if alias.startswith(prefix):
+                spec = self._commands.get(canonical)
+                if spec:
+                    results[spec.name] = spec
+        return list(results.values())
 
     def all_commands(self) -> list[CommandSpec]:
-        return sorted(self._commands.values(), key=lambda c: c.name)
-
-    def commands_for_group(self, group: str) -> list[CommandSpec]:
-        return sorted((c for c in self._commands.values() if c.group == group), key=lambda c: c.name)
+        return sorted(self._commands.values(), key=lambda s: s.name)
 
     def groups(self) -> list[str]:
-        order = ["Built-in", "Skills", "Plugins", "MCP"]
-        seen = {c.group for c in self._commands.values()}
-        return [g for g in order if g in seen] + sorted(seen - set(order))
+        present = {spec.group for spec in self._commands.values()}
+        ordered = [g for g in _GROUP_ORDER if g in present]
+        extra = sorted(g for g in present if g not in _GROUP_ORDER)
+        return ordered + extra
 
-    def matches(self, partial: str) -> list[CommandSpec]:
-        result = []
-        for cmd in self._commands.values():
-            for candidate in (cmd.name,) + cmd.aliases:
-                if candidate.startswith(partial):
-                    result.append(cmd)
-                    break
-        return sorted(result, key=lambda c: c.name)
+    def commands_for_group(self, group: str) -> list[CommandSpec]:
+        return [s for s in self._commands.values() if s.group == group]
+
+    def commands(self) -> list[str]:
+        """Return list of registered command names."""
+        return list(self._commands.keys())
+
+    def add(self, spec: CommandSpec) -> None:
+        """Compatibility shim: register a spec."""
+        self.register(spec)
+
+    def register_command(self, spec: CommandSpec) -> None:
+        """Compatibility shim: register a spec."""
+        self.register(spec)
+
+    def completions_for(self, prefix: str) -> list[CommandSpec]:
+        """Compatibility shim."""
+        return self.matches(prefix)
 
     def __len__(self) -> int:
         return len(self._commands)
 
 
+BUILTIN_COMMANDS: list[CommandSpec] = [
+    CommandSpec("/status", "Show running agents and tool calls", group="Built-in"),
+    CommandSpec(
+        "/model",
+        "Switch the active LLM model",
+        group="Built-in",
+        argument_hint="[provider] [model]",
+    ),
+    CommandSpec("/help", "Show available slash commands", group="Built-in"),
+    CommandSpec("/history", "Show session transcript history", group="Built-in"),
+    CommandSpec("/clear", "Clear the transcript", group="Built-in"),
+    CommandSpec("/exit", "Exit the session", group="Built-in"),
+    CommandSpec("/mcp", "Manage MCP server connections", group="MCP"),
+]
+
+
 def build_default_registry() -> CommandRegistry:
-    """Create a CommandRegistry pre-loaded with BUILTIN_COMMANDS."""
+    """Create a CommandRegistry pre-populated with BUILTIN_COMMANDS."""
     reg = CommandRegistry()
     reg.register_many(BUILTIN_COMMANDS)
     return reg
 
 
-# ── @-mention file helper ─────────────────────────────────────────────────────
+# ── Compat classes ────────────────────────────────────────────────────────────
+
+class SlashCommandCompleter:
+    """Completes /commands anywhere in the input (compat class)."""
+
+    def __init__(self, commands: list[CommandSpec]) -> None:
+        self._commands = list(commands)
+
+    def add(self, spec: CommandSpec) -> None:
+        self._commands.append(spec)
+
+    def matches(self, partial: str) -> list[CommandSpec]:
+        if not partial.startswith("/"):
+            return []
+        return [c for c in self._commands if c.name.startswith(partial)]
+
+    def get_match_for_line(self, line: str) -> list[CommandSpec]:
+        m = re.search(r"(?:^|\s)(\/\S*)$", line)
+        if m is None:
+            return []
+        return self.matches(m.group(1))
 
 
-def _entry_meta(entry: Path) -> str:
-    """Return a short metadata string (file size or "dir")."""
-    try:
-        if entry.is_dir():
-            return "dir"
-        kb = entry.stat().st_size / 1024
-        if kb < 1:
-            return f"{entry.stat().st_size} B"
-        if kb < 1024:
-            return f"{kb:.0f} KB"
-        return f"{kb / 1024:.1f} MB"
-    except OSError:
-        return ""
+def _entry_meta(path: Path) -> str:
+    """Return a short metadata string for a filesystem entry."""
+    if path.is_dir():
+        return "dir"
+    size = path.stat().st_size
+    if size >= 1024 * 1024:
+        return f"{size // (1024 * 1024)} MB"
+    if size >= 1024:
+        return f"{size // 1024} KB"
+    return f"{size} B"
 
 
 class AtMentionCompleter:
-    """Returns file/directory completions for @-mention fragments.
+    """Completes @file/path mentions (compat class)."""
 
-    Used by :mod:`agenthicc.tui.mention_input` for the inline dropdown.
-    """
-
-    def __init__(
-        self,
-        base_path: str | Path = ".",
-        recent_urls: list[str] | None = None,
-    ) -> None:
+    def __init__(self, base_path: str | Path = ".", *, recent_urls: list[str] | None = None) -> None:
         self._base = Path(base_path).resolve()
-        self._recent_urls: list[str] = recent_urls or []
+        self._recent_urls: list[str] = list(recent_urls or [])
 
     def completions(self, fragment: str) -> list[tuple[str, str]]:
-        """Return [(display_path, meta), ...] matching *fragment*.
-
-        Suitable for the inline dropdown in :func:`~mention_input.read_line_with_mention`.
-        """
-        if fragment.startswith("http"):
-            results = []
-            for url in self._recent_urls:
-                if url.startswith(fragment):
-                    results.append((url, "url"))
-            return results
-
-        if "/" in fragment:
-            dir_part, file_prefix = fragment.rsplit("/", 1)
-            search_dir = self._base / dir_part
-        else:
-            dir_part = ""
-            file_prefix = fragment
-            search_dir = self._base
-
-        if not search_dir.is_dir():
-            return []
-
         results: list[tuple[str, str]] = []
-        try:
-            for entry in sorted(
-                search_dir.iterdir(),
-                key=lambda e: (not e.is_dir(), e.name),
-            ):
-                if entry.name.startswith("."):
-                    continue
-                if not entry.name.startswith(file_prefix):
-                    continue
-                suffix = "/" if entry.is_dir() else ""
-                display = (
-                    f"{dir_part}/{entry.name}{suffix}" if dir_part
-                    else f"{entry.name}{suffix}"
-                )
-                results.append((display, _entry_meta(entry)))
-        except PermissionError:
-            pass
+
+        # First: match recent_urls whose full URL starts with fragment
+        for url in self._recent_urls:
+            if url.startswith(fragment):
+                results.append((url, "url"))
+
+        # Then: filesystem matches (only when fragment looks like a path, not a URL)
+        if not fragment.startswith("http://") and not fragment.startswith("https://"):
+            if "/" in fragment:
+                dir_part, file_prefix = fragment.rsplit("/", 1)
+                search_dir = self._base / dir_part
+            else:
+                dir_part = ""
+                file_prefix = fragment
+                search_dir = self._base
+
+            if search_dir.is_dir():
+                try:
+                    for entry in sorted(search_dir.iterdir(), key=lambda e: (not e.is_dir(), e.name)):
+                        if entry.name.startswith("."):
+                            continue
+                        if not entry.name.startswith(file_prefix):
+                            continue
+                        suffix = "/" if entry.is_dir() else ""
+                        display = f"{dir_part}/{entry.name}{suffix}" if dir_part else f"{entry.name}{suffix}"
+                        results.append((display, _entry_meta(entry)))
+                except PermissionError:
+                    pass
+
         return results

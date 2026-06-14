@@ -55,7 +55,7 @@ def _items(n: int) -> list[MatchItem]:
 
 
 def test_redraw_mode_line_none_returns_zero(capsys):
-    result = _redraw(
+    rows_below, _input_rows = _redraw(
         prompt_str="> ",
         buf=[],
         fragment="",
@@ -65,7 +65,7 @@ def test_redraw_mode_line_none_returns_zero(capsys):
         in_trigger=False,
         mode_line=None,
     )
-    assert result == 0
+    assert rows_below == 0
 
 
 def test_redraw_mode_line_none_no_extra_output(capsys):
@@ -91,7 +91,7 @@ def test_redraw_mode_line_none_no_extra_output(capsys):
 
 
 def test_redraw_mode_line_text_returns_one(capsys):
-    result = _redraw(
+    rows_below, _input_rows = _redraw(
         prompt_str="> ",
         buf=[],
         fragment="",
@@ -101,12 +101,12 @@ def test_redraw_mode_line_text_returns_one(capsys):
         in_trigger=False,
         mode_line="some text",
     )
-    assert result == 1
+    assert rows_below == 1
 
 
 def test_redraw_mode_line_empty_string_returns_one(capsys):
     """An empty-string mode_line still counts as 1 extra line."""
-    result = _redraw(
+    rows_below, _input_rows = _redraw(
         prompt_str="> ",
         buf=[],
         fragment="",
@@ -116,7 +116,7 @@ def test_redraw_mode_line_empty_string_returns_one(capsys):
         in_trigger=False,
         mode_line="",
     )
-    assert result == 1
+    assert rows_below == 1
 
 
 def test_redraw_mode_line_text_appears_in_stdout(capsys):
@@ -157,7 +157,7 @@ def test_redraw_mode_line_ansi_text_appears(capsys):
 
 
 def test_redraw_mode_line_with_one_match(capsys):
-    result = _redraw(
+    rows_below, _input_rows = _redraw(
         prompt_str="> ",
         buf=[],
         fragment="f",
@@ -167,11 +167,11 @@ def test_redraw_mode_line_with_one_match(capsys):
         in_trigger=True,
         mode_line="some text",
     )
-    assert result == 1 + min(8, 1)  # == 2
+    assert rows_below == 1 + min(8, 1)  # == 2
 
 
 def test_redraw_mode_line_with_three_matches(capsys):
-    result = _redraw(
+    rows_below, _input_rows = _redraw(
         prompt_str="> ",
         buf=[],
         fragment="f",
@@ -181,11 +181,11 @@ def test_redraw_mode_line_with_three_matches(capsys):
         in_trigger=True,
         mode_line="some text",
     )
-    assert result == 1 + min(8, 3)  # == 4
+    assert rows_below == 1 + min(8, 3)  # == 4
 
 
 def test_redraw_mode_line_with_eight_matches(capsys):
-    result = _redraw(
+    rows_below, _input_rows = _redraw(
         prompt_str="> ",
         buf=[],
         fragment="f",
@@ -195,13 +195,13 @@ def test_redraw_mode_line_with_eight_matches(capsys):
         in_trigger=True,
         mode_line="some text",
     )
-    assert result == 1 + min(8, 8)  # == 9
+    assert rows_below == 1 + min(8, 8)  # == 9
 
 
 def test_redraw_mode_line_with_five_matches_formula(capsys):
     """Return value equals 1 + min(8, len(matches)) for any n <= 8."""
     for n in range(1, 9):
-        result = _redraw(
+        rows_below, _input_rows = _redraw(
             prompt_str="> ",
             buf=[],
             fragment="x",
@@ -211,7 +211,7 @@ def test_redraw_mode_line_with_five_matches_formula(capsys):
             in_trigger=True,
             mode_line="mode",
         )
-        assert result == 1 + min(8, n), f"n={n}: expected {1 + min(8, n)}, got {result}"
+        assert rows_below == 1 + min(8, n), f"n={n}: expected {1 + min(8, n)}, got {rows_below}"
         capsys.readouterr()  # drain captured output between iterations
 
 
@@ -236,7 +236,7 @@ def test_redraw_mode_line_with_matches_shows_items_in_stdout(capsys):
 def test_redraw_no_mode_line_with_matches_returns_min_8(capsys):
     """Without mode_line, return value is min(8, len(matches)) for n <= 8."""
     for n in range(1, 9):
-        result = _redraw(
+        rows_below, _input_rows = _redraw(
             prompt_str="> ",
             buf=[],
             fragment="x",
@@ -246,7 +246,7 @@ def test_redraw_no_mode_line_with_matches_returns_min_8(capsys):
             in_trigger=True,
             mode_line=None,
         )
-        assert result == min(8, n), f"n={n}: expected {min(8, n)}, got {result}"
+        assert rows_below == min(8, n), f"n={n}: expected {min(8, n)}, got {rows_below}"
         capsys.readouterr()
 
 

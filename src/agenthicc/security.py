@@ -35,59 +35,37 @@ DENY = "deny"
 REQUIRE_CONFIRMATION = "require_confirmation"
 
 
-# ---------------------------------------------------------------------------
-# PRD-19 — per-agent capability scoping
-# ---------------------------------------------------------------------------
+
+import fnmatch as _fnmatch
+from dataclasses import dataclass as _dataclass, field as _field
 
 
-@dataclass(frozen=True)
+@_dataclass(frozen=True)
 class AgentCapabilityScope:
-    """Immutable capability constraint attached to one agent instance.
+    """Immutable capability constraint for one agent.
 
-    Attributes
-    ----------
-    allowed_tools:
-        ``None`` means every tool is accessible (subject to global policy).
-        A non-empty frozenset means *only* those tool-name patterns are
-        accessible.
-    denied_tools:
-        Explicit denies that always take precedence over *allowed_tools*.
-        Supports :mod:`fnmatch` wildcard patterns (e.g. ``"outlook_*"``).
-    allowed_comm_tools:
-        ``None`` means all communication tools are accessible.
-    max_tool_call_budget:
-        Maximum number of tool calls this agent may make per session.
-    max_spawn_depth:
-        Maximum depth in the agent-spawn tree; 0 means no sub-agents.
+    ``allowed_tools=None`` means all tools are permitted (subject to
+    the global :class:`SecurityPolicy`).  Setting it to a frozenset creates
+    an explicit allow-list; only tools whose name matches at least one pattern
+    are accessible.  ``denied_tools`` always takes precedence.
     """
 
     allowed_tools: frozenset[str] | None = None
-    denied_tools: frozenset[str] = field(default_factory=frozenset)
+    denied_tools: frozenset[str] = _field(default_factory=frozenset)
     allowed_comm_tools: frozenset[str] | None = None
     max_tool_call_budget: int = 100
     max_spawn_depth: int = 3
 
     def is_tool_allowed(self, tool_name: str) -> bool:
-        """Return ``True`` when *tool_name* is permitted by this scope.
-
-        Deny patterns are checked first; then the allow whitelist (if set).
-        """
         for pattern in self.denied_tools:
-            if fnmatch.fnmatch(tool_name, pattern):
+            if _fnmatch.fnmatch(tool_name, pattern):
                 return False
         if self.allowed_tools is not None:
-            return any(fnmatch.fnmatch(tool_name, p) for p in self.allowed_tools)
+            return any(_fnmatch.fnmatch(tool_name, p) for p in self.allowed_tools)
         return True
 
     def restrict(self, other: "AgentCapabilityScope") -> "AgentCapabilityScope":
-        """Return the intersection of *self* and *other* — always more restrictive.
-
-        Rules:
-        * ``allowed_tools``: intersection when both set; whichever is not None
-          wins when only one side is set; ``None`` only when both are ``None``.
-        * ``denied_tools``: union (more denies).
-        * ``max_tool_call_budget`` / ``max_spawn_depth``: minimum.
-        """
+        """Return the most restrictive intersection of self and other."""
         if self.allowed_tools is not None and other.allowed_tools is not None:
             allowed: frozenset[str] | None = self.allowed_tools & other.allowed_tools
         elif self.allowed_tools is not None:
@@ -98,65 +76,34 @@ class AgentCapabilityScope:
             allowed = None
 
         denied = self.denied_tools | other.denied_tools
-
-        # allowed_comm_tools: same intersection logic
-        if self.allowed_comm_tools is not None and other.allowed_comm_tools is not None:
-            allowed_comm: frozenset[str] | None = (
-                self.allowed_comm_tools & other.allowed_comm_tools
-            )
-        elif self.allowed_comm_tools is not None:
-            allowed_comm = self.allowed_comm_tools
-        elif other.allowed_comm_tools is not None:
-            allowed_comm = other.allowed_comm_tools
-        else:
-            allowed_comm = None
-
         return AgentCapabilityScope(
             allowed_tools=allowed,
             denied_tools=denied,
-            allowed_comm_tools=allowed_comm,
-            max_tool_call_budget=min(
-                self.max_tool_call_budget, other.max_tool_call_budget
-            ),
+            max_tool_call_budget=min(self.max_tool_call_budget, other.max_tool_call_budget),
             max_spawn_depth=min(self.max_spawn_depth, other.max_spawn_depth),
         )
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AgentCapabilityScope":
-        """Deserialise from a plain dict (e.g. from the event log)."""
-        raw_allowed = data.get("allowed_tools")
-        raw_comm = data.get("allowed_comm_tools")
+    def from_dict(cls, data: dict) -> "AgentCapabilityScope":
+        at = data.get("allowed_tools")
         return cls(
-            allowed_tools=frozenset(raw_allowed) if raw_allowed is not None else None,
+            allowed_tools=frozenset(at) if at is not None else None,
             denied_tools=frozenset(data.get("denied_tools", [])),
-            allowed_comm_tools=frozenset(raw_comm) if raw_comm is not None else None,
             max_tool_call_budget=int(data.get("max_tool_call_budget", 100)),
             max_spawn_depth=int(data.get("max_spawn_depth", 3)),
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialise to a plain dict suitable for JSON / TOML."""
+    def to_dict(self) -> dict:
         return {
-            "allowed_tools": (
-                list(self.allowed_tools) if self.allowed_tools is not None else None
-            ),
+            "allowed_tools": list(self.allowed_tools) if self.allowed_tools is not None else None,
             "denied_tools": list(self.denied_tools),
-            "allowed_comm_tools": (
-                list(self.allowed_comm_tools)
-                if self.allowed_comm_tools is not None
-                else None
-            ),
             "max_tool_call_budget": self.max_tool_call_budget,
             "max_spawn_depth": self.max_spawn_depth,
         }
 
 
 class ScopeManager:
-    """Tracks ``agent_id → (AgentCapabilityScope, spawn_depth)`` mappings.
-
-    Registered agents inherit their parent's scope when no explicit scope is
-    supplied. Child scopes can only *restrict*, never expand, the parent scope.
-    """
+    """Tracks agent_id → (scope, spawn_depth) mappings."""
 
     def __init__(self) -> None:
         self._scopes: dict[str, AgentCapabilityScope] = {}
@@ -166,41 +113,26 @@ class ScopeManager:
         self,
         agent_id: str,
         scope: AgentCapabilityScope | None,
-        parent_id: str | None,
+        parent_id: str | None = None,
     ) -> None:
-        """Register *agent_id* with an optional *scope* and optional *parent_id*.
-
-        Depth is ``parent_depth + 1`` (root agents get depth 1).
-
-        When *scope* is ``None`` the parent's scope is inherited verbatim.
-        When both *scope* and a parent scope exist, the result is the
-        intersection (child cannot exceed parent).
-        """
         parent_depth = self._depths.get(parent_id, 0) if parent_id else 0
         self._depths[agent_id] = parent_depth + 1
 
         if scope is None:
             parent_scope = self._scopes.get(parent_id) if parent_id else None
-            self._scopes[agent_id] = parent_scope if parent_scope is not None else AgentCapabilityScope()
+            self._scopes[agent_id] = parent_scope or AgentCapabilityScope()
         elif parent_id and parent_id in self._scopes:
-            # Restrict: child cannot exceed parent
             self._scopes[agent_id] = self._scopes[parent_id].restrict(scope)
         else:
             self._scopes[agent_id] = scope
 
     def get_scope(self, agent_id: str) -> AgentCapabilityScope | None:
-        """Return the current scope for *agent_id*, or ``None`` if not registered."""
         return self._scopes.get(agent_id)
 
     def get_depth(self, agent_id: str) -> int:
-        """Return the spawn depth for *agent_id* (0 if never registered)."""
         return self._depths.get(agent_id, 0)
 
     def update_scope(self, agent_id: str, new_scope: AgentCapabilityScope) -> None:
-        """Downscope a running agent — can only restrict, never expand.
-
-        If *agent_id* has no existing scope the new scope is stored directly.
-        """
         existing = self._scopes.get(agent_id)
         if existing is not None:
             self._scopes[agent_id] = existing.restrict(new_scope)
@@ -208,20 +140,10 @@ class ScopeManager:
             self._scopes[agent_id] = new_scope
 
     def can_spawn(self, parent_id: str) -> bool:
-        """Return ``True`` when *parent_id* has not reached its ``max_spawn_depth``.
-
-        A parent at depth *d* would create a child at depth *d + 1*.
-        ``max_spawn_depth`` is the maximum depth a descendant may reach, so
-        ``can_spawn`` returns ``True`` iff ``depth < max_spawn_depth``.
-        """
         scope = self._scopes.get(parent_id)
         depth = self._depths.get(parent_id, 0)
-        max_depth = scope.max_spawn_depth if scope is not None else 3
+        max_depth = scope.max_spawn_depth if scope else 3
         return depth < max_depth
-
-
-# ---------------------------------------------------------------------------
-# PRD-07 — global policy checker (extended for PRD-19)
 # ---------------------------------------------------------------------------
 
 

@@ -10,6 +10,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 
 # ── session index helpers ────────────────────────────────────────────────────
@@ -285,10 +286,6 @@ async def _run_agent_turn(
     from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
     from lauren_ai.testing import _build_runner_for_agent  # noqa: PLC0415
     from agenthicc.kernel import Event  # noqa: PLC0415
-    from agenthicc.tui.app import _thinking_wave  # noqa: PLC0415
-    from agenthicc.agent_tools import AGENT_TOOLS  # noqa: PLC0415
-    from rich.live import Live  # noqa: PLC0415
-    from rich.text import Text  # noqa: PLC0415
 
     if runner is None:
         transcript.append_turn("system", "system", time.monotonic())
@@ -325,20 +322,32 @@ async def _run_agent_turn(
     # Fires once per LLM turn so counts accumulate in real-time during multi-turn runs.
     _signals = getattr(runner, "_signals", None)
 
-    # Live tool call list shown inside the spinner block while the agent is thinking.
-    # Each entry: {"id": str, "name": str, "args": str, "done": bool, "ok": bool, "ms": float|None}
-    _live_calls: list[dict] = []
     # Keyed by tool_use_id: (relative_path, original_content) captured before the call.
     _file_snapshots: dict[str, tuple[str, str]] = {}
     # File-editing tool names that warrant a unified diff in the transcript.
     _FILE_EDIT_TOOLS = {"write_file", "patch_file", "append_file"}
 
+    from agenthicc.tui.render_loop import RenderLoop as _RL  # noqa: PLC0415
+    from agenthicc.tui.frame_composer import FrameComposer as _FC  # noqa: PLC0415
+    from agenthicc.tui.terminal import FakeTerminal as _FakeTerm  # noqa: PLC0415
+    _rl_terminal = getattr(renderer, "_terminal", None) or _FakeTerm()
+    _rl = _RL(_rl_terminal, _FC())
+    renderer._status.partial_text = ""
+    _any_tool_calls: list[bool] = [False]
+
     if _signals is not None:
         from lauren_ai._signals import ModelCallComplete as _MCC  # noqa: PLC0415
         from lauren_ai._signals import ToolCallStarted as _TCS, ToolCallComplete as _TCC  # noqa: PLC0415
 
+        # Guard: the runner's SignalBus accumulates handlers across turns because
+        # _run_agent_turn() re-registers on every call.  _handler_active is set to
+        # False in the finally block so only the CURRENT turn's closures fire.
+        _handler_active = [True]
+
         @_signals.on(_MCC)
         async def _on_model_complete(sig: Any) -> None:
+            if not _handler_active[0]:
+                return
             usage = getattr(sig, "usage", None)
             if usage:
                 renderer._status.input_tokens += getattr(usage, "input_tokens", 0)
@@ -347,6 +356,8 @@ async def _run_agent_turn(
 
         @_signals.on(_TCS)
         async def _on_tool_started(sig: Any) -> None:
+            if not _handler_active[0]:
+                return
             args = dict(getattr(sig, "input", {}) or {})
             tool_name = getattr(sig, "tool_name", "")
             tid = getattr(sig, "tool_use_id", "")
@@ -360,14 +371,8 @@ async def _run_agent_turn(
                     args_str += ", …"
             else:
                 args_str = ""
-            _live_calls.append({
-                "id": tid,
-                "name": tool_name,
-                "args": args_str,
-                "done": False,
-                "ok": True,
-                "ms": None,
-            })
+            _any_tool_calls[0] = True
+            _rl.tick(transcript, renderer._status, None)
             # Snapshot file content before write/patch so we can produce a diff later.
             if tool_name in _FILE_EDIT_TOOLS:
                 rel_path = args.get("path", "")
@@ -383,14 +388,14 @@ async def _run_agent_turn(
 
         @_signals.on(_TCC)
         async def _on_tool_complete(sig: Any) -> None:
+            if not _handler_active[0]:
+                return
             import difflib as _dl  # noqa: PLC0415
             tid = getattr(sig, "tool_use_id", "")
-            for entry in _live_calls:
-                if entry["id"] == tid:
-                    entry["done"] = True
-                    entry["ok"] = bool(getattr(sig, "success", True))
-                    entry["ms"] = getattr(sig, "duration_ms", None)
-                    break
+            success = bool(getattr(sig, "success", True))
+            duration_ms = getattr(sig, "duration_ms", 0.0) or 0.0
+            error = getattr(sig, "error", None) if not success else None
+            diff: str | None = None
             # Generate unified diff for file-editing tools and store as transcript output.
             if tid in _file_snapshots:
                 rel_path, original = _file_snapshots.pop(tid)
@@ -399,25 +404,26 @@ async def _run_agent_turn(
                     new_content = await asyncio.to_thread(
                         lambda p=full: open(p).read() if os.path.exists(p) else ""
                     )
-                    diff = "".join(_dl.unified_diff(
-                        original.splitlines(keepends=True),
-                        new_content.splitlines(keepends=True),
+                    # Use splitlines() WITHOUT keepends + lineterm="" + "\n".join so
+                    # the ---/+++/@@ control lines each land on their own line.  Using
+                    # keepends=True with lineterm="" concatenates the control headers
+                    # into one giant line ("--- a/f+++ b/f@@ …") which then wraps and
+                    # corrupts the scroll-region layout.
+                    diff = "\n".join(_dl.unified_diff(
+                        original.splitlines(),
+                        new_content.splitlines(),
                         fromfile=f"a/{rel_path}",
                         tofile=f"b/{rel_path}",
                         lineterm="",
                     ))
                     if diff:
                         transcript.finish_tool_call(tool_use_id=tid, output=diff)
-                        for entry in _live_calls:
-                            if entry["id"] == tid:
-                                entry["diff"] = diff
-                                break
                 except Exception:
                     pass
+            _rl.tick(transcript, renderer._status, None)
 
     # ── @mention injection ────────────────────────────────────────────
     from agenthicc.mentions.injector import build_context_prefix, InjectionConfig  # noqa: PLC0415
-    from agenthicc.mentions.parser import parse_mentions as _parse_mentions  # noqa: PLC0415
     from agenthicc.tui.transcript import MentionChip  # noqa: PLC0415
     _exec_cfg = getattr(renderer, "_exec_cfg", None)
     _mention_cfg = InjectionConfig(
@@ -504,155 +510,6 @@ async def _run_agent_turn(
         signals=getattr(runner, "_signals", None),
     )
 
-    live = Live(refresh_per_second=12, transient=True)
-    live.start()
-
-    from agenthicc.tui.transcript import TranscriptModel as _TM  # noqa: PLC0415
-    _MAX_VISIBLE_CALLS = _TM.MAX_VISIBLE_TOOL_CALLS
-
-    # CTRL+O toggles expanded/collapsed; ↑/↓ scroll in expanded mode.
-    _expanded = [False]
-    _scroll_offset = [0]  # first visible call_line index when expanded
-
-    async def _watch_ctrlO() -> None:
-        """Poll stdin for CTRL+O and arrow keys while the agent is thinking."""
-        import select as _sel, tty as _tty, termios as _tm  # noqa: PLC0415
-        fd = sys.stdin.fileno()
-        try:
-            old = _tm.tcgetattr(fd)
-            _tty.setcbreak(fd)
-        except Exception:
-            return
-        try:
-            while True:
-                await asyncio.sleep(0.05)
-                r, _, _ = _sel.select([fd], [], [], 0)
-                if not r:
-                    continue
-                ch = os.read(fd, 1)
-                if ch == b"\x0f":           # CTRL+O — toggle and reset scroll
-                    _expanded[0] = not _expanded[0]
-                    _scroll_offset[0] = 0
-                elif ch == b"\x1b":         # possible escape sequence (arrow keys)
-                    r2, _, _ = _sel.select([fd], [], [], 0.05)
-                    if r2:
-                        rest = os.read(fd, 2)
-                        seq = ch + rest
-                        if _expanded[0]:
-                            if seq == b"\x1b[A":    # up arrow
-                                _scroll_offset[0] = max(0, _scroll_offset[0] - 1)
-                            elif seq == b"\x1b[B":  # down arrow
-                                _scroll_offset[0] += 1  # clamped in _spin()
-        except asyncio.CancelledError:
-            pass
-        finally:
-            try:
-                _tm.tcsetattr(fd, _tm.TCSADRAIN, old)
-            except Exception:
-                pass
-
-    async def _spin() -> None:
-        import shutil as _sh  # noqa: PLC0415
-        from rich.markup import render as _mk  # noqa: PLC0415
-        while True:
-            elapsed = time.monotonic() - renderer._status.intent_started_at
-            frame = _thinking_wave(renderer._status.spinner_frame)
-            header = (
-                f" {frame}  [dim]{elapsed:.1f}s  │[/dim]"
-                f"  [cyan]↑ {renderer._status.input_tokens:,}[/cyan]"
-                f"  [green]↓ {renderer._status.output_tokens:,}[/green]"
-            )
-            # Current streaming text (partial turn, cleared at turn boundary).
-            _live_text = _streaming_text[0] if _streaming_text else ""
-
-            # Build one entry (list of lines) per tool call so that diff lines
-            # are grouped with their parent call, not counted as extra calls.
-            entries: list[list[str]] = []
-            for call in _live_calls:
-                name = call["name"]
-                args = call["args"]
-                entry: list[str] = []
-                if call["done"]:
-                    icon = "[green]✓[/green]" if call["ok"] else "[red]✗[/red]"
-                    ms = f"  [dim]{call['ms']:.0f}ms[/dim]" if call["ms"] else ""
-                    entry.append(
-                        f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  {icon}{ms}"
-                    )
-                    diff_text = call.get("diff", "")
-                    if diff_text:
-                        diff_lines_all = diff_text.splitlines()
-                        diff_preview = diff_lines_all[:8]
-                        for dl in diff_preview:
-                            if dl.startswith("+++") or dl.startswith("---"):
-                                entry.append(f"      [dim]{dl}[/dim]")
-                            elif dl.startswith("@@"):
-                                entry.append(f"      [dim cyan]{dl}[/dim cyan]")
-                            elif dl.startswith("+"):
-                                entry.append(f"      [green]{dl}[/green]")
-                            elif dl.startswith("-"):
-                                entry.append(f"      [red]{dl}[/red]")
-                            else:
-                                entry.append(f"      [dim]{dl}[/dim]")
-                        if len(diff_lines_all) > 8:
-                            entry.append(
-                                f"      [dim]… {len(diff_lines_all) - 8} more diff lines[/dim]"
-                            )
-                else:
-                    entry.append(
-                        f"   [dim]⎿[/dim] [bold]{name}[/bold][dim]({args})[/dim]  [dim]…[/dim]"
-                    )
-                entries.append(entry)
-
-            n_entries = len(entries)
-            if _expanded[0]:
-                # Flatten all entries; apply viewport scroll.
-                call_lines = [ln for e in entries for ln in e]
-                rows = _sh.get_terminal_size((80, 24)).lines
-                viewport = max(4, rows - 3)
-                total = len(call_lines)
-                _scroll_offset[0] = min(_scroll_offset[0], max(0, total - viewport))
-                off = _scroll_offset[0]
-                end = min(off + viewport, total)
-                indicator = (
-                    f"   [dim]{off + 1}–{end} of {total}"
-                    f"  ↑↓ to scroll  ctrl+O to collapse[/dim]"
-                )
-                call_lines = call_lines[off:end] + [indicator]
-            else:
-                # Truncate at the call-entry level so diff lines don't inflate
-                # the "hidden" count — a call with a 10-line diff is still 1 call.
-                visible_entries = entries[:_MAX_VISIBLE_CALLS]
-                hidden = n_entries - len(visible_entries)
-                call_lines = [ln for e in visible_entries for ln in e]
-                if hidden > 0:
-                    # Use parentheses, not square brackets — Rich interprets [] as
-                    # markup tags and silently drops unrecognised ones like [ctrl+O].
-                    call_lines.append(
-                        f"   [dim]… and {hidden} more tool call{'s' if hidden != 1 else ''}"
-                        f"  (ctrl+O to expand)[/dim]"
-                    )
-                elif n_entries > 0:
-                    # Always show the hint even when all calls fit on screen.
-                    call_lines.append("   [dim](ctrl+O to expand)[/dim]")
-            # Prepend partial streaming text above tool calls when the model is
-            # generating prose (cleared as soon as the turn boundary arrives).
-            if _live_text:
-                cols = _sh.get_terminal_size((80, 24)).columns
-                _display = _live_text.replace("\n", " ")
-                if len(_display) > cols - 4:
-                    _display = _display[:cols - 7] + "…"
-                call_lines = [f"   [dim]{_display}[/dim]"] + call_lines
-            live.update(_mk("\n".join([header] + call_lines)))
-            renderer._status.spinner_frame += 1
-            await asyncio.sleep(0.05)
-
-    # Live-streaming text shared with _spin() so partial text appears in the
-    # spinner as the model generates it.  Cleared at each turn boundary.
-    _streaming_text: list[str] = [""]   # [0] = current partial turn text
-
-    spin_task = asyncio.create_task(_spin())
-    ctrlO_task = asyncio.create_task(_watch_ctrlO())
-
     # Per-turn text accumulation (run_stream yields chunks across all turns)
     _current_turn: list[str] = []
     _all_turn_texts: list[str] = []     # one entry per LLM turn that produced text
@@ -674,7 +531,8 @@ async def _run_agent_turn(
             # Accumulate text delta into the current turn buffer.
             if _chunk.delta:
                 _current_turn.append(_chunk.delta)
-                _streaming_text[0] = "".join(_current_turn)
+                renderer._status.partial_text = (getattr(renderer._status, "partial_text", "") or "") + _chunk.delta
+                _rl.tick(transcript, renderer._status, None)
 
             # A chunk with stop_reason marks the end of one LLM turn.
             if _chunk.stop_reason is not None:
@@ -687,8 +545,9 @@ async def _run_agent_turn(
                     #   turn-1 text → turn-1 tools → turn-2 text → turn-2 tools …
                     from agenthicc.tui.app import InlineRenderer as _IR  # noqa: PLC0415
                     transcript.append_line(agent_id, _IR._MD_SENTINEL + _turn_text)
+                renderer._status.partial_text = ""
+                _rl.force_commit(transcript, renderer._status, None)
                 _current_turn = []
-                _streaming_text[0] = ""
 
         # Build final content from the last turn (replaces response.content).
         content = _all_turn_texts[-1] if _all_turn_texts else ""
@@ -696,7 +555,7 @@ async def _run_agent_turn(
         content = _re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=_re.DOTALL)
         content = _re.sub(r"<[^>]+>", "", content).strip()
         # If tools ran but the final turn produced no prose, that's fine — skip it.
-        if not content and not _live_calls:
+        if not content and not _any_tool_calls[0]:
             content = "(no response)"
 
     except (asyncio.CancelledError, KeyboardInterrupt):
@@ -708,18 +567,18 @@ async def _run_agent_turn(
         content = f"⚠ Error: {exc}"
         _all_turn_texts = []
     finally:
-        _streaming_text[0] = ""
-        spin_task.cancel()
-        ctrlO_task.cancel()
-        # Protect the cleanup await: if this task is being cancelled a second
-        # time the gather itself could raise CancelledError mid-flight.
-        try:
-            await asyncio.gather(spin_task, ctrlO_task, return_exceptions=True)
-        except asyncio.CancelledError:
-            pass
-        live.stop()
+        # Deactivate this turn's signal handlers so they become no-ops for future
+        # turns (the runner's SignalBus accumulates handlers indefinitely).
+        if _signals is not None:
+            _handler_active[0] = False
         renderer._status.active = False
         renderer._status.completed_agents += 1
+        renderer._status.partial_text = ""
+        # Erase the bottom block so _print_status() + read_line_with_mention()
+        # in the outer loop can draw the idle input bar cleanly.
+        _rl_terminal = getattr(renderer, "_terminal", None)
+        if _rl_terminal is not None:
+            _rl_terminal.clear_bottom()
 
     from agenthicc.tui.app import InlineRenderer  # noqa: PLC0415
 
@@ -729,13 +588,17 @@ async def _run_agent_turn(
     if content == "(no response)":
         transcript.append_line(agent_id, InlineRenderer._MD_SENTINEL + content)
 
+    # Advance _printed_count so _flush_new_lines() (called in the outer loop)
+    # does not re-print content already committed to scrollback by the RenderLoop.
+    renderer._printed_count = len(transcript.render())
+
     await processor.emit(
         Event.create("IntentStatusChanged", {"intent_id": intent_id, "status": "complete"})
     )
 
 
 async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str] | None = None) -> None:
-    from agenthicc.kernel import AppState, Event, EventProcessor, SecurityPolicy, SystemSettings
+    from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
     from agenthicc.kernel.reducer import root_reducer
     from agenthicc.kernel.processor import restore_from_log
     from agenthicc.tui.transcript import TranscriptModel
@@ -890,7 +753,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
         if len(model.turns) > turns_before:
             last = model.turns[-1]
             content = "\n".join(
-                ln.replace(_MD_SENTINEL, "") for ln in last.lines
+                ln.replace(_MD_SENTINEL, "") for ln in getattr(last, "output_lines", getattr(last, "lines", []))
             ).strip()
             ms = last.agent_name.replace("assistant (", "").rstrip(")")
             conv_store.save_turn(session_id, idx, "assistant", content, time.time(), model_short=ms)
@@ -902,7 +765,7 @@ async def _run_tui_session(resume_id: str | None = None, cli_overrides: list[str
     # Start ad rotator for free-tier authenticated users
     ad_task: asyncio.Task | None = None
     try:
-        from agenthicc.auth import AuthClient, NotLoggedInError  # noqa: PLC0415
+        from agenthicc.auth import AuthClient  # noqa: PLC0415
         from agenthicc.ads import AdRotator  # noqa: PLC0415
         auth_client = AuthClient()
         bundle = auth_client.current_bundle()

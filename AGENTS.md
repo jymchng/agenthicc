@@ -1,5 +1,102 @@
 # AGENTS.md — Agent guidance for agenthicc
 
+---
+
+## TUI Design Intent — READ THIS BEFORE TOUCHING tui/
+
+The owner of this codebase has specified an exact TUI design.
+**Do not deviate from it without explicit instruction.**
+
+### Philosophy: managed-bottom-block (Ink/log-update style)
+
+During an agent turn the TUI uses the **managed-bottom-block** pattern:
+
+- **Committed lines** (completed tool calls, LLM text chunks) are printed once and
+  scroll permanently into the terminal's scrollback buffer.  Nothing is ever erased
+  from the committed region.
+- **The bottom block** (status/thinking line, divider, input rows, optional dropdown,
+  mode footer) is **erased and redrawn each frame** as a single atomic unit.
+- There is **no ANSI scroll region (DECSTBM)** — `\x1b[…r` scroll-region sequences
+  are explicitly forbidden.  They were tried and caused footer text to leak into the
+  content area when Rich emitted unexpected cursor-movement sequences.
+- There is **no alternate screen** — content stays in the normal scrollback buffer
+  so users can scroll back through history.
+
+This is the same approach used by Ink (React for CLIs) and log-update.
+
+### Architecture
+
+```
+AppModel  ──►  FrameComposer (pure)  ──►  Frame(committed, bottom)
+                                                   │
+                                          RenderLoop (diffs frames)
+                                                   │
+                                           ┌───────▼────────┐
+                                           │   Terminal      │
+                                           │  (single I/O   │
+                                           │    owner)       │
+                                           └────────────────┘
+```
+
+- **`Terminal`** — the SINGLE owner of all I/O (`sys.stdout`).  No other module
+  may write to stdout directly.  Provides: `commit_lines(lines)`, `redraw_bottom(lines)`,
+  `erase_bottom(n)`, `Size` (`.lines`, `.columns`).
+- **`FrameComposer`** — pure function: `compose(app_model) -> Frame`.  Takes the
+  current `AppModel` and returns a `Frame` with two fields: `committed` (new lines
+  to append to scrollback) and `bottom` (lines to erase-and-redraw each frame).
+  No I/O, no side effects — trivially testable.
+- **`RenderLoop`** — diffs consecutive frames, calls `terminal.commit_lines()` for
+  newly committed content, and calls `terminal.redraw_bottom()` to replace the
+  bottom block.
+- **`InputState`** — tracks the current input buffer, cursor position, and dropdown
+  state; fed into `FrameComposer` each frame.
+
+### Bottom block layout
+
+```
+╔══════════════════════════════════════════════════════════════════════════╗
+║  ... committed lines scroll into scrollback above this point ...        ║
+╠══════════════════════════════════════════════════════════════════════════╣
+║  [streaming text line — only present while streaming]                   ║  (opt)
+║  T̲hinking...  35.1s  │  ↑ 48,320  ↓ 891       (status/thinking)        ║
+║  ──────────────────────────────────────────── (divider)                 ║
+║  ❯  <input buffer>                            (input row)               ║
+║  [dropdown suggestions]                        (opt)                    ║
+║    ⏵⏵ Auto  (shift+tab to cycle)             (mode footer)             ║
+╚══════════════════════════════════════════════════════════════════════════╝
+```
+
+The entire bottom block is erased and rewritten atomically; its height can vary
+frame-to-frame (e.g. dropdown appears/disappears) without corrupting layout.
+
+### Key files
+
+| File | Role |
+|------|------|
+| `src/agenthicc/tui/terminal.py` | `Terminal` — single owner of all stdout I/O; `Size` with `.lines` and `.columns`; `commit_lines()`, `redraw_bottom()`, `erase_bottom()` |
+| `src/agenthicc/tui/frame_composer.py` | `FrameComposer` — pure `compose(app_model) -> Frame`; `Frame(committed, bottom)` |
+| `src/agenthicc/tui/render_loop.py` | `RenderLoop` — diffs frames; drives `Terminal`; runs the animation tick |
+| `src/agenthicc/tui/input_state.py` | `InputState` — input buffer, cursor, dropdown state; fed into `FrameComposer` |
+| `src/agenthicc/tui/stream_renderer.py` | **DEPRECATED** — superseded by the above; will be deleted in PRD-68 Step 3 |
+
+### What NOT to do
+
+- **Do not write to `sys.stdout` outside `terminal.py`.**  All output must go
+  through `Terminal` so the bottom-block accounting stays correct.
+- **Do not use ANSI scroll regions (`\x1b[…r`, DECSTBM).**  They are fragile and
+  fought with Rich; the managed-bottom-block pattern replaces them entirely.
+- **Do not use the alternate screen (`\x1b[?1049h`/`\x1b[?1049l`).**  Content must
+  remain in the normal scrollback buffer.
+- **Do not use DEC cursor save/restore (`\x1b7`/`\x1b8`).**  They were tried and
+  caused the footer to leak into the content area.
+- **Do not unpack `Size` as a tuple** (e.g. `rows, cols = size`).  The `Size` class
+  MUST be accessed via `.lines` and `.columns` explicitly — tuple unpacking swaps
+  them (width first, height second in `os.terminal_size`) and causes the bottom
+  block to be drawn at the wrong row or wrap at the wrong column.
+- **Do not re-add `rich.live.Live`** to the agent turn path.  The owner explicitly
+  removed it.
+
+---
 
 ## LLM Environment Variables
 

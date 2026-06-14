@@ -16,8 +16,7 @@ engineering built on top of lauren-ai.  It provides:
   workflow node, task, agent, and tool-call granularity; loaded from TOML dotpaths.
 - **3-tier memory** — session (in-process LRU+TTL), project (SQLite KV + artifacts),
   global (user-wide SQLite).
-- **Full-screen TUI** — `prompt_toolkit` HSplit; transcript viewport auto-scrolls;
-  input bar always pinned to the last terminal row.
+- **Inline scroll-buffer TUI** — managed-bottom-block (Ink-style): committed content scrolls into terminal scrollback; pinned bottom block (status + input) erased+redrawn each frame via Terminal + FrameComposer + RenderLoop. No alternate screen. No scroll regions.
 
 
 ## LLM Configuration

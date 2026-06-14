@@ -1,7 +1,5 @@
-"""Interactive menu widgets (PRD-41 through PRD-43)."""
-
+"""TUI widgets."""
 from __future__ import annotations
-
-from agenthicc.tui.widgets.dropdown import DropdownWidget
-
-__all__ = ["DropdownWidget"]
+from .config_menu import ConfigurationMenu
+from .dropdown import DropdownWidget
+__all__ = ["ConfigurationMenu", "DropdownWidget"]

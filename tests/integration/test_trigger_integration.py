@@ -50,7 +50,7 @@ def _drive(
     with (
         patch("agenthicc.tui.mention_input._raw_mode", fake_raw),
         patch("agenthicc.tui.mention_input._read_key", fake_read_key),
-        patch("agenthicc.tui.mention_input._redraw", return_value=0),
+        patch("agenthicc.tui.mention_input._redraw", return_value=(0, 1)),
         patch("sys.stdin.isatty", return_value=True),
         patch("sys.stdin.fileno", return_value=42),
     ):
@@ -289,7 +289,7 @@ def test_hint_passed_to_redraw():
 
     def capturing_redraw(*args, **kwargs):
         redraw_calls.append(args)
-        return 0
+        return (0, 1)
 
     it = iter([_char("/"), _esc(), _enter()])
 

@@ -70,7 +70,7 @@ def test_mode_footer_rendered_always(capsys):
     from agenthicc.tui.mention_input import _redraw
     from agenthicc.tui.trigger import MatchItem
 
-    n = _redraw(
+    n, _ = _redraw(
         "prompt> ",
         [],
         "",
@@ -102,7 +102,7 @@ def test_mode_footer_with_dropdown(capsys):
         for i in range(3)
     ]
 
-    n = _redraw(
+    n, _ = _redraw(
         "prompt> ",
         [],
         "",
