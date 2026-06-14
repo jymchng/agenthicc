@@ -637,15 +637,19 @@ async def _run_agent_turn(
                 elif n_entries > 0:
                     # Always show the hint even when all calls fit on screen.
                     call_lines.append("   [dim](ctrl+O to expand)[/dim]")
+            cols = _sh.get_terminal_size((80, 24)).columns
             # Append partial streaming text below tool calls, above the status line.
             if _live_text:
-                cols = _sh.get_terminal_size((80, 24)).columns
                 _display = _live_text.replace("\n", " ")
                 if len(_display) > cols - 4:
                     _display = _display[:cols - 7] + "…"
                 call_lines.append(f"   [dim]{_display}[/dim]")
-            # Header (Thinking... + token counts) always sits at the bottom.
-            live.update(_mk("\n".join(call_lines + [header])))
+            # Top rule separates user input (scroll buffer) from agent response.
+            # Bottom rule + ❯ is the persistent input bar pinned at the bottom.
+            top_rule = "[dim]" + "─" * cols + "[/dim]"
+            bot_rule = "[dim]" + "─" * cols + "[/dim]"
+            input_bar = "[bold green]❯[/bold green] "
+            live.update(_mk("\n".join([top_rule] + call_lines + [header, bot_rule, input_bar])))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)
 
@@ -711,8 +715,11 @@ async def _run_agent_turn(
         content = ""
         _all_turn_texts = []
     except Exception as exc:
-        content = f"⚠ Error: {exc}"
         _all_turn_texts = []
+        content = ""
+        _err_line = f"[red bold]⚠ {type(exc).__name__}:[/red bold] [red]{exc}[/red]"
+        transcript.append_line(agent_id, _err_line)
+        renderer._flush_new_lines()
     finally:
         _streaming_text[0] = ""
         spin_task.cancel()

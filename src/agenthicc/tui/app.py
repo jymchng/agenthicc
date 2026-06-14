@@ -319,7 +319,18 @@ class InlineRenderer:
             except (_asyncio.CancelledError, KeyboardInterrupt):
                 # Agent turn was interrupted — status already reset by _run_agent_turn
                 # (which catches the same exceptions and sets renderer._status.active = False).
-                pass
+                self._status.active = False
+            except Exception as exc:
+                # Any unexpected exception: show in red, keep the loop running.
+                self._status.active = False
+                if RICH_AVAILABLE:
+                    self.console.print(
+                        f"[red bold]⚠ {type(exc).__name__}:[/red bold] [red]{exc}[/red]",
+                        markup=True, highlight=False,
+                    )
+                else:
+                    import sys as _sys  # noqa: PLC0415
+                    print(f"⚠ {type(exc).__name__}: {exc}", file=_sys.stderr)
             finally:
                 self._current_agent_task = None
 
@@ -353,35 +364,48 @@ class InlineRenderer:
                 if not text:
                     continue
 
-                self.console.print(
-                    f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
-                )
-
-                handled = SlashCommandHandler(
-                    renderer=self, skills=getattr(self, "_skills", {})
-                ).handle(text, self.model, self.console)
-                pending = getattr(self, "_pending_skill", None)
-                if pending:
-                    self._pending_skill = None
-                    self.on_intent_submitted()
-                    if _is_async:
-                        await _run_agent(on_input(pending))
+                try:
+                    handled = SlashCommandHandler(
+                        renderer=self, skills=getattr(self, "_skills", {})
+                    ).handle(text, self.model, self.console)
+                    if handled:
+                        # Slash commands don't use the Live block, so print the
+                        # separator here to visually frame their output.
+                        self.console.print(
+                            f"[dim]{'─' * _sh.get_terminal_size((80, 24)).columns}[/dim]"
+                        )
+                    pending = getattr(self, "_pending_skill", None)
+                    if pending:
+                        self._pending_skill = None
+                        self.on_intent_submitted()
+                        if _is_async:
+                            await _run_agent(on_input(pending))
+                        else:
+                            try:
+                                on_input(pending)
+                            except (KeyboardInterrupt, _asyncio.CancelledError):
+                                self._status.active = False
+                        self._flush_new_lines()
+                    elif not handled:
+                        self.on_intent_submitted()
+                        if _is_async:
+                            await _run_agent(on_input(text))
+                        else:
+                            try:
+                                on_input(text)
+                            except (KeyboardInterrupt, _asyncio.CancelledError):
+                                self._status.active = False
+                        self._flush_new_lines()
+                except Exception as _exc:
+                    self._status.active = False
+                    if RICH_AVAILABLE:
+                        self.console.print(
+                            f"[red bold]⚠ {type(_exc).__name__}:[/red bold] [red]{_exc}[/red]",
+                            markup=True, highlight=False,
+                        )
                     else:
-                        try:
-                            on_input(pending)
-                        except (KeyboardInterrupt, _asyncio.CancelledError):
-                            self._status.active = False
-                    self._flush_new_lines()
-                elif not handled:
-                    self.on_intent_submitted()
-                    if _is_async:
-                        await _run_agent(on_input(text))
-                    else:
-                        try:
-                            on_input(text)
-                        except (KeyboardInterrupt, _asyncio.CancelledError):
-                            self._status.active = False
-                    self._flush_new_lines()
+                        import sys as _sys  # noqa: PLC0415
+                        print(f"⚠ {type(_exc).__name__}: {_exc}", file=_sys.stderr)
         finally:
             _save_history()
             if _sigint_installed:
