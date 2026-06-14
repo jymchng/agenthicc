@@ -702,29 +702,20 @@ async def _run_agent_turn(
                 call_lines.append(f"   [dim]{_display}[/dim]")
             # Top rule separates user input (scroll buffer) from agent response.
             # Bottom rule + ❯ is the persistent input bar pinned at the bottom.
+            from agenthicc.tui.input_area import (  # noqa: PLC0415
+                get_mode_str as _ia_mode_str,
+                prompt_markup as _ia_prompt,
+                footer_markup as _ia_footer,
+            )
             top_rule = "[dim]" + "─" * cols + "[/dim]"
             bot_rule = "[dim]" + "─" * cols + "[/dim]"
-            _typed = "".join(_queue_input_buf)
-            if len(_typed) > cols - 4:
-                _typed = _typed[:cols - 7] + "…"
-            input_bar = f"[bold green]❯[/bold green] {_typed}[bold]▌[/bold]"
             _q_count = len(pending_queue) if pending_queue is not None else 0
             _hdr = header + (f"  [dim]({_q_count} queued)[/dim]" if _q_count else "")
-            # Mirror the real _redraw layout: border + mode line below the ❯ bar.
-            _mm = getattr(renderer, "_mode_manager", None)
-            if _mm is not None:
-                _m = _mm.active
-                _mode_str = (
-                    f"⏵⏵ {_m.badge} {_m.name}  (shift+tab to cycle)"
-                    if _m.name != "Auto"
-                    else "⏵⏵ Auto  (shift+tab to cycle)"
-                )
-            else:
-                _mode_str = "⏵⏵ Auto  (shift+tab to cycle)"
-            mode_border = "[dim]" + "─" * cols + "[/dim]"
-            mode_line = f"  [dim]{_mode_str}[/dim]"
+            _bar = _ia_prompt("".join(_queue_input_buf), cols)
+            _mode_str = _ia_mode_str(getattr(renderer, "_mode_manager", None))
+            _mode_border, _mode_text = _ia_footer(_mode_str, cols)
             live.update(_mk("\n".join(
-                [top_rule] + call_lines + [_hdr, bot_rule, input_bar, mode_border, mode_line]
+                [top_rule] + call_lines + [_hdr, bot_rule, _bar, _mode_border, _mode_text]
             )))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)

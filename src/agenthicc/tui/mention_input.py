@@ -41,11 +41,12 @@ if TYPE_CHECKING:
 
 from agenthicc.tui.trigger import TriggerRegistry, TriggerHandler, TriggerContext, MatchItem
 from agenthicc.tui.menu import MenuDriver, MenuResultKind, MenuWidget
+from agenthicc.tui.input_area import PROMPT_CHAR
 
 __all__ = ["read_line_with_mention", "Key"]
 
 _MAX_VISIBLE = 8
-_PROMPT_STYLE = "\x1b[1;32m❯\x1b[0m "  # bold green ❯ + space
+_PROMPT_STYLE = f"\x1b[1;32m{PROMPT_CHAR}\x1b[0m "  # bold green ❯ + space
 
 # ── Exit messages — centralised here so they can never be lost ────────────────
 
@@ -88,8 +89,14 @@ def _raw_mode(fd: int) -> Generator[int, None, None]:
         # though our state machine already handles b"\x03" gracefully.
         cur[3] &= ~(termios.ECHOCTL | termios.ISIG)
         termios.tcsetattr(fd, termios.TCSANOW, cur)
+        # Hide the OS cursor so it does not appear alongside the ▌ indicator
+        # that prompt_ansi() renders at the insertion point.
+        sys.stdout.write("\x1b[?25l")
+        sys.stdout.flush()
         yield fd
     finally:
+        sys.stdout.write("\x1b[?25h")         # restore cursor visibility
+        sys.stdout.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
@@ -300,17 +307,19 @@ def _redraw(
     # rows below in a single escape.
     out.write("\r\x1b[0J")
 
-    # Step 2: redraw the input line.
+    # Step 2: redraw the input line with ▌ cursor at the insertion point.
     mention_suffix = (trigger_char + fragment) if in_trigger else ""
-    out.write(prompt_str + "".join(buf) + mention_suffix)
+    from agenthicc.tui.input_area import prompt_ansi as _ia_prompt_ansi  # noqa: PLC0415
+    out.write(_ia_prompt_ansi(buf, mention_suffix, cursor, in_trigger))
 
     # Step 2b — border + permanent mode footer (truncated so it never wraps)
     n_base = 0
     if mode_line is not None:
-        _rule = "─" * cols
+        from agenthicc.tui.input_area import footer_ansi as _ia_footer  # noqa: PLC0415
         _safe_line = _truncate_to_cols(mode_line, max(8, cols - 4))
-        out.write(f"\n\r\x1b[2m{_rule}\x1b[0m")
-        out.write(f"\n\r  \x1b[2m{_safe_line}\x1b[0m")
+        _border_str, _mode_str = _ia_footer(_safe_line, cols)
+        out.write(f"\n\r{_border_str}")
+        out.write(f"\n\r{_mode_str}")
         n_base = 2
 
     # Step 3: render dropdown if in trigger mode with matches.
@@ -349,14 +358,14 @@ def _redraw(
         new_n_lines = n_base + len(lines)
         out.write("\n" + "\n".join(lines))
         out.write(f"\x1b[{new_n_lines}A")
-        out.write("\r" + prompt_str + "".join(buf) + mention_suffix)
+        out.write("\r" + _ia_prompt_ansi(buf, mention_suffix, cursor, in_trigger))
         _apply_cursor(out, buf, in_trigger, cursor)
         out.flush()
         return new_n_lines
 
     if n_base:
         out.write(f"\x1b[{n_base}A")
-        out.write("\r" + prompt_str + "".join(buf) + mention_suffix)
+        out.write("\r" + _ia_prompt_ansi(buf, mention_suffix, cursor, in_trigger))
     _apply_cursor(out, buf, in_trigger, cursor)
     out.flush()
     return n_base
@@ -515,16 +524,12 @@ def read_line_with_mention(
     _mode_notification: list[_Any] = [None]
 
     def _get_mode_line() -> str:
+        from agenthicc.tui.input_area import get_mode_str as _ia_mode_str  # noqa: PLC0415
         notif = _mode_notification[0]
         if notif is not None:
             _mode_notification[0] = None
             return f"❖ Switched to {notif.name} mode"
-        if mode_manager is None:
-            return "⏵⏵ Auto  (shift+tab to cycle)"
-        m = mode_manager.active
-        if m.name == "Auto":
-            return "⏵⏵ Auto  (shift+tab to cycle)"
-        return f"⏵⏵ {m.badge}\x1b[2m {m.name}  (shift+tab to cycle)"
+        return _ia_mode_str(mode_manager)
 
     with _raw_mode(fd):
         while True:
