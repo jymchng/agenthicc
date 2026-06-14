@@ -251,6 +251,7 @@ def read_line_with_mention(
         resume_id=resume_id,
         mode_manager=mode_manager,
         initial_buf=initial_buf,
+        prompt_str=prompt_str,
         _fn_raw_mode=_mi._raw_mode,
         _fn_read_key=_mi._read_key,
         _fn_redraw=_mi._redraw,

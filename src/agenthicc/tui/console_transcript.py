@@ -32,7 +32,7 @@ class TranscriptView:
 
     def print_user(self, text: str) -> None:
         self._console.print(
-            f"[bold cyan]You[/bold cyan]\n{_SEP}\n{text}\n",
+            f"[bold cyan]You[/bold cyan]\n{_SEP}\n{text}",
             markup=True, highlight=False,
         )
 
@@ -98,7 +98,9 @@ class TranscriptView:
         """Print an arbitrary Rich markup string (or Markdown sentinel)."""
         if markup.startswith(_MD):
             from rich.markdown import Markdown  # noqa: PLC0415
-            self._console.print(Markdown(markup[len(_MD):]), highlight=False)
+            # end="" lets Markdown's own newlines control spacing; console.print's
+            # default end="\n" would add a second trailing newline creating a blank line.
+            self._console.print(Markdown(markup[len(_MD):]), highlight=False, end="")
         else:
             self._console.print(markup, markup=True, highlight=False)
 

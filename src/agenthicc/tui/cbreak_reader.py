@@ -67,11 +67,33 @@ def raw_mode(fd: int) -> Generator[int, None, None]:
     * Write ``\\x1b[?25l`` (hide OS cursor) and ``\\x1b[?2004h`` (enable bracketed
       paste) while active; restore on exit.
     """
+    import atexit     # noqa: PLC0415
     import termios   # noqa: PLC0415
     import sys       # noqa: PLC0415
     import tty       # noqa: PLC0415
 
     old = termios.tcgetattr(fd)
+
+    def _restore() -> None:
+        """Restore terminal to pre-CBREAK state.
+
+        Called both from the normal ``finally`` path and (as a safety net) from
+        ``atexit`` in case the thread is killed before ``finally`` runs — e.g.
+        when the main asyncio thread catches ``KeyboardInterrupt`` and exits
+        while this worker thread is still alive.  ``TCSAFLUSH`` (vs ``TCSADRAIN``)
+        discards any buffered input so the terminal is immediately usable.
+        """
+        try:
+            sys.stdout.write("\x1b[?2004l\x1b[?25h")  # bracketed paste OFF + show cursor
+            sys.stdout.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+        except Exception:  # noqa: BLE001
+            pass
+
+    atexit.register(_restore)
     try:
         tty.setcbreak(fd)                      # enable CBREAK
         cur = list(termios.tcgetattr(fd))      # read POST-CBREAK settings (NOT old)
@@ -82,9 +104,8 @@ def raw_mode(fd: int) -> Generator[int, None, None]:
         sys.stdout.flush()
         yield fd
     finally:
-        sys.stdout.write("\x1b[?2004l\x1b[?25h")  # bracketed paste OFF + show cursor
-        sys.stdout.flush()
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        atexit.unregister(_restore)  # normal exit — remove so atexit doesn't double-restore
+        _restore()
 
 
 # ── Keystroke reader ──────────────────────────────────────────────────────────

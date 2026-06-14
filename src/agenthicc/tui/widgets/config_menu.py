@@ -137,11 +137,16 @@ class ConfigurationMenu:
         out = sys.stdout
         cols = shutil.get_terminal_size((80, 24)).columns
 
-        # 1. Erase old rows (move down then erase each line, then jump back up).
+        # 1. Erase old rows below the input line.
+        #    On the very first call (prev_n_lines == 0) we still erase from the
+        #    current position to end-of-screen so stale content from a previous
+        #    render (footer, dropdown, etc.) cannot bleed through.
         if prev_n_lines > 0:
             for _ in range(prev_n_lines):
                 out.write("\n\r\x1b[2K")
             out.write(f"\x1b[{prev_n_lines}A")
+        else:
+            out.write("\x1b[0J")  # erase from cursor to end of screen
 
         # 2. Redraw input line.
         if self._state == "EDIT":
@@ -337,6 +342,12 @@ class ConfigurationMenu:
         Field rows:       ``  ► label        ● value``  (reversed if focused,
                           yellow ● if changed)
         """
+        if not self._sections:
+            return [
+                "  \x1b[2m(no configuration loaded — start agenthicc from a\x1b[0m",
+                "  \x1b[2m project directory with an agenthicc.toml file)\x1b[0m",
+                "  \x1b[2mPress Esc to close.\x1b[0m",
+            ]
         rows: list[str] = []
         si_cur, fi_cur = self._cursor
         for si, section in enumerate(self._sections):

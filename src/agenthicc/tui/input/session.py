@@ -87,6 +87,7 @@ class InputSession:
         resume_id: str = "",
         mode_manager: "ModeManager | None" = None,
         initial_buf: list[str] | None = None,
+        prompt_str: str = "\x1b[1;32m❯\x1b[0m ",
         _fn_raw_mode: Callable | None = None,
         _fn_read_key: Callable | None = None,
         _fn_redraw: Callable | None = None,
@@ -98,6 +99,7 @@ class InputSession:
         self._cwd = cwd
         self._resume_id = resume_id
         self._mode_manager = mode_manager
+        self._prompt_str = prompt_str
         self._renderer = PromptRenderer()
 
         if registry is None:
@@ -185,21 +187,50 @@ class InputSession:
 
         fd = sys.stdin.fileno()
         with self._fn_raw_mode(fd):
+            # Clear from the current terminal position downward so the first
+            # render starts from a clean state regardless of what _print_idle_status
+            # or previous sessions left on screen.
+            sys.stdout.write("\r\x1b[0J")
+            sys.stdout.flush()
+
             while True:
                 try:
-                    self._fn_render()
+                    if self._driver.active:
+                        # ── Menu mode ────────────────────────────────────────
+                        # Erase from the current row downward, then let the
+                        # menu draw the prompt + its own content.  We do NOT
+                        # call _fn_render() here because PromptRenderer draws a
+                        # footer below the input, which conflicts with the menu
+                        # trying to occupy the same rows (causing multiple echoed
+                        # prompt lines and visible escape sequences).
+                        sys.stdout.write("\r\x1b[0J")
+                        sys.stdout.flush()
+                        self._driver.render(self._prompt_str, self._buf.buf)
+                    else:
+                        # ── Normal mode ──────────────────────────────────────
+                        self._fn_render()
                     key, ch = self._fn_read_key(fd)
                 except KeyboardInterrupt:
-                    # SIGINT arrived in the thread — treat as double Ctrl+C and
-                    # exit immediately (tui.py's outer except will also catch it).
+                    # SIGINT arrived in the thread — exit immediately.
                     self._renderer.show_exit_hint(self._resume_id)
                     return None
                 except OSError:
-                    # os.read() interrupted by a signal (EINTR) — retry the loop.
+                    # os.read() interrupted by a signal (EINTR) — retry.
+                    continue
+                except Exception:
+                    # Unexpected render error — close menu if open, keep looping.
+                    if self._driver.active:
+                        try:
+                            self._driver.close()
+                        except Exception:  # noqa: BLE001
+                            pass
                     continue
 
                 if self._driver.active:
-                    self._driver.handle_key(key, ch)
+                    result = self._driver.handle_key(key, ch)
+                    # After DONE or CANCEL, driver.active is False and the next
+                    # iteration resumes normal editing with _fn_render().
+                    # After CONTINUE, driver stays active; loop re-renders menu.
                     self._ctrl_c_count = 0
                     continue
 
@@ -574,6 +605,7 @@ def run_input_session(
         resume_id=resume_id,
         mode_manager=mode_manager,
         initial_buf=initial_buf,
+        prompt_str=prompt_str,
         _fn_raw_mode=_fn_raw_mode,
         _fn_read_key=_fn_read_key,
         _fn_redraw=_fn_redraw,

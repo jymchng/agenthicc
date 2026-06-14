@@ -95,6 +95,10 @@ class AgenthiccTUI:
         self._base_path = base_path
         self._history_file = history_file
         self._mode_manager: Any = None
+        # Set by CommandDispatcher when a /command opens a menu widget.
+        # Consumed (and reset to None) at the start of the next idle prompt so
+        # the menu opens immediately when read_line_with_mention starts.
+        self._pending_menu: Any = None
 
         self.bus = EventBus()
         self.live_panel = LivePanel(self.console)
@@ -105,7 +109,6 @@ class AgenthiccTUI:
         self.status_state    = self.live_panel.status
         self.footer_state    = self.live_panel.footer
         self.input_bar_state = self.live_panel.input_bar
-        self.spinner_state   = self.live_panel.spinner
 
         self._wire_bus()
         self._status = _StatusShim(self.status_state, self.footer_state)
@@ -143,37 +146,46 @@ class AgenthiccTUI:
         pass  # TranscriptModel.render() already outputs the ● assistant header
 
     def _on_assistant_chunk(self, e: AssistantChunkEvent) -> None:
-        self.spinner_state.set_streaming_text(e.chunk)
+        pass  # Streaming text shown via status_state "Thinking" animation.
 
     def _on_assistant_complete(self, _: AssistantCompleteEvent) -> None:
-        # Flush whatever was just appended to the transcript (text + any completed
-        # tool calls) to the scroll buffer before clearing the spinner, so the user
-        # always sees completed work above the live panel.
+        # Flush transcript (LLM text + tool results) to the scroll buffer.
         self.transcript.flush_from_model()
-        # Clear the spinner so the next batch of tool calls renders fresh.
-        # The scroll buffer retains the full history; only the live view resets.
-        self.spinner_state.set_streaming_text("")
-        self.spinner_state.clear()
 
     def _on_thinking_step(self, e: ThinkingStepEvent) -> None:
         self.transcript.print_thinking_step(e.step, e.done)
 
     def _on_tool_start(self, e: ToolStartEvent) -> None:
-        # Clear any streaming-text preview before adding the new tool row.
-        # If the LLM streamed prose between two tool groups, that text would
-        # otherwise appear as a dim separator line between them.
-        self.spinner_state.set_streaming_text("")
-        self.spinner_state.add_call(e.tool_use_id, e.name, e.args)
+        # Show active tool name in status bar.  The Live block stays constant
+        # height — no spinner row is added; completed calls go to scroll buffer.
         self.status_state.tool  = e.name
         self.status_state.state = "running"
         self.footer_state.mode  = "running"
 
     def _on_tool_complete(self, e: ToolCompleteEvent) -> None:
-        # Update the spinner only — do NOT print to stdout yet.
-        # The live panel is active; printing to stdout at the same time creates
-        # a duplicate "group 1 / border / group 2" split.  The transcript will
-        # be flushed via _flush_new_lines() once live_panel.stop() is called.
-        self.spinner_state.complete_call(e.tool_use_id, e.success, e.duration_ms, e.diff)
+        # Print the completed call directly to the scroll buffer while the Live
+        # block is active.  Rich's Console.print() inserts above the Live block
+        # automatically — this gives the "tool calls scroll upward" effect the
+        # user wants, and keeps the Live block at a constant height so the
+        # status bar and input bar never shift position.
+        from rich.markup import escape as _esc  # noqa: PLC0415
+        icon  = "[green]✓[/green]" if e.success else "[red]✗[/red]"
+        dur   = f"  [dim]{e.duration_ms:.0f}ms[/dim]" if e.duration_ms else ""
+        name  = e.name or ""
+        self.console.print(
+            f"   [dim]⎿[/dim] [bold]{_esc(name)}[/bold]  {icon}{dur}",
+            markup=True, highlight=False,
+        )
+        if e.diff:
+            for dl in e.diff.splitlines()[:6]:
+                if dl.startswith("+"):
+                    self.console.print(f"      [green]{_esc(dl)}[/green]", markup=True, highlight=False)
+                elif dl.startswith("-"):
+                    self.console.print(f"      [red]{_esc(dl)}[/red]", markup=True, highlight=False)
+                elif dl.startswith("@@"):
+                    self.console.print(f"      [dim cyan]{_esc(dl)}[/dim cyan]", markup=True, highlight=False)
+                else:
+                    self.console.print(f"      [dim]{_esc(dl)}[/dim]", markup=True, highlight=False)
         self.status_state.state = "thinking"
         self.status_state.tool  = ""
 
@@ -219,7 +231,6 @@ class AgenthiccTUI:
         self._status.output_tokens = 0
         self.status_state.start_run()
         self.footer_state.mode = "thinking"
-        self.spinner_state.clear()
 
     def on_model_call_complete(
         self, input_tokens: int, output_tokens: int, cost_usd: float = 0.0
@@ -245,7 +256,6 @@ class AgenthiccTUI:
         while True:
             await asyncio.sleep(0.05)
             self.status_state.tick()
-            self.spinner_state.tick()
 
     # ── Main run loop ─────────────────────────────────────────────────────────
 
@@ -332,6 +342,8 @@ class AgenthiccTUI:
         try:
             while True:
                 self._print_idle_status()
+                # Consume any menu widget queued by a /command (e.g. /config).
+                _initial_menu, self._pending_menu = self._pending_menu, None
                 try:
                     text = await _a.to_thread(
                         read_line_with_mention,
@@ -339,7 +351,7 @@ class AgenthiccTUI:
                         _cwd,
                         _history,
                         _registry,
-                        None,
+                        _initial_menu,
                         self._status.resume_id,
                         _mode_manager,
                     )
@@ -381,12 +393,11 @@ class AgenthiccTUI:
                 self.live_panel.stop()
                 self._flush_new_lines()
                 # Drain any messages queued while the agent was running.
+                # Do NOT echo them again — the user already saw "[dim]❯ … ⌛ Queued[/dim]"
+                # during streaming.  Printing another "❯ text" line here creates
+                # redundant output and the extra blank lines around it.
                 while _pending_queue:
                     next_text = _pending_queue.pop(0)
-                    self.console.print(
-                        f"[bold green]❯[/bold green] {next_text}",
-                        markup=True, highlight=False,
-                    )
                     self.on_intent_submitted()
                     self.live_panel.start()
                     _streaming_input.start()
