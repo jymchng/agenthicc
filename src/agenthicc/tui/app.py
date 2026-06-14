@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, TextIO
 
-from .transcript import TranscriptModel, ToolCallState
+from .transcript import SPINNER_FRAMES, TranscriptModel, ToolCallState
 
 __all__ = [
     "INPUT_PROMPT",
@@ -148,6 +148,7 @@ class InlineRenderer:
         else:  # pragma: no cover
             self.console = console
         self._printed_count: int = 0
+        self._pending_running: set[int] = set()
         self._live: Any | None = None
         self._base_path = base_path
         self._history_file = history_file
@@ -457,24 +458,49 @@ class InlineRenderer:
             self._status.spinner_frame += 1
 
     _MD_SENTINEL = "\x00md\x00"
+    _SPINNER_ENDS = tuple(SPINNER_FRAMES)
 
     def _flush_new_lines(self) -> None:
         """Print lines from model.render() not yet printed.
 
         Lines prefixed with ``_MD_SENTINEL`` are agent prose rendered through
         Rich's ``Markdown`` class; all other lines use standard Rich markup.
+
+        RUNNING tool-call lines (ending with a spinner frame character) are
+        deferred — the Live spinner panel already shows them.  Their indices
+        are stored in ``_pending_running`` and reprinted here as soon as they
+        transition to SUCCESS or FAILURE, so the completed output appears in
+        the scroll buffer without a duplicate spinner ghost above it.
         """
         lines = self.model.render()
+
+        # Reprint any previously-deferred lines that have now completed.
+        still_pending: set[int] = set()
+        for idx in sorted(self._pending_running):
+            if idx < len(lines):
+                line = lines[idx]
+                if line.endswith(self._SPINNER_ENDS):
+                    still_pending.add(idx)  # still running
+                else:
+                    self._emit_line(line)
+        self._pending_running = still_pending
+
+        # Process newly visible lines, deferring any that are still RUNNING.
         new = lines[self._printed_count:]
-        for line in new:
-            if line.startswith(self._MD_SENTINEL):
-                from rich.markdown import Markdown  # noqa: PLC0415
-                md_text = line[len(self._MD_SENTINEL):]
-                self.console.print(Markdown(md_text), highlight=False)
+        for i, line in enumerate(new, start=self._printed_count):
+            if line.endswith(self._SPINNER_ENDS):
+                self._pending_running.add(i)
             else:
-                self.console.print(line, markup=True, highlight=False)
+                self._emit_line(line)
         if new:
             self._printed_count = len(lines)
+
+    def _emit_line(self, line: str) -> None:
+        if line.startswith(self._MD_SENTINEL):
+            from rich.markdown import Markdown  # noqa: PLC0415
+            self.console.print(Markdown(line[len(self._MD_SENTINEL):]), highlight=False)
+        else:
+            self.console.print(line, markup=True, highlight=False)
 
     def _update_spinner(self) -> None:
         """Start / update / stop the spinner Live block."""

@@ -65,7 +65,7 @@ class ToolCallEntry:
         args_str = ", ".join(
             f"{k}={repr(v)[:40]}" for k, v in (self.args or {}).items()
         )
-        call_line = f"  [bold]{self.name}[/bold][dim]({args_str})[/dim]"
+        call_line = f"  [dim]⎿[/dim] [bold]{self.name}[/bold][dim]({args_str})[/dim]"
 
         if self.state is ToolCallState.RUNNING:
             frame = SPINNER_FRAMES[self.spinner_frame % len(SPINNER_FRAMES)]

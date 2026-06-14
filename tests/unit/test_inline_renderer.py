@@ -66,6 +66,35 @@ class TestInlineRendererFlush:
         r._flush_new_lines()
         assert r._printed_count == len(m.render())
 
+    def test_running_tool_call_deferred_then_printed_on_complete(self):
+        """RUNNING tool calls must not be printed until they complete.
+
+        Regression: the completed ✓ line and its output were silently dropped
+        because the RUNNING spinner was already counted in _printed_count,
+        so the same render-list index was never reprinted after state change.
+        """
+        con, buf = _console()
+        m = TranscriptModel()
+        m.append_turn("a1", "agent:test", 0.0)
+        m.add_tool_call("a1", "tc1", "list_directory", state=ToolCallState.RUNNING)
+        r = InlineRenderer(m, console=con)
+
+        # First flush — tool is RUNNING, should NOT appear in scroll buffer.
+        # model.render() has 2 elements: turn header (index 0) + tool call (index 1).
+        r._flush_new_lines()
+        assert "list_directory" not in buf.getvalue()
+        assert r._printed_count == 2  # both indices consumed; tool call deferred
+        assert 1 in r._pending_running
+
+        # Tool completes with output
+        m.finish_tool_call("tc1", success=True, duration_ms=12.0, output="file1\nfile2")
+        r._flush_new_lines()
+
+        output = buf.getvalue()
+        assert "list_directory" in output  # success line now printed
+        assert "file1" in output           # output also printed
+        assert not r._pending_running      # pending set cleared
+
 
 # ── spinner panel tests ───────────────────────────────────────────────────
 

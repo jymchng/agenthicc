@@ -504,7 +504,7 @@ async def _run_agent_turn(
         signals=getattr(runner, "_signals", None),
     )
 
-    live = Live(refresh_per_second=12, transient=True)
+    live = Live(console=renderer.console, refresh_per_second=12, transient=True)
     live.start()
 
     from agenthicc.tui.transcript import TranscriptModel as _TM  # noqa: PLC0415
@@ -555,6 +555,9 @@ async def _run_agent_turn(
         import shutil as _sh  # noqa: PLC0415
         from rich.markup import render as _mk  # noqa: PLC0415
         while True:
+            # Flush any completed transcript lines (text turns, finished tool calls)
+            # to the permanent scroll buffer before updating the transient Live block.
+            renderer._flush_new_lines()
             elapsed = time.monotonic() - renderer._status.intent_started_at
             frame = _thinking_wave(renderer._status.spinner_frame)
             header = (
@@ -634,15 +637,15 @@ async def _run_agent_turn(
                 elif n_entries > 0:
                     # Always show the hint even when all calls fit on screen.
                     call_lines.append("   [dim](ctrl+O to expand)[/dim]")
-            # Prepend partial streaming text above tool calls when the model is
-            # generating prose (cleared as soon as the turn boundary arrives).
+            # Append partial streaming text below tool calls, above the status line.
             if _live_text:
                 cols = _sh.get_terminal_size((80, 24)).columns
                 _display = _live_text.replace("\n", " ")
                 if len(_display) > cols - 4:
                     _display = _display[:cols - 7] + "…"
-                call_lines = [f"   [dim]{_display}[/dim]"] + call_lines
-            live.update(_mk("\n".join([header] + call_lines)))
+                call_lines.append(f"   [dim]{_display}[/dim]")
+            # Header (Thinking... + token counts) always sits at the bottom.
+            live.update(_mk("\n".join(call_lines + [header])))
             renderer._status.spinner_frame += 1
             await asyncio.sleep(0.05)
 
@@ -687,6 +690,9 @@ async def _run_agent_turn(
                     #   turn-1 text → turn-1 tools → turn-2 text → turn-2 tools …
                     from agenthicc.tui.app import InlineRenderer as _IR  # noqa: PLC0415
                     transcript.append_line(agent_id, _IR._MD_SENTINEL + _turn_text)
+                    # Immediately print the completed turn text to the scroll buffer
+                    # so it persists above the tool-call Live block.
+                    renderer._flush_new_lines()
                 _current_turn = []
                 _streaming_text[0] = ""
 
