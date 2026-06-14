@@ -110,11 +110,14 @@ def _raw_mode(fd: int) -> Generator[int, None, None]:
         # support it (kitty, WezTerm, foot, …) send \x1b[13;5u for Ctrl+Enter
         # instead of the indistinguishable \r.  Terminals that don't understand
         # the escape simply ignore it, so this is safe everywhere.
-        sys.stdout.write("\x1b[?25l")   # hide OS cursor (we draw ▌ ourselves)
+        # \x1b[?25l  — hide OS cursor (we draw ▌ ourselves)
+        # \x1b[?2004h — enable bracketed paste: terminal wraps clipboard pastes
+        #               in \x1b[200~…\x1b[201~, letting us detect paste vs typing.
+        sys.stdout.write("\x1b[?25l\x1b[?2004h")
         sys.stdout.flush()
         yield fd
     finally:
-        sys.stdout.write("\x1b[?25h")   # restore cursor visibility
+        sys.stdout.write("\x1b[?2004l\x1b[?25h")  # disable bracketed paste + show cursor
         sys.stdout.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -130,6 +133,8 @@ class Key(str, Enum):
     END       = "END"
     ENTER     = "ENTER"
     CTRL_ENTER = "CTRL_ENTER"  # insert newline (multi-line input)
+    CTRL_V    = "CTRL_V"      # expand condensed paste
+    PASTE     = "PASTE"       # bracketed paste event; ch carries the pasted text
     TAB       = "TAB"
     ESC       = "ESC"
     BACKSPACE = "BACKSPACE"
@@ -165,6 +170,8 @@ def _read_key(fd: int) -> tuple[Key, str]:
         return (Key.BACKSPACE, "")
     if b == b"\x15":
         return (Key.CTRL_U, "")
+    if b == b"\x16":
+        return (Key.CTRL_V, "")
     if b == b"@":
         return (Key.AT, "")
 
@@ -200,6 +207,25 @@ def _read_key(fd: int) -> tuple[Key, str]:
         if seq == b"1~":     return (Key.HOME, "")
         if seq == b"3~":     return (Key.CHAR, "")    # Delete — ignore
         if seq == b"4~":     return (Key.END, "")
+
+        # Bracketed paste: \x1b[200~ starts the paste payload; read until \x1b[201~.
+        if seq == b"200~":
+            _TERM = b"\x1b[201~"
+            paste_bytes = b""
+            while True:
+                r_p, _, _ = select.select([fd], [], [], 2.0)
+                if not r_p:
+                    break
+                paste_bytes += os.read(fd, 4096)
+                if _TERM in paste_bytes:
+                    paste_bytes = paste_bytes[:paste_bytes.index(_TERM)]
+                    break
+            try:
+                pasted = paste_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                pasted = paste_bytes.decode("utf-8", errors="replace")
+            return (Key.PASTE, pasted)
+
         return (Key.ESC, "")
 
     # Printable or multi-byte UTF-8
@@ -572,11 +598,21 @@ def read_line_with_mention(
     saved_buf: list[str] = []
     ctrl_c_count: int = 0
 
+    # ── paste state ───────────────────────────────────────────────────────────
+    # Pastes with more than this many lines are shown in condensed form.
+    _PASTE_CONDENSE_THRESHOLD = 3
+    _paste_condensed: list[bool] = [False]     # True → show label instead of buf
+    _paste_count: list[int] = [0]              # increments on each condensed paste
+    _paste_label: list[str] = [""]             # the one-line condensed label
+    _paste_range: list[tuple[int, int]] = [(0, 0)]  # (start, end) in buf
+
     from typing import Any as _Any  # noqa: PLC0415
     _mode_notification: list[_Any] = [None]
 
     def _get_mode_line() -> str:
         from agenthicc.tui.input_area import get_mode_str as _ia_mode_str  # noqa: PLC0415
+        if _paste_condensed[0]:
+            return "ctrl+v to expand paste"
         notif = _mode_notification[0]
         if notif is not None:
             _mode_notification[0] = None
@@ -588,19 +624,27 @@ def read_line_with_mention(
     with _raw_mode(fd):
         while True:
             # Determine what to show in the input bar.
-            if driver.active and driver.widget.edit_field_value is not None:
+            # When a large paste is condensed, show the one-line label instead
+            # of the full buffer so the terminal doesn't fill with pasted text.
+            if _paste_condensed[0] and active_handler is None and not driver.active:
+                display_buf = list(_paste_label[0])
+                _display_cursor = len(display_buf)
+            elif driver.active and driver.widget.edit_field_value is not None:
                 display_buf = list(driver.widget.edit_field_value)
+                _display_cursor = cursor
             elif active_handler is not None:
                 display_buf = buf
+                _display_cursor = cursor
             else:
                 display_buf = buf
+                _display_cursor = cursor
 
             prev_dropdown_lines = _redraw(
                 prompt_str, display_buf, fragment, matches, selected,
                 prev_dropdown_lines, active_handler is not None, current_hint,
                 active_handler.char if active_handler else "@",
                 mode_line=_get_mode_line(),
-                cursor=cursor,
+                cursor=_display_cursor,
             )
             if driver.active:
                 driver._prev_lines = driver.widget.render(prompt_str, display_buf, driver._prev_lines)
@@ -778,6 +822,26 @@ def read_line_with_mention(
             # Reset ctrl_c_count on any key except CTRL_C.
             ctrl_c_count = 0
 
+            # ── Ctrl+V: expand a condensed paste ────────────────────────────────
+            if key == Key.CTRL_V:
+                if _paste_condensed[0]:
+                    _paste_condensed[0] = False
+                    cursor = len(buf)
+                continue  # nothing else to do for Ctrl+V
+
+            # ── Exit condensed mode on any other key before processing it ───────
+            if _paste_condensed[0]:
+                if key == Key.BACKSPACE:
+                    # Delete the entire paste from the buffer cleanly so the
+                    # user never sees the raw (potentially huge) pasted content.
+                    _start, _end = _paste_range[0]
+                    del buf[_start:_end]
+                    cursor = _start
+                    _paste_condensed[0] = False
+                    continue  # backspace is fully handled — don't delete a second char
+                _paste_condensed[0] = False
+                cursor = len(buf)
+
             if key == Key.CTRL_D:
                 _n_rows = max(1, "".join(buf).count("\n") + 1)
                 _scrub_cursor(buf, _n_rows)
@@ -789,9 +853,16 @@ def read_line_with_mention(
             elif key == Key.ENTER:
                 result = "".join(buf)
                 _n_rows = max(1, result.count("\n") + 1)
-                _scrub_cursor(buf, _n_rows)
-                _erase_below(_n_rows)
-                sys.stdout.write("\n" * _n_rows)
+                # When condensed, the visible line is the label (1 row), not the
+                # full buf.  Scrub the label so ▌ doesn't persist in the scroll.
+                if _paste_condensed[0]:
+                    _scrub_cursor(list(_paste_label[0]), 1)
+                    _erase_below(1)
+                    sys.stdout.write("\n")
+                else:
+                    _scrub_cursor(buf, _n_rows)
+                    _erase_below(_n_rows)
+                    sys.stdout.write("\n" * _n_rows)
                 sys.stdout.flush()
                 if result:
                     history.append(result)
@@ -930,6 +1001,39 @@ def read_line_with_mention(
                     else:
                         buf.insert(cursor, trigger_ch)
                         cursor += 1
+
+            elif key == Key.PASTE and ch:
+                # Insert pasted text at cursor position.
+                paste_text = ch
+                paste_chars = list(paste_text)
+                _paste_start = cursor
+                buf[cursor:cursor] = paste_chars
+                cursor += len(paste_chars)
+                _paste_range[0] = (_paste_start, cursor)  # remember for backspace
+                hist_idx = len(history)  # reset history navigation
+
+                # Condense large pastes so they don't flood the input bar.
+                # Trigger on EITHER too many lines OR too many characters —
+                # a single-line 500-char paste is just as hard to navigate as
+                # a 10-line paste, and would cause terminal line-wrap confusion.
+                import shutil as _sh_paste  # noqa: PLC0415
+                _cols = _sh_paste.get_terminal_size((80, 24)).columns
+                n_lines = paste_text.count("\n") + 1
+                _should_condense = (
+                    n_lines > _PASTE_CONDENSE_THRESHOLD
+                    or len(paste_text) > max(_cols - 4, 40)
+                )
+                if _should_condense:
+                    _paste_count[0] += 1
+                    _suffix = (
+                        f"+{n_lines} lines"
+                        if n_lines > 1
+                        else f"{len(paste_text)} chars"
+                    )
+                    _paste_label[0] = (
+                        f"Pasted text #{_paste_count[0]} {_suffix}"
+                    )
+                    _paste_condensed[0] = True
 
             elif key == Key.CHAR and ch:
                 # Space terminates a token — never re-enter trigger mode for it.
