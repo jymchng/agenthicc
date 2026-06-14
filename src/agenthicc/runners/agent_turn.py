@@ -291,16 +291,13 @@ async def _run_agent_turn(
                     if r2:
                         rest = os.read(fd, 2)
                         seq = b + rest
-                        if len(rest) == 1 and rest in (b"\r", b"\n"):
-                            # Alt+Enter — insert newline for multi-line queued input.
-                            _queue_input_buf.append("\n")
-                        elif _expanded[0]:
+                        if _expanded[0]:
                             if seq == b"\x1b[A":    # up arrow
                                 _scroll_offset[0] = max(0, _scroll_offset[0] - 1)
                             elif seq == b"\x1b[B":  # down arrow
                                 _scroll_offset[0] += 1  # clamped in _spin()
 
-                elif b in (b"\r", b"\n"):           # Enter — submit
+                elif b == b"\r":                    # Enter (\r) — submit
                     typed = "".join(_queue_input_buf).strip()
                     _queue_input_buf.clear()
                     if typed:
@@ -311,6 +308,9 @@ async def _run_agent_turn(
                             markup=True, highlight=False,
                         )
                         renderer._flush_new_lines()
+
+                elif b == b"\n":                    # Ctrl+J — insert newline
+                    _queue_input_buf.append("\n")
 
                 elif b in (b"\x7f", b"\x08"):       # Backspace
                     if _queue_input_buf:

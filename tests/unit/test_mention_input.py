@@ -209,10 +209,16 @@ class TestReadKey:
         assert key == Key.ENTER
         assert ch == ""
 
-    def test_reads_enter_lf(self) -> None:
+    def test_reads_ctrl_j_as_ctrl_enter(self) -> None:
+        """\\n (Ctrl+J) maps to CTRL_ENTER — fallback for terminals without Kitty KP.
+
+        In CBREAK mode \\r (Enter) and \\n (Ctrl+J) are always distinct bytes.
+        Terminals with Kitty Keyboard Protocol send \\x1b[13;5u for Ctrl+Enter;
+        others fall back to Ctrl+J (\\n) for reliable multi-line newline insertion.
+        """
         with _mock_read_key([b"\n"]):
             key, ch = _read_key(42)
-        assert key == Key.ENTER
+        assert key == Key.CTRL_ENTER
 
     def test_reads_backspace_del(self) -> None:
         with _mock_read_key([b"\x7f"]):

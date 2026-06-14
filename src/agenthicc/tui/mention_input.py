@@ -94,6 +94,11 @@ def _raw_mode(fd: int) -> Generator[int, None, None]:
     try:
         tty.setcbreak(fd)                     # enable CBREAK
         cur = list(termios.tcgetattr(fd))     # read POST-CBREAK settings (NOT old)
+        # Clear ICRNL (iflag) so the terminal driver does NOT translate \r → \n.
+        # Without this, Enter (\r) arrives as \n which our code maps to CTRL_ENTER
+        # (insert newline) instead of ENTER (submit).  setcbreak only clears ECHO
+        # and ICANON; it leaves ICRNL intact, so we must clear it ourselves.
+        cur[0] &= ~termios.ICRNL
         # Clear ISIG so Ctrl+C delivers \x03 to stdin instead of raising SIGINT.
         # Without this, Python would throw KeyboardInterrupt in the thread even
         # though our state machine already handles b"\x03" gracefully.
@@ -101,11 +106,15 @@ def _raw_mode(fd: int) -> Generator[int, None, None]:
         termios.tcsetattr(fd, termios.TCSANOW, cur)
         # Hide the OS cursor so it does not appear alongside the ▌ indicator
         # that prompt_ansi() renders at the insertion point.
-        sys.stdout.write("\x1b[?25l")
+        # Request Kitty Keyboard Protocol "disambiguate" mode so terminals that
+        # support it (kitty, WezTerm, foot, …) send \x1b[13;5u for Ctrl+Enter
+        # instead of the indistinguishable \r.  Terminals that don't understand
+        # the escape simply ignore it, so this is safe everywhere.
+        sys.stdout.write("\x1b[?25l")   # hide OS cursor (we draw ▌ ourselves)
         sys.stdout.flush()
         yield fd
     finally:
-        sys.stdout.write("\x1b[?25h")         # restore cursor visibility
+        sys.stdout.write("\x1b[?25h")   # restore cursor visibility
         sys.stdout.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -120,7 +129,7 @@ class Key(str, Enum):
     HOME      = "HOME"
     END       = "END"
     ENTER     = "ENTER"
-    ALT_ENTER = "ALT_ENTER"   # insert newline (multi-line input)
+    CTRL_ENTER = "CTRL_ENTER"  # insert newline (multi-line input)
     TAB       = "TAB"
     ESC       = "ESC"
     BACKSPACE = "BACKSPACE"
@@ -144,8 +153,12 @@ def _read_key(fd: int) -> tuple[Key, str]:
         return (Key.CTRL_C, "")
     if b == b"\x04":
         return (Key.CTRL_D, "")
-    if b in (b"\r", b"\n"):
+    if b == b"\r":
         return (Key.ENTER, "")
+    if b == b"\n":
+        # Ctrl+J (\n) — reliably distinct from Enter (\r) in CBREAK mode.
+        # Fallback for terminals without Kitty Keyboard Protocol support.
+        return (Key.CTRL_ENTER, "")
     if b == b"\t":
         return (Key.TAB, "")
     if b in (b"\x7f", b"\x08"):
@@ -161,38 +174,32 @@ def _read_key(fd: int) -> tuple[Key, str]:
         if not r:
             return (Key.ESC, "")
         b2 = os.read(fd, 1)
-        if b2 in (b"\r", b"\n"):
-            # Alt+Enter — insert a newline in multi-line input.
-            return (Key.ALT_ENTER, "")
         if b2 != b"[":
-            # Malformed or alt-key — treat as ESC
             return (Key.ESC, "")
-        b3 = os.read(fd, 1)
-        if b3 == b"A":
-            return (Key.UP, "")
-        if b3 == b"B":
-            return (Key.DOWN, "")
-        if b3 == b"C":
-            return (Key.RIGHT, "")
-        if b3 == b"D":
-            return (Key.LEFT, "")
-        if b3 == b"H":
-            return (Key.HOME, "")
-        if b3 == b"F":
-            return (Key.END, "")
-        if b3 == b"Z":
-            return (Key.SHIFT_TAB, "")
-        # Sequences of the form ESC [ <digit> ~ — consume the trailing ~
-        if b3 in (b"1", b"3", b"4"):
-            r2, _, _ = select.select([fd], [], [], 0.05)
-            if r2:
-                os.read(fd, 1)  # consume ~
-            if b3 == b"1":
-                return (Key.HOME, "")
-            if b3 == b"4":
-                return (Key.END, "")
-            return (Key.CHAR, "")  # b"3" = Delete — ignore
-        # Unknown sequence
+
+        # CSI sequence: read bytes until the final byte (a letter or '~').
+        # This loop replaces the old single-byte lookahead so multi-byte
+        # sequences like \x1b[13;5u (Kitty KP Ctrl+Enter) are parsed correctly.
+        seq = b""
+        while True:
+            r_s, _, _ = select.select([fd], [], [], 0.05)
+            if not r_s:
+                break
+            b_s = os.read(fd, 1)
+            seq += b_s
+            if b_s[-1:] in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~":
+                break
+
+        if seq == b"A":      return (Key.UP, "")
+        if seq == b"B":      return (Key.DOWN, "")
+        if seq == b"C":      return (Key.RIGHT, "")
+        if seq == b"D":      return (Key.LEFT, "")
+        if seq == b"H":      return (Key.HOME, "")
+        if seq == b"F":      return (Key.END, "")
+        if seq == b"Z":      return (Key.SHIFT_TAB, "")
+        if seq == b"1~":     return (Key.HOME, "")
+        if seq == b"3~":     return (Key.CHAR, "")    # Delete — ignore
+        if seq == b"4~":     return (Key.END, "")
         return (Key.ESC, "")
 
     # Printable or multi-byte UTF-8
@@ -790,7 +797,7 @@ def read_line_with_mention(
                     history.append(result)
                 return result
 
-            elif key == Key.ALT_ENTER:
+            elif key == Key.CTRL_ENTER:
                 # Insert a newline at the cursor for multi-line input.
                 buf.insert(cursor, "\n")
                 cursor += 1

@@ -27,18 +27,22 @@ PROMPT_CHAR = "❯"
 CURSOR_CHAR = "▌"
 
 
+_NEW_LINE_HINT = "  │  ctrl+j = ↵"
+
+
 def get_mode_str(mode_manager: Any | None) -> str:
     """Return the plain-text mode label for the given ModeManager (no ANSI/markup).
 
     Both renderers call this and apply their own styling, so the return value
-    is always unstyled text.
+    is always unstyled text.  A new-line key hint is appended so users on any
+    terminal know how to insert a line break.
     """
     if mode_manager is None:
-        return f"⏵⏵ Auto  (shift+tab to cycle)"
+        return f"⏵⏵ Auto  (shift+tab to cycle){_NEW_LINE_HINT}"
     m = mode_manager.active
     if m.name == "Auto":
-        return "⏵⏵ Auto  (shift+tab to cycle)"
-    return f"⏵⏵ {m.badge} {m.name}  (shift+tab to cycle)"
+        return f"⏵⏵ Auto  (shift+tab to cycle){_NEW_LINE_HINT}"
+    return f"⏵⏵ {m.badge} {m.name}  (shift+tab to cycle){_NEW_LINE_HINT}"
 
 
 # ── Rich markup ───────────────────────────────────────────────────────────────
