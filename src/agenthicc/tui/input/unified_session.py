@@ -1,15 +1,16 @@
-"""UnifiedInputSession — single CBREAK context for the application lifetime (PRD-62 §2).
+"""UnifiedInputSession — single CBREAK context for the application lifetime (PRD-62, PRD-74).
 
-Replaces the separate IdleInputSession + StreamingSession pair that caused
-the raw_mode nesting race.  One session, one raw_mode context, two modes.
+One session, one raw_mode context, capability-pipeline dispatch (PRD-74).
 
 Modes:
     IDLE      — full feature set: triggers, history, cursor movement, mode cycling
     STREAMING — reduced: queue messages, interrupt agent, paste, basic editing
+
+Each mode is a declared list of Capability instances (see capabilities.py).
+Adding a new trigger char or a new mode requires no changes here.
 """
 from __future__ import annotations
 
-import asyncio
 import sys
 from enum import Enum, auto
 from pathlib import Path
@@ -19,13 +20,14 @@ from agenthicc.tui.cbreak_reader import Key, raw_mode, read_key
 from agenthicc.tui.input.buffer import InputBuffer
 from agenthicc.tui.input.history import HistoryNavigator
 from agenthicc.tui.input.paste import PasteState
-from agenthicc.tui.runtime.mode_manager import ModeManager, build_mode_str
-from agenthicc.tui.runtime.commands import (
-    CommandBus, SendMessageCommand, InterruptAgentCommand,
+from agenthicc.tui.runtime.mode_manager import ModeManager
+from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
+from agenthicc.tui.input.capabilities import (
+    IDLE_CAPABILITIES, STREAMING_CAPABILITIES, _EXIT,
 )
 
-# Sentinel: dispatch methods return this to exit run()
-_EXIT = object()
+# Re-export _EXIT for tests/external callers that import it from here.
+__all__ = ["UnifiedInputSession", "InputMode", "_EXIT"]
 
 
 class InputMode(Enum):
@@ -59,10 +61,11 @@ class UnifiedInputSession:
         self._cwd      = cwd or Path(".")
         self._cfg      = cfg
 
-        self._mode     = InputMode.IDLE
-        self._buf      = InputBuffer()
-        self._paste    = PasteState()
-        self._hist     = HistoryNavigator(history or [])
+        self._mode         = InputMode.IDLE
+        self._capabilities = IDLE_CAPABILITIES   # switched by set_mode()
+        self._buf          = InputBuffer()
+        self._paste        = PasteState()
+        self._hist         = HistoryNavigator(history or [])
         self._ctrl_c_count = 0
         self._mode_notification: Any = None
 
@@ -72,24 +75,23 @@ class UnifiedInputSession:
         self._mode = mode
         if mode == InputMode.STREAMING:
             self._ctrl_c_count = 0
+        self._capabilities = (
+            STREAMING_CAPABILITIES if mode == InputMode.STREAMING
+            else IDLE_CAPABILITIES
+        )
 
     # ── main loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        """Block until the user exits (Ctrl+C twice or Ctrl+D on empty).
-        Never returns during normal operation.
-        """
+        """Block until the user exits (Ctrl+C twice or Ctrl+D on empty)."""
         import asyncio as _asyncio  # noqa: PLC0415
         fd = sys.stdin.fileno()
         loop = _asyncio.get_event_loop()
         with raw_mode(fd):
             while True:
                 try:
-                    # run_in_executor lets the event loop process other tasks
+                    # run_in_executor lets the event loop service other tasks
                     # (agent streaming, workspace redraws, tick loop, etc.)
-                    # while waiting for the next keystroke.  Without this,
-                    # read_key(fd) blocks the entire event loop and ESC/Ctrl+C
-                    # during an agent run are never received.
                     key, ch = await loop.run_in_executor(None, read_key, fd)
                 except KeyboardInterrupt:
                     self._state.conversation.notification.set(None)
@@ -97,239 +99,19 @@ class UnifiedInputSession:
                 except OSError:
                     continue
 
-                # Route to overlay first if one is active
-                if self._overlay and self._overlay.active:
-                    self._overlay.handle_key(key, ch)
-                    continue
-
-                ret = (
-                    await self._dispatch_streaming(key, ch)
-                    if self._mode == InputMode.STREAMING
-                    else await self._dispatch_idle(key, ch)
-                )
-
-                if ret is _EXIT:
+                if await self._dispatch(key, ch) is _EXIT:
                     return
 
-    # ── streaming dispatch ────────────────────────────────────────────────────
+    # ── capability pipeline dispatch ──────────────────────────────────────────
 
-    async def _dispatch_streaming(self, key: Key, ch: str) -> object:
-        match key:
-            case Key.CTRL_C | Key.ESC:
-                self._buf.clear()
-                self._paste.condensed = False
-                self._push()
-                await self._bus.dispatch_async(InterruptAgentCommand())
-
-            case Key.ENTER:
-                text = self._buf.text.strip()
-                self._buf.clear()
-                self._paste.condensed = False
-                self._push()
-                if text:
-                    await self._bus.dispatch_async(SendMessageCommand(text=text))
-
-            case Key.PASTE if ch:
-                import shutil  # noqa: PLC0415
-                cols = shutil.get_terminal_size((80, 24)).columns
-                self._paste.apply(self._buf, ch, cols)
-                self._push()
-
-            case Key.CTRL_V:
-                self._paste.expand()
-                self._push()
-
-            case Key.CTRL_ENTER:
-                self._paste_exit()
-                self._buf.insert("\n")
-                self._push()
-
-            case Key.BACKSPACE:
-                if self._paste.condensed:
-                    self._paste.backspace(self._buf)
-                else:
-                    self._buf.delete_before()
-                self._push()
-
-            case Key.CTRL_U:
-                self._buf.clear()
-                self._paste.condensed = False
-                self._push()
-
-            case Key.CHAR if ch:
-                self._paste_exit()
-                # Trigger detection during streaming (same as idle)
-                tch = self._registry.resolve(key, ch) if self._registry else None
-                if tch is not None:
-                    await self._open_trigger_overlay(tch)
-                else:
-                    self._buf.insert(ch)
-                self._push()
-
-        return None
-
-    # ── idle dispatch ─────────────────────────────────────────────────────────
-
-    async def _dispatch_idle(self, key: Key, ch: str) -> object:
-        # ── exit / interrupt ──────────────────────────────────────────────────
-        if key == Key.CTRL_C:
-            return self._ctrl_c_sequence()
-
-        # Any key other than Ctrl+C clears the "Press Ctrl+C again" notification
-        # and resets the double-press counter so the user can start fresh.
-        if self._ctrl_c_count > 0:
-            self._ctrl_c_count = 0
-            self._state.conversation.notification.set(None)
-
-        if key == Key.CTRL_D:
-            text = self._buf.text
-            if text:
-                return await self._submit(text)
-            return _EXIT
-
-        # ── paste ─────────────────────────────────────────────────────────────
-        if key == Key.PASTE and ch:
-            import shutil  # noqa: PLC0415
-            cols = shutil.get_terminal_size((80, 24)).columns
-            self._paste.apply(self._buf, ch, cols)
-            self._push()
-            return None
-
-        if key == Key.CTRL_V:
-            self._paste.expand()
-            self._push()
-            return None
-
-        # ── trigger detection ──────────────────────────────────────────────────
-        trigger_char = self._registry.resolve(key, ch) if self._registry else None
-        if trigger_char is not None:
-            handler = self._registry.get(trigger_char)
-            can = handler.can_activate(self._buf.buf[:self._buf.cursor]) if handler else False
-            if can:
-                await self._open_trigger_overlay(trigger_char)
-            else:
-                self._paste_exit()
-                self._buf.insert(trigger_char)
-                self._push()
-            return None
-
-        # ── main key dispatch ─────────────────────────────────────────────────
-        match key:
-            case Key.ENTER:
-                text = self._buf.text.strip()
-                if self._paste.condensed:
-                    text = self._buf.text.strip()
-                if text:
-                    self._buf.clear()
-                    self._paste.condensed = False
-                    self._push()
-                    self._hist.commit(text)
-                    return await self._submit(text)
-
-            case Key.CTRL_ENTER:
-                self._paste_exit()
-                self._buf.insert("\n")
-                self._push()
-
-            case Key.BACKSPACE:
-                if self._paste.condensed:
-                    self._paste.backspace(self._buf)
-                elif self._buf.cursor == len(self._buf):
-                    # Re-enter trigger mode via backspace into @/slash token
-                    tail = self._find_trigger_tail()
-                    if tail:
-                        tch, tpre, tfrag = tail
-                        handler = self._registry.get(tch) if self._registry else None
-                        if handler:
-                            self._buf.set(tpre)
-                            await self._open_trigger_overlay_with_initial(
-                                list(tpre) + [tch] + list(tfrag)
-                            )
-                            return None
-                    self._buf.delete_before()
-                else:
-                    self._buf.delete_before()
-                self._push()
-
-            case Key.CTRL_U:
-                self._buf.clear()
-                self._paste.condensed = False
-                self._push()
-
-            case Key.LEFT:
-                self._paste_exit()
-                self._buf.move_left()
-                self._push()
-
-            case Key.RIGHT:
-                self._paste_exit()
-                self._buf.move_right()
-                self._push()
-
-            case Key.HOME:
-                self._paste_exit()
-                self._buf.move_home()
-                self._push()
-
-            case Key.END:
-                self._paste_exit()
-                self._buf.move_end()
-                self._push()
-
-            case Key.UP:
-                self._paste_exit()
-                if not self._buf.move_up():
-                    result = self._hist.up(self._buf.buf)
-                    if result is not None:
-                        self._buf.set(result)
-                        self._paste.condensed = False
-                self._push()
-
-            case Key.DOWN:
-                self._paste_exit()
-                if not self._buf.move_down():
-                    result = self._hist.down(self._buf.buf)
-                    if result is not None:
-                        self._buf.set(result)
-                        self._paste.condensed = False
-                self._push()
-
-            case Key.SHIFT_TAB:
-                new_mode = self._modes.cycle()
-                mode_str = build_mode_str(new_mode)
-                self._state.conversation.mode_str.set(mode_str)
-                self._state.conversation.active_mode_name.set(new_mode.name)
-                self._state.conversation.active_mode_badge.set(new_mode.badge)
-                self._state.conversation.notification.set(
-                    f"❖ Switched to {new_mode.name} mode"
-                )
-                asyncio.get_event_loop().call_later(
-                    2.0,
-                    lambda: self._state.conversation.notification.set(None),
-                )
-
-            case Key.CHAR if ch:
-                self._paste_exit()
-                # Re-enter trigger via typing into existing @/slash token
-                if not ch.isspace() and self._buf.cursor == len(self._buf):
-                    tail = self._find_trigger_tail()
-                    if tail:
-                        tch, tpre, tfrag = tail
-                        handler = self._registry.get(tch) if self._registry else None
-                        if handler:
-                            self._buf.set(tpre)
-                            await self._open_trigger_overlay_with_initial(
-                                list(tpre) + [tch] + list(tfrag) + [ch]
-                            )
-                            return None
-                # Check whether this char is a registered trigger.
-                tch = self._registry.resolve(key, ch) if self._registry else None
-                self._buf.insert(ch)
-                if tch is not None:
-                    await self._open_trigger_overlay(tch)
-                else:
-                    self._push()
-
+    async def _dispatch(self, key: Key, ch: str) -> object:
+        """Run the active capability list until one consumes the key."""
+        for cap in self._capabilities:
+            result = await cap.handle(key, ch, self)
+            if result is _EXIT:
+                return _EXIT
+            if result:
+                return None
         return None
 
     # ── helpers ───────────────────────────────────────────────────────────────
