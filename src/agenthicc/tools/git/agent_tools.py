@@ -4,6 +4,7 @@ NOTE: no ``from __future__ import annotations`` — @tool() inspects real annota
 """
 import os
 from lauren_ai._tools import tool
+from agenthicc.tools.capabilities import tool_git_read, tool_git_write
 
 __all__ = [
     "git_add",
@@ -23,6 +24,7 @@ __all__ = [
 _CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
 
 
+@tool_git_read
 @tool()
 async def git_status() -> dict:
     """Show working tree status: branch, staged, unstaged, and untracked files."""
@@ -30,6 +32,7 @@ async def git_status() -> dict:
     return await GitStatusTool().execute({}, _CTX())
 
 
+@tool_git_read
 @tool()
 async def git_diff(path: str | None = None, staged: bool = False, ref: str | None = None) -> dict:
     """Show changes between the working tree, index, and commits.
@@ -48,6 +51,7 @@ async def git_diff(path: str | None = None, staged: bool = False, ref: str | Non
     return await GitDiffTool().execute(args, _CTX())
 
 
+@tool_git_read
 @tool()
 async def git_log(n: int = 10, path: str | None = None) -> dict:
     """Show recent commit history.
@@ -63,6 +67,7 @@ async def git_log(n: int = 10, path: str | None = None) -> dict:
     return await GitLogTool().execute(args, _CTX())
 
 
+@tool_git_read
 @tool()
 async def git_show(ref: str = "HEAD") -> dict:
     """Show a commit's metadata and diff.
@@ -74,6 +79,7 @@ async def git_show(ref: str = "HEAD") -> dict:
     return await GitShowTool().execute({"ref": ref}, _CTX())
 
 
+@tool_git_write
 @tool()
 async def git_add(paths: list[str]) -> dict:
     """Stage files for the next commit.
@@ -85,6 +91,7 @@ async def git_add(paths: list[str]) -> dict:
     return await GitAddTool().execute({"paths": paths}, _CTX())
 
 
+@tool_git_write
 @tool()
 async def git_commit(message: str, author: str | None = None) -> dict:
     """Create a commit from currently staged changes.
@@ -100,6 +107,7 @@ async def git_commit(message: str, author: str | None = None) -> dict:
     return await GitCommitTool().execute(args, _CTX())
 
 
+@tool_git_write
 @tool()
 async def git_checkout(branch: str, create: bool = False) -> dict:
     """Switch to a branch, optionally creating it.
@@ -112,6 +120,7 @@ async def git_checkout(branch: str, create: bool = False) -> dict:
     return await GitCheckoutTool().execute({"branch": branch, "create": create}, _CTX())
 
 
+@tool_git_read
 @tool()
 async def git_branch(pattern: str | None = None) -> dict:
     """List branches in the repository.
@@ -126,6 +135,7 @@ async def git_branch(pattern: str | None = None) -> dict:
     return await GitBranchTool().execute(args, _CTX())
 
 
+@tool_git_write
 @tool()
 async def git_stash(action: str = "push", message: str | None = None) -> dict:
     """Save or restore the current working state.
@@ -141,6 +151,7 @@ async def git_stash(action: str = "push", message: str | None = None) -> dict:
     return await GitStashTool().execute(args, _CTX())
 
 
+@tool_git_read
 @tool()
 async def git_blame(path: str, start_line: int = 1, end_line: int | None = None) -> dict:
     """Show line-by-line authorship of a file.
@@ -157,6 +168,7 @@ async def git_blame(path: str, start_line: int = 1, end_line: int | None = None)
     return await GitBlameTool().execute(args, _CTX())
 
 
+@tool_git_read
 @tool()
 async def git_grep(pattern: str, ref: str = "HEAD") -> dict:
     """Search for a pattern in files tracked by git.

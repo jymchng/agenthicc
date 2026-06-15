@@ -266,6 +266,7 @@ async def _run_tui_session(
                 session_memory=_session_memory,
                 max_agent_turns=cfg.execution.max_agent_turns,
                 conv_store=app_state.conversation,
+                app_state=app_state,
                 exec_cfg=cfg.execution,
                 skills=_skills,
                 mention_cache=_mention_cache,

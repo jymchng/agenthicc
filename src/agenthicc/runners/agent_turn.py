@@ -29,6 +29,7 @@ async def _run_agent_turn(
     session_memory: Any = None,
     max_agent_turns: int = 200,
     conv_store: Any = None,
+    app_state: Any = None,
     exec_cfg: Any = None,
     skills: Any = None,
     mention_cache: Any = None,
@@ -215,9 +216,21 @@ async def _run_agent_turn(
     class _AgenthiccAgent: ...
 
     _agent_instance = _AgenthiccAgent()
-    _active_runner  = _build_runner_for_agent(
+    # _build_runner_for_agent populates meta.tools on the agent class (side-effect).
+    _build_runner_for_agent(
         _agent_instance, runner._transport,
         signals=getattr(runner, "_signals", None),
+    )
+    # Build the real runner with global hooks, including the capability gate.
+    from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase  # noqa: PLC0415
+    _global_hooks: list = []
+    if app_state is not None:
+        from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
+        _global_hooks.append(ToolCapabilityGate(app_state))
+    _active_runner = _RunnerBase(
+        transport=runner._transport,
+        signals=getattr(runner, "_signals", None),
+        global_hooks=_global_hooks or None,
     )
 
     # ── streaming loop ────────────────────────────────────────────────────────

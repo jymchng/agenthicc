@@ -7,6 +7,9 @@ import re
 import hashlib
 from typing import TYPE_CHECKING
 from lauren_ai._tools import tool
+from agenthicc.tools.capabilities import (
+    tool_read, tool_write, tool_read_search,
+)
 
 if TYPE_CHECKING:
     from agenthicc.tools.fs.backend import FilesystemBackend
@@ -58,6 +61,7 @@ def configure_router(router: "BackendRouter") -> None:
     _router = router
 
 
+@tool_read
 @tool()
 async def read_file(path: str, encoding: str = "utf-8") -> dict:
     """Read the full contents of a file.
@@ -70,6 +74,7 @@ async def read_file(path: str, encoding: str = "utf-8") -> dict:
     return await ReadFileTool().execute({"path": path, "encoding": encoding}, _CTX())
 
 
+@tool_write
 @tool()
 async def write_file(path: str, content: str, create_parents: bool = True) -> dict:
     """Write content to a file (creates parent directories if needed).
@@ -85,6 +90,7 @@ async def write_file(path: str, content: str, create_parents: bool = True) -> di
     )
 
 
+@tool_write
 @tool()
 async def append_file(path: str, content: str) -> dict:
     """Append text to the end of an existing file.
@@ -97,6 +103,7 @@ async def append_file(path: str, content: str) -> dict:
     return await AppendFileTool().execute({"path": path, "content": content}, _CTX())
 
 
+@tool_write
 @tool()
 async def delete_file(path: str) -> dict:
     """Delete a file from the workspace.
@@ -108,6 +115,7 @@ async def delete_file(path: str) -> dict:
     return await DeleteFileTool().execute({"path": path}, _CTX())
 
 
+@tool_write
 @tool()
 async def move_file(source: str, destination: str) -> dict:
     """Move or rename a file within the workspace.
@@ -120,6 +128,7 @@ async def move_file(source: str, destination: str) -> dict:
     return await MoveFileTool().execute({"source": source, "destination": destination}, _CTX())
 
 
+@tool_write
 @tool()
 async def copy_file(source: str, destination: str) -> dict:
     """Copy a file to a new location within the workspace.
@@ -132,6 +141,7 @@ async def copy_file(source: str, destination: str) -> dict:
     return await CopyFileTool().execute({"source": source, "destination": destination}, _CTX())
 
 
+@tool_read_search
 @tool()
 async def list_directory(path: str = ".", pattern: str = "*", recursive: bool = False) -> dict:
     """List files and directories at a path.
@@ -147,6 +157,7 @@ async def list_directory(path: str = ".", pattern: str = "*", recursive: bool = 
     )
 
 
+@tool_write
 @tool()
 async def make_directory(path: str) -> dict:
     """Create a directory (and all missing parent directories).
@@ -158,6 +169,7 @@ async def make_directory(path: str) -> dict:
     return await MakeDirectoryTool().execute({"path": path}, _CTX())
 
 
+@tool_read
 @tool()
 async def file_exists(path: str) -> dict:
     """Check whether a file or directory exists.
@@ -169,6 +181,7 @@ async def file_exists(path: str) -> dict:
     return await FileExistsTool().execute({"path": path}, _CTX())
 
 
+@tool_read_search
 @tool()
 async def search_files(pattern: str, path: str = ".", recursive: bool = True) -> dict:
     """Find files matching a glob pattern.
@@ -184,6 +197,7 @@ async def search_files(pattern: str, path: str = ".", recursive: bool = True) ->
     )
 
 
+@tool_read_search
 @tool()
 async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> dict:
     """Search file contents for a regex pattern and return matching lines.
@@ -200,6 +214,7 @@ async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> di
     )
 
 
+@tool_read
 @tool()
 async def get_file_info(path: str) -> dict:
     """Return metadata for a file or directory (size, dates, permissions).
@@ -211,6 +226,7 @@ async def get_file_info(path: str) -> dict:
     return await GetFileInfoTool().execute({"path": path}, _CTX())
 
 
+@tool_read
 @tool()
 async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict:
     """Read a specific range of lines from a file (1-indexed).
@@ -227,6 +243,7 @@ async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict:
     return await ReadLinesTool().execute(args, _CTX())
 
 
+@tool_write
 @tool()
 async def patch_file(path: str, old_content: str, new_content: str) -> dict:
     """Replace all occurrences of old_content with new_content in a file.
@@ -242,6 +259,7 @@ async def patch_file(path: str, old_content: str, new_content: str) -> dict:
     )
 
 
+@tool_read_search
 @tool()
 async def grep_file(
     path: str,
@@ -287,6 +305,7 @@ async def grep_file(
     return {"ok": True, "path": path, "matches": matches, "total_matches": len(matches)}
 
 
+@tool_write
 @tool()
 async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict:
     """Apply a unified diff to a file.
@@ -361,6 +380,7 @@ async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict:
     return {"ok": True, "hunks_applied": hunks_applied, "hunks_failed": hunks_failed, "result": new_content}
 
 
+@tool_read
 @tool()
 async def checksum_file(path: str, algorithm: str = "sha256") -> dict:
     """Compute a cryptographic checksum of a file.
@@ -384,6 +404,7 @@ async def checksum_file(path: str, algorithm: str = "sha256") -> dict:
     return {"ok": True, "path": path, "algorithm": algorithm, "digest": h.hexdigest()}
 
 
+@tool_write
 @tool()
 async def truncate_file(path: str, size: int = 0) -> dict:
     """Truncate a file to a given byte size.
@@ -403,6 +424,7 @@ async def truncate_file(path: str, size: int = 0) -> dict:
     return {"ok": True, "path": path, "new_size": new_size}
 
 
+@tool_write
 @tool()
 async def touch_file(path: str, create: bool = True) -> dict:
     """Create a file if it does not exist, or update its modification time if it does.
@@ -426,6 +448,7 @@ async def touch_file(path: str, create: bool = True) -> dict:
     return {"ok": True, "path": path, "created": not existed}
 
 
+@tool_read
 @tool()
 async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict:
     """Read multiple files in a single call.
@@ -446,6 +469,7 @@ async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict:
     }
 
 
+@tool_write
 @tool()
 async def batch_write(files: list[dict], create_parents: bool = True) -> dict:
     """Write multiple files in a single call.
@@ -476,6 +500,7 @@ async def batch_write(files: list[dict], create_parents: bool = True) -> dict:
     }
 
 
+@tool_write
 @tool()
 async def batch_delete(paths: list[str]) -> dict:
     """Delete multiple files in a single call.
@@ -495,6 +520,7 @@ async def batch_delete(paths: list[str]) -> dict:
     }
 
 
+@tool_write
 @tool()
 async def batch_move(moves: list[dict]) -> dict:
     """Move multiple files in a single call.
@@ -518,6 +544,7 @@ async def batch_move(moves: list[dict]) -> dict:
     return {"ok": all_ok, "results": results, "succeeded": succeeded, "failed": len(moves) - succeeded}
 
 
+@tool_write
 @tool()
 async def batch_copy(copies: list[dict]) -> dict:
     """Copy multiple files in a single call.

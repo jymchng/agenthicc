@@ -4,6 +4,7 @@ NOTE: no ``from __future__ import annotations`` — @tool() inspects real annota
 """
 import os
 from lauren_ai._tools import tool
+from agenthicc.tools.capabilities import tool_execute
 
 __all__ = [
     "run_bash",
@@ -18,6 +19,7 @@ __all__ = [
 _CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
 
 
+@tool_execute
 @tool()
 async def shell(command: str, timeout: float = 30.0) -> dict:
     """Execute a shell command and return stdout/stderr.
@@ -30,6 +32,7 @@ async def shell(command: str, timeout: float = 30.0) -> dict:
     return await RunBashTool().execute({"command": command, "timeout": timeout}, _CTX())
 
 
+@tool_execute
 @tool()
 async def run_bash(command: str, timeout: float = 30.0) -> dict:
     """Execute a bash shell command and return stdout/stderr.
@@ -42,6 +45,7 @@ async def run_bash(command: str, timeout: float = 30.0) -> dict:
     return await RunBashTool().execute({"command": command, "timeout": timeout}, _CTX())
 
 
+@tool_execute
 @tool()
 async def run_command(argv: list[str], timeout: float = 30.0) -> dict:
     """Execute an executable directly (no shell) and return stdout/stderr.
@@ -54,6 +58,7 @@ async def run_command(argv: list[str], timeout: float = 30.0) -> dict:
     return await RunCommandTool().execute({"argv": argv, "timeout": timeout}, _CTX())
 
 
+@tool_execute
 @tool()
 async def run_python(code: str, timeout: float = 30.0) -> dict:
     """Execute a Python code snippet in a subprocess.
@@ -66,6 +71,7 @@ async def run_python(code: str, timeout: float = 30.0) -> dict:
     return await RunPythonTool().execute({"code": code, "timeout": timeout}, _CTX())
 
 
+@tool_execute
 @tool()
 async def run_python_expr(expression: str, timeout: float = 10.0) -> dict:
     """Evaluate a Python expression and return its repr.
@@ -78,6 +84,7 @@ async def run_python_expr(expression: str, timeout: float = 10.0) -> dict:
     return await RunPythonExprTool().execute({"expression": expression, "timeout": timeout}, _CTX())
 
 
+@tool_execute
 @tool()
 async def run_tests(path: str = "tests/", framework: str = "pytest",
                     args: list[str] | None = None, timeout: float = 120.0) -> dict:

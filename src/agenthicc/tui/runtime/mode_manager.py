@@ -7,7 +7,7 @@ write it.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -18,10 +18,11 @@ _NEW_LINE_HINT = "  │  ctrl+j = ↵"
 @dataclass(frozen=True)
 class RuntimeMode:
     """A named execution context for the agent."""
-    name:                str
-    badge:               str = "⏵⏵"
-    description:         str = ""
-    system_prompt_suffix:str = ""
+    name:                 str
+    badge:                str            = "⏵⏵"
+    description:          str            = ""
+    system_prompt_suffix: str            = ""
+    blocked_capabilities: frozenset[str] = field(default_factory=frozenset)
 
 
 class ModeRegistry:
@@ -42,6 +43,24 @@ class ModeRegistry:
 
 def build_default_registry() -> ModeRegistry:
     """Build the runtime mode registry from the existing agenthicc.modes system."""
+    from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
+
+    # Capabilities blocked by all restrictive modes (Plan / Ask / Review / Safe).
+    _RESTRICTED = frozenset({
+        ToolCapability.WRITE,
+        ToolCapability.GIT_WRITE,
+        ToolCapability.EXECUTE,
+        ToolCapability.NETWORK,
+    })
+
+    # Per-mode blocked capabilities; absent key → no blocking (open access).
+    _BLOCKED: dict[str, frozenset] = {
+        "Plan":   _RESTRICTED,
+        "Ask":    _RESTRICTED,
+        "Review": _RESTRICTED,
+        "Safe":   _RESTRICTED,
+    }
+
     reg = ModeRegistry()
     try:
         from agenthicc.modes.builtin import build_default_registry as _bdr  # noqa: PLC0415
@@ -53,6 +72,7 @@ def build_default_registry() -> ModeRegistry:
                 badge=getattr(mode, "label", mode.name),
                 description=getattr(mode, "description", ""),
                 system_prompt_suffix=getattr(mode, "system_patch", ""),
+                blocked_capabilities=_BLOCKED.get(mode.name, frozenset()),
             ))
     except Exception as exc:  # noqa: BLE001
         log.warning("Could not load modes from agenthicc.modes: %s", exc)

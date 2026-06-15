@@ -7,6 +7,9 @@ NOTE: no ``from __future__ import annotations`` — @tool() inspects real annota
 """
 import os
 from lauren_ai._tools import tool
+from agenthicc.tools.capabilities import (
+    tool_network_read, tool_network_write, tool_network_search,
+)
 
 __all__ = [
     "list_emails",
@@ -35,6 +38,7 @@ def _backend():
     return GraphApiOutlookBackend(token=os.getenv("MSGRAPH_TOKEN", ""))
 
 
+@tool_network_read
 @tool()
 async def list_emails(
     folder: str = "Inbox",
@@ -51,6 +55,7 @@ async def list_emails(
     return await _backend().list_emails(folder=folder, n=n, unread_only=unread_only)
 
 
+@tool_network_read
 @tool()
 async def read_email(email_id: str) -> dict:
     """Read the full content of an email by ID.
@@ -61,6 +66,7 @@ async def read_email(email_id: str) -> dict:
     return await _backend().read_email(email_id=email_id)
 
 
+@tool_network_write
 @tool()
 async def send_email(
     to: list[str],
@@ -83,6 +89,7 @@ async def send_email(
     )
 
 
+@tool_network_write
 @tool()
 async def reply_email(
     email_id: str,
@@ -99,6 +106,7 @@ async def reply_email(
     return await _backend().reply_email(email_id=email_id, body=body, reply_all=reply_all)
 
 
+@tool_network_search
 @tool()
 async def search_emails(
     query: str,
@@ -115,6 +123,7 @@ async def search_emails(
     return await _backend().search_emails(query=query, folder=folder, n=n)
 
 
+@tool_network_write
 @tool()
 async def move_email(email_id: str, destination: str) -> dict:
     """Move an email to a different folder.
@@ -126,12 +135,14 @@ async def move_email(email_id: str, destination: str) -> dict:
     return await _backend().move_email(email_id=email_id, destination=destination)
 
 
+@tool_network_read
 @tool()
 async def list_folders() -> list:
     """List all available Outlook mail folders."""
     return await _backend().list_folders()
 
 
+@tool_network_read
 @tool()
 async def calendar_events(start_date: str, end_date: str) -> list:
     """Retrieve calendar events within a date range.
@@ -143,6 +154,7 @@ async def calendar_events(start_date: str, end_date: str) -> list:
     return await _backend().calendar_events(start_date=start_date, end_date=end_date)
 
 
+@tool_network_write
 @tool()
 async def create_event(
     subject: str,
