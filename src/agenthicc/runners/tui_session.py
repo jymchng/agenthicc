@@ -363,6 +363,12 @@ async def _run_tui_session(
 
         # Agent is free — route immediately (slash dispatch or agent turn).
         if _route(text):
+            # Skill commands deposit a body in _pending_skill_body and return True.
+            # Start the agent turn immediately so the skill executes on one Enter press.
+            if _pending_skill_body:
+                body = _pending_skill_body.pop()
+                app_state.conversation.append_event("user_message", {"text": text})
+                _agent_task = asyncio.create_task(_agent_task_body(body), name="agent-turn")
             return
         app_state.conversation.append_event("user_message", {"text": text})
         _agent_task = asyncio.create_task(_agent_task_body(text), name="agent-turn")
