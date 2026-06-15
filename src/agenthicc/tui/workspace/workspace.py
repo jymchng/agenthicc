@@ -115,11 +115,17 @@ class Workspace:
 
     def _build(self) -> Any:
         from rich.console import Group  # noqa: PLC0415
+        from rich.text import Text      # noqa: PLC0415
         cols = _get_cols()
 
         parts: list[Any] = []
 
-        # Status bar (1 or 2 lines) — always at the top
+        # Blank separator between the Scroll Buffer and the status bar (PRD-73).
+        # Stays inside the Live Block so it moves with the block and never
+        # appears in the scroll buffer.
+        parts.append(Text(""))
+
+        # Status bar — always at the top of the Live Block
         parts.append(self.status.render())
         parts.append(_border(cols))
 

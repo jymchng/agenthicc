@@ -88,12 +88,17 @@ class StatusComponent:
         }
         color = colors.get(state_name, "dim")
 
-        # ── line 1: state animation + runtime + active tool ───────────────────
+        # ── line 1: state animation + elapsed + tokens + active tool ────────────
         l1_parts = [f"{flower} [{color}]{state_text}[/{color}]"]
         elapsed = conv.elapsed_s()
         if elapsed > 0:
-            m, s = divmod(int(elapsed), 60)
-            l1_parts.append(f"[dim] │ Runtime:[/dim] {m:02d}:{s:02d}")
+            l1_parts.append(f"[dim] │[/dim] {int(elapsed)}s")
+        inp = conv.tokens_in()
+        out = conv.tokens_out()
+        if inp or out:
+            l1_parts.append(
+                f"[dim] │[/dim] [cyan]↑ {inp:,}[/cyan] [green]↓ {out:,}[/green]"
+            )
         tool = conv.active_tool()
         if tool:
             l1_parts.append(f"[dim] │[/dim] [bold]{_e(tool)}[/bold]")
@@ -108,21 +113,16 @@ class StatusComponent:
         # ── line 2: model name only ───────────────────────────────────────────
         line2 = _fit(f"[dim]{_e(model)}[/dim]", cols)
 
-        # ── line 3: session ID + turns + cost + tokens ────────────────────────
+        # ── line 3: session ID + turns + cost ────────────────────────────────────
         sid   = conv.session_id()
         turns = conv.turn_count()
         cost  = conv.cost_usd()
-        inp   = conv.tokens_in()
-        out   = conv.tokens_out()
 
         l3_parts: list[str] = []
         if sid:
             l3_parts.append(f"[dim]{_e(sid)}[/dim]")
         l3_parts.append(f"[dim] │  {turns} turn{'s' if turns != 1 else ''}[/dim]")
         l3_parts.append(f"[dim] │  ${cost:.3f}[/dim]")
-        l3_parts.append(
-            f"  [cyan]↑ {inp:,}[/cyan]  [green]↓ {out:,}[/green]"
-        )
         while len(l3_parts) > 1 and _vlen("".join(l3_parts)) > cols:
             l3_parts.pop()
         line3 = "".join(l3_parts)
@@ -134,7 +134,21 @@ class StatusComponent:
         )
 
     def height(self, cols: int) -> int:  # noqa: ARG002
-        return 3 if self._state.conversation.model_name() else 1
+        """Return the total terminal rows this component occupies.
+
+        Counts the blank separator line (rendered by Workspace._build before
+        calling render()) plus every line render() produces.  Must always
+        equal the actual rendered row count — invariant I-10.
+
+        Layout: 1 (blank) + 1 (line1) + 1 (line2, if model) + 1 (line3, if model)
+        → 2 when no model set, 4 when all three lines present.
+        """
+        has_model = bool(self._state.conversation.model_name())
+        blank  = 1   # Text("") prepended by Workspace._build()
+        line1  = 1   # always: flower + state + runtime
+        line2  = 1 if has_model else 0   # model name
+        line3  = 1 if has_model else 0   # session id + metrics
+        return blank + line1 + line2 + line3
 
 
 # ── ComposerComponent ─────────────────────────────────────────────────────────

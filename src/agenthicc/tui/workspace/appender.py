@@ -79,13 +79,18 @@ class ScrollBufferAppender:
     def _flush_batch(self) -> None:
         self._flush_scheduled = False
         pending, self._pending = self._pending, []
-        for ev in pending:
-            if not ev.rendered:
-                ev.rendered = True
-                try:
-                    self._render_one(ev)
-                except Exception:       # noqa: BLE001
-                    pass
+        # Wrap the entire batch in one console context so all console.print()
+        # calls share a single write() + flush().  Without this, each print
+        # triggers its own erase-Live-Block → write-content → redraw-Live-Block
+        # cycle, causing the status bar to flicker once per event.
+        with self._console:
+            for ev in pending:
+                if not ev.rendered:
+                    ev.rendered = True
+                    try:
+                        self._render_one(ev)
+                    except Exception:   # noqa: BLE001
+                        pass
 
     # ── rendering ─────────────────────────────────────────────────────────────
 
