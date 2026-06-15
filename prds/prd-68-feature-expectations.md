@@ -129,7 +129,7 @@ Built-in and project commands are dispatched by the **command registry** — the
 | 8.9 | `/expand [id]` | Expands a tool output or @mention that was truncated. |
 | 8.10 | `/mcp [connect …]` | Shows MCP server status or connects a new server. |
 | 8.11 | Interception before agent | Any `/command` typed into the input bar is dispatched to the command registry first. If the registry handles it (handler returns True), the agent is never invoked. Unknown `/commands` not in the registry fall through to the agent as free text. |
-| 8.12 | Project command dispatch | Commands registered from `CommandSpec` (project commands with no Python handler, e.g. `/bench`) are still intercepted by the command registry. Their `description` field is sent to the agent as the task text (e.g. `/bench` → agent receives `"Benchmark password generation speed"`). The literal `/bench` string is never forwarded to the agent. |
+| 8.12 | Project command dispatch | Commands registered from `CommandSpec` (project commands with no Python handler, e.g. `/gen`) are intercepted by the command registry and **never reach the agent**. The TUI prints `Command /gen has no handler. Add a handler in .agenthicc/commands/`. Only unregistered slash-commands (not in the registry at all) fall through to the agent as free text. |
 
 ---
 

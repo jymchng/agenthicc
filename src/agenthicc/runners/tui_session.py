@@ -166,13 +166,19 @@ async def _run_tui_session(
     _cmd_registry = build_builtin_registry()
     for _spec in _project_commands:
         try:
-            _cmd_registry.register(_Cmd(
-                name=_spec.name,
-                description=_spec.description,
-                aliases=tuple(getattr(_spec, "aliases", ())),
-                argument_hint=getattr(_spec, "argument_hint", ""),
-                group=getattr(_spec, "group", "Project"),
-            ))
+            # If the plugin already exported a full Command (with handler), use it
+            # directly.  Only wrap bare CommandSpec completion-hint objects.
+            if isinstance(_spec, _Cmd):
+                _cmd_registry.register(_spec)
+            else:
+                _cmd_registry.register(_Cmd(
+                    name=_spec.name,
+                    description=_spec.description,
+                    aliases=tuple(getattr(_spec, "aliases", ())),
+                    argument_hint=getattr(_spec, "argument_hint", ""),
+                    group=getattr(_spec, "group", "Project"),
+                    source_id="plugin",
+                ))
         except Exception:  # noqa: BLE001
             pass
     if _project_commands:
@@ -289,17 +295,16 @@ async def _run_tui_session(
         if text.startswith("/"):
             if _dispatch_slash(text):
                 return
-            # Command is in the registry but has no handler (e.g. project CommandSpec).
-            # Send the command's description to the agent as a task rather than the
-            # literal "/bench" text, which the agent wouldn't understand.
+            # Command is in the registry but has no handler (project CommandSpec).
+            # Per §8.11: registered commands never reach the agent.
+            # Unregistered slash-commands fall through as free text.
             cmd_name = text.split()[0]
-            registered = _cmd_registry.get(cmd_name)
-            if registered is not None:
-                args_tail = text[len(cmd_name):].strip()
-                agent_text = registered.description
-                if args_tail:
-                    agent_text += f" {args_tail}"
-                text = agent_text
+            if _cmd_registry.get(cmd_name) is not None:
+                console.print(
+                    f"  [dim]Command [bold]{cmd_name}[/bold] has no handler. "
+                    f"Add a handler in [bold].agenthicc/commands/[/bold][/dim]"
+                )
+                return
 
         app_state.conversation.append_event("user_message", {"text": cmd.text.strip()})
         if _agent_task and not _agent_task.done():
