@@ -83,7 +83,8 @@ async def _run_agent_turn(
 
         @_signals.on(_MCC)
         async def _on_model_complete(sig: Any) -> None:
-            if not _turn_active[0]: return
+            if not _turn_active[0]:
+                return
             usage = getattr(sig, "usage", None)
             inp   = getattr(usage, "input_tokens", 0) if usage else 0
             out   = getattr(usage, "output_tokens", 0) if usage else 0
@@ -93,7 +94,8 @@ async def _run_agent_turn(
 
         @_signals.on(_TCS)
         async def _on_tool_started(sig: Any) -> None:
-            if not _turn_active[0]: return
+            if not _turn_active[0]:
+                return
             args = dict(getattr(sig, "input", {}) or {})
             name = getattr(sig, "tool_name", "")
             tid  = getattr(sig, "tool_use_id", "")
@@ -114,7 +116,8 @@ async def _run_agent_turn(
 
         @_signals.on(_TCC)
         async def _on_tool_complete(sig: Any) -> None:
-            if not _turn_active[0]: return
+            if not _turn_active[0]:
+                return
             import difflib as _dl  # noqa: PLC0415
             tid     = getattr(sig, "tool_use_id", "")
             success = bool(getattr(sig, "success", True))

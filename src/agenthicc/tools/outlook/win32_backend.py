@@ -22,7 +22,6 @@ WIN32_AVAILABLE: bool = sys.platform == "win32"
 try:  # pragma: no cover — only importable on Windows
     if WIN32_AVAILABLE:
         import win32com.client
-        import pywintypes
 except ImportError:  # pragma: no cover
     WIN32_AVAILABLE = False
 

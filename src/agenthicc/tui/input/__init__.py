@@ -1,25 +1,18 @@
-"""tui.input — idle CBREAK input session components.
-
-Re-exports the main public symbols so existing imports like
-``from agenthicc.tui.input.session import run_input_session`` work,
-and so ``mention_input.py`` can re-export them for backward compatibility.
-"""
+"""tui.input — reactive input session components."""
 from __future__ import annotations
 
 from agenthicc.tui.input.buffer import InputBuffer
+from agenthicc.tui.input.completions import CommandSpec, CommandRegistry
 from agenthicc.tui.input.history import HistoryNavigator
 from agenthicc.tui.input.paste import PasteState
-from agenthicc.tui.input.renderer import DropdownState, PromptRenderer, build_prompt, build_footer
-from agenthicc.tui.input.session import InputSession, run_input_session
+from agenthicc.tui.input.renderer import build_prompt, show_exit_hint
 
 __all__ = [
     "InputBuffer",
+    "CommandSpec",
+    "CommandRegistry",
     "HistoryNavigator",
     "PasteState",
-    "DropdownState",
-    "PromptRenderer",
     "build_prompt",
-    "build_footer",
-    "InputSession",
-    "run_input_session",
+    "show_exit_hint",
 ]

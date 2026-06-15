@@ -37,7 +37,6 @@ def prompt_install(
         return True
 
     # Interactive prompt
-    deps_str = " ".join(missing)
     print(
         f"\n⚠  Plugin {path} requires missing packages:\n"
         f"     {', '.join(missing)}\n"

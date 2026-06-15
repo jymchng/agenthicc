@@ -99,8 +99,6 @@ class AgentRuntime:
             self._conv.end_turn()
 
         except Exception as exc:
-            import traceback  # noqa: PLC0415
-            detail = traceback.format_exc()
             self._bus.publish(AgentFailed(turn_id=turn_id, error=str(exc)))
             self._conv.fail_turn(str(exc))
 

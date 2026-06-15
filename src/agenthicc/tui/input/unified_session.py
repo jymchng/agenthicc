@@ -370,19 +370,15 @@ class UnifiedInputSession:
 
     def _ctrl_c_sequence(self) -> object:
         self._ctrl_c_count += 1
-        n = max(1, self._buf.text.count("\n") + 1)
-        from agenthicc.tui.input.renderer import PromptRenderer  # noqa: PLC0415
-        renderer = PromptRenderer()
-        renderer.erase_below(n)
         if self._ctrl_c_count == 1:
             self._buf.clear()
             self._paste.condensed = False
             self._push()
-            # Show "Press Ctrl+C again to exit." on the mode line
             self._state.conversation.notification.set("Press Ctrl+C again to exit.")
             return None   # keep looping
         self._state.conversation.notification.set(None)
-        renderer.show_exit_hint(self._state.conversation.session_id())
+        from agenthicc.tui.input.renderer import show_exit_hint  # noqa: PLC0415
+        show_exit_hint(self._state.conversation.session_id())
         return _EXIT
 
     async def _submit(self, text: str) -> object:
