@@ -278,16 +278,28 @@ async def _run_tui_session(
         nonlocal _agent_task
         try:
             await _run_turn(text)
+            # Absorb any messages queued during this turn before chaining.
+            _pending_queue.extend(input_session.drain_queue())
             while _pending_queue:
                 await _run_turn(_pending_queue.pop(0))
         except asyncio.CancelledError:
             app_state.conversation.end_turn()
             input_session.set_mode(InputMode.IDLE)
+            # Keep messages that were queued before the interrupt — they
+            # represent explicit user intent and must not be silently dropped.
+            _pending_queue.extend(input_session.drain_queue())
         except Exception as exc:
             app_state.conversation.fail_turn(str(exc))
             input_session.set_mode(InputMode.IDLE)
+            _pending_queue.extend(input_session.drain_queue())
         finally:
             _agent_task = None
+            # If queued messages survived (from interrupt or error), start the
+            # next turn immediately now that the current task slot is free.
+            if _pending_queue:
+                _agent_task = asyncio.create_task(
+                    _agent_task_body(_pending_queue.pop(0)), name="agent-turn"
+                )
 
     async def _handle_send(cmd: SendMessageCommand) -> None:
         nonlocal _agent_task

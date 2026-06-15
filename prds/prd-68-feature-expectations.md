@@ -94,8 +94,8 @@ Content appears above the always-on Live block and scrolls naturally.
 |---|---|---|
 | 6.1 | Submit message | Enter sends the current buffer to the agent. |
 | 6.2 | Queue during streaming | Typing and pressing Enter while the agent runs queues the message with `⌛ Queued` confirmation. Queued messages are dispatched sequentially after the current turn. |
-| 6.3 | ESC cancels agent | Pressing ESC while the agent is streaming cancels the current turn immediately. Status returns to Idle. |
-| 6.4 | Ctrl+C cancels agent | Same as ESC during streaming. |
+| 6.3 | ESC cancels agent | Pressing ESC while the agent is streaming cancels the current turn immediately. Status returns to Idle. Any messages queued before the interrupt are sent as the next turn — they are never silently dropped. |
+| 6.4 | Ctrl+C cancels agent | Same as ESC during streaming. Queued messages are preserved and sent after the interrupt. |
 | 6.5 | Double Ctrl+C exits | First press clears the buffer and shows `Press Ctrl+C again to exit.` on the footer. Second press shows the resume hint and exits. |
 | 6.6 | Any key clears Ctrl+C prompt | Pressing any key other than Ctrl+C after the first press resets the counter and clears the notification. |
 | 6.7 | Session resume hint | On exit the terminal shows `agenthicc --resume <id>` / `agenthicc --continue`. |
