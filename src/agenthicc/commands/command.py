@@ -18,15 +18,26 @@ __all__ = [
 
 @dataclass
 class CommandContext:
-    """Runtime state available to command handler functions."""
+    """Runtime state available to command handler functions.
 
-    text: str        # full text the user submitted, e.g. "/model anthropic gpt-4o"
-    args: str        # everything after the command name, e.g. "anthropic gpt-4o"
-    model: Any       # TranscriptModel
-    console: Any     # Rich Console
-    renderer: Any    # InlineRenderer
-    config: Any      # AgenthiccConfig (live, mutable)
+    All command-needed state is held as direct fields — never access renderer
+    attributes from command handlers; that caused NameErrors and silent failures
+    when the renderer was a partial duck-type.
+    """
+
+    text: str               # full text the user submitted, e.g. "/model gpt-4o"
+    args: str               # everything after the command name, e.g. "gpt-4o"
+    model: Any              # model name string (or legacy TranscriptModel)
+    console: Any            # Rich Console
+    config: Any             # AgenthiccConfig (live, mutable)
     session_id: str = ""
+
+    skills: dict = field(default_factory=dict)  # slug → SkillDef
+    command_registry: Any = None                # UnifiedCommandRegistry
+    mode_manager: Any = None                    # ModeManager
+    set_pending_skill: Any = None               # callable(body: str) → None
+    set_pending_menu: Any = None                # callable(Overlay) → None  (workspace.overlays.show)
+    close_overlay: Any = None                   # callable() → None        (workspace.overlays.hide)
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

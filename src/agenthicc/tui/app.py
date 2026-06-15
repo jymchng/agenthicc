@@ -659,9 +659,9 @@ class SlashCommandHandler:
             args=" ".join(stripped.split()[1:]),
             model=model,
             console=console,
-            renderer=self._renderer,
             config=getattr(self._renderer, "_loaded_config", None) if self._renderer else None,
             session_id=getattr(getattr(self._renderer, "_status", None), "session_id", ""),
+            skills=self._skills,
         )
 
         # Prefer the renderer's real CommandDispatcher when available.
@@ -684,10 +684,11 @@ class SlashCommandHandler:
                     self._renderer._pending_menu = widget
                 return True
 
-        # Fallback: use the built-in command registry so that /status, /history,
-        # /help etc. work even when no renderer (or no real dispatcher) is set.
+        # Fallback: use the built-in command registry.
         from agenthicc.commands import build_builtin_registry  # noqa: PLC0415
-        fallback = CommandDispatcher(build_builtin_registry())
+        fallback_reg = build_builtin_registry()
+        ctx.command_registry = fallback_reg
+        fallback = CommandDispatcher(fallback_reg)
         return fallback.dispatch(stripped, ctx)
 
     def _status(self, model: TranscriptModel, console: Any) -> None:

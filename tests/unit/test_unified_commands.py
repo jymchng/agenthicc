@@ -298,19 +298,19 @@ def test_dispatcher_calls_handler():
 
 
 def test_dispatcher_opens_menu_on_no_args():
-    """Dispatcher sets renderer._pending_menu when command has menu_factory and no args."""
+    """Dispatcher calls set_pending_menu when command has menu_factory and no args."""
     from agenthicc.commands import UnifiedCommandRegistry, Command, CommandDispatcher
 
     widget = object()
     reg = UnifiedCommandRegistry()
     reg.register(Command("/cfg", "Config", menu_factory=lambda ctx: widget))
     disp = CommandDispatcher(reg)
-    renderer = MagicMock()
+    received = []
     ctx = MagicMock()
-    ctx.renderer = renderer
+    ctx.set_pending_menu = received.append
     ctx.args = ""
     disp.dispatch("/cfg", ctx)
-    assert renderer._pending_menu is widget
+    assert received == [widget]
 
 
 def test_dispatcher_uses_handler_with_args():
@@ -354,12 +354,12 @@ def test_dispatcher_opens_menu():
     reg = UnifiedCommandRegistry()
     reg.register(Command("/cfg", "Config", menu_factory=lambda ctx: widget))
     disp = CommandDispatcher(reg)
-    renderer = MagicMock()
+    received = []
     ctx = MagicMock()
-    ctx.renderer = renderer
+    ctx.set_pending_menu = received.append
     ctx.args = ""
     disp.dispatch("/cfg", ctx)
-    assert renderer._pending_menu is widget
+    assert received == [widget]
 
 
 def test_dispatcher_returns_false_for_unknown():

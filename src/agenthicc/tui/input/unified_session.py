@@ -391,8 +391,6 @@ class UnifiedInputSession:
         self._paste.condensed = False
         self._ctrl_c_count = 0
         self._push()
-        # Add user message event
-        self._state.conversation.append_event("user_message", {"text": text})
         await self._bus.dispatch_async(SendMessageCommand(text=text))
         return None
 

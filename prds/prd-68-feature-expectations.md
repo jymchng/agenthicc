@@ -38,7 +38,7 @@ Content appears above the always-on Live block and scrolls naturally.
 | 2.7 | File modified | `  Modified: path/to/file` when a write/patch tool changes a file. |
 | 2.8 | Error block | `ERROR message` in red when a turn fails. |
 | 2.9 | @mention chips | `  @path/to/file  preview…` inline before the first tool call of a turn. |
-| 2.10 | No duplicates | Each item appears exactly once. No repeated turn headers or tool calls. |
+| 2.10 | No duplicates | Each item appears exactly once. No repeated turn headers, user messages, or tool calls. User message (`❯ text`) is appended to the scroll buffer exactly once — in `_handle_send` before the agent task is created, not inside `_run_turn`. |
 | 2.11 | No status bar content in scroll buffer | `✿ Idle`, separators, or footer lines must never leak into the transcript. |
 
 ---
@@ -128,7 +128,8 @@ Built-in and project commands are dispatched by the **command registry** — the
 | 8.8 | `/clear` | Clears the conversation transcript display. |
 | 8.9 | `/expand [id]` | Expands a tool output or @mention that was truncated. |
 | 8.10 | `/mcp [connect …]` | Shows MCP server status or connects a new server. |
-| 8.11 | Interception before agent | Any `/command` typed into the input bar is dispatched to the command registry first. If the registry handles it, the agent is never invoked. Unknown commands fall through to the agent. |
+| 8.11 | Interception before agent | Any `/command` typed into the input bar is dispatched to the command registry first. If the registry handles it (handler returns True), the agent is never invoked. Unknown `/commands` not in the registry fall through to the agent as free text. |
+| 8.12 | Project command dispatch | Commands registered from `CommandSpec` (project commands with no Python handler, e.g. `/bench`) are still intercepted by the command registry. Their `description` field is sent to the agent as the task text (e.g. `/bench` → agent receives `"Benchmark password generation speed"`). The literal `/bench` string is never forwarded to the agent. |
 
 ---
 

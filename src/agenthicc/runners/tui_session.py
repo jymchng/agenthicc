@@ -200,24 +200,31 @@ async def _run_tui_session(
             _session_memory.restore(snap)
         _lcs.close()
 
+    # ── pending skill body (set by skill command handlers, consumed by _run_turn) ─
+    _pending_skill_body: list[str] = []
+
+    def _set_pending_skill(body: str) -> None:
+        _pending_skill_body.clear()
+        _pending_skill_body.append(body)
+
     # ── command dispatch helper ───────────────────────────────────────────────
     def _dispatch_slash(text: str) -> bool:
         """Dispatch a slash command. Returns True if handled."""
-        import types as _types                              # noqa: PLC0415
-        from agenthicc.commands import CommandContext       # noqa: PLC0415
-
-        # SimpleNamespace avoids the Python class-body scoping trap where
-        # LOAD_NAME skips closure variables, causing NameError on _skills.
-        _r = _types.SimpleNamespace(_skills=_skills, _loaded_config=cfg)
+        from agenthicc.commands import CommandContext  # noqa: PLC0415
 
         ctx = CommandContext(
             text=text,
             args=" ".join(text.split()[1:]),
             model=model_label,
             console=console,
-            renderer=_r,
             config=cfg,
             session_id=session_id,
+            skills=_skills,
+            command_registry=_cmd_registry,
+            mode_manager=mode_manager,
+            set_pending_skill=_set_pending_skill,
+            set_pending_menu=workspace.overlays.show,
+            close_overlay=workspace.overlays.hide,
         )
         return bool(_cmd_dispatcher.dispatch(text, ctx))
 
@@ -227,7 +234,9 @@ async def _run_tui_session(
 
     async def _run_turn(text: str) -> None:
         input_session.set_mode(InputMode.STREAMING)
-        app_state.conversation.append_event("user_message", {"text": text})
+        # Prepend any queued skill body (from /skillname commands)
+        if _pending_skill_body:
+            text = _pending_skill_body.pop() + "\n\n" + text
         try:
             await _run_agent_turn(
                 text, agent_runner, None,   # transcript=None (not used)
@@ -280,6 +289,19 @@ async def _run_tui_session(
         if text.startswith("/"):
             if _dispatch_slash(text):
                 return
+            # Command is in the registry but has no handler (e.g. project CommandSpec).
+            # Send the command's description to the agent as a task rather than the
+            # literal "/bench" text, which the agent wouldn't understand.
+            cmd_name = text.split()[0]
+            registered = _cmd_registry.get(cmd_name)
+            if registered is not None:
+                args_tail = text[len(cmd_name):].strip()
+                agent_text = registered.description
+                if args_tail:
+                    agent_text += f" {args_tail}"
+                text = agent_text
+
+        app_state.conversation.append_event("user_message", {"text": cmd.text.strip()})
         if _agent_task and not _agent_task.done():
             return
         _agent_task = asyncio.create_task(_agent_task_body(text), name="agent-turn")

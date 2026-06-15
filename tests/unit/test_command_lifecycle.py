@@ -158,34 +158,35 @@ def test_command_plugin_commands_export(tmp_path):
 
 
 def test_skill_handler_sets_pending_skill():
-    # _make_skill_handler does `from agenthicc.skills.runner import process_skill_body`
-    # at function-call time (not at closure-call time), so we must call
-    # _make_skill_handler *inside* the patch context so the import sees the mock.
     from agenthicc.commands.builtins import _make_skill_handler
 
-    renderer = MagicMock()
+    received = []
     skill = MagicMock()
     skill.path = MagicMock()
     ctx = MagicMock()
     ctx.args = ""
+    ctx.session_id = ""
     ctx.console = MagicMock()
+    ctx.set_pending_skill = received.append
     with patch("agenthicc.skills.runner.process_skill_body", return_value="body"):
-        handler = _make_skill_handler("test-skill", skill, renderer)
+        handler = _make_skill_handler("test-skill", skill)
         handler(ctx)
-    assert renderer._pending_skill == "body"
+    assert len(received) == 1
+    assert "body" in received[0]
 
 
 def test_skill_handler_returns_true():
     from agenthicc.commands.builtins import _make_skill_handler
 
-    renderer = MagicMock()
     skill = MagicMock()
     skill.path = MagicMock()
     ctx = MagicMock()
     ctx.args = "arg1 arg2"
+    ctx.session_id = ""
     ctx.console = MagicMock()
+    ctx.set_pending_skill = lambda _: None
     with patch("agenthicc.skills.runner.process_skill_body", return_value="processed"):
-        handler = _make_skill_handler("my-skill", skill, renderer)
+        handler = _make_skill_handler("my-skill", skill)
         result = handler(ctx)
     assert result is True
 
@@ -193,12 +194,13 @@ def test_skill_handler_returns_true():
 def test_skill_handler_passes_args():
     from agenthicc.commands.builtins import _make_skill_handler
 
-    renderer = MagicMock()
     skill = MagicMock()
     skill.path = MagicMock()
     ctx = MagicMock()
     ctx.args = "foo bar"
+    ctx.session_id = ""
     ctx.console = MagicMock()
+    ctx.set_pending_skill = lambda _: None
 
     captured_args = []
 
@@ -207,7 +209,7 @@ def test_skill_handler_passes_args():
         return "result"
 
     with patch("agenthicc.skills.runner.process_skill_body", side_effect=_mock_process):
-        handler = _make_skill_handler("my-skill", skill, renderer)
+        handler = _make_skill_handler("my-skill", skill)
         handler(ctx)
     assert captured_args == ["foo", "bar"]
 
