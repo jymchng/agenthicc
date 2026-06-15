@@ -77,8 +77,10 @@ def parse_mentions(
         resolved = (base / path_str).resolve()
         if resolved.is_file():
             kind = MentionKind.FILE
-        elif resolved.is_dir() or path_str.endswith("/"):
+        elif resolved.is_dir():
             kind = MentionKind.DIRECTORY
+        # Non-existent trailing-slash paths fall through to UNRESOLVED so that
+        # resolve_mention returns a soft-error block instead of raising.
         else:
             kind = MentionKind.UNRESOLVED
 

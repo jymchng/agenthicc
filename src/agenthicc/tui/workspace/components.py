@@ -14,11 +14,12 @@ _THINKING = "Thinking"
 # the mode line consistent between idle and streaming.
 _IDLE_HINTS = "Enter Submit  Ctrl+J Newline  /cmd  @Mention"
 _HINTS: dict[str, str] = {
-    "idle":     _IDLE_HINTS,
-    "thinking": _IDLE_HINTS,   # same — streaming input accepts all these keys
-    "running":  _IDLE_HINTS,   # same
-    "error":    "R Retry  Esc Dismiss",
-    "complete": "Enter New Task  Ctrl+L Clear",
+    "idle":       _IDLE_HINTS,
+    "thinking":   _IDLE_HINTS,   # same — streaming input accepts all these keys
+    "running":    _IDLE_HINTS,   # same
+    "recovering": "ESC Cancel  (LLM responding to tool error)",
+    "error":      "R Retry  Esc Dismiss",
+    "complete":   "Enter New Task  Ctrl+L Clear",
 }
 
 
@@ -74,13 +75,16 @@ class StatusComponent:
         state_name = agent_st.name.lower()
 
         if conv.is_running():
-            state_text = _thinking_markup(conv._thinking_frame)
+            if state_name == "recovering":
+                state_text = "↻ " + _thinking_markup(conv._thinking_frame)
+            else:
+                state_text = _thinking_markup(conv._thinking_frame)
         else:
             state_text = agent_st.name.title()
 
         colors = {
             "idle": "dim", "thinking": "yellow", "running": "cyan",
-            "error": "red", "complete": "green",
+            "recovering": "red", "error": "red", "complete": "green",
         }
         color = colors.get(state_name, "dim")
 

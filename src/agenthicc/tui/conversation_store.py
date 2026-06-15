@@ -20,11 +20,12 @@ from agenthicc.reactive import Signal, Computed
 # ── Agent state ───────────────────────────────────────────────────────────────
 
 class AgentState(Enum):
-    IDLE      = auto()
-    THINKING  = auto()
-    RUNNING   = auto()   # tool executing
-    COMPLETE  = auto()
-    ERROR     = auto()
+    IDLE       = auto()
+    THINKING   = auto()
+    RUNNING    = auto()    # tool executing
+    RECOVERING = auto()    # tool failed; LLM deciding how to respond
+    COMPLETE   = auto()
+    ERROR      = auto()
 
 
 # ── Conversation events ───────────────────────────────────────────────────────
@@ -89,7 +90,9 @@ class ConversationStore:
 
         # ── computed values ───────────────────────────────────────────────────
         self.is_running: Computed[bool] = Computed(
-            lambda: self.agent_state() not in (AgentState.IDLE, AgentState.COMPLETE),
+            lambda: self.agent_state() not in (
+                AgentState.IDLE, AgentState.COMPLETE, AgentState.ERROR
+            ),
             self.agent_state,
         )
         self.turn_count: Computed[int] = Computed(
@@ -156,10 +159,11 @@ class ConversationStore:
         self.active_tool.set(name)
         self.agent_state.set(AgentState.RUNNING)
 
-    def clear_tool(self) -> None:
+    def clear_tool(self, success: bool = True) -> None:
         self.active_tool.set("")
         if self.agent_state() == AgentState.RUNNING:
-            self.agent_state.set(AgentState.THINKING)
+            next_state = AgentState.THINKING if success else AgentState.RECOVERING
+            self.agent_state.set(next_state)
 
     # ── metrics ───────────────────────────────────────────────────────────────
 

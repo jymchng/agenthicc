@@ -143,7 +143,7 @@ async def _run_agent_turn(
                     pass
 
             if conv_store:
-                conv_store.clear_tool()
+                conv_store.clear_tool(success=success)
                 conv_store.append_event("tool_complete", {
                     "tool_use_id":  tid,
                     "name":         name,

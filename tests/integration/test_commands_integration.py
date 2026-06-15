@@ -235,27 +235,25 @@ def test_builtin_commands_all_retrievable():
         assert reg.get(cmd.name) is cmd, f"Could not retrieve built-in {cmd.name}"
 
 
-def test_dispatch_with_args_skips_menu():
-    """When args are provided, the handler runs instead of the menu factory."""
+def test_dispatch_with_args_uses_menu_factory(monkeypatch):
+    """menu_factory always wins (PRD-70): args are passed to the factory via ctx.args."""
+    menu_args = []
     handler_called = []
-    menu_called = []
 
     reg = build_builtin_registry()
-    # Add a command with both handler and menu_factory
     reg.register(Command(
         "/dual",
         "Dual",
         handler=lambda ctx: handler_called.append(ctx.args) or True,
-        menu_factory=lambda ctx: menu_called.append(True) or object(),
+        menu_factory=lambda ctx: menu_args.append(ctx.args) or object(),
     ))
 
     disp = CommandDispatcher(reg)
     ctx = MagicMock()
-    ctx.renderer = MagicMock()
     ctx.args = ""
     ctx.session_id = ""
 
-    # With an arg — handler should be called
+    # menu_factory receives the args; handler is never called
     disp.dispatch("/dual somearg", ctx)
-    assert handler_called == ["somearg"]
-    assert menu_called == []
+    assert menu_args == ["somearg"]
+    assert handler_called == []

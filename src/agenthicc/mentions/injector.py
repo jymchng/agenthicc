@@ -110,8 +110,8 @@ def _format_dir_block(path: Path, path_str: str) -> str:
                 size_kb = entry.stat().st_size / 1024
                 mtime = time.strftime("%Y-%m-%d", time.localtime(entry.stat().st_mtime))
                 lines.append(f"{entry.name}  {size_kb:.1f} KB  {mtime}")
-    except PermissionError:
-        lines.append("[permission denied]")
+    except OSError as exc:
+        lines.append(f"[error reading directory: {exc}]")
     body = "\n".join(lines) or "(empty)"
     return f'<dir path="{path_str}">\n{body}\n</dir>'
 
