@@ -66,20 +66,12 @@ class UnifiedInputSession:
         self._ctrl_c_count = 0
         self._mode_notification: Any = None
 
-        # Message queue for streaming mode
-        self._queued: list[str] = []
-
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
     def set_mode(self, mode: InputMode) -> None:
         self._mode = mode
         if mode == InputMode.STREAMING:
             self._ctrl_c_count = 0
-
-    def drain_queue(self) -> list[str]:
-        """Return and clear queued streaming messages."""
-        msgs, self._queued = list(self._queued), []
-        return msgs
 
     # ── main loop ─────────────────────────────────────────────────────────────
 
@@ -135,10 +127,7 @@ class UnifiedInputSession:
                 self._paste.condensed = False
                 self._push()
                 if text:
-                    self._queued.append(text)
-                    self._state.conversation.notification.set(
-                        f"⌛ Queued: {text[:40]}{'…' if len(text) > 40 else ''}"
-                    )
+                    await self._bus.dispatch_async(SendMessageCommand(text=text))
 
             case Key.PASTE if ch:
                 import shutil  # noqa: PLC0415

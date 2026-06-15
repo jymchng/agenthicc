@@ -28,7 +28,6 @@ async def _run_agent_turn(
     processor: Any,
     session_memory: Any = None,
     max_agent_turns: int = 200,
-    pending_queue: list | None = None,
     conv_store: Any = None,
     exec_cfg: Any = None,
     skills: Any = None,

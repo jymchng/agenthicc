@@ -186,6 +186,21 @@ async def _run_tui_session(
             f"[dim]Loaded {len(_project_commands)} project command(s) from .agenthicc/commands/[/dim]"
         )
 
+    # Register each discovered skill as a slash command so /slug is invocable.
+    from agenthicc.commands.builtins import _make_skill_handler  # noqa: PLC0415
+    for _slug, _skill in _skills.items():
+        try:
+            _cmd_registry.register(_Cmd(
+                name=f"/{_slug}",
+                description=_skill.description or _skill.name,
+                argument_hint="[args…]",
+                group="Skills",
+                handler=_make_skill_handler(_slug, _skill),
+                source_id=f"skill:{_slug}",
+            ))
+        except Exception:  # noqa: BLE001
+            pass
+
     _trigger_registry = TriggerRegistry()
     _trigger_registry.register(AtMentionTrigger())
     _trigger_registry.register(SlashCommandTrigger(_cmd_registry))
@@ -250,7 +265,6 @@ async def _run_tui_session(
                 processor,
                 session_memory=_session_memory,
                 max_agent_turns=cfg.execution.max_agent_turns,
-                pending_queue=_pending_queue,
                 conv_store=app_state.conversation,
                 exec_cfg=cfg.execution,
                 skills=_skills,
@@ -272,13 +286,17 @@ async def _run_tui_session(
             except Exception:  # noqa: BLE001
                 pass
 
-    _pending_queue: list[str] = []
+    # ── single message queue (state machine) ─────────────────────────────────
+    # All messages — whether submitted immediately or queued during streaming —
+    # enter via SendMessageCommand and are held here until the agent is free.
+    _msg_queue: list[str] = []
 
-    def _try_dispatch_slash(msg: str) -> bool:
-        """Dispatch msg as a slash command if it starts with '/'.
+    def _route(msg: str) -> bool:
+        """Route one message through the full pipeline.
 
-        Returns True if msg was a slash command (handled or no-handler).
-        Returns False if msg is regular text and should go to the agent.
+        Slash commands are dispatched immediately (synchronously).
+        Returns True if the message was a slash command and is fully handled.
+        Returns False if it is regular text that should become an agent turn.
         """
         if not msg.startswith("/"):
             return False
@@ -290,30 +308,36 @@ async def _run_tui_session(
                 f"  [dim]Command [bold]{cmd_name}[/bold] has no handler. "
                 f"Add a handler in [bold].agenthicc/commands/[/bold][/dim]"
             )
-        return True  # slash command — never forward to agent regardless
+        return True  # never forward slash commands to the agent
 
-    def _drain_to_pending() -> None:
-        """Move streaming-queued messages into _pending_queue and clear the
-        ⌛ Queued notification once the queue is empty."""
-        _pending_queue.extend(input_session.drain_queue())
-        if not _pending_queue:
+    def _advance() -> None:
+        """Start the next agent turn from _msg_queue (synchronous, no await).
+
+        Drains leading slash commands immediately, then starts an agent task
+        for the first regular message.  Clears the ⌛ Queued notification once
+        the queue is empty.  Safe to call from a finally block: no awaits, so
+        asyncio cannot interleave another coroutine between _agent_task = None
+        and the new task creation — the race condition is structurally impossible.
+        """
+        nonlocal _agent_task
+        while _msg_queue:
+            msg = _msg_queue.pop(0).strip()
+            if not msg:
+                continue
+            if _route(msg):
+                continue
+            # First regular message: show in transcript and start agent.
             app_state.conversation.notification.set(None)
+            app_state.conversation.append_event("user_message", {"text": msg})
+            _agent_task = asyncio.create_task(_agent_task_body(msg), name="agent-turn")
+            return
+        # Queue exhausted — clear any residual notification.
+        app_state.conversation.notification.set(None)
 
     async def _agent_task_body(text: str) -> None:
         nonlocal _agent_task
         try:
             await _run_turn(text)
-            # Absorb any messages queued during this turn.
-            _drain_to_pending()
-            while _pending_queue:
-                msg = _pending_queue.pop(0).strip()
-                if _try_dispatch_slash(msg):
-                    continue
-                # Regular message: show in transcript and run as agent turn.
-                app_state.conversation.notification.set(None)
-                app_state.conversation.append_event("user_message", {"text": msg})
-                await _run_turn(msg)
-                _drain_to_pending()
         except asyncio.CancelledError:
             app_state.conversation.end_turn()
             input_session.set_mode(InputMode.IDLE)
@@ -322,43 +346,25 @@ async def _run_tui_session(
             input_session.set_mode(InputMode.IDLE)
         finally:
             _agent_task = None
-            _drain_to_pending()
-            # Dispatch any slash commands at the head of the queue immediately,
-            # then start the next agent turn for the first regular message.
-            while _pending_queue:
-                msg = _pending_queue[0].strip()
-                if _try_dispatch_slash(msg):
-                    _pending_queue.pop(0)
-                    continue
-                # First regular message — start a new agent turn.
-                _pending_queue.pop(0)
-                app_state.conversation.notification.set(None)
-                app_state.conversation.append_event("user_message", {"text": msg})
-                _agent_task = asyncio.create_task(
-                    _agent_task_body(msg), name="agent-turn"
-                )
-                break
+            _advance()
 
     async def _handle_send(cmd: SendMessageCommand) -> None:
         nonlocal _agent_task
         text = cmd.text.strip()
-        if text.startswith("/"):
-            if _dispatch_slash(text):
-                return
-            # Command is in the registry but has no handler (project CommandSpec).
-            # Per §8.11: registered commands never reach the agent.
-            # Unregistered slash-commands fall through as free text.
-            cmd_name = text.split()[0]
-            if _cmd_registry.get(cmd_name) is not None:
-                console.print(
-                    f"  [dim]Command [bold]{cmd_name}[/bold] has no handler. "
-                    f"Add a handler in [bold].agenthicc/commands/[/bold][/dim]"
-                )
-                return
-
-        app_state.conversation.append_event("user_message", {"text": cmd.text.strip()})
-        if _agent_task and not _agent_task.done():
+        if not text:
             return
+
+        # Agent is busy — queue for later and show confirmation.
+        if _agent_task and not _agent_task.done():
+            _msg_queue.append(text)
+            label = text[:40] + ("…" if len(text) > 40 else "")
+            app_state.conversation.notification.set(f"⌛ Queued: {label}")
+            return
+
+        # Agent is free — route immediately (slash dispatch or agent turn).
+        if _route(text):
+            return
+        app_state.conversation.append_event("user_message", {"text": text})
         _agent_task = asyncio.create_task(_agent_task_body(text), name="agent-turn")
 
     def _handle_interrupt(cmd: InterruptAgentCommand) -> None:

@@ -142,7 +142,7 @@ Built-in and project commands are dispatched by the **command registry** — the
 |---|---|---|
 | 9.1 | Per-project tool plugins | `.agenthicc/tools/*.py` files exporting `TOOLS = [fn1, fn2]` (`@tool()`-decorated async functions) are loaded at startup. Tools are immediately available to the agent. |
 | 9.2 | Per-project command plugins | `.agenthicc/commands/*.py` files exporting `COMMANDS = [CommandSpec(…)]` are loaded and appear in the `/` dropdown under their declared group. |
-| 9.3 | Per-project skill plugins | `.agenthicc/skills/<slug>/SKILL.md` files with YAML front-matter are discovered and shown in `/skills`. Skills with matching `suggestedTopics` are injected into the agent's context automatically. |
+| 9.3 | Per-project skill plugins | `.agenthicc/skills/<slug>/SKILL.md` files with YAML front-matter are discovered and shown in `/skills`. Skills with matching `suggestedTopics` are injected into the agent's context automatically. Each skill is also registered in the slash-command registry as `/<slug>` so it is invocable directly from the input bar (e.g. `/generate-password`). Skill commands appear in the `/` dropdown under the "Skills" group. |
 | 9.4 | User-global plugins | `~/.agenthicc/tools/`, `~/.agenthicc/commands/`, and `~/.agenthicc/skills/` are loaded first; project-local plugins are loaded second and may shadow user-global ones by name. |
 | 9.5 | Mode plugins | `.agenthicc/modes/*.py` files can register custom modes via `ModeRegistry`. |
 | 9.6 | `/skills` shows loaded skills | `/skills` prints a table of **all** discovered skills (name, slug, description), including per-project skills from `.agenthicc/skills/`. It reads from the in-process registry — it must NOT pass the command to the agent as a free-text query. |
