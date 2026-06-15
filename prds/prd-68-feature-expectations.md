@@ -80,6 +80,8 @@ Content appears above the always-on Live block and scrolls naturally.
 | 5.3 | Dropdown navigation | Up/Down arrows navigate matches; selected item is highlighted. |
 | 5.4 | Enter / Tab to select | Enter inserts the selected item and closes the overlay. Tab inserts and appends a space. |
 | 5.10 | Space commits command and exits | Typing a space character while the slash-command dropdown is open commits the currently highlighted command (inserting it into the buffer with a trailing space) and closes the overlay. Subsequent characters (arguments) go directly into the input bar. This ensures `/bench --count 5` + Enter requires exactly **one** Enter press, not two. |
+| 5.11 | Enter with no match submits immediately | When the trigger overlay has no matching items (e.g. `@docs/.`) and the user presses Enter, the overlay closes AND the message is submitted in one key press. The input bar clears immediately. Pressing Tab with no match commits the text into the buffer without submitting — the user can continue typing. |
+| 5.12 | Typing after committed mention re-enters overlay | If the user selects `@docs/` from the overlay and then types `.`, the overlay re-opens with `@docs/.` as the fragment. Enter submits in one press; the input bar clears correctly and the text is never shown as a residue. |
 | 5.5 | Esc to cancel | Closes the overlay without inserting, restores the buffer. |
 | 5.6 | Backspace into token | Backspace at the end of a committed `@path` or `/cmd` token re-opens the picker with the existing fragment. |
 | 5.7 | Hint text | A short hint/description appears below the match list. |
@@ -92,7 +94,7 @@ Content appears above the always-on Live block and scrolls naturally.
 
 | # | Feature | Expected behaviour |
 |---|---|---|
-| 6.1 | Submit message | Enter sends the current buffer to the agent. |
+| 6.1 | Submit message | Enter sends the current buffer to the agent. The input bar clears immediately after submission regardless of which code path triggered the send (normal Enter, trigger overlay auto-submit, etc.). All submission paths go through `_prepare_submission()` — a single method that clears the buffer, resets paste state, resets the Ctrl+C counter, and updates the display. |
 | 6.2 | Queue during streaming | Typing and pressing Enter while the agent runs queues the message with `⌛ Queued` confirmation. Queued messages are dispatched sequentially after the current turn completes or is interrupted. The `⌛ Queued` notification clears once the queue is fully processed. |
 | 6.3 | ESC cancels agent | Pressing ESC while the agent is streaming cancels the current turn immediately. Status returns to Idle. Any messages queued before the interrupt are sent as the next turn — they are never silently dropped. |
 | 6.4 | Ctrl+C cancels agent | Same as ESC during streaming. Queued messages are preserved and sent after the interrupt. |

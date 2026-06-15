@@ -144,12 +144,21 @@ class UnifiedInputSession:
         show_exit_hint(self._state.conversation.session_id())
         return _EXIT
 
-    async def _submit(self, text: str) -> object:
-        """Clear buffer and dispatch SendMessageCommand."""
+    def _prepare_submission(self) -> None:
+        """Synchronous pre-submission cleanup — single source of truth.
+
+        Every code path that sends a message must call this before dispatching
+        SendMessageCommand.  Adding new cleanup here automatically applies to
+        all submission paths (normal Enter, trigger overlay auto-submit, etc.).
+        """
         self._buf.clear()
         self._paste.condensed = False
         self._ctrl_c_count = 0
         self._push()
+
+    async def _submit(self, text: str) -> object:
+        """Prepare the input state and dispatch SendMessageCommand."""
+        self._prepare_submission()
         await self._bus.dispatch_async(SendMessageCommand(text=text))
         return None
 
@@ -195,12 +204,7 @@ class UnifiedInputSession:
             if result is not None and isinstance(result, TriggerResult) and result.submit:
                 import asyncio  # noqa: PLC0415
                 text = "".join(result.buffer).strip()
-                # Mirror what _submit() does: clear the buffer so the input
-                # bar is empty after submission, not left showing the sent text.
-                self._buf.clear()
-                self._paste.condensed = False
-                self._ctrl_c_count = 0
-                self._push()
+                self._prepare_submission()   # single source of truth for cleanup
                 asyncio.get_event_loop().create_task(
                     self._bus.dispatch_async(SendMessageCommand(text=text))
                 )
