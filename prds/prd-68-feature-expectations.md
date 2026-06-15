@@ -257,6 +257,48 @@ what each mode supports.
 
 ---
 
+## 15. CLI (PRD-79)
+
+The CLI uses a decorator-based registry with three-layer command discovery.
+All command extensions — built-in, user-global, and project-local — are
+wired through the same `@command()` / `@group()` decorators and dispatched
+by the same `main()` with no special-casing per depth.
+
+### 15.1 Subcommand system
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 15.1 | Arbitrarily nested subcommands | `agenthicc plugin trust add my-plugin` (three levels deep) works. Depth is unlimited. |
+| 15.2 | Single-decorator registration | Adding a new subcommand at any depth requires one `@command(*path)` decorator entry — no changes to `main()`, `parse_cli()`, or any other handler. |
+| 15.3 | CLIContext injection by type | `CLIContext` is injected into handler parameters by annotation type only. The parameter name is irrelevant — `ctx`, `app`, `c`, `session: CLIContext` all work identically. |
+| 15.4 | Signature-driven argparse | Handler parameters become argparse arguments automatically: `str` (no default) → positional; `bool = False` → `--flag`; `str = "val"` → `--option VALUE`. |
+| 15.5 | Source badges in `--help` | `agenthicc --help` shows `[builtin]`, `[user]`, or `[project]` next to each command so provenance is always visible. |
+
+### 15.2 Configuration wiring
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 15.6 | `--set` for config values | `--set execution.model=gpt-4o` merges into `AgenthiccConfig` via the normal TOML precedence chain (layer 5 — highest for config). |
+| 15.7 | `BehaviourSettings` TOML section | `[behaviour]` in `agenthicc.toml` sets developer convenience defaults (e.g. `verbose = true`). These ARE storable in TOML. |
+| 15.8 | `CLIFlags` — ephemeral, not TOML-settable | Security-bypassing flags (`--dangerously-skip-permissions`, etc.) live in `CLIFlags`, are frozen at session startup, and have **no TOML path** — the user must retype them every invocation. |
+| 15.9 | `AppState.cli_flags` | `CLIFlags` is set once on `AppState` at startup and never changes. Runtime components (`ApprovalGate`, etc.) read it directly. |
+| 15.10 | `--dangerously-skip-permissions` | Disables all `ApprovalGate` prompts for the session, in all modes (Guard, Ask, Review, etc.). The flag is intentionally not settable in `agenthicc.toml`. |
+
+### 15.3 User-defined commands
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 15.11 | Built-in layer | `agenthicc/cli/commands/*.py` — lowest priority. |
+| 15.12 | User-global layer | `~/.agenthicc/cli/*.py` — discovered at startup without any trust step. Shadows builtins. |
+| 15.13 | Project-local layer | `.agenthicc/cli/*.py` — discovered after `agenthicc trust cli` writes `.agenthicc/trusted_cli.json`. Shadows builtins and user-global. |
+| 15.14 | Python plugin format | A file in `.agenthicc/cli/` using `@command(*path)` and `@group(*path)` from `agenthicc.cli.registry` registers commands that appear in `agenthicc --help` with `[project]` badge. |
+| 15.15 | TOML shorthand | `.agenthicc/cli.toml` with `[[command]]` entries using `run = "script {arg}"` creates working commands without any Python code. |
+| 15.16 | Shadow semantics | A project command with the same path as a built-in or user-global command silently replaces it. |
+| 15.17 | Trust enforcement | Project-local `.agenthicc/cli/*.py` files are NOT loaded until `agenthicc trust cli` is run (unless `PluginSettings.auto_trust = true`). Modified files invalidate the trust manifest and block loading with a warning. |
+| 15.18 | `ContextVar` source tagging | `@command()` decorators executed during file loading are tagged with their source (`"builtin"`, `"user"`, `"project"`) via a `ContextVar` — no caller changes needed. |
+
+---
+
 ## Acceptance Criteria (summary)
 
 A release is shippable when:
