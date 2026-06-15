@@ -313,31 +313,34 @@ def test_dispatcher_opens_menu_on_no_args():
     assert received == [widget]
 
 
-def test_dispatcher_uses_handler_with_args():
-    """/model openai → handler called (not menu), because args are present."""
+def test_dispatcher_menu_factory_wins_with_args():
+    """menu_factory always fires when set, even when args are present (PRD-70).
+
+    The factory receives ctx.args and decides what to render; handler is never
+    called when menu_factory is set.
+    """
     from agenthicc.commands import UnifiedCommandRegistry, Command, CommandDispatcher
 
     handler_called = []
-    menu_called = []
+    menu_args = []
 
     def _handler(ctx):
         handler_called.append(ctx.args)
         return True
 
     def _menu(ctx):
-        menu_called.append(True)
+        menu_args.append(ctx.args)
         return object()
 
     reg = UnifiedCommandRegistry()
     reg.register(Command("/model", "Model", handler=_handler, menu_factory=_menu))
     disp = CommandDispatcher(reg)
     ctx = MagicMock()
-    ctx.renderer = MagicMock()
     ctx.args = ""
-    # Dispatch with args in text
     disp.dispatch("/model openai", ctx)
-    assert handler_called == ["openai"]
-    assert menu_called == []
+    # menu_factory received the args; handler was never called
+    assert menu_args == ["openai"]
+    assert handler_called == []
 
 
 def test_dispatcher_returns_false_unknown():

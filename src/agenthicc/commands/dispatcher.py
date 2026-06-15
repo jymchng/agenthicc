@@ -41,8 +41,8 @@ class CommandDispatcher:
             close_overlay=ctx.close_overlay,
         )
 
-        # Menu factory takes precedence when no args are given.
-        if cmd.menu_factory is not None and not args.strip():
+        # Menu factory always takes precedence; factory receives args via ctx.args.
+        if cmd.menu_factory is not None:
             widget = cmd.menu_factory(ctx_with_args)
             if ctx.set_pending_menu is not None:
                 ctx.set_pending_menu(widget)

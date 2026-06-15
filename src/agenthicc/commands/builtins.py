@@ -25,27 +25,10 @@ def _cmd_expand(ctx: CommandContext) -> bool:
     return True
 
 
-def _cmd_help(ctx: CommandContext) -> bool:
-    try:
-        from rich.table import Table   # noqa: PLC0415
-        from rich import box as _rbox  # noqa: PLC0415
-        registry = ctx.command_registry
-        if registry is not None:
-            for group in registry.groups():
-                table = Table(title=group, box=_rbox.SIMPLE)
-                table.add_column("Command", style="bold")
-                table.add_column("Arguments", style="dim")
-                table.add_column("Description")
-                for cmd in registry.commands_for_group(group):
-                    table.add_row(cmd.name, cmd.argument_hint or "", cmd.description)
-                ctx.console.print(table)
-        else:
-            ctx.console.print("[dim]No command registry available.[/dim]")
-    except ImportError:
-        if ctx.command_registry:
-            for cmd in ctx.command_registry.all_commands():
-                ctx.console.print(f"  {cmd.name}  {cmd.description}")
-    return True
+def _help_menu(ctx: CommandContext) -> object:
+    from agenthicc.tui.workspace.overlays.help import HelpOverlay  # noqa: PLC0415
+    on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
+    return HelpOverlay(ctx.command_registry, on_close, initial_query=ctx.args)
 
 
 def _cmd_history(ctx: CommandContext) -> bool:
@@ -279,7 +262,8 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/help",
         description="List available commands",
-        handler=_cmd_help,
+        argument_hint="[/command]",
+        menu_factory=_help_menu,
     ),
     Command(
         name="/history",
