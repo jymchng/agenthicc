@@ -194,25 +194,38 @@ class AgenthiccTUI:
         self.footer_state.mode  = "running"
 
     def _on_tool_complete(self, e: ToolCompleteEvent) -> None:
-        # Print the completed call to the scroll buffer using ToolCallEntry.render()
-        # which already formats: name(args)  ✓/✗  Nms  [output preview].
-        # This avoids duplicating the transcript model's rendering logic and
-        # ensures args are always shown.
+        # Build the rendered line from event data + args from transcript.
+        # We do NOT call tc.render() here because tc.state may still read as
+        # RUNNING (the background _RefreshThread could have cached a stale
+        # frame).  Using event data directly guarantees the correct ✓/✗ icon.
+        from rich.markup import escape as _esc  # noqa: PLC0415
+
+        # Fetch args from transcript model (only info not in the event).
         model = self.transcript._model
         tc = model._tool_index.get(e.tool_use_id) if model else None
-        if tc is not None:
-            # render() returns a Rich-markup string (possibly multiline for output)
-            for line in tc.render().splitlines():
-                self.console.print(line, markup=True, highlight=False)
-        else:
-            # Fallback: no transcript entry — print name + status only
-            from rich.markup import escape as _esc  # noqa: PLC0415
-            icon = "[green]✓[/green]" if e.success else "[red]✗[/red]"
-            dur  = f"  [dim]{e.duration_ms:.0f}ms[/dim]" if e.duration_ms else ""
-            self.console.print(
-                f"  [dim]⎿[/dim] [bold]{_esc(e.name or '')}[/bold]  {icon}{dur}",
-                markup=True, highlight=False,
-            )
+        args_str = ""
+        if tc and tc.args:
+            args_str = "[dim](" + ", ".join(
+                f"{_esc(k)}={_esc(repr(v)[:40])}"
+                for k, v in list(tc.args.items())
+            ) + ")[/dim]"
+
+        icon = "[green]✓[/green]" if e.success else "[red]✗[/red]"
+        dur  = f"  [dim]{e.duration_ms:.0f}ms[/dim]" if e.duration_ms else ""
+        name = _esc(e.name or "")
+        self.console.print(
+            f"  [dim]⎿[/dim] [bold]{name}[/bold]{args_str}  {icon}{dur}",
+            markup=True, highlight=False,
+        )
+
+        # Print any diff output from the transcript entry (e.g. git diffs).
+        if tc and tc.output_lines:
+            for ln in tc.output_lines[:4]:
+                self.console.print(f"    [dim]{_esc(ln[:120])}[/dim]", markup=True, highlight=False)
+            if len(tc.output_lines) > 4:
+                extra = len(tc.output_lines) - 4
+                self.console.print(f"    [dim](+{extra} more lines)[/dim]", markup=True, highlight=False)
+
         self.status_state.state = "thinking"
         self.status_state.tool  = ""
 

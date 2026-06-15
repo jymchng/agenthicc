@@ -1,0 +1,203 @@
+"""ScrollBufferAppender — the ONLY component allowed to call console.print().
+
+Every ConversationEvent is rendered exactly once to stdout (above the always-on
+Live region).  Rich's Console.print() while a Live block is active automatically
+inserts content above the Live block.
+
+This eliminates:
+- _on_tool_complete / _on_assistant_complete ad-hoc prints
+- flush_from_model() and _printed_count tracking
+- duplicate tool call rendering
+- spinner-state / background-thread races
+
+Architecture: PRD-60 §7, PRD-66 §3.
+"""
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from agenthicc.tui.conversation_store import ConversationEvent
+
+
+def _hhmmss(ts: float) -> str:
+    import time
+    return time.strftime("%H:%M:%S", time.localtime(ts))
+
+
+def _fmt_args(args: dict) -> str:
+    if not args:
+        return ""
+    from rich.markup import escape as _e
+    items = list(args.items())
+    if len(items) == 1:
+        return f"[dim]({_e(repr(items[0][1])[:60])})[/dim]"
+    return "[dim](" + ", ".join(
+        f"{_e(k)}={_e(repr(v)[:25])}" for k, v in items[:3]
+    ) + ")[/dim]"
+
+
+class ScrollBufferAppender:
+    """Subscribes to ConversationStore events and renders them to stdout.
+
+    Instantiate once, call mount() after the Live block is started.
+    All rendering is queued via call_soon_threadsafe to ensure it happens
+    on the asyncio event-loop thread (not on background threads).
+    """
+
+    def __init__(self, app_state: Any, console: Any) -> None:
+        self._state   = app_state
+        self._console = console
+        self._unsub: Any = None
+        # Small batch buffer to coalesce rapid events (e.g. many tool completions)
+        self._pending: list[ConversationEvent] = []
+        self._flush_scheduled = False
+
+    def mount(self) -> None:
+        self._unsub = self._state.conversation.on_event(self._queue_event)
+
+    def unmount(self) -> None:
+        if self._unsub:
+            self._unsub()
+            self._unsub = None
+
+    # ── event queuing ─────────────────────────────────────────────────────────
+
+    def _queue_event(self, ev: ConversationEvent) -> None:
+        self._pending.append(ev)
+        if not self._flush_scheduled:
+            self._flush_scheduled = True
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.call_soon(self._flush_batch)
+                else:
+                    self._flush_batch()
+            except RuntimeError:
+                self._flush_batch()
+
+    def _flush_batch(self) -> None:
+        self._flush_scheduled = False
+        pending, self._pending = self._pending, []
+        for ev in pending:
+            if not ev.rendered:
+                ev.rendered = True
+                try:
+                    self._render_one(ev)
+                except Exception:       # noqa: BLE001
+                    pass
+
+    # ── rendering ─────────────────────────────────────────────────────────────
+
+    def _render_one(self, ev: ConversationEvent) -> None:
+        match ev.kind:
+            case "turn_start":
+                agent_name = ev.payload.get("agent_name", "assistant")
+                self._console.print(
+                    f"[bold cyan]●[/bold cyan] [bold]{agent_name}[/bold]"
+                    f"  [dim]{_hhmmss(ev.timestamp)}[/dim]",
+                    markup=True, highlight=False,
+                )
+
+            case "user_message":
+                from rich.markup import escape as _e
+                text = ev.payload.get("text", "")
+                self._console.print(
+                    f"[bold green]❯[/bold green] {_e(text)}",
+                    markup=True, highlight=False,
+                )
+
+            case "tool_complete":
+                self._render_tool_complete(ev.payload)
+
+            case "text":
+                text = ev.payload.get("text", "")
+                if text.strip():
+                    from rich.markdown import Markdown  # noqa: PLC0415
+                    self._console.print(Markdown(text), end="")
+
+            case "thinking_step":
+                from rich.markup import escape as _e
+                step = ev.payload.get("step", "")
+                done = ev.payload.get("done", False)
+                icon = "[green]✓[/green]" if done else "[yellow]→[/yellow]"
+                self._console.print(
+                    f"  {icon} [dim]{_e(step)}[/dim]",
+                    markup=True, highlight=False,
+                )
+
+            case "file_modified":
+                from rich.markup import escape as _e
+                path = ev.payload.get("path", "")
+                self._console.print(
+                    f"  [dim]Modified:[/dim] [cyan]{_e(path)}[/cyan]",
+                    markup=True, highlight=False,
+                )
+
+            case "error":
+                from rich.markup import escape as _e
+                msg    = ev.payload.get("message", "")
+                detail = ev.payload.get("detail", "")
+                self._console.print(
+                    f"\n[red bold]ERROR[/red bold] {_e(msg)}",
+                    markup=True, highlight=False,
+                )
+                if detail:
+                    self._console.print(
+                        f"[dim]{_e(detail[:500])}[/dim]",
+                        markup=True, highlight=False,
+                    )
+
+            case "mention_chips":
+                from rich.markup import escape as _e
+                for chip in ev.payload.get("chips", []):
+                    raw     = chip.get("raw", "")
+                    preview = chip.get("content_preview", "")
+                    self._console.print(
+                        f"  [dim]@[/dim][cyan]{_e(raw.lstrip('@'))}[/cyan]"
+                        + (f"  [dim]{_e(preview[:60])}[/dim]" if preview else ""),
+                        markup=True, highlight=False,
+                    )
+
+            case _:
+                pass
+
+    def _render_tool_complete(self, payload: dict) -> None:
+        from rich.markup import escape as _e
+        name     = _e(payload.get("name", ""))
+        args_str = payload.get("args_str", "")
+        icon     = "[green]✓[/green]" if payload.get("success", True) else "[red]✗[/red]"
+        dur      = payload.get("dur_str", "")
+        self._console.print(
+            f"  [dim]⎿[/dim] [bold]{name}[/bold]{args_str}  {icon}{dur}",
+            markup=True, highlight=False,
+        )
+        for ln in payload.get("output_lines", [])[:4]:
+            self._console.print(
+                f"    [dim]{_e(str(ln)[:120])}[/dim]",
+                markup=True, highlight=False,
+            )
+        if len(payload.get("output_lines", [])) > 4:
+            extra = len(payload["output_lines"]) - 4
+            self._console.print(
+                f"    [dim](+{extra} more lines)[/dim]",
+                markup=True, highlight=False,
+            )
+
+    # ── idle status header (printed once before each new prompt) ──────────────
+
+    def print_idle_header(self) -> None:
+        """Print session info + separator before the input prompt."""
+        import shutil
+        conv  = self._state.conversation
+        cols  = shutil.get_terminal_size((80, 24)).columns
+        sid   = conv.session_id() or "session"
+        turns = conv.turn_count()
+        cost  = f"${conv.cost_usd():.3f}"
+        self._console.print(
+            f" [dim]{sid}  |  {turns} turn{'s' if turns != 1 else ''}  |  {cost}[/dim]"
+            f"  [cyan]↑ {conv.tokens_in():,}[/cyan]"
+            f"  [green]↓ {conv.tokens_out():,}[/green]",
+            markup=True, highlight=False,
+        )
+        self._console.print(f"[dim]{'─' * cols}[/dim]", markup=True, highlight=False)

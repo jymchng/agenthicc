@@ -1,6 +1,6 @@
 """Slash-command trigger — implements PRD-36, PRD-37, PRD-38."""
 from __future__ import annotations
-from agenthicc.tui.trigger import TriggerHandler, TriggerContext, MatchItem
+from agenthicc.tui.trigger import TriggerContext, MatchItem
 
 class SlashCommandTrigger:
     """Trigger handler for "/" that opens the slash-command dropdown."""

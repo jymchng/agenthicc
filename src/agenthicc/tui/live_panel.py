@@ -107,8 +107,8 @@ class LivePanel:
         self._live = Live(
             self._build(),
             console=self._console,
-            refresh_per_second=12,
-            transient=True,
+            auto_refresh=False,   # disable background _RefreshThread — it races
+            transient=True,       # with console.print() causing cursor desync
         )
         self._live.start()
 

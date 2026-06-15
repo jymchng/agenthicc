@@ -1,7 +1,9 @@
 """Single agent turn: LLM streaming, tool signals, transcript wiring.
 
-Renderer must be AgenthiccTUI.  All tool/token events are published to
-renderer.bus so the LivePanel and SpinnerState update reactively.
+When *conv_store* is provided (the new reactive runtime path), events are
+published directly to ``ConversationStore`` — no old EventBus or AgenthiccTUI
+required.  When *conv_store* is ``None`` the legacy path is used (old bus
+events to AgenthiccTUI).
 """
 from __future__ import annotations
 
@@ -33,24 +35,99 @@ async def _run_agent_turn(
     session_memory: Any = None,
     max_agent_turns: int = 200,
     pending_queue: list | None = None,
+    conv_store: Any = None,   # ConversationStore — when set, bypasses old bus entirely
 ) -> None:
-    """Run one agent turn against AgenthiccTUI."""
+    """Run one agent turn.
+
+    *conv_store* (``agenthicc.tui.conversation_store.ConversationStore``):
+        When provided, all events are published directly to the reactive
+        ConversationStore.  The old AgenthiccTUI / EventBus path is skipped
+        completely, eliminating the bridge layer.
+    """
     import re as _re  # noqa: PLC0415
     from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
     from lauren_ai.testing import _build_runner_for_agent  # noqa: PLC0415
     from agenthicc.kernel import Event  # noqa: PLC0415
-    from agenthicc.tui.tui_events import (  # noqa: PLC0415
-        AssistantStartEvent,
-        AssistantChunkEvent,
-        AssistantCompleteEvent,
-        ToolStartEvent,
-        ToolCompleteEvent,
-        TokenUpdateEvent,
-        FileModifiedEvent,
-        ErrorEvent,
-    )
 
-    tui = _require_tui(renderer)
+    # ── routing helpers ───────────────────────────────────────────────────────
+
+    def _emit_turn_start(agent_id: str, model_short: str) -> None:
+        if conv_store is not None:
+            conv_store.append_event("turn_start", {
+                "turn_id": agent_id, "agent_name": f"assistant ({model_short})"
+            })
+        else:
+            from agenthicc.tui.tui_events import AssistantStartEvent  # noqa: PLC0415
+            tui.bus.publish(AssistantStartEvent(agent_id=agent_id, model_short=model_short))
+
+    def _emit_tool_start(tid: str, name: str, args: dict) -> None:
+        if conv_store is not None:
+            conv_store.set_tool(name)
+        else:
+            from agenthicc.tui.tui_events import ToolStartEvent  # noqa: PLC0415
+            tui.bus.publish(ToolStartEvent(tool_use_id=tid, name=name, args=args))
+
+    def _emit_tool_complete(tid: str, name: str, success: bool, ms: Any, diff: Any) -> None:
+        if conv_store is not None:
+            from agenthicc.tui.runtime.agent_runtime import _fmt_args  # noqa: PLC0415
+            # Retrieve args from transcript model's tool_index
+            tc = transcript._tool_index.get(tid) if transcript else None
+            args = tc.args if tc else {}
+            args_str = _fmt_args(args)
+            dur_str  = f"  [dim]{ms:.0f}ms[/dim]" if ms else ""
+            conv_store.clear_tool()
+            conv_store.append_event("tool_complete", {
+                "tool_use_id":  tid,
+                "name":         name,
+                "success":      success,
+                "args_str":     args_str,
+                "dur_str":      dur_str,
+                "output_lines": [],
+            })
+        else:
+            from agenthicc.tui.tui_events import ToolCompleteEvent  # noqa: PLC0415
+            tui.bus.publish(ToolCompleteEvent(
+                tool_use_id=tid, name=name, success=success, duration_ms=ms, diff=diff
+            ))
+
+    def _emit_file_modified(path: str) -> None:
+        if conv_store is not None:
+            conv_store.append_event("file_modified", {"path": path})
+        else:
+            from agenthicc.tui.tui_events import FileModifiedEvent  # noqa: PLC0415
+            tui.bus.publish(FileModifiedEvent(path=path))
+
+    def _emit_tokens(inp: int, out: int, cost: float) -> None:
+        if conv_store is not None:
+            conv_store.add_tokens(inp, out, cost)
+        else:
+            from agenthicc.tui.tui_events import TokenUpdateEvent  # noqa: PLC0415
+            renderer._status.input_tokens += inp
+            renderer._status.output_tokens += out
+            renderer._status.session_cost_usd += cost
+            tui.bus.publish(TokenUpdateEvent(input_tokens=inp, output_tokens=out, cost_usd=cost))
+
+    def _emit_turn_complete(agent_id: str, texts: list[str]) -> None:
+        if conv_store is not None:
+            for t in texts:
+                if t.strip():
+                    conv_store.append_event("text", {"text": t.strip()})
+            conv_store.end_turn()
+        else:
+            from agenthicc.tui.tui_events import AssistantCompleteEvent  # noqa: PLC0415
+            tui.bus.publish(AssistantCompleteEvent(agent_id=agent_id))
+
+    def _emit_error(msg: str) -> None:
+        if conv_store is not None:
+            conv_store.append_event("error", {"message": msg})
+        else:
+            from agenthicc.tui.tui_events import ErrorEvent  # noqa: PLC0415
+            tui.bus.publish(ErrorEvent(message=msg))
+
+    # ── old-path setup (only when conv_store is None) ─────────────────────────
+    tui: Any = None
+    if conv_store is None:
+        tui = _require_tui(renderer)
 
     if runner is None:
         transcript.append_turn("system", "system", time.monotonic())
@@ -68,18 +145,26 @@ async def _run_agent_turn(
     await processor.emit(Event.create("IntentCreated", {"intent_id": intent_id, "raw_text": text}))
 
     agent_id = f"agent-{intent_id[:8]}"
+    if conv_store is not None:
+        conv_store.begin_turn(f"assistant ({model_short})", agent_id)
     transcript.append_turn(agent_id, f"assistant ({model_short})", time.monotonic())
 
     cell = getattr(getattr(runner, "_signals", None), "_current_agent_cell", None)
     if cell is not None:
         cell[0] = agent_id
 
-    tui.bus.publish(AssistantStartEvent(agent_id=agent_id, model_short=model_short))
+    _emit_turn_start(agent_id, model_short)
 
     _signals = getattr(runner, "_signals", None)
     _file_snapshots: dict[str, tuple[str, str]] = {}
     _tool_names: dict[str, str] = {}
     _FILE_EDIT_TOOLS = {"write_file", "patch_file", "append_file"}
+
+    # Guard flag defined unconditionally so the finally block can always reference it.
+    # Each call to _run_agent_turn registers NEW handlers on runner._signals.
+    # Setting _turn_active[0] = False in finally makes stale handlers no-op,
+    # preventing N-turn accumulation that causes every event to fire N times.
+    _turn_active = [True]
 
     if _signals is not None:
         from lauren_ai._signals import ModelCallComplete as _MCC  # noqa: PLC0415
@@ -87,22 +172,21 @@ async def _run_agent_turn(
 
         @_signals.on(_MCC)
         async def _on_model_complete(sig: Any) -> None:
+            if not _turn_active[0]: return
             usage = getattr(sig, "usage", None)
             inp = getattr(usage, "input_tokens", 0) if usage else 0
             out = getattr(usage, "output_tokens", 0) if usage else 0
             cost = getattr(sig, "cost_usd", 0.0) or 0.0
-            renderer._status.input_tokens += inp
-            renderer._status.output_tokens += out
-            renderer._status.session_cost_usd += cost
-            tui.bus.publish(TokenUpdateEvent(input_tokens=inp, output_tokens=out, cost_usd=cost))
+            _emit_tokens(inp, out, cost)
 
         @_signals.on(_TCS)
         async def _on_tool_started(sig: Any) -> None:
+            if not _turn_active[0]: return
             args = dict(getattr(sig, "input", {}) or {})
             name = getattr(sig, "tool_name", "")
             tid = getattr(sig, "tool_use_id", "")
             _tool_names[tid] = name
-            tui.bus.publish(ToolStartEvent(tool_use_id=tid, name=name, args=args))
+            _emit_tool_start(tid, name, args)
             if name in _FILE_EDIT_TOOLS:
                 rel_path = args.get("path", "")
                 if rel_path:
@@ -117,6 +201,7 @@ async def _run_agent_turn(
 
         @_signals.on(_TCC)
         async def _on_tool_complete(sig: Any) -> None:
+            if not _turn_active[0]: return
             import difflib as _dl  # noqa: PLC0415
             tid = getattr(sig, "tool_use_id", "")
             success = bool(getattr(sig, "success", True))
@@ -139,12 +224,10 @@ async def _run_agent_turn(
                     )) or None
                     if diff:
                         transcript.finish_tool_call(tool_use_id=tid, output=diff)
-                        tui.bus.publish(FileModifiedEvent(path=rel_path))
+                        _emit_file_modified(rel_path)
                 except Exception:
                     pass
-            tui.bus.publish(ToolCompleteEvent(
-                tool_use_id=tid, name=name, success=success, duration_ms=ms, diff=diff
-            ))
+            _emit_tool_complete(tid, name, success, ms, diff)
 
     # ── @mention injection ────────────────────────────────────────────────────
     from agenthicc.mentions.injector import build_context_prefix, InjectionConfig  # noqa: PLC0415
@@ -245,9 +328,13 @@ async def _run_agent_turn(
         async for _chunk in _stream:
             if _chunk.delta:
                 _current_turn.append(_chunk.delta)
-                tui.bus.publish(AssistantChunkEvent(
-                    agent_id=agent_id, chunk="".join(_current_turn)
-                ))
+                # New path: no streaming preview needed (status bar shows Thinking animation)
+                # Old path: publish chunk for spinner streaming text
+                if conv_store is None and tui is not None:
+                    from agenthicc.tui.tui_events import AssistantChunkEvent  # noqa: PLC0415
+                    tui.bus.publish(AssistantChunkEvent(
+                        agent_id=agent_id, chunk="".join(_current_turn)
+                    ))
 
             if _chunk.stop_reason is not None:
                 _turn_text = "".join(_current_turn).strip()
@@ -256,11 +343,13 @@ async def _run_agent_turn(
                 if _turn_text:
                     _all_turn_texts.append(_turn_text)
                     transcript.append_line(agent_id, "\x00md\x00" + _turn_text)
+                    # New path: emit text event immediately per sub-turn
+                    if conv_store is not None:
+                        conv_store.append_event("text", {"text": _turn_text})
 
-                # Always publish so the spinner clears its streaming-text preview.
-                # The live spinner also clears its tool-call list here so the next
-                # batch of calls renders fresh — but the scroll buffer keeps everything.
-                tui.bus.publish(AssistantCompleteEvent(agent_id=agent_id))
+                if conv_store is None and tui is not None:
+                    from agenthicc.tui.tui_events import AssistantCompleteEvent  # noqa: PLC0415
+                    tui.bus.publish(AssistantCompleteEvent(agent_id=agent_id))
 
         content = _all_turn_texts[-1] if _all_turn_texts else ""
         content = _re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=_re.DOTALL)
@@ -271,13 +360,25 @@ async def _run_agent_turn(
     except (asyncio.CancelledError, KeyboardInterrupt):
         content = ""
         _all_turn_texts = []
+        if conv_store is not None:
+            conv_store.end_turn()
     except Exception as exc:
         _all_turn_texts = []
         content = ""
-        tui.bus.publish(ErrorEvent(message=f"{type(exc).__name__}: {exc}"))
+        _emit_error(f"{type(exc).__name__}: {exc}")
+        if conv_store is not None:
+            conv_store.fail_turn(str(exc))
     finally:
-        renderer._status.active = False
-        renderer._status.completed_agents += 1
+        # Deactivate all signal handlers registered during this turn so that
+        # handlers from previous turns (still attached to runner._signals) become
+        # no-ops.  Without this, each subsequent turn accumulates N more handlers
+        # and every event fires N+1 times.
+        _turn_active[0] = False   # deactivate this turn's signal handlers
+        if conv_store is not None:
+            conv_store.end_turn()
+        elif renderer is not None:
+            renderer._status.active = False
+            renderer._status.completed_agents += 1
 
     if content == "(no response)":
         transcript.append_line(agent_id, "\x00md\x00" + content)
