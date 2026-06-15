@@ -269,3 +269,5 @@ A release is shippable when:
 6. Plugin hot-path: `.agenthicc/tools/`, `.agenthicc/commands/`, and `.agenthicc/skills/` are picked up on the next launch.
 7. Mode cycling (Shift+Tab) works during both idle and live streaming and the footer updates immediately.
 8. In Plan / Ask / Review / Safe mode, WRITE / GIT_WRITE / EXECUTE / NETWORK tools are blocked and the model receives a structured error.
+9. `agenthicc deploy staging` works when `.agenthicc/cli/deploy.py` defines `@command("deploy", "staging")`.
+10. `agenthicc --dangerously-skip-permissions` disables all approval prompts for the session without requiring a config file change.

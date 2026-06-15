@@ -1,4 +1,4 @@
-# PRD-79 — CLI Revamp: Decorator-Based Subcommands, CLIContext, and Configuration Wiring
+# PRD-79 — CLI Revamp: Decorator-Based Subcommands, CLIContext, Configuration Wiring, and User-Defined Commands
 
 ## Background
 
@@ -477,13 +477,289 @@ ApprovalGate.before_tool_call():
 
 ---
 
+---
+
+## Fix 4 — User-defined commands from `~/.agenthicc/` and `.agenthicc/`
+
+### Three-layer discovery (mirrors config precedence)
+
+Commands are discovered in priority order.  Later layers overwrite earlier
+layers for the same command path.  A project command `("deploy",)` silently
+shadows a user-global `("deploy",)` which silently shadows a built-in
+`("deploy",)`.
+
+```
+1. Built-in      agenthicc/cli/commands/*.py     source="builtin"   (lowest)
+2. User-global   ~/.agenthicc/cli/*.py           source="user"
+3. Project-local ./.agenthicc/cli/*.py           source="project"   (highest)
+```
+
+This is the same layering used by `load_config()` for TOML files.
+
+### What the user writes
+
+#### Python plugin (full power)
+
+```python
+# .agenthicc/cli/deploy.py
+
+from agenthicc.cli.registry import command, group
+from agenthicc.cli.context import CLIContext
+
+@group("deploy", help="Deployment commands for this project")
+def _(): ...
+
+@command("deploy", "staging")
+async def deploy_staging(ctx: CLIContext, dry_run: bool = False) -> None:
+    """Deploy to the staging environment."""
+    import subprocess
+    cmd = ["./scripts/deploy.sh", "staging"]
+    if dry_run: cmd.append("--dry-run")
+    subprocess.run(cmd, check=True)
+
+@command("deploy", "production")
+async def deploy_production(ctx: CLIContext, tag: str) -> None:
+    """Deploy a specific tag to production."""
+    import subprocess
+    subprocess.run(["./scripts/deploy.sh", "production", f"--tag={tag}"], check=True)
+```
+
+```
+agenthicc deploy staging --dry-run
+agenthicc deploy production --tag v2.1.0
+```
+
+#### TOML shorthand (no Python needed — shell-wrapping only)
+
+```toml
+# .agenthicc/cli.toml
+
+[[command]]
+path = ["deploy", "staging"]
+help = "Deploy to the staging environment"
+run  = "scripts/deploy.sh staging"
+args = [
+  { name = "dry_run", type = "bool", default = false },
+]
+
+[[command]]
+path = ["deploy", "production"]
+help = "Deploy a tagged release to production"
+run  = "scripts/deploy.sh production --tag={tag}"
+args = [
+  { name = "tag", type = "str", help = "Git tag to deploy" },
+]
+```
+
+The discovery layer synthesises TOML entries into Python handlers with
+`subprocess.run` and `{arg}` interpolation.  The user never needs to touch
+Python for simple shell-wrapping cases.
+
+### `_Entry` gains `source`
+
+```python
+@dataclass
+class _Entry:
+    path:     tuple[str, ...]
+    help:     str
+    handler:  Callable
+    is_async: bool
+    source:   str = "builtin"   # "builtin" | "user" | "project"
+```
+
+`agenthicc --commands` (and `/commands` in the TUI) shows the badge next to
+each command so provenance is always visible and auditable.
+
+### `@command()` reads a `ContextVar` for source tagging
+
+Registration happens at import time, before the call site knows the source.
+A `ContextVar` threads the tag through the dynamic import:
+
+```python
+from contextvars import ContextVar
+
+_LOADING_SOURCE: ContextVar[str] = ContextVar("_LOADING_SOURCE", default="builtin")
+
+def command(*path: str, help: str = ""):
+    def decorator(fn: Callable) -> Callable:
+        doc = help or (inspect.getdoc(fn) or "").splitlines()[0]
+        _REGISTRY[path] = _Entry(
+            path=path, help=doc,
+            handler=fn, is_async=asyncio.iscoroutinefunction(fn),
+            source=_LOADING_SOURCE.get(),   # reads context at decoration time
+        )
+        return fn
+    return decorator
+```
+
+### `_discover_directory()` — dynamic file loader
+
+```python
+import importlib.util, sys, warnings
+
+def _discover_directory(directory: Path, source: str) -> None:
+    if not directory.is_dir():
+        return
+
+    token = _LOADING_SOURCE.set(source)
+    try:
+        for py in sorted(directory.glob("*.py")):
+            if py.name.startswith("_"):
+                continue
+            mod_name = f"agenthicc._cli_plugin.{source}.{py.stem}"
+            spec = importlib.util.spec_from_file_location(mod_name, py)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[mod_name] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except Exception as exc:          # noqa: BLE001
+                warnings.warn(
+                    f"[agenthicc] Failed to load CLI plugin {py}: {exc}",
+                    stacklevel=2,
+                )
+
+        # Optional TOML shorthand (cli.toml sits beside the cli/ directory)
+        toml_file = directory.parent / "cli.toml"
+        if toml_file.exists():
+            _load_toml_commands(toml_file, source=source)
+    finally:
+        _LOADING_SOURCE.reset(token)
+```
+
+### `_load_toml_commands()` — synthesises handlers for the TOML shorthand
+
+```python
+def _load_toml_commands(toml_file: Path, source: str) -> None:
+    import tomllib, shlex, subprocess                    # noqa: PLC0415
+    try:
+        with open(toml_file, "rb") as f:
+            data = tomllib.load(f)
+    except Exception as exc:                             # noqa: BLE001
+        import warnings
+        warnings.warn(f"[agenthicc] Bad cli.toml at {toml_file}: {exc}", stacklevel=2)
+        return
+
+    token = _LOADING_SOURCE.set(source)
+    try:
+        for spec in data.get("command", []):
+            path      = tuple(spec["path"])
+            help_str  = spec.get("help", "")
+            run_tmpl  = spec.get("run", "")
+            arg_specs = spec.get("args", [])
+
+            def _make_handler(tmpl: str, args: list[dict]):
+                async def handler(**kwargs):
+                    cmd_str = tmpl.format(**kwargs)
+                    subprocess.run(shlex.split(cmd_str), check=True)
+                handler.__name__        = "_".join(path)
+                handler.__doc__         = help_str
+                handler.__annotations__ = {
+                    a["name"]: bool if a.get("type") == "bool" else str
+                    for a in args
+                }
+                handler.__kwdefaults__ = {
+                    a["name"]: a["default"]
+                    for a in args if "default" in a
+                }
+                return handler
+
+            _REGISTRY[path] = _Entry(
+                path=path, help=help_str,
+                handler=_make_handler(run_tmpl, arg_specs),
+                is_async=True,
+                source=source,
+            )
+    finally:
+        _LOADING_SOURCE.reset(token)
+```
+
+### `_discover()` extended — all three layers in precedence order
+
+```python
+def _discover(
+    project_dir: Path | None = None,
+    user_dir:    Path | None = None,
+) -> None:
+    # 1. Built-in (lowest priority)
+    _discover_package("agenthicc.cli.commands")
+
+    # 2. User-global — can extend or shadow built-ins
+    user_cli = (user_dir or Path.home() / ".agenthicc") / "cli"
+    _discover_directory(user_cli, source="user")
+
+    # 3. Project-local — highest priority, can shadow both
+    project_cli = (project_dir or Path(".agenthicc")) / "cli"
+    _discover_directory(project_cli, source="project")
+```
+
+`parse_cli()` calls `_discover()` once before building the argparse tree.
+
+### Security model
+
+**User-global (`~/.agenthicc/cli/`) — always trusted.**
+The user's own home directory is implicitly trusted, the same as `~/.bashrc`
+or `~/.gitconfig`.
+
+**Project-local (`.agenthicc/cli/`) — explicit trust required.**
+Loading arbitrary Python from a checked-out repository is a supply-chain risk.
+The user must run `agenthicc trust cli` which hashes the current files and
+writes `.agenthicc/trusted_cli.json`:
+
+```json
+{
+  "signed_at": "2026-06-15T10:30:00Z",
+  "files": {
+    "cli/deploy.py": "sha256:abc123..."
+  }
+}
+```
+
+`_discover_directory()` verifies hashes before loading.  If any file has
+changed since the trust was recorded, loading is skipped and a warning is
+printed:
+
+```
+⚠  .agenthicc/cli/ has untrusted or modified files.
+   Run `agenthicc trust cli` to allow loading.
+```
+
+`PluginSettings.auto_trust = true` (existing flag in `config.py`) bypasses the
+check for CI/CD environments.
+
+### Provenance display
+
+`agenthicc --help` (and `agenthicc <group> --help`) shows a `[source]` badge
+next to each command:
+
+```
+  deploy    Deployment commands for this project   [project]
+  sessions  Manage saved sessions                  [builtin]
+  config    Manage configuration                   [builtin]
+```
+
+This makes it immediately clear which commands originate from which layer,
+which is especially useful when a project command shadows a built-in.
+
+### Precedence table
+
+| Source | Location | Trust | Shadows |
+|---|---|---|---|
+| `builtin` | `agenthicc/cli/commands/*.py` | Implicit | — |
+| `user` | `~/.agenthicc/cli/*.py` | Implicit (home dir) | builtins |
+| `project` | `.agenthicc/cli/*.py` | Explicit (`trust cli`) | builtins + user |
+
+---
+
 ## File changes
 
 | File | Change |
 |---|---|
-| `cli/registry.py` | **New** — `_Entry`, `_REGISTRY`, `_GROUPS`, `command()`, `group()`, `_add_params()`, `_as_tree()`, `_wire()`, `_call()`, `_discover()` |
+| `cli/registry.py` | **New** — `_Entry` (with `source`), `_REGISTRY`, `_GROUPS`, `_LOADING_SOURCE` ContextVar, `command()`, `group()`, `_add_params()`, `_as_tree()`, `_wire()`, `_call()`, `_discover()`, `_discover_directory()`, `_load_toml_commands()` |
 | `cli/context.py` | **New** — `CLIFlags`, `CLIContext` dataclasses |
-| `cli/commands/` | **New directory** — one file per command domain (`sessions.py`, `plugin.py`, `config.py`, `auth.py`) |
+| `cli/commands/` | **New directory** — one file per built-in command domain (`sessions.py`, `plugin.py`, `config.py`, `auth.py`) |
+| `cli/commands/trust.py` | **New built-in** — `@command("trust", "cli")` writes `.agenthicc/trusted_cli.json` |
 | `cli/parser.py` | Returns `(CLIContext, argparse.Namespace)`; iterates `_as_tree()` to build argparse; adds `--dangerously-skip-permissions` |
 | `__main__.py` | `main()` — 6 lines; dispatch via `_entry` attribute set by `set_defaults` |
 | `config.py` | Add `BehaviourSettings`; add `behaviour` field to `AgenthiccConfig`; parse in `_dict_to_config()` |
@@ -491,6 +767,10 @@ ApprovalGate.before_tool_call():
 | `runners/tui_session.py` | Add `cli_flags` param to `_run_tui_session()`; accept `CLIContext` in `_run_tui()` |
 | `runners/headless.py` | Accept `CLIContext`; respect `cli_flags` |
 | `tools/approval.py` (PRD-78) | `ApprovalGate` checks `app_state.cli_flags.dangerously_skip_permissions` first |
+| `~/.agenthicc/cli/*.py` | User-global Python command plugins (discovered at startup) |
+| `.agenthicc/cli/*.py` | Project-local Python command plugins (trusted, then discovered) |
+| `.agenthicc/cli.toml` | Optional TOML shorthand for shell-wrapping commands |
+| `.agenthicc/trusted_cli.json` | Trust manifest written by `agenthicc trust cli` |
 
 ---
 
@@ -498,7 +778,7 @@ ApprovalGate.before_tool_call():
 
 - [ ] `agenthicc sessions show abc-123` works.
 - [ ] `agenthicc plugin trust add my-plugin` works (three-level nesting).
-- [ ] Adding a new subcommand at any depth requires only one `@command(...)` decorator — no changes to `main()`, `parse_cli()`, or any other handler.
+- [ ] Adding a new built-in subcommand at any depth requires only one `@command(...)` decorator — no changes to `main()`, `parse_cli()`, or any other handler.
 - [ ] `CLIContext` is injected by annotation type; the parameter name is irrelevant (`ctx`, `app`, `c`, `session` all work).
 - [ ] `agenthicc --dangerously-skip-permissions` disables all `ApprovalGate` prompts in all modes (Guard, Ask, Review, etc.).
 - [ ] `--dangerously-skip-permissions` cannot be set in `agenthicc.toml` (no TOML path exists).
@@ -506,3 +786,9 @@ ApprovalGate.before_tool_call():
 - [ ] `AppState.cli_flags` is frozen after startup and never changes during the session.
 - [ ] All existing tests pass.
 - [ ] `agenthicc --help` and `agenthicc plugin --help` show correct help at every nesting level.
+- [ ] A Python file in `.agenthicc/cli/deploy.py` using `@command("deploy", "staging")` produces a working `agenthicc deploy staging` command.
+- [ ] A `.agenthicc/cli.toml` entry with `run = "scripts/deploy.sh {env}"` produces a working command without any Python code.
+- [ ] Project-local commands in `.agenthicc/cli/` are NOT loaded until `agenthicc trust cli` has been run (or `PluginSettings.auto_trust = true`).
+- [ ] User-global commands in `~/.agenthicc/cli/` are always loaded without a trust step.
+- [ ] `agenthicc --help` shows `[project]`, `[user]`, or `[builtin]` badges next to each command.
+- [ ] A project command with the same path as a built-in silently shadows the built-in.
