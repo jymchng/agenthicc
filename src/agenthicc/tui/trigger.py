@@ -1,25 +1,52 @@
-"""Input Trigger System — generic dropdown architecture (PRD-39).
+"""Input Trigger System — generic dropdown architecture (PRD-39, PRD-69).
 
 Defines the data structures and protocol that every trigger handler must
-implement.  A TriggerRegistry maps single characters to their handlers;
-the state machine in mention_input.py consults the registry on every keystroke.
+implement.  A TriggerManager maps single characters to their handlers;
+unified_session.py consults the manager on every keystroke via resolve().
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["MatchItem", "TriggerContext", "TriggerHandler", "TriggerRegistry"]
+from agenthicc.tui.cbreak_reader import Key
+
+__all__ = [
+    "MatchItem",
+    "TriggerContext",
+    "TriggerResult",
+    "TriggerHandler",
+    "TriggerHandlerBase",
+    "TriggerManager",
+]
+
+
+@dataclass
+class TriggerResult:
+    """Typed result returned by TriggerHandler.on_select.
+
+    Carries the new buffer content and optional post-selection behaviour
+    signals so callers never have to inspect raw bytes to decide what to do.
+    """
+
+    buffer: list[str]         # new buffer content after selection
+    submit: bool = False      # if True, dispatch SendMessageCommand immediately
+    cursor: int | None = None # explicit cursor position; None = end of buffer
 
 
 @dataclass
 class MatchItem:
     """One row in the dropdown for any trigger type."""
 
-    display: str  # shown in the dropdown left column (e.g. "+ src/auth.py", "/deploy")
-    value: str    # inserted into the buffer on selection (may differ from display)
-    hint: str = ""  # optional right-column or below-dropdown annotation
+    display: str  # computed single-line fallback (backwards compat)
+    value:   str  # text inserted into buffer on selection
+    hint:    str = ""  # optional below-dropdown annotation
+
+    # Structured fields (PRD-69) — set by handlers that want the overlay to
+    # render a two-column layout with description wrapping.
+    label:  str = ""  # left column  (e.g. "/commands", "@docs/index.md")
+    detail: str = ""  # right column — full, untruncated description/path
 
 
 @dataclass
@@ -27,95 +54,99 @@ class TriggerContext:
     """Read-only runtime context passed to handlers on every call."""
 
     cwd: Path
-    history: list[str] = field(default_factory=list)
+    session_id: str = ""          # scope results to a session if needed
+    command_registry: Any = None  # CommandRegistry, for cross-trigger lookups
 
 
 @runtime_checkable
 class TriggerHandler(Protocol):
-    """One handler per trigger character.  All methods are pure (no I/O).
+    """Type-annotation Protocol for trigger handlers (pure specification).
 
-    Implementations must set ``char`` to the single character that activates
-    this handler (e.g. ``"@"``, ``"/"``, ``"#"``).
+    Defines the full interface a handler must satisfy.  Contains no default
+    implementations — defaults live in TriggerHandlerBase so they are
+    actually inherited by in-tree handlers.  External plugins that satisfy
+    this Protocol structurally (without explicit inheritance) continue to work.
     """
 
-    #: The single character that activates this handler.
-    char: str
+    char:  str   # single activation character
+    label: str   # human-readable name ("Mention File", "Command", "Shell", "Agent")
 
-    def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
-        """Return dropdown rows for the current fragment.
+    def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]: ...
+    def on_select(self, item: MatchItem | None, fragment: str, buf: list[str]) -> TriggerResult: ...
+    def on_cancel(self, fragment: str, buf: list[str]) -> list[str]: ...
+    def can_activate(self, buf: list[str]) -> bool: ...
+    def get_hint(self, item: MatchItem | None) -> str | None: ...
+    def get_lines(self, item: MatchItem, available_width: int) -> list[str]: ...
 
-        Called on every keystroke after the trigger character.
-        *fragment* is everything the user typed AFTER the trigger char.
-        Return an empty list to show the "no matches" state.
-        """
-        ...
 
-    def on_select(
-        self,
-        item: MatchItem | None,
-        fragment: str,
-        buf: list[str],
-    ) -> list[str]:
-        """Return the new buffer after the user confirms a selection.
+class TriggerHandlerBase:
+    """Concrete mixin that provides default implementations of optional
+    TriggerHandler methods.
 
-        *item* is None only when matches is empty and the user pressed Enter.
-        Implementations typically insert ``self.char + item.value`` into *buf*.
-        """
-        ...
+    In-tree handlers inherit this so that adding a new optional method with a
+    sensible default never breaks existing subclasses.  External plugins that
+    satisfy TriggerHandler structurally (no explicit inheritance) are unaffected.
 
-    def on_cancel(self, fragment: str, buf: list[str]) -> list[str]:
-        """Return the new buffer when the user presses ESC.
+    Required abstract methods (get_matches, on_select, on_cancel) have no
+    defaults here — subclasses must implement them.
+    """
 
-        Typically restores the literal trigger char + fragment so no input is
-        lost.
-        """
-        ...
+    char:  str = ""
+    label: str = ""
 
     def can_activate(self, buf: list[str]) -> bool:
-        """Return True if this trigger should open given the current buffer.
-
-        Called immediately before the state machine switches into trigger mode.
-        When this returns False the trigger character is appended to the buffer
-        as a literal character instead of opening a dropdown.
-
-        The default implementation always returns True (activate unconditionally).
-        Override to restrict activation to specific cursor contexts — for example,
-        a slash-command handler should only activate on an empty buffer, while an
-        @-mention handler should only activate after whitespace or at position 0.
-        """
+        """Activate unconditionally by default."""
         return True
 
     def get_hint(self, item: MatchItem | None) -> str | None:
-        """Optional one-line hint shown below the dropdown for the highlighted item.
-
-        Return ``None`` to show no hint (default behaviour for most handlers).
-        Example: a slash-command handler returns ``"/model [provider] [model]"``
-        when ``/model`` is highlighted.
-        """
+        """No hint by default."""
         return None
 
+    def get_lines(self, item: MatchItem, available_width: int) -> list[str]:
+        """Single-line display, clipped to available_width."""
+        return [item.display[:available_width]]
 
-class TriggerRegistry:
-    """Maps trigger characters to their handlers."""
+
+class TriggerManager:
+    """Maps trigger characters to their handlers.
+
+    The single source of truth for trigger char → handler resolution, including
+    key-enum normalisation (Key.AT → "@").  No other file needs to know about
+    specific Key.* values for trigger detection.
+    """
 
     def __init__(self) -> None:
         self._handlers: dict[str, TriggerHandler] = {}
 
     def register(self, handler: TriggerHandler) -> None:
-        """Register *handler* for its declared trigger character.
-
-        Raises:
-            ValueError: if ``handler.char`` is not exactly one character.
-        """
+        """Register *handler* for its declared trigger character."""
         if len(handler.char) != 1:
             raise ValueError(
                 f"Trigger char must be exactly one character, got {handler.char!r}"
             )
         self._handlers[handler.char] = handler
 
+    def unregister(self, char: str) -> None:
+        """Remove the handler for *char* (no-op if not registered)."""
+        self._handlers.pop(char, None)
+
     def get(self, char: str) -> TriggerHandler | None:
         """Return the handler registered for *char*, or ``None``."""
         return self._handlers.get(char)
+
+    def resolve(self, key: Key, ch: str) -> str | None:
+        """Map a (Key, ch) pair to a registered trigger char, or None.
+
+        This is the single place where key-enum normalisation lives.
+        Key.AT → "@" if "@" is registered.
+        Any other Key.CHAR ch that is registered maps to itself.
+        No other file ever inspects Key enums for trigger detection.
+        """
+        if key == Key.AT:
+            return "@" if "@" in self._handlers else None
+        if key == Key.CHAR and ch and ch in self._handlers:
+            return ch
+        return None
 
     @property
     def chars(self) -> frozenset[str]:
@@ -123,7 +154,7 @@ class TriggerRegistry:
         return frozenset(self._handlers)
 
     def __repr__(self) -> str:
-        return f"TriggerRegistry(chars={sorted(self.chars)})"
+        return f"TriggerManager(chars={sorted(self.chars)})"
 
     def __len__(self) -> int:
         return len(self._handlers)

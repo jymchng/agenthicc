@@ -159,8 +159,9 @@ class UnifiedInputSession:
             case Key.CHAR if ch:
                 self._paste_exit()
                 # Trigger detection during streaming (same as idle)
-                if self._is_trigger_char(key, ch):
-                    await self._open_trigger_overlay(ch)
+                tch = self._registry.resolve(key, ch) if self._registry else None
+                if tch is not None:
+                    await self._open_trigger_overlay(tch)
                 else:
                     self._buf.insert(ch)
                 self._push()
@@ -200,9 +201,9 @@ class UnifiedInputSession:
             return None
 
         # ── trigger detection ──────────────────────────────────────────────────
-        if self._is_trigger_char(key, ch):
-            trigger_char = "@" if key == Key.AT else ch
-            handler = self._registry.get(trigger_char) if self._registry else None
+        trigger_char = self._registry.resolve(key, ch) if self._registry else None
+        if trigger_char is not None:
+            handler = self._registry.get(trigger_char)
             can = handler.can_activate(self._buf.buf[:self._buf.cursor]) if handler else False
             if can:
                 await self._open_trigger_overlay(trigger_char)
@@ -321,13 +322,13 @@ class UnifiedInputSession:
                                 list(tpre) + [tch] + list(tfrag) + [ch]
                             )
                             return None
-                # Check slash-command
-                if ch in (self._registry.chars if self._registry else set()):
-                    self._buf.insert(ch)
-                    await self._open_trigger_overlay(ch)
+                # Check whether this char is a registered trigger.
+                tch = self._registry.resolve(key, ch) if self._registry else None
+                self._buf.insert(ch)
+                if tch is not None:
+                    await self._open_trigger_overlay(tch)
                 else:
-                    self._buf.insert(ch)
-                self._push()
+                    self._push()
 
         return None
 
@@ -347,15 +348,6 @@ class UnifiedInputSession:
     def _paste_exit(self) -> None:
         if self._paste.condensed:
             self._paste.expand()
-
-    def _is_trigger_char(self, key: Key, ch: str) -> bool:
-        if self._registry is None:
-            return False
-        if key == Key.AT and "@" in self._registry.chars:
-            return True
-        if key == Key.CHAR and ch and ch in self._registry.chars:
-            return True
-        return False
 
     def _ctrl_c_sequence(self) -> object:
         self._ctrl_c_count += 1
@@ -404,11 +396,22 @@ class UnifiedInputSession:
             return
         from agenthicc.tui.workspace.overlays.trigger_picker import TriggerPickerOverlay  # noqa: PLC0415
 
-        def on_complete(result: str | None) -> None:
+        def on_complete(result: Any) -> None:
+            from agenthicc.tui.trigger import TriggerResult  # noqa: PLC0415
             self._overlay.hide()
-            if result is not None:
-                self._buf.set(list(result))
-            self._push()
+            if result is not None and isinstance(result, TriggerResult):
+                self._buf.set(result.buffer)
+                if result.cursor is not None:
+                    self._buf.cursor = result.cursor
+                self._push()
+                if result.submit:
+                    import asyncio  # noqa: PLC0415
+                    text = "".join(result.buffer).strip()
+                    asyncio.get_event_loop().create_task(
+                        self._bus.dispatch_async(SendMessageCommand(text=text))
+                    )
+            else:
+                self._push()
 
         overlay = TriggerPickerOverlay(
             initial_buf=initial,

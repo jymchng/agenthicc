@@ -104,35 +104,46 @@ def test_get_matches_sorted_alphabetically():
 
 
 def test_on_select_inserts_command():
+    from agenthicc.tui.trigger import TriggerResult
     t = SlashCommandTrigger(_reg(CommandSpec("/model", "Switch")))
     item = MatchItem(display="/model  Switch", value="/model")
-    buf = t.on_select(item, "mod", [])
-    assert "".join(buf) == "/model"
+    result = t.on_select(item, "mod", [])
+    assert isinstance(result, TriggerResult)
+    assert "".join(result.buffer) == "/model"
+    assert result.submit is False
 
 
 def test_on_select_inserts_into_existing_buf():
+    from agenthicc.tui.trigger import TriggerResult
     t = SlashCommandTrigger(_reg(CommandSpec("/model", "Switch")))
     item = MatchItem(display="/model  Switch", value="/model")
-    buf = t.on_select(item, "mod", list("run "))
-    assert "".join(buf) == "run /model"
+    result = t.on_select(item, "mod", list("run "))
+    assert isinstance(result, TriggerResult)
+    assert "".join(result.buffer) == "run /model"
 
 
 def test_on_select_none_restores_literal():
+    from agenthicc.tui.trigger import TriggerResult
     t = SlashCommandTrigger(CommandRegistry())
-    buf = t.on_select(None, "dep", [])
-    assert "".join(buf) == "/dep"
+    result = t.on_select(None, "dep", [])
+    assert isinstance(result, TriggerResult)
+    assert "".join(result.buffer) == "/dep"
 
 
 def test_on_select_none_empty_fragment():
+    from agenthicc.tui.trigger import TriggerResult
     t = SlashCommandTrigger(CommandRegistry())
-    buf = t.on_select(None, "", [])
-    assert "".join(buf) == "/"
+    result = t.on_select(None, "", [])
+    assert isinstance(result, TriggerResult)
+    assert "".join(result.buffer) == "/"
 
 
 def test_on_select_none_preserves_existing_buf():
+    from agenthicc.tui.trigger import TriggerResult
     t = SlashCommandTrigger(CommandRegistry())
-    buf = t.on_select(None, "foo", list("hello "))
-    assert "".join(buf) == "hello /foo"
+    result = t.on_select(None, "foo", list("hello "))
+    assert isinstance(result, TriggerResult)
+    assert "".join(result.buffer) == "hello /foo"
 
 
 # ── SlashCommandTrigger.on_cancel ────────────────────────────────────────────

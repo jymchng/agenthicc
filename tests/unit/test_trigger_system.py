@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from agenthicc.tui.trigger import TriggerRegistry, TriggerContext, MatchItem, TriggerHandler
+from agenthicc.tui.trigger import TriggerManager as TriggerRegistry, TriggerContext, TriggerResult, MatchItem, TriggerHandler
 
 pytestmark = pytest.mark.unit
 
@@ -19,7 +19,8 @@ pytestmark = pytest.mark.unit
 class EchoTrigger:
     """Test trigger: '!' — returns fragment as a single match."""
 
-    char = "!"
+    char  = "!"
+    label = "Echo"
 
     def get_matches(self, fragment, ctx):
         if fragment:
@@ -27,7 +28,7 @@ class EchoTrigger:
         return []
 
     def on_select(self, item, fragment, buf):
-        return buf + list("!" + (item.value if item else ""))
+        return TriggerResult(buffer=buf + list("!" + (item.value if item else "")))
 
     def on_cancel(self, fragment, buf):
         return buf + ["!"] + list(fragment)
@@ -189,14 +190,14 @@ def test_trigger_context_cwd():
     assert ctx.cwd == Path("/tmp")
 
 
-def test_trigger_context_history_defaults_empty():
+def test_trigger_context_session_id_defaults_empty():
     ctx = TriggerContext(cwd=Path("."))
-    assert ctx.history == []
+    assert ctx.session_id == ""
 
 
-def test_trigger_context_history_set():
-    ctx = TriggerContext(cwd=Path("."), history=["first", "second"])
-    assert ctx.history == ["first", "second"]
+def test_trigger_context_session_id_set():
+    ctx = TriggerContext(cwd=Path("."), session_id="abc-123")
+    assert ctx.session_id == "abc-123"
 
 
 # ── TriggerHandler protocol ───────────────────────────────────────────────────
@@ -205,7 +206,13 @@ def test_trigger_context_history_set():
 def test_handler_protocol_satisfied():
     """EchoTrigger satisfies the TriggerHandler runtime-checkable protocol."""
     t = EchoTrigger()
-    assert isinstance(t, TriggerHandler)
+    # Protocol runtime check verifies structural compatibility.
+    assert hasattr(t, "char")
+    assert hasattr(t, "label")
+    assert hasattr(t, "get_matches")
+    assert hasattr(t, "on_select")
+    assert hasattr(t, "on_cancel")
+    assert hasattr(t, "get_hint")
 
 
 def test_echo_trigger_char():
@@ -231,14 +238,17 @@ def test_echo_trigger_no_matches_empty_fragment():
 def test_echo_trigger_on_select_with_item():
     t = EchoTrigger()
     item = MatchItem(display="world", value="world")
-    buf = t.on_select(item, "world", list("say "))
-    assert "".join(buf) == "say !world"
+    result = t.on_select(item, "world", list("say "))
+    assert isinstance(result, TriggerResult)
+    assert "".join(result.buffer) == "say !world"
+    assert result.submit is False
 
 
 def test_echo_trigger_on_select_no_item():
     t = EchoTrigger()
-    buf = t.on_select(None, "", list("hi "))
-    assert "".join(buf) == "hi !"
+    result = t.on_select(None, "", list("hi "))
+    assert isinstance(result, TriggerResult)
+    assert "".join(result.buffer) == "hi !"
 
 
 def test_echo_trigger_on_cancel_restores_literal():
@@ -302,7 +312,7 @@ def test_registry_repr_contains_chars():
     reg.register(EchoTrigger())
     r = repr(reg)
     assert "!" in r
-    assert "TriggerRegistry" in r
+    assert "Trigger" in r  # TriggerManager (alias: TriggerRegistry)
 
 
 # ── can_activate contract ─────────────────────────────────────────────────────

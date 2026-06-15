@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agenthicc.tui.trigger import MatchItem, TriggerContext
+from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase, TriggerResult
 
 
-class AtMentionTrigger:
+class AtMentionTrigger(TriggerHandlerBase):
     """File/directory mention trigger for the '@' character."""
 
-    char = "@"
+    char  = "@"
+    label = "Mention File"
 
     # ------------------------------------------------------------------
     # Internal helpers (mirrors the original _get_matches / _iter_dir)
@@ -91,15 +92,11 @@ class AtMentionTrigger:
         item: MatchItem | None,
         fragment: str,
         buf: list[str],
-    ) -> list[str]:
-        """Insert the selected path (with leading '@') into *buf*.
-
-        When there are no matches (*item* is None) the literal ``@fragment``
-        text is restored unchanged.
-        """
+    ) -> TriggerResult:
+        """Insert the selected path (with leading '@') into *buf*."""
         if item is None:
-            return buf + ["@"] + list(fragment)
-        return buf + list("@" + item.value)
+            return TriggerResult(buffer=buf + ["@"] + list(fragment))
+        return TriggerResult(buffer=buf + list("@" + item.value))
 
     def can_activate(self, buf: list[str]) -> bool:
         # Activate at position 0 or immediately after whitespace.
@@ -110,6 +107,4 @@ class AtMentionTrigger:
         """Restore the literal ``@fragment`` text into *buf* on ESC."""
         return buf + ["@"] + list(fragment)
 
-    def get_hint(self, item: MatchItem | None) -> str | None:
-        """No hint for file mentions."""
-        return None
+    # get_hint → inherited from TriggerHandlerBase (returns None)

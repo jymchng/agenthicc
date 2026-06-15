@@ -157,7 +157,7 @@ async def _run_tui_session(
     _session_memory = ShortTermMemory(max_tokens=32_000)
 
     # ── command registry + trigger registry ──────────────────────────────────
-    from agenthicc.tui.trigger import TriggerRegistry              # noqa: PLC0415
+    from agenthicc.tui.trigger import TriggerManager                     # noqa: PLC0415
     from agenthicc.tui.triggers.at_mention import AtMentionTrigger # noqa: PLC0415
     from agenthicc.tui.triggers.slash_command import SlashCommandTrigger  # noqa: PLC0415
     from agenthicc.commands import build_builtin_registry, CommandDispatcher  # noqa: PLC0415
@@ -201,7 +201,7 @@ async def _run_tui_session(
         except Exception:  # noqa: BLE001
             pass
 
-    _trigger_registry = TriggerRegistry()
+    _trigger_registry = TriggerManager()
     _trigger_registry.register(AtMentionTrigger())
     _trigger_registry.register(SlashCommandTrigger(_cmd_registry))
     _cmd_dispatcher = CommandDispatcher(_cmd_registry)
@@ -390,7 +390,6 @@ async def _run_tui_session(
         overlay_host=workspace.overlays,
         cwd=Path(os.getcwd()),
         cfg=cfg,
-        history=[],
     )
 
     # ── start ─────────────────────────────────────────────────────────────────

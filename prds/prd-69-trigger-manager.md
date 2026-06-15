@@ -2,9 +2,9 @@
 
 ## Problem
 
-The trigger system (`@`, `/`) is well-structured at its core but has three
-specific leaks that make adding new trigger characters (`!`, `#`) require
-touching multiple unrelated files:
+The trigger system (`@`, `/`) is well-structured at its core but has four
+specific issues that make adding new trigger characters (`!`, `#`) error-prone
+and prevent full description display in the dropdown:
 
 1. **`Key.AT` is hardcoded in two files.** `unified_session.py`
    (`_is_trigger_char`) and `trigger_picker.py` (`handle_key`) both contain
@@ -18,8 +18,14 @@ touching multiple unrelated files:
 
 3. **`TriggerPickerOverlay` is coupled to the full `TriggerRegistry`.**
    The overlay does its own handler lookup via `_init_trigger()` rather than
-   receiving a pre-resolved handler. This means the overlay has to know about
-   the registry's internal structure and character normalisation.
+   receiving a pre-resolved handler.
+
+4. **Dropdown descriptions are truncated and cannot wrap.**
+   `SlashCommandTrigger.get_matches` pre-truncates descriptions to 36 chars.
+   `TriggerPickerOverlay` further clips each item to 60 chars and renders it
+   as exactly one terminal line per item. Long descriptions (e.g.
+   "List all registered commands with their source and group") are always
+   silently cut off with no way to see the full text.
 
 ---
 
@@ -32,6 +38,8 @@ touching multiple unrelated files:
   cursor placement) without changes to any calling code.
 - The overlay is a pure rendering surface; it receives a resolved handler and
   emits a `TriggerResult`.
+- Long descriptions display fully, wrapped to the next line under the same
+  column as the description text, without overflowing the overlay height.
 
 ---
 
@@ -39,8 +47,6 @@ touching multiple unrelated files:
 
 - Do not implement `!` (BashTrigger) or `#` (AgentMentionTrigger) — those are
   follow-on PRDs. This PRD only lays the infrastructure.
-- Do not change the dropdown rendering (`MatchItem`, `TriggerPickerOverlay`
-  layout, scrolling, hint display).
 - Do not change `_find_trigger_tail` / backspace-reopen mechanics.
 - Do not add async to any `TriggerHandler` method.
 
@@ -61,7 +67,26 @@ class TriggerResult:
 Replaces the bare `list[str]` return type of `on_select`. Every completion
 path now carries intent, not just buffer bytes.
 
-### `MatchItem` — unchanged
+### `MatchItem` — structured fields added
+
+```python
+@dataclass
+class MatchItem:
+    display: str          # computed single-line fallback (backwards compat)
+    value:   str          # text inserted into buffer on selection — unchanged
+    hint:    str = ""     # below-dropdown annotation — unchanged
+    label:   str = ""     # left column (e.g. "/commands", "@docs/index.md")
+    detail:  str = ""     # right column — full, untruncated description/path
+```
+
+`label` and `detail` carry the raw, untruncated data. When both are set,
+`TriggerPickerOverlay` uses them (via `handler.get_lines`) instead of
+`display`. When absent, `display` is used as before — fully backwards
+compatible.
+
+`get_matches` implementations stop pre-truncating: the full description goes
+into `detail`, and `display` is kept as a short fallback for any consumer that
+doesn't know about `label`/`detail`.
 
 ### `TriggerContext` — minimal change
 
@@ -76,22 +101,48 @@ class TriggerContext:
     command_registry: Any = None  # CommandRegistry, for cross-trigger lookups
 ```
 
-### `TriggerHandler` Protocol — one addition, one changed return type
+### `TriggerHandler` Protocol — two additions, one changed return type
 
 ```python
 class TriggerHandler(Protocol):
-    char: str    # single activation character — unchanged
+    char:  str   # single activation character — unchanged
     label: str   # NEW: human-readable name ("Mention File", "Command", "Shell", "Agent")
 
-    def can_activate(self, buf: list[str]) -> bool: ...              # unchanged
+    def can_activate(self, buf: list[str]) -> bool: ...               # unchanged
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]: ...  # unchanged
     def on_select(self, item: MatchItem | None, fragment: str, buf: list[str]) -> TriggerResult: ...  # was list[str]
     def on_cancel(self, fragment: str, buf: list[str]) -> list[str]: ...  # unchanged
-    def get_hint(self, item: MatchItem | None) -> str | None: ...    # unchanged
+    def get_hint(self, item: MatchItem | None) -> str | None: ...     # unchanged
+
+    def get_lines(self, item: MatchItem, available_width: int) -> list[str]:
+        """Return the terminal lines to display for one dropdown item.
+
+        Default implementation returns a single line using item.display,
+        clipped to available_width. Handlers override this to implement
+        two-column layout with description wrapping.
+
+        The overlay calls this once per visible item per render. The returned
+        list length determines how many terminal rows that item occupies.
+        """
+        return [item.display[:available_width]]
 ```
 
-The only breaking change: `on_select` return type changes from `list[str]` to
-`TriggerResult`. Existing handlers each need a one-line update.
+`get_lines` is the key addition for multi-line display. It is an **optional
+override** — the default returns one line, so existing handlers that do not
+override it continue to work without change.
+
+`SlashCommandTrigger` overrides `get_lines` to produce:
+
+```
+  ▶ /commands              List all registered commands with
+                           their source and group
+```
+
+The second line is indented to align under the description column. The handler
+computes this layout given `available_width` at render time.
+
+The only **breaking** change is `on_select` return type (`TriggerResult`
+instead of `list[str]`). Each existing handler needs a one-line update.
 
 ---
 
@@ -124,15 +175,55 @@ knowledge required. The overlay never sees `Key.*` for trigger-char purposes.
 
 ---
 
+## `TriggerPickerOverlay` — line-height-aware scroll model
+
+The current scroll model assumes **one item = one terminal line**:
+
+```python
+# current (item-count-based)
+n      = min(_MAX_VISIBLE, len(matches))
+scroll = max(0, min(selected - n + 1, len(matches) - n))
+for i, item in enumerate(matches[scroll:scroll + n]):
+    lines.append(Text(item.display[:60]))   # exactly 1 line per item
+```
+
+With `get_lines` returning variable-height items, the model must track
+**terminal lines**, not items:
+
+```python
+# new (line-count-based)
+available_width = shutil.get_terminal_size((80, 24)).columns - 4  # indent
+item_lines  = [handler.get_lines(item, available_width) for item in matches]
+item_heights = [len(ls) for ls in item_lines]   # lines per item
+
+# cumulative line offsets — map item index → first terminal line
+offsets = [0]
+for h in item_heights:
+    offsets.append(offsets[-1] + h)
+
+# scroll tracks the item index whose first line is at the top of the window
+# ensure the selected item's last line is within the visible window
+```
+
+`_MAX_VISIBLE` becomes a terminal-line budget (default 12), not an item count.
+The scroll computation uses cumulative offsets to keep the selected item fully
+visible — the selected item's first **and** last lines are inside the window.
+
+The overlay stores `_scroll_item: int` (index of the topmost visible item).
+On Up/Down navigation, after updating `_selected`, the overlay adjusts
+`_scroll_item` so the selected item is always fully in view.
+
+---
+
 ## File-by-file changes
 
 | File | Change |
 |---|---|
-| `tui/trigger.py` | Add `TriggerResult`; remove `history` from `TriggerContext`; add `session_id` and `command_registry`; add `label` to `TriggerHandler` Protocol; rename `TriggerRegistry` → `TriggerManager`; add `resolve()` method |
-| `tui/triggers/at_mention.py` | `on_select` returns `TriggerResult(buffer=...)` |
-| `tui/triggers/slash_command.py` | `on_select` returns `TriggerResult(buffer=...)` |
+| `tui/trigger.py` | Add `TriggerResult`; add `label`/`detail` to `MatchItem`; remove `history` from `TriggerContext`; add `session_id` and `command_registry`; add `label` and `get_lines` to `TriggerHandler` Protocol; rename `TriggerRegistry` → `TriggerManager`; add `resolve()` |
+| `tui/triggers/at_mention.py` | `on_select` returns `TriggerResult(buffer=...)`; populate `label`/`detail` in returned `MatchItem`s |
+| `tui/triggers/slash_command.py` | `on_select` returns `TriggerResult(buffer=...)`; stop pre-truncating descriptions; populate `label`/`detail`; override `get_lines` for two-column wrapped layout |
 | `tui/input/unified_session.py` | `_is_trigger_char` replaced by `self._triggers.resolve(key, ch)`; `on_complete` callback handles `submit=True` and explicit `cursor` from `TriggerResult` |
-| `tui/workspace/overlays/trigger_picker.py` | Remove `Key.AT` special-case in `handle_key`; pass resolved `TriggerResult` through `on_complete`; receive pre-resolved handler instead of full registry |
+| `tui/workspace/overlays/trigger_picker.py` | Remove `Key.AT` special-case; receive pre-resolved handler; call `handler.get_lines(item, width)` per item; switch scroll to line-count model |
 | `runners/tui_session.py` | `TriggerRegistry()` → `TriggerManager()` |
 
 No new files required. No changes outside the trigger subsystem.
@@ -143,41 +234,39 @@ No new files required. No changes outside the trigger subsystem.
 
 ```python
 class BashTrigger:
-    char = "!"
+    char  = "!"
     label = "Shell"
 
     def can_activate(self, buf): return not buf or buf[-1] == "\n"
-    def get_matches(self, fragment, ctx): return [...]  # shell history / common cmds
+    def get_matches(self, fragment, ctx):
+        return [MatchItem(display=cmd, value=cmd, label="!", detail=cmd)
+                for cmd in shell_history if cmd.startswith(fragment)]
     def on_select(self, item, fragment, buf):
         cmd = item.value if item else fragment
         return TriggerResult(buffer=buf + list("!" + cmd), submit=True)
     def on_cancel(self, fragment, buf): return buf + list("!" + fragment)
     def get_hint(self, item): return item.hint if item else None
+    # get_lines: default (one line) is fine for shell commands
 ```
 
-Registration:
-
-```python
-manager.register(BashTrigger())
-```
-
-No other file changes. `submit=True` in `TriggerResult` causes
-`unified_session` to dispatch `SendMessageCommand` immediately after updating
-the buffer.
+No other file changes. `submit=True` causes `unified_session` to dispatch
+`SendMessageCommand` immediately after the buffer update.
 
 ## Example: adding `#` (AgentMentionTrigger) after this PRD
 
 ```python
 class AgentMentionTrigger:
-    char = "#"
+    char  = "#"
     label = "Agent"
 
     def get_matches(self, fragment, ctx):
-        return [MatchItem(display=a.name, value=a.id) for a in agents if ...]
-
+        return [MatchItem(display=a.name, value=a.id,
+                          label=f"#{a.id}", detail=a.description)
+                for a in agents if a.name.startswith(fragment)]
     def on_select(self, item, fragment, buf):
         prefix = list(f"#{item.value} ")
         return TriggerResult(buffer=buf + prefix, cursor=len(buf) + len(prefix))
+    # get_lines: may override to show agent description on second line
 ```
 
 ---
@@ -193,5 +282,12 @@ class AgentMentionTrigger:
   call, no other file changes.
 - [ ] `TriggerResult.submit=True` causes `unified_session` to dispatch
   `SendMessageCommand` after buffer update.
+- [ ] `MatchItem.detail` carries the full, untruncated description for
+  slash commands. No handler truncates descriptions before returning `MatchItem`.
+- [ ] `SlashCommandTrigger.get_lines` wraps long descriptions onto a second
+  line aligned under the description column. The full description is visible.
+- [ ] The dropdown never overflows its `_MAX_VISIBLE` line budget regardless
+  of how many items have multi-line display.
 - [ ] All existing tests pass. `/skills`, `@mention`, and `/command` triggers
-  work identically to before.
+  work identically to before (description wrapping is an addition, not a
+  regression).

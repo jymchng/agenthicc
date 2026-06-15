@@ -1,13 +1,19 @@
-"""Slash-command trigger — implements PRD-36, PRD-37, PRD-38."""
+"""Slash-command trigger — implements PRD-36, PRD-37, PRD-38, PRD-69."""
 from __future__ import annotations
-from agenthicc.tui.trigger import TriggerContext, MatchItem
 
-class SlashCommandTrigger:
+from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase, TriggerResult
+
+_NAME_COL = 24   # characters reserved for the command name column
+
+
+class SlashCommandTrigger(TriggerHandlerBase):
     """Trigger handler for "/" that opens the slash-command dropdown."""
-    char = "/"
+
+    char  = "/"
+    label = "Command"
 
     def __init__(self, registry=None) -> None:
-        self._registry = registry  # UnifiedCommandRegistry | None (PRD-44)
+        self._registry = registry  # UnifiedCommandRegistry | None
 
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
         if self._registry is None:
@@ -16,12 +22,17 @@ class SlashCommandTrigger:
         cmds = self._registry.matches(partial)
         results = []
         for cmd in cmds:
-            # Keep description short so the full row fits in one terminal line.
-            # The renderer also truncates, but trimming here keeps display clean.
-            desc = cmd.description[:36] + "…" if len(cmd.description) > 36 else cmd.description
-            display = f"{cmd.name:<22} {desc}"
-            hint = self._format_hint(cmd)
-            results.append(MatchItem(display=display, value=cmd.name, hint=hint))
+            # display: short single-line fallback for consumers without get_lines
+            short_desc = (cmd.description[:36] + "…"
+                          if len(cmd.description) > 36 else cmd.description)
+            display = f"{cmd.name:<{_NAME_COL}} {short_desc}"
+            results.append(MatchItem(
+                display=display,
+                value=cmd.name,
+                hint=self._format_hint(cmd),
+                label=cmd.name,
+                detail=cmd.description,   # full, untruncated
+            ))
         return results
 
     def _format_hint(self, cmd) -> str:
@@ -29,20 +40,67 @@ class SlashCommandTrigger:
             return f"  ↑ {cmd.name} {cmd.argument_hint}  —  {cmd.description}"
         return f"  ↑ {cmd.name}  —  {cmd.description}"
 
-    def on_select(self, item, fragment, buf):
+    def on_select(
+        self,
+        item: MatchItem | None,
+        fragment: str,
+        buf: list[str],
+    ) -> TriggerResult:
         if item is None:
-            return buf + ["/"] + list(fragment)
-        return buf + list(item.value)
+            return TriggerResult(buffer=buf + ["/"] + list(fragment))
+        return TriggerResult(buffer=buf + list(item.value))
 
-    def on_cancel(self, fragment, buf):
+    def on_cancel(self, fragment: str, buf: list[str]) -> list[str]:
         return buf + ["/"] + list(fragment)
 
     def can_activate(self, buf: list[str]) -> bool:
-        # Activate on an empty buffer OR immediately after a newline so that
-        # '/cmd' works both at the very start and at the start of a new line
-        # within a multi-line input.  A '/' elsewhere (e.g. inside '@docs/')
-        # is treated as a literal character.
         return not buf or buf[-1] == "\n"
 
-    def get_hint(self, item) -> str | None:
+    def get_hint(self, item: MatchItem | None) -> str | None:
         return item.hint if item and item.hint else None
+
+    def get_lines(self, item: MatchItem, available_width: int) -> list[str]:
+        """Two-column layout: command name left, description right with wrapping.
+
+        When the description is short enough it fits on one line:
+            "  ▶ /commands              List all registered commands"
+
+        When too long it wraps under the description column:
+            "  ▶ /commands              List all registered commands with
+                                        their source and group"
+
+        The indicator and indentation are NOT included — the overlay adds them.
+        """
+        name = item.label or item.value
+        detail = item.detail or item.display
+
+        # Space available for the description: total width minus name column
+        # minus the 4-char indicator prefix ("  ▶ " / "    ") the overlay adds.
+        indent_width = 4         # "  ▶ " or "    "
+        name_field   = _NAME_COL # fixed column width for command name
+        desc_col     = indent_width + name_field + 1  # column where description starts
+        desc_width   = max(available_width - desc_col, 16)
+
+        if len(detail) <= desc_width:
+            # Fits on one line.
+            return [f"{name:<{name_field}} {detail}"]
+
+        # Wrap: break detail into chunks of desc_width.
+        chunks: list[str] = []
+        remaining = detail
+        while remaining:
+            # Try to break at a word boundary within desc_width.
+            if len(remaining) <= desc_width:
+                chunks.append(remaining)
+                break
+            cut = remaining.rfind(" ", 0, desc_width + 1)
+            if cut <= 0:
+                cut = desc_width
+            chunks.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip()
+
+        lines = [f"{name:<{name_field}} {chunks[0]}"]
+        continuation_prefix = " " * (name_field + 1)  # aligns under description
+        for chunk in chunks[1:]:
+            lines.append(f"{continuation_prefix}{chunk}")
+        return lines
