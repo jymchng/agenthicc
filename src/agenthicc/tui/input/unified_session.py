@@ -180,20 +180,30 @@ class UnifiedInputSession:
 
         def on_complete(result: Any) -> None:
             from agenthicc.tui.trigger import TriggerResult  # noqa: PLC0415
-            self._overlay.hide()
+            # Push to InputState BEFORE hiding the overlay.  hide() triggers
+            # _redraw() synchronously; if InputState is still empty at that
+            # point, ComposerComponent renders a blank bar and flushes it to
+            # the terminal before the correct content can be set.
             if result is not None and isinstance(result, TriggerResult):
                 self._buf.set(result.buffer)
                 if result.cursor is not None:
                     self._buf.cursor = result.cursor
                 self._push()
-                if result.submit:
-                    import asyncio  # noqa: PLC0415
-                    text = "".join(result.buffer).strip()
-                    asyncio.get_event_loop().create_task(
-                        self._bus.dispatch_async(SendMessageCommand(text=text))
-                    )
             else:
+                self._push()   # restore pre-trigger content on ESC / cancel
+            self._overlay.hide()   # _redraw fires here; InputState already correct
+            if result is not None and isinstance(result, TriggerResult) and result.submit:
+                import asyncio  # noqa: PLC0415
+                text = "".join(result.buffer).strip()
+                # Mirror what _submit() does: clear the buffer so the input
+                # bar is empty after submission, not left showing the sent text.
+                self._buf.clear()
+                self._paste.condensed = False
+                self._ctrl_c_count = 0
                 self._push()
+                asyncio.get_event_loop().create_task(
+                    self._bus.dispatch_async(SendMessageCommand(text=text))
+                )
 
         overlay = TriggerPickerOverlay(
             initial_buf=initial,

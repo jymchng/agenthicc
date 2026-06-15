@@ -46,20 +46,27 @@ class TriggerPickerOverlay(Overlay):
     # ── setup ─────────────────────────────────────────────────────────────────
 
     def _init_trigger(self) -> None:
-        """Activate the trigger from the last trigger char in initial_buf."""
+        """Find the rightmost activatable trigger char in initial_buf and activate it.
+
+        PRD-77 fix: do NOT anchor on last_char.  The last character may be a
+        regular char appended after the trigger (e.g. InsertCapability re-opens
+        the overlay with initial = pre + ["@"] + fragment + [new_char], where
+        new_char is "." — not a trigger).  Walking backward and using each
+        candidate char's own handler avoids the wrong-handler bug too.
+        """
         buf = self._buf.buf
         if not buf:
             return
-        last_char = buf[-1]
-        handler = self._registry.get(last_char) if self._registry else None
-        if handler is None:
-            return
+        chars = self._registry.chars if self._registry else set()
         for i in range(len(buf) - 1, -1, -1):
             ch = buf[i]
-            if ch in (self._registry.chars if self._registry else set()):
+            if ch.isspace():
+                break   # stop at a word boundary; no trigger activates here
+            if ch in chars:
+                handler  = self._registry.get(ch)   # handler for THIS char
                 pre      = buf[:i]
                 fragment = "".join(buf[i + 1:])
-                if handler.can_activate(pre):
+                if handler and handler.can_activate(pre):
                     from types import SimpleNamespace  # noqa: PLC0415
                     self._trigger = SimpleNamespace(
                         handler=handler,
@@ -147,7 +154,27 @@ class TriggerPickerOverlay(Overlay):
                 else:
                     self._complete(None)
 
-            case Key.ENTER | Key.TAB:
+            case Key.ENTER:
+                # PRD-77: Enter with no match commits the text AND submits so
+                # the user doesn't need a second Enter press.  Enter with a
+                # match commits the selection (same as Tab).
+                item = self._matches[self._selected] if self._matches else None
+                if self._trigger:
+                    result = self._trigger.handler.on_select(
+                        item, self._trigger.fragment, self._buf.buf
+                    )
+                    if item is None:
+                        from agenthicc.tui.trigger import TriggerResult  # noqa: PLC0415
+                        result = TriggerResult(
+                            buffer=result.buffer, submit=True, cursor=result.cursor
+                        )
+                    self._complete(result)
+                else:
+                    self._complete(None)
+
+            case Key.TAB:
+                # Tab commits the selection without submitting — user continues
+                # typing after the inserted text.
                 item = self._matches[self._selected] if self._matches else None
                 if self._trigger:
                     result = self._trigger.handler.on_select(
