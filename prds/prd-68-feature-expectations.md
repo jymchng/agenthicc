@@ -93,9 +93,11 @@ Content appears above the always-on Live block and scrolls naturally.
 | # | Feature | Expected behaviour |
 |---|---|---|
 | 6.1 | Submit message | Enter sends the current buffer to the agent. |
-| 6.2 | Queue during streaming | Typing and pressing Enter while the agent runs queues the message with `⌛ Queued` confirmation. Queued messages are dispatched sequentially after the current turn. |
+| 6.2 | Queue during streaming | Typing and pressing Enter while the agent runs queues the message with `⌛ Queued` confirmation. Queued messages are dispatched sequentially after the current turn completes or is interrupted. The `⌛ Queued` notification clears once the queue is fully processed. |
 | 6.3 | ESC cancels agent | Pressing ESC while the agent is streaming cancels the current turn immediately. Status returns to Idle. Any messages queued before the interrupt are sent as the next turn — they are never silently dropped. |
 | 6.4 | Ctrl+C cancels agent | Same as ESC during streaming. Queued messages are preserved and sent after the interrupt. |
+| 6.7 | Queued commands dispatched after interrupt | If a slash command (e.g. `/config`) was queued during streaming and the agent is interrupted, the command is dispatched through the full slash-command pipeline — it is never forwarded to the agent as free text. |
+| 6.8 | Queued messages appear in transcript | Each queued message that reaches the agent is shown in the transcript (`❯ text`) before the agent's response, in the same way as a directly-submitted message. |
 | 6.5 | Double Ctrl+C exits | First press clears the buffer and shows `Press Ctrl+C again to exit.` on the footer. Second press shows the resume hint and exits. |
 | 6.6 | Any key clears Ctrl+C prompt | Pressing any key other than Ctrl+C after the first press resets the counter and clears the notification. |
 | 6.7 | Session resume hint | On exit the terminal shows `agenthicc --resume <id>` / `agenthicc --continue`. |

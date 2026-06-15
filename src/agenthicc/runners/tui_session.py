@@ -274,32 +274,70 @@ async def _run_tui_session(
 
     _pending_queue: list[str] = []
 
+    def _try_dispatch_slash(msg: str) -> bool:
+        """Dispatch msg as a slash command if it starts with '/'.
+
+        Returns True if msg was a slash command (handled or no-handler).
+        Returns False if msg is regular text and should go to the agent.
+        """
+        if not msg.startswith("/"):
+            return False
+        if _dispatch_slash(msg):
+            return True
+        cmd_name = msg.split()[0]
+        if _cmd_registry.get(cmd_name) is not None:
+            console.print(
+                f"  [dim]Command [bold]{cmd_name}[/bold] has no handler. "
+                f"Add a handler in [bold].agenthicc/commands/[/bold][/dim]"
+            )
+        return True  # slash command — never forward to agent regardless
+
+    def _drain_to_pending() -> None:
+        """Move streaming-queued messages into _pending_queue and clear the
+        ⌛ Queued notification once the queue is empty."""
+        _pending_queue.extend(input_session.drain_queue())
+        if not _pending_queue:
+            app_state.conversation.notification.set(None)
+
     async def _agent_task_body(text: str) -> None:
         nonlocal _agent_task
         try:
             await _run_turn(text)
-            # Absorb any messages queued during this turn before chaining.
-            _pending_queue.extend(input_session.drain_queue())
+            # Absorb any messages queued during this turn.
+            _drain_to_pending()
             while _pending_queue:
-                await _run_turn(_pending_queue.pop(0))
+                msg = _pending_queue.pop(0).strip()
+                if _try_dispatch_slash(msg):
+                    continue
+                # Regular message: show in transcript and run as agent turn.
+                app_state.conversation.notification.set(None)
+                app_state.conversation.append_event("user_message", {"text": msg})
+                await _run_turn(msg)
+                _drain_to_pending()
         except asyncio.CancelledError:
             app_state.conversation.end_turn()
             input_session.set_mode(InputMode.IDLE)
-            # Keep messages that were queued before the interrupt — they
-            # represent explicit user intent and must not be silently dropped.
-            _pending_queue.extend(input_session.drain_queue())
         except Exception as exc:
             app_state.conversation.fail_turn(str(exc))
             input_session.set_mode(InputMode.IDLE)
-            _pending_queue.extend(input_session.drain_queue())
         finally:
             _agent_task = None
-            # If queued messages survived (from interrupt or error), start the
-            # next turn immediately now that the current task slot is free.
-            if _pending_queue:
+            _drain_to_pending()
+            # Dispatch any slash commands at the head of the queue immediately,
+            # then start the next agent turn for the first regular message.
+            while _pending_queue:
+                msg = _pending_queue[0].strip()
+                if _try_dispatch_slash(msg):
+                    _pending_queue.pop(0)
+                    continue
+                # First regular message — start a new agent turn.
+                _pending_queue.pop(0)
+                app_state.conversation.notification.set(None)
+                app_state.conversation.append_event("user_message", {"text": msg})
                 _agent_task = asyncio.create_task(
-                    _agent_task_body(_pending_queue.pop(0)), name="agent-turn"
+                    _agent_task_body(msg), name="agent-turn"
                 )
+                break
 
     async def _handle_send(cmd: SendMessageCommand) -> None:
         nonlocal _agent_task
