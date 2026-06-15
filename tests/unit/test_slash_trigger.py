@@ -11,7 +11,7 @@ from pathlib import Path
 
 from agenthicc.tui.trigger import TriggerContext, MatchItem
 from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
-from agenthicc.tui.input_bar import CommandRegistry, CommandSpec, build_default_registry, BUILTIN_COMMANDS
+from agenthicc.tui.input.completions import CommandRegistry, CommandSpec, build_default_registry, BUILTIN_COMMANDS
 
 pytestmark = pytest.mark.unit
 

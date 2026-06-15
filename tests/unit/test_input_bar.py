@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from agenthicc.tui.input_bar import (
+from agenthicc.tui.input.completions import (
     AtMentionCompleter,
     BUILTIN_COMMANDS,
     CommandSpec,

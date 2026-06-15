@@ -223,10 +223,6 @@ def test_cmd_mode_lists_modes():
     registry = build_default_registry()
     manager = ModeManager(registry)
 
-    renderer = MagicMock()
-    renderer._mode_manager = manager
-    renderer._mode_registry = registry
-
     console = MagicMock()
 
     ctx = CommandContext(
@@ -234,9 +230,9 @@ def test_cmd_mode_lists_modes():
         args="",
         model=MagicMock(),
         console=console,
-        renderer=renderer,
         config=MagicMock(),
         session_id="",
+        mode_manager=manager,
     )
 
     _cmd_mode(ctx)
@@ -261,10 +257,6 @@ def test_cmd_mode_switches():
     registry = build_default_registry()
     manager = ModeManager(registry)
 
-    renderer = MagicMock()
-    renderer._mode_manager = manager
-    renderer._mode_registry = registry
-
     console = MagicMock()
 
     ctx = CommandContext(
@@ -272,9 +264,9 @@ def test_cmd_mode_switches():
         args="Plan",
         model=MagicMock(),
         console=console,
-        renderer=renderer,
         config=MagicMock(),
         session_id="",
+        mode_manager=manager,
     )
 
     _cmd_mode(ctx)

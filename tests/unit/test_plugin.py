@@ -41,7 +41,7 @@ class TestPluginRegistry:
         assert "MyEvent" in reg.event_handlers
 
     def test_register_command_calls_session(self):
-        from agenthicc.tui.input_bar import CommandSpec
+        from agenthicc.tui.input.completions import CommandSpec
         mock_session = MagicMock()
         reg = PluginRegistry(input_bar_session=mock_session)
         spec = CommandSpec("/test", "Test")

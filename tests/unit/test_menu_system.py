@@ -123,7 +123,7 @@ def test_menu_driver_widget_property_after_close():
 
 def test_menu_driver_routes_to_widget():
     """MenuDriver delegates handle_key to the active widget."""
-    from agenthicc.tui.mention_input import Key
+    from agenthicc.tui.cbreak_reader import Key
 
     d = MenuDriver()
     d.open(EchoWidget())
@@ -133,7 +133,7 @@ def test_menu_driver_routes_to_widget():
 
 
 def test_menu_driver_auto_closes_on_done():
-    from agenthicc.tui.mention_input import Key
+    from agenthicc.tui.cbreak_reader import Key
 
     d = MenuDriver()
     d.open(EchoWidget())
@@ -142,7 +142,7 @@ def test_menu_driver_auto_closes_on_done():
 
 
 def test_menu_driver_auto_closes_on_cancel():
-    from agenthicc.tui.mention_input import Key
+    from agenthicc.tui.cbreak_reader import Key
 
     d = MenuDriver()
     d.open(EchoWidget())
@@ -152,7 +152,7 @@ def test_menu_driver_auto_closes_on_cancel():
 
 
 def test_menu_driver_stays_open_on_continue():
-    from agenthicc.tui.mention_input import Key
+    from agenthicc.tui.cbreak_reader import Key
 
     d = MenuDriver()
     d.open(EchoWidget())
@@ -163,7 +163,7 @@ def test_menu_driver_stays_open_on_continue():
 
 
 def test_menu_driver_no_widget_returns_continue():
-    from agenthicc.tui.mention_input import Key
+    from agenthicc.tui.cbreak_reader import Key
 
     d = MenuDriver()
     result = d.handle_key(Key.ENTER, "")
