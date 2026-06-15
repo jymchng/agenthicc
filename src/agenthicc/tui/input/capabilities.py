@@ -347,10 +347,11 @@ STREAMING_CAPABILITIES: list[Any] = [
     OverlayCapability(),
     InterruptCapability(),        # Ctrl+C / ESC → cancel agent
     PasteCapability(),
-    TriggerCapability(),          # @, / etc. — same as idle (fixes @ in streaming)
+    TriggerCapability(),          # @, / etc. — same as idle
     SubmitCapability(commit_history=False),
     NewlineCapability(),
     BackspaceCapability(),
     ClearCapability(),
+    ModeCycleCapability(),        # Shift+Tab — mode switch takes effect on next tool call
     InsertCapability(),           # fallback — must be last
 ]
