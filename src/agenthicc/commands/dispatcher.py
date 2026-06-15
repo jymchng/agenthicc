@@ -1,7 +1,7 @@
 """CommandDispatcher — executes commands via the unified registry (PRD-44)."""
 from __future__ import annotations
 
-from .command import Command, CommandContext
+from .command import CommandContext
 from .registry import UnifiedCommandRegistry
 
 __all__ = ["CommandDispatcher"]

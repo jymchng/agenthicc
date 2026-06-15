@@ -16,15 +16,14 @@ from __future__ import annotations
 
 import os
 import select
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agenthicc.modes import ModeManager
 
-from agenthicc.tui.trigger import TriggerRegistry, TriggerHandler, TriggerContext, MatchItem
-from agenthicc.tui.menu import MenuDriver, MenuResultKind, MenuWidget
+from agenthicc.tui.trigger import TriggerRegistry, MatchItem
+from agenthicc.tui.menu import MenuWidget
 
 # ── Re-exports: CBREAK primitives ────────────────────────────────────────────
 from agenthicc.tui.cbreak_reader import Key, raw_mode as _raw_mode  # noqa: F401

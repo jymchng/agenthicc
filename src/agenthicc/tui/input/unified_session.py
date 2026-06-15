@@ -13,7 +13,7 @@ import asyncio
 import sys
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from agenthicc.tui.cbreak_reader import Key, raw_mode, read_key
 from agenthicc.tui.input.buffer import InputBuffer
@@ -22,7 +22,6 @@ from agenthicc.tui.input.paste import PasteState
 from agenthicc.tui.runtime.mode_manager import ModeManager, build_mode_str
 from agenthicc.tui.runtime.commands import (
     CommandBus, SendMessageCommand, InterruptAgentCommand,
-    RunBuiltinCommand, OpenOverlayCommand,
 )
 
 # Sentinel: dispatch methods return this to exit run()

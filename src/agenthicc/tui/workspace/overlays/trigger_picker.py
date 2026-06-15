@@ -26,7 +26,7 @@ class TriggerPickerOverlay(Overlay):
         cwd: Any,
         on_complete: Callable[[str | None], None],
     ) -> None:
-        from agenthicc.tui.trigger import TriggerContext, TriggerRegistry   # noqa: PLC0415
+        from agenthicc.tui.trigger import TriggerContext   # noqa: PLC0415
         self._buf       = InputBuffer(initial_buf)
         self._registry  = registry
         self._cwd       = cwd

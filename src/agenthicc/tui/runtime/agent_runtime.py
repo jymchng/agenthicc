@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any, AsyncGenerator, Callable
+from typing import Callable
 
 from agenthicc.tui.conversation_store import ConversationStore
 from agenthicc.tui.runtime.commands import SendMessageCommand, InterruptAgentCommand

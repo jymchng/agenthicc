@@ -75,7 +75,7 @@ class CommandBus:
         return handler(command)
 
     async def dispatch_async(self, command: Command) -> Any:
-        import asyncio, inspect    # noqa: PLC0415
+        import inspect    # noqa: PLC0415
         handler = self._handlers.get(type(command))
         if handler is None:
             raise ValueError(f"No handler for {type(command).__name__}")

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 
 from agenthicc.cli.parser import _parse_args
 from agenthicc.cli.config import _do_config_show, _do_config_init

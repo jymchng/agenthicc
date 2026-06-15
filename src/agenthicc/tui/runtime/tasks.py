@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from enum import Enum, auto
-from typing import Any, Coroutine
+from typing import Coroutine
 
 from agenthicc.reactive import Signal
 

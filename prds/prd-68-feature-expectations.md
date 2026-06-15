@@ -114,18 +114,21 @@ Content appears above the always-on Live block and scrolls naturally.
 
 ## 8. Commands
 
+Built-in and project commands are dispatched by the **command registry** — they are never passed to the agent as free-text queries.
+
 | # | Feature | Expected behaviour |
 |---|---|---|
 | 8.1 | `/config` | Opens the configuration editor overlay. Navigate with Up/Down, edit with Enter, save with `s`, close with Esc. |
 | 8.2 | `/model` | Shows or switches LLM provider/model. |
 | 8.3 | `/models` | Lists all available providers and models. |
 | 8.4 | `/status` | Displays running agents and their states. |
-| 8.5 | `/skills` | Lists available skills. |
-| 8.6 | `/help` | Lists all available commands. |
+| 8.5 | `/skills` | Prints a table of all loaded skills (from the in-process registry). Per-project and user-global skills are included. Does **not** search the filesystem. |
+| 8.6 | `/help` | Lists all available commands, including per-project ones. |
 | 8.7 | `/cancel` | Cancels the currently running agent turn. |
 | 8.8 | `/clear` | Clears the conversation transcript display. |
 | 8.9 | `/expand [id]` | Expands a tool output or @mention that was truncated. |
 | 8.10 | `/mcp [connect …]` | Shows MCP server status or connects a new server. |
+| 8.11 | Interception before agent | Any `/command` typed into the input bar is dispatched to the command registry first. If the registry handles it, the agent is never invoked. Unknown commands fall through to the agent. |
 
 ---
 
@@ -133,11 +136,15 @@ Content appears above the always-on Live block and scrolls naturally.
 
 | # | Feature | Expected behaviour |
 |---|---|---|
-| 9.1 | Per-project tool plugins | `.agenthicc/tools/*.py` files exporting `TOOLS = [fn1, fn2]` are loaded at startup. Tools are immediately available to the agent. |
-| 9.2 | Per-project command plugins | `.agenthicc/commands/*.py` files exporting `COMMANDS = [CommandSpec(…)]` are loaded and appear in the `/` dropdown. |
-| 9.3 | Mode plugins | `.agenthicc/modes/*.py` files can register custom modes via `ModeRegistry`. |
-| 9.4 | No conflict crashes | Conflicting tool names log a warning (last writer wins); the application never crashes on plugin load errors. |
-| 9.5 | Dependency declaration | Plugin files may export `DEPENDENCIES = ["package>=version"]`; missing deps produce a clear error, not an import crash. |
+| 9.1 | Per-project tool plugins | `.agenthicc/tools/*.py` files exporting `TOOLS = [fn1, fn2]` (`@tool()`-decorated async functions) are loaded at startup. Tools are immediately available to the agent. |
+| 9.2 | Per-project command plugins | `.agenthicc/commands/*.py` files exporting `COMMANDS = [CommandSpec(…)]` are loaded and appear in the `/` dropdown under their declared group. |
+| 9.3 | Per-project skill plugins | `.agenthicc/skills/<slug>/SKILL.md` files with YAML front-matter are discovered and shown in `/skills`. Skills with matching `suggestedTopics` are injected into the agent's context automatically. |
+| 9.4 | User-global plugins | `~/.agenthicc/tools/`, `~/.agenthicc/commands/`, and `~/.agenthicc/skills/` are loaded first; project-local plugins are loaded second and may shadow user-global ones by name. |
+| 9.5 | Mode plugins | `.agenthicc/modes/*.py` files can register custom modes via `ModeRegistry`. |
+| 9.6 | `/skills` shows loaded skills | `/skills` prints a table of **all** discovered skills (name, slug, description), including per-project skills from `.agenthicc/skills/`. It reads from the in-process registry — it must NOT pass the command to the agent as a free-text query. |
+| 9.7 | No conflict crashes | Conflicting tool names log a warning (last writer wins); the application never crashes on plugin load errors. |
+| 9.8 | Dependency declaration | Plugin files may export `DEPENDENCIES = ["package>=version"]`; missing deps produce a clear error, not an import crash. |
+| 9.9 | Startup confirmation | If project tool or command plugins are found, a dim confirmation line is printed once at startup (e.g. `Loaded 5 tool(s) from .agenthicc/tools/`). |
 
 ---
 
@@ -180,4 +187,4 @@ A release is shippable when:
 3. **ESC and Ctrl+C cancel the agent** within 200 ms of the keypress.
 4. **Triggers work**: `@` and `/` open dropdowns with correct matches during both idle and streaming modes.
 5. **No duplicate rendering**: each tool call, turn header, and LLM text line appears exactly once.
-6. **Plugin hot-path**: creating a new `.agenthicc/tools/my_tool.py` with `TOOLS=[fn]` in the project directory makes the tool available on the next launch.
+6. **Plugin hot-path**: creating `.agenthicc/tools/my_tool.py` (with `TOOLS=[fn]`), `.agenthicc/commands/my_cmds.py` (with `COMMANDS=[CommandSpec(…)]`), and `.agenthicc/skills/my-skill/SKILL.md` in the project directory makes them available on the next launch — tools to the agent, commands in the `/` dropdown, skills in `/skills` and auto-triggered by topic.

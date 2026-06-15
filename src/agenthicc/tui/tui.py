@@ -29,7 +29,6 @@ from agenthicc.tui.tui_events import (
     AssistantCompleteEvent,
     AssistantStartEvent,
     ErrorEvent,
-    Event,
     EventBus,
     FileModifiedEvent,
     InputChangedEvent,
@@ -50,10 +49,8 @@ from agenthicc.tui.console_transcript import TranscriptView
 from agenthicc.tui.tui_events import *  # noqa: F401, F403
 from agenthicc.tui.reactive import ReactiveProperty, _Observable  # noqa: F401
 from agenthicc.tui.states import (  # noqa: F401
-    FooterState,
     InputBarState,
     SpinnerState,
-    StatusBarState,
 )
 
 __all__ = ["AgenthiccTUI"]

@@ -187,7 +187,8 @@ class RunTestsTool(Tool):
     }
 
     async def execute(self, args: dict, context: dict) -> Any:
-        import re, uuid  # noqa: PLC0415
+        import re
+        import uuid  # noqa: PLC0415
         cwd = context.get("workspace_root", ".")
         extra = list(args.get("args") or [])
         path = args.get("path", "tests/")

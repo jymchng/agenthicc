@@ -27,7 +27,8 @@ _VALID_TRANSPORTS = frozenset({"stdio", "ws", "websocket", "streamable", "http",
 
 def _auto_name(url: str) -> str:
     """Generate a slug from a URL for use as MCP server name."""
-    import re, urllib.parse  # noqa: PLC0415
+    import re
+    import urllib.parse  # noqa: PLC0415
     try:
         parsed = urllib.parse.urlparse(url)
         base = parsed.netloc or (url.split()[-1] if url.split() else "server")

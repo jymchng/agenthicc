@@ -642,7 +642,9 @@ class SlashCommandHandler:
     def __init__(self, renderer: Any = None, skills: Any = None) -> None:
         # Optional back-reference to InlineRenderer for live config mutations
         self._renderer = renderer
-        self._skills = skills or {}
+        # Fall back to renderer._skills so that per-project skills discovered at
+        # startup are visible in /skills even when skills= is not passed explicitly.
+        self._skills = skills or getattr(renderer, "_skills", None) or {}
 
     def handle(self, text: str, model: TranscriptModel, console: Any) -> bool:
         """Dispatch to UnifiedCommandRegistry via CommandDispatcher."""

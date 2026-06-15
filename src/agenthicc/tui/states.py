@@ -7,7 +7,6 @@ explicit ``@property`` setters) so the LivePanel redraws whenever state changes.
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from agenthicc.tui.reactive import ReactiveProperty, _Observable
 

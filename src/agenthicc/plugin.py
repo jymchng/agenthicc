@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import abc
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from agenthicc.tools.base import Tool

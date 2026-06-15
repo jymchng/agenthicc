@@ -37,7 +37,7 @@ from agenthicc.tui.input.renderer import DropdownState, PromptRenderer
 
 if TYPE_CHECKING:
     from agenthicc.tui.trigger import TriggerContext, TriggerHandler, TriggerRegistry
-    from agenthicc.tui.menu import MenuDriver, MenuWidget
+    from agenthicc.tui.menu import MenuWidget
     from agenthicc.modes import ModeManager
 
 # Sentinel returned by dispatch methods to mean "run() should return None".

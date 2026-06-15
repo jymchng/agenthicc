@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from .events import Effect, Event
 from .reducer import ReducerFn, root_reducer
