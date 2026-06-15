@@ -148,6 +148,15 @@ class TriggerPickerOverlay(Overlay):
                     self._update_matches()
             case Key.CHAR if ch:
                 if self._trigger:
-                    self._trigger.fragment += ch
-                    self._update_matches()
+                    if ch == " ":
+                        # Space commits the currently selected item and closes the
+                        # overlay so the user can type arguments without a second Enter.
+                        item = self._matches[self._selected] if self._matches else None
+                        result_buf = self._trigger.handler.on_select(
+                            item, self._trigger.fragment, self._buf.buf
+                        )
+                        self._complete("".join(result_buf) + " ")
+                    else:
+                        self._trigger.fragment += ch
+                        self._update_matches()
         return True  # overlay consumes all keys

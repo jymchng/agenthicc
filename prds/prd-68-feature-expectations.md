@@ -79,6 +79,7 @@ Content appears above the always-on Live block and scrolls naturally.
 | 5.2 | `/` opens command picker | Typing `/` at the start of a word opens the slash-command dropdown. |
 | 5.3 | Dropdown navigation | Up/Down arrows navigate matches; selected item is highlighted. |
 | 5.4 | Enter / Tab to select | Enter inserts the selected item and closes the overlay. Tab inserts and appends a space. |
+| 5.10 | Space commits command and exits | Typing a space character while the slash-command dropdown is open commits the currently highlighted command (inserting it into the buffer with a trailing space) and closes the overlay. Subsequent characters (arguments) go directly into the input bar. This ensures `/bench --count 5` + Enter requires exactly **one** Enter press, not two. |
 | 5.5 | Esc to cancel | Closes the overlay without inserting, restores the buffer. |
 | 5.6 | Backspace into token | Backspace at the end of a committed `@path` or `/cmd` token re-opens the picker with the existing fragment. |
 | 5.7 | Hint text | A short hint/description appears below the match list. |
