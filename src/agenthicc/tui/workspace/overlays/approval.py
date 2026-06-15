@@ -1,14 +1,7 @@
 """ApprovalOverlay — shown in the Live block while an agent tool awaits approval (PRD-78).
 
-Rendered by Workspace._build() via OverlayHost whenever
-AppState.pending_approval is non-None.  Key routing goes through the
-normal OverlayCapability → OverlayHost.handle_key() path.
-
-Key bindings:
-    y        Allow this call once
-    a        Allow all remaining calls of the same capability class this turn
-    A        Allow all remaining calls of the same capability class this session
-    n / Esc  Deny — model receives {"ok": false, "error": "..."}
+Options are selectable with Up/Down and confirmed with Enter.
+Hotkeys (y/a/A/n) still work for quick access.
 """
 from __future__ import annotations
 
@@ -20,6 +13,24 @@ from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlay import Overlay
 
 _BORDER_CHAR = "─"
+
+# (hotkey, label_template, respond kwargs)
+# {caps} in label_template is replaced with the capability string at render time.
+_OPTIONS: list[tuple[str, str, dict]] = [
+    ("y", "Allow once",                    dict(allowed=True)),
+    ("a", "Allow all {caps} this turn",    dict(allowed=True, remember=True)),
+    ("A", "Allow all {caps} this session", dict(allowed=True, remember_all=True)),
+    ("n", "Deny",                          dict(allowed=False)),
+]
+
+
+def _cap_str(capabilities: frozenset) -> str:
+    """Format capability set as a short human-readable string."""
+    parts = []
+    for c in sorted(capabilities):
+        # ToolCapability inherits from str — .value gives the raw string ("write").
+        parts.append(getattr(c, "value", str(c)))
+    return ", ".join(parts)
 
 
 class ApprovalOverlay(Overlay):
@@ -33,42 +44,42 @@ class ApprovalOverlay(Overlay):
         service: Any,                # ApprovalService
         close_fn: Callable[[], None],
     ) -> None:
-        self._req     = req
-        self._service = service
-        self._close   = close_fn
+        self._req      = req
+        self._service  = service
+        self._close    = close_fn
+        self._selected = 0            # index into _OPTIONS
+        self._scroll   = 0            # first visible option index
 
     # ── Overlay interface ──────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
-        pass
+        self._selected = 0
+        self._scroll   = 0
 
     def on_unmount(self) -> None:
         pass
 
     def render(self) -> Any:
-        from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text      # noqa: PLC0415
+        from rich.console import Group        # noqa: PLC0415
+        from rich.text import Text            # noqa: PLC0415
         from rich.markup import escape as _e  # noqa: PLC0415
 
         cols     = shutil.get_terminal_size((80, 24)).columns
         req      = self._req
-        cap_tags = ", ".join(sorted(str(c) for c in req.capabilities))
+        cap_tags = _cap_str(req.capabilities)
 
         lines: list[Any] = []
 
-        # Header
-        header = f"  ⚠  Tool Approval Required  [{_e(cap_tags)}]"
+        # ── header ────────────────────────────────────────────────────────────
         lines.append(Text.from_markup(
-            f"[bold yellow]{_e(header)}[/bold yellow]"
+            f"[bold yellow]  ⚠  Tool Approval Required  [{_e(cap_tags)}][/bold yellow]"
         ))
         lines.append(Text(_BORDER_CHAR * min(cols, 66), style="dim"))
 
-        # Tool name
-        lines.append(Text.from_markup(
-            f"  [bold]{_e(req.tool_name)}[/bold]"
-        ))
+        # ── tool name ─────────────────────────────────────────────────────────
+        lines.append(Text.from_markup(f"  [bold]{_e(req.tool_name)}[/bold]"))
 
-        # Truncated args — up to 3 key-value pairs, values up to 80 chars
+        # ── truncated args — up to 3 key/value pairs ─────────────────────────
         inp = req.tool_input or {}
         for key_name, val in list(inp.items())[:3]:
             if isinstance(val, str):
@@ -84,32 +95,65 @@ class ApprovalOverlay(Overlay):
 
         lines.append(Text(""))
 
-        # Key bindings
-        lines.append(Text.from_markup("  [bold]y[/bold] [dim]Allow once[/dim]"))
-        lines.append(Text.from_markup(
-            f"  [bold]a[/bold] [dim]Allow all {_e(cap_tags)} this turn[/dim]"
-        ))
-        lines.append(Text.from_markup(
-            f"  [bold]A[/bold] [dim]Allow all {_e(cap_tags)} this session[/dim]"
-        ))
-        lines.append(Text.from_markup("  [bold]n / Esc[/bold] [dim]Deny[/dim]"))
+        # ── selectable options ────────────────────────────────────────────────
+        n = len(_OPTIONS)
+        # Clamp scroll so selected is visible within a 6-line window.
+        max_visible = 6
+        if self._selected < self._scroll:
+            self._scroll = self._selected
+        elif self._selected >= self._scroll + max_visible:
+            self._scroll = self._selected - max_visible + 1
+
+        for idx in range(self._scroll, min(self._scroll + max_visible, n)):
+            hotkey, label_tmpl, _ = _OPTIONS[idx]
+            label    = label_tmpl.format(caps=cap_tags)
+            selected = idx == self._selected
+            indicator = "▶" if selected else " "
+            style     = "reverse" if selected else ""
+            lines.append(Text(
+                f"  {indicator} [{hotkey}] {label}",
+                style=style,
+            ))
+
+        # scroll hint
+        if self._scroll + max_visible < n:
+            lines.append(Text("  ↓ more…", style="dim"))
+
+        lines.append(Text(""))
+        lines.append(Text("  ↑↓ navigate  Enter confirm", style="dim"))
 
         return Group(*lines)
 
     def handle_key(self, key: Key, ch: str) -> bool:
-        match (key, ch):
-            case (Key.CHAR, "y"):
-                self._service.respond(True)
-                self._close()
-            case (Key.CHAR, "a"):
-                self._service.respond(True, remember=True)
-                self._close()
-            case (Key.CHAR, "A"):
-                self._service.respond(True, remember_all=True)
-                self._close()
-            case (Key.CHAR, "n") | (Key.ESC, _):
-                self._service.respond(False)
-                self._close()
+        n = len(_OPTIONS)
+
+        match key:
+            case Key.UP:
+                self._selected = (self._selected - 1) % n
+            case Key.DOWN:
+                self._selected = (self._selected + 1) % n
+            case Key.ENTER:
+                self._execute(self._selected)
+            case Key.ESC:
+                # ESC always denies
+                self._respond(dict(allowed=False))
+            case Key.CHAR if ch:
+                # Hotkey fast-path
+                for idx, (hotkey, _, _) in enumerate(_OPTIONS):
+                    if ch == hotkey:
+                        self._execute(idx)
+                        break
             case _:
-                pass  # consume but ignore any other key
-        return True   # overlay always consumes all keys
+                pass  # consume but ignore
+
+        return True  # overlay always consumes all keys
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _execute(self, idx: int) -> None:
+        _, _, kwargs = _OPTIONS[idx]
+        self._respond(kwargs)
+
+    def _respond(self, kwargs: dict) -> None:
+        self._service.respond(**kwargs)
+        self._close()
