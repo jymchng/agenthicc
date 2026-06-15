@@ -114,6 +114,10 @@ async def _run_tui_session(
     mode_manager = ModeManager(app_state=app_state)   # PRD-75: writes app_state.active_mode
     mode_manager.set_by_name("Auto")
 
+    # PRD-78: approval service — coordinates tool approval between agent and TUI.
+    from agenthicc.tools.approval import ApprovalService  # noqa: PLC0415
+    approval_svc = ApprovalService(app_state)
+
     # ── skills / plugins ─────────────────────────────────────────────────────
     from agenthicc.skills.loader import discover_skills as _ds      # noqa: PLC0415
     _skills = _ds(project_dir=Path(".agenthicc"),
@@ -255,6 +259,7 @@ async def _run_tui_session(
 
     async def _run_turn(text: str) -> None:
         input_session.set_mode(InputMode.STREAMING)
+        approval_svc.reset_turn_memory()   # PRD-78: clear per-turn blanket approvals
         # Prepend any queued skill body (from /skillname commands)
         if _pending_skill_body:
             text = _pending_skill_body.pop() + "\n\n" + text
@@ -274,6 +279,7 @@ async def _run_tui_session(
                 mcp_registry=_mcp_registry,
                 active_agent="default",
                 completed_turns=_turn_count[0],
+                approval_svc=approval_svc,  # PRD-78
             )
         finally:
             input_session.set_mode(InputMode.IDLE)
@@ -392,6 +398,19 @@ async def _run_tui_session(
         cwd=Path(os.getcwd()),
         cfg=cfg,
     )
+
+    # ── PRD-78: wire pending_approval signal → ApprovalOverlay ───────────────
+    def _on_approval_change() -> None:
+        req = app_state.pending_approval()
+        from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay  # noqa: PLC0415
+        if req is not None:
+            overlay = ApprovalOverlay(req, approval_svc, workspace.overlays.hide)
+            workspace.overlays.show(overlay)
+        else:
+            if isinstance(workspace.overlays.widget, ApprovalOverlay):
+                workspace.overlays.hide()
+
+    app_state.pending_approval.subscribe(_on_approval_change)
 
     # ── start ─────────────────────────────────────────────────────────────────
     workspace.start()

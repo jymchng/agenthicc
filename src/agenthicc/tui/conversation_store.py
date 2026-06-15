@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 from agenthicc.reactive import Signal, Computed
 
@@ -243,8 +243,10 @@ class AppState:
         self.active_mode: Signal[RuntimeMode] = Signal(
             RuntimeMode(name="Auto", badge="⏵⏵", description="Automatic")
         )
-        self.overlay:     Signal[str]  = Signal("")     # active overlay name
-        self.modal_open:  Signal[bool] = Signal(False)
+        self.overlay:           Signal[str]  = Signal("")     # active overlay name
+        self.modal_open:        Signal[bool] = Signal(False)
+        # PRD-78: non-None when an agent tool is paused waiting for approval.
+        self.pending_approval: Signal[Any]   = Signal(None)
 
     @classmethod
     def create(cls) -> "AppState":

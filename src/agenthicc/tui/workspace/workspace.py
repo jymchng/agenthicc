@@ -75,9 +75,10 @@ class Workspace:
             conv.agent_state, conv.active_tool, conv.elapsed_s,
             conv.model_name, conv.tokens_in, conv.tokens_out, conv.cost_usd,
             conv.notification,
-            self._state.active_mode,      # PRD-75: single mode signal
+            self._state.active_mode,       # PRD-75: single mode signal
             inp.buf, inp.cursor, inp.paste_condensed, inp.paste_label,
             self._state.overlay,
+            self._state.pending_approval,  # PRD-78: approval overlay
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
 

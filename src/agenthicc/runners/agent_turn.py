@@ -37,6 +37,7 @@ async def _run_agent_turn(
     mcp_registry: Any = None,
     active_agent: str | None = None,
     completed_turns: int = 0,
+    approval_svc: Any = None,
 ) -> None:
     """Run one agent turn, publishing events directly to *conv_store*."""
     from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
@@ -221,12 +222,15 @@ async def _run_agent_turn(
         _agent_instance, runner._transport,
         signals=getattr(runner, "_signals", None),
     )
-    # Build the real runner with global hooks, including the capability gate.
+    # Build the real runner with global hooks: capability gate → approval gate.
     from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase  # noqa: PLC0415
     _global_hooks: list = []
     if app_state is not None:
         from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
         _global_hooks.append(ToolCapabilityGate(app_state))
+        if approval_svc is not None:
+            from agenthicc.tools.approval import ApprovalGate           # noqa: PLC0415
+            _global_hooks.append(ApprovalGate(app_state, approval_svc))
     _active_runner = _RunnerBase(
         transport=runner._transport,
         signals=getattr(runner, "_signals", None),

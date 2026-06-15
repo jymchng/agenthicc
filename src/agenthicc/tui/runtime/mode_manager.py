@@ -23,6 +23,7 @@ class RuntimeMode:
     description:          str            = ""
     system_prompt_suffix: str            = ""
     blocked_capabilities: frozenset[str] = field(default_factory=frozenset)
+    approval_required:    frozenset[str] = field(default_factory=frozenset)
 
 
 class ModeRegistry:
@@ -45,7 +46,8 @@ def build_default_registry() -> ModeRegistry:
     """Build the runtime mode registry from the existing agenthicc.modes system."""
     from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
 
-    # Capabilities blocked by all restrictive modes (Plan / Ask / Review / Safe).
+    # Capabilities that all restrictive modes hard-block (Plan / Ask / Review / Safe)
+    # and that Guard mode soft-blocks with an approval overlay.
     _RESTRICTED = frozenset({
         ToolCapability.WRITE,
         ToolCapability.GIT_WRITE,
@@ -53,12 +55,17 @@ def build_default_registry() -> ModeRegistry:
         ToolCapability.NETWORK,
     })
 
-    # Per-mode blocked capabilities; absent key → no blocking (open access).
+    # Per-mode hard-blocked capabilities; absent key → no blocking.
     _BLOCKED: dict[str, frozenset] = {
         "Plan":   _RESTRICTED,
         "Ask":    _RESTRICTED,
         "Review": _RESTRICTED,
         "Safe":   _RESTRICTED,
+    }
+
+    # Per-mode approval-required capabilities; absent key → no approval needed.
+    _APPROVAL: dict[str, frozenset] = {
+        "Guard": _RESTRICTED,
     }
 
     reg = ModeRegistry()
@@ -73,11 +80,23 @@ def build_default_registry() -> ModeRegistry:
                 description=getattr(mode, "description", ""),
                 system_prompt_suffix=getattr(mode, "system_patch", ""),
                 blocked_capabilities=_BLOCKED.get(mode.name, frozenset()),
+                approval_required=_APPROVAL.get(mode.name, frozenset()),
             ))
     except Exception as exc:  # noqa: BLE001
         log.warning("Could not load modes from agenthicc.modes: %s", exc)
     if not reg.get("Auto"):
         reg.register(RuntimeMode(name="Auto", badge="⏵⏵", description="Automatic"))
+    if not reg.get("Guard"):
+        reg.register(RuntimeMode(
+            name="Guard",
+            badge="⏸⏸",
+            description=(
+                "All tools are allowed, but side-effecting tools "
+                "require explicit approval before each execution."
+            ),
+            blocked_capabilities=frozenset(),
+            approval_required=_RESTRICTED,
+        ))
     return reg
 
 

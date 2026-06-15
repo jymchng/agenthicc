@@ -750,6 +750,42 @@ which is especially useful when a project command shadows a built-in.
 | `user` | `~/.agenthicc/cli/*.py` | Implicit (home dir) | builtins |
 | `project` | `.agenthicc/cli/*.py` | Explicit (`trust cli`) | builtins + user |
 
+### Shadow conflict resolution
+
+Not all shadows are equal.  The answer differs by which layer is being shadowed:
+
+| Shadow direction | Behaviour | Rationale |
+|---|---|---|
+| user shadows builtin | **Silent** | This is the entire point of user plugins — same as aliasing `ls` in `.bashrc`. |
+| project shadows builtin | **Silent** | Same. Project plugins exist to extend or replace built-ins for that codebase. |
+| project shadows user-global | **Warn by default; error in strict mode** | The user wrote their global command intentionally. Silent replacement is surprising and a potential security concern (a malicious repo overriding a trusted personal command). |
+
+**Default behaviour** — print a dim warning at startup and continue:
+
+```
+⚠  .agenthicc/cli/deploy.py (project) shadows ~/.agenthicc/cli/deploy.py (user)
+   Run `agenthicc --help` to see which commands are active.
+```
+
+**Strict mode** — treat any user↔project conflict as a hard error.
+Configured in `agenthicc.toml` or locked via the Profile (PRD-80):
+
+```toml
+# .agenthicc/agenthicc.toml
+[plugins]
+strict_cli_shadow = true
+```
+
+```
+agenthicc: error: .agenthicc/cli/deploy.py conflicts with ~/.agenthicc/cli/deploy.py
+           Both define command path ["deploy"]. Rename one or set
+           [plugins] strict_cli_shadow = false to allow silent shadowing.
+```
+
+The rule in one sentence: **shadowing a built-in is intentional extensibility —
+always silent.  Shadowing another user-controlled layer is a potential surprise
+— warn by default, error in strict mode.**
+
 ---
 
 ## File changes
@@ -771,6 +807,8 @@ which is especially useful when a project command shadows a built-in.
 | `.agenthicc/cli/*.py` | Project-local Python command plugins (trusted, then discovered) |
 | `.agenthicc/cli.toml` | Optional TOML shorthand for shell-wrapping commands |
 | `.agenthicc/trusted_cli.json` | Trust manifest written by `agenthicc trust cli` |
+| `config.py` — `PluginSettings` | Add `strict_cli_shadow: bool = False` field |
+| `cli/registry.py` | `_discover()` detects user↔project conflicts; warns or errors based on `strict_cli_shadow` |
 
 ---
 
@@ -791,4 +829,7 @@ which is especially useful when a project command shadows a built-in.
 - [ ] Project-local commands in `.agenthicc/cli/` are NOT loaded until `agenthicc trust cli` has been run (or `PluginSettings.auto_trust = true`).
 - [ ] User-global commands in `~/.agenthicc/cli/` are always loaded without a trust step.
 - [ ] `agenthicc --help` shows `[project]`, `[user]`, or `[builtin]` badges next to each command.
-- [ ] A project command with the same path as a built-in silently shadows the built-in.
+- [ ] A project command with the same path as a built-in silently shadows the built-in (no warning).
+- [ ] A project command with the same path as a user-global command prints a startup warning naming both files and the shadowed path.
+- [ ] Setting `[plugins] strict_cli_shadow = true` turns the user↔project shadow warning into a hard error that exits before the session starts.
+- [ ] A user-global command shadowing a built-in produces no warning or error.
