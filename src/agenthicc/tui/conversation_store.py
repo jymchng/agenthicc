@@ -80,13 +80,8 @@ class ConversationStore:
         self.tokens_out:       Signal[int]                    = Signal(0)
         self.cost_usd:         Signal[float]                  = Signal(0.0)
         self.session_id:       Signal[str]                    = Signal("")
-        self.model_name:       Signal[str]                    = Signal("")
-        self.active_mode_name: Signal[str]                    = Signal("Auto")
-        self.active_mode_badge:Signal[str]                    = Signal("⏵⏵")
-        self.mode_str:         Signal[str]                    = Signal(
-            "⏵⏵ Auto  (shift+tab to cycle)  │  ctrl+j = ↵"
-        )
-        self.notification:     Signal[str | None]             = Signal(None)
+        self.model_name:   Signal[str]      = Signal("")
+        self.notification: Signal[str | None] = Signal(None)
 
         # ── computed values ───────────────────────────────────────────────────
         self.is_running: Computed[bool] = Computed(
@@ -242,8 +237,12 @@ class AppState:
     """Root state container — single instance for the application lifetime."""
 
     def __init__(self) -> None:
+        from agenthicc.tui.runtime.mode_manager import RuntimeMode  # noqa: PLC0415
         self.conversation = ConversationStore()
         self.input        = InputState()
+        self.active_mode: Signal[RuntimeMode] = Signal(
+            RuntimeMode(name="Auto", badge="⏵⏵", description="Automatic")
+        )
         self.overlay:     Signal[str]  = Signal("")     # active overlay name
         self.modal_open:  Signal[bool] = Signal(False)
 

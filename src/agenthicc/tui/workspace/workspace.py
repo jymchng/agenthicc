@@ -74,7 +74,8 @@ class Workspace:
         for sig in (
             conv.agent_state, conv.active_tool, conv.elapsed_s,
             conv.model_name, conv.tokens_in, conv.tokens_out, conv.cost_usd,
-            conv.mode_str, conv.notification, conv.active_mode_name,
+            conv.notification,
+            self._state.active_mode,      # PRD-75: single mode signal
             inp.buf, inp.cursor, inp.paste_condensed, inp.paste_label,
             self._state.overlay,
         ):

@@ -205,9 +205,10 @@ class FooterComponent:
         conv = self._state.conversation
         cols = _get_cols()
 
-        # Row 1: mode string
-        mode_line_raw = f"  [dim]{conv.mode_str()}[/dim]"
-        mode_line = _fit(mode_line_raw, cols)
+        # Row 1: mode string — derived from AppState.active_mode (PRD-75)
+        from agenthicc.tui.runtime.mode_manager import build_mode_str  # noqa: PLC0415
+        mode     = self._state.active_mode()
+        mode_line = _fit(f"  [dim]{build_mode_str(mode)}[/dim]", cols)
 
         # Row 2: notification OR context hints
         notif = conv.notification()

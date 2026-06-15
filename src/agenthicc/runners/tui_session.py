@@ -111,7 +111,7 @@ async def _run_tui_session(
 
     # ── runtime services ──────────────────────────────────────────────────────
     command_bus  = CommandBus()
-    mode_manager = ModeManager()
+    mode_manager = ModeManager(app_state=app_state)   # PRD-75: writes app_state.active_mode
     mode_manager.set_by_name("Auto")
 
     # ── skills / plugins ─────────────────────────────────────────────────────

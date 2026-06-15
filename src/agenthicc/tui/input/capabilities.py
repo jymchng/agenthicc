@@ -275,19 +275,18 @@ class HistoryCapability:
 # ── Mode cycling ──────────────────────────────────────────────────────────────
 
 class ModeCycleCapability:
-    """Shift+Tab — cycles through registered input modes."""
+    """Shift+Tab — cycles through registered input modes.
+
+    ModeManager.cycle() writes AppState.active_mode internally (PRD-75).
+    This capability only needs to show the notification.
+    """
 
     async def handle(self, key: Key, ch: str, session: Any) -> Any:
         if key != Key.SHIFT_TAB:
             return _PASS
-        from agenthicc.tui.runtime.mode_manager import build_mode_str  # noqa: PLC0415
-        new_mode = session._modes.cycle()
-        mode_str = build_mode_str(new_mode)
-        session._state.conversation.mode_str.set(mode_str)
-        session._state.conversation.active_mode_name.set(new_mode.name)
-        session._state.conversation.active_mode_badge.set(new_mode.badge)
+        new_mode = session._modes.cycle()   # writes app_state.active_mode internally
         session._state.conversation.notification.set(f"❖ Switched to {new_mode.name} mode")
-        asyncio.get_event_loop().call_later(
+        asyncio.get_running_loop().call_later(
             2.0,
             lambda: session._state.conversation.notification.set(None),
         )

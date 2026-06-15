@@ -83,7 +83,7 @@ Content appears above the always-on Live block and scrolls naturally.
 | 5.5 | Esc to cancel | Closes the overlay without inserting, restores the buffer. |
 | 5.6 | Backspace into token | Backspace at the end of a committed `@path` or `/cmd` token re-opens the picker with the existing fragment. |
 | 5.7 | Hint text | A short hint/description appears below the match list. |
-| 5.8 | Works during streaming | Typing `@` or `/` while the agent is running opens the picker (Live block stays active). |
+| 5.8 | Works during streaming | Typing `@` or `/` while the agent is running opens the picker (Live block stays active). `@` works in streaming mode because trigger detection is handled by `TriggerCapability` which calls `TriggerManager.resolve()` — this normalises `Key.AT → "@"` regardless of input mode. |
 | 5.9 | No double input bar | When the overlay is active, the composer is NOT also rendered — exactly one prompt line is visible. |
 
 ---
@@ -179,6 +179,43 @@ Built-in and project commands are dispatched by the **command registry** — the
 |---|---|---|
 | 12.1 | `--headless` flag | Reads prompts from stdin (one per line), outputs JSON-lines to stdout. No TUI. |
 | 12.2 | JSON event schema | Each event is `{"type": "…", "payload": {…}, "timestamp": float}`. |
+
+---
+
+## 13. Input Capability Pipeline (PRD-74)
+
+The `UnifiedInputSession` dispatches keystrokes through an ordered pipeline of
+`Capability` instances rather than a pair of monolithic dispatch functions.
+Each mode declares the capabilities it uses as a module-level list constant.
+
+### 13.1 Capabilities
+
+| Capability | Handles | Present in |
+|---|---|---|
+| `OverlayCapability` | Routes all keys to the active overlay when one is open | IDLE, STREAMING |
+| `CtrlCCapability` | Double-Ctrl+C exit sequence; resets counter on any other key | IDLE |
+| `CtrlDCapability` | Submit non-empty buffer or exit on empty buffer | IDLE |
+| `InterruptCapability` | Ctrl+C / ESC → `InterruptAgentCommand` (cancel agent) | STREAMING |
+| `TriggerCapability` | All registered trigger chars (`@`, `/`, `#`, `!`) via `TriggerManager.resolve()` | IDLE, STREAMING |
+| `PasteCapability` | Bracketed paste and Ctrl+V expansion | IDLE, STREAMING |
+| `SubmitCapability` | Enter; `commit_history=True` in idle (history nav), `False` in streaming (queue) | IDLE, STREAMING |
+| `NewlineCapability` | Ctrl+Enter / Ctrl+J — insert literal newline | IDLE, STREAMING |
+| `BackspaceCapability` | Backspace; re-enters trigger overlay when cursor is inside a committed trigger token | IDLE, STREAMING |
+| `ClearCapability` | Ctrl+U — clear entire buffer | IDLE, STREAMING |
+| `CursorCapability` | Left / Right / Home / End — move insertion cursor | IDLE |
+| `HistoryCapability` | Up / Down — navigate command history | IDLE |
+| `ModeCycleCapability` | Shift+Tab — cycle through registered input modes | IDLE |
+| `InsertCapability` | Key.CHAR fallback — insert char; re-enters trigger overlay when typing into an existing trigger token. **Must always be last.** | IDLE, STREAMING |
+
+### 13.2 Mode declarations
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 13.1 | Mode = declared capability list | `IDLE_CAPABILITIES` and `STREAMING_CAPABILITIES` (in `capabilities.py`) are the single source of truth for what each mode supports. No logic lives in `UnifiedInputSession` beyond running the pipeline. |
+| 13.2 | New trigger char = one registration | Registering a new `TriggerHandler` in `TriggerManager` makes it available in every mode that includes `TriggerCapability`. No changes to `capabilities.py` or `unified_session.py`. |
+| 13.3 | New input mode = one list | Adding a new `InputMode` requires only declaring a new capability list. No changes to existing capabilities. |
+| 13.4 | Trigger chars work in all modes | `TriggerCapability` uses `TriggerManager.resolve(key, ch)` which normalises `Key.AT → "@"` before the pipeline runs. `@`, `/`, and any future trigger chars behave identically in IDLE and STREAMING. |
+| 13.5 | Pipeline short-circuits | The first capability to return `True` (_CONSUMED) stops the pipeline. `_EXIT` stops the loop and exits. `False` (_PASS) passes to the next capability. |
 
 ---
 
