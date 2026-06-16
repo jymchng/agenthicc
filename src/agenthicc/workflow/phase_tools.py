@@ -116,7 +116,10 @@ def make_planner_tools(
             "ok": True,
             "message": (
                 "Plan finalized and handed to the execution phase. "
-                "Your task is complete for this phase."
+                "Your role in the planning phase is now complete — do not call any more tools "
+                "and do not begin implementing. "
+                "Write a single short acknowledgment (one or two sentences) confirming the plan "
+                "is ready, then stop. The system will automatically start the execution phase."
             ),
         }
 
