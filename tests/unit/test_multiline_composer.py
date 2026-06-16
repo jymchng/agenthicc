@@ -110,10 +110,13 @@ class TestRenderMultiline:
 
 
 class TestComposerRenderPaths:
-    def test_single_line_returns_text(self):
+    def test_single_line_returns_group(self):
+        # Non-condensed content always uses _render_multiline → Group,
+        # even for single-line buffers (PRD-84 consolidation).
         comp = _make_comp(list("hello"), 5)
         result = comp.render()
-        assert isinstance(result, Text)
+        assert isinstance(result, Group)
+        assert len(result.renderables) == 1
 
     def test_multiline_returns_group(self):
         buf = list("line1") + ["\n"] + list("line2")

@@ -230,16 +230,10 @@ class ComposerComponent:
             disp_cursor = len(disp_buf)
             return Text.from_markup(_fit(build_prompt(disp_buf, disp_cursor), cols))
 
-        disp_buf    = inp.buf()
-        disp_cursor = inp.cursor()
-
-        # Multi-line buffer (typed Ctrl+J or expanded paste): bypass _fit so
-        # the sum of visible chars across all lines does not trigger truncation.
-        if "\n" in disp_buf:
-            return _render_multiline(disp_buf, disp_cursor)
-
-        # Single-line — existing path, _fit is safe.
-        return Text.from_markup(_fit(build_prompt(disp_buf, disp_cursor), cols))
+        # Non-condensed: always use _render_multiline regardless of line count.
+        # Single-line buffers produce one Text in the Group — Rich soft-wraps
+        # at terminal width instead of truncating with "…".
+        return _render_multiline(inp.buf(), inp.cursor())
 
     def height(self, cols: int) -> int:  # noqa: ARG002
         inp = self._state.input
@@ -275,10 +269,14 @@ class FooterComponent:
         mode     = self._state.active_mode()
         mode_line = _fit(f"  [dim]{build_mode_str(mode)}[/dim]", cols)
 
-        # Row 2: notification OR context hints
+        # Row 2: notification > paste hint > normal state hints
         notif = conv.notification()
         if notif:
             hints_str = _fit(f"[dim]{notif}[/dim]", cols)
+        elif self._state.input.paste_condensed():
+            hints_str = _build_hints(
+                "Ctrl+V Expand paste  Backspace Delete  Enter Submit as-is", cols
+            )
         else:
             state_name = conv.agent_state().name.lower()
             raw_hints  = _HINTS.get(state_name, _HINTS["idle"])

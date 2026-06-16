@@ -120,9 +120,63 @@ to call `console.print()`.  All events for one batch are flushed in a single
 | 3.7 | Ctrl+U | Clear the entire buffer. |
 | 3.8 | Ctrl+J | Insert a newline at the cursor (multi-line input). |
 | 3.9 | Enter | Submit the current buffer as a new message. Input bar clears immediately. |
-| 3.10 | Paste condensation | Bracketed paste inserts the text but shows `[Pasted text with N chars]`. Backspace deletes the whole paste. Ctrl+V expands. Any other key exits condensed mode. |
-| 3.11 | Width-safe | Long lines are wrapped/truncated; the Live block height never overflows the terminal. |
-| 3.12 | Multi-line rendering | When the buffer contains newlines (via Ctrl+J or expanded paste Ctrl+V), the composer renders one row per logical line. All lines are visible. The `❯` prefix appears only on line 0; continuation lines are indented with `  ` (two spaces). The cursor `▌` appears on the correct line at the correct column. |
+| 3.10 | Paste condensation | Bracketed paste inserts the text but shows `[Pasted text #N M chars]` (or `+L lines`). Backspace deletes the whole paste. Ctrl+V expands the full content into the composer. Any other key exits condensed mode. While condensed, footer row 2 shows `Ctrl+V Expand paste │ Backspace Delete │ Enter Submit as-is` instead of the normal hints. |
+| 3.11 | Soft-wrap, no truncation | All non-condensed composer content (normal typing, multi-line input, expanded paste) is rendered by `_render_multiline`. Content is never truncated with `…`. Lines longer than the terminal width are soft-wrapped by Rich. The Live block grows to fit. |
+| 3.12 | Unified composer renderer | `ComposerComponent.render()` has exactly two paths: (a) condensed paste label → single fixed line with `_fit`; (b) everything else → `_render_multiline`. There is no separate single-line path. Single-line, multi-line, and expanded paste all share one rendering function. |
+
+### §3 Illustration — composer states
+
+**Normal single-line typing**
+```
+────────────────────────────────────────────────────────────────────────────────
+❯ what does the main function do?▌
+────────────────────────────────────────────────────────────────────────────────
+  AUTO  (shift+tab to cycle)  │  ctrl+j = ↵
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+```
+
+**Multi-line input (Ctrl+J inserts newlines)**
+```
+────────────────────────────────────────────────────────────────────────────────
+❯ Please refactor this function:
+  it has too many arguments and
+  no docstring▌
+────────────────────────────────────────────────────────────────────────────────
+  AUTO  (shift+tab to cycle)  │  ctrl+j = ↵
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+```
+
+**Paste condensed**
+```
+────────────────────────────────────────────────────────────────────────────────
+❯ [Pasted text #1 +47 lines]▌
+────────────────────────────────────────────────────────────────────────────────
+  AUTO  (shift+tab to cycle)  │  ctrl+j = ↵
+Ctrl+V Expand paste  │  Backspace Delete  │  Enter Submit as-is
+```
+
+**Paste expanded — multi-line (Ctrl+V)**
+```
+────────────────────────────────────────────────────────────────────────────────
+❯ def greet(name: str) -> str:
+      """Return a greeting."""
+      return f"Hello, {name}"▌
+────────────────────────────────────────────────────────────────────────────────
+  AUTO  (shift+tab to cycle)  │  ctrl+j = ↵
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+```
+
+**Paste expanded — long single line (Ctrl+V, no newlines in paste)**
+```
+────────────────────────────────────────────────────────────────────────────────
+❯ {"model":"gpt-4o","messages":[{"role":"user","content":"hello"}],"max_tokens":
+  512,"temperature":0.7,"stream":true}▌
+────────────────────────────────────────────────────────────────────────────────
+  AUTO  (shift+tab to cycle)  │  ctrl+j = ↵
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+```
+
+Content is soft-wrapped at terminal width; `…` never appears.
 
 ---
 
@@ -134,6 +188,7 @@ to call `console.print()`.  All events for one batch are flushed in a single
 | 4.2 | Context hints (row 2) | `Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention` — unchanged during streaming. |
 | 4.3 | Notification | Transient text replaces row 2 for ~2 s (e.g. `❖ Switched to Plan mode`, `Press Ctrl+C again to exit.`). Clears on timeout or next keypress. |
 | 4.4 | Recovering hint | When `AgentState.RECOVERING`, row 2 shows `ESC Cancel  (LLM responding to tool error)`. |
+| 4.5 | Paste-condensed hint | When a paste is condensed, row 2 shows `Ctrl+V Expand paste │ Backspace Delete │ Enter Submit as-is` instead of the normal hints. Priority is: transient notification > paste hint > normal state hints. The hint disappears automatically when Ctrl+V expands the paste or Backspace deletes it. |
 
 ---
 
