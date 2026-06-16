@@ -171,24 +171,25 @@ class WorkflowRunner:
                     return
                 iteration_counts[phase_name] = count + 1
 
-                # Global phase-run cap: len(phases) + 1.  Fires when the workflow
-                # would start a phase beyond the linear path + one retry.
-                _total_runs = sum(iteration_counts.values())
-                _max_total  = len(self._def.phases) + 1
-                if _total_runs >= _max_total:
-                    log.warning(
-                        "Workflow %s: global cap reached (%d/%d phase runs). Stopping.",
-                        self._def.name, _total_runs, _max_total,
-                    )
-                    wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
-                    self._cfg.app_state.workflow_run.set(wf_run)
-                    self._cfg.conv_store.append_event("error", {
-                        "message": (
-                            f"Workflow '{self._def.name}' stopped after {_total_runs} phase "
-                            f"runs (limit: {_max_total}). Use /auto to continue manually."
+                # Opt-in global cap — only enforced when max_total_phase_runs > 0.
+                # Default is 0 (unlimited) so the execute↔review loop can iterate freely.
+                _max_total = self._def.max_total_phase_runs
+                if _max_total > 0:
+                    _total_runs = sum(iteration_counts.values())
+                    if _total_runs >= _max_total:
+                        log.warning(
+                            "Workflow %s: global cap reached (%d/%d phase runs). Stopping.",
+                            self._def.name, _total_runs, _max_total,
                         )
-                    })
-                    return
+                        wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+                        self._cfg.app_state.workflow_run.set(wf_run)
+                        self._cfg.conv_store.append_event("error", {
+                            "message": (
+                                f"Workflow '{self._def.name}' stopped after {_total_runs} phase "
+                                f"runs (limit: {_max_total}). Use /auto to continue manually."
+                            )
+                        })
+                        return
 
                 phase_idx = next(
                     (i for i, p in enumerate(self._def.phases) if p.name == phase_name), 0
@@ -323,14 +324,22 @@ class WorkflowRunner:
         output_buf: list[str] = []
         t0 = time.monotonic()
 
-        plan_event: asyncio.Event | None = None
-        plan_data:  dict                 = {}
+        plan_event:    asyncio.Event | None = None
+        plan_data:     dict                 = {}
+        execute_event: asyncio.Event | None = None
+        execute_data:  dict                 = {}
         if self._cfg.approval_svc is not None:
-            from agenthicc.workflow.phase_tools import make_planner_tools  # noqa: PLC0415
+            from agenthicc.workflow.phase_tools import (   # noqa: PLC0415
+                make_planner_tools, make_executor_tools,
+            )
             plan_event = asyncio.Event()
             filtered   = list(filtered) + make_planner_tools(
                 self._cfg.approval_svc, plan_event, plan_data,
             )
+            # Inject mark_execute_complete into every phase so it's always
+            # available to the execute phase (the agent only calls it there).
+            execute_event = asyncio.Event()
+            filtered = filtered + make_executor_tools(execute_event, execute_data)
 
         _original_mode = self._cfg.app_state.active_mode()
         if spec.mode_override and self._mode_manager is not None:
@@ -341,26 +350,57 @@ class WorkflowRunner:
                     spec.name, spec.mode_override,
                 )
 
+        # Shared kwargs for all _run_agent_turn calls in this phase.
+        _turn_kwargs = dict(
+            runner=self._cfg.agent_runner,
+            processor=self._cfg.processor,
+            session_memory=self._shared_memory,
+            max_agent_turns=spec.max_turns,
+            conv_store=self._cfg.conv_store,
+            app_state=self._cfg.app_state,
+            exec_cfg=self._cfg.cfg.execution,
+            skills=self._cfg.skills,
+            mention_cache=self._cfg.mention_cache,
+            project_plugin_tools=filtered,
+            mcp_registry=self._cfg.mcp_registry,
+            active_agent=spec.agent_type,
+            completed_turns=self._cfg.completed_turns,
+            approval_svc=self._cfg.approval_svc,
+            output_collector=output_buf,
+            system_prompt_suffix=role_prompt,
+        )
+
         try:
-            await _run_agent_turn(
-                phase_text,
-                self._cfg.agent_runner,
-                self._cfg.processor,
-                session_memory=self._shared_memory,
-                max_agent_turns=spec.max_turns,
-                conv_store=self._cfg.conv_store,
-                app_state=self._cfg.app_state,
-                exec_cfg=self._cfg.cfg.execution,
-                skills=self._cfg.skills,
-                mention_cache=self._cfg.mention_cache,
-                project_plugin_tools=filtered,
-                mcp_registry=self._cfg.mcp_registry,
-                active_agent=spec.agent_type,
-                completed_turns=self._cfg.completed_turns,
-                approval_svc=self._cfg.approval_svc,
-                output_collector=output_buf,
-                system_prompt_suffix=role_prompt,
-            )
+            if spec.require_explicit_completion and execute_event is not None:
+                # Continuation loop — one agent, many turns, until the completion
+                # tool fires.  The shared ShortTermMemory carries full context so
+                # each continuation is a genuine resume, not a restart.
+                max_cont = spec.max_iterations if spec.max_iterations > 0 else 10
+                for attempt in range(1, max_cont + 1):
+                    text = (
+                        phase_text
+                        if attempt == 1
+                        else (
+                            "Continue implementing — you have not yet called "
+                            "mark_execute_complete(). Resume from where you left off "
+                            "and complete all remaining tasks. Call "
+                            "mark_execute_complete() once everything is done."
+                        )
+                    )
+                    try:
+                        await _run_agent_turn(text, **_turn_kwargs)
+                    except (asyncio.CancelledError, KeyboardInterrupt):
+                        raise
+                    except Exception as exc:
+                        log.error(
+                            "Phase %r continuation %d error: %s",
+                            spec.name, attempt, exc,
+                        )
+                        break  # exit loop; event-not-set path returns approved=False
+                    if execute_event.is_set():
+                        break
+            else:
+                await _run_agent_turn(phase_text, **_turn_kwargs)
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except Exception as exc:
@@ -389,14 +429,41 @@ class WorkflowRunner:
                     agent_id=uuid.uuid4().hex[:8],
                     duration_s=time.monotonic() - t0,
                 )
+        elif execute_event is not None and execute_event.is_set():
+            # mark_execute_complete was called — use its summary as phase output.
+            full_text = execute_data.get("summary", "".join(output_buf))
+        elif execute_event is not None and not execute_event.is_set():
+            # Agent turn ended without calling mark_execute_complete — treat as
+            # incomplete so on_reject="execute" retries rather than advancing.
+            return PhaseOutput(
+                phase_name=spec.name,
+                role=spec.agent_type,
+                full_text="".join(output_buf),
+                approved=False,
+                agent_id=uuid.uuid4().hex[:8],
+                duration_s=time.monotonic() - t0,
+            )
         else:
             full_text = "".join(output_buf)
 
         structured = _parse_output_schema(full_text, spec.output_schema)
 
+        # Review phase: if <review> tag missing the turn ended without a decision —
+        # retry the review phase itself rather than routing back through execute.
+        if structured and structured.get("incomplete"):
+            return PhaseOutput(
+                phase_name=spec.name,
+                role=spec.agent_type,
+                full_text=full_text,
+                approved=False,
+                metadata={"__next_phase__": spec.name},  # retry same phase
+                agent_id=uuid.uuid4().hex[:8],
+                duration_s=time.monotonic() - t0,
+            )
+
         approved: bool | None = None
         if structured and "approved" in structured:
-            approved = bool(structured["approved"])
+            approved = bool(structured["approved"]) if structured["approved"] is not None else None
 
         return PhaseOutput(
             phase_name=spec.name,

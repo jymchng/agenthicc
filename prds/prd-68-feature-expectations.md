@@ -469,10 +469,26 @@ is available in the execute phase without any re-exploration.
 |---|---|---|
 | 16.14 | Single agent, shared memory | One `ShortTermMemory` instance (32 k tokens) is created at workflow start and shared across plan → execute → review → summarize. The agent carries full conversation history forward between phases. |
 | 16.15 | Plan phase — write tools blocked | Plan mode has `blocked_capabilities = {WRITE, GIT_WRITE, EXECUTE, NETWORK}`. The plan phase runs in Plan mode, so the agent cannot call write or execute tools. `ToolCapabilityGate` enforces this; no per-phase filter needed. |
-| 16.16 | Plan phase with approval tools | `request_plan_approval(plan)` and `finalize_plan(plan)` are injected into every phase via `make_planner_tools()`. Both are proper `@tool()`-decorated callables so the LLM receives their schemas. Only the plan phase will call them (guided by `system_prompt_override`). |
+| 16.16 | Phase completion tools injected into every phase | `request_plan_approval`, `finalize_plan`, and `mark_execute_complete` are injected into every phase via `make_planner_tools()` + `make_executor_tools()`. All are `@tool()`-decorated so the LLM receives their schemas. The agent only calls the tool relevant to its current phase (guided by `system_prompt_override`). |
 | 16.17 | `request_plan_approval` | Shows `PlanApprovalOverlay` (PRD-86) and suspends the agent via `ApprovalService.request_approval()`. Returns `{"approved": bool, "feedback": str}`. When `approved=True`, `feedback` includes an explicit instruction to call `finalize_plan()` next. The agent can call this multiple times if rejected. |
 | 16.18 | `finalize_plan` enforcement | `finalize_plan` returns `{"ok": False, "error": "…"}` if called before `request_plan_approval` returned `approved=True`. The approval gate is machine-enforced in shared closure state (`approval_state["granted"]`). On success the message instructs the agent to write a short acknowledgment and stop — not begin implementing. |
 | 16.19 | Plan not finalised → retry | If the plan phase ends without `finalize_plan()` being called, `_run_phase` returns `approved=False`. `on_reject="plan"` on the plan phase loops back. Up to 5 attempts (`max_iterations=5`) before the workflow fails. |
+| 16.19a | Execute phase — `mark_execute_complete` gate | The execute phase requires the agent to call `mark_execute_complete(summary)` when all implementation tasks are done. Until that call is made, the phase loops in a continuation while-loop (see §16.16). |
+| 16.19b | Review phase incomplete detection | If the review phase ends without a `<review>approved/rejected</review>` tag, `_parse_output_schema` returns `{"incomplete": True}`. `_run_phase` detects this and injects `metadata={"__next_phase__": "review"}`, retrying the review phase directly rather than routing back through execute. This distinguishes "deliberate rejection" (`on_reject="execute"`) from "review turn ended without a decision" (retry review). |
+
+### 16.16 Phase continuation loop (`require_explicit_completion`)
+
+`PhaseSpec.require_explicit_completion: bool = False` makes a phase run in a **while loop** inside `_run_phase` rather than advancing after a single `_run_agent_turn`. The loop exits only when the phase's completion tool fires.
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.51 | While-loop execution | When `require_explicit_completion=True`, `_run_phase` runs `_run_agent_turn` in a loop. Iteration 1 receives the full phase prompt. Subsequent iterations receive a short continuation prompt: "Continue implementing — you have not yet called mark_execute_complete(). Resume from where you left off…". The shared `ShortTermMemory` carries the full conversation history so each continuation is a genuine resume. |
+| 16.52 | Loop exit on completion | The loop exits when `execute_event.is_set()` (agent called `mark_execute_complete`). The phase then returns `PhaseOutput` with the summary as `full_text`. |
+| 16.53 | Loop exit on Ctrl+C | `CancelledError` / `KeyboardInterrupt` inside any iteration propagates immediately out of the loop. No retry on cancellation. |
+| 16.54 | Per-iteration error handling | If an individual turn raises a non-cancellation exception (e.g. `JSONDecodeError` in a tool response), the error is logged and the loop breaks rather than crashing the whole phase. The event-not-set path then returns `approved=False`. |
+| 16.55 | Max continuations cap | `max_iterations` on the `PhaseSpec` caps the number of continuation turns (not phase-level retries). `-1` (default) → 10 continuations. Exhausting the cap returns `approved=False`. For `code_plan` execute: `max_iterations=-1` (10 continuations × 40 sub-turns = 400 LLM sub-turns max). |
+| 16.56 | No `on_reject` needed | Because the while loop retries internally, `on_reject` is not set on the execute phase. The phase-history accumulates only one entry per execute cycle regardless of how many continuation turns were needed. |
+| 16.57 | Mode override wraps the whole loop | `PhaseSpec.mode_override` is applied once before the loop and restored in a `finally` block after the loop exits — not per-iteration. The execute phase runs in Auto mode for all its continuation turns. |
 | 16.20 | Execute phase — mode switches to Auto | `PhaseSpec.mode_override="Auto"` on the execute phase temporarily sets `active_mode` to Auto for the duration of the turn. Write/execute tools are available. The original mode is restored in a `finally` block. |
 | 16.21 | Review phase — read-only | Review phase runs in Plan mode (no override). The agent inspects changes, runs tests, and outputs `<review>approved</review>` or `<review>rejected: reason</review>`. |
 | 16.22 | Per-phase focus via `system_prompt_override` | Each `PhaseSpec` carries a `system_prompt_override` that is prepended before the role's registry system prompt, guiding the single agent's focus per phase. |
@@ -525,7 +541,21 @@ is available in the execute phase without any re-exploration.
 | 16.36 | Mode binding | A workflow's `mode_bindings` list determines which modes offer it. The first binding wins for `default_workflow`; all bindings appear in `mode.workflows`. |
 | 16.37 | Shadow warning | A project workflow shadowing a user workflow emits a startup warning. A user workflow shadowing a builtin logs at DEBUG level only. |
 
-### 16.12 Scroll buffer tool-call collapse (configurable, live)
+### 16.13 Phase display — definition position, not cumulative count
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.47 | `current_phase_index` on `WorkflowRun` | `WorkflowRun.current_phase_index: int = 0` holds the zero-based definition position of the active phase. Set by `_run_phase_loop` alongside `current_phase` using `next(i for i, p in enumerate(def.phases) if p.name == phase_name)`. |
+| 16.48 | Status badge uses definition position | `Phase N/M` in both the status bar and footer uses `current_phase_index + 1` (not `len(phase_history) + 1`). Plan always shows Phase 1/M, execute Phase 2/M, review Phase 3/M — regardless of how many times a phase has been retried. |
+
+### 16.14 Global phase-run cap removed; opt-in only
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.49 | No default global cap | `WorkflowDefinition.max_total_phase_runs: int = 0` defaults to 0 (no cap). The execute↔review retry loop runs freely. Per-phase `max_iterations` and Ctrl+C are the only termination mechanisms by default. |
+| 16.50 | Opt-in cap | Set `max_total_phase_runs = N` on a `WorkflowDefinition` to enforce a hard ceiling. Used in tests and available for workflow authors who want a safety net. |
+
+### 16.15 Scroll buffer tool-call collapse (configurable, live)
 
 | # | Feature | Expected behaviour |
 |---|---|---|
@@ -556,6 +586,9 @@ A release is shippable when:
 15. If the agent skips `finalize_plan()` after a plan rejection, the plan phase loops back (up to 5 times) before failing.
 16. `--resume` on a session with an interrupted `code_plan` run restarts from the last completed phase; phases already recorded in the kernel JSONL are not re-run.
 17. `⎿ ...and N more tool calls` appears flush against the last printed tool call (no blank line between them), updates live as calls arrive, and is printed permanently to the scroll buffer when the group closes.
+18. If the execute phase ends without calling `mark_execute_complete()`, the phase continues in-loop with a continuation prompt rather than advancing to review. The agent resumes from full memory context.
+19. If the review phase ends without a `<review>` tag, the review phase itself retries — the agent is not routed back through execute.
+20. `Phase N/M` in the status bar always shows the workflow-definition position of the current phase — plan is always 1, execute always 2 — regardless of how many retry iterations have occurred.
 
 ---
 

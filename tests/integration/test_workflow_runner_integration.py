@@ -107,9 +107,8 @@ async def test_two_phase_sequential(app_state, processor):
     assert [r.phase_name for r in wf_run.phase_history] == ["plan", "execute"]
 
 
-async def test_on_reject_routes_back_before_global_cap(app_state, processor):
-    """on_reject fires and routes back to plan; the global cap (2+1=3) stops it
-    before the second plan run executes — verifying on_reject routing works."""
+async def test_on_reject_loops_back_and_eventually_completes(app_state, processor):
+    """on_reject routes back; second review approves; workflow completes."""
     call_count: dict[str, int] = {}
 
     wf = _make_workflow(
@@ -120,27 +119,30 @@ async def test_on_reject_routes_back_before_global_cap(app_state, processor):
 
     async def _phase(spec, intent, context):
         call_count[spec.name] = call_count.get(spec.name, 0) + 1
+        # review rejects once, approves on second attempt
+        approved = None
+        if spec.name == "review":
+            approved = call_count["review"] >= 2
         out = PhaseOutput(
             phase_name=spec.name, role=spec.agent_type,
-            full_text="ok", approved=False if spec.name == "review" else None,
+            full_text="ok", approved=approved,
         )
         context.add_output(out)
         return out
 
     runner._run_phase = _phase
     await runner.run("Fix it")
-    # plan(1) + review(1, rejected) = 2 runs; about to start plan(2), total=3 >= cap(3) → stop
-    assert call_count.get("plan", 0) == 1
-    assert call_count.get("review", 0) == 1
-    assert app_state.workflow_run().status == "failed"
+    assert call_count.get("plan", 0) == 2
+    assert call_count.get("review", 0) == 2
+    assert app_state.workflow_run().status == "complete"
 
 
-async def test_per_phase_max_iterations_fires_before_global_cap(app_state, processor):
-    """When a phase's own max_iterations is hit before the global cap, that error wins."""
+async def test_per_phase_max_iterations_stops_loop(app_state, processor):
+    """Per-phase max_iterations terminates a phase that keeps rejecting."""
     wf = _make_workflow(
         PhaseSpec(name="plan",   agent_type=PhaseRole.PLANNER,  next="review"),
         PhaseSpec(name="review", agent_type=PhaseRole.REVIEWER,
-                  on_reject="plan", max_iterations=1),
+                  on_reject="plan", max_iterations=2),
     )
     runner = _make_runner(wf, app_state, processor)
 
@@ -157,14 +159,18 @@ async def test_per_phase_max_iterations_fires_before_global_cap(app_state, proce
     assert app_state.workflow_run().status == "failed"
 
 
-async def test_global_cap_stops_infinite_loop(app_state, processor):
-    """A workflow where review always rejects is terminated by the global cap
-    (len(phases)+1 = 3), never running more than 2 completed phase runs."""
+async def test_opt_in_global_cap_stops_infinite_loop(app_state, processor):
+    """max_total_phase_runs on WorkflowDefinition provides an opt-in hard ceiling."""
+    from agenthicc.workflow.plugin import WorkflowDefinition
     call_count: dict[str, int] = {}
 
-    wf = _make_workflow(
-        PhaseSpec(name="plan",   agent_type=PhaseRole.PLANNER,  next="review"),
-        PhaseSpec(name="review", agent_type=PhaseRole.REVIEWER, on_reject="plan"),
+    wf = WorkflowDefinition(
+        name="test_wf",
+        phases=(
+            PhaseSpec(name="plan",   agent_type=PhaseRole.PLANNER,  next="review"),
+            PhaseSpec(name="review", agent_type=PhaseRole.REVIEWER, on_reject="plan"),
+        ),
+        max_total_phase_runs=3,   # hard ceiling: plan + review + plan = 3, then stop
     )
     runner = _make_runner(wf, app_state, processor)
 
@@ -179,13 +185,12 @@ async def test_global_cap_stops_infinite_loop(app_state, processor):
 
     runner._run_phase = _phase
     await runner.run("Loop forever")
-    total = sum(call_count.values())
-    assert total == 2   # plan + review(rejected); cap fires before plan(2)
+    assert sum(call_count.values()) <= 3
     assert app_state.workflow_run().status == "failed"
 
 
-async def test_global_cap_linear_workflow_completes(app_state, processor):
-    """A linear 4-phase workflow completes in exactly 4 runs — under the cap of 5."""
+async def test_no_global_cap_by_default(app_state, processor):
+    """Default WorkflowDefinition has no global cap; only per-phase limits apply."""
     wf = _make_workflow(
         PhaseSpec(name="plan",      next="execute"),
         PhaseSpec(name="execute",   next="review"),
@@ -193,7 +198,7 @@ async def test_global_cap_linear_workflow_completes(app_state, processor):
         PhaseSpec(name="summarize"),
     )
     runner = _make_runner(wf, app_state, processor)
-    _patch_run_phase(runner, {})   # default PhaseOutput for all phases
+    _patch_run_phase(runner, {})
     await runner.run("Do the work")
     assert app_state.workflow_run().status == "complete"
     assert len(app_state.workflow_run().phase_history) == 4

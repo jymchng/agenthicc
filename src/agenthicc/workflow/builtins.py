@@ -58,12 +58,15 @@ class CodePlan(WorkflowPlugin):
             agent_type="auto",
             max_turns=40,
             next="review",
-            max_iterations=-1,      # global cap (len(phases)+1) is the backstop
-            mode_override="Auto",   # switches to Auto → write/exec tools available
+            max_iterations=-1,              # -1 → up to 10 continuation turns
+            require_explicit_completion=True,
+            mode_override="Auto",           # switches to Auto → write/exec tools available
             system_prompt_override=(
                 "You are in the EXECUTION phase. You already explored and planned "
                 "in the previous phase — do NOT re-explore. Implement the approved "
-                "plan step by step using tools."
+                "plan step by step using tools. "
+                "When ALL tasks are complete, call mark_execute_complete() with a "
+                "brief summary. Do not stop without calling it."
             ),
         ),
         PhaseSpec(

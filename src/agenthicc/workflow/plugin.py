@@ -80,8 +80,17 @@ class PhaseSpec:
 
     max_iterations: int = -1
     """Maximum number of times this specific phase may be entered during one workflow run.
-    -1 means unlimited (the workflow-level cap in WorkflowDefinition.max_total_phase_runs applies instead).
-    Any positive integer is a hard per-phase ceiling independent of the global cap."""
+    -1 means unlimited.  Any positive integer is a hard per-phase ceiling.
+    When require_explicit_completion=True this also caps the number of continuation
+    turns within the phase (default 10 when -1)."""
+
+    require_explicit_completion: bool = False
+    """When True, _run_phase loops until the phase's completion tool is called
+    (mark_execute_complete for execute phases).  Each loop iteration runs a full
+    _run_agent_turn with a continuation prompt; the shared ShortTermMemory carries
+    full context forward so the agent resumes exactly where it left off.
+    If the loop exhausts max_iterations continuations without the event being set,
+    the phase returns approved=False."""
 
     parallel_with: tuple[str, ...] = ()
     """Names of sibling phases to run concurrently with this one via asyncio.gather."""
@@ -118,6 +127,12 @@ class WorkflowDefinition:
 
     path: str | None = None
     """Filesystem path of the .py file that defined this workflow (None for builtins)."""
+
+    max_total_phase_runs: int = 0
+    """Hard ceiling on total phase runs across all phases for one workflow run.
+    0 (default) means no global cap — the execute↔review loop can iterate freely.
+    Set to a positive integer to add an opt-in safety net for workflows that
+    should not loop indefinitely (e.g. a workflow with no per-phase max_iterations)."""
 
     def get_phase(self, name: str) -> PhaseSpec | None:
         for phase in self.phases:
@@ -212,7 +227,10 @@ def _parse_output_schema(text: str, schema: str | None) -> dict | None:
             content = match.group(1).strip()
             approved = content.lower() == "approved" or content.lower().startswith("approved")
             return {"content": content, "approved": approved}
-        return {"content": text, "approved": None}
+        # No <review> tag — review turn ended without a decision.
+        # Mark as incomplete so _run_phase retries the review phase itself,
+        # not the execute phase (which is what approved=False would trigger).
+        return {"content": text, "approved": None, "incomplete": True}
     if schema == "free_text":
         return {"text": text}
     return {"raw": text}

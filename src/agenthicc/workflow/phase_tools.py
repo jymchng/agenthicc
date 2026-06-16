@@ -124,3 +124,49 @@ def make_planner_tools(
         }
 
     return [request_plan_approval, finalize_plan]
+
+
+def make_executor_tools(
+    execute_event: asyncio.Event,
+    execute_data:  dict,
+) -> list:
+    """Return [mark_execute_complete] as a @tool()-decorated callable.
+
+    Closes over shared asyncio state so WorkflowRunner._run_phase can detect
+    whether the agent explicitly finished execution:
+
+      execute_event — set by mark_execute_complete; checked by _run_phase.
+      execute_data  — {"summary": str} written by mark_execute_complete.
+
+    If the agent turn ends without calling mark_execute_complete (abrupt end,
+    max_turns exhausted, tool error), execute_event remains unset and _run_phase
+    returns approved=False, which retries the execute phase via on_reject="execute".
+    """
+    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+
+    @_tool()
+    async def mark_execute_complete(summary: str) -> dict:
+        """Signal that all implementation tasks are finished.
+
+        Call this ONLY when every file has been written, every function
+        implemented, and the code is ready for the review phase.
+
+        Do NOT call this if you still have outstanding implementation tasks.
+        The system will automatically start the review phase after you call
+        this tool.
+
+        Args:
+            summary: One or two sentences describing what was implemented.
+        """
+        execute_data["summary"] = summary
+        execute_event.set()
+        return {
+            "ok": True,
+            "message": (
+                "Implementation marked complete and handed to the review phase. "
+                "Write a single short confirmation (one sentence) and stop — "
+                "do not continue implementing. The review phase will start automatically."
+            ),
+        }
+
+    return [mark_execute_complete]

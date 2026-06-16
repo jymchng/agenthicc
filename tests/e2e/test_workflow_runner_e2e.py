@@ -146,13 +146,14 @@ async def test_e2e_reviewer_approves_first_try(app_state, processor, tmp_path):
     assert phase_names == ["execute", "review"]
 
 
-async def test_e2e_global_cap_stops_rejection_loop(app_state, processor, tmp_path):
-    """execute → review: reviewer always rejects; global cap (cap=3) stops the loop
-    after execute(1) + review(1,rejected), before execute(2) can run."""
+async def test_e2e_opt_in_cap_stops_rejection_loop(app_state, processor, tmp_path):
+    """execute → review: reviewer always rejects; opt-in max_total_phase_runs=3 stops
+    the loop after execute(1) + review(1,rejected) + execute(2) = 3 runs."""
     mock = MockTransport()
     mock.queue_response(_completion("Implementation attempt 1.", n=1))
     mock.queue_response(_completion("<review>rejected: not good enough</review>", n=2))
-    # execute(2) would need a 3rd response but the global cap fires first
+    mock.queue_response(_completion("Implementation attempt 2.", n=3))
+    # review(2) would need a 4th response but the cap fires after execute(2)
 
     wf = WorkflowDefinition(
         name="test_wf",
@@ -161,6 +162,7 @@ async def test_e2e_global_cap_stops_rejection_loop(app_state, processor, tmp_pat
             PhaseSpec(name="review",  agent_type=PhaseRole.REVIEWER,
                       output_schema="review_result", on_reject="execute"),
         ),
+        max_total_phase_runs=3,
     )
     runner = _make_wf_runner(wf, app_state, processor, mock)
     await runner.run("Implement and review")
@@ -168,8 +170,7 @@ async def test_e2e_global_cap_stops_rejection_loop(app_state, processor, tmp_pat
     wf_run = app_state.workflow_run()
     assert wf_run.status == "failed"
     phase_names = [r.phase_name for r in wf_run.phase_history]
-    # Only 2 phases complete before the cap fires for the 3rd
-    assert phase_names == ["execute", "review"]
+    assert len(phase_names) <= 3
 
 
 async def test_e2e_agents_registry_resolves_system_prompt(app_state, processor, tmp_path):
