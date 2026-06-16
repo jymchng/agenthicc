@@ -638,7 +638,10 @@ async def _run_tui_session(
     from agenthicc.tui.input.unified_session import UnifiedInputSession  # noqa: PLC0415
 
     ctx = await _build_session_context(resume_id, cli_overrides)
-    workspace = Workspace(ctx.app_state, ctx.console)
+    workspace = Workspace(
+        ctx.app_state, ctx.console,
+        max_live_tool_calls=ctx.cfg.tools.max_live_tool_calls,
+    )
     input_session = UnifiedInputSession(
         app_state=ctx.app_state,
         command_bus=ctx.command_bus,

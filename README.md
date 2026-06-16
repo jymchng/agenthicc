@@ -60,31 +60,23 @@
 ## TUI Demo
 
 ```
-╔══════════════════════════════════════════════════════════════════════════════╗
-║ agenthicc — session-abc123                                                   ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║ ● agent:planner  12:34:01                                                    ║
-║   Planning Argon2 refactor across 3 parallel branches                        ║
-║                                                                              ║
-║ ● agent:refactor  12:34:03                                                   ║
-║   Replacing bcrypt with Argon2id in auth/hashing.py                          ║
-║   [tool] read_file auth/hashing.py                        ✓  12ms            ║
-║   [tool] write_file auth/hashing.py                       ✓  8ms             ║
-║                                                                              ║
-║ ● agent:tester  12:34:05                                                     ║
-║   Running test suite for Argon2 implementation                               ║
-║   [tool] run_tests tests/test_auth.py                     ⣾ running…         ║
-║                                                                              ║
-║ ● agent:docs  12:34:05                                                       ║
-║   Updating authentication documentation                                      ║
-║   [tool] write_file docs/auth.md                          ✓  5ms             ║
-║                                                                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║ session-abc123 | 3 agents active | 12 tool calls | $0.008                   ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║ > _                                                                          ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+● assistant (laguna-m.1)  15:02:51
+  ⎿ list_directory('tests')  ✓  2ms
+  ⎿ list_directory  ✓  15ms
+  ⎿ list_directory  ✓  7ms
+  ⎿ list_directory  ✓  18ms
+  ⎿ list_directory('rust_password_generator')  ✓  20ms
+  ⎿ ...and 3 more tool calls
+  
+❁ ↻ Thinking │ 1m 40s │ ↑ 591,173 ↓ 3,736 │ Phase 1/4: plan
+openai/poolside/laguna-m.1
+29e1874d-3ea6-4ba5-9c2e-247376ae4a2e │  4 turns │  $0.602
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ ▌
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  PLAN Plan  (shift+tab to cycle)  │  ctrl+j = ↵
+ESC Cancel  │  (LLM responding to tool error)
+  Workflow: code_plan  │  Phase 1/4: plan
 ```
 
 ---

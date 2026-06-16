@@ -86,6 +86,11 @@ class ConversationStore:
         # Resets to 0 when a text event or turn_start arrives.
         # Drives the collapsed "…and N more" summary in the scroll buffer.
         self.tool_group_count: Signal[int]   = Signal(0)
+        # Number of tool calls currently hidden above the scroll-buffer threshold.
+        # Set live by ScrollBufferAppender as each overflow call arrives;
+        # reset to 0 when the group closes (text/error event).
+        # FooterComponent renders this as a live "⎿ …and N more" footer row.
+        self.live_tool_overflow: Signal[int] = Signal(0)
 
         # ── computed values ───────────────────────────────────────────────────
         self.is_running: Computed[bool] = Computed(

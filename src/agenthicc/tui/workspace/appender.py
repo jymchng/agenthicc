@@ -45,10 +45,11 @@ class ScrollBufferAppender:
     on the asyncio event-loop thread (not on background threads).
     """
 
-    def __init__(self, app_state: Any, console: Any) -> None:
+    def __init__(self, app_state: Any, console: Any, max_live_tool_calls: int = 5) -> None:
         self._state   = app_state
         self._console = console
         self._unsub: Any = None
+        self._max_tool_calls: int = max_live_tool_calls
         # Small batch buffer to coalesce rapid events (e.g. many tool completions)
         self._pending: list[ConversationEvent] = []
         self._flush_scheduled = False
@@ -120,10 +121,13 @@ class ScrollBufferAppender:
 
             case "tool_complete":
                 self._group_count += 1
-                if self._group_count <= 5:
+                if self._group_count <= self._max_tool_calls:
                     self._render_tool_complete(ev.payload)
-                # calls beyond 5 are silently counted; the summary is printed
-                # when the next text or error event closes the group.
+                else:
+                    # Beyond threshold: update the live overflow signal so the
+                    # FooterComponent shows a live "⎿ …and N more" indicator.
+                    overflow = self._group_count - self._max_tool_calls
+                    self._state.conversation.live_tool_overflow.set(overflow)
 
             case "text":
                 self._flush_group_summary()
@@ -180,9 +184,11 @@ class ScrollBufferAppender:
                 pass
 
     def _flush_group_summary(self) -> None:
-        """Print the collapsed summary for the current tool group, then reset."""
-        overflow = self._group_count - 5
+        """Close the current tool group: reset the live signal, print permanent record."""
+        overflow = self._group_count - self._max_tool_calls
         self._group_count = 0
+        # Always clear the live footer indicator first.
+        self._state.conversation.live_tool_overflow.set(0)
         if overflow > 0:
             word = "call" if overflow == 1 else "calls"
             self._console.print(

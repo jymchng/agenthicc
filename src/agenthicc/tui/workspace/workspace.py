@@ -35,7 +35,7 @@ def _get_cols() -> int:
 class Workspace:
     """Root component — owns the terminal for the application lifetime."""
 
-    def __init__(self, app_state: Any, console: Any) -> None:
+    def __init__(self, app_state: Any, console: Any, max_live_tool_calls: int = 5) -> None:
         self._state   = app_state
         self._console = console
 
@@ -43,7 +43,10 @@ class Workspace:
         self.composer = ComposerComponent(app_state)
         self.footer   = FooterComponent(app_state)
         self.overlays = OverlayHost(app_state)
-        self.scroll   = ScrollBufferAppender(app_state, console)
+        self.scroll   = ScrollBufferAppender(
+            app_state, console,
+            max_live_tool_calls=max_live_tool_calls,
+        )
 
         self._live: Any | None = None
         self._unsubs: list[Any] = []
@@ -79,7 +82,8 @@ class Workspace:
             inp.buf, inp.cursor, inp.paste_condensed, inp.paste_label,
             self._state.overlay,
             self._state.pending_approval,  # PRD-78: approval overlay
-            self._state.workflow_run,       # PRD-81: workflow progress
+            self._state.workflow_run,              # PRD-81: workflow progress
+            conv.live_tool_overflow,               # overflow bridge row
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
 
@@ -123,9 +127,24 @@ class Workspace:
 
         parts: list[Any] = []
 
-        # Blank separator between the Scroll Buffer and the status bar (PRD-73).
-        # Stays inside the Live Block so it moves with the block and never
-        # appears in the scroll buffer.
+        # Overflow bridge — flush against the scroll-buffer tool-call sequence
+        # when a group exceeds the threshold.  The blank separator follows it so
+        # there is no gap between the last printed tool call and this line.
+        # When there is no overflow the blank separator comes first as normal.
+        _overflow_shown = False
+        try:
+            _ov = self._state.conversation.live_tool_overflow()
+            if _ov > 0:
+                _ov_word = "call" if _ov == 1 else "calls"
+                parts.append(Text.from_markup(
+                    f"  [dim]⎿ ...and {_ov} more tool {_ov_word}[/dim]"
+                ))
+                _overflow_shown = True
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Blank separator between scroll buffer (or overflow bridge) and the
+        # status bar.  Stays inside the Live Block so it never leaks to stdout.
         parts.append(Text(""))
 
         # Status bar — always at the top of the Live Block

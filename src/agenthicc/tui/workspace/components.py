@@ -311,6 +311,7 @@ class FooterComponent:
         except Exception:  # noqa: BLE001
             pass
 
+
         return Group(
             Text.from_markup(mode_line),
             Text.from_markup(hints_str),
@@ -318,7 +319,15 @@ class FooterComponent:
         )
 
     def height(self, cols: int) -> int:  # noqa: ARG002
-        return 2
+        extra = 0
+        try:
+            _wf = self._state.workflow_run()
+            if (getattr(_wf, "status", None) == "running"
+                    and getattr(_wf, "workflow_name", None)):
+                extra += 1
+        except Exception:  # noqa: BLE001
+            pass
+        return 2 + extra
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

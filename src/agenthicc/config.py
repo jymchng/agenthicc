@@ -136,6 +136,10 @@ class ToolSettings:
     plugins: list[str] = field(default_factory=list)
     allowed: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
+    max_live_tool_calls: int = 5
+    """Maximum tool completions rendered individually in the scroll buffer
+    before collapsing the rest into a live "…and N more tool calls" indicator.
+    Set via [tools] max_live_tool_calls = N in agenthicc.toml."""
 
 
 @dataclass
@@ -432,6 +436,7 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
         plugins=list(to.get("plugins", [])),
         allowed=list(to.get("allowed", to.get("allowed_tools", []))),
         denied=list(to.get("denied", to.get("denied_tools", []))),
+        max_live_tool_calls=int(to.get("max_live_tool_calls", 5)),
     )
 
     me = data.get("memory", {})
