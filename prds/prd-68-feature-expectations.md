@@ -17,7 +17,7 @@ buffer (PRD-73: `transient=True`, `auto_refresh=False`, single `_redraw()` path)
 |---|---|---|
 | 1.1 | Flower animation | A Unicode flower icon (`✿❀❁❃✾❋✽❊`) cycles every ~100 ms while the agent is active. |
 | 1.2 | State label | `Thinking` (one bold character bouncing left↔right) while the LLM generates; `Running` while a tool executes; `↻ Recovering` (red) while the LLM responds to a tool failure; `Idle` otherwise. |
-| 1.3 | Elapsed time | `│ Ns` appears while the agent is active, counting up in whole seconds (e.g. `│ 22s`). No `Runtime:` prefix. |
+| 1.3 | Elapsed time | `│ Ns` for under a minute; `│ Mm Ns` for a minute or more (e.g. `│ 22s`, `│ 1m 5s`, `│ 10m 30s`). Displayed while the agent is active. No `Runtime:` prefix. |
 | 1.4 | Token counts | `│ ↑ N,NNN ↓ N,NNN` (cyan input / green output) shown on line 1 alongside elapsed time, when non-zero. |
 | 1.5 | Active tool name | `│ tool_name` appears next to the state when a tool is running. |
 | 1.6 | Model name (line 2) | Always shows `provider/model` (e.g. `openai/poolside/laguna-xs.2`). |
@@ -25,6 +25,60 @@ buffer (PRD-73: `transient=True`, `auto_refresh=False`, single `_redraw()` path)
 | 1.8 | Width-safe | All three lines are truncated to terminal width. Never wrap or overflow. |
 | 1.9 | Blank separator | A blank line appears between the last scroll-buffer line and the top border of the status bar. The blank line is the first element of the Live block; it never appears in the scroll buffer. |
 | 1.10 | Dynamic height | `StatusComponent.height()` always equals the actual number of terminal rows rendered (including the blank separator). The Live block resizes correctly when status content changes. |
+
+### §1 Illustration — status bar states
+
+**Idle (no agent running)**
+```
+────────────────────────────────────────────────────────────────────────────────
+✿ Idle
+openai/poolside/laguna-xs.2
+de88d5d3-cf1a-4571  │  3 turns  │  $0.012
+────────────────────────────────────────────────────────────────────────────────
+```
+
+**Thinking — under one minute**
+```
+────────────────────────────────────────────────────────────────────────────────
+❀ Thinking │ 22s │ ↑ 1,024 ↓ 0
+openai/poolside/laguna-xs.2
+de88d5d3-cf1a-4571  │  3 turns  │  $0.012
+────────────────────────────────────────────────────────────────────────────────
+```
+
+**Thinking — over one minute**
+```
+────────────────────────────────────────────────────────────────────────────────
+❁ Thinking │ 1m 5s │ ↑ 8,192 ↓ 512
+openai/poolside/laguna-xs.2
+de88d5d3-cf1a-4571  │  4 turns  │  $0.031
+────────────────────────────────────────────────────────────────────────────────
+```
+
+**Running a tool**
+```
+────────────────────────────────────────────────────────────────────────────────
+❃ Running │ 2m 30s │ ↑ 4,096 ↓ 256 │ read_file
+openai/poolside/laguna-xs.2
+de88d5d3-cf1a-4571  │  4 turns  │  $0.018
+────────────────────────────────────────────────────────────────────────────────
+```
+
+**Recovering after a tool error**
+```
+────────────────────────────────────────────────────────────────────────────────
+✾ ↻ Recovering │ 10m 30s │ ↑ 16,384 ↓ 2,048
+openai/poolside/laguna-xs.2
+de88d5d3-cf1a-4571  │  7 turns  │  $0.091
+────────────────────────────────────────────────────────────────────────────────
+```
+
+Line 1 layout (left to right, width-truncated):
+`{flower} {state}  │  {elapsed}  │  ↑ {in} ↓ {out}  │  {active_tool}`
+
+Elapsed format rules:
+- `0 – 59 s` → `Ns` (e.g. `22s`)
+- `≥ 60 s` → `Mm Ns` (e.g. `1m 5s`, `10m 30s`)
 
 ---
 

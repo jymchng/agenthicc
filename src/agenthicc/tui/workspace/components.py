@@ -30,6 +30,13 @@ def _get_cols() -> int:
         return 80
 
 
+def _fmt_elapsed(seconds: float) -> str:
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    return f"{s // 60}m {s % 60}s"
+
+
 def _fit(markup: str, cols: int) -> str:
     from agenthicc.tui.rendering import fit, visible_len   # noqa: PLC0415
     if visible_len(markup) > cols:
@@ -92,7 +99,7 @@ class StatusComponent:
         l1_parts = [f"{flower} [{color}]{state_text}[/{color}]"]
         elapsed = conv.elapsed_s()
         if elapsed > 0:
-            l1_parts.append(f"[dim] │[/dim] {int(elapsed)}s")
+            l1_parts.append(f"[dim] │[/dim] {_fmt_elapsed(elapsed)}")
         inp = conv.tokens_in()
         out = conv.tokens_out()
         if inp or out:
