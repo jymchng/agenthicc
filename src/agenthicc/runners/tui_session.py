@@ -212,7 +212,7 @@ async def _run_tui_session(
     _cmd_dispatcher = CommandDispatcher(_cmd_registry)
 
     # ── agent runner ──────────────────────────────────────────────────────────
-    agent_runner = _build_agent_runner(llm_cfg, transcript=None)
+    agent_runner = _build_agent_runner(llm_cfg)
 
     # ── PRD-83: reconciliation handler — registered ONCE per session ─────────
     # AgentRunComplete carries total_usage (authoritative sum across all sub-turns).
@@ -284,9 +284,7 @@ async def _run_tui_session(
             text = _pending_skill_body.pop() + "\n\n" + text
         try:
             await _run_agent_turn(
-                text, agent_runner, None,   # transcript=None (not used)
-                None,                        # renderer=None (not used)
-                processor,
+                text, agent_runner, processor,
                 session_memory=_session_memory,
                 max_agent_turns=cfg.execution.max_agent_turns,
                 conv_store=app_state.conversation,

@@ -23,8 +23,6 @@ def _fmt_args(args: dict) -> str:
 async def _run_agent_turn(
     text: str,
     runner: Any,
-    transcript: Any,        # unused — kept for API compat; pass None
-    renderer: Any,          # unused — kept for API compat; pass None
     processor: Any,
     session_memory: Any = None,
     max_agent_turns: int = 200,
