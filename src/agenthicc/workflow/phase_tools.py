@@ -61,7 +61,10 @@ def make_planner_tools(
         """
         if approval_svc is None:
             approval_state["granted"] = True
-            return {"approved": True, "feedback": ""}
+            return {
+                "approved": True,
+                "feedback": "The plan is approved. Call finalize_plan() now to hand off to the execution phase.",
+            }
 
         from agenthicc.tools.approval import ApprovalRequest  # noqa: PLC0415
 
@@ -76,9 +79,13 @@ def make_planner_tools(
         response = await approval_svc.request_approval(req)
         # Always update the gate so each rejection correctly resets it.
         approval_state["granted"] = response.allowed
+        feedback = response.message or ""
+        if response.allowed:
+            suffix = "The plan is approved. Call finalize_plan() now to hand off to the execution phase."
+            feedback = f"{feedback}\n\n{suffix}" if feedback else suffix
         return {
             "approved": response.allowed,
-            "feedback": response.message or "",
+            "feedback": feedback,
         }
 
     @_tool()
