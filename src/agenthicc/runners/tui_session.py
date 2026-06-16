@@ -6,6 +6,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 
 def _reset_terminal_on_exit() -> None:
@@ -212,6 +213,24 @@ async def _run_tui_session(
 
     # ── agent runner ──────────────────────────────────────────────────────────
     agent_runner = _build_agent_runner(llm_cfg, transcript=None)
+
+    # ── PRD-83: reconciliation handler — registered ONCE per session ─────────
+    # AgentRunComplete carries total_usage (authoritative sum across all sub-turns).
+    # Using set_tokens (not add_tokens) makes this idempotent: if chunk.usage
+    # already updated incrementally, this is a no-op.  If the provider did not
+    # populate chunk.usage, this delivers the final correct totals.
+    _runner_signals = getattr(agent_runner, "_signals", None)
+    if _runner_signals is not None:
+        from lauren_ai._signals import AgentRunComplete as _ARC  # noqa: PLC0415
+
+        @_runner_signals.on(_ARC)
+        async def _on_agent_run_complete(sig: Any) -> None:
+            usage = getattr(sig, "total_usage", None)
+            cost  = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
+            if usage is not None:
+                inp = int(getattr(usage, "input_tokens", 0) or 0)
+                out = int(getattr(usage, "output_tokens", 0) or 0)
+                app_state.conversation.set_tokens(inp, out, cost)
 
     # ── resume: show previous context ────────────────────────────────────────
     if resume_id:

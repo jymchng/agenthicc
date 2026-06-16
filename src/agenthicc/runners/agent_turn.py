@@ -79,19 +79,7 @@ async def _run_agent_turn(
     _file_snapshots: dict[str, tuple[str, str]] = {}
 
     if _signals is not None:
-        from lauren_ai._signals import ModelCallComplete as _MCC  # noqa: PLC0415
         from lauren_ai._signals import ToolCallStarted as _TCS, ToolCallComplete as _TCC  # noqa: PLC0415
-
-        @_signals.on(_MCC)
-        async def _on_model_complete(sig: Any) -> None:
-            if not _turn_active[0]:
-                return
-            usage = getattr(sig, "usage", None)
-            inp   = getattr(usage, "input_tokens", 0) if usage else 0
-            out   = getattr(usage, "output_tokens", 0) if usage else 0
-            cost  = getattr(sig, "cost_usd", 0.0) or 0.0
-            if conv_store:
-                conv_store.add_tokens(inp, out, cost)
 
         @_signals.on(_TCS)
         async def _on_tool_started(sig: Any) -> None:
@@ -253,6 +241,19 @@ async def _run_agent_turn(
         async for _chunk in _stream:
             if _chunk.delta:
                 _current_turn.append(_chunk.delta)
+
+            # Live token update: fires on the final chunk of each LLM sub-turn.
+            # Self-contained — no signal bus, no shared flags.
+            # AgentRunComplete (registered once in tui_session.py) reconciles
+            # the final absolute total after the full run completes.
+            if _chunk.usage is not None and conv_store:
+                _u   = _chunk.usage
+                _cst = (
+                    _u.cost_usd(model_id)
+                    if callable(getattr(_u, "cost_usd", None))
+                    else 0.0
+                )
+                conv_store.add_tokens(_u.input_tokens, _u.output_tokens, _cst)
 
             if _chunk.stop_reason is not None:
                 _turn_text = "".join(_current_turn).strip()

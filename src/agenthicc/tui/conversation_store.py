@@ -171,6 +171,17 @@ class ConversationStore:
         self.tokens_out.set(self.tokens_out() + out)
         self.cost_usd.set(self.cost_usd() + cost)
 
+    def set_tokens(self, inp: int, out: int, cost: float) -> None:
+        """Overwrite token counts with authoritative absolute values.
+
+        Used by the AgentRunComplete reconciliation path.  Signal equality
+        short-circuits no-ops, so calling this with already-correct values
+        causes zero extra redraws.
+        """
+        self.tokens_in.set(inp)
+        self.tokens_out.set(out)
+        self.cost_usd.set(cost)
+
     # ── event appending ───────────────────────────────────────────────────────
 
     def append_event(
