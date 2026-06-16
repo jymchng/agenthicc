@@ -410,6 +410,102 @@ by the same `main()` with no special-casing per depth.
 
 ---
 
+## 16. Workflow System (PRD-81, PRD-87, PRD-88, PRD-89, PRD-90, PRD-91)
+
+Workflows are sequences of phases executed by purpose-specific agents.
+Each phase is backed by a named entry in `AgentsRegistry`, which holds a
+`@agent(system=…)`-decorated class as the canonical system-prompt source.
+The active `RuntimeMode` determines which workflow runs when the user submits
+a message.
+
+### 16.1 Workflow phases
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.1 | Phase execution | Each phase calls `_run_agent_turn()` so conv_store lifecycle (begin_turn / end_turn), real-time text streaming, token accounting, and tool-signal routing work identically to a direct agent turn. |
+| 16.2 | Phase-filtered tools | Each phase receives only the tools whose capabilities fit within (a) the session mode's `blocked_capabilities` ceiling and (b) the phase's `allowed_capabilities` (derived from `ROLE_DEFAULT_ALLOWED[agent_type]` when not explicitly set). |
+| 16.3 | Workflow context injection | Each phase agent receives a `[WORKFLOW CONTEXT]` block in its prompt containing the original user intent and a truncated summary of every prior phase's output. |
+| 16.4 | Parallel phases | Phases whose `PhaseSpec.parallel_with` is non-empty run concurrently via `asyncio.gather`; the next phase waits for all siblings to complete. |
+| 16.5 | Transition logic | `_determine_transition` checks `PhaseOutput.metadata["__next_phase__"]` first (dynamic override), then `on_reject` (when `approved=False`), then `spec.next`. |
+| 16.6 | Max-iterations guard | A phase that loops back via `on_reject` is terminated with a workflow failure after `spec.max_iterations` attempts. |
+| 16.7 | Kernel events | `WorkflowPhaseStarted`, `WorkflowPhaseCompleted`, and `WorkflowRunCompleted` are emitted to the kernel event log for auditability. |
+
+### 16.2 Status bar and footer during a workflow
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.8 | Phase badge in status | Status line 1 shows `│ Phase N/M: phase_name` alongside elapsed time and token counts while a workflow is running. |
+| 16.9 | Workflow footer row | An optional third footer row shows `Workflow: name │ Phase N/M: phase_name` while `workflow_run.status == "running"`. Disappears after completion. |
+
+### 16.3 Built-in workflows
+
+| Workflow | Mode binding | Phases |
+|---|---|---|
+| `code_plan` | **Plan** | plan → execute → review → summarize (single agent, shared memory) |
+| `plan_only` | Review | plan (read-only) |
+| `review_only` | — | review (read-only) |
+| `supervised` | — | plan → human_review → execute |
+| `architect` | — | explore → plan → execute → verify |
+
+### 16.4 AgentsRegistry
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.10 | Named agent classes | Each agent type (`planner`, `executor`, `reviewer`, `explorer`, `verifier`, `human`, `auto`) is backed by a `@agent(model=None, system=…)`-decorated Python class. The system prompt is stored on `AGENT_META` at decoration time and is the single source of truth. |
+| 16.11 | Base system prompt | `BASE_SYSTEM_PROMPT` (from `agents/plugin.py`) is prepended to every agent's role-specific system prompt. It instructs all agents to use tools directly, never ask for information a tool can provide, and never invent file contents. |
+| 16.12 | Tool schema delivery | `_build_runner_for_agent()` is called per phase to populate `meta.tools` from `meta.tool_classes`. Without this, the transport sends no tool schemas and the model falls back to text-based tool calls. |
+| 16.13 | User/project agent plugins | Python files in `~/.agenthicc/agents/` (user-global) and `.agenthicc/agents/` (project-local) are discovered and registered, shadowing builtins by name. Files must export `AGENTS = [PluginClass]` or define an `AgentPlugin` subclass. |
+
+### 16.5 Plan mode (`code_plan` workflow — PRD-90, PRD-91)
+
+`code_plan` uses a **single agent with shared memory** across all four phases.
+The agent builds up context progressively: what it explores in the plan phase
+is available in the execute phase without any re-exploration.
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.14 | Single agent, shared memory | One `ShortTermMemory` instance (32 k tokens) is created at workflow start and shared across plan → execute → review → summarize. The agent carries full conversation history forward between phases. |
+| 16.15 | Plan phase — write tools blocked | Plan mode has `blocked_capabilities = {WRITE, GIT_WRITE, EXECUTE, NETWORK}`. The plan phase runs in Plan mode, so the agent cannot call write or execute tools. `ToolCapabilityGate` enforces this; no per-phase filter needed. |
+| 16.16 | Plan phase with approval tools | `request_plan_approval(plan)` and `finalize_plan(plan)` are injected into every phase. Only the plan phase will call them (guided by `system_prompt_override`). |
+| 16.17 | `request_plan_approval` | Shows `PlanApprovalOverlay` (PRD-86) and suspends the agent via `ApprovalService.request_approval()`. Returns `{"approved": bool, "feedback": str}`. The agent can call this multiple times if rejected. |
+| 16.18 | `finalize_plan` enforcement | `finalize_plan` returns `{"ok": False, "error": "…"}` if called before `request_plan_approval` returned `approved=True`. The approval gate is machine-enforced in shared closure state (`approval_state["granted"]`). |
+| 16.19 | Plan not finalised → retry | If the plan phase ends without `finalize_plan()` being called, `_run_phase` returns `approved=False`. `on_reject="plan"` on the plan phase loops back. Up to 5 attempts before the workflow fails. |
+| 16.20 | Execute phase — mode switches to Auto | `PhaseSpec.mode_override="Auto"` on the execute phase temporarily sets `active_mode` to Auto for the duration of the turn. Write/execute tools are available. The original mode is restored in a `finally` block. |
+| 16.21 | Review phase — read-only | Review phase runs in Plan mode (no override). The agent inspects changes, runs tests, and outputs `<review>approved</review>` or `<review>rejected: reason</review>`. |
+| 16.22 | Per-phase focus via `system_prompt_override` | Each `PhaseSpec` carries a `system_prompt_override` that is prepended before the role's registry system prompt, guiding the single agent's focus per phase. |
+| 16.23 | Summarize phase | Agent writes a concise summary of what was planned, implemented, and verified. |
+| 16.24 | Mode auto-reset | After the workflow completes with `status="complete"`, the active mode switches automatically to Auto and a `✓ Workflow complete — switched to Auto mode` notification appears for ~2 s. |
+
+### 16.6 `PlanApprovalOverlay` (PRD-86, PRD-88)
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.21 | Plan display | The overlay shows up to 10 lines of the plan in a scrollable viewport. |
+| 16.22 | Scrolling | `[` scrolls the plan viewport up one line; `]` scrolls down. Clamped at top and bottom. A scroll indicator (`↑ · lines A–B of Total · ↓`) is shown when the plan overflows. |
+| 16.23 | Three options | `▶ Approve`, `Reject — add feedback`, `Approve — add instructions`. Navigated with `↑`/`↓`, confirmed with `Enter`. |
+| 16.24 | Prompt input | Options 2 and 3 enter a PROMPTING state where the user types feedback or instructions. `Enter` submits; `Esc` returns to SELECTING. |
+| 16.25 | Approval feedback to planner | The user's typed message is returned as `response.message` and delivered to the planner as the `feedback` or `instructions` field of the tool result. |
+
+### 16.7 Phase mode switching (`PhaseSpec.mode_override`)
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.30 | Per-phase mode override | `PhaseSpec.mode_override: str \| None` — when set to a `RuntimeMode` name (e.g. `"Auto"`), `WorkflowRunner._run_phase` switches `app_state.active_mode` to that mode for the duration of the agent turn, then restores it. |
+| 16.31 | `ToolCapabilityGate` enforcement | `ToolCapabilityGate` reads `active_mode().blocked_capabilities` on every tool call, so the mode switch takes effect immediately at the first tool call of the phase. |
+| 16.32 | Restoration on error | The original mode is restored in a `finally` block — even if the agent turn raises an exception, cancellation, or keyboard interrupt. |
+| 16.33 | Unknown mode silently skipped | If `mode_override` names a mode not in the registry, a warning is logged and the phase runs in the current mode unchanged. |
+
+### 16.8 Workflow plugin discovery
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.34 | Python-only plugins | Workflow plugins are Python `WorkflowPlugin` subclasses. TOML workflow files are not supported. |
+| 16.35 | Discovery paths | Builtin → `~/.agenthicc/workflows/*.py` (user-global) → `.agenthicc/workflows/*.py` (project-local). Later sources shadow earlier ones by workflow name. |
+| 16.36 | Mode binding | A workflow's `mode_bindings` list determines which modes offer it. The first binding wins for `default_workflow`; all bindings appear in `mode.workflows`. |
+| 16.37 | Shadow warning | A project workflow shadowing a user workflow emits a startup warning. A user workflow shadowing a builtin logs at DEBUG level only. |
+
+---
+
 ## Acceptance Criteria (summary)
 
 A release is shippable when:
@@ -424,3 +520,8 @@ A release is shippable when:
 8. In Plan / Ask / Review / Safe mode, WRITE / GIT_WRITE / EXECUTE / NETWORK tools are blocked and the model receives a structured error.
 9. `agenthicc deploy staging` works when `.agenthicc/cli/deploy.py` defines `@command("deploy", "staging")`.
 10. `agenthicc --dangerously-skip-permissions` disables all approval prompts for the session without requiring a config file change.
+11. In Plan mode, the `code_plan` workflow runs: plan (explore + seek approval) → execute → review → summarize. All phases share one agent and one memory.
+12. During the plan phase of `code_plan`, calling `write_file` or `run_bash` returns a capability-blocked error — the file is never modified.
+13. During the execute phase of `code_plan`, `write_file` and `run_bash` succeed (mode switches to Auto for that phase only).
+14. After the `code_plan` workflow completes successfully, the active mode automatically switches to Auto.
+15. If the agent skips `finalize_plan()` after a plan rejection, the plan phase loops back (up to 5 times) before failing.

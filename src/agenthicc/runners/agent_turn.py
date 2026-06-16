@@ -36,6 +36,8 @@ async def _run_agent_turn(
     active_agent: str | None = None,
     completed_turns: int = 0,
     approval_svc: Any = None,
+    output_collector: list[str] | None = None,
+    system_prompt_suffix: str = "",
 ) -> None:
     """Run one agent turn, publishing events directly to *conv_store*."""
     from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
@@ -188,13 +190,17 @@ async def _run_agent_turn(
         project_plugin_tools=(project_plugin_tools or []) + _mcp_tools,
     )
 
+    from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE  # noqa: PLC0415
+    # Use the project-level base_system_prompt override from cfg if set.
+    _cfg_base = getattr(getattr(exec_cfg, "__class__", None), "base_system_prompt",
+                        None) or getattr(exec_cfg, "base_system_prompt", None) or ""
+    _effective_base = _cfg_base or _BASE
+
     @agent_decorator(
         model=model_id,
         system=(
-            "You are a capable AI assistant with access to filesystem, shell, "
-            "and git tools. Use them directly to complete tasks. "
-            "Give concise responses. Show command output when relevant. "
-            "Never invent file contents — always read them first."
+            _effective_base
+            + (f"\n\n{system_prompt_suffix}" if system_prompt_suffix else "")
             + (_skill_suffix or "")
             + (f"\n\n{_registry.describe()}" if _registry.describe() else "")
         ),
@@ -229,6 +235,7 @@ async def _run_agent_turn(
 
     try:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
+
         _stream = await _active_runner.run_stream(
             _agent_instance, _agent_text,
             memory=session_memory,
@@ -239,11 +246,10 @@ async def _run_agent_turn(
         async for _chunk in _stream:
             if _chunk.delta:
                 _current_turn.append(_chunk.delta)
+                if output_collector is not None:
+                    output_collector.append(_chunk.delta)
 
-            # Live token update: fires on the final chunk of each LLM sub-turn.
-            # Self-contained — no signal bus, no shared flags.
-            # AgentRunComplete (registered once in tui_session.py) reconciles
-            # the final absolute total after the full run completes.
+            # Live token update — see PRD-83.
             if _chunk.usage is not None and conv_store:
                 _u   = _chunk.usage
                 _cst = (

@@ -268,6 +268,8 @@ class AppState:
         self.modal_open:        Signal[bool] = Signal(False)
         # PRD-78: non-None when an agent tool is paused waiting for approval.
         self.pending_approval: Signal[Any]   = Signal(None)
+        # PRD-81: holds WorkflowRun | None; set by WorkflowRunner during execution.
+        self.workflow_run:     Signal[Any]   = Signal(None)
 
     @classmethod
     def create(cls) -> "AppState":

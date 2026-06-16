@@ -34,6 +34,7 @@ class ApprovalRequest:
     tool_input:   dict
     capabilities: frozenset  # ToolCapability values that triggered the approval
     event:        asyncio.Event = field(compare=False, hash=False)
+    kind:         str = "tool"   # "tool" | "plan_review" — controls which overlay is shown
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class ApprovalResponse:
     allowed:      bool
     remember:     bool = False      # allow all remaining calls of this capability this turn
     remember_all: bool = False      # allow all remaining calls of this capability this session
+    message:      str  = ""         # user-typed feedback / instructions (plan_review only)
 
 
 class ApprovalService:
@@ -63,9 +65,12 @@ class ApprovalService:
     async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
         """Agent-side: suspend until the user responds."""
         # Fast path — capability already blanket-approved in this session/turn.
-        if req.capabilities <= self._remembered_all:
+        # Guard: empty capabilities must never match (frozenset() <= frozenset()
+        # is True in Python, which would silently auto-approve plan reviews and
+        # any other non-capability request before the overlay is shown).
+        if req.capabilities and req.capabilities <= self._remembered_all:
             return ApprovalResponse(allowed=True)
-        if req.capabilities <= self._remembered_turn:
+        if req.capabilities and req.capabilities <= self._remembered_turn:
             return ApprovalResponse(allowed=True)
 
         # Serialise concurrent approvals.
@@ -88,12 +93,14 @@ class ApprovalService:
         *,
         remember: bool = False,
         remember_all: bool = False,
+        message: str = "",
     ) -> None:
-        """TUI-side (sync): called from ApprovalOverlay.handle_key()."""
+        """TUI-side (sync): called from ApprovalOverlay / PlanApprovalOverlay."""
         self._response = ApprovalResponse(
             allowed=allowed,
             remember=remember,
             remember_all=remember_all,
+            message=message,
         )
         pending = self._app_state.pending_approval()
         if pending is not None:

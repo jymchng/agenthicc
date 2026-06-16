@@ -111,13 +111,32 @@ async def _run_tui_session(
     workspace = Workspace(app_state, console)
 
     # ── runtime services ──────────────────────────────────────────────────────
-    command_bus  = CommandBus()
-    mode_manager = ModeManager(app_state=app_state)   # PRD-75: writes app_state.active_mode
-    mode_manager.set_by_name("Auto")
+    command_bus = CommandBus()
 
     # PRD-78: approval service — coordinates tool approval between agent and TUI.
     from agenthicc.tools.approval import ApprovalService  # noqa: PLC0415
     approval_svc = ApprovalService(app_state)
+
+    # PRD-87: workflow + agents registries — both built before ModeManager so
+    # the mode→workflow maps can be derived from workflow mode_bindings.
+    from agenthicc.workflow.registry import build_workflow_registry  # noqa: PLC0415
+    from agenthicc.agents.registry import build_agents_registry      # noqa: PLC0415
+    _workflow_registry = build_workflow_registry(
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
+    )
+    _agents_registry = build_agents_registry(
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
+    )
+
+    # PRD-75 / PRD-87: ModeManager derives workflow bindings from the registry.
+    mode_manager = ModeManager(
+        app_state=app_state,
+        default_map=_workflow_registry.mode_default_map(),
+        available_map=_workflow_registry.mode_available_map(),
+    )
+    mode_manager.set_by_name("Auto")
 
     # ── skills / plugins ─────────────────────────────────────────────────────
     from agenthicc.skills.loader import discover_skills as _ds      # noqa: PLC0415
@@ -282,22 +301,61 @@ async def _run_tui_session(
         # Prepend any queued skill body (from /skillname commands)
         if _pending_skill_body:
             text = _pending_skill_body.pop() + "\n\n" + text
+
+        # PRD-87: dispatch through WorkflowRunner when the active mode has a
+        # default_workflow; otherwise use the direct single-turn path.
+        _active_wf_name = app_state.active_mode().default_workflow
+        _wf_defn = _workflow_registry.get(_active_wf_name) if _active_wf_name else None
+
         try:
-            await _run_agent_turn(
-                text, agent_runner, processor,
-                session_memory=_session_memory,
-                max_agent_turns=cfg.execution.max_agent_turns,
-                conv_store=app_state.conversation,
-                app_state=app_state,
-                exec_cfg=cfg.execution,
-                skills=_skills,
-                mention_cache=_mention_cache,
-                project_plugin_tools=_project_plugins.all_tools,
-                mcp_registry=_mcp_registry,
-                active_agent="default",
-                completed_turns=_turn_count[0],
-                approval_svc=approval_svc,  # PRD-78
-            )
+            if _wf_defn is not None:
+                from agenthicc.workflow.runner import WorkflowRunner  # noqa: PLC0415
+                _wf_runner = WorkflowRunner(
+                    definition=_wf_defn,
+                    conv_store=app_state.conversation,
+                    app_state=app_state,
+                    processor=processor,
+                    agent_runner=agent_runner,
+                    session_mem=_session_memory,
+                    approval_svc=approval_svc,
+                    cfg=cfg,
+                    skills=_skills,
+                    plugin_tools=_project_plugins.all_tools,
+                    mcp_registry=_mcp_registry,
+                    mention_cache=_mention_cache,
+                    agents_registry=_agents_registry,
+                    mode_manager=mode_manager,   # PRD-91: phase mode switching
+                    completed_turns=_turn_count[0],
+                )
+                await _wf_runner.run(text)
+                # PRD-89: after a successful workflow, exit the workflow-bound
+                # mode automatically so the next message is a normal turn.
+                _wf_result = app_state.workflow_run()
+                if (
+                    _wf_result is not None
+                    and getattr(_wf_result, "status", None) == "complete"
+                    and app_state.active_mode().default_workflow is not None
+                ):
+                    mode_manager.set_by_name("Auto")
+                    app_state.conversation.notification.set(
+                        "✓ Workflow complete — switched to Auto mode"
+                    )
+            else:
+                await _run_agent_turn(
+                    text, agent_runner, processor,
+                    session_memory=_session_memory,
+                    max_agent_turns=cfg.execution.max_agent_turns,
+                    conv_store=app_state.conversation,
+                    app_state=app_state,
+                    exec_cfg=cfg.execution,
+                    skills=_skills,
+                    mention_cache=_mention_cache,
+                    project_plugin_tools=_project_plugins.all_tools,
+                    mcp_registry=_mcp_registry,
+                    active_agent="default",
+                    completed_turns=_turn_count[0],
+                    approval_svc=approval_svc,
+                )
         finally:
             input_session.set_mode(InputMode.IDLE)
             _turn_count[0] += 1
@@ -416,15 +474,19 @@ async def _run_tui_session(
         cfg=cfg,
     )
 
-    # ── PRD-78: wire pending_approval signal → ApprovalOverlay ───────────────
+    # ── PRD-78 / PRD-86: wire pending_approval signal → correct overlay ──────
     def _on_approval_change() -> None:
         req = app_state.pending_approval()
-        from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay  # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay          # noqa: PLC0415
+        from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay # noqa: PLC0415
         if req is not None:
-            overlay = ApprovalOverlay(req, approval_svc, workspace.overlays.hide)
+            if getattr(req, "kind", "tool") == "plan_review":
+                overlay = PlanApprovalOverlay(req, approval_svc, workspace.overlays.hide)
+            else:
+                overlay = ApprovalOverlay(req, approval_svc, workspace.overlays.hide)
             workspace.overlays.show(overlay)
         else:
-            if isinstance(workspace.overlays.widget, ApprovalOverlay):
+            if isinstance(workspace.overlays.widget, (ApprovalOverlay, PlanApprovalOverlay)):
                 workspace.overlays.hide()
 
     app_state.pending_approval.subscribe(_on_approval_change)

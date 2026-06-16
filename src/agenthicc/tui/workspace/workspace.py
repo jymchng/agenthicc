@@ -79,6 +79,7 @@ class Workspace:
             inp.buf, inp.cursor, inp.paste_condensed, inp.paste_label,
             self._state.overlay,
             self._state.pending_approval,  # PRD-78: approval overlay
+            self._state.workflow_run,       # PRD-81: workflow progress
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
 

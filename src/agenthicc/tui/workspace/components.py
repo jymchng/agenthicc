@@ -109,6 +109,17 @@ class StatusComponent:
         tool = conv.active_tool()
         if tool:
             l1_parts.append(f"[dim] │[/dim] [bold]{_e(tool)}[/bold]")
+        # PRD-81: workflow phase badge
+        try:
+            _wf = self._state.workflow_run()
+            if isinstance(getattr(_wf, "current_phase", None), str):
+                _n_done = len(getattr(_wf, "phase_history", []))
+                _total  = getattr(_wf, "total_phases", 0)
+                l1_parts.append(
+                    f"[dim] │[/dim] Phase {_n_done + 1}/{_total}: {_e(_wf.current_phase)}"
+                )
+        except Exception:  # noqa: BLE001
+            pass
         while len(l1_parts) > 1 and _vlen("".join(l1_parts)) > cols:
             l1_parts.pop()
         line1 = "".join(l1_parts)
@@ -282,9 +293,28 @@ class FooterComponent:
             raw_hints  = _HINTS.get(state_name, _HINTS["idle"])
             hints_str  = _build_hints(raw_hints, cols)
 
+        # PRD-81: optional workflow progress row
+        extra: list[Any] = []
+        try:
+            from rich.markup import escape as _e  # noqa: PLC0415
+            _wf = self._state.workflow_run()
+            if (isinstance(getattr(_wf, "status", None), str)
+                    and _wf.status == "running"
+                    and isinstance(getattr(_wf, "workflow_name", None), str)):
+                _n    = len(getattr(_wf, "phase_history", []))
+                _tot  = getattr(_wf, "total_phases", 0)
+                _cp   = getattr(_wf, "current_phase", None)
+                _info = f"Phase {_n + 1}/{_tot}: {_e(_cp)}" if isinstance(_cp, str) else "Done"
+                extra.append(Text.from_markup(
+                    _fit(f"  [dim]Workflow: {_e(_wf.workflow_name)}  │  {_info}[/dim]", cols)
+                ))
+        except Exception:  # noqa: BLE001
+            pass
+
         return Group(
             Text.from_markup(mode_line),
             Text.from_markup(hints_str),
+            *extra,
         )
 
     def height(self, cols: int) -> int:  # noqa: ARG002
