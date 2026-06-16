@@ -35,7 +35,7 @@ class TestPhaseSpec:
         assert spec.allowed_capabilities is None
         assert spec.max_turns == 20
         assert spec.next is None
-        assert spec.max_iterations == 3
+        assert spec.max_iterations == -1
 
     def test_resolved_allowed_caps_planner_uses_role_default(self):
         spec = PhaseSpec(name="p", agent_type=PhaseRole.PLANNER)

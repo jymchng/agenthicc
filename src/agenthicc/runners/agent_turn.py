@@ -267,10 +267,10 @@ class AgentTurnRunner:
         Returns (agent_instance, active_runner).
         """
         from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
-        from lauren_ai.testing import _build_runner_for_agent              # noqa: PLC0415
         from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase  # noqa: PLC0415
         from agenthicc.plugins.registry import build_registry              # noqa: PLC0415
         from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE   # noqa: PLC0415
+        from agenthicc.runners.tool_populator import populate_agent_tools  # noqa: PLC0415
 
         ctx = self._ctx
 
@@ -296,12 +296,8 @@ class AgentTurnRunner:
         class _AgenthiccAgent: ...
 
         agent_instance = _AgenthiccAgent()
-        # Populate meta.tools from tool_classes (side-effect on class).
-        _build_runner_for_agent(
-            agent_instance,
-            ctx.runner._transport,
-            signals=getattr(ctx.runner, "_signals", None),
-        )
+        # Populate meta.tools from the registered tool classes.
+        populate_agent_tools(agent_instance, registry.tools)
 
         # Global hooks
         hooks: list = []
@@ -364,6 +360,7 @@ class AgentTurnRunner:
         except (asyncio.CancelledError, KeyboardInterrupt):
             if ctx.conv_store:
                 ctx.conv_store.end_turn()
+            raise   # must propagate so task.cancel() terminates the workflow runner
         except Exception as exc:
             if ctx.conv_store:
                 ctx.conv_store.append_event("error", {

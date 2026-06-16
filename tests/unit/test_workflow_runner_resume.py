@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agenthicc.workflow.config import WorkflowConfig
 from agenthicc.workflow.plugin import (
     PhaseOutput,
     PhaseSpec,
@@ -27,13 +28,11 @@ def _make_runner(definition: WorkflowDefinition) -> WorkflowRunner:
     app_state = MagicMock()
     app_state.active_mode.return_value.blocked_capabilities = frozenset()
 
-    runner = WorkflowRunner(
-        definition=definition,
+    cfg = WorkflowConfig(
         conv_store=MagicMock(),
         app_state=app_state,
         processor=MagicMock(),
         agent_runner=MagicMock(),
-        session_mem=MagicMock(),
         approval_svc=None,
         cfg=MagicMock(),
         skills={},
@@ -42,8 +41,9 @@ def _make_runner(definition: WorkflowDefinition) -> WorkflowRunner:
         mention_cache=MagicMock(),
         agents_registry=MagicMock(),
     )
+    runner = WorkflowRunner(definition, cfg)
     # Stub processor.emit
-    runner._processor.emit = AsyncMock()
+    runner._cfg.processor.emit = AsyncMock()
     return runner
 
 
@@ -124,7 +124,7 @@ class TestWorkflowRunnerResume:
 
         await runner.resume(ctx)
 
-        wf_run = runner._app_state.workflow_run.set.call_args_list[-1][0][0]
+        wf_run = runner._cfg.app_state.workflow_run.set.call_args_list[-1][0][0]
         assert wf_run.status == "complete"
         assert runner._run_id == "run1"
 

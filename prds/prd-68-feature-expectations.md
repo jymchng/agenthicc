@@ -427,15 +427,17 @@ a message.
 | 16.3 | Workflow context injection | Each phase agent receives a `[WORKFLOW CONTEXT]` block in its prompt containing the original user intent and a truncated summary of every prior phase's output. |
 | 16.4 | Parallel phases | Phases whose `PhaseSpec.parallel_with` is non-empty run concurrently via `asyncio.gather`; the next phase waits for all siblings to complete. |
 | 16.5 | Transition logic | `_determine_transition` checks `PhaseOutput.metadata["__next_phase__"]` first (dynamic override), then `on_reject` (when `approved=False`), then `spec.next`. |
-| 16.6 | Max-iterations guard | A phase that loops back via `on_reject` is terminated with a workflow failure after `spec.max_iterations` attempts. |
+| 16.6 | Per-phase max-iterations guard | A phase with `max_iterations != -1` is terminated with a workflow failure once it has been entered that many times. The default is `-1` (unlimited per-phase; the global cap applies instead). |
+| 16.6a | Global phase-run cap | The workflow stops with `status="failed"` when the total number of phase runs reaches `len(phases) + 1`. For a 4-phase workflow this cap is 5 — the normal linear path (4 runs) plus one retry before the loop is terminated. The error message "stopped after N phase runs (limit: M)" is appended to the transcript. |
+| 16.6b | Ctrl+C / interrupt cancellation | Pressing Ctrl+C (or ESC) during a workflow immediately cancels the active LLM call and propagates `CancelledError` through the full workflow runner stack, terminating the workflow. The `_stream()` method re-raises `CancelledError` rather than swallowing it; `_run_phase`, `_run_phase_loop`, `run_turn`, and `agent_task_body` each propagate it correctly. |
 | 16.7 | Kernel events | `WorkflowPhaseStarted`, `WorkflowPhaseCompleted`, and `WorkflowRunCompleted` are emitted to the kernel event log for auditability. |
 
 ### 16.2 Status bar and footer during a workflow
 
 | # | Feature | Expected behaviour |
 |---|---|---|
-| 16.8 | Phase badge in status | Status line 1 shows `│ Phase N/M: phase_name` alongside elapsed time and token counts while a workflow is running. |
-| 16.9 | Workflow footer row | An optional third footer row shows `Workflow: name │ Phase N/M: phase_name` while `workflow_run.status == "running"`. Disappears after completion. |
+| 16.8 | Phase badge in status | Status line 1 shows `│ Phase N/M: phase_name` alongside elapsed time and token counts while a workflow is running. N is the 1-based **definition position** of the current phase (`current_phase_index + 1`), not the cumulative run count. Plan always shows Phase 1/M, execute Phase 2/M, etc., regardless of how many times a phase has been retried via `on_reject`. |
+| 16.9 | Workflow footer row | An optional third footer row shows `Workflow: name │ Phase N/M: phase_name` while `workflow_run.status == "running"`. Uses the same definition-position N as the status badge. Disappears after completion. |
 
 ### 16.3 Built-in workflows
 

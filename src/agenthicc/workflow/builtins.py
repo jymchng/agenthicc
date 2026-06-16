@@ -58,7 +58,7 @@ class CodePlan(WorkflowPlugin):
             agent_type="auto",
             max_turns=40,
             next="review",
-            max_iterations=0,       # no cap — review can loop back as many times as needed
+            max_iterations=-1,      # global cap (len(phases)+1) is the backstop
             mode_override="Auto",   # switches to Auto → write/exec tools available
             system_prompt_override=(
                 "You are in the EXECUTION phase. You already explored and planned "
@@ -72,7 +72,7 @@ class CodePlan(WorkflowPlugin):
             max_turns=8,
             output_schema="review_result",
             on_reject="execute",
-            max_iterations=0,       # no cap — keep iterating until tests pass
+            max_iterations=-1,      # global cap (len(phases)+1) is the backstop
             next="summarize",
             mode_override=None,     # stays in Plan mode → read-only review
             system_prompt_override=(

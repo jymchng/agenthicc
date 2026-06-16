@@ -15,6 +15,7 @@ from agenthicc.workflow.plugin import (
 from agenthicc.workflow.registry import WorkflowRegistry, build_workflow_registry
 from agenthicc.workflow.loader import load_builtin_workflows, load_python_workflows
 from agenthicc.workflow.runner import WorkflowRunner, build_workflow_runner
+from agenthicc.workflow.config import WorkflowConfig
 
 __all__ = [
     "PhaseRole", "PhaseSpec", "WorkflowContext", "WorkflowDefinition",
@@ -23,4 +24,5 @@ __all__ = [
     "WorkflowRegistry", "build_workflow_registry",
     "load_builtin_workflows", "load_python_workflows",
     "WorkflowRunner", "build_workflow_runner",
+    "WorkflowConfig",
 ]

@@ -60,14 +60,13 @@ async def processor(tmp_path):
 
 def _make_wf_runner(wf, app_state, processor, mock_transport, agents_registry=None):
     from unittest.mock import MagicMock
-    runner = AgentRunnerBase(transport=mock_transport, signals=SignalBus())
-    return WorkflowRunner(
-        definition=wf,
+    from agenthicc.workflow.config import WorkflowConfig
+    agent_runner = AgentRunnerBase(transport=mock_transport, signals=SignalBus())
+    cfg = WorkflowConfig(
         conv_store=app_state.conversation,
         app_state=app_state,
         processor=processor,
-        agent_runner=runner,
-        session_mem=MagicMock(),
+        agent_runner=agent_runner,
         approval_svc=None,
         cfg=MagicMock(),
         skills={},
@@ -76,6 +75,7 @@ def _make_wf_runner(wf, app_state, processor, mock_transport, agents_registry=No
         mention_cache=MagicMock(),
         agents_registry=agents_registry or build_agents_registry(),
     )
+    return WorkflowRunner(wf, cfg)
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────
@@ -123,23 +123,18 @@ async def test_e2e_two_phase_plan_execute(app_state, processor, tmp_path):
     assert wf_run.phase_history[1].phase_name == "execute"
 
 
-async def test_e2e_reviewer_approval_loop(app_state, processor, tmp_path):
-    """execute → review: reviewer rejects first, approves second."""
+async def test_e2e_reviewer_approves_first_try(app_state, processor, tmp_path):
+    """execute → review: reviewer approves on the first attempt; workflow completes."""
     mock = MockTransport()
-    # execute (x2), review (x2)
-    mock.queue_response(_completion("Initial implementation.", n=1))
-    mock.queue_response(_completion("<review>rejected: needs error handling</review>", n=2))
-    mock.queue_response(_completion("Added error handling.", n=3))
-    mock.queue_response(_completion("<review>approved</review>", n=4))
+    mock.queue_response(_completion("Implementation complete.", n=1))
+    mock.queue_response(_completion("<review>approved</review>", n=2))
 
     wf = WorkflowDefinition(
         name="test_wf",
         phases=(
-            PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR,
-                      next="review", max_iterations=3),
+            PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR, next="review"),
             PhaseSpec(name="review",  agent_type=PhaseRole.REVIEWER,
-                      output_schema="review_result", on_reject="execute",
-                      max_iterations=3),
+                      output_schema="review_result", on_reject="execute"),
         ),
     )
     runner = _make_wf_runner(wf, app_state, processor, mock)
@@ -148,8 +143,33 @@ async def test_e2e_reviewer_approval_loop(app_state, processor, tmp_path):
     wf_run = app_state.workflow_run()
     assert wf_run.status == "complete"
     phase_names = [r.phase_name for r in wf_run.phase_history]
-    assert phase_names.count("execute") == 2
-    assert phase_names.count("review") == 2
+    assert phase_names == ["execute", "review"]
+
+
+async def test_e2e_global_cap_stops_rejection_loop(app_state, processor, tmp_path):
+    """execute → review: reviewer always rejects; global cap (cap=3) stops the loop
+    after execute(1) + review(1,rejected), before execute(2) can run."""
+    mock = MockTransport()
+    mock.queue_response(_completion("Implementation attempt 1.", n=1))
+    mock.queue_response(_completion("<review>rejected: not good enough</review>", n=2))
+    # execute(2) would need a 3rd response but the global cap fires first
+
+    wf = WorkflowDefinition(
+        name="test_wf",
+        phases=(
+            PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR, next="review"),
+            PhaseSpec(name="review",  agent_type=PhaseRole.REVIEWER,
+                      output_schema="review_result", on_reject="execute"),
+        ),
+    )
+    runner = _make_wf_runner(wf, app_state, processor, mock)
+    await runner.run("Implement and review")
+
+    wf_run = app_state.workflow_run()
+    assert wf_run.status == "failed"
+    phase_names = [r.phase_name for r in wf_run.phase_history]
+    # Only 2 phases complete before the cap fires for the 3rd
+    assert phase_names == ["execute", "review"]
 
 
 async def test_e2e_agents_registry_resolves_system_prompt(app_state, processor, tmp_path):

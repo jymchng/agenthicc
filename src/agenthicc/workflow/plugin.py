@@ -44,19 +44,47 @@ class PhaseSpec:
     allowed_capabilities_override — explicit per-instance override; takes
         priority over allowed_capabilities and role default.
     """
-    name:                          str
-    agent_type:                    str            = "auto"
-    system_prompt_override:        str            = ""     # overrides registry prompt for this phase
-    mode_override:                 str | None     = None   # RuntimeMode name to apply during this phase
-    allowed_capabilities:          object         = None   # frozenset | None
-    allowed_capabilities_override: object         = None   # frozenset | None
-    max_turns:                     int            = 20
-    output_schema:                 str | None     = None
-    next:                          str | None     = None
-    on_reject:                     str | None     = None
-    on_error:                      str | None     = None
-    max_iterations:                int            = 3
-    parallel_with:                 tuple[str,...] = ()
+    name: str
+    """Unique phase identifier within the workflow; used as the transition target in next/on_reject."""
+
+    agent_type: str = "auto"
+    """Key into AgentsRegistry that selects the system prompt and allowed capabilities for this phase."""
+
+    system_prompt_override: str = ""
+    """When non-empty, replaces the registry's system prompt for this phase entirely."""
+
+    mode_override: str | None = None
+    """RuntimeMode name to activate for the duration of this phase (e.g. 'Auto' to allow writes)."""
+
+    allowed_capabilities: object = None
+    """frozenset[ToolCapability] | None — tool capability allowlist for this phase.
+    None means fall back to ROLE_DEFAULT_ALLOWED[agent_type], then the session mode ceiling."""
+
+    allowed_capabilities_override: object = None
+    """Explicit per-instance capability override; takes priority over allowed_capabilities and role default."""
+
+    max_turns: int = 20
+    """Maximum number of LLM sub-turns (tool-call → response cycles) within a single phase run."""
+
+    output_schema: str | None = None
+    """Schema name used to parse structured output from the phase's full_text ('plan', 'review_result', 'free_text')."""
+
+    next: str | None = None
+    """Name of the phase to run after this one completes successfully; None ends the workflow."""
+
+    on_reject: str | None = None
+    """Name of the phase to run when this phase's output has approved=False; enables retry loops."""
+
+    on_error: str | None = None
+    """Name of the phase to run when this phase raises an unhandled exception (reserved, not yet used)."""
+
+    max_iterations: int = -1
+    """Maximum number of times this specific phase may be entered during one workflow run.
+    -1 means unlimited (the workflow-level cap in WorkflowDefinition.max_total_phase_runs applies instead).
+    Any positive integer is a hard per-phase ceiling independent of the global cap."""
+
+    parallel_with: tuple[str, ...] = ()
+    """Names of sibling phases to run concurrently with this one via asyncio.gather."""
 
     @property
     def resolved_allowed_caps(self) -> object:  # frozenset | None
@@ -73,12 +101,23 @@ class PhaseSpec:
 
 @dataclasses.dataclass(frozen=True)
 class WorkflowDefinition:
-    name:          str
-    description:   str              = ""
-    phases:        tuple[PhaseSpec,...] = ()
-    mode_bindings: tuple[str,...]   = ()
-    source:        str              = "builtin"
-    path:          str | None       = None
+    name: str
+    """Unique workflow identifier; used in WorkflowRegistry lookups and kernel event payloads."""
+
+    description: str = ""
+    """Human-readable summary shown in mode menus and help text."""
+
+    phases: tuple[PhaseSpec, ...] = ()
+    """Ordered tuple of PhaseSpec nodes defining the workflow graph."""
+
+    mode_bindings: tuple[str, ...] = ()
+    """RuntimeMode names that automatically trigger this workflow when the user sends a message."""
+
+    source: str = "builtin"
+    """Origin of this definition: 'builtin', 'user', or 'project'."""
+
+    path: str | None = None
+    """Filesystem path of the .py file that defined this workflow (None for builtins)."""
 
     def get_phase(self, name: str) -> PhaseSpec | None:
         for phase in self.phases:
@@ -127,6 +166,11 @@ class WorkflowRun:
     status:        str                  = "running"
     created_at:    float                = field(default_factory=time.time)
     total_phases:  int                  = 0
+    current_phase_index: int            = 0
+    """Zero-based position of current_phase within WorkflowDefinition.phases.
+    Used by the TUI to display "Phase N/M" where N = current_phase_index + 1.
+    Stays fixed at the definition position regardless of how many times the
+    phase is retried via on_reject, so plan always shows Phase 1/M."""
 
 
 @dataclasses.dataclass

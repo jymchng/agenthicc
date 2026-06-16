@@ -113,10 +113,10 @@ class StatusComponent:
         try:
             _wf = self._state.workflow_run()
             if isinstance(getattr(_wf, "current_phase", None), str):
-                _n_done = len(getattr(_wf, "phase_history", []))
-                _total  = getattr(_wf, "total_phases", 0)
+                _n     = getattr(_wf, "current_phase_index", 0) + 1
+                _total = getattr(_wf, "total_phases", 0)
                 l1_parts.append(
-                    f"[dim] │[/dim] Phase {_n_done + 1}/{_total}: {_e(_wf.current_phase)}"
+                    f"[dim] │[/dim] Phase {_n}/{_total}: {_e(_wf.current_phase)}"
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -301,10 +301,10 @@ class FooterComponent:
             if (isinstance(getattr(_wf, "status", None), str)
                     and _wf.status == "running"
                     and isinstance(getattr(_wf, "workflow_name", None), str)):
-                _n    = len(getattr(_wf, "phase_history", []))
+                _n    = getattr(_wf, "current_phase_index", 0) + 1
                 _tot  = getattr(_wf, "total_phases", 0)
                 _cp   = getattr(_wf, "current_phase", None)
-                _info = f"Phase {_n + 1}/{_tot}: {_e(_cp)}" if isinstance(_cp, str) else "Done"
+                _info = f"Phase {_n}/{_tot}: {_e(_cp)}" if isinstance(_cp, str) else "Done"
                 extra.append(Text.from_markup(
                     _fit(f"  [dim]Workflow: {_e(_wf.workflow_name)}  │  {_info}[/dim]", cols)
                 ))

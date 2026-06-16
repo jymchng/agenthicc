@@ -319,8 +319,23 @@ class TUISession:
         self._agent_task:         asyncio.Task | None = None
         self._turn_count:         int                 = 0
 
-        from agenthicc.commands import CommandDispatcher  # noqa: PLC0415
+        from agenthicc.commands import CommandDispatcher          # noqa: PLC0415
+        from agenthicc.workflow.config import WorkflowConfig      # noqa: PLC0415
         self._cmd_dispatcher = CommandDispatcher(ctx.cmd_registry)
+        # Built once per session; completed_turns is updated per run via replace().
+        self._wf_config_base = WorkflowConfig(
+            conv_store=ctx.app_state.conversation,
+            app_state=ctx.app_state,
+            processor=ctx.processor,
+            agent_runner=ctx.agent_runner,
+            approval_svc=ctx.approval_svc,
+            cfg=ctx.cfg,
+            skills=ctx.skills,
+            plugin_tools=ctx.project_plugins.all_tools,
+            mcp_registry=ctx.mcp_registry,
+            mention_cache=ctx.mention_cache,
+            agents_registry=ctx.agents_registry,
+        )
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -419,24 +434,12 @@ class TUISession:
 
         try:
             if _wf_defn is not None:
-                from agenthicc.workflow.runner import WorkflowRunner  # noqa: PLC0415
-                _wf_runner = WorkflowRunner(
-                    definition=_wf_defn,
-                    conv_store=ctx.app_state.conversation,
-                    app_state=ctx.app_state,
-                    processor=ctx.processor,
-                    agent_runner=ctx.agent_runner,
-                    session_mem=ctx.session_memory,
-                    approval_svc=ctx.approval_svc,
-                    cfg=ctx.cfg,
-                    skills=ctx.skills,
-                    plugin_tools=ctx.project_plugins.all_tools,
-                    mcp_registry=ctx.mcp_registry,
-                    mention_cache=ctx.mention_cache,
-                    agents_registry=ctx.agents_registry,
-                    mode_manager=ctx.mode_manager,
-                    completed_turns=self._turn_count,
+                import dataclasses as _dc                              # noqa: PLC0415
+                from agenthicc.workflow.runner import WorkflowRunner   # noqa: PLC0415
+                _wf_config = _dc.replace(
+                    self._wf_config_base, completed_turns=self._turn_count,
                 )
+                _wf_runner = WorkflowRunner(_wf_defn, _wf_config, ctx.mode_manager)
                 await _wf_runner.run(text)
                 # PRD-89: exit workflow-bound mode after successful completion
                 _wf_result = ctx.app_state.workflow_run()
@@ -550,22 +553,7 @@ class TUISession:
         self._input_session.set_mode(InputMode.STREAMING)
         ctx.approval_svc.reset_turn_memory()
         try:
-            runner = WorkflowRunner(
-                definition=wf_defn,
-                conv_store=ctx.app_state.conversation,
-                app_state=ctx.app_state,
-                processor=ctx.processor,
-                agent_runner=ctx.agent_runner,
-                session_mem=ctx.session_memory,
-                approval_svc=ctx.approval_svc,
-                cfg=ctx.cfg,
-                skills=ctx.skills,
-                plugin_tools=ctx.project_plugins.all_tools,
-                mcp_registry=ctx.mcp_registry,
-                mention_cache=ctx.mention_cache,
-                agents_registry=ctx.agents_registry,
-                mode_manager=ctx.mode_manager,
-            )
+            runner = WorkflowRunner(wf_defn, self._wf_config_base, ctx.mode_manager)
             await runner.resume(context)
             # PRD-89: exit workflow-bound mode after completion
             _wf_result = ctx.app_state.workflow_run()
