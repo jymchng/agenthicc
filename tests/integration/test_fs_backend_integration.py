@@ -5,8 +5,6 @@ Tests exercise real I/O through the full routing stack.
 NOTE: no ``from __future__ import annotations`` — @tool() inspects real annotations.
 """
 
-import hashlib
-from pathlib import Path
 
 import pytest
 

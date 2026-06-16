@@ -2,7 +2,6 @@
 from __future__ import annotations
 import tomllib
 import pytest
-from pathlib import Path
 from unittest.mock import patch
 from agenthicc.cli.config import _do_config_show, _do_config_init, TEMPLATE_CONFIG
 from agenthicc.cli.parser import _parse_args

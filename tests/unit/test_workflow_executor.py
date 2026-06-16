@@ -17,7 +17,6 @@ from agenthicc.kernel import (
     Workflow,
     WorkflowNode,
 )
-from agenthicc.kernel.reducer import root_reducer
 from agenthicc.workflow.executor import DAGExecutor
 
 pytestmark = pytest.mark.unit

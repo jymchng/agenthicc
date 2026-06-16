@@ -4,8 +4,6 @@ Targeted lines in hooks.py: 66, 70, 76, 94, 141, 199-200
 """
 from __future__ import annotations
 
-import sys
-import types
 from typing import Any
 
 import pytest
@@ -260,7 +258,7 @@ class TestLoadHookFromDotpath:
 class TestLaurenToolHookAdapterExtended:
     async def test_after_tool_call_returns_proceed_decision(self):
         """Line 199-200: after_tool_call always returns AfterToolHookDecision.proceed()."""
-        from lauren_ai._tools._hooks import AfterToolHookDecision, _NO_REPLACE
+        from lauren_ai._tools._hooks import _NO_REPLACE
 
         adapter = LaurenToolHookAdapter(NullHook())
         ctx = _lauren_ctx()

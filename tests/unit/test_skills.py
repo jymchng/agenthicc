@@ -41,7 +41,7 @@ class TestSkillRegistry:
         assert "search_web" in names
 
     def test_broken_skill_no_crash(self):
-        from agenthicc.skills import SkillBundle, _BUILTIN
+        from agenthicc.skills import SkillBundle
         class _Broken(SkillBundle):
             @property
             def name(self): return "_broken_99"

@@ -1,10 +1,9 @@
 """Integration tests for git tools with a real git repository (PRD-15)."""
 from __future__ import annotations
-import asyncio
 import subprocess
 import pytest
 from agenthicc.tools.git import (GitStatusTool, GitLogTool, GitAddTool,
-    GitCommitTool, GitDiffTool, GitBranchTool, GitCheckoutTool)
+    GitCommitTool, GitDiffTool, GitBranchTool)
 
 pytestmark = pytest.mark.integration
 

@@ -11,9 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from agenthicc.modes import (
-    Mode,
     ModeManager,
-    ModeRegistry,
     build_default_registry,
     discover_mode_plugins,
 )

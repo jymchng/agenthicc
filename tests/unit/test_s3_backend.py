@@ -7,7 +7,6 @@ moto tests if the package is later added.
 """
 from __future__ import annotations
 
-import builtins
 import datetime
 import sys
 import types

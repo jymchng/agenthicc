@@ -104,7 +104,7 @@ def test_signature_preserved_through_timeout():
     """inspect.signature and type hints survive @timeout wrapping."""
     import inspect
     import typing
-    from lauren_ai._tools import tool, TOOL_META
+    from lauren_ai._tools import tool
 
     @timeout(30)
     @tool()

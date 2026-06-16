@@ -7,14 +7,11 @@ end-to-end dropdown registration.
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
 
 from agenthicc.commands.plugin_loader import (
     _load_command_file,
     discover_command_plugins,
-    CommandPluginSet,
 )
-from agenthicc.commands import Command
 
 pytestmark = pytest.mark.unit
 

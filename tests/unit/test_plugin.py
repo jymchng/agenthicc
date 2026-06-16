@@ -2,7 +2,7 @@
 from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock, patch
-from agenthicc.plugin import AgenthiccPlugin, PluginLoadError, PluginManifest, PluginRegistry
+from agenthicc.plugin import AgenthiccPlugin, PluginLoadError, PluginRegistry
 from agenthicc.tools.base import Tool
 
 pytestmark = pytest.mark.unit
@@ -88,7 +88,6 @@ class TestPluginRegistry:
         assert manifests == []
 
     def test_load_unknown_raises(self):
-        from agenthicc.plugin import PluginLoadError
         reg = PluginRegistry()
         with patch("importlib.metadata.entry_points", return_value=[]):
             reg.discover()

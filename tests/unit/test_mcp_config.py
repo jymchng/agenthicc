@@ -81,7 +81,6 @@ def test_parse_mcp_servers_graceful_on_missing_import(monkeypatch):
     """Falls back to raw dicts when agenthicc.tools.mcp is not importable."""
     monkeypatch.setitem(sys.modules, "agenthicc.tools.mcp", None)
     # Force reimport of config to pick up the monkeypatched sys.modules
-    import importlib
     import agenthicc.config as cfg_module
 
     original_fn = cfg_module._parse_mcp_servers

@@ -431,7 +431,7 @@ a message.
 | 16.6 | Per-phase max-iterations guard | A phase with `max_iterations != -1` is terminated with a workflow failure once it has been entered that many times. The default is `-1` (unlimited per-phase; the global cap applies instead). |
 | 16.6a | Global phase-run cap | The workflow stops with `status="failed"` when the total number of phase runs reaches `len(phases) + 1`. For a 4-phase workflow this cap is 5 — the normal linear path (4 runs) plus one retry before the loop is terminated. The error message "stopped after N phase runs (limit: M)" is appended to the transcript. |
 | 16.6b | Ctrl+C / interrupt cancellation | Pressing Ctrl+C (or ESC) during a workflow immediately cancels the active LLM call and propagates `CancelledError` through the full workflow runner stack, terminating the workflow. The `_stream()` method re-raises `CancelledError` rather than swallowing it; `_run_phase`, `_run_phase_loop`, `run_turn`, and `agent_task_body` each propagate it correctly. |
-| 16.7 | Kernel events | `WorkflowPhaseStarted`, `WorkflowPhaseCompleted`, and `WorkflowRunCompleted` are emitted to the kernel event log for auditability. |
+| 16.7 | Kernel events | `WorkflowRunStarted`, `WorkflowPhaseStarted`, `WorkflowPhaseCompleted`, and `WorkflowRunCompleted` are emitted to the kernel event log. `WorkflowPhaseCompleted` carries `role`, `full_text`, `approved`, and `structured` so that `restore_from_log` can reconstruct a `WorkflowContext` for resume. |
 
 ### 16.2 Status bar and footer during a workflow
 
@@ -456,7 +456,7 @@ a message.
 |---|---|---|
 | 16.10 | Named agent classes | Each agent type (`planner`, `executor`, `reviewer`, `explorer`, `verifier`, `human`, `auto`) is backed by a `@agent(model=None, system=…)`-decorated Python class. The system prompt is stored on `AGENT_META` at decoration time and is the single source of truth. |
 | 16.11 | Base system prompt | `BASE_SYSTEM_PROMPT` (from `agents/plugin.py`) is prepended to every agent's role-specific system prompt. It instructs all agents to use tools directly, never ask for information a tool can provide, and never invent file contents. |
-| 16.12 | Tool schema delivery | `_build_runner_for_agent()` is called per phase to populate `meta.tools` from `meta.tool_classes`. Without this, the transport sends no tool schemas and the model falls back to text-based tool calls. |
+| 16.12 | Tool schema delivery | `populate_agent_tools(agent_instance, tools)` (in `runners/tool_populator.py`) populates `meta.tools` from the registered tool list. Without this step the transport sends no tool schemas and the model falls back to text-based tool calls. This replaces the old `testing._build_runner_for_agent` call. |
 | 16.13 | User/project agent plugins | Python files in `~/.agenthicc/agents/` (user-global) and `.agenthicc/agents/` (project-local) are discovered and registered, shadowing builtins by name. Files must export `AGENTS = [PluginClass]` or define an `AgentPlugin` subclass. |
 
 ### 16.5 Plan mode (`code_plan` workflow — PRD-90, PRD-91)
@@ -469,10 +469,10 @@ is available in the execute phase without any re-exploration.
 |---|---|---|
 | 16.14 | Single agent, shared memory | One `ShortTermMemory` instance (32 k tokens) is created at workflow start and shared across plan → execute → review → summarize. The agent carries full conversation history forward between phases. |
 | 16.15 | Plan phase — write tools blocked | Plan mode has `blocked_capabilities = {WRITE, GIT_WRITE, EXECUTE, NETWORK}`. The plan phase runs in Plan mode, so the agent cannot call write or execute tools. `ToolCapabilityGate` enforces this; no per-phase filter needed. |
-| 16.16 | Plan phase with approval tools | `request_plan_approval(plan)` and `finalize_plan(plan)` are injected into every phase. Only the plan phase will call them (guided by `system_prompt_override`). |
-| 16.17 | `request_plan_approval` | Shows `PlanApprovalOverlay` (PRD-86) and suspends the agent via `ApprovalService.request_approval()`. Returns `{"approved": bool, "feedback": str}`. The agent can call this multiple times if rejected. |
-| 16.18 | `finalize_plan` enforcement | `finalize_plan` returns `{"ok": False, "error": "…"}` if called before `request_plan_approval` returned `approved=True`. The approval gate is machine-enforced in shared closure state (`approval_state["granted"]`). |
-| 16.19 | Plan not finalised → retry | If the plan phase ends without `finalize_plan()` being called, `_run_phase` returns `approved=False`. `on_reject="plan"` on the plan phase loops back. Up to 5 attempts before the workflow fails. |
+| 16.16 | Plan phase with approval tools | `request_plan_approval(plan)` and `finalize_plan(plan)` are injected into every phase via `make_planner_tools()`. Both are proper `@tool()`-decorated callables so the LLM receives their schemas. Only the plan phase will call them (guided by `system_prompt_override`). |
+| 16.17 | `request_plan_approval` | Shows `PlanApprovalOverlay` (PRD-86) and suspends the agent via `ApprovalService.request_approval()`. Returns `{"approved": bool, "feedback": str}`. When `approved=True`, `feedback` includes an explicit instruction to call `finalize_plan()` next. The agent can call this multiple times if rejected. |
+| 16.18 | `finalize_plan` enforcement | `finalize_plan` returns `{"ok": False, "error": "…"}` if called before `request_plan_approval` returned `approved=True`. The approval gate is machine-enforced in shared closure state (`approval_state["granted"]`). On success the message instructs the agent to write a short acknowledgment and stop — not begin implementing. |
+| 16.19 | Plan not finalised → retry | If the plan phase ends without `finalize_plan()` being called, `_run_phase` returns `approved=False`. `on_reject="plan"` on the plan phase loops back. Up to 5 attempts (`max_iterations=5`) before the workflow fails. |
 | 16.20 | Execute phase — mode switches to Auto | `PhaseSpec.mode_override="Auto"` on the execute phase temporarily sets `active_mode` to Auto for the duration of the turn. Write/execute tools are available. The original mode is restored in a `finally` block. |
 | 16.21 | Review phase — read-only | Review phase runs in Plan mode (no override). The agent inspects changes, runs tests, and outputs `<review>approved</review>` or `<review>rejected: reason</review>`. |
 | 16.22 | Per-phase focus via `system_prompt_override` | Each `PhaseSpec` carries a `system_prompt_override` that is prepended before the role's registry system prompt, guiding the single agent's focus per phase. |
@@ -498,7 +498,25 @@ is available in the execute phase without any re-exploration.
 | 16.32 | Restoration on error | The original mode is restored in a `finally` block — even if the agent turn raises an exception, cancellation, or keyboard interrupt. |
 | 16.33 | Unknown mode silently skipped | If `mode_override` names a mode not in the registry, a warning is logged and the phase runs in the current mode unchanged. |
 
-### 16.8 Workflow plugin discovery
+### 16.9 WorkflowConfig (PRD-95)
+
+`WorkflowRunner.__init__` takes exactly three parameters: `definition`, `config: WorkflowConfig`, and `mode_manager`.
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.38 | `WorkflowConfig` dataclass | Holds all session-scoped singletons: `conv_store`, `app_state`, `processor`, `agent_runner`, `approval_svc`, `cfg`, `skills`, `plugin_tools`, `mcp_registry`, `mention_cache`, `agents_registry`, `completed_turns`. Frozen; `dataclasses.replace` is used to update `completed_turns` per run. |
+| 16.39 | Constructed once per session | `TUISession.__init__` builds one `_wf_config_base` from `SessionContext`. Each workflow run gets a `replace`d copy with the current `completed_turns`. Resume uses `_wf_config_base` directly. |
+
+### 16.10 Workflow resume (PRD-94, PRD-98)
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.40 | Kernel `Workflow` entry | `WorkflowRunStarted` creates a `Workflow` entry in `AppState.workflows` keyed by `run_id`, storing `name` (definition name) and `intent_text` (original user message). |
+| 16.41 | Per-phase kernel node | `WorkflowPhaseCompleted` appends a `WorkflowNode` to the workflow with `result = {full_text, role, approved, structured}`. These nodes are replayed by `restore_from_log` to reconstruct `WorkflowContext`. |
+| 16.42 | Auto-resume on `--resume` | `TUISession._schedule_workflow_resume()` scans `processor.get_state().workflows` after the session starts. Any workflow with `status != complete/failed` is reconstructed via `_reconstruct_workflow_context()` and resumed by `WorkflowRunner.resume(context)`. |
+| 16.43 | `WorkflowRunner.resume()` | Skips phases already in `context.phase_outputs` using `_find_resume_phase()`, which replays the phase-transition graph (respecting `on_reject` paths). Runs `_run_phase_loop` from the first incomplete phase. |
+
+### 16.11 Workflow plugin discovery
 
 | # | Feature | Expected behaviour |
 |---|---|---|
@@ -506,6 +524,14 @@ is available in the execute phase without any re-exploration.
 | 16.35 | Discovery paths | Builtin → `~/.agenthicc/workflows/*.py` (user-global) → `.agenthicc/workflows/*.py` (project-local). Later sources shadow earlier ones by workflow name. |
 | 16.36 | Mode binding | A workflow's `mode_bindings` list determines which modes offer it. The first binding wins for `default_workflow`; all bindings appear in `mode.workflows`. |
 | 16.37 | Shadow warning | A project workflow shadowing a user workflow emits a startup warning. A user workflow shadowing a builtin logs at DEBUG level only. |
+
+### 16.12 Scroll buffer tool-call collapse (configurable, live)
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.44 | Configurable threshold | The number of individually-rendered tool calls before collapsing is `ToolSettings.max_live_tool_calls` (default 5). Set via `[tools] max_live_tool_calls = N` in `agenthicc.toml`. Passed to `Workspace` → `ScrollBufferAppender` at startup. |
+| 16.45 | Live overflow bridge | While a tool group exceeds the threshold, `ConversationStore.live_tool_overflow: Signal[int]` holds the current overflow count. The workspace renders `⎿ ...and N more tool call(s)` directly above the status bar (flush against the scroll-buffer content, no blank line between it and the last printed tool call). |
+| 16.46 | Permanent scroll-buffer record | When the group closes (`text` or `error` event), `live_tool_overflow` is reset to 0 (bridge disappears) and a permanent `⎿ ...and N more tool call(s)` line is appended to the scroll buffer. |
 
 ---
 
@@ -528,3 +554,22 @@ A release is shippable when:
 13. During the execute phase of `code_plan`, `write_file` and `run_bash` succeed (mode switches to Auto for that phase only).
 14. After the `code_plan` workflow completes successfully, the active mode automatically switches to Auto.
 15. If the agent skips `finalize_plan()` after a plan rejection, the plan phase loops back (up to 5 times) before failing.
+16. `--resume` on a session with an interrupted `code_plan` run restarts from the last completed phase; phases already recorded in the kernel JSONL are not re-run.
+17. `⎿ ...and N more tool calls` appears flush against the last printed tool call (no blank line between them), updates live as calls arrive, and is printed permanently to the scroll buffer when the group closes.
+
+---
+
+## Known Lauren-AI gaps (future PRDs)
+
+These are friction points in agenthicc that require reaching into private lauren-ai internals.
+Each entry is a candidate for a lauren-ai PRD.
+
+| Gap | Current workaround in agenthicc | Ideal API in lauren-ai |
+|---|---|---|
+| No public model accessor | `getattr(runner, "_transport", None)._config.model` in `agent_turn.py` and `workflow/runner.py` | `AgentRunnerBase.model_id: str` property |
+| No public signal bus accessor | `getattr(runner, "_signals", None)` in `agent_turn.py` and `tui_session.py` | `AgentRunnerBase.signals: SignalBus` public property |
+| `meta.tools` not populated after `@agent` + `@use_tools` | `populate_agent_tools()` in `runners/tool_populator.py` uses private `AGENT_META`, `TOOL_META`, `_add_to_tool_map` | Public `build_tool_map(tools) -> dict` or auto-populate in decorator |
+| Global hooks only settable at construction | New `AgentRunnerBase` created per turn in `_build_agent()` to inject `global_hooks` | `run_stream(..., global_hooks=...)` per-call override |
+| No `on_turn_start` hook | `approval_svc.reset_turn_memory()` called manually in `run_turn()` | `ToolHook.on_turn_start(ctx)` lifecycle method |
+| `_add_to_tool_map` is private but production-required | `from lauren_ai._tools import _add_to_tool_map` in `tool_populator.py` | Make public; rename to `add_to_tool_map` |
+| No `AgentConfig.memory_window_tokens` | `ShortTermMemory(max_tokens=32_000)` constructed outside runner | `AgentConfig.memory_window_tokens: int` field |

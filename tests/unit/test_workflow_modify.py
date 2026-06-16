@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 
 import pytest
 
 from agenthicc.kernel import (
     AppState,
-    Event,
     EventProcessor,
     NodeStatus,
     SecurityPolicy,
@@ -18,7 +16,6 @@ from agenthicc.kernel import (
     Workflow,
     WorkflowNode,
 )
-from agenthicc.kernel.reducer import root_reducer
 from agenthicc.workflow.modify import ModifyResult, WorkflowModifier
 
 pytestmark = pytest.mark.unit

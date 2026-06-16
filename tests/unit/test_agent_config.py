@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
 
 from agenthicc.plugins.agent_config import (
     AgentDef,

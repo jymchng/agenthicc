@@ -109,8 +109,6 @@ def test_build_total_live_block_height_with_model():
     + 1 border + 2 footer = 9 lines (borders and composer may vary, but
     blank + status must be 4).
     """
-    from rich.text import Text
-    from rich.console import Group
     from agenthicc.tui.workspace.workspace import Workspace
 
     console = MagicMock()

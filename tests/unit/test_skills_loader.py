@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
 
 from agenthicc.skills.loader import discover_skills, _parse_skill
 

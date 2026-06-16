@@ -1,12 +1,8 @@
 """Tests for PRD-21 configuration management: file search, env overrides, CLI overrides."""
 from __future__ import annotations
 
-import os
-import sys
-import importlib
 import pytest
 from pathlib import Path
-from unittest.mock import patch
 
 pytestmark = pytest.mark.unit
 

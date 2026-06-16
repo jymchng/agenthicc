@@ -24,7 +24,6 @@ class _ContribPlugin(AgenthiccPlugin):
 async def test_register_tool_emits_kernel_event(running_processor):
     # PluginRegistry.register_tool emits via asyncio.ensure_future;
     # wait a short time for the event to be processed.
-    import asyncio
     reg = PluginRegistry(event_processor=running_processor)
     reg.register_tool(_SimpleTool())
     await asyncio.sleep(0.1)
@@ -39,7 +38,6 @@ async def test_load_plugin_via_mocked_entry_point(running_processor):
     with patch("importlib.metadata.entry_points", return_value=[ep]):
         reg.discover()
         manifest = reg.load("contrib")
-    import asyncio
     await asyncio.sleep(0.1)
     await running_processor.drain()
     assert manifest.status == "loaded"

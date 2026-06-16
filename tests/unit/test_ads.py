@@ -1,11 +1,9 @@
 """Unit tests for AdRotator and AdCache (PRD-11)."""
 from __future__ import annotations
 
-import json
 import time
 import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 from agenthicc.ads import AdCache, AdRecord, AdRotator
 

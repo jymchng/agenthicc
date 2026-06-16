@@ -9,14 +9,12 @@ from __future__ import annotations
 import json
 import socket
 import time
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agenthicc.auth import (
     AGENTHICC_REVOKE_URL,
-    AGENTHICC_TOKEN_URL,
     AuthClient,
     TokenBundle,
     TokenStore,
@@ -300,7 +298,6 @@ class TestAuthClientLogin:
 
     async def test_login_completes_and_stores_bundle(self):
         """Full mocked login flow: callback fires immediately with a code."""
-        import asyncio
 
         store = MagicMock()
         client = AuthClient(store)

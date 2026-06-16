@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
-from agenthicc.mentions.parser import MentionKind, Mention, parse_mentions, strip_mentions
+from agenthicc.mentions.parser import MentionKind, parse_mentions, strip_mentions
 
 pytestmark = pytest.mark.unit
 

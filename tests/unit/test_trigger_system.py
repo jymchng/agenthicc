@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from agenthicc.tui.trigger import TriggerManager as TriggerRegistry, TriggerContext, TriggerResult, MatchItem, TriggerHandler
+from agenthicc.tui.trigger import TriggerManager as TriggerRegistry, TriggerContext, TriggerResult, MatchItem
 
 pytestmark = pytest.mark.unit
 

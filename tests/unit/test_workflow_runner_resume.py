@@ -1,7 +1,7 @@
 """Unit tests for WorkflowRunner.resume() and _find_resume_phase() (PRD-94)."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -175,7 +175,6 @@ class TestRestoreFromLog:
         """Replaying WorkflowRunStarted + phases + Completed via restore_from_log
         produces a fully populated kernel AppState.workflows entry."""
         import json
-        import time
 
         from agenthicc.kernel import AppState, Event, SecurityPolicy, SystemSettings
         from agenthicc.kernel.processor import restore_from_log

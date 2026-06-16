@@ -3,9 +3,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from agenthicc.tools.outlook import (GraphApiOutlookBackend, OutlookListEmailsTool,
-    OutlookSendEmailTool, OutlookCalendarEventsTool, OutlookCreateEventTool,
-    OutlookSearchEmailsTool, OutlookListFoldersTool, OutlookReadEmailTool,
-    OutlookReplyEmailTool, OutlookMoveEmailTool, OutlookToolKit)
+    OutlookSendEmailTool, OutlookCalendarEventsTool, OutlookToolKit)
 
 pytestmark = pytest.mark.unit
 

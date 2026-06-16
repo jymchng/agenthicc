@@ -10,7 +10,6 @@ import pytest
 
 from agenthicc.kernel import (
     AppState,
-    Effect,
     Event,
     EventProcessor,
     SecurityPolicy,

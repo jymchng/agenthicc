@@ -10,8 +10,6 @@ import pytest
 
 from agenthicc.ads import (
     AD_CACHE_TTL,
-    AD_DISMISS_SEC,
-    AD_ROTATION_SEC,
     AdCache,
     AdRecord,
     AdRotator,

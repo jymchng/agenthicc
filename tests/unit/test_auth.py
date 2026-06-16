@@ -1,11 +1,9 @@
 """Unit tests for AuthClient and TokenStore (PRD-11)."""
 from __future__ import annotations
 
-import json
 import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from pathlib import Path
 
 from agenthicc.auth import AuthClient, NotLoggedInError, TokenBundle, TokenStore
 

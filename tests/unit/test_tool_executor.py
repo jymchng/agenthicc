@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from agenthicc.tools.base import Tool, ToolResultEnvelope
+from agenthicc.tools.base import Tool
 from agenthicc.tools.executor import AgenthiccToolExecutor
 from agenthicc.tools.hooks import HookRegistry, HookRunner, LifecycleHook, RecoveryAction, Rejection
 

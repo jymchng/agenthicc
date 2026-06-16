@@ -1,7 +1,7 @@
 """Unit tests for exec tools (PRD-16)."""
 from __future__ import annotations
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 from agenthicc.tools.exec import (ExecToolKit, RunBashTool, RunCommandTool,
     RunPythonTool, RunPythonExprTool, RunTestsTool, _truncate)
 

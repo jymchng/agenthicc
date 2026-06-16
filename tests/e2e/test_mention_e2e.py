@@ -6,7 +6,6 @@ are made; all tests are self-contained with tmp_path fixtures.
 """
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest

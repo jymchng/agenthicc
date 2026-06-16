@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from agenthicc.tools.mcp import McpServerConfig, McpToolBridge, McpToolSchema
+from agenthicc.tools.mcp import McpServerConfig, McpToolBridge
 
 
 @pytest.fixture

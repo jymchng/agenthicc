@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 pytestmark = pytest.mark.unit
 
@@ -63,7 +63,6 @@ class TestSessionIndex:
         """Register two sessions for this cwd → _find_latest returns the more recent one."""
         from agenthicc.sessions import (
             _register_session,
-            _touch_session,
             _find_latest_session_for_cwd,
             _load_session_index,
             _save_session_index,
@@ -387,7 +386,7 @@ class TestDoSessions:
 
     def test_current_cwd_marked_with_asterisk(self, capsys):
         """A session whose cwd matches the current directory is marked with *."""
-        from agenthicc.sessions import _register_session, _do_sessions, _save_session_index
+        from agenthicc.sessions import _do_sessions, _save_session_index
         # Register a session for a different cwd
         _save_session_index({
             "aabbccddeeff": {
@@ -554,7 +553,6 @@ class TestRunHeadless:
     async def test_run_headless_emits_ready_on_eof(self, capsys, tmp_path):
         """_run_headless prints ready JSON then exits cleanly on EOF stdin."""
         import agenthicc.__main__ as m
-        from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
 
         # Empty stdin → immediate EOF
         lines = iter([""])

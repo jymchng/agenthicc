@@ -1,6 +1,5 @@
 """Integration tests for exec tools with real subprocess execution (PRD-16)."""
 from __future__ import annotations
-import asyncio
 import sys
 import pytest
 from agenthicc.tools.exec import RunBashTool, RunCommandTool, RunPythonTool, RunPythonExprTool, RunTestsTool

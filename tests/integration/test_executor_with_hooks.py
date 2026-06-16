@@ -9,7 +9,6 @@ import pytest
 from agenthicc.tools.base import Tool
 from agenthicc.tools.executor import AgenthiccToolExecutor
 from agenthicc.tools.hooks import HookRegistry, HookRunner, LifecycleHook, RecoveryAction
-from agenthicc.kernel import Event
 
 pytestmark = pytest.mark.integration
 

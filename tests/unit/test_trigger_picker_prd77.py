@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 
 def _make_registry(*chars: str):
     """Build a minimal TriggerManager-like mock for given trigger chars."""
-    from agenthicc.tui.trigger import TriggerResult, MatchItem
+    from agenthicc.tui.trigger import TriggerResult
 
     handlers = {}
     for ch in chars:

@@ -1,13 +1,12 @@
 """Targeted tests to push coverage to >90% on new modules (PRD-13..19)."""
 from __future__ import annotations
-import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from agenthicc.tools.fs import (AppendFileTool, DeleteFileTool, MoveFileTool,
     CopyFileTool, ListDirectoryTool, MakeDirectoryTool, FileExistsTool,
     SearchFilesTool, GrepFilesTool, GetFileInfoTool, ReadLinesTool, PatchFileTool)
 from agenthicc.tools.git import GitBlameTool, GitShowTool, GitStashTool, GitDiffTool
-from agenthicc.tools.exec import RunCommandTool, RunPythonTool, RunTestsTool, _run_proc
+from agenthicc.tools.exec import RunCommandTool, RunPythonTool, RunTestsTool
 from agenthicc.tools.outlook import GraphApiOutlookBackend, OutlookMoveEmailTool, OutlookListFoldersTool
 
 pytestmark = pytest.mark.unit
@@ -141,7 +140,6 @@ class TestExecEdgeCases:
         assert mp.call_args[1]["cwd"] == "/tmp"
 
     async def test_run_python_cleans_up_temp_file(self, mp):
-        import os
         mp.return_value = {"stdout": "", "stderr": "", "returncode": 0, "duration_ms": 1.0, "timed_out": False}
         await RunPythonTool().execute({"code": "pass"}, {})
         # Temp file should be cleaned up (check by not crashing)

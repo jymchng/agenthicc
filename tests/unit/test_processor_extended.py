@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from agenthicc.kernel import AppState, Effect, Event, SecurityPolicy, SystemSettings
-from agenthicc.kernel.processor import EventProcessor, NoOpEffectExecutor
+from agenthicc.kernel.processor import EventProcessor
 from agenthicc.kernel.reducer import root_reducer
 
 pytestmark = pytest.mark.unit

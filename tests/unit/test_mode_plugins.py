@@ -19,7 +19,6 @@ from unittest.mock import patch
 import pytest
 
 from agenthicc.modes.plugin_loader import (
-    ModeLoadResult,
     load_mode_file,
     discover_modes,
     _scan_mode_directory,

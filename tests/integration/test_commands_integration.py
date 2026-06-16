@@ -9,7 +9,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from agenthicc.commands import build_builtin_registry, CommandDispatcher, CommandContext, Command
+from agenthicc.commands import build_builtin_registry, CommandDispatcher, Command
 from agenthicc.commands.plugin_loader import discover_command_plugins
 
 pytestmark = pytest.mark.integration
