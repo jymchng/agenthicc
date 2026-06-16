@@ -52,6 +52,11 @@ class ScrollBufferAppender:
         # Small batch buffer to coalesce rapid events (e.g. many tool completions)
         self._pending: list[ConversationEvent] = []
         self._flush_scheduled = False
+        # Tracks how many tool_complete events have been seen in the current
+        # consecutive group.  Mirrors ConversationStore.tool_group_count but
+        # maintained locally so it is accurate during _flush_batch regardless
+        # of what other events in the same batch have already reset the signal.
+        self._group_count: int = 0
 
     def mount(self) -> None:
         self._unsub = self._state.conversation.on_event(self._queue_event)
@@ -97,6 +102,7 @@ class ScrollBufferAppender:
     def _render_one(self, ev: ConversationEvent) -> None:
         match ev.kind:
             case "turn_start":
+                self._group_count = 0
                 agent_name = ev.payload.get("agent_name", "assistant")
                 self._console.print(
                     f"[bold cyan]●[/bold cyan] [bold]{agent_name}[/bold]"
@@ -113,9 +119,14 @@ class ScrollBufferAppender:
                 )
 
             case "tool_complete":
-                self._render_tool_complete(ev.payload)
+                self._group_count += 1
+                if self._group_count <= 5:
+                    self._render_tool_complete(ev.payload)
+                # calls beyond 5 are silently counted; the summary is printed
+                # when the next text or error event closes the group.
 
             case "text":
+                self._flush_group_summary()
                 text = ev.payload.get("text", "")
                 if text.strip():
                     from rich.markdown import Markdown  # noqa: PLC0415
@@ -140,6 +151,7 @@ class ScrollBufferAppender:
                 )
 
             case "error":
+                self._flush_group_summary()
                 from rich.markup import escape as _e
                 msg    = ev.payload.get("message", "")
                 detail = ev.payload.get("detail", "")
@@ -166,6 +178,17 @@ class ScrollBufferAppender:
 
             case _:
                 pass
+
+    def _flush_group_summary(self) -> None:
+        """Print the collapsed summary for the current tool group, then reset."""
+        overflow = self._group_count - 5
+        self._group_count = 0
+        if overflow > 0:
+            word = "call" if overflow == 1 else "calls"
+            self._console.print(
+                f"  [dim]⎿ ...and {overflow} more tool {word}[/dim]",
+                markup=True, highlight=False,
+            )
 
     def _render_tool_complete(self, payload: dict) -> None:
         from rich.markup import escape as _e

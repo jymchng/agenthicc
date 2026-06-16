@@ -80,8 +80,12 @@ class ConversationStore:
         self.tokens_out:       Signal[int]                    = Signal(0)
         self.cost_usd:         Signal[float]                  = Signal(0.0)
         self.session_id:       Signal[str]                    = Signal("")
-        self.model_name:   Signal[str]      = Signal("")
-        self.notification: Signal[str | None] = Signal(None)
+        self.model_name:       Signal[str]      = Signal("")
+        self.notification:     Signal[str | None] = Signal(None)
+        # Counts consecutive tool_complete events in the current group.
+        # Resets to 0 when a text event or turn_start arrives.
+        # Drives the collapsed "…and N more" summary in the scroll buffer.
+        self.tool_group_count: Signal[int]   = Signal(0)
 
         # ── computed values ───────────────────────────────────────────────────
         self.is_running: Computed[bool] = Computed(
@@ -182,6 +186,12 @@ class ConversationStore:
         )
         if self._current_turn is not None:
             self._current_turn.events.append(ev)
+        # Keep tool_group_count in sync before notifying subscribers so any
+        # Live-block component that reads it gets the updated value immediately.
+        if kind == "tool_complete":
+            self.tool_group_count.set(self.tool_group_count.get() + 1)
+        elif kind in ("text", "turn_start"):
+            self.tool_group_count.set(0)
         for sub in list(self._event_subscribers):
             try:
                 sub(ev)

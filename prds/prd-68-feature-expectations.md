@@ -49,6 +49,7 @@ to call `console.print()`.  All events for one batch are flushed in a single
 | 2.10 | No duplicates | Each item appears exactly once. User message (`❯ text`) is appended once in `_handle_send` before the agent task is created. |
 | 2.11 | No status bar content in scroll buffer | `✿ Idle`, separators, or footer lines must never leak into the transcript. |
 | 2.12 | Single-flush batch | `ScrollBufferAppender._flush_batch()` wraps all `console.print()` calls for one batch in a single `with console:` context — one terminal write per batch, no intermediate renders. |
+| 2.13 | Tool group collapse | Consecutive `tool_complete` events between two `text` events form a group. The first 5 in a group are printed in full. If a group exceeds 5, only the first 5 are shown and the remainder collapses to a single `  ⎿ ...and N more tool call(s)` line printed just before the next `text` or `error` event. Each new `text` or `turn_start` event begins a fresh group. `ConversationStore.tool_group_count: Signal[int]` tracks the live count for any Live-block component that wishes to display it. |
 
 ---
 
