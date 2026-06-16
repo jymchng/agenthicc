@@ -33,7 +33,7 @@ class PasteState:
             suffix = (
                 f"+{n_lines} lines" if n_lines > 1 else f"{len(text)} chars"
             )
-            self.label = f"Pasted text #{self.count} {suffix}"
+            self.label = f"[Pasted text #{self.count} {suffix}]"
             self.condensed = True
 
     def expand(self) -> None:

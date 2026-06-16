@@ -122,6 +122,7 @@ to call `console.print()`.  All events for one batch are flushed in a single
 | 3.9 | Enter | Submit the current buffer as a new message. Input bar clears immediately. |
 | 3.10 | Paste condensation | Bracketed paste inserts the text but shows `[Pasted text with N chars]`. Backspace deletes the whole paste. Ctrl+V expands. Any other key exits condensed mode. |
 | 3.11 | Width-safe | Long lines are wrapped/truncated; the Live block height never overflows the terminal. |
+| 3.12 | Multi-line rendering | When the buffer contains newlines (via Ctrl+J or expanded paste Ctrl+V), the composer renders one row per logical line. All lines are visible. The `❯` prefix appears only on line 0; continuation lines are indented with `  ` (two spaces). The cursor `▌` appears on the correct line at the correct column. |
 
 ---
 

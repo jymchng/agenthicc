@@ -158,6 +158,57 @@ class StatusComponent:
         return blank + line1 + line2 + line3
 
 
+# ── multi-line composer helper ────────────────────────────────────────────────
+
+def _render_multiline(buf: list[str], cursor: int) -> Any:
+    """Build one Rich Text per logical line; return as a Group.
+
+    Used by ComposerComponent.render() when the buffer contains '\\n'.
+    No _fit call — Rich handles terminal-width soft-wrapping per line.
+    """
+    from rich.text import Text            # noqa: PLC0415
+    from rich.console import Group        # noqa: PLC0415
+    from agenthicc.tui.input.renderer import PROMPT_CHAR, CURSOR_CHAR  # noqa: PLC0415
+
+    # Split on '\n' into logical lines.
+    lines: list[list[str]] = []
+    current: list[str] = []
+    for ch in buf:
+        if ch == "\n":
+            lines.append(current)
+            current = []
+        else:
+            current.append(ch)
+    lines.append(current)
+
+    # Locate the cursor: which logical line and column offset.
+    cursor_line = len(lines) - 1
+    cursor_col  = len(lines[-1])
+    cumulative  = 0
+    for i, ln in enumerate(lines):
+        if cumulative + len(ln) >= cursor:
+            cursor_line = i
+            cursor_col  = cursor - cumulative
+            break
+        cumulative += len(ln) + 1
+
+    # One Text per logical line.
+    result: list[Text] = []
+    for i, ln in enumerate(lines):
+        t = Text()
+        t.append(f"{PROMPT_CHAR} " if i == 0 else "  ",
+                 style="bold green" if i == 0 else "")
+        if i == cursor_line:
+            t.append("".join(ln[:cursor_col]))
+            t.append(CURSOR_CHAR, style="bold")
+            t.append("".join(ln[cursor_col:]))
+        else:
+            t.append("".join(ln))
+        result.append(t)
+
+    return Group(*result)
+
+
 # ── ComposerComponent ─────────────────────────────────────────────────────────
 
 class ComposerComponent:
@@ -170,18 +221,25 @@ class ComposerComponent:
         from rich.text import Text                              # noqa: PLC0415
         from agenthicc.tui.input.renderer import build_prompt  # noqa: PLC0415
 
-        inp    = self._state.input
-        cols   = _get_cols()
+        inp  = self._state.input
+        cols = _get_cols()
 
+        # Condensed paste label — always a single line, _fit is safe.
         if inp.paste_condensed():
             disp_buf    = list(inp.paste_label())
             disp_cursor = len(disp_buf)
-        else:
-            disp_buf    = inp.buf()
-            disp_cursor = inp.cursor()
+            return Text.from_markup(_fit(build_prompt(disp_buf, disp_cursor), cols))
 
-        prompt = build_prompt(disp_buf, disp_cursor)
-        return Text.from_markup(_fit(prompt, cols))
+        disp_buf    = inp.buf()
+        disp_cursor = inp.cursor()
+
+        # Multi-line buffer (typed Ctrl+J or expanded paste): bypass _fit so
+        # the sum of visible chars across all lines does not trigger truncation.
+        if "\n" in disp_buf:
+            return _render_multiline(disp_buf, disp_cursor)
+
+        # Single-line — existing path, _fit is safe.
+        return Text.from_markup(_fit(build_prompt(disp_buf, disp_cursor), cols))
 
     def height(self, cols: int) -> int:  # noqa: ARG002
         inp = self._state.input
