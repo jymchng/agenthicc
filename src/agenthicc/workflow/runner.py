@@ -1,4 +1,4 @@
-"""WorkflowRunner — executes phase-based workflows using AgentsRegistry (PRD-87)."""
+"""WorkflowRunner — executes phase-based workflows using AgentsRegistry (PRD-87, PRD-94)."""
 from __future__ import annotations
 
 import asyncio
@@ -48,24 +48,28 @@ class WorkflowRunner:
         self._completed_turns = completed_turns
         # Derive the raw API model string from the transport config (primary)
         # falling back to cfg.execution.effective_model() (secondary).
-        # Never use the display label (provider/model) — the API only accepts
-        # the model portion without the provider prefix.
         _transport_cfg  = getattr(
             getattr(agent_runner, "_transport", None), "_config", None
         )
         _transport_model = getattr(_transport_cfg, "model", None)
         self._model_id   = _transport_model or cfg.execution.effective_model()
 
-    # ── public entry point ────────────────────────────────────────────────────
+        # Set by run() / resume() so helpers can reference the current run.
+        self._run_id:        str = ""
+        self._shared_memory: Any = None
+
+    # ── public entry points ───────────────────────────────────────────────────
 
     async def run(self, intent: str) -> None:
-        from agenthicc.workflow.plugin import WorkflowContext, WorkflowRun, PhaseRunRecord  # noqa: PLC0415
-        from lauren_ai._memory import ShortTermMemory                                       # noqa: PLC0415
+        """Start a fresh workflow run for the given intent."""
+        from agenthicc.workflow.plugin import WorkflowContext, WorkflowRun  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory                       # noqa: PLC0415
+        from agenthicc.kernel import Event                                  # noqa: PLC0415
 
-        # Shared memory for all phases — the agent carries full context forward.
         self._shared_memory = ShortTermMemory(max_tokens=32_000)
-
         run_id  = uuid.uuid4().hex
+        self._run_id = run_id
+
         context = WorkflowContext(intent=intent, run_id=run_id, workflow_name=self._def.name)
         wf_run  = WorkflowRun(
             run_id=run_id,
@@ -76,9 +80,74 @@ class WorkflowRunner:
         )
         self._app_state.workflow_run.set(wf_run)
 
+        await self._processor.emit(Event.create("WorkflowRunStarted", {
+            "run_id":         run_id,
+            "workflow_name":  self._def.name,
+            "intent":         intent,
+            "phase_names":    self._def.phase_names(),
+        }))
+
+        start_phase = self._def.first_phase().name if self._def.first_phase() else None
+        await self._run_phase_loop(intent, context, wf_run, run_id, start_phase)
+
+    async def resume(self, context: Any) -> None:
+        """Resume a workflow from a pre-populated WorkflowContext.
+
+        Phases already present in ``context.phase_outputs`` are skipped;
+        execution continues from the first incomplete phase.
+        """
+        from agenthicc.workflow.plugin import WorkflowRun, PhaseRunRecord  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory                      # noqa: PLC0415
+
+        run_id = context.run_id
+        self._run_id = run_id
+        self._shared_memory = ShortTermMemory(max_tokens=32_000)
+
+        phase_history = [
+            PhaseRunRecord(
+                phase_name=name,
+                role=output.role,
+                approved=output.approved,
+                output_summary=output.full_text[:200],
+                iteration=1,
+                duration_s=output.duration_s,
+            )
+            for name, output in context.phase_outputs.items()
+        ]
+        wf_run = WorkflowRun(
+            run_id=run_id,
+            workflow_name=self._def.name,
+            intent=context.intent,
+            current_phase=None,
+            total_phases=len(self._def.phases),
+            phase_history=phase_history,
+        )
+        self._app_state.workflow_run.set(wf_run)
+
+        start_phase = self._find_resume_phase(context)
+        if start_phase is None:
+            wf_run = dataclasses.replace(wf_run, status="complete", current_phase=None)
+            self._app_state.workflow_run.set(wf_run)
+            return
+
+        await self._run_phase_loop(context.intent, context, wf_run, run_id, start_phase)
+
+    # ── phase loop ────────────────────────────────────────────────────────────
+
+    async def _run_phase_loop(
+        self,
+        intent:     str,
+        context:    Any,  # WorkflowContext
+        wf_run:     Any,  # WorkflowRun (local; mutated via dataclasses.replace)
+        run_id:     str,
+        start_phase: str | None,
+    ) -> None:
+        from agenthicc.workflow.plugin import PhaseRunRecord  # noqa: PLC0415
+        from agenthicc.kernel import Event                    # noqa: PLC0415
+
         iteration_counts: dict[str, int] = {}
         _processed_parallel: set[str]    = set()
-        phase_name = self._def.first_phase().name if self._def.first_phase() else None
+        phase_name = start_phase
 
         try:
             while phase_name is not None:
@@ -143,7 +212,6 @@ class WorkflowRunner:
                     phase_name = spec.next
                     continue
 
-                from agenthicc.kernel import Event  # noqa: PLC0415
                 await self._processor.emit(Event.create("WorkflowPhaseStarted", {
                     "run_id": run_id, "phase_name": phase_name,
                     "workflow_name": self._def.name,
@@ -166,7 +234,12 @@ class WorkflowRunner:
                 self._app_state.workflow_run.set(wf_run)
 
                 await self._processor.emit(Event.create("WorkflowPhaseCompleted", {
-                    "run_id": run_id, "phase_name": phase_name, "approved": output.approved,
+                    "run_id":     run_id,
+                    "phase_name": phase_name,
+                    "role":       spec.agent_type,
+                    "full_text":  output.full_text,
+                    "approved":   output.approved,
+                    "structured": output.structured or {},
                 }))
 
                 phase_name = self._determine_transition(spec, output)
@@ -174,8 +247,10 @@ class WorkflowRunner:
             wf_run = dataclasses.replace(wf_run, status="complete", current_phase=None)
             self._app_state.workflow_run.set(wf_run)
             await self._processor.emit(Event.create("WorkflowRunCompleted", {
-                "run_id": run_id, "workflow_name": self._def.name,
-                "phases_run": len(wf_run.phase_history), "status": "complete",
+                "run_id":       run_id,
+                "workflow_name": self._def.name,
+                "phases_run":   len(wf_run.phase_history),
+                "status":       "complete",
             }))
 
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -189,6 +264,32 @@ class WorkflowRunner:
             self._conv_store.append_event("error", {
                 "message": f"Workflow '{self._def.name}' failed: {exc}"
             })
+
+    # ── resume helpers ────────────────────────────────────────────────────────
+
+    def _find_resume_phase(self, context: Any) -> str | None:
+        """Walk the phase-transition graph to find the first incomplete phase.
+
+        A phase is considered complete if it appears in ``context.phase_outputs``.
+        Cycles (e.g. plan→reject→plan) are guarded by the ``seen`` set.
+        """
+        completed  = set(context.phase_outputs.keys())
+        phase_name = self._def.first_phase().name if self._def.first_phase() else None
+        seen: set[str] = set()
+
+        while phase_name is not None:
+            if phase_name in seen:
+                break
+            seen.add(phase_name)
+            if phase_name not in completed:
+                return phase_name
+            spec = self._def.get_phase(phase_name)
+            if spec is None:
+                return None
+            output = context.phase_outputs[phase_name]
+            phase_name = self._determine_transition(spec, output)
+
+        return None
 
     # ── phase execution ───────────────────────────────────────────────────────
 
@@ -219,11 +320,6 @@ class WorkflowRunner:
         t0 = time.monotonic()
 
         # ── Approval tool injection ───────────────────────────────────────────
-        # request_plan_approval() and finalize_plan() are injected into every
-        # phase when approval_svc is available.  Only the plan phase will
-        # actually call them (guided by system_prompt_override); other phases
-        # simply ignore them.  plan_event tells _run_phase whether this phase
-        # called finalize_plan().
         plan_event: asyncio.Event | None = None
         plan_data:  dict                 = {}
         if self._approval_svc is not None:
@@ -234,9 +330,6 @@ class WorkflowRunner:
             )
 
         # ── Mode override ─────────────────────────────────────────────────────
-        # Some phases need a different active mode than the session mode.
-        # e.g. the execute phase in code_plan switches to "Auto" so that
-        # ToolCapabilityGate permits write/execute tools.
         _original_mode = self._app_state.active_mode()
         if spec.mode_override and self._mode_manager is not None:
             _override = self._mode_manager.set_by_name(spec.mode_override)
@@ -279,19 +372,14 @@ class WorkflowRunner:
                 duration_s=time.monotonic() - t0,
             )
         finally:
-            # Always restore the session mode after the phase, even on error.
             if spec.mode_override and self._mode_manager is not None:
                 self._app_state.active_mode.set(_original_mode)
 
         # ── Resolve output ────────────────────────────────────────────────────
         if plan_event is not None:
             if plan_event.is_set() and "plan" in plan_data:
-                # finalize_plan() was called after approval — use the submitted plan.
                 full_text = plan_data["plan"]
             else:
-                # Approval tools were injected but finalize_plan() was never called.
-                # The agent either ignored rejections or ran out of turns.
-                # Return approved=False so on_reject fires (loops back to plan phase).
                 return PhaseOutput(
                     phase_name=spec.name,
                     role=spec.agent_type,
@@ -358,16 +446,10 @@ class WorkflowRunner:
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _filter_tools(self, spec: Any) -> list:
-        """Return tools whose capabilities fit within phase allowed + mode ceiling.
-
-        Capabilities are read via get_tool_capabilities(), which reads from
-        __lauren_ai_tool_metadata__[CAPABILITIES_KEY] — the dict written by
-        set_metadata().  Unannotated tools pass through (open-by-default).
-        """
         from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
 
         mode_blocked  = self._app_state.active_mode().blocked_capabilities
-        phase_allowed = spec.resolved_allowed_caps  # frozenset | None
+        phase_allowed = spec.resolved_allowed_caps
 
         all_tools = list(self._plugin_tools)
         if self._mcp_registry is not None:

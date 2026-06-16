@@ -179,6 +179,58 @@ def _workflow_node_status_changed(state: AppState, event: Event) -> tuple[AppSta
     return state.with_workflow(new_wf), effects
 
 
+# ── WorkflowRun (live-session events, PRD-94) ────────────────────────────
+
+
+def _workflow_run_started(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    """Creates a Workflow entry when a WorkflowRunner.run() begins."""
+    wf = Workflow(
+        workflow_id=event.payload["run_id"],
+        intent_id="",
+        nodes={},
+        status=NodeStatus.pending,
+        created_at=event.timestamp,
+        name=event.payload.get("workflow_name", ""),
+        intent_text=event.payload.get("intent", ""),
+    )
+    return state.with_workflow(wf), []
+
+
+def _workflow_phase_completed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    """Records a completed phase as a WorkflowNode inside the Workflow."""
+    run_id     = event.payload["run_id"]
+    phase_name = event.payload["phase_name"]
+    wf = state.workflows.get(run_id)
+    if wf is None:
+        return state, []
+    node = WorkflowNode(
+        node_id=phase_name,
+        task_id=phase_name,
+        label=phase_name,
+        dependencies=frozenset(),
+        status=NodeStatus.complete,
+        result={
+            "role":       event.payload.get("role", ""),
+            "full_text":  event.payload.get("full_text", ""),
+            "approved":   event.payload.get("approved"),
+            "structured": event.payload.get("structured", {}),
+        },
+    )
+    new_wf = replace(wf, nodes={**wf.nodes, node.node_id: node})
+    return state.with_workflow(new_wf), []
+
+
+def _workflow_run_completed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    """Marks a Workflow as complete or failed when the runner finishes."""
+    run_id = event.payload["run_id"]
+    wf = state.workflows.get(run_id)
+    if wf is None:
+        return state, []
+    status_str = event.payload.get("status", "complete")
+    new_status = NodeStatus.complete if status_str == "complete" else NodeStatus.failed
+    return state.with_workflow(replace(wf, status=new_status)), []
+
+
 # ── Tasks ────────────────────────────────────────────────────────────────
 
 
@@ -268,6 +320,10 @@ _HANDLERS: dict[str, ReducerFn] = {
     "WorkflowNodeAdded": _workflow_node_added,
     "WorkflowNodeRemoved": _workflow_node_removed,
     "WorkflowNodeStatusChanged": _workflow_node_status_changed,
+    # PRD-94: live-session workflow run tracking
+    "WorkflowRunStarted": _workflow_run_started,
+    "WorkflowPhaseCompleted": _workflow_phase_completed,
+    "WorkflowRunCompleted": _workflow_run_completed,
     "TaskCreated": _task_created,
     "TaskAssigned": _task_assigned,
     "ToolRegistered": _tool_registered,

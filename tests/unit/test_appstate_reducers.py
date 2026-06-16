@@ -158,6 +158,108 @@ class TestWorkflowReducers:
         assert s2.workflows["wf"].nodes["n1"].error == "boom"
 
 
+class TestWorkflowRunReducers:
+    """PRD-94: live-session workflow run event handlers."""
+
+    def test_workflow_run_started_creates_workflow(self):
+        s, effects = root_reducer(base_state(), ev("WorkflowRunStarted", {
+            "run_id": "run1",
+            "workflow_name": "code_plan",
+            "intent": "refactor auth",
+            "phase_names": ["plan", "execute"],
+        }))
+        assert "run1" in s.workflows
+        wf = s.workflows["run1"]
+        assert wf.name == "code_plan"
+        assert wf.intent_text == "refactor auth"
+        assert wf.status == NodeStatus.pending
+        assert wf.nodes == {}
+        assert effects == []
+
+    def test_workflow_run_started_unknown_fields_ignored(self):
+        s, _ = root_reducer(base_state(), ev("WorkflowRunStarted", {
+            "run_id": "r2", "workflow_name": "wf", "intent": "x",
+        }))
+        assert "r2" in s.workflows
+
+    def test_workflow_phase_completed_adds_node(self):
+        s0, _ = root_reducer(base_state(), ev("WorkflowRunStarted", {
+            "run_id": "run1", "workflow_name": "wf", "intent": "do it",
+        }))
+        s1, effects = root_reducer(s0, ev("WorkflowPhaseCompleted", {
+            "run_id": "run1",
+            "phase_name": "plan",
+            "role": "planner",
+            "full_text": "Here is the plan.",
+            "approved": True,
+            "structured": {"plan_text": "step 1"},
+        }))
+        assert "plan" in s1.workflows["run1"].nodes
+        node = s1.workflows["run1"].nodes["plan"]
+        assert node.status == NodeStatus.complete
+        assert node.result["full_text"] == "Here is the plan."
+        assert node.result["approved"] is True
+        assert node.result["role"] == "planner"
+        assert node.result["structured"] == {"plan_text": "step 1"}
+        assert effects == []
+
+    def test_workflow_phase_completed_unknown_run_noop(self):
+        s = base_state()
+        s2, effects = root_reducer(s, ev("WorkflowPhaseCompleted", {
+            "run_id": "nope", "phase_name": "p", "role": "r", "full_text": "",
+            "approved": None, "structured": {},
+        }))
+        assert s2 is s
+        assert effects == []
+
+    def test_workflow_run_completed_marks_complete(self):
+        s0, _ = root_reducer(base_state(), ev("WorkflowRunStarted", {
+            "run_id": "run1", "workflow_name": "wf", "intent": "x",
+        }))
+        s1, effects = root_reducer(s0, ev("WorkflowRunCompleted", {
+            "run_id": "run1", "status": "complete",
+        }))
+        assert s1.workflows["run1"].status == NodeStatus.complete
+        assert effects == []
+
+    def test_workflow_run_completed_marks_failed(self):
+        s0, _ = root_reducer(base_state(), ev("WorkflowRunStarted", {
+            "run_id": "run1", "workflow_name": "wf", "intent": "x",
+        }))
+        s1, _ = root_reducer(s0, ev("WorkflowRunCompleted", {
+            "run_id": "run1", "status": "failed",
+        }))
+        assert s1.workflows["run1"].status == NodeStatus.failed
+
+    def test_workflow_run_completed_unknown_run_noop(self):
+        s = base_state()
+        s2, _ = root_reducer(s, ev("WorkflowRunCompleted", {"run_id": "nope", "status": "complete"}))
+        assert s2 is s
+
+    def test_full_sequence_restores_via_replay(self):
+        """Replaying WorkflowRunStarted + WorkflowPhaseCompleted × N + WorkflowRunCompleted
+        produces a Workflow with all phases as complete nodes."""
+        s = base_state()
+        s, _ = root_reducer(s, ev("WorkflowRunStarted", {
+            "run_id": "rx", "workflow_name": "wf", "intent": "fix bugs",
+            "phase_names": ["plan", "execute"],
+        }))
+        s, _ = root_reducer(s, ev("WorkflowPhaseCompleted", {
+            "run_id": "rx", "phase_name": "plan", "role": "planner",
+            "full_text": "plan text", "approved": True, "structured": {},
+        }))
+        s, _ = root_reducer(s, ev("WorkflowPhaseCompleted", {
+            "run_id": "rx", "phase_name": "execute", "role": "executor",
+            "full_text": "exec text", "approved": None, "structured": {},
+        }))
+        s, _ = root_reducer(s, ev("WorkflowRunCompleted", {"run_id": "rx", "status": "complete"}))
+        wf = s.workflows["rx"]
+        assert wf.status == NodeStatus.complete
+        assert set(wf.nodes.keys()) == {"plan", "execute"}
+        assert wf.nodes["plan"].result["full_text"] == "plan text"
+        assert wf.nodes["execute"].result["role"] == "executor"
+
+
 class TestToolAndHookReducers:
     def test_tool_registered(self):
         s, _ = root_reducer(base_state(), ev("ToolRegistered", {

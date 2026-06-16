@@ -78,6 +78,8 @@ class Workflow:
     nodes: dict[str, WorkflowNode]
     status: NodeStatus
     created_at: float
+    name: str = ""          # workflow definition name — used for resume lookup
+    intent_text: str = ""   # original intent text — used to reconstruct WorkflowContext
 
 
 @dataclass(frozen=True)

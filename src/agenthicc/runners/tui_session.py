@@ -45,6 +45,29 @@ _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 _find_latest_session_for_cwd = find_latest_session_for_cwd
 
 
+def _reconstruct_workflow_context(wf: Any) -> Any:
+    """Rebuild a WorkflowContext from a kernel Workflow state entry (PRD-94)."""
+    from agenthicc.workflow.plugin import WorkflowContext, PhaseOutput  # noqa: PLC0415
+    from agenthicc.kernel.state import NodeStatus                       # noqa: PLC0415
+
+    context = WorkflowContext(
+        intent=wf.intent_text,
+        run_id=wf.workflow_id,
+        workflow_name=wf.name,
+    )
+    for node_id, node in wf.nodes.items():
+        if node.status == NodeStatus.complete and isinstance(node.result, dict):
+            r = node.result
+            context.add_output(PhaseOutput(
+                phase_name=node_id,
+                role=r.get("role", ""),
+                full_text=r.get("full_text", ""),
+                structured=r.get("structured"),
+                approved=r.get("approved"),
+            ))
+    return context
+
+
 # ── session construction ──────────────────────────────────────────────────────
 
 async def _build_session_context(
@@ -496,6 +519,75 @@ class TUISession:
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
 
+    # ── workflow resume (PRD-94) ──────────────────────────────────────────────
+
+    def _schedule_workflow_resume(self) -> None:
+        """If the kernel state has an unfinished workflow, schedule its resume."""
+        from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
+        k_state = self._ctx.processor.get_state()
+        for wf in k_state.workflows.values():
+            if wf.status in (NodeStatus.complete, NodeStatus.failed):
+                continue
+            if not wf.name:
+                continue
+            wf_defn = self._ctx.workflow_registry.get(wf.name)
+            if wf_defn is None:
+                continue
+            context = _reconstruct_workflow_context(wf)
+            self._ctx.app_state.conversation.notification.set(
+                f"⟳ Resuming workflow '{wf.name}'…"
+            )
+            self._agent_task = asyncio.create_task(
+                self._resume_workflow_task(wf_defn, context), name="agent-turn"
+            )
+            return  # resume one workflow at a time
+
+    async def _resume_workflow_task(self, wf_defn: Any, context: Any) -> None:
+        """Resume a WorkflowRunner with error handling matching agent_task_body."""
+        from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
+        from agenthicc.workflow.runner import WorkflowRunner       # noqa: PLC0415
+        ctx = self._ctx
+        self._input_session.set_mode(InputMode.STREAMING)
+        ctx.approval_svc.reset_turn_memory()
+        try:
+            runner = WorkflowRunner(
+                definition=wf_defn,
+                conv_store=ctx.app_state.conversation,
+                app_state=ctx.app_state,
+                processor=ctx.processor,
+                agent_runner=ctx.agent_runner,
+                session_mem=ctx.session_memory,
+                approval_svc=ctx.approval_svc,
+                cfg=ctx.cfg,
+                skills=ctx.skills,
+                plugin_tools=ctx.project_plugins.all_tools,
+                mcp_registry=ctx.mcp_registry,
+                mention_cache=ctx.mention_cache,
+                agents_registry=ctx.agents_registry,
+                mode_manager=ctx.mode_manager,
+            )
+            await runner.resume(context)
+            # PRD-89: exit workflow-bound mode after completion
+            _wf_result = ctx.app_state.workflow_run()
+            if (
+                _wf_result is not None
+                and getattr(_wf_result, "status", None) == "complete"
+                and ctx.app_state.active_mode().default_workflow is not None
+            ):
+                ctx.mode_manager.set_by_name("Auto")
+                ctx.app_state.conversation.notification.set(
+                    "✓ Workflow resumed and complete — switched to Auto mode"
+                )
+        except asyncio.CancelledError:
+            ctx.app_state.conversation.end_turn()
+            self._input_session.set_mode(InputMode.IDLE)
+        except Exception as exc:
+            ctx.app_state.conversation.fail_turn(str(exc))
+            self._input_session.set_mode(InputMode.IDLE)
+        finally:
+            self._agent_task = None
+            self.advance()
+
     # ── main loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:
@@ -511,6 +603,8 @@ class TUISession:
 
         self._workspace.start()
         proc_task = asyncio.create_task(ctx.processor.run())
+        # PRD-94: auto-resume any incomplete workflow from a previous session.
+        self._schedule_workflow_resume()
         ad_task: asyncio.Task | None = None
         try:
             from agenthicc.auth import AuthClient  # noqa: PLC0415
