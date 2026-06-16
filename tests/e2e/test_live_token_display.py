@@ -67,7 +67,7 @@ async def _run_turn(runner, conv_store, tmp_path):
     t = asyncio.create_task(proc.run())
     try:
         await _run_agent_turn(
-            "test prompt", runner, None, None, proc,
+            "test prompt", runner, proc,
             conv_store=conv_store, app_state=None,
         )
     finally:
