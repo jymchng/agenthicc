@@ -22,9 +22,13 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agenthicc.kernel import SecurityPolicy, SystemSettings
+
+if TYPE_CHECKING:
+    from lauren_ai._config import LLMConfig
+    from agenthicc.tools.mcp import McpServerConfig
 
 __all__ = [
     "AgenthiccConfig",
@@ -132,7 +136,7 @@ class ExecutionSettings:
 
 @dataclass
 class ToolSettings:
-    mcp_servers: list[dict[str, Any]] = field(default_factory=list)
+    mcp_servers: list[McpServerConfig] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
     allowed: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
@@ -192,7 +196,7 @@ class AgentsSettings:
     agents: dict[str, AgentSettings] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "AgentsSettings":
+    def from_dict(cls, d: dict[str, dict[str, Any]]) -> "AgentsSettings":
         fields = {f for f in AgentSettings.__dataclass_fields__}
         return cls(agents={
             name: AgentSettings(**{k: v for k, v in cfg.items() if k in fields})
@@ -252,13 +256,13 @@ class AgenthiccConfig:
         return build_policy_from_config(self)
 
 
-def _parse_mcp_servers(raw_list: list[dict]) -> list[Any]:
+def _parse_mcp_servers(raw_list: list[dict[str, Any]]) -> list[McpServerConfig]:
     """Convert raw TOML dicts to McpServerConfig objects (graceful if mcp.py unavailable)."""
     try:
         from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
         return [McpServerConfig.from_dict(d) for d in raw_list]
     except ImportError:
-        return list(raw_list)  # fall back to raw dicts
+        return list(raw_list)  # type: ignore[return-value]  # fall back to raw dicts
 
 
 # ── merging ──────────────────────────────────────────────────────────────
@@ -319,7 +323,7 @@ def _load_toml_safe(path: Path) -> dict[str, Any]:
 # ── environment / CLI override helpers ───────────────────────────────────
 
 
-def _coerce_env(value: str) -> Any:
+def _coerce_env(value: str) -> bool | int | float | str:
     """Coerce an env var string to int / bool / float / str."""
     if value.lower() in ("true", "1", "yes"):
         return True
@@ -561,7 +565,7 @@ def load_config(
 # ── LLM transport builder ─────────────────────────────────────────────────
 
 
-def build_llm_config(execution: ExecutionSettings) -> "LLMConfig":
+def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
     """Build a :class:`~lauren_ai._config.LLMConfig` from agenthicc execution settings.
 
     Supports all providers that lauren-ai knows about:
@@ -586,7 +590,7 @@ def build_llm_config(execution: ExecutionSettings) -> "LLMConfig":
     )
 
     if provider == "anthropic":
-        kwargs: dict[str, Any] = {"model": model, "api_key": api_key}
+        kwargs: dict[str, str | None] = {"model": model, "api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
         return LLMConfig.for_anthropic(**kwargs)
@@ -600,7 +604,7 @@ def build_llm_config(execution: ExecutionSettings) -> "LLMConfig":
         return LLMConfig.for_openai(**kwargs)
 
     if provider == "ollama":
-        kwargs = {"model": model}
+        kwargs: dict[str, str | None] = {"model": model}
         if base_url:
             kwargs["base_url"] = base_url
         return LLMConfig.for_ollama(**kwargs)
