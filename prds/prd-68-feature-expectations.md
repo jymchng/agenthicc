@@ -555,6 +555,51 @@ is available in the execute phase without any re-exploration.
 | 16.49 | No default global cap | `WorkflowDefinition.max_total_phase_runs: int = 0` defaults to 0 (no cap). The execute↔review retry loop runs freely. Per-phase `max_iterations` and Ctrl+C are the only termination mechanisms by default. |
 | 16.50 | Opt-in cap | Set `max_total_phase_runs = N` on a `WorkflowDefinition` to enforce a hard ceiling. Used in tests and available for workflow authors who want a safety net. |
 
+### 16.17 Graph-based workflow model (PRD-101)
+
+Introduces `WorkflowGraph`, `PhaseNode`, `EdgeSpec`, `EdgeGate`, `DataBus`,
+and `NodeResult` alongside the legacy `WorkflowDefinition` / `PhaseSpec` types.
+`WorkflowRunner` accepts both; the definition type is detected once at
+construction via `isinstance(definition, WorkflowGraph)`.
+
+#### 16.17.1 Core graph types
+
+| # | Type | Description |
+|---|---|---|
+| 16.58 | `EdgeGate(kind, title)` | Specifies which overlay to show before a transition is committed. `kind` is looked up in `_OVERLAY_REGISTRY` at runtime — `"plan_review"` → `PlanApprovalOverlay`, `"tool_approval"` → `ApprovalOverlay`. New overlay types are registered by adding `_OVERLAY_REGISTRY["kind"] = MyOverlay` at startup without touching `EdgeGate` or `EdgeSpec`. |
+| 16.59 | `EdgeSpec(target, label, gate)` | A directed edge in the graph. `target` is the destination node name (or `None` for terminal). `label` is the semantic name the agent uses when calling `complete_phase(next=label)`. `gate` is an optional `EdgeGate`. Replaces `PhaseSpec.next`, `PhaseSpec.on_reject`, and `approval_required: bool`. |
+| 16.60 | `PhaseNode` | Graph node. Carries `agent_config: AgentConfig \| None` (from `lauren_ai` — system prompt, max_turns, thinking, parallel_tool_calls, …) and `llm_config: LLMConfig \| None` (from `lauren_ai` — provider/model override). `edges: tuple[EdgeSpec, …]` replaces `next`/`on_reject`. `max_continuations` replaces `max_iterations`. No boolean flags. |
+| 16.61 | `WorkflowGraph(name, entry, nodes, max_total_phase_runs)` | Ordered dict of `PhaseNode` objects. `entry` names the first node. `node_index(name)` returns the definition-position used for `Phase N/M` display. `max_total_phase_runs=0` (default) is unlimited. |
+| 16.62 | `DataBus(intent, run_id, outputs, edge_history)` | Structured blackboard that replaces `WorkflowContext`. `outputs: dict[str, dict]` stores each node's output dict (from `complete_phase(output=…)`). `edge_history: dict[str, str]` records which edge each node took (used by `_find_resume_node`). `as_context_block()` serialises all prior outputs as structured key–value text for prompt injection — no 200-char truncation. |
+| 16.63 | `NodeResult(node_name, edge_label, output, duration_s)` | Runner-internal result of running one node. `edge_label` is which edge the agent chose — replaces `PhaseOutput.approved: bool \| None` tristate. `None` means terminal or failed. |
+
+#### 16.17.2 Unified `complete_phase` tool
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.64 | One tool per node | `make_completion_tool(node, data_bus, transition_event, transition_data, approval_svc)` generates a single `@tool()`-decorated `complete_phase` callable. Terminal nodes (no edges) receive a variant that takes only `output`. Non-terminal nodes receive `complete_phase(output: dict, next: str)`. |
+| 16.65 | Edge labels in schema | The docstring (and therefore the LLM tool schema) enumerates the node's valid edge labels at tool-generation time so the agent always knows which transitions are available. |
+| 16.66 | Gate suspension | When `edge.gate is not None`, `complete_phase` calls `ApprovalService.request_approval(ApprovalRequest(kind=edge.gate.kind, tool_input=output, …))`, suspending the agent. If denied, returns `{"approved": False, "feedback": "…"}` — agent stays in the continuation loop. If approved (and `response.message` was given), `_user_instructions` is merged into the output dict. |
+| 16.67 | Replaces five mechanisms | `complete_phase` replaces `finalize_plan`, `request_plan_approval`, `mark_execute_complete`, the `<review>` XML tag parsing, and the `require_plan_finalization` / `require_explicit_completion` flags — all in one code path. |
+
+#### 16.17.3 Runner graph path
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 16.68 | `_run_graph` | Walks the node graph: updates UI (`current_phase`, `current_phase_index`), emits `WorkflowPhaseStarted`, calls `self._run_node(node, intent, data_bus)`, writes result to `DataBus`, emits `WorkflowPhaseCompleted` (now carries `edge_label`), follows `self._follow_edge(node, result.edge_label)` to the next node. |
+| 16.69 | `_run_node` | Runs one `PhaseNode` in a continuation loop (identical to the old `require_explicit_completion` path, but universal). Resolves `node.agent_config or AgentConfig()`, filters tools via `_filter_node_tools`, generates `complete_phase`, sets `mode_override`, loops up to `node.max_continuations` times, restores mode in `finally`. |
+| 16.70 | `_follow_edge` | 3-line method: iterates `node.edges`, returns `edge.target` for the matching label, or `None` for no match / terminal. Replaces the 8-line `_determine_transition` with its `approved` tristate and `__next_phase__` escape hatch. |
+| 16.71 | `_find_resume_node` | Replays `DataBus.edge_history` to find the first incomplete node. Cycle detection (revisited node) returns the revisited node — meaning it needs re-execution (e.g. execute after a review rejection). |
+| 16.72 | Overlay registry | `_on_approval_change` in `tui_session.py` now resolves the overlay class from `_OVERLAY_REGISTRY: dict[str, type]` instead of a hardcoded `if kind == "plan_review"` branch. Plugins register custom overlays at startup: `_OVERLAY_REGISTRY["my_kind"] = MyOverlay`. |
+
+#### 16.17.4 `WorkflowRunner` correctness fixes (applied during PRD-101)
+
+| # | Fix | What was wrong |
+|---|---|---|
+| 16.73 | No `Any` in type annotations | Every method now uses concrete types (`PhaseNode`, `DataBus`, `NodeResult`, `PhaseSpec`, `WorkflowContext`, `PhaseOutput`, etc.) under `TYPE_CHECKING`. `Any` existed because of copy-pasta from legacy code where circular imports were a real problem. |
+| 16.74 | No module-level method binding | Graph methods were defined as module-level functions and bound via `WorkflowRunner._run_graph = _graph_run`. Now they are regular class methods. Static analysis, IDE navigation, and test patching all work correctly. |
+| 16.75 | `isinstance` replaces duck-typing | `_IS_GRAPH = lambda d: hasattr(d, "entry") and …` replaced by `isinstance(definition, WorkflowGraph)` in `__init__`. |
+
 ### 16.15 Scroll buffer tool-call collapse (configurable, live)
 
 | # | Feature | Expected behaviour |
@@ -589,6 +634,10 @@ A release is shippable when:
 18. If the execute phase ends without calling `mark_execute_complete()`, the phase continues in-loop with a continuation prompt rather than advancing to review. The agent resumes from full memory context.
 19. If the review phase ends without a `<review>` tag, the review phase itself retries — the agent is not routed back through execute.
 20. `Phase N/M` in the status bar always shows the workflow-definition position of the current phase — plan is always 1, execute always 2 — regardless of how many retry iterations have occurred.
+21. A `WorkflowGraph`-based workflow completes the full graph path (all nodes visit `complete_phase` with a valid edge label) and produces `status="complete"`.
+22. A rejected plan edge (`EdgeSpec(gate=EdgeGate("plan_review"))` denied) keeps the agent in the continuation loop; `approved=False` and `feedback` are returned to the LLM.
+23. `WorkflowRunner._follow_edge`, `_run_node`, `_find_resume_node` are regular class methods — no module-level binding, no `Any` annotations, full IDE navigation.
+24. Adding a custom overlay kind requires only `_OVERLAY_REGISTRY["kind"] = MyClass` at startup — no changes to `EdgeGate`, `EdgeSpec`, or `ApprovalService`.
 
 ---
 

@@ -1,9 +1,15 @@
-"""Workflow plugin types — phase topology, definitions, context (PRD-81, PRD-87).
+"""Workflow plugin types — phase topology, definitions, context (PRD-81, PRD-87, PRD-101).
 
-PhaseSpec describes WHERE and WHEN an agent runs in a workflow graph.
-HOW the agent behaves (system prompt, model) lives in AgentsRegistry.
-WHICH tools it receives is determined by PhaseSpec.resolved_allowed_caps
-intersected with the session mode's blocked_capabilities ceiling.
+PRD-101 introduces the graph-based workflow model:
+  WorkflowGraph  — replaces WorkflowDefinition
+  PhaseNode      — replaces PhaseSpec
+  EdgeSpec       — replaces spec.next / spec.on_reject
+  EdgeGate       — configures the overlay shown before a transition
+  DataBus        — replaces WorkflowContext (structured dicts, no text truncation)
+  NodeResult     — replaces PhaseOutput for runner-internal routing
+
+The legacy types (PhaseSpec, WorkflowDefinition, WorkflowContext, PhaseOutput)
+remain for backward compatibility and are used by WorkflowRunner's legacy path.
 """
 from __future__ import annotations
 
@@ -12,6 +18,10 @@ import dataclasses
 import re
 import time
 from dataclasses import field
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from lauren_ai._config import AgentConfig, LLMConfig
 
 
 # ── PhaseRole — typed string constants matching builtin agent type names ──────
@@ -272,3 +282,202 @@ class WorkflowPlugin(abc.ABC):
         if output.approved is False and spec.on_reject:
             return spec.on_reject
         return spec.next
+
+
+# ── PRD-101: Graph-based workflow types ───────────────────────────────────────
+
+
+@dataclasses.dataclass(frozen=True)
+class EdgeGate:
+    """Human-in-the-loop gate on an edge transition.
+
+    When a PhaseNode's complete_phase tool is called with an edge that has a
+    gate, the runner suspends and shows an overlay before committing.  The
+    overlay class is resolved from ``_OVERLAY_REGISTRY`` in tui_session.py
+    using ``kind`` as the key — new overlay types can be registered without
+    touching EdgeGate or EdgeSpec.
+    """
+
+    kind: str = "plan_review"
+    """Overlay identifier.  Built-in values:
+      'plan_review'   → PlanApprovalOverlay  (plan text + approve/reject/instructions)
+      'tool_approval' → ApprovalOverlay       (y/a/A/n inline approval)
+    Plugins register custom kinds at startup via ``_OVERLAY_REGISTRY[kind] = cls``."""
+
+    title: str = ""
+    """Optional header override shown in the overlay.  Empty = use the node name."""
+
+
+@dataclasses.dataclass(frozen=True)
+class EdgeSpec:
+    """A directed edge in a WorkflowGraph.
+
+    The agent calls ``complete_phase(next=label)`` to follow this edge.
+    ``target=None`` marks a terminal edge — the workflow ends after it.
+    """
+
+    target: str | None
+    """Destination node name.  None = terminal (workflow ends after this edge)."""
+
+    label: str
+    """Semantic name the agent uses: 'approve', 'reject', 'complete', 'revise', …
+    Shown to the agent in the complete_phase tool docstring."""
+
+    gate: EdgeGate | None = None
+    """When set, complete_phase suspends and shows an overlay before committing.
+    None = automatic transition (no human step)."""
+
+
+@dataclasses.dataclass(frozen=True)
+class PhaseNode:
+    """One node in a WorkflowGraph.
+
+    Replaces PhaseSpec.  Transitions are expressed as EdgeSpec objects rather
+    than plain ``next``/``on_reject`` strings.  The agent MUST call
+    ``complete_phase(output=..., next=label)`` to advance — no implicit
+    end-of-turn advancement.
+    """
+
+    name: str
+    """Unique node identifier within the workflow graph."""
+
+    agent_config: "AgentConfig | None" = None
+    """Per-node agent behaviour from lauren_ai.AgentConfig
+    (system_prompt, max_turns, temperature, thinking, parallel_tool_calls, …).
+    Passed as config_override to run_stream().  None = session defaults.
+    system_prompt replaces the old PhaseSpec.system_prompt_override.
+    max_turns replaces the old top-level field."""
+
+    llm_config: "LLMConfig | None" = None
+    """Per-node provider/model override from lauren_ai.LLMConfig.
+    None = use the session transport as-is (the common path).
+    Set only when a node needs a different model or provider."""
+
+    agent_type: str = "auto"
+    """Key into AgentsRegistry for role-based capability defaults."""
+
+    edges: tuple[EdgeSpec, ...] = ()
+    """Outgoing edges.  Empty tuple = terminal node."""
+
+    allowed_capabilities: Any = None
+    """frozenset[ToolCapability] | None — tool capability allowlist.
+    None = use ROLE_DEFAULT_ALLOWED[agent_type], then session mode ceiling."""
+
+    mode_override: str | None = None
+    """RuntimeMode name to activate for the duration of this node's turn.
+    Restored in a finally block after the turn — even on error/cancellation."""
+
+    max_continuations: int = 10
+    """Maximum continuation loop iterations before giving up.
+    Each iteration runs a full _run_agent_turn with a short continuation prompt.
+    The shared ShortTermMemory carries context between iterations."""
+
+    parallel_with: tuple[str, ...] = ()
+    """Names of sibling nodes to run concurrently via asyncio.gather."""
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkflowGraph:
+    """A directed graph of PhaseNodes.
+
+    Replaces WorkflowDefinition.  Edges are typed (EdgeSpec) rather than plain
+    ``next``/``on_reject`` strings.  Transition routing is agent-driven via
+    ``complete_phase(next=label)`` rather than inferred from ``approved: bool``.
+    """
+
+    name: str
+    """Unique workflow identifier used in registry lookups and kernel events."""
+
+    entry: str
+    """Name of the first node to execute."""
+
+    nodes: dict[str, "PhaseNode"]
+    """Ordered mapping of node_name → PhaseNode.
+    Insertion order = definition order used for Phase N/M display."""
+
+    description: str = ""
+    mode_bindings: tuple[str, ...] = ()
+    source: str = "builtin"
+    path: str | None = None
+
+    max_total_phase_runs: int = 0
+    """Opt-in global cap on total node runs for one workflow execution.
+    0 (default) = unlimited.  Set to a positive integer to add a hard ceiling."""
+
+    def get_node(self, name: str) -> "PhaseNode | None":
+        return self.nodes.get(name)
+
+    def node_index(self, name: str) -> int:
+        """0-based position of *name* in insertion order."""
+        keys = list(self.nodes.keys())
+        return keys.index(name) if name in self.nodes else 0
+
+    def node_names(self) -> list[str]:
+        return list(self.nodes.keys())
+
+
+@dataclasses.dataclass
+class DataBus:
+    """Structured blackboard of node outputs, readable by all subsequent nodes.
+
+    Replaces WorkflowContext.  Each node writes a plain dict via complete_phase;
+    downstream nodes read fields directly.  No 200-char text truncation.
+    """
+
+    intent: str
+    """The original user intent that started this workflow run."""
+
+    run_id: str
+    """Unique run identifier matching the kernel WorkflowRun entry."""
+
+    outputs: dict[str, dict] = dataclasses.field(default_factory=dict)
+    """node_name → structured output dict written by complete_phase()."""
+
+    edge_history: dict[str, str] = dataclasses.field(default_factory=dict)
+    """node_name → edge_label taken — used by _find_resume_node."""
+
+    def set(self, node_name: str, data: dict) -> None:
+        self.outputs[node_name] = data
+
+    def get(self, node_name: str) -> dict | None:
+        return self.outputs.get(node_name)
+
+    def record_edge(self, node_name: str, edge_label: str) -> None:
+        self.edge_history[node_name] = edge_label
+
+    def as_context_block(self) -> str:
+        """Structured prompt injection for each node's system prompt."""
+        if not self.outputs:
+            return f"[WORKFLOW CONTEXT]\nOriginal intent: {self.intent}"
+        lines = ["[WORKFLOW CONTEXT]", f"Original intent: {self.intent}", ""]
+        for name, output in self.outputs.items():
+            lines.append(f"{name}:")
+            for k, v in output.items():
+                if k.startswith("_"):
+                    continue   # internal keys
+                v_str = str(v)
+                if len(v_str) > 500:
+                    v_str = v_str[:500] + "…"
+                lines.append(f"  {k}: {v_str}")
+        return "\n".join(lines)
+
+
+@dataclasses.dataclass
+class NodeResult:
+    """Outcome of running one PhaseNode — for runner-internal routing.
+
+    Replaces PhaseOutput for the purpose of edge traversal.  PhaseRunRecord
+    (the audit trail) is updated separately from this.
+    """
+
+    node_name: str
+    """Name of the node that produced this result."""
+
+    edge_label: str | None
+    """Which edge the agent chose via complete_phase(next=label).
+    None = terminal (no edges on node) or failed (complete_phase never called)."""
+
+    output: dict
+    """Structured output from complete_phase(output=…).  Empty on failure."""
+
+    duration_s: float = 0.0

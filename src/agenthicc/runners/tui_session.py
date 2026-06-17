@@ -352,14 +352,21 @@ class TUISession:
             req = app_state.pending_approval()
             from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay           # noqa: PLC0415
             from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay  # noqa: PLC0415
+            # PRD-101: overlay registry — maps EdgeGate.kind to overlay class.
+            # Register custom kinds at startup: _OVERLAY_REGISTRY["my_kind"] = MyOverlay
+            _OVERLAY_REGISTRY: dict[str, type] = {
+                "plan_review":   PlanApprovalOverlay,
+                "tool_approval": ApprovalOverlay,
+            }
             if req is not None:
-                if getattr(req, "kind", "tool") == "plan_review":
-                    overlay = PlanApprovalOverlay(req, approval_svc, workspace.overlays.hide)
-                else:
-                    overlay = ApprovalOverlay(req, approval_svc, workspace.overlays.hide)
+                kind        = getattr(req, "kind", "tool_approval")
+                overlay_cls = _OVERLAY_REGISTRY.get(kind, ApprovalOverlay)
+                overlay     = overlay_cls(req, approval_svc, workspace.overlays.hide)
                 workspace.overlays.show(overlay)
             else:
-                if isinstance(workspace.overlays.widget, (ApprovalOverlay, PlanApprovalOverlay)):
+                from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay as _AO      # noqa: PLC0415
+                from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay as _PAO  # noqa: PLC0415
+                if isinstance(workspace.overlays.widget, (_AO, _PAO)):
                     workspace.overlays.hide()
 
         app_state.pending_approval.subscribe(_on_approval_change)

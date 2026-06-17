@@ -126,6 +126,128 @@ def make_planner_tools(
     return [request_plan_approval, finalize_plan]
 
 
+# ── PRD-101: unified completion tool ─────────────────────────────────────────
+
+
+def make_completion_tool(
+    node:             Any,           # PhaseNode
+    data_bus:         Any,           # DataBus
+    transition_event: asyncio.Event,
+    transition_data:  dict,
+    approval_svc:     Any,           # ApprovalService | None
+) -> Any:
+    """Return a single @tool()-decorated ``complete_phase`` callable for *node*.
+
+    The tool docstring enumerates the node's valid edge labels so the LLM
+    receives them in the tool schema.  When an edge has ``gate`` set, the tool
+    suspends via ApprovalService and shows the configured overlay before
+    committing the transition.
+
+    Closing state:
+      transition_event — set when the agent commits; checked by _run_node.
+      transition_data  — {"edge_label": str | None, "output": dict} written here.
+    """
+    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+
+    edges_by_label: dict[str, Any] = {e.label: e for e in (node.edges or ())}
+    is_terminal = not edges_by_label
+    labels_str  = ", ".join(f'"{l}"' for l in edges_by_label)
+
+    if is_terminal:
+        @_tool()
+        async def complete_phase(output: dict) -> dict:
+            """Signal that this final phase is complete.
+
+            Call this when all tasks are done.  The workflow ends after this.
+
+            Args:
+                output: Structured summary of what was accomplished.
+            """
+            data_bus.set(node.name, output)
+            transition_event.set()
+            transition_data["edge_label"] = None
+            transition_data["output"]     = output
+            return {
+                "ok":     True,
+                "message": (
+                    "Phase complete — this is the final phase.  Write a single "
+                    "short confirmation and stop."
+                ),
+            }
+    else:
+        # Build a docstring with edge labels embedded so the LLM sees them.
+        _doc = (
+            f"Signal completion of this phase and choose the next transition.\n\n"
+            f"Available edges: {labels_str}\n\n"
+            f"Args:\n"
+            f"    output: Structured data for downstream phases.\n"
+            f"    next:   Edge label to follow ({labels_str})."
+        )
+
+        @_tool()
+        async def complete_phase(output: dict, next: str) -> dict:
+            """Signal completion and choose which edge to follow.
+
+            Args:
+                output: Structured data for downstream phases.
+                next:   Edge label to follow.
+            """
+            edge = edges_by_label.get(next)
+            if edge is None:
+                avail = labels_str or "(none)"
+                return {
+                    "ok":    False,
+                    "error": (
+                        f"Unknown edge '{next}'.  "
+                        f"Available: {avail}"
+                    ),
+                }
+
+            # Gate: show overlay before committing.
+            if edge.gate is not None and approval_svc is not None:
+                from agenthicc.tools.approval import ApprovalRequest  # noqa: PLC0415
+                req = ApprovalRequest(
+                    tool_name=edge.gate.title or f"Review: {node.name}",
+                    tool_use_id=uuid.uuid4().hex,
+                    tool_input=output,
+                    capabilities=frozenset(),
+                    event=asyncio.Event(),
+                    kind=edge.gate.kind,
+                )
+                response = await approval_svc.request_approval(req)
+                if not response.allowed:
+                    fb = response.message or ""
+                    return {
+                        "approved": False,
+                        "feedback": (
+                            fb
+                            or "Transition not approved.  Revise and call "
+                               "complete_phase() again."
+                        ),
+                    }
+                # Incorporate any user instructions into the output
+                if response.message:
+                    output = {**output, "_user_instructions": response.message}
+
+            data_bus.set(node.name, output)
+            data_bus.record_edge(node.name, next)
+            transition_event.set()
+            transition_data["edge_label"] = next
+            transition_data["output"]     = output
+            return {
+                "ok":     True,
+                "message": (
+                    f"Phase complete.  Transitioning to '{next}'.  "
+                    "Write a single short confirmation and stop."
+                ),
+            }
+
+        # Patch the docstring so the LLM sees the real edge labels.
+        complete_phase.__doc__ = _doc
+
+    return complete_phase
+
+
 def make_executor_tools(
     execute_event: asyncio.Event,
     execute_data:  dict,

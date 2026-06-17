@@ -1,7 +1,10 @@
-"""Built-in workflow definitions — Python-only, no TOML (PRD-87)."""
+"""Built-in workflow definitions — Python-only, no TOML (PRD-87, PRD-101)."""
 from __future__ import annotations
 
-from agenthicc.workflow.plugin import PhaseRole, PhaseSpec, WorkflowPlugin
+from agenthicc.workflow.plugin import (
+    EdgeGate, EdgeSpec, PhaseNode, PhaseRole, PhaseSpec,
+    WorkflowGraph, WorkflowPlugin,
+)
 
 
 class PlanOnly(WorkflowPlugin):
@@ -174,3 +177,63 @@ class Architect(WorkflowPlugin):
             max_iterations=2,
         ),
     ]
+
+
+# ── PRD-101 graph-based built-in workflows ────────────────────────────────────
+
+class CodePlanGraph(WorkflowPlugin):
+    """Graph-based Plan mode: plan → execute → review → summarize.
+
+    Uses WorkflowGraph + PhaseNode (PRD-101).  All transitions go through the
+    unified ``complete_phase`` tool; no XML parsing or separate event objects.
+    """
+    name          = "code_plan_graph"
+    description   = "Plan → Execute → Review → Summary (graph model, PRD-101)"
+    mode_bindings: list[str] = []  # registered separately; does not shadow code_plan yet
+
+    # WorkflowGraph definition — used directly by WorkflowRunner when
+    # type(definition) has .entry and .nodes.
+    graph = WorkflowGraph(
+        name  = "code_plan_graph",
+        entry = "plan",
+        nodes = {
+            "plan": PhaseNode(
+                name            = "plan",
+                agent_type      = "auto",
+                max_continuations = 5,
+                edges           = (
+                    EdgeSpec("execute", "approve",
+                             gate=EdgeGate(kind="plan_review",
+                                          title="Review Implementation Plan")),
+                    EdgeSpec("plan",    "revise"),
+                ),
+            ),
+            "execute": PhaseNode(
+                name              = "execute",
+                agent_type        = "auto",
+                mode_override     = "Auto",
+                max_continuations = 10,
+                edges             = (
+                    EdgeSpec("review", "complete"),
+                ),
+            ),
+            "review": PhaseNode(
+                name              = "review",
+                agent_type        = "auto",
+                max_continuations = 3,
+                edges             = (
+                    EdgeSpec("summarize", "approve"),
+                    EdgeSpec("execute",   "reject"),
+                ),
+            ),
+            "summarize": PhaseNode(
+                name              = "summarize",
+                agent_type        = "auto",
+                max_continuations = 1,
+                edges             = (),   # terminal
+            ),
+        },
+    )
+
+    def to_definition(self, source: str = "builtin", path: str | None = None) -> WorkflowGraph:
+        return self.__class__.graph
