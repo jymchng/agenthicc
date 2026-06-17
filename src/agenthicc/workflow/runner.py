@@ -399,9 +399,69 @@ class WorkflowRunner:
                             "Phase %r continuation %d error: %s",
                             spec.name, attempt, exc,
                         )
-                        break  # exit loop; event-not-set path returns approved=False
+                        break
                     if execute_event.is_set():
                         break
+
+            elif spec.require_explicit_review and review_event is not None:
+                # Continuation loop — loops until approve_review() or reject_review()
+                # is called.  If the agent ends its turn without calling either tool,
+                # a reminder prompt is sent so it gets another attempt.
+                max_cont = spec.max_iterations if spec.max_iterations > 0 else 10
+                for attempt in range(1, max_cont + 1):
+                    text = (
+                        phase_text
+                        if attempt == 1
+                        else (
+                            "You have not yet called approve_review() or reject_review(). "
+                            "Review the implementation now and call one of these tools: "
+                            "approve_review(summary) if all tests pass and the code is correct, "
+                            "or reject_review(reason) if there are issues that need fixing."
+                        )
+                    )
+                    try:
+                        await _run_agent_turn(text, **_turn_kwargs)
+                    except (asyncio.CancelledError, KeyboardInterrupt):
+                        raise
+                    except Exception as exc:
+                        log.error(
+                            "Phase %r continuation %d error: %s",
+                            spec.name, attempt, exc,
+                        )
+                        break
+                    if review_event.is_set():
+                        break
+
+            elif spec.require_plan_finalization and plan_event is not None:
+                # Continuation loop — loops until finalize_plan() is called.
+                # If the agent ends its turn without calling finalize_plan(),
+                # a reminder prompt is sent that re-states the user's task so
+                # the agent stays focused on producing and approving the plan.
+                max_cont = spec.max_iterations if spec.max_iterations > 0 else 10
+                for attempt in range(1, max_cont + 1):
+                    text = (
+                        phase_text
+                        if attempt == 1
+                        else (
+                            "You have not yet finalized the plan. "
+                            "Return to the task described above, develop or refine your "
+                            "implementation plan, present it with request_plan_approval(plan), "
+                            "and once it is approved call finalize_plan(plan)."
+                        )
+                    )
+                    try:
+                        await _run_agent_turn(text, **_turn_kwargs)
+                    except (asyncio.CancelledError, KeyboardInterrupt):
+                        raise
+                    except Exception as exc:
+                        log.error(
+                            "Phase %r continuation %d error: %s",
+                            spec.name, attempt, exc,
+                        )
+                        break
+                    if plan_event.is_set():
+                        break
+
             else:
                 await _run_agent_turn(phase_text, **_turn_kwargs)
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -420,20 +480,10 @@ class WorkflowRunner:
             if spec.mode_override and self._mode_manager is not None:
                 self._cfg.app_state.active_mode.set(_original_mode)
 
-        if plan_event is not None:
-            if plan_event.is_set() and "plan" in plan_data:
-                full_text = plan_data["plan"]
-            else:
-                return PhaseOutput(
-                    phase_name=spec.name,
-                    role=spec.agent_type,
-                    full_text="".join(output_buf),
-                    approved=False,
-                    agent_id=uuid.uuid4().hex[:8],
-                    duration_s=time.monotonic() - t0,
-                )
-        elif spec.require_explicit_review and review_event is not None:
-            # Review phase: agent must call approve_review() or reject_review().
+        # Phase-specific flags are checked first — they must take priority over
+        # the generic event-presence checks below, because plan_event / execute_event
+        # are injected into EVERY phase and would otherwise short-circuit all others.
+        if spec.require_explicit_review and review_event is not None:
             if review_event.is_set():
                 action = review_data.get("action", "reject")
                 if action == "approve":
@@ -465,20 +515,33 @@ class WorkflowRunner:
                     agent_id=uuid.uuid4().hex[:8],
                     duration_s=time.monotonic() - t0,
                 )
-        elif execute_event is not None and execute_event.is_set():
-            # mark_execute_complete was called — use its summary as phase output.
-            full_text = execute_data.get("summary", "".join(output_buf))
-        elif execute_event is not None and not execute_event.is_set():
-            # Agent turn ended without calling mark_execute_complete — treat as
-            # incomplete so on_reject="execute" retries rather than advancing.
-            return PhaseOutput(
-                phase_name=spec.name,
-                role=spec.agent_type,
-                full_text="".join(output_buf),
-                approved=False,
-                agent_id=uuid.uuid4().hex[:8],
-                duration_s=time.monotonic() - t0,
-            )
+
+        elif spec.require_plan_finalization and plan_event is not None:
+            if plan_event.is_set() and "plan" in plan_data:
+                full_text = plan_data["plan"]
+            else:
+                return PhaseOutput(
+                    phase_name=spec.name,
+                    role=spec.agent_type,
+                    full_text="".join(output_buf),
+                    approved=False,
+                    agent_id=uuid.uuid4().hex[:8],
+                    duration_s=time.monotonic() - t0,
+                )
+
+        elif spec.require_explicit_completion and execute_event is not None:
+            if execute_event.is_set():
+                full_text = execute_data.get("summary", "".join(output_buf))
+            else:
+                return PhaseOutput(
+                    phase_name=spec.name,
+                    role=spec.agent_type,
+                    full_text="".join(output_buf),
+                    approved=False,
+                    agent_id=uuid.uuid4().hex[:8],
+                    duration_s=time.monotonic() - t0,
+                )
+
         else:
             full_text = "".join(output_buf)
 

@@ -92,6 +92,11 @@ class PhaseSpec:
     If the loop exhausts max_iterations continuations without the event being set,
     the phase returns approved=False."""
 
+    require_plan_finalization: bool = False
+    """When True, _run_phase loops until finalize_plan() is called.  If the agent
+    ends its turn without calling finalize_plan(), a reminder prompt re-states
+    the user's task so the agent stays focused on producing and approving a plan."""
+
     require_explicit_review: bool = False
     """When True, the agent must call approve_review() or reject_review() instead
     of outputting an XML <review> tag.  Eliminates brittle text parsing where

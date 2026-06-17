@@ -43,9 +43,10 @@ class CodePlan(WorkflowPlugin):
             agent_type="auto",
             max_turns=20,
             next="execute",
-            on_reject="plan",       # loop back when finalize_plan() never called
-            max_iterations=5,       # up to 5 approval attempts before failing
-            mode_override=None,     # stays in Plan mode → writes/exec blocked
+            on_reject="plan",
+            max_iterations=10,
+            require_plan_finalization=True,
+            mode_override=None,
             system_prompt_override=(
                 "You are in the PLANNING phase. First explore the repository to "
                 "understand the codebase. Then produce a detailed implementation "
@@ -58,7 +59,7 @@ class CodePlan(WorkflowPlugin):
             agent_type="auto",
             max_turns=40,
             next="review",
-            max_iterations=-1,              # -1 → up to 10 continuation turns
+            max_iterations=10,
             require_explicit_completion=True,
             mode_override="Auto",           # switches to Auto → write/exec tools available
             system_prompt_override=(
@@ -74,7 +75,7 @@ class CodePlan(WorkflowPlugin):
             agent_type="auto",
             max_turns=8,
             on_reject="execute",
-            max_iterations=3,           # at most 3 rejection cycles before failing
+            max_iterations=10,
             next="summarize",
             require_explicit_review=True,
             mode_override=None,         # stays in Plan mode → read-only review
