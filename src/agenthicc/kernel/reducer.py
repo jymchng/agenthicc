@@ -210,10 +210,11 @@ def _workflow_phase_completed(state: AppState, event: Event) -> tuple[AppState, 
         dependencies=frozenset(),
         status=NodeStatus.complete,
         result={
-            "role":       event.payload.get("role", ""),
-            "full_text":  event.payload.get("full_text", ""),
-            "approved":   event.payload.get("approved"),
-            "structured": event.payload.get("structured", {}),
+            "role":        event.payload.get("role", ""),
+            "full_text":   event.payload.get("full_text", ""),
+            "approved":    event.payload.get("approved"),
+            "structured":  event.payload.get("structured", {}),
+            "edge_label":  event.payload.get("edge_label"),
         },
     )
     new_wf = replace(wf, nodes={**wf.nodes, node.node_id: node})

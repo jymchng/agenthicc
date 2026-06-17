@@ -577,10 +577,11 @@ construction via `isinstance(definition, WorkflowGraph)`.
 
 | # | Feature | Expected behaviour |
 |---|---|---|
-| 16.64 | One tool per node | `make_completion_tool(node, data_bus, transition_event, transition_data, approval_svc)` generates a single `@tool()`-decorated `complete_phase` callable. Terminal nodes (no edges) receive a variant that takes only `output`. Non-terminal nodes receive `complete_phase(output: dict, next: str)`. |
-| 16.65 | Edge labels in schema | The docstring (and therefore the LLM tool schema) enumerates the node's valid edge labels at tool-generation time so the agent always knows which transitions are available. |
-| 16.66 | Gate suspension | When `edge.gate is not None`, `complete_phase` calls `ApprovalService.request_approval(ApprovalRequest(kind=edge.gate.kind, tool_input=output, …))`, suspending the agent. If denied, returns `{"approved": False, "feedback": "…"}` — agent stays in the continuation loop. If approved (and `response.message` was given), `_user_instructions` is merged into the output dict. |
-| 16.67 | Replaces five mechanisms | `complete_phase` replaces `finalize_plan`, `request_plan_approval`, `mark_execute_complete`, the `<review>` XML tag parsing, and the `require_plan_finalization` / `require_explicit_completion` flags — all in one code path. |
+| 16.64 | One tool per edge (not one polymorphic tool) | `make_transition_tools(node, …)` returns a list — one `@tool()`-decorated callable per `EdgeSpec`, plus a single `finish(output)` tool for terminal nodes. The tool `__name__` equals the edge label (e.g. `approve`, `reject`, `complete`). `__name__` and `__doc__` are set **before** `@_tool()` is applied so the LLM tool schema is correct. A single `complete_phase(output, next)` tool was rejected because `@_tool()` captures the schema at decoration time; patching `__doc__` afterwards has no effect on what the LLM sees. |
+| 16.65 | Tool name = edge label | The agent calls `approve(output={…})`, `reject(output={…})`, or `complete(output={…})` — the tool name IS the transition signal. No `next: str` parameter. No string-matching. No way to mis-spell an edge label. The `✗ 0ms` tool failures from incorrect `next` values are eliminated. |
+| 16.66 | Tool docstring is edge-specific | Each tool's docstring describes the specific transition: `"Call this to proceed to 'execute' from the 'plan' phase. Requires human approval before committing."` The LLM knows exactly what calling the tool does. |
+| 16.67 | Gate suspension per edge tool | When `edge.gate is not None`, the named edge tool calls `ApprovalService.request_approval(ApprovalRequest(kind=edge.gate.kind, …))`, suspending the agent. If denied, returns `{"approved": False, "feedback": "…"}` — agent stays in the continuation loop. If approved with a message, `_user_instructions` is merged into the output dict. |
+| 16.68 | Replaces five mechanisms | Per-edge tools replace `finalize_plan`, `request_plan_approval`, `mark_execute_complete`, the `<review>` XML tag parsing, and the `require_plan_finalization` / `require_explicit_completion` flags — one consistent pattern for all phases. |
 
 #### 16.17.3 Runner graph path
 

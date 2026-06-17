@@ -1,4 +1,4 @@
-"""Unit tests: workflow/plugin.py — PhaseSpec, WorkflowDefinition, WorkflowContext (PRD-87)."""
+"""Unit tests: workflow/plugin.py — PhaseNode, WorkflowGraph, DataBus (PRD-101)."""
 from __future__ import annotations
 
 import pytest
@@ -6,8 +6,8 @@ import pytest
 from agenthicc.agents.plugin import READ_CAPS
 from agenthicc.tools.capabilities import ToolCapability
 from agenthicc.workflow.plugin import (
-    PhaseRole, PhaseSpec, WorkflowContext, WorkflowDefinition,
-    WorkflowPlugin, PhaseOutput, _parse_output_schema,
+    DataBus, EdgeGate, EdgeSpec, NodeResult,
+    PhaseNode, PhaseRole, WorkflowGraph, WorkflowPlugin,
 )
 
 pytestmark = pytest.mark.unit
@@ -24,131 +24,143 @@ class TestPhaseRole:
         assert isinstance(PhaseRole.PLANNER, str)
 
     def test_usable_as_agent_type(self):
-        spec = PhaseSpec(name="p", agent_type=PhaseRole.PLANNER)
-        assert spec.agent_type == "planner"
+        node = PhaseNode(name="p", agent_type=PhaseRole.PLANNER)
+        assert node.agent_type == "planner"
 
 
-class TestPhaseSpec:
+class TestPhaseNode:
     def test_defaults(self):
-        spec = PhaseSpec(name="p")
-        assert spec.agent_type == "auto"
-        assert spec.allowed_capabilities is None
-        assert spec.max_turns == 20
-        assert spec.next is None
-        assert spec.max_iterations == -1
+        node = PhaseNode(name="p")
+        assert node.agent_type        == "auto"
+        assert node.allowed_capabilities is None
+        assert node.max_continuations == 10
+        assert node.edges             == ()
+        assert node.mode_override     is None
+        assert node.agent_config      is None
+        assert node.llm_config        is None
 
-    def test_resolved_allowed_caps_planner_uses_role_default(self):
-        spec = PhaseSpec(name="p", agent_type=PhaseRole.PLANNER)
-        assert spec.resolved_allowed_caps == READ_CAPS
-
-    def test_resolved_allowed_caps_executor_returns_none(self):
-        spec = PhaseSpec(name="p", agent_type=PhaseRole.EXECUTOR)
-        assert spec.resolved_allowed_caps is None
-
-    def test_resolved_allowed_caps_explicit_field_wins(self):
-        custom = frozenset({ToolCapability.READ})
-        spec = PhaseSpec(name="p", agent_type=PhaseRole.PLANNER, allowed_capabilities=custom)
-        assert spec.resolved_allowed_caps == custom
-
-    def test_resolved_allowed_caps_override_wins_over_field(self):
-        spec = PhaseSpec(
-            name="p", agent_type=PhaseRole.PLANNER,
-            allowed_capabilities=frozenset({ToolCapability.READ}),
-            allowed_capabilities_override=frozenset({ToolCapability.SEARCH}),
+    def test_with_edges(self):
+        node = PhaseNode(
+            name  = "review",
+            edges = (EdgeSpec("summarize", "approve"), EdgeSpec("execute", "reject")),
         )
-        assert spec.resolved_allowed_caps == frozenset({ToolCapability.SEARCH})
+        assert len(node.edges) == 2
+        assert node.edges[0].label  == "approve"
+        assert node.edges[1].target == "execute"
 
-    def test_human_resolved_caps_is_empty(self):
-        assert PhaseSpec(name="p", agent_type=PhaseRole.HUMAN).resolved_allowed_caps == frozenset()
+    def test_terminal(self):
+        assert PhaseNode(name="summarize").edges == ()
 
     def test_frozen(self):
-        spec = PhaseSpec(name="p")
+        node = PhaseNode(name="p")
         with pytest.raises((AttributeError, TypeError)):
-            spec.name = "changed"  # type: ignore[misc]
+            node.name = "other"  # type: ignore[misc]
 
 
-class TestWorkflowDefinition:
+class TestWorkflowGraph:
     def _wf(self, *names):
-        return WorkflowDefinition(name="wf", phases=tuple(PhaseSpec(name=n) for n in names))
+        nodes = {n: PhaseNode(name=n) for n in names}
+        return WorkflowGraph(name="wf", entry=names[0] if names else "", nodes=nodes)
 
-    def test_get_phase_found(self):
-        assert self._wf("plan", "execute").get_phase("plan").name == "plan"
+    def test_get_node_found(self):
+        assert self._wf("plan", "execute").get_node("plan").name == "plan"
 
-    def test_get_phase_missing(self):
-        assert self._wf("plan").get_phase("x") is None
+    def test_get_node_missing(self):
+        assert self._wf("plan").get_node("x") is None
 
-    def test_first_phase(self):
-        assert self._wf("plan", "execute").first_phase().name == "plan"
+    def test_node_index(self):
+        wf = self._wf("plan", "execute", "review", "summarize")
+        assert wf.node_index("plan")      == 0
+        assert wf.node_index("execute")   == 1
+        assert wf.node_index("review")    == 2
+        assert wf.node_index("summarize") == 3
 
-    def test_first_phase_empty(self):
-        assert WorkflowDefinition(name="wf").first_phase() is None
+    def test_node_names(self):
+        assert self._wf("a", "b", "c").node_names() == ["a", "b", "c"]
 
-    def test_phase_names(self):
-        assert self._wf("a", "b", "c").phase_names() == ["a", "b", "c"]
+    def test_default_max_total_phase_runs(self):
+        assert self._wf("p").max_total_phase_runs == 0
+
+    def test_frozen(self):
+        wf = self._wf("p")
+        with pytest.raises((AttributeError, TypeError)):
+            wf.name = "other"  # type: ignore[misc]
 
 
-class TestWorkflowContext:
-    def _ctx(self):
-        return WorkflowContext(intent="Fix bug", run_id="r1", workflow_name="wf")
-
-    def test_block_no_outputs(self):
-        block = self._ctx().as_system_block()
+class TestDataBus:
+    def test_empty_context_block(self):
+        bus = DataBus(intent="Fix bug", run_id="r1")
+        block = bus.as_context_block()
         assert "Original intent: Fix bug" in block
-        assert "Completed phases" not in block
+        assert "plan" not in block
 
-    def test_block_with_output(self):
-        ctx = self._ctx()
-        ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="Step 1."))
-        block = ctx.as_system_block()
-        assert "plan" in block and "Step 1" in block
+    def test_set_and_get(self):
+        bus = DataBus(intent="x", run_id="r1")
+        bus.set("plan", {"approach": "JWT", "files": ["auth.py"]})
+        assert bus.get("plan") == {"approach": "JWT", "files": ["auth.py"]}
 
-    def test_output_truncated(self):
-        ctx = self._ctx()
-        ctx.add_output(PhaseOutput(phase_name="p", role="r", full_text="x" * 500))
-        assert "..." in ctx.as_system_block()
+    def test_get_missing(self):
+        assert DataBus(intent="x", run_id="r").get("nope") is None
+
+    def test_edge_history(self):
+        bus = DataBus(intent="x", run_id="r")
+        bus.record_edge("plan", "approve")
+        assert bus.edge_history["plan"] == "approve"
+
+    def test_context_block_with_outputs(self):
+        bus = DataBus(intent="add auth", run_id="r")
+        bus.set("plan", {"approach": "JWT", "files": ["a.py"]})
+        bus.set("execute", {"modified": ["a.py"], "tests_pass": True})
+        block = bus.as_context_block()
+        assert "add auth" in block
+        assert "plan:"    in block
+        assert "JWT"      in block
+        assert "execute:" in block
+
+    def test_internal_keys_skipped(self):
+        bus = DataBus(intent="x", run_id="r")
+        bus.set("plan", {"_edge_label": "approve", "real_key": "real_value"})
+        assert "_edge_label" not in bus.as_context_block()
+        assert "real_value"  in bus.as_context_block()
+
+    def test_long_values_truncated(self):
+        bus = DataBus(intent="x", run_id="r")
+        bus.set("plan", {"text": "x" * 1000})
+        assert "…" in bus.as_context_block()
 
 
-class TestParseOutputSchema:
-    def test_none(self):
-        assert _parse_output_schema("x", None) is None
+class TestNodeResult:
+    def test_basic(self):
+        r = NodeResult(node_name="plan", edge_label="approve", output={"plan": "step 1"})
+        assert r.node_name  == "plan"
+        assert r.edge_label == "approve"
+        assert r.duration_s == 0.0
 
-    def test_plan_found(self):
-        assert _parse_output_schema("<plan>S1</plan>", "plan") == {"plan_text": "S1"}
-
-    def test_plan_fallback(self):
-        assert _parse_output_schema("no tags", "plan") == {"plan_text": "no tags"}
-
-    def test_review_approved(self):
-        assert _parse_output_schema("<review>approved</review>", "review_result")["approved"] is True
-
-    def test_review_rejected(self):
-        assert _parse_output_schema("<review>rejected: x</review>", "review_result")["approved"] is False
-
-    def test_free_text(self):
-        assert _parse_output_schema("hi", "free_text") == {"text": "hi"}
-
-    def test_unknown(self):
-        assert _parse_output_schema("hi", "other") == {"raw": "hi"}
+    def test_terminal(self):
+        r = NodeResult(node_name="summarize", edge_label=None, output={})
+        assert r.edge_label is None
 
 
 class TestWorkflowPlugin:
-    def test_to_definition(self):
+    def test_to_definition_from_graph(self):
         class MyWf(WorkflowPlugin):
-            name = "my_wf"
-            description = "d"
+            name          = "my_wf"
+            description   = "d"
             mode_bindings = ["Plan"]
-            phases = [PhaseSpec(name="p", agent_type=PhaseRole.PLANNER)]
+            graph = WorkflowGraph(
+                name="my_wf", entry="p",
+                nodes={"p": PhaseNode(name="p", agent_type=PhaseRole.PLANNER)},
+            )
+
         defn = MyWf().to_definition(source="user", path="/tmp/x.py")
-        assert defn.name == "my_wf" and "Plan" in defn.mode_bindings
+        assert defn.name   == "my_wf"
+        assert "Plan"      in defn.mode_bindings
+        assert defn.source == "user"
+        assert defn.path   == "/tmp/x.py"
 
-    def test_transition_approved(self):
-        spec = PhaseSpec(name="p", next="q", on_reject="p")
-        out  = PhaseOutput(phase_name="p", role="r", approved=True)
-        ctx  = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
-        assert WorkflowPlugin().determine_transition(spec, out, ctx) == "q"
+    def test_to_definition_no_graph_raises(self):
+        class NoGraph(WorkflowPlugin):
+            name = "broken"
 
-    def test_transition_rejected(self):
-        spec = PhaseSpec(name="p", next="q", on_reject="retry")
-        out  = PhaseOutput(phase_name="p", role="r", approved=False)
-        ctx  = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
-        assert WorkflowPlugin().determine_transition(spec, out, ctx) == "retry"
+        with pytest.raises(NotImplementedError):
+            NoGraph().to_definition()

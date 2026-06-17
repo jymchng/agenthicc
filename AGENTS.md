@@ -254,3 +254,29 @@ If you change a `CommunicationTools` method signature, update:
   stages they care about.
 - `HookRunner.run_before` returns the first `Rejection` by registration order;
   subsequent hooks still run (via `asyncio.gather`) but their results are ignored.
+
+---
+
+## Engineering rule: no legacy code in PRD implementations
+
+When implementing any PRD, **remove every symbol the PRD supersedes**.
+
+Do not keep old implementations alongside new ones. The project is not in
+production; there are no external consumers of internal APIs to protect.
+
+**Before declaring a PRD complete:**
+
+1. Delete every type, function, and method the PRD replaces.
+2. Remove all `isinstance` dispatch branches that existed only to support the
+   old path.
+3. Remove all `# type: ignore[union-attr]` comments left over from legacy
+   union types.
+4. Update or delete every test that imported a removed symbol.
+5. Confirm `grep -rn "OldSymbol" src/` returns zero results.
+
+**Example:** PRD-101 introduced `WorkflowGraph`, `PhaseNode`, `DataBus`,
+`NodeResult`, and `make_completion_tool`. The correct implementation removed
+`WorkflowDefinition`, `PhaseSpec`, `WorkflowContext`, `PhaseOutput`,
+`_parse_output_schema`, `make_planner_tools`, `make_executor_tools`,
+`finalize_plan`, `request_plan_approval`, `mark_execute_complete`, and the
+entire `_run_phase_loop`/`_run_phase`/`_determine_transition` runner path.

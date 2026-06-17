@@ -217,63 +217,78 @@ class TestNodeResult:
         assert r.duration_s == 5.0
 
 
-# ── make_completion_tool ──────────────────────────────────────────────────────
+# ── make_transition_tools ────────────────────────────────────────────────────
 
-class TestMakeCompletionTool:
-    def _make_tool(self, node, approval_svc=None):
-        from agenthicc.workflow.phase_tools import make_completion_tool
+def _get_tool(tools: list, name: str):
+    """Find a tool from the list by its __name__."""
+    from lauren_ai._tools import TOOL_META
+    for t in tools:
+        meta = getattr(t, TOOL_META, None)
+        if meta and getattr(meta, "name", None) == name:
+            return t
+        if getattr(t, "__name__", None) == name:
+            return t
+    raise KeyError(f"No tool named {name!r} in {[getattr(t,'__name__','?') for t in tools]}")
+
+
+class TestMakeTransitionTools:
+    def _make_tools(self, node, approval_svc=None):
+        from agenthicc.workflow.phase_tools import make_transition_tools
         from agenthicc.workflow.plugin import DataBus
         data_bus         = DataBus(intent="x", run_id="r")
         transition_event = asyncio.Event()
         transition_data: dict = {}
-        tool = make_completion_tool(
+        tools = make_transition_tools(
             node, data_bus, transition_event, transition_data, approval_svc
         )
-        return tool, data_bus, transition_event, transition_data
+        return tools, data_bus, transition_event, transition_data
 
-    async def test_terminal_node_sets_event(self):
+    async def test_terminal_node_returns_one_finish_tool(self):
         node = PhaseNode(name="summarize", edges=())
-        tool, bus, ev, td = self._make_tool(node)
-        result = await tool(output={"summary": "done"})
-        assert result["ok"]  is True
+        tools, bus, ev, td = self._make_tools(node)
+        assert len(tools) == 1
+        finish = tools[0]
+        result = await finish(output={"summary": "done"})
+        assert result["ok"]   is True
         assert ev.is_set()
         assert td["edge_label"] is None
         assert td["output"]     == {"summary": "done"}
         assert bus.get("summarize") == {"summary": "done"}
 
-    async def test_single_edge_approve(self):
-        node = PhaseNode(
-            name  = "plan",
-            edges = (EdgeSpec("execute", "approve"),),
-        )
-        tool, bus, ev, td = self._make_tool(node)
-        result = await tool(output={"plan": "step 1"}, next="approve")
-        assert result["ok"]  is True
+    async def test_terminal_tool_name_is_finish(self):
+        node  = PhaseNode(name="summarize", edges=())
+        tools, _, _, _ = self._make_tools(node)
+        assert tools[0].__name__ == "finish"
+
+    async def test_single_edge_creates_one_named_tool(self):
+        node = PhaseNode(name="plan", edges=(EdgeSpec("execute", "approve"),))
+        tools, bus, ev, td = self._make_tools(node)
+        assert len(tools) == 1
+        assert tools[0].__name__ == "approve"
+        result = await tools[0](output={"plan": "step 1"})
+        assert result["ok"]   is True
         assert ev.is_set()
         assert td["edge_label"] == "approve"
         assert bus.get("plan")   == {"plan": "step 1"}
 
-    async def test_unknown_edge_returns_error(self):
-        node = PhaseNode(
-            name  = "plan",
-            edges = (EdgeSpec("execute", "approve"),),
-        )
-        tool, _, ev, _ = self._make_tool(node)
-        result = await tool(output={}, next="nonexistent")
-        assert result["ok"]   is False
-        assert "nonexistent"  in result["error"]
-        assert not ev.is_set()
-
-    async def test_two_edge_reject(self):
+    async def test_two_edges_create_two_named_tools(self):
         node = PhaseNode(
             name  = "review",
-            edges = (
-                EdgeSpec("summarize", "approve"),
-                EdgeSpec("execute",   "reject"),
-            ),
+            edges = (EdgeSpec("summarize", "approve"), EdgeSpec("execute", "reject")),
         )
-        tool, _, ev, td = self._make_tool(node)
-        result = await tool(output={"issues": ["test failure"]}, next="reject")
+        tools, _, ev, td = self._make_tools(node)
+        assert len(tools) == 2
+        names = {t.__name__ for t in tools}
+        assert names == {"approve", "reject"}
+
+    async def test_reject_tool_fires(self):
+        node = PhaseNode(
+            name  = "review",
+            edges = (EdgeSpec("summarize", "approve"), EdgeSpec("execute", "reject")),
+        )
+        tools, _, ev, td = self._make_tools(node)
+        reject = _get_tool(tools, "reject")
+        result = await reject(output={"issues": ["test failure"]})
         assert result["ok"]     is True
         assert td["edge_label"] == "reject"
         assert ev.is_set()
@@ -288,11 +303,11 @@ class TestMakeCompletionTool:
             name  = "plan",
             edges = (EdgeSpec("execute", "approve", gate=EdgeGate(kind="plan_review")),),
         )
-        tool, bus, ev, td = self._make_tool(node, approval_svc=approval_svc)
-        result = await tool(output={"plan": "do stuff"}, next="approve")
+        tools, bus, ev, td = self._make_tools(node, approval_svc=approval_svc)
+        approve = _get_tool(tools, "approve")
+        result  = await approve(output={"plan": "do stuff"})
         assert result["ok"] is True
         assert ev.is_set()
-        # User instructions added to output
         assert bus.get("plan").get("_user_instructions") == "Looks good!"
 
     async def test_gated_edge_denied(self):
@@ -305,10 +320,11 @@ class TestMakeCompletionTool:
             name  = "plan",
             edges = (EdgeSpec("execute", "approve", gate=EdgeGate(kind="plan_review")),),
         )
-        tool, _, ev, _ = self._make_tool(node, approval_svc=approval_svc)
-        result = await tool(output={"plan": "draft"}, next="approve")
-        assert result.get("approved")  is False
-        assert "Not ready yet"         in result.get("feedback", "")
+        tools, _, ev, _ = self._make_tools(node, approval_svc=approval_svc)
+        approve = _get_tool(tools, "approve")
+        result  = await approve(output={"plan": "draft"})
+        assert result.get("approved") is False
+        assert "Not ready yet"        in result.get("feedback", "")
         assert not ev.is_set()
 
     async def test_headless_no_approval_svc(self):
@@ -317,8 +333,9 @@ class TestMakeCompletionTool:
             name  = "plan",
             edges = (EdgeSpec("execute", "approve", gate=EdgeGate(kind="plan_review")),),
         )
-        tool, _, ev, td = self._make_tool(node, approval_svc=None)
-        result = await tool(output={"plan": "draft"}, next="approve")
+        tools, _, ev, td = self._make_tools(node, approval_svc=None)
+        approve = _get_tool(tools, "approve")
+        result  = await approve(output={"plan": "draft"})
         assert result["ok"] is True
         assert ev.is_set()
         assert td["edge_label"] == "approve"

@@ -45,27 +45,20 @@ _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 _find_latest_session_for_cwd = find_latest_session_for_cwd
 
 
-def _reconstruct_workflow_context(wf: Any) -> Any:
-    """Rebuild a WorkflowContext from a kernel Workflow state entry (PRD-94)."""
-    from agenthicc.workflow.plugin import WorkflowContext, PhaseOutput  # noqa: PLC0415
-    from agenthicc.kernel.state import NodeStatus                       # noqa: PLC0415
+def _reconstruct_data_bus(wf: Any) -> Any:
+    """Rebuild a DataBus from a kernel Workflow state entry (PRD-94)."""
+    from agenthicc.workflow.plugin import DataBus  # noqa: PLC0415
+    from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
 
-    context = WorkflowContext(
-        intent=wf.intent_text,
-        run_id=wf.workflow_id,
-        workflow_name=wf.name,
-    )
+    bus = DataBus(intent=wf.intent_text, run_id=wf.workflow_id)
     for node_id, node in wf.nodes.items():
         if node.status == NodeStatus.complete and isinstance(node.result, dict):
             r = node.result
-            context.add_output(PhaseOutput(
-                phase_name=node_id,
-                role=r.get("role", ""),
-                full_text=r.get("full_text", ""),
-                structured=r.get("structured"),
-                approved=r.get("approved"),
-            ))
-    return context
+            bus.set(node_id, r)
+            edge_label = r.get("edge_label") or r.get("_edge_label")
+            if edge_label:
+                bus.record_edge(node_id, edge_label)
+    return bus
 
 
 # ── session construction ──────────────────────────────────────────────────────
@@ -543,7 +536,7 @@ class TUISession:
             wf_defn = self._ctx.workflow_registry.get(wf.name)
             if wf_defn is None:
                 continue
-            context = _reconstruct_workflow_context(wf)
+            context = _reconstruct_data_bus(wf)
             self._ctx.app_state.conversation.notification.set(
                 f"⟳ Resuming workflow '{wf.name}'…"
             )

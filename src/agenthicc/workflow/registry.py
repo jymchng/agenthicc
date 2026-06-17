@@ -1,19 +1,19 @@
-"""WorkflowRegistry — discover, store, and query workflow definitions (PRD-87)."""
+"""WorkflowRegistry — discover, store, and query WorkflowGraph definitions (PRD-101)."""
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 
-from agenthicc.workflow.plugin import WorkflowDefinition
+from agenthicc.workflow.plugin import WorkflowGraph
 
 log = logging.getLogger(__name__)
 
 
 class WorkflowRegistry:
     def __init__(self) -> None:
-        self._defs: dict[str, WorkflowDefinition] = {}
+        self._defs: dict[str, WorkflowGraph] = {}
 
-    def register(self, defn: WorkflowDefinition) -> None:
+    def register(self, defn: WorkflowGraph) -> None:
         existing = self._defs.get(defn.name)
         if existing is not None:
             if defn.source == "user" and existing.source == "builtin":
@@ -25,17 +25,16 @@ class WorkflowRegistry:
                 )
         self._defs[defn.name] = defn
 
-    def get(self, name: str) -> WorkflowDefinition | None:
+    def get(self, name: str) -> WorkflowGraph | None:
         return self._defs.get(name)
 
-    def all(self) -> list[WorkflowDefinition]:
+    def all(self) -> list[WorkflowGraph]:
         return list(self._defs.values())
 
     def names(self) -> list[str]:
         return list(self._defs.keys())
 
     def mode_default_map(self) -> dict[str, str]:
-        """Return {mode_name: workflow_name} for the first-registered binding per mode."""
         result: dict[str, str] = {}
         for defn in self._defs.values():
             for mode_name in defn.mode_bindings:
@@ -43,7 +42,6 @@ class WorkflowRegistry:
         return result
 
     def mode_available_map(self) -> dict[str, list[str]]:
-        """Return {mode_name: [workflow_name, …]} for all bindings per mode."""
         result: dict[str, list[str]] = {}
         for defn in self._defs.values():
             for mode_name in defn.mode_bindings:
@@ -55,7 +53,6 @@ def build_workflow_registry(
     project_dir: Path | None = None,
     user_dir: Path | None = None,
 ) -> WorkflowRegistry:
-    """Build the registry: builtin → user-global → project-local (Python only)."""
     if project_dir is None:
         project_dir = Path(".agenthicc")
     if user_dir is None:
@@ -73,9 +70,7 @@ def build_workflow_registry(
     return registry
 
 
-def _scan_workflow_dir(
-    directory: Path, source: str, registry: WorkflowRegistry,
-) -> None:
+def _scan_workflow_dir(directory: Path, source: str, registry: WorkflowRegistry) -> None:
     if not directory.exists():
         return
     from agenthicc.workflow.loader import load_python_workflows  # noqa: PLC0415

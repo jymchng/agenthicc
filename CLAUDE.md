@@ -304,3 +304,32 @@ drop-in replacements — swap `layers.py` without touching `MemoryRouter`.
 | `ScopeManager.can_spawn()` returns False unexpectedly | Agent already at `max_spawn_depth` | Check `get_depth(agent_id)` vs `scope.max_spawn_depth` |
 | `run_bash` timeout leaves zombie processes | `start_new_session=False` | The tool uses `start_new_session=True` and `os.killpg` — verify POSIX platform |
 | `WorkspaceView.resolve()` raises `PermissionError` on traversal | Path escapes workspace root | All fs tools catch this and return `{ok: False, error: "permission_denied:..."}` |
+
+## Engineering Discipline
+
+### No legacy code
+
+When implementing a PRD, **remove all code it supersedes**.  Do not keep the
+old implementation alongside the new one "for backward compatibility".  This
+project is not in production; there are no external consumers of internal APIs.
+
+Concretely:
+
+- If a PRD introduces `WorkflowGraph`, remove `WorkflowDefinition`.
+- If a PRD introduces `PhaseNode`, remove `PhaseSpec`.
+- If a PRD introduces `DataBus`, remove `WorkflowContext`.
+- If a PRD introduces `make_completion_tool`, remove `make_planner_tools` and
+  `make_executor_tools`.
+- If a PRD introduces a new runner path, remove the old runner path.
+- Update every test that references the removed types.
+
+Keeping both paths doubles the surface area, creates `isinstance` branches,
+forces `Any` type annotations, and guarantees the old path will rot unnoticed.
+
+**Checklist before marking a PRD complete:**
+
+1. Search for every symbol the PRD replaces and delete them.
+2. Remove all `# type: ignore[union-attr]` comments that exist only because of
+   legacy union types.
+3. Run `grep -rn "OldSymbol" src/` — zero results expected.
+4. All tests pass with the new types only.

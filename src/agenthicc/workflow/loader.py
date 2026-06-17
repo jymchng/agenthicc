@@ -1,7 +1,7 @@
-"""Workflow loader — Python-only plugin discovery (PRD-87).
+"""Workflow loader — Python-only plugin discovery (PRD-101).
 
-TOML support has been removed.  Builtin workflows are Python classes.
-User/project workflows must also be Python WorkflowPlugin subclasses.
+All workflows are WorkflowPlugin subclasses that return a WorkflowGraph from
+to_definition().  TOML support is not provided.
 """
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ import inspect
 import logging
 from pathlib import Path
 
-from agenthicc.workflow.plugin import WorkflowDefinition, WorkflowPlugin
+from agenthicc.workflow.plugin import WorkflowGraph, WorkflowPlugin
 
 log = logging.getLogger(__name__)
 
 
-def load_builtin_workflows() -> list[WorkflowDefinition]:
-    """Return WorkflowDefinition objects for all builtin workflows."""
+def load_builtin_workflows() -> list[WorkflowGraph]:
+    """Return WorkflowGraph objects for all built-in workflows."""
     from agenthicc.workflow.builtins import (  # noqa: PLC0415
         Architect, CodePlan, PlanOnly, ReviewOnly, Supervised,
     )
@@ -26,7 +26,7 @@ def load_builtin_workflows() -> list[WorkflowDefinition]:
     ]
 
 
-def load_python_workflows(path: Path, source: str = "user") -> list[WorkflowDefinition]:
+def load_python_workflows(path: Path, source: str = "user") -> list[WorkflowGraph]:
     """Import a Python plugin file and return all WorkflowPlugin definitions."""
     module_name = f"_agenthicc_workflow_{path.stem}"
     try:
@@ -37,7 +37,7 @@ def load_python_workflows(path: Path, source: str = "user") -> list[WorkflowDefi
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)  # type: ignore[union-attr]
 
-        results: list[WorkflowDefinition] = []
+        results: list[WorkflowGraph] = []
         for _attr_name, obj in inspect.getmembers(module, inspect.isclass):
             if (
                 obj is not WorkflowPlugin
