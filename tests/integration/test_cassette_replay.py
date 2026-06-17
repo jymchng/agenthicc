@@ -60,6 +60,7 @@ def _intent_from_meta(meta_path: Path, fallback: str = "enhance this repo") -> s
 
 # ── tests ─────────────────────────────────────────────────────────────────────
 
+@pytest.mark.cassette
 @pytest.mark.skipif(
     not PLAN_MODE_CASSETTE.exists(),
     reason=(
@@ -68,6 +69,7 @@ def _intent_from_meta(meta_path: Path, fallback: str = "enhance this repo") -> s
         "Then re-run: uv run pytest tests/integration/test_cassette_replay.py"
     ),
 )
+@pytest.mark.timeout(600)
 async def test_plan_mode_end_to_end_orchestration() -> None:
     """Verify that the code_plan workflow still routes through all four phases.
 
@@ -112,24 +114,43 @@ async def test_plan_mode_end_to_end_orchestration() -> None:
 
     # ── transport-call sanity ─────────────────────────────────────────────────
     assert result.transport_calls == len(cassette.entries), (
-        f"Transport call count mismatch: {result.transport_calls} calls made, "
-        f"{len(cassette.entries)} cassette entries.  "
-        "The orchestration may be doing extra or fewer LLM calls than when recorded."
+        f"Transport call count mismatch: made {result.transport_calls} calls, "
+        f"cassette has {len(cassette.entries)} entries.  "
+        "The orchestration is doing a different number of LLM calls than when recorded."
+    )
+
+    # Summarise what happened (always printed, useful on CI)
+    print(
+        f"\n  phases={result.phases}"
+        f"\n  tools_called={result.tools_called}"
+        f"\n  approvals_consumed={result.approvals_consumed}"
+        f"\n  transport_calls={result.transport_calls}"
     )
 
 
+@pytest.mark.cassette
 @pytest.mark.skipif(
     not PLAN_MODE_CASSETTE.exists(),
     reason="Plan-mode cassette not found — see test_plan_mode_end_to_end_orchestration.",
 )
+@pytest.mark.timeout(30)
 async def test_plan_mode_cassette_integrity() -> None:
     """Verify the cassette file itself is well-formed before running the main test."""
     cassette = SessionCassette.from_path(cassette_path=PLAN_MODE_CASSETTE)
 
     assert len(cassette.entries) > 0, "cassette.jsonl is empty"
-    assert all(e.response_stop_reason in ("end_turn", "tool_use") for e in cassette.entries), (
-        "Some entries have unexpected stop_reason"
+
+    # All four stop reasons defined by the Transport protocol are valid.
+    valid_stop_reasons = {"end_turn", "tool_use", "max_tokens", "stop_sequence"}
+    bad = [
+        f"  index={e.index}  stop_reason={e.response_stop_reason!r}"
+        for e in cassette.entries
+        if e.response_stop_reason not in valid_stop_reasons
+    ]
+    assert not bad, (
+        f"{len(bad)} entries have unrecognised stop_reason:\n" + "\n".join(bad)
     )
+
     # The first response should be a tool use (LLM calls request_plan_approval or similar)
     first = cassette.entries[0]
     assert first.response_stop_reason == "tool_use", (

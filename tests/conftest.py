@@ -4,9 +4,61 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+# ── cassette mark: skipped unless the file is explicitly targeted ─────────────
+
+_CASSETTE_FILE = Path(__file__).parent / "integration" / "test_cassette_replay.py"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "cassette: slow cassette-replay regression tests. Skipped by default; "
+        "run with: pytest tests/integration/test_cassette_replay.py  or  --run-cassette",
+    )
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-cassette",
+        action="store_true",
+        default=False,
+        help="Include cassette-replay regression tests (skipped by default).",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config,
+    items: list[pytest.Item],
+) -> None:
+    if config.getoption("--run-cassette", default=False):
+        return
+
+    # Run if the cassette file (or a parent dir containing it) was given explicitly.
+    explicitly_targeted = any(
+        _CASSETTE_FILE.resolve() == Path(arg).resolve()
+        or (Path(arg).is_dir() and _CASSETTE_FILE.is_relative_to(Path(arg).resolve()))
+        for arg in config.args
+        if Path(arg).exists()
+    )
+    if explicitly_targeted:
+        return
+
+    skip = pytest.mark.skip(
+        reason=(
+            "cassette-replay tests are skipped by default (slow). "
+            "Run them with:  pytest tests/integration/test_cassette_replay.py  "
+            "or add --run-cassette to any pytest invocation."
+        )
+    )
+    for item in items:
+        if item.get_closest_marker("cassette"):
+            item.add_marker(skip)
 
 from agenthicc.kernel import (
     AppState,
