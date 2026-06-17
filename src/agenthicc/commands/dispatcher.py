@@ -39,6 +39,7 @@ class CommandDispatcher:
             set_pending_skill=ctx.set_pending_skill,
             set_pending_menu=ctx.set_pending_menu,
             close_overlay=ctx.close_overlay,
+            set_pending_replay=ctx.set_pending_replay,
         )
 
         # Menu factory always takes precedence; factory receives args via ctx.args.

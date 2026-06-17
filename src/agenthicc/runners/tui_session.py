@@ -43,7 +43,7 @@ def _reset_terminal_on_exit() -> None:
 
 from agenthicc.tui.runtime.session_log import (   # noqa: E402
     create_session_id, register_session, touch_session,
-    find_latest_session_for_cwd, get_session_log_path, SessionEventLog,
+    find_latest_session_for_cwd, SessionEventLog,
 )
 from agenthicc.runners.agent_turn import _run_agent_turn         # noqa: E402
 from agenthicc.runners.session_context import SessionContext      # noqa: E402
@@ -53,29 +53,6 @@ _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 
 # Module-level alias so tests that monkeypatch this name on the module work.
 _find_latest_session_for_cwd = find_latest_session_for_cwd
-
-
-def _reconstruct_workflow_context(wf: Any) -> Any:
-    """Rebuild a WorkflowContext from a kernel Workflow state entry (PRD-94)."""
-    from agenthicc.workflows.plugin import WorkflowContext, PhaseOutput  # noqa: PLC0415
-    from agenthicc.kernel.state import NodeStatus                       # noqa: PLC0415
-
-    context = WorkflowContext(
-        intent=wf.intent_text,
-        run_id=wf.workflow_id,
-        workflow_name=wf.name,
-    )
-    for node_id, node in wf.nodes.items():
-        if node.status == NodeStatus.complete and isinstance(node.result, dict):
-            r = node.result
-            context.add_output(PhaseOutput(
-                phase_name=node_id,
-                role=r.get("role", ""),
-                full_text=r.get("full_text", ""),
-                structured=r.get("structured"),
-                approved=r.get("approved"),
-            ))
-    return context
 
 
 # ── session construction ──────────────────────────────────────────────────────
@@ -332,6 +309,7 @@ class TUISession:
         self._msg_queue:          list[str]           = []
         self._agent_task:         asyncio.Task | None = None
         self._turn_count:         int                 = 0
+        self._pending_replay_id:  str | None          = None
 
         from agenthicc.commands import CommandDispatcher          # noqa: PLC0415
         from agenthicc.workflows.config import WorkflowConfig      # noqa: PLC0415
@@ -356,6 +334,9 @@ class TUISession:
     def _set_pending_skill(self, body: str) -> None:
         self._pending_skill_body.clear()
         self._pending_skill_body.append(body)
+
+    def _set_pending_replay(self, session_id: str) -> None:
+        self._pending_replay_id = session_id
 
     def _wire_approval_overlay(self) -> None:
         workspace    = self._workspace
@@ -397,6 +378,7 @@ class TUISession:
             set_pending_skill=self._set_pending_skill,
             set_pending_menu=self._workspace.overlays.show,
             close_overlay=self._workspace.overlays.hide,
+            set_pending_replay=self._set_pending_replay,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
@@ -405,6 +387,13 @@ class TUISession:
         if not msg.startswith("/"):
             return False
         if self.dispatch_slash(msg):
+            # Check if a replay was requested by the command handler.
+            if self._pending_replay_id:
+                replay_id = self._pending_replay_id
+                self._pending_replay_id = None
+                self._agent_task = asyncio.create_task(
+                    self._run_replay(replay_id), name="replay"
+                )
             return True
         cmd_name = msg.split()[0]
         if self._ctx.cmd_registry.get(cmd_name) is not None:
@@ -543,6 +532,35 @@ class TUISession:
             self._agent_task.cancel()
 
     # ── workflow resume (PRD-94) ──────────────────────────────────────────────
+
+    async def _run_replay(self, session_id: str) -> None:
+        """Replay a historical session's conversation through the render pipeline."""
+        from agenthicc.tui.input.unified_session import InputMode     # noqa: PLC0415
+        from agenthicc.tui.runtime.replay import ConversationReplayer  # noqa: PLC0415
+        ctx = self._ctx
+
+        # Enter Replay mode — blocks all tool capabilities during replay.
+        prior_mode = ctx.app_state.active_mode()
+        ctx.mode_manager.set_by_name("Replay")
+        self._input_session.set_mode(InputMode.STREAMING)
+
+        try:
+            replayer = ConversationReplayer(
+                session_id=session_id,
+                conv_store=ctx.app_state.conversation,
+                mode_manager=ctx.mode_manager,
+            )
+            await replayer.run()
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            ctx.app_state.conversation.notification.set("⏮ Replay cancelled.")
+            raise
+        except Exception as exc:
+            ctx.app_state.conversation.notification.set(f"⏮ Replay error: {exc}")
+        finally:
+            ctx.app_state.active_mode.set(prior_mode)
+            self._input_session.set_mode(InputMode.IDLE)
+            self._agent_task = None
+            self.advance()
 
     def _notify_incomplete_workflow(self) -> None:
         """If the kernel state has an unfinished workflow, notify the user.

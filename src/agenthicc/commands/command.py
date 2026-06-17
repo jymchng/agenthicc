@@ -38,6 +38,7 @@ class CommandContext:
     set_pending_skill: Any = None               # callable(body: str) → None
     set_pending_menu: Any = None                # callable(Overlay) → None  (workspace.overlays.show)
     close_overlay: Any = None                   # callable() → None        (workspace.overlays.hide)
+    set_pending_replay: Any = None              # callable(session_id: str) → None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

@@ -140,7 +140,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             run_id=run_id,
             workflow_name="code_plan",
             intent=intent,
-            current_phase="plan",
+            current_phase="plan".title(),
             total_phases=4,
         )
         self._cfg.app_state.workflow_run.set(wf_run)

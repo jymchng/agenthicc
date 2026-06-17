@@ -561,7 +561,7 @@ def load_config(
 # ── LLM transport builder ─────────────────────────────────────────────────
 
 
-def build_llm_config(execution: ExecutionSettings) -> "Any":
+def build_llm_config(execution: ExecutionSettings) -> "LLMConfig":
     """Build a :class:`~lauren_ai._config.LLMConfig` from agenthicc execution settings.
 
     Supports all providers that lauren-ai knows about:

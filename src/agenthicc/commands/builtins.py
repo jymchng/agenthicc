@@ -10,6 +10,36 @@ __all__ = ["BUILTIN_COMMANDS", "build_builtin_registry", "_make_skill_handler"]
 # ── individual handlers ───────────────────────────────────────────────────────
 
 
+def _cmd_replay(ctx: CommandContext) -> bool:
+    """Replay a previous session's conversation in the scroll buffer."""
+    from agenthicc.tui.runtime.session_log import (  # noqa: PLC0415
+        get_session_log_path, find_latest_session_for_cwd,
+    )
+    session_id: str = ctx.args.strip()
+    if not session_id:
+        # No ID provided — use the most recent session for the current directory,
+        # excluding the current session itself.
+        session_id = find_latest_session_for_cwd() or ""
+        if not session_id or session_id == ctx.session_id:
+            ctx.console.print(
+                "[red]Usage:[/red] /replay [dim]<session-id>[/dim]  "
+                "— no previous session found for this directory."
+            )
+            return True
+
+    path = get_session_log_path(session_id)
+    if not path.exists():
+        ctx.console.print(
+            f"[red]Session [bold]{session_id[:16]}[/bold] not found.[/red]\n"
+            "[dim]Check ~/.agenthicc/sessions/ for available session IDs.[/dim]"
+        )
+        return True
+
+    if ctx.set_pending_replay is not None:
+        ctx.set_pending_replay(session_id)
+    return True
+
+
 def _cmd_cancel(ctx: CommandContext) -> bool:
     ctx.console.print("[dim]No active intent to cancel.[/dim]")
     return True
@@ -231,6 +261,13 @@ def _make_skill_handler(slug: str, skill: object) -> object:
 # ── built-in command list ─────────────────────────────────────────────────────
 
 BUILTIN_COMMANDS: list[Command] = [
+    Command(
+        name="/replay",
+        description="Replay a previous session's conversation in the scroll buffer",
+        argument_hint="[session-id]",
+        group="Built-in",
+        handler=_cmd_replay,
+    ),
     Command(
         name="/cancel",
         description="Cancel the currently running intent",

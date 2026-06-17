@@ -114,6 +114,23 @@ def build_default_registry(
             blocked_capabilities=frozenset(),
             approval_required=_RESTRICTED,
         ))
+    if not reg.get("Replay"):
+        from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
+        _all_caps = frozenset({
+            ToolCapability.WRITE, ToolCapability.GIT_WRITE,
+            ToolCapability.EXECUTE, ToolCapability.NETWORK,
+            ToolCapability.READ, ToolCapability.SEARCH,
+        })
+        reg.register(RuntimeMode(
+            name="Replay",
+            badge="⏮",
+            description=(
+                "Replaying a previous session. "
+                "All tools are blocked until replay completes."
+            ),
+            blocked_capabilities=_all_caps,
+            approval_required=frozenset(),
+        ))
     return reg
 
 

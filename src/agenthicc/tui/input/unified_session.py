@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Protocol
 
 from agenthicc.tui.cbreak_reader import Key, raw_mode, read_key
 from agenthicc.tui.input.buffer import InputBuffer
@@ -26,8 +26,21 @@ from agenthicc.tui.input.capabilities import (
     IDLE_CAPABILITIES, STREAMING_CAPABILITIES, _EXIT,
 )
 
+if TYPE_CHECKING:
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.trigger import TriggerManager, TriggerResult
+    from agenthicc.tui.workspace.appender import ScrollBufferAppender
+    from agenthicc.tui.workspace.overlay import OverlayHost
+
 # Re-export _EXIT for tests/external callers that import it from here.
 __all__ = ["UnifiedInputSession", "InputMode", "_EXIT"]
+
+
+class Capability(Protocol):
+    """Structural type for a single input capability handler."""
+
+    async def handle(self, key: Key, ch: str, session: UnifiedInputSession) -> object: ...
 
 
 class InputMode(Enum):
@@ -44,30 +57,30 @@ class UnifiedInputSession:
 
     def __init__(
         self,
-        app_state: Any,
+        app_state: AppState,
         command_bus: CommandBus,
-        trigger_registry: Any | None = None,
+        trigger_registry: TriggerManager | None = None,
         mode_manager: ModeManager | None = None,
-        overlay_host: Any | None = None,
+        overlay_host: OverlayHost | None = None,
         cwd: Path | None = None,
-        cfg: Any = None,
+        cfg: AgenthiccConfig | None = None,
         history: list[str] | None = None,
     ) -> None:
-        self._state    = app_state
-        self._bus      = command_bus
-        self._registry = trigger_registry
-        self._modes    = mode_manager or ModeManager()
-        self._overlay  = overlay_host
-        self._cwd      = cwd or Path(".")
-        self._cfg      = cfg
+        self._state:    AppState               = app_state
+        self._bus:      CommandBus             = command_bus
+        self._registry: TriggerManager | None  = trigger_registry
+        self._modes:    ModeManager            = mode_manager or ModeManager()
+        self._overlay:  OverlayHost | None     = overlay_host
+        self._cwd:      Path                   = cwd or Path(".")
+        self._cfg:      AgenthiccConfig | None = cfg
 
-        self._mode         = InputMode.IDLE
-        self._capabilities = IDLE_CAPABILITIES   # switched by set_mode()
-        self._buf          = InputBuffer()
-        self._paste        = PasteState()
-        self._hist         = HistoryNavigator(history or [])
-        self._ctrl_c_count = 0
-        self._mode_notification: Any = None
+        self._mode:         InputMode        = InputMode.IDLE
+        self._capabilities: list[Capability] = IDLE_CAPABILITIES   # switched by set_mode()
+        self._buf:          InputBuffer      = InputBuffer()
+        self._paste:        PasteState       = PasteState()
+        self._hist:         HistoryNavigator = HistoryNavigator(history or [])
+        self._ctrl_c_count: int              = 0
+        self._mode_notification: None        = None
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -104,7 +117,7 @@ class UnifiedInputSession:
 
     # ── capability pipeline dispatch ──────────────────────────────────────────
 
-    async def _dispatch(self, key: Key, ch: str) -> object:
+    async def _dispatch(self, key: Key, ch: str) -> object | None:
         """Run the active capability list until one consumes the key."""
         for cap in self._capabilities:
             result = await cap.handle(key, ch, self)
@@ -131,7 +144,7 @@ class UnifiedInputSession:
         if self._paste.condensed:
             self._paste.expand()
 
-    def _ctrl_c_sequence(self) -> object:
+    def _ctrl_c_sequence(self) -> object | None:
         self._ctrl_c_count += 1
         if self._ctrl_c_count == 1:
             self._buf.clear()
@@ -156,11 +169,10 @@ class UnifiedInputSession:
         self._ctrl_c_count = 0
         self._push()
 
-    async def _submit(self, text: str) -> object:
+    async def _submit(self, text: str) -> None:
         """Prepare the input state and dispatch SendMessageCommand."""
         self._prepare_submission()
         await self._bus.dispatch_async(SendMessageCommand(text=text))
-        return None
 
     def _find_trigger_tail(self) -> tuple[str, list[str], str] | None:
         buf = self._buf.buf
@@ -187,7 +199,7 @@ class UnifiedInputSession:
             return
         from agenthicc.tui.workspace.overlays.trigger_picker import TriggerPickerOverlay  # noqa: PLC0415
 
-        def on_complete(result: Any) -> None:
+        def on_complete(result: TriggerResult | None) -> None:
             from agenthicc.tui.trigger import TriggerResult  # noqa: PLC0415
             # Push to InputState BEFORE hiding the overlay.  hide() triggers
             # _redraw() synchronously; if InputState is still empty at that
@@ -217,7 +229,7 @@ class UnifiedInputSession:
         )
         self._overlay.show(overlay)
 
-    def print_idle_header(self, appender: Any) -> None:
+    def print_idle_header(self, appender: ScrollBufferAppender | None) -> None:
         """Print the session info + separator before each new prompt."""
         if appender:
             appender.print_idle_header()
