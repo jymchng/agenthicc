@@ -84,6 +84,11 @@ class PhaseSpec:
     When require_explicit_completion=True this also caps the number of continuation
     turns within the phase (default 10 when -1)."""
 
+    require_plan_finalization: bool = False
+    """When True, _run_phase gates on plan_event after _run_agent_turn returns.
+    The phase succeeds only if finalize_plan() was called during the turn.
+    Any other end-of-turn returns approved=False.  Set on the plan phase only."""
+
     require_explicit_completion: bool = False
     """When True, _run_phase loops until the phase's completion tool is called
     (mark_execute_complete for execute phases).  Each loop iteration runs a full

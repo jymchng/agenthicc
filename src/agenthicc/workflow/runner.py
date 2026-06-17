@@ -417,7 +417,8 @@ class WorkflowRunner:
             if spec.mode_override and self._mode_manager is not None:
                 self._cfg.app_state.active_mode.set(_original_mode)
 
-        if plan_event is not None:
+        if spec.require_plan_finalization and plan_event is not None:
+            # Plan phase: finalize_plan() must have been called.
             if plan_event.is_set() and "plan" in plan_data:
                 full_text = plan_data["plan"]
             else:
@@ -429,21 +430,21 @@ class WorkflowRunner:
                     agent_id=uuid.uuid4().hex[:8],
                     duration_s=time.monotonic() - t0,
                 )
-        elif execute_event is not None and execute_event.is_set():
-            # mark_execute_complete was called — use its summary as phase output.
-            full_text = execute_data.get("summary", "".join(output_buf))
-        elif execute_event is not None and not execute_event.is_set():
-            # Agent turn ended without calling mark_execute_complete — treat as
-            # incomplete so on_reject="execute" retries rather than advancing.
-            return PhaseOutput(
-                phase_name=spec.name,
-                role=spec.agent_type,
-                full_text="".join(output_buf),
-                approved=False,
-                agent_id=uuid.uuid4().hex[:8],
-                duration_s=time.monotonic() - t0,
-            )
+        elif spec.require_explicit_completion and execute_event is not None:
+            # Execute phase: mark_execute_complete() must have been called.
+            if execute_event.is_set():
+                full_text = execute_data.get("summary", "".join(output_buf))
+            else:
+                return PhaseOutput(
+                    phase_name=spec.name,
+                    role=spec.agent_type,
+                    full_text="".join(output_buf),
+                    approved=False,
+                    agent_id=uuid.uuid4().hex[:8],
+                    duration_s=time.monotonic() - t0,
+                )
         else:
+            # All other phases (review, summarize, …): use raw output_buf.
             full_text = "".join(output_buf)
 
         structured = _parse_output_schema(full_text, spec.output_schema)
