@@ -327,6 +327,14 @@ class AgentTurnRunner:
         ctx           = self._ctx
         current_turn: list[str] = []
 
+        # Heal any dangling tool_calls left by an interrupted previous turn
+        # (e.g. a plan-approval that was cancelled while awaiting the user's
+        # second review).  ensure_valid() is unconditional — unlike messages()
+        # it does not wait for a subsequent user message to confirm the turn
+        # is complete, making it safe to call right before run_stream().
+        if ctx.session_memory is not None:
+            ctx.session_memory.ensure_valid()
+
         try:
             stream = await active_runner.run_stream(
                 agent_instance, agent_text,

@@ -153,7 +153,7 @@ def make_executor_tools(
 
         Do NOT call this if you still have outstanding implementation tasks.
         The system will automatically start the review phase after you call
-        this tool.
+        this tool.  Do NOT call it more than once.
 
         Args:
             summary: One or two sentences describing what was implemented.
@@ -170,3 +170,67 @@ def make_executor_tools(
         }
 
     return [mark_execute_complete]
+
+
+def make_reviewer_tools(
+    review_event: asyncio.Event,
+    review_data:  dict,
+) -> list:
+    """Return [approve_review, reject_review] as @tool()-decorated callables.
+
+    Replaces XML-tag output parsing for the review phase.  The agent calls
+    one of these tools to signal its decision; the transition is unambiguous
+    regardless of how the agent phrases its reasoning.
+
+      review_event — set by either tool; checked by _run_phase after the turn.
+      review_data  — {"action": "approve"|"reject", "summary": str, "reason": str}.
+    """
+    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+
+    @_tool()
+    async def approve_review(summary: str) -> dict:
+        """Signal that the implementation passes review and is ready to summarize.
+
+        Call this when all tests pass and the code is correct.  The workflow
+        will move to the summary phase automatically.
+
+        Do NOT call this if you found any issues — call reject_review instead.
+
+        Args:
+            summary: One or two sentences describing what was verified.
+        """
+        review_data["action"]  = "approve"
+        review_data["summary"] = summary
+        review_event.set()
+        return {
+            "ok":     True,
+            "message": (
+                "Review approved.  Transitioning to the summary phase.  "
+                "Write one sentence confirming the approval and stop."
+            ),
+        }
+
+    @_tool()
+    async def reject_review(reason: str) -> dict:
+        """Signal that the implementation has issues that must be fixed.
+
+        Call this when tests fail or the code is incorrect.  The workflow
+        will return to the execution phase automatically.
+
+        Do NOT call this if the implementation is correct — call approve_review instead.
+
+        Args:
+            reason: One or two sentences describing exactly what needs to be fixed.
+        """
+        review_data["action"] = "reject"
+        review_data["reason"] = reason
+        review_event.set()
+        return {
+            "ok":     True,
+            "message": (
+                "Review rejected.  Transitioning back to the execution phase.  "
+                "Write one sentence summarising the issue and stop."
+            ),
+        }
+
+    return [approve_review, reject_review]

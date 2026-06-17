@@ -328,18 +328,21 @@ class WorkflowRunner:
         plan_data:     dict                 = {}
         execute_event: asyncio.Event | None = None
         execute_data:  dict                 = {}
+        review_event:  asyncio.Event | None = None
+        review_data:   dict                 = {}
         if self._cfg.approval_svc is not None:
             from agenthicc.workflow.phase_tools import (   # noqa: PLC0415
-                make_planner_tools, make_executor_tools,
+                make_planner_tools, make_executor_tools, make_reviewer_tools,
             )
             plan_event = asyncio.Event()
             filtered   = list(filtered) + make_planner_tools(
                 self._cfg.approval_svc, plan_event, plan_data,
             )
-            # Inject mark_execute_complete into every phase so it's always
-            # available to the execute phase (the agent only calls it there).
             execute_event = asyncio.Event()
             filtered = filtered + make_executor_tools(execute_event, execute_data)
+            if spec.require_explicit_review:
+                review_event = asyncio.Event()
+                filtered = filtered + make_reviewer_tools(review_event, review_data)
 
         _original_mode = self._cfg.app_state.active_mode()
         if spec.mode_override and self._mode_manager is not None:
@@ -426,6 +429,39 @@ class WorkflowRunner:
                     role=spec.agent_type,
                     full_text="".join(output_buf),
                     approved=False,
+                    agent_id=uuid.uuid4().hex[:8],
+                    duration_s=time.monotonic() - t0,
+                )
+        elif spec.require_explicit_review and review_event is not None:
+            # Review phase: agent must call approve_review() or reject_review().
+            if review_event.is_set():
+                action = review_data.get("action", "reject")
+                if action == "approve":
+                    return PhaseOutput(
+                        phase_name=spec.name,
+                        role=spec.agent_type,
+                        full_text=review_data.get("summary", "".join(output_buf)),
+                        approved=True,
+                        agent_id=uuid.uuid4().hex[:8],
+                        duration_s=time.monotonic() - t0,
+                    )
+                else:
+                    return PhaseOutput(
+                        phase_name=spec.name,
+                        role=spec.agent_type,
+                        full_text=review_data.get("reason", "".join(output_buf)),
+                        approved=False,
+                        agent_id=uuid.uuid4().hex[:8],
+                        duration_s=time.monotonic() - t0,
+                    )
+            else:
+                # Agent didn't call either review tool — retry the review phase.
+                return PhaseOutput(
+                    phase_name=spec.name,
+                    role=spec.agent_type,
+                    full_text="".join(output_buf),
+                    approved=False,
+                    metadata={"__next_phase__": spec.name},
                     agent_id=uuid.uuid4().hex[:8],
                     duration_s=time.monotonic() - t0,
                 )

@@ -73,15 +73,17 @@ class CodePlan(WorkflowPlugin):
             name="review",
             agent_type="auto",
             max_turns=8,
-            output_schema="review_result",
             on_reject="execute",
-            max_iterations=-1,      # global cap (len(phases)+1) is the backstop
+            max_iterations=3,           # at most 3 rejection cycles before failing
             next="summarize",
-            mode_override=None,     # stays in Plan mode → read-only review
+            require_explicit_review=True,
+            mode_override=None,         # stays in Plan mode → read-only review
             system_prompt_override=(
                 "You are in the REVIEW phase. Inspect the changes you just made "
-                "and run the tests. End with <review>approved</review> or "
-                "<review>rejected: reason</review>."
+                "and run the tests. "
+                "Call approve_review(summary) if all tests pass and the code is correct. "
+                "Call reject_review(reason) if there are issues that need fixing. "
+                "You MUST call one of these two tools — do not output any other signal."
             ),
         ),
         PhaseSpec(

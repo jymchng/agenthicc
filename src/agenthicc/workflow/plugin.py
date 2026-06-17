@@ -92,6 +92,12 @@ class PhaseSpec:
     If the loop exhausts max_iterations continuations without the event being set,
     the phase returns approved=False."""
 
+    require_explicit_review: bool = False
+    """When True, the agent must call approve_review() or reject_review() instead
+    of outputting an XML <review> tag.  Eliminates brittle text parsing where
+    phrases like 'The code is approved' were misclassified as rejection because
+    the content did not start with the literal word 'approved'."""
+
     parallel_with: tuple[str, ...] = ()
     """Names of sibling phases to run concurrently with this one via asyncio.gather."""
 
