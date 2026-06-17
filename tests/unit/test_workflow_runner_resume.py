@@ -5,14 +5,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agenthicc.workflow.config import WorkflowConfig
-from agenthicc.workflow.plugin import (
+from agenthicc.workflows.config import WorkflowConfig
+from agenthicc.workflows.plugin import (
     PhaseOutput,
     PhaseSpec,
     WorkflowContext,
     WorkflowDefinition,
 )
-from agenthicc.workflow.runner import WorkflowRunner
+from agenthicc.workflows.runner import WorkflowRunner
 
 pytestmark = pytest.mark.unit
 

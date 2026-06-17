@@ -4,7 +4,7 @@ import asyncio
 import time
 import pytest
 from agenthicc.kernel import Event, EventProcessor, NodeStatus, SecurityPolicy, SystemSettings, AppState
-from agenthicc.workflow.executor import DAGExecutor
+from agenthicc.workflows.executor import DAGExecutor
 
 pytestmark = pytest.mark.integration
 

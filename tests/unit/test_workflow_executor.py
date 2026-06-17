@@ -17,7 +17,7 @@ from agenthicc.kernel import (
     Workflow,
     WorkflowNode,
 )
-from agenthicc.workflow.executor import DAGExecutor
+from agenthicc.workflows.executor import DAGExecutor
 
 pytestmark = pytest.mark.unit
 
@@ -315,7 +315,7 @@ class TestDAGExecutor:
         # Workflow status is checked; nodes don't affect workflow status directly
         # The executor checks workflow.status in _TERMINAL_WORKFLOW
 
-        from agenthicc.workflow.executor import _TERMINAL_WORKFLOW
+        from agenthicc.workflows.executor import _TERMINAL_WORKFLOW
         assert NodeStatus.complete in _TERMINAL_WORKFLOW
 
     async def test_skip_doomed_nodes(self, processor_with_workflow):

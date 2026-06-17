@@ -13,7 +13,7 @@ from typing import Awaitable, Callable
 
 from agenthicc.kernel import Event, EventProcessor, NodeStatus, Workflow, WorkflowNode
 
-from .dag import find_ready_nodes
+from agenthicc.workflows.dag import find_ready_nodes
 
 __all__ = ["DAGExecutor", "NodeRunner"]
 

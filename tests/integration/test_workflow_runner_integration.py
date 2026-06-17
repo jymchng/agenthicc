@@ -8,7 +8,7 @@ import pytest
 
 from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
 from agenthicc.tui.conversation_store import AppState as TUIAppState
-from agenthicc.workflow.plugin import (
+from agenthicc.workflows.plugin import (
     PhaseOutput, PhaseRole, PhaseSpec, WorkflowDefinition,
 )
 
@@ -43,8 +43,8 @@ def _make_workflow(*specs: PhaseSpec) -> WorkflowDefinition:
 
 
 def _make_runner(wf, app_state, processor):
-    from agenthicc.workflow.runner import WorkflowRunner
-    from agenthicc.workflow.config import WorkflowConfig
+    from agenthicc.workflows.runner import WorkflowRunner
+    from agenthicc.workflows.config import WorkflowConfig
     agents_registry = MagicMock()
     agent_runner = MagicMock()
     agent_runner._transport = MagicMock()
@@ -161,7 +161,7 @@ async def test_per_phase_max_iterations_stops_loop(app_state, processor):
 
 async def test_opt_in_global_cap_stops_infinite_loop(app_state, processor):
     """max_total_phase_runs on WorkflowDefinition provides an opt-in hard ceiling."""
-    from agenthicc.workflow.plugin import WorkflowDefinition
+    from agenthicc.workflows.plugin import WorkflowDefinition
     call_count: dict[str, int] = {}
 
     wf = WorkflowDefinition(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import pytest
 from agenthicc.kernel import AppState, Intent, IntentStatus, SecurityPolicy, SystemSettings
-from agenthicc.workflow.intent import (
+from agenthicc.workflows.intent import (
     IntentParser, IntentValidator, LlmPlanner, ParsedIntent, StaticPlanner, parse_task_json,
 )
 pytestmark = pytest.mark.unit

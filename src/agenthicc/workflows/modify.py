@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from agenthicc.kernel import Event, EventProcessor, NodeStatus, WorkflowNode
 
-from .dag import detect_cycle
+from agenthicc.workflows.dag import detect_cycle
 
 __all__ = ["ModifyResult", "WorkflowModifier"]
 

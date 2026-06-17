@@ -2,6 +2,12 @@
 from __future__ import annotations
 
 from agenthicc.workflows.base import BaseWorkflowRunner
+from agenthicc.workflows.executor import DAGExecutor, NodeRunner
+from agenthicc.workflows.intent import (
+    IntentParser, IntentPlanner, IntentValidator,
+    LlmPlanner, NodeSpec, ParsedIntent, StaticPlanner, ValidationResult,
+)
+from agenthicc.workflows.modify import ModifyResult, WorkflowModifier
 from agenthicc.workflows.plugin import (
     PhaseRunRecord,
     PhaseRole,
@@ -21,7 +27,14 @@ from agenthicc.workflows.code_plan import CodePlanRunner, CodePlanState, CodePla
 __all__ = [
     # Base
     "BaseWorkflowRunner",
-    # Legacy types (backward compat)
+    # DAG executor (formerly workflow.executor)
+    "DAGExecutor", "NodeRunner",
+    # Intent parsing (formerly workflow.intent)
+    "IntentParser", "IntentPlanner", "IntentValidator",
+    "LlmPlanner", "NodeSpec", "ParsedIntent", "StaticPlanner", "ValidationResult",
+    # Workflow modifier (formerly workflow.modify)
+    "ModifyResult", "WorkflowModifier",
+    # Legacy types
     "PhaseRole", "PhaseSpec", "WorkflowContext", "WorkflowDefinition",
     "WorkflowPlugin", "WorkflowRun", "PhaseRunRecord", "_parse_output_schema",
     # Infrastructure

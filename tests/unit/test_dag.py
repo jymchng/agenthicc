@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agenthicc.kernel import NodeStatus, Workflow, WorkflowNode
-from agenthicc.workflow.dag import CycleError, detect_cycle, find_ready_nodes, topological_sort
+from agenthicc.workflows.dag import CycleError, detect_cycle, find_ready_nodes, topological_sort
 
 pytestmark = pytest.mark.unit
 

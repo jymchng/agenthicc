@@ -16,8 +16,8 @@ from lauren_ai._transport._mock import MockTransport
 from agenthicc.agents.registry import build_agents_registry
 from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
 from agenthicc.tui.conversation_store import AppState as TUIAppState
-from agenthicc.workflow.plugin import PhaseRole, PhaseSpec, WorkflowDefinition
-from agenthicc.workflow.runner import WorkflowRunner
+from agenthicc.workflows.plugin import PhaseRole, PhaseSpec, WorkflowDefinition
+from agenthicc.workflows.runner import WorkflowRunner
 
 pytestmark = pytest.mark.e2e
 
@@ -60,7 +60,7 @@ async def processor(tmp_path):
 
 def _make_wf_runner(wf, app_state, processor, mock_transport, agents_registry=None):
     from unittest.mock import MagicMock
-    from agenthicc.workflow.config import WorkflowConfig
+    from agenthicc.workflows.config import WorkflowConfig
     agent_runner = AgentRunnerBase(transport=mock_transport, signals=SignalBus())
     cfg = WorkflowConfig(
         conv_store=app_state.conversation,

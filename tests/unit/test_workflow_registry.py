@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from agenthicc.workflow.loader import load_python_workflows
-from agenthicc.workflow.plugin import PhaseRole, WorkflowDefinition
-from agenthicc.workflow.registry import WorkflowRegistry, build_workflow_registry
+from agenthicc.workflows.loader import load_python_workflows
+from agenthicc.workflows.plugin import PhaseRole, WorkflowDefinition
+from agenthicc.workflows.registry import WorkflowRegistry, build_workflow_registry
 
 pytestmark = pytest.mark.unit
 
@@ -156,7 +156,7 @@ class TestBuildWorkflowRegistry:
 class TestPythonLoader:
     def test_load_python_plugin(self, tmp_path):
         content = """
-            from agenthicc.workflow.plugin import WorkflowPlugin, PhaseSpec, PhaseRole
+            from agenthicc.workflows.plugin import WorkflowPlugin, PhaseSpec, PhaseRole
 
             class MyWorkflow(WorkflowPlugin):
                 name = "my_plugin_workflow"
@@ -175,7 +175,7 @@ class TestPythonLoader:
 
     def test_load_python_source_stored(self, tmp_path):
         content = """
-            from agenthicc.workflow.plugin import WorkflowPlugin, PhaseSpec
+            from agenthicc.workflows.plugin import WorkflowPlugin, PhaseSpec
 
             class P(WorkflowPlugin):
                 name = "sourced"
@@ -186,7 +186,7 @@ class TestPythonLoader:
 
     def test_load_python_multiple_plugins(self, tmp_path):
         content = """
-            from agenthicc.workflow.plugin import WorkflowPlugin, PhaseSpec
+            from agenthicc.workflows.plugin import WorkflowPlugin, PhaseSpec
 
             class Alpha(WorkflowPlugin):
                 name = "alpha_wf"
@@ -202,7 +202,7 @@ class TestPythonLoader:
 
     def test_load_python_base_class_not_included(self, tmp_path):
         content = """
-            from agenthicc.workflow.plugin import WorkflowPlugin, PhaseSpec
+            from agenthicc.workflows.plugin import WorkflowPlugin, PhaseSpec
 
             class Real(WorkflowPlugin):
                 name = "real"
@@ -225,7 +225,7 @@ class TestPythonLoader:
 
     def test_load_python_unnamed_skipped(self, tmp_path):
         content = """
-            from agenthicc.workflow.plugin import WorkflowPlugin, PhaseSpec
+            from agenthicc.workflows.plugin import WorkflowPlugin, PhaseSpec
 
             class Unnamed(WorkflowPlugin):
                 name = ""
@@ -235,7 +235,7 @@ class TestPythonLoader:
 
     def test_load_python_mode_bindings_preserved(self, tmp_path):
         content = """
-            from agenthicc.workflow.plugin import WorkflowPlugin, PhaseSpec
+            from agenthicc.workflows.plugin import WorkflowPlugin, PhaseSpec
 
             class Bound(WorkflowPlugin):
                 name = "bound"

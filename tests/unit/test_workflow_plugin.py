@@ -5,7 +5,7 @@ import pytest
 
 from agenthicc.agents.plugin import READ_CAPS
 from agenthicc.tools.capabilities import ToolCapability
-from agenthicc.workflow.plugin import (
+from agenthicc.workflows.plugin import (
     PhaseRole, PhaseSpec, WorkflowContext, WorkflowDefinition,
     WorkflowPlugin, PhaseOutput, _parse_output_schema,
 )

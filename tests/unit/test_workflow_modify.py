@@ -16,7 +16,7 @@ from agenthicc.kernel import (
     Workflow,
     WorkflowNode,
 )
-from agenthicc.workflow.modify import ModifyResult, WorkflowModifier
+from agenthicc.workflows.modify import ModifyResult, WorkflowModifier
 
 pytestmark = pytest.mark.unit
 

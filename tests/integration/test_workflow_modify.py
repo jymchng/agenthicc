@@ -14,7 +14,7 @@ from agenthicc.kernel import (
     SecurityPolicy,
     SystemSettings,
 )
-from agenthicc.workflow.modify import WorkflowModifier
+from agenthicc.workflows.modify import WorkflowModifier
 
 pytestmark = pytest.mark.integration
 
