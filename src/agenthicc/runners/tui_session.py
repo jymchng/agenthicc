@@ -14,6 +14,17 @@ if TYPE_CHECKING:
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import SendMessageCommand, InterruptAgentCommand
 
+def _build_agent_runner(llm_cfg: Any) -> Any:
+    """Build a lauren-ai AgentRunnerBase wired to a SignalBus."""
+    if llm_cfg is None:
+        return None
+    from lauren_ai._agents._runner import AgentRunnerBase  # noqa: PLC0415
+    from lauren_ai._module import _build_transport          # noqa: PLC0415
+    from lauren_ai._signals import SignalBus                # noqa: PLC0415
+
+    transport = _build_transport(llm_cfg)
+    return AgentRunnerBase(transport=transport, signals=SignalBus())
+
 
 def _reset_terminal_on_exit() -> None:
     try:
@@ -34,7 +45,6 @@ from agenthicc.tui.runtime.session_log import (   # noqa: E402
     create_session_id, register_session, touch_session,
     find_latest_session_for_cwd, get_session_log_path, SessionEventLog,
 )
-from agenthicc.runners.agent_builder import _build_agent_runner  # noqa: E402
 from agenthicc.runners.agent_turn import _run_agent_turn         # noqa: E402
 from agenthicc.runners.session_context import SessionContext      # noqa: E402
 
