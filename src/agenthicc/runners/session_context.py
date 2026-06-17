@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
     from agenthicc.tui.runtime import CommandBus, ModeManager
     from agenthicc.tui.runtime.session_log import SessionEventLog
-    from agenthicc.workflow.registry import WorkflowRegistry
+    from agenthicc.workflows.registry import WorkflowRegistry
     from agenthicc.agents.registry import AgentsRegistry
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.mentions.cache import MentionCache

@@ -72,7 +72,7 @@ def _detect_cycle(graph: dict[str, set[str]]) -> bool:
     DFS when it is not importable (or its signature does not match).
     """
     try:
-        from agenthicc.workflow.dag import detect_cycle  # noqa: PLC0415
+        from agenthicc.workflows.dag import detect_cycle  # noqa: PLC0415
     except ImportError:
         return _has_cycle(graph)
     try:
