@@ -544,8 +544,13 @@ class TUISession:
 
     # ── workflow resume (PRD-94) ──────────────────────────────────────────────
 
-    def _schedule_workflow_resume(self) -> None:
-        """If the kernel state has an unfinished workflow, schedule its resume."""
+    def _notify_incomplete_workflow(self) -> None:
+        """If the kernel state has an unfinished workflow, notify the user.
+
+        Does NOT auto-start the workflow.  On --resume the user should decide
+        whether to continue — sending a message in Plan mode will start a fresh
+        workflow run with their new intent.
+        """
         from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
         k_state = self._ctx.processor.get_state()
         for wf in k_state.workflows.values():
@@ -553,17 +558,11 @@ class TUISession:
                 continue
             if not wf.name:
                 continue
-            wf_defn = self._ctx.workflow_registry.get(wf.name)
-            if wf_defn is None:
-                continue
-            context = _reconstruct_workflow_context(wf)
             self._ctx.app_state.conversation.notification.set(
-                f"⟳ Resuming workflow '{wf.name}'…"
+                f"Session had an in-progress '{wf.name}' workflow. "
+                "Send a message to start a new run."
             )
-            self._agent_task = asyncio.create_task(
-                self._resume_workflow_task(wf_defn, context), name="agent-turn"
-            )
-            return  # resume one workflow at a time
+            return
 
     async def _resume_workflow_task(self, wf_defn: Any, context: Any) -> None:
         """Resume a WorkflowRunner with error handling matching agent_task_body."""
@@ -615,8 +614,9 @@ class TUISession:
 
         self._workspace.start()
         proc_task = asyncio.create_task(ctx.processor.run())
-        # PRD-94: auto-resume any incomplete workflow from a previous session.
-        self._schedule_workflow_resume()
+        # If a previous session had an in-progress workflow, show a notification
+        # but do NOT auto-start it — the user decides what to do next.
+        self._notify_incomplete_workflow()
         ad_task: asyncio.Task | None = None
         try:
             from agenthicc.auth import AuthClient  # noqa: PLC0415
