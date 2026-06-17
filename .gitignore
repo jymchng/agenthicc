@@ -226,3 +226,6 @@ __marimo__/
 # MkDocs built site
 site/
 uv.lock
+
+# Created by cassette
+password_generator/

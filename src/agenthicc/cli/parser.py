@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 
 def _parse_args() -> argparse.Namespace:
@@ -18,6 +19,14 @@ def _parse_args() -> argparse.Namespace:
                         help="Continue the most recent session for this directory.")
     parser.add_argument("--resume", metavar="ID", default=None,
                         help="Resume the session with the given ID.")
+    parser.add_argument("--record-cassette", metavar="DIR",
+                        nargs="?",
+                        const=str(Path.home() / ".agenthicc" / "cassettes"),
+                        default=None,
+                        dest="record_cassette",
+                        help="Record LLM calls and approvals to DIR/<session-id>/. "
+                             "Omit DIR to use ~/.agenthicc/cassettes. "
+                             "Omit the flag entirely to disable recording.")
 
     parser.add_argument(
         "--set",

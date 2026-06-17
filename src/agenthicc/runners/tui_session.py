@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import SendMessageCommand, InterruptAgentCommand
 
-def _build_agent_runner(llm_cfg: Any) -> Any:
+def _build_agent_runner(llm_cfg: Any, *, cassette_dir: Path | None = None) -> Any:
     """Build a lauren-ai AgentRunnerBase wired to a SignalBus."""
     if llm_cfg is None:
         return None
@@ -23,6 +23,10 @@ def _build_agent_runner(llm_cfg: Any) -> Any:
     from lauren_ai._signals import SignalBus                # noqa: PLC0415
 
     transport = _build_transport(llm_cfg)
+    if cassette_dir is not None:
+        from agenthicc.testing.recording_transport import RecordingTransport  # noqa: PLC0415
+        cassette_dir.mkdir(parents=True, exist_ok=True)
+        transport = RecordingTransport(transport, cassette_dir / "cassette.jsonl")
     return AgentRunnerBase(transport=transport, signals=SignalBus())
 
 
@@ -60,6 +64,7 @@ _find_latest_session_for_cwd = find_latest_session_for_cwd
 async def _build_session_context(
     resume_id: str | None,
     cli_overrides: list[str] | None,
+    record_cassette_dir: Path | None = None,
 ) -> SessionContext:
     """Construct all session-scoped singletons and return a SessionContext."""
     from rich.console import Console                              # noqa: PLC0415
@@ -78,6 +83,13 @@ async def _build_session_context(
     # ── session ID ────────────────────────────────────────────────────────────
     session_id = resume_id or create_session_id()
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ── cassette dir: <base>/<session_id>/ ───────────────────────────────────
+    cassette_dir: Path | None = (
+        record_cassette_dir / session_id if record_cassette_dir is not None else None
+    )
+    if cassette_dir is not None:
+        cassette_dir.mkdir(parents=True, exist_ok=True)
 
     # ── kernel ────────────────────────────────────────────────────────────────
     log_path = str(_SESSIONS_DIR / f"{session_id}.jsonl")
@@ -127,7 +139,12 @@ async def _build_session_context(
     command_bus = CommandBus()
 
     from agenthicc.tools.approval import ApprovalService         # noqa: PLC0415
-    approval_svc = ApprovalService(app_state)
+    approval_svc: Any = ApprovalService(app_state)
+    if cassette_dir is not None:
+        from agenthicc.testing.recording_approval import RecordingApprovalService  # noqa: PLC0415
+        approval_svc = RecordingApprovalService(
+            approval_svc, cassette_dir / "approvals.jsonl"
+        )
 
     # ── workflow + agents registries ──────────────────────────────────────────
     from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
@@ -238,7 +255,10 @@ async def _build_session_context(
     trigger_registry.register(SlashCommandTrigger(cmd_registry))
 
     # ── agent runner ──────────────────────────────────────────────────────────
-    agent_runner = _build_agent_runner(llm_cfg)
+    agent_runner = _build_agent_runner(
+        llm_cfg,
+        cassette_dir=cassette_dir,
+    )
 
     # ── PRD-83: AgentRunComplete reconciliation handler ───────────────────────
     _runner_signals = getattr(agent_runner, "_signals", None)
@@ -674,12 +694,15 @@ class TUISession:
 async def _run_tui_session(
     resume_id: str | None = None,
     cli_overrides: list[str] | None = None,
+    record_cassette: str | None = None,
 ) -> None:
     """Reactive TUI session — single entry point, no legacy branches."""
     from agenthicc.tui.workspace import Workspace                        # noqa: PLC0415
     from agenthicc.tui.input.unified_session import UnifiedInputSession  # noqa: PLC0415
 
-    ctx = await _build_session_context(resume_id, cli_overrides)
+    cassette_base: Path | None = Path(record_cassette) if record_cassette else None
+
+    ctx = await _build_session_context(resume_id, cli_overrides, cassette_base)
     workspace = Workspace(
         ctx.app_state, ctx.console,
         max_live_tool_calls=ctx.cfg.tools.max_live_tool_calls,
@@ -700,6 +723,25 @@ async def _run_tui_session(
         ctx.session_log.close()
         if ctx.mcp_registry:
             await ctx.mcp_registry.shutdown()
+        if cassette_base is not None:
+            _write_cassette_meta(cassette_base / ctx.session_id, ctx.session_id)
+
+
+def _write_cassette_meta(cassette_dir: Path, session_id: str) -> None:
+    """Write meta.json alongside the cassette files."""
+    import json as _json
+    from datetime import datetime, timezone
+    meta = {
+        "session_id": session_id,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+        "intent": "",   # filled in manually or from history
+    }
+    try:
+        (cassette_dir / "meta.json").write_text(
+            _json.dumps(meta, indent=2), encoding="utf-8"
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ── sync entry point (unchanged) ─────────────────────────────────────────────
@@ -720,8 +762,14 @@ def _run_tui(args: argparse.Namespace) -> None:
         if resume_id is None:
             print("No previous session found for this directory. Starting fresh.")
 
+    record_cassette: str | None = getattr(args, "record_cassette", None)
+
     try:
-        asyncio.run(_run_tui_session(resume_id=resume_id, cli_overrides=cli_overrides))
+        asyncio.run(_run_tui_session(
+            resume_id=resume_id,
+            cli_overrides=cli_overrides,
+            record_cassette=record_cassette,
+        ))
     except Exception as exc:
         print(f"TUI error: {exc}", file=sys.stderr)
         sys.exit(1)
