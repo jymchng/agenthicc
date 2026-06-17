@@ -18,12 +18,22 @@ from typing import TYPE_CHECKING, Any
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 
 if TYPE_CHECKING:
-    pass   # runtime imports are deferred below to match existing pattern
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._memory import ShortTermMemory
+    from lauren_ai._signals import ToolCallStarted, ToolCallComplete
+    from agenthicc.kernel.processor import EventProcessor
+    from agenthicc.mentions.cache import MentionCache
+    from agenthicc.plugins.registry import PluginTool
+    from agenthicc.skills.loader import SkillDef
+    from agenthicc.tools.approval import ApprovalGate, ApprovalService
+    from agenthicc.tools.capability_gate import ToolCapabilityGate
+    from agenthicc.tools.mcp import McpToolRegistry
+    from agenthicc.tui.conversation_store import ConversationStore
 
 
 # ── formatting helper (module-level, unchanged) ───────────────────────────────
 
-def _fmt_args(args: dict) -> str:
+def _fmt_args(args: dict[str, Any]) -> str:
     from rich.markup import escape as _e  # noqa: PLC0415
     items = list(args.items())
     if not items:
@@ -57,7 +67,7 @@ class AgentTurnRunner:
         self._turn_active:    bool = True
 
         # Tool tracking — populated by signal handlers.
-        self._tool_args:      dict[str, dict]           = {}
+        self._tool_args:      dict[str, dict[str, Any]]  = {}
         self._tool_names:     dict[str, str]            = {}
         self._file_snapshots: dict[str, tuple[str, str]] = {}
 
@@ -135,7 +145,7 @@ class AgentTurnRunner:
         )
 
         @signals.on(_TCS)
-        async def _on_tool_started(sig: Any) -> None:
+        async def _on_tool_started(sig: ToolCallStarted) -> None:
             if not self._turn_active:
                 return
             args = dict(getattr(sig, "input", {}) or {})
@@ -149,7 +159,7 @@ class AgentTurnRunner:
                 await self._snapshot_file(tid, args["path"])
 
         @signals.on(_TCC)
-        async def _on_tool_complete(sig: Any) -> None:
+        async def _on_tool_complete(sig: ToolCallComplete) -> None:
             if not self._turn_active:
                 return
             await self._handle_tool_complete(sig)
@@ -168,11 +178,11 @@ class AgentTurnRunner:
         except Exception:  # noqa: BLE001
             pass
 
-    async def _handle_tool_complete(self, sig: Any) -> None:
+    async def _handle_tool_complete(self, sig: ToolCallComplete) -> None:
         import difflib as _dl  # noqa: PLC0415
-        tid     = getattr(sig, "tool_use_id", "")
-        success = bool(getattr(sig, "success", True))
-        ms      = getattr(sig, "duration_ms", None)
+        tid:     str        = getattr(sig, "tool_use_id", "")
+        success: bool       = bool(getattr(sig, "success", True))
+        ms:      float | None = getattr(sig, "duration_ms", None)
         name    = self._tool_names.pop(tid, tid)
         args    = self._tool_args.pop(tid, {})
         conv    = self._ctx.conv_store
@@ -261,7 +271,7 @@ class AgentTurnRunner:
 
     # ── step 7: build @agent class and runner ─────────────────────────────────
 
-    def _build_agent(self) -> tuple[Any, Any]:
+    def _build_agent(self) -> tuple[Any, AgentRunnerBase]:
         """Construct the @agent-decorated class, populate meta.tools, build runner.
 
         Returns (agent_instance, active_runner).
@@ -300,7 +310,7 @@ class AgentTurnRunner:
         populate_agent_tools(agent_instance, registry.tools)
 
         # Global hooks
-        hooks: list = []
+        hooks: list[ToolCapabilityGate | ApprovalGate] = []
         if ctx.app_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
             hooks.append(ToolCapabilityGate(ctx.app_state))
@@ -321,7 +331,7 @@ class AgentTurnRunner:
         self,
         agent_instance: Any,
         agent_text: str,
-        active_runner: Any,
+        active_runner: AgentRunnerBase,
     ) -> None:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
         ctx           = self._ctx
@@ -396,20 +406,20 @@ class AgentTurnRunner:
 
 async def _run_agent_turn(
     text: str,
-    runner: Any,
-    processor: Any,
-    session_memory: Any = None,
+    runner: AgentRunnerBase,
+    processor: EventProcessor,
+    session_memory: ShortTermMemory | None = None,
     max_agent_turns: int = 200,
-    conv_store: Any = None,
-    app_state: Any = None,
-    exec_cfg: Any = None,
-    skills: Any = None,
-    mention_cache: Any = None,
-    project_plugin_tools: Any = None,
-    mcp_registry: Any = None,
+    conv_store: ConversationStore | None = None,
+    app_state: Any = None,                          # tui.AppState; Any avoids circular import
+    exec_cfg: Any = None,                           # ExecutionSettings; Any avoids circular import
+    skills: dict[str, SkillDef] | None = None,
+    mention_cache: MentionCache | None = None,
+    project_plugin_tools: list[PluginTool] | None = None,
+    mcp_registry: McpToolRegistry | None = None,
     active_agent: str | None = None,
     completed_turns: int = 0,
-    approval_svc: Any = None,
+    approval_svc: ApprovalService | None = None,
     output_collector: list[str] | None = None,
     system_prompt_suffix: str = "",
 ) -> None:
