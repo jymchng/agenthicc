@@ -110,9 +110,13 @@ async def _build_session_context(
         policy=SecurityPolicy(),
     )
     if resume_id:
-        lf = get_session_log_path(resume_id)
-        if lf and lf.exists():
-            k_state = await restore_from_log(str(lf), k_state, root_reducer)
+        # log_path already points to the kernel event log (sessions/<id>.jsonl).
+        # get_session_log_path() returns the TUI conversation log
+        # (sessions/<id>/conversation.jsonl) — a completely different file that
+        # restore_from_log cannot parse, producing "skipping corrupt event log line".
+        kernel_log = Path(log_path)
+        if kernel_log.exists():
+            k_state = await restore_from_log(log_path, k_state, root_reducer)
         touch_session(resume_id)
     else:
         register_session(session_id, os.getcwd(), "")
