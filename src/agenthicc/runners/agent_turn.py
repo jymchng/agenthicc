@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
     from lauren_ai._signals import ToolCallStarted, ToolCallComplete
+    from agenthicc.config import ExecutionSettings
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.plugins.registry import PluginTool
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalGate, ApprovalService
     from agenthicc.tools.capability_gate import ToolCapabilityGate
     from agenthicc.tools.mcp import McpToolRegistry
-    from agenthicc.tui.conversation_store import ConversationStore
+    from agenthicc.tui.conversation_store import AppState, ConversationStore
 
 
 # ── formatting helper (module-level, unchanged) ───────────────────────────────
@@ -411,8 +412,8 @@ async def _run_agent_turn(
     session_memory: ShortTermMemory | None = None,
     max_agent_turns: int = 200,
     conv_store: ConversationStore | None = None,
-    app_state: Any = None,                          # tui.AppState; Any avoids circular import
-    exec_cfg: Any = None,                           # ExecutionSettings; Any avoids circular import
+    app_state: AppState | None = None,
+    exec_cfg: ExecutionSettings | None = None,
     skills: dict[str, SkillDef] | None = None,
     mention_cache: MentionCache | None = None,
     project_plugin_tools: list[PluginTool] | None = None,

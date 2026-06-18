@@ -10,14 +10,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    # Import real types for IDE/type-checker; all are deferred at runtime to
-    # avoid circular imports and keep startup fast.
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
+    from agenthicc.config import ExecutionSettings
     from agenthicc.kernel.processor import EventProcessor
-    from agenthicc.tui.conversation_store import ConversationStore
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tui.conversation_store import AppState, ConversationStore
 
 
 @dataclass(frozen=True)
@@ -38,8 +37,8 @@ class AgentTurnContext:
 
     # ── observability ─────────────────────────────────────────────────────────
     conv_store: "ConversationStore | None" = None
-    app_state:  Any                        = None   # tui.AppState; Any avoids circular
-    exec_cfg:   Any                        = None   # ExecutionSettings; Any avoids circular
+    app_state:  "AppState | None"          = None
+    exec_cfg:   "ExecutionSettings | None" = None
 
     # ── content injection ─────────────────────────────────────────────────────
     skills:               "dict | None"       = None
