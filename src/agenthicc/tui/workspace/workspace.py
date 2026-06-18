@@ -170,6 +170,8 @@ class Workspace:
         # Footer
         parts.append(self.footer.render())
 
+        parts.append(Text(""))   # 1-row bottom margin — always visible
+
         return Group(*parts)
 
     def _redraw(self) -> None:

@@ -74,7 +74,7 @@ class PlanApprovalOverlay(PromptOverlay):
         # Pre-rendered line cache — rebuilt on mount and on terminal width change.
         self._rendered_lines: list[Text] = []
         self._render_width:   int        = 0
-        # Cached plan_visible from last render — read by _handle_selecting.
+        # Cached from last render — read by _handle_selecting.
         self._plan_visible:   int        = _PLAN_VISIBLE_LINES
 
     # ── Overlay interface ──────────────────────────────────────────────────────
@@ -132,11 +132,14 @@ class PlanApprovalOverlay(PromptOverlay):
         cols             = term.columns
         rows             = term.lines
         border_w         = min(cols, 66)
-        # Overhead = workspace chrome (blank+status+2 borders+footer) +
-        # overlay fixed chrome (header+top-border+indicator+bottom-border+
-        # 3 options+bottom-border+hint) = 18 lines.
-        plan_visible     = min(_PLAN_VISIBLE_LINES, max(4, rows - 18))
-        self._plan_visible = plan_visible   # read by _handle_selecting
+        # Overhead = 19 fixed rows surrounding the plan content:
+        #   workspace (blank+status+top-border) = 5
+        #   overlay   (header+top-border+indicator+bottom-border+
+        #              3-options+bottom-border+hint) = 7 + 2 = 9
+        #   workspace (bottom-border+footer+margin) = 5
+        # plan_visible = max(1, rows − 19) — floor at 1 so the footer always fits.
+        plan_visible     = min(_PLAN_VISIBLE_LINES, max(1, rows - 19))
+        self._plan_visible = plan_visible
         lines: list[Any] = []
 
         lines.append(Text.from_markup("[bold cyan]  📋 Plan Review[/bold cyan]"))

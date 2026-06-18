@@ -215,8 +215,7 @@ class TestPlanApprovalSelecting:
     def test_scroll_down_with_bracket(self):
         long_plan = "\n\n".join(f"Step {i}" for i in range(25))
         ov, _, _ = _make_overlay(long_plan)
-        ov.render()   # populates _rendered_lines AND sets _plan_visible
-        # Only scrollable if total rendered lines exceed the dynamic viewport.
+        ov.render()   # populates _rendered_lines and sets _plan_visible
         if len(ov._rendered_lines) > ov._plan_visible:
             assert ov._plan_scroll == 0
             ov.handle_key(Key.CHAR, "]")

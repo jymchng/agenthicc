@@ -16,10 +16,10 @@ dynamically from the terminal height), padded with blank rows when a question
 has fewer options than the tallest question.  This keeps the overlay height
 constant while navigating between questions.
 
-Fixed overhead = 18 lines (workspace blank + status + 2 borders + overlay
-header + top-border + nav + 2 blanks + question + blank-after-options +
-bottom-border + hint + workspace bottom-border + footer-with-workflow-line).
-opt_rows = min(max_opts_any_question, max(2, rows − 18)).
+Fixed overhead = 19 lines: workspace (blank+status+top-border=5) +
+overlay chrome (header+top-border+nav+2-blanks+question+blank-after-options+
+bottom-border+hint=9) + workspace (bottom-border+footer+margin=5).
+opt_rows = min(max_opts_any_question, max(1, rows − 19)).
 """
 from __future__ import annotations
 
@@ -203,8 +203,9 @@ class QuestionsOverlay(PromptOverlay):
 
         # Max options (including "Other") across all questions.
         max_opts = max((len(self._opts(i)) for i in range(len(self._questions))), default=2)
-        # Overhead = 18 lines (see module docstring).
-        opt_rows       = min(max_opts, max(2, rows - 18))
+        # Overhead = 17 lines (18 minus the 1-row workspace Layout margin).
+        # Overhead = 19 fixed rows; floor at 1 so the footer always fits.
+        opt_rows       = min(max_opts, max(1, rows - 19))
         self._opt_rows = opt_rows   # read by _handle_selecting
 
         lines: list[Any] = []
