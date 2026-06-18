@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from agenthicc.tui.cbreak_reader import Key, raw_mode, read_key
 from agenthicc.tui.input.buffer import InputBuffer
@@ -23,6 +23,7 @@ from agenthicc.tui.input.paste import PasteState
 from agenthicc.tui.runtime.mode_manager import ModeManager
 from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
 from agenthicc.tui.input.capabilities import (
+    Capability, _ExitSentinel,
     IDLE_CAPABILITIES, STREAMING_CAPABILITIES, _EXIT,
 )
 
@@ -33,14 +34,8 @@ if TYPE_CHECKING:
     from agenthicc.tui.workspace.appender import ScrollBufferAppender
     from agenthicc.tui.workspace.overlay import OverlayHost
 
-# Re-export _EXIT for tests/external callers that import it from here.
+# Re-export for tests/external callers that import from here.
 __all__ = ["UnifiedInputSession", "InputMode", "_EXIT"]
-
-
-class Capability(Protocol):
-    """Structural type for a single input capability handler."""
-
-    async def handle(self, key: Key, ch: str, session: UnifiedInputSession) -> object: ...
 
 
 class InputMode(Enum):
@@ -80,7 +75,6 @@ class UnifiedInputSession:
         self._paste:        PasteState       = PasteState()
         self._hist:         HistoryNavigator = HistoryNavigator(history or [])
         self._ctrl_c_count: int              = 0
-        self._mode_notification: None        = None
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -117,7 +111,7 @@ class UnifiedInputSession:
 
     # ── capability pipeline dispatch ──────────────────────────────────────────
 
-    async def _dispatch(self, key: Key, ch: str) -> object | None:
+    async def _dispatch(self, key: Key, ch: str) -> _ExitSentinel | None:
         """Run the active capability list until one consumes the key."""
         for cap in self._capabilities:
             result = await cap.handle(key, ch, self)
@@ -144,7 +138,7 @@ class UnifiedInputSession:
         if self._paste.condensed:
             self._paste.expand()
 
-    def _ctrl_c_sequence(self) -> object | None:
+    def _ctrl_c_sequence(self) -> _ExitSentinel | None:
         self._ctrl_c_count += 1
         if self._ctrl_c_count == 1:
             self._buf.clear()

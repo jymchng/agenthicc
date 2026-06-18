@@ -11,14 +11,46 @@ requires registering it in TriggerManager — no changes here.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Protocol
 
 from agenthicc.tui.cbreak_reader import Key
 
-# Return values from handle()
-_CONSUMED = True    # key was handled; stop pipeline
-_PASS     = False   # key not handled; try next capability
-_EXIT     = object()  # key triggered application exit; stop loop
+if TYPE_CHECKING:
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+
+
+# ── sentinel & return-value types ────────────────────────────────────────────
+
+class _ExitSentinel:
+    """Singleton sentinel — returned by a capability to signal application exit."""
+    __slots__ = ()
+
+
+#: Return values from handle()
+_CONSUMED: bool         = True    # key was handled; stop pipeline
+_PASS:     bool         = False   # key not handled; try next capability
+_EXIT:     _ExitSentinel = _ExitSentinel()   # application exit requested
+
+#: Union of all values a capability handle() method may return.
+CapabilityResult = bool | _ExitSentinel
+
+
+# ── Capability Protocol ───────────────────────────────────────────────────────
+
+class Capability(Protocol):
+    """Structural protocol for a single input capability handler.
+
+    Defined here alongside the concrete capability classes and the mode lists
+    that hold them, so IDLE_CAPABILITIES / STREAMING_CAPABILITIES can be typed
+    as ``list[Capability]`` without any circular imports.
+    """
+
+    async def handle(
+        self,
+        key:     Key,
+        ch:      str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult: ...
 
 
 # ── Overlay ───────────────────────────────────────────────────────────────────
@@ -29,7 +61,9 @@ class OverlayCapability:
     When an overlay is active it consumes every key — nothing else runs.
     """
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if session._overlay and session._overlay.active:
             session._overlay.handle_key(key, ch)
             return _CONSUMED
@@ -45,7 +79,9 @@ class CtrlCCapability:
     Must run before other capabilities so the counter is always cleared.
     """
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key == Key.CTRL_C:
             result = session._ctrl_c_sequence()
             return _EXIT if result is _EXIT else _CONSUMED
@@ -61,7 +97,9 @@ class CtrlCCapability:
 class CtrlDCapability:
     """Ctrl+D — submit non-empty buffer or exit."""
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key != Key.CTRL_D:
             return _PASS
         text = session._buf.text
@@ -76,7 +114,9 @@ class CtrlDCapability:
 class InterruptCapability:
     """Ctrl+C / ESC in streaming mode — cancels the running agent."""
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key not in (Key.CTRL_C, Key.ESC):
             return _PASS
         from agenthicc.tui.runtime.commands import InterruptAgentCommand  # noqa: PLC0415
@@ -97,7 +137,9 @@ class TriggerCapability:
     dropped in streaming because Key.AT never matched `case Key.CHAR if ch:`.
     """
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         tch = session._registry.resolve(key, ch) if session._registry else None
         if tch is None:
             return _PASS
@@ -117,7 +159,9 @@ class TriggerCapability:
 class PasteCapability:
     """Handles bracketed paste (Key.PASTE) and Ctrl+V expansion."""
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key == Key.PASTE and ch:
             import shutil  # noqa: PLC0415
             cols = shutil.get_terminal_size((80, 24)).columns
@@ -143,7 +187,9 @@ class SubmitCapability:
     def __init__(self, commit_history: bool = False) -> None:
         self._commit_history = commit_history
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key != Key.ENTER:
             return _PASS
         from agenthicc.tui.runtime.commands import SendMessageCommand  # noqa: PLC0415
@@ -164,7 +210,9 @@ class SubmitCapability:
 class NewlineCapability:
     """Ctrl+Enter / Ctrl+J — inserts a literal newline for multi-line input."""
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key != Key.CTRL_ENTER:
             return _PASS
         session._paste_exit()
@@ -183,7 +231,9 @@ class BackspaceCapability:
     overlay so the user can refine the selection.
     """
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key != Key.BACKSPACE:
             return _PASS
         if session._paste.condensed:
@@ -211,7 +261,9 @@ class BackspaceCapability:
 class ClearCapability:
     """Ctrl+U — clears the entire buffer."""
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key != Key.CTRL_U:
             return _PASS
         session._buf.clear()
@@ -225,7 +277,9 @@ class ClearCapability:
 class CursorCapability:
     """Left / Right / Home / End — moves the insertion cursor."""
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         match key:
             case Key.LEFT:
                 session._paste_exit()
@@ -250,7 +304,9 @@ class CursorCapability:
 class HistoryCapability:
     """Up / Down — navigates command history when at the first/last buffer line."""
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         match key:
             case Key.UP:
                 session._paste_exit()
@@ -281,7 +337,9 @@ class ModeCycleCapability:
     This capability only needs to show the notification.
     """
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key != Key.SHIFT_TAB:
             return _PASS
         new_mode = session._modes.cycle()   # writes app_state.active_mode internally
@@ -302,7 +360,9 @@ class InsertCapability:
     existing committed trigger token (e.g. continuing to type after @docs).
     """
 
-    async def handle(self, key: Key, ch: str, session: Any) -> Any:
+    async def handle(
+        self, key: Key, ch: str, session: UnifiedInputSession,
+    ) -> CapabilityResult:
         if key != Key.CHAR or not ch:
             return _PASS
         session._paste_exit()
@@ -326,7 +386,7 @@ class InsertCapability:
 # ── Mode declarations ─────────────────────────────────────────────────────────
 
 #: Full feature set: triggers, history, cursor movement, mode cycling.
-IDLE_CAPABILITIES: list[Any] = [
+IDLE_CAPABILITIES: list[Capability] = [
     OverlayCapability(),
     CtrlCCapability(),            # first: resets counter on any non-Ctrl+C key
     CtrlDCapability(),
@@ -343,7 +403,7 @@ IDLE_CAPABILITIES: list[Any] = [
 ]
 
 #: Reduced set: queue messages, interrupt agent, paste, basic editing.
-STREAMING_CAPABILITIES: list[Any] = [
+STREAMING_CAPABILITIES: list[Capability] = [
     OverlayCapability(),
     InterruptCapability(),        # Ctrl+C / ESC → cancel agent
     PasteCapability(),
