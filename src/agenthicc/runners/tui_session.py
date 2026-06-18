@@ -731,6 +731,12 @@ async def _run_tui_session(
     )
     session = TUISession(ctx, workspace, input_session)
     try:
+        from agenthicc.tui.welcome import print_welcome  # noqa: PLC0415
+        print_welcome(
+            ctx.console,
+            model=ctx.model_label,
+            cwd=os.getcwd(),
+        )
         await session.run()
     finally:
         ctx.session_log.close()
