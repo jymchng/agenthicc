@@ -10,13 +10,15 @@ class CodePlanState(Enum):
     """Every possible state in the code_plan workflow.
 
     Transitions:
-        PLAN      → EXECUTE (plan approved + finalized)
-               ↺  → PLAN    (plan not finalized — retry)
+        PLAN      → EXECUTE  (plan approved + finalized)
+               ↺  → PLAN     (plan not finalized — retry)
+               → EXITED   (exit_code_plan called — clean early exit)
         EXECUTE   → REVIEW   (mark_execute_complete called)
         REVIEW    → SUMMARIZE (approve_review called)
                → EXECUTE   (reject_review called)
         SUMMARIZE → COMPLETE
-        FAILED    (any phase exhausted retries)
+        EXITED    (terminal — agent chose not to plan)
+        FAILED    (terminal — any phase exhausted retries or error)
     """
 
     PLAN      = auto()
@@ -24,11 +26,12 @@ class CodePlanState(Enum):
     REVIEW    = auto()
     SUMMARIZE = auto()
     COMPLETE  = auto()   # terminal — success
+    EXITED    = auto()   # terminal — agent exited without planning
     FAILED    = auto()   # terminal — exhausted retries or error
 
     @property
     def is_terminal(self) -> bool:
-        return self in (CodePlanState.COMPLETE, CodePlanState.FAILED)
+        return self in (CodePlanState.COMPLETE, CodePlanState.EXITED, CodePlanState.FAILED)
 
 
 @dataclasses.dataclass

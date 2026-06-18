@@ -24,6 +24,7 @@ def make_planner_tools(
     approval_svc: Any,         # ApprovalService | None
     plan_event:   asyncio.Event,
     plan_data:    dict,
+    exit_event:   asyncio.Event | None = None,
 ) -> list:
     """Return [request_plan_approval, finalize_plan] as @tool()-decorated callables.
 
@@ -123,7 +124,32 @@ def make_planner_tools(
             ),
         }
 
-    return [request_plan_approval, finalize_plan]
+    tools = [request_plan_approval, finalize_plan]
+
+    if exit_event is not None:
+        _exit_event = exit_event
+
+        @_tool()
+        async def exit_code_plan() -> dict:
+            """Exit the code_plan workflow immediately without producing a plan.
+
+            Call this when the user's request does not require planning,
+            execution, or review — for example: a question, an explanation
+            request, a read-only query, or an intent too vague to turn into
+            concrete implementation steps.
+
+            After calling this tool, write a short conversational reply to the
+            user explaining what you can help with instead.
+
+            Do NOT call this if the task is executable but complex or
+            unfamiliar — that is exactly what planning is for.
+            """
+            _exit_event.set()
+            return {"accepted": True}
+
+        tools.append(exit_code_plan)  # noqa: F821
+
+    return tools
 
 
 def make_executor_tools(

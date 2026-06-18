@@ -49,7 +49,12 @@ _PLAN_PROMPT: str = (
     "Explore only the parts of the codebase directly relevant to it — do not "
     "do a general repository survey. Produce a focused implementation plan that "
     "addresses exactly what was asked, nothing more. Use request_plan_approval() "
-    "to present the plan for human review, and finalize_plan() once it is approved."
+    "to present the plan for human review, and finalize_plan() once it is approved.\n\n"
+    "If the user's message is a question, an explanation request, a read-only "
+    "query, or any intent that cannot be turned into concrete implementation steps, "
+    "call exit_code_plan(suggestion) immediately — do not attempt to produce a plan. "
+    "Reserve planning for tasks that genuinely require file changes, commands, or "
+    "multi-step implementation."
 )
 _PLAN_REMINDER: str = (
     "You have not yet finalized the plan. The original user intent is in your "
@@ -200,9 +205,13 @@ class CodePlanRunner(BaseWorkflowRunner):
                 self._cfg.app_state.workflow_run.set(wf_run)
                 log.info("code_plan: %s → %s", phase_name, state.name)
 
-            final_status: str = (
-                "complete" if state == CodePlanState.COMPLETE else "failed"
-            )
+            if state == CodePlanState.COMPLETE:
+                final_status = "complete"
+            elif state == CodePlanState.EXITED:
+                final_status = "exited"
+            else:
+                final_status = "failed"
+
             wf_run = dataclasses.replace(wf_run, status=final_status, current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
 
@@ -285,25 +294,31 @@ class CodePlanRunner(BaseWorkflowRunner):
                 case CodePlanState.SUMMARIZE:
                     state = await self._summarize(ctx)
 
-        final: str = "complete" if state == CodePlanState.COMPLETE else "failed"
+        if state == CodePlanState.COMPLETE:
+            final: str = "complete"
+        elif state == CodePlanState.EXITED:
+            final = "exited"
+        else:
+            final = "failed"
         wf_run = dataclasses.replace(wf_run, status=final, current_phase=None)
         self._cfg.app_state.workflow_run.set(wf_run)
 
     # ── phase methods ─────────────────────────────────────────────────────────
 
     async def _plan(self, ctx: CodePlanContext) -> CodePlanState:
-        """Loop until finalize_plan() fires; return EXECUTE or FAILED."""
+        """Loop until finalize_plan() or exit_code_plan() fires; return EXECUTE, EXITED, or FAILED."""
         from agenthicc.workflows.phase_tools import make_planner_tools  # noqa: PLC0415
+
+        exit_event: asyncio.Event = asyncio.Event()
 
         for attempt in range(1, _MAX_PLAN_ATTEMPTS + 1):
             plan_event: asyncio.Event     = asyncio.Event()
             plan_data:  dict[str, str]    = {}
 
-            tools: _ToolList = list(self._base_tools())
-            if self._cfg.approval_svc is not None:
-                tools = tools + list(make_planner_tools(
-                    self._cfg.approval_svc, plan_event, plan_data,
-                ))
+            tools: _ToolList = list(self._base_tools()) + list(make_planner_tools(
+                self._cfg.approval_svc, plan_event, plan_data,
+                exit_event=exit_event,
+            ))
 
             text: str = ctx.intent if attempt == 1 else _PLAN_REMINDER
 
@@ -318,6 +333,10 @@ class CodePlanRunner(BaseWorkflowRunner):
             except Exception as exc:
                 log.error("_plan attempt %d error: %s", attempt, exc)
                 break
+
+            # Exit takes priority — check before plan finalization.
+            if exit_event.is_set():
+                return CodePlanState.EXITED
 
             if plan_event.is_set() and "plan" in plan_data:
                 ctx.plan = plan_data["plan"]
