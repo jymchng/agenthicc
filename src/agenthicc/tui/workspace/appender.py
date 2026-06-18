@@ -20,6 +20,29 @@ from typing import Any
 from agenthicc.tui.conversation_store import ConversationEvent
 
 
+_TOOL_OP: dict[str, str] = {
+    "write_file":  "Update",
+    "patch_file":  "Update",
+    "append_file": "Append",
+}
+
+_LANG_MAP: dict[str, str] = {
+    "py": "python", "js": "javascript", "ts": "typescript",
+    "jsx": "jsx",   "tsx": "tsx",       "json": "json",
+    "yaml": "yaml", "yml": "yaml",      "toml": "toml",
+    "md": "markdown", "sh": "bash",     "rs": "rust",
+    "go": "go",     "rb": "ruby",       "c": "c",
+    "cpp": "cpp",   "h": "c",           "cs": "csharp",
+    "java": "java", "kt": "kotlin",     "swift": "swift",
+    "html": "html", "css": "css",       "sql": "sql",
+}
+
+
+def _lang_for_path(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return _LANG_MAP.get(ext, "text")
+
+
 def _hhmmss(ts: float) -> str:
     import time
     return time.strftime("%H:%M:%S", time.localtime(ts))
@@ -147,12 +170,27 @@ class ScrollBufferAppender:
                 )
 
             case "file_modified":
-                from rich.markup import escape as _e
-                path = ev.payload.get("path", "")
-                self._console.print(
-                    f"  [dim]Modified:[/dim] [cyan]{_e(path)}[/cyan]",
-                    markup=True, highlight=False,
-                )
+                from agenthicc.tui.diff_renderer import render_file_diff  # noqa: PLC0415
+                path      = ev.payload.get("path", "")
+                old_lines = ev.payload.get("old_lines")
+                new_lines = ev.payload.get("new_lines")
+                tool      = ev.payload.get("tool", "write_file")
+                op        = _TOOL_OP.get(tool, "Update")
+                if old_lines is not None and new_lines is not None:
+                    self._console.print(
+                        render_file_diff(
+                            path, old_lines, new_lines,
+                            operation=op,
+                            language=_lang_for_path(path),
+                        ),
+                        highlight=False,
+                    )
+                else:
+                    from rich.markup import escape as _e  # noqa: PLC0415
+                    self._console.print(
+                        f"  [dim]{op}:[/dim] [cyan]{_e(path)}[/cyan]",
+                        markup=True, highlight=False,
+                    )
 
             case "error":
                 self._flush_group_summary()

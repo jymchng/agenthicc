@@ -180,7 +180,6 @@ class AgentTurnRunner:
             pass
 
     async def _handle_tool_complete(self, sig: ToolCallComplete) -> None:
-        import difflib as _dl  # noqa: PLC0415
         tid:     str        = getattr(sig, "tool_use_id", "")
         success: bool       = bool(getattr(sig, "success", True))
         ms:      float | None = getattr(sig, "duration_ms", None)
@@ -199,13 +198,16 @@ class AgentTurnRunner:
                 new_content = await asyncio.to_thread(
                     lambda p=full: open(p).read() if os.path.exists(p) else ""
                 )
-                diff = "".join(_dl.unified_diff(
-                    original.splitlines(keepends=True),
-                    new_content.splitlines(keepends=True),
-                    fromfile=f"a/{rel_path}", tofile=f"b/{rel_path}", lineterm="",
-                )) or None
-                if diff and conv:
-                    conv.append_event("file_modified", {"path": rel_path})
+                old_lines = original.splitlines()
+                new_lines = new_content.splitlines()
+                changed   = old_lines != new_lines
+                if changed and conv:
+                    conv.append_event("file_modified", {
+                        "path":      rel_path,
+                        "old_lines": old_lines,
+                        "new_lines": new_lines,
+                        "tool":      name,
+                    })
             except Exception:  # noqa: BLE001
                 pass
 

@@ -29,6 +29,11 @@ def _make_conv(model_name: str = "anthropic/claude-opus-4-8") -> MagicMock:
 def _make_app_state(model_name: str = "anthropic/claude-opus-4-8") -> MagicMock:
     state = MagicMock()
     state.conversation = _make_conv(model_name)
+    # RuntimeMode attributes used by build_mode_str and FooterComponent.
+    mode = state.active_mode.return_value
+    mode.badge = "⏵⏵"
+    mode.name  = "Auto"
+    mode.color = "green"
     return state
 
 
