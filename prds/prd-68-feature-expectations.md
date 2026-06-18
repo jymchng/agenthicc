@@ -494,6 +494,7 @@ is available in the execute phase without any re-exploration.
 | 16.22 | Per-phase focus via `system_prompt_override` | Each `PhaseSpec` carries a `system_prompt_override` that is prepended before the role's registry system prompt, guiding the single agent's focus per phase. |
 | 16.23 | Summarize phase | Agent writes a concise summary of what was planned, implemented, and verified. |
 | 16.24 | Mode auto-reset | After the workflow completes with `status="complete"`, the active mode switches automatically to Auto and a `✓ Workflow complete — switched to Auto mode` notification appears for ~2 s. |
+| 16.25 | Intent threaded through every phase system prompt | `ctx.intent` (the original user message) is appended to the system prompt of every phase as a `[USER INTENT]` block. This ensures that if the LLM stops early within a phase (e.g. token limit, abrupt generation end) and the phase retries, the next turn's system prompt still carries the original request — independent of whether `shared_memory` conversation history is available. The intent appears in the system prompt even on retry turns where the `text` message is a short continuation reminder rather than the full original message. |
 
 ### 16.6 `PlanApprovalOverlay` (PRD-86, PRD-88)
 

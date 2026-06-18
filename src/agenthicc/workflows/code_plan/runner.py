@@ -45,49 +45,50 @@ _MAX_REVIEW_ATTEMPTS:  int = 10
 # ── system prompts ────────────────────────────────────────────────────────────
 
 _PLAN_PROMPT: str = (
-    "You are in the PLANNING phase. Explore only the parts of the codebase "
-    "directly relevant to the user's intent — do not do a general repository "
-    "survey. Produce a focused implementation plan that addresses exactly what "
-    "was asked, nothing more. Use request_plan_approval() to present the plan "
-    "for human review, and finalize_plan() once it is approved."
+    "You are in the PLANNING phase. The original user intent is provided below. "
+    "Explore only the parts of the codebase directly relevant to it — do not "
+    "do a general repository survey. Produce a focused implementation plan that "
+    "addresses exactly what was asked, nothing more. Use request_plan_approval() "
+    "to present the plan for human review, and finalize_plan() once it is approved."
 )
 _PLAN_REMINDER: str = (
-    "You have not yet finalized the plan. Return to the task described above, "
-    "develop or refine your implementation plan, present it with "
-    "request_plan_approval(plan), and once approved call finalize_plan(plan)."
+    "You have not yet finalized the plan. The original user intent is in your "
+    "system prompt. Return to that task, develop or refine your implementation "
+    "plan, present it with request_plan_approval(plan), and once approved call "
+    "finalize_plan(plan)."
 )
 
 _EXECUTE_PROMPT: str = (
-    "You are in the EXECUTION phase. The approved plan is provided below — "
-    "implement it step by step using tools. Do NOT re-explore or re-plan. "
-    "When ALL tasks are complete, call mark_execute_complete() with a brief "
-    "summary. Do not stop without calling it."
+    "You are in the EXECUTION phase. The original user intent and the approved "
+    "plan are provided below — implement the plan step by step using tools. "
+    "Do NOT re-explore or re-plan. When ALL tasks are complete, call "
+    "mark_execute_complete() with a brief summary. Do not stop without calling it."
 )
 _EXECUTE_REMINDER: str = (
     "Continue implementing — you have not yet called mark_execute_complete(). "
+    "The original user intent and approved plan are in your system prompt. "
     "Resume from where you left off and complete all remaining tasks. "
-    "The approved plan is in your system prompt. Call "
-    "mark_execute_complete() once everything is done."
+    "Call mark_execute_complete() once everything is done."
 )
 
 _REVIEW_PROMPT: str = (
     "You are in the REVIEW phase. The EXECUTE phase has just completed. "
-    "The approved plan and execution summary are provided below. "
-    "Inspect the changes that were made and run the tests. Call "
+    "The original user intent, approved plan, and execution summary are provided "
+    "below. Inspect the changes that were made and run the tests. Call "
     "approve_review(summary) if all tests pass and the code is correct, or "
     "reject_review(reason) if there are issues that need fixing. "
     "You MUST call one of these two tools."
 )
 _REVIEW_REMINDER: str = (
     "You have not yet called approve_review() or reject_review(). "
-    "The approved plan and execution summary are in your system prompt. "
-    "Review the implementation now and call approve_review(summary) if "
-    "everything is correct, or reject_review(reason) if there are issues."
+    "The original user intent, approved plan, and execution summary are in your "
+    "system prompt. Review the implementation now and call approve_review(summary) "
+    "if everything is correct, or reject_review(reason) if there are issues."
 )
 
 _SUMMARIZE_PROMPT: str = (
-    "You are in the SUMMARY phase. Write a concise summary of what was "
-    "planned, implemented, and verified in this session."
+    "You are in the SUMMARY phase. The original user intent is provided below. "
+    "Write a concise summary of what was planned, implemented, and verified."
 )
 
 _PHASE_INDEX: dict[str, int] = {
@@ -309,7 +310,8 @@ class CodePlanRunner(BaseWorkflowRunner):
             try:
                 await self._run_turn(
                     text, tools=tools, mode=None,
-                    system_prompt=_PLAN_PROMPT, max_turns=20, ctx=ctx,
+                    system_prompt=_PLAN_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
+                    max_turns=20, ctx=ctx,
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
@@ -330,9 +332,13 @@ class CodePlanRunner(BaseWorkflowRunner):
         """Loop until mark_execute_complete() fires; return REVIEW or FAILED."""
         from agenthicc.workflows.phase_tools import make_executor_tools  # noqa: PLC0415
 
-        # Embed the approved plan in the system prompt so every retry turn has
-        # it as persistent context, independent of conversation-history trimming.
-        system_prompt: str = _EXECUTE_PROMPT + f"\n\n[APPROVED PLAN]\n{ctx.plan}"
+        # Embed intent + approved plan in the system prompt so every retry turn
+        # has full context, independent of conversation-history trimming.
+        system_prompt: str = (
+            _EXECUTE_PROMPT
+            + f"\n\n[USER INTENT]\n{ctx.intent}"
+            + f"\n\n[APPROVED PLAN]\n{ctx.plan}"
+        )
 
         for attempt in range(1, _MAX_EXECUTE_ATTEMPTS + 1):
             execute_event: asyncio.Event  = asyncio.Event()
@@ -374,7 +380,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
         # Embed accumulated context in the system prompt so every retry turn
         # has the full picture, independent of conversation-history trimming.
-        system_prompt: str = _REVIEW_PROMPT
+        system_prompt: str = _REVIEW_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}"
         if ctx.plan:
             system_prompt += f"\n\n[APPROVED PLAN]\n{ctx.plan}"
         if ctx.execute_summary:
@@ -427,7 +433,8 @@ class CodePlanRunner(BaseWorkflowRunner):
         try:
             await self._run_turn(
                 text, tools=self._base_tools(), mode=None,
-                system_prompt=_SUMMARIZE_PROMPT, max_turns=4, ctx=ctx,
+                system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
+                max_turns=4, ctx=ctx,
             )
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
