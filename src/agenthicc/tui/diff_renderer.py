@@ -26,6 +26,7 @@ from typing import Any
 
 from rich.console import Console
 from rich.console import Group
+from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
@@ -315,5 +316,5 @@ def render_file_diff(
         _header(path, operation),
         _summary(n_added, n_removed),
         Text(""),
-        table,
+        Padding(table, pad=(0, 0, 0, 2)),
     )
