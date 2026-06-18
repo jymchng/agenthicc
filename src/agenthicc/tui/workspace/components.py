@@ -106,9 +106,6 @@ class StatusComponent:
             l1_parts.append(
                 f"[dim] │[/dim] [cyan]↑ {inp:,}[/cyan] [green]↓ {out:,}[/green]"
             )
-        tool = conv.active_tool()
-        if tool:
-            l1_parts.append(f"[dim] │[/dim] [bold]{_e(tool)}[/bold]")
         # PRD-81: workflow phase badge
         try:
             _wf = self._state.workflow_run()

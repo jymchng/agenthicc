@@ -309,16 +309,22 @@ class CodePlanRunner(BaseWorkflowRunner):
         """Loop until finalize_plan() or exit_code_plan() fires; return EXECUTE, EXITED, or FAILED."""
         from agenthicc.workflows.phase_tools import make_planner_tools  # noqa: PLC0415
 
+        from agenthicc.workflows.phase_tools import make_questions_tool  # noqa: PLC0415
+
         exit_event: asyncio.Event = asyncio.Event()
 
         for attempt in range(1, _MAX_PLAN_ATTEMPTS + 1):
             plan_event: asyncio.Event     = asyncio.Event()
             plan_data:  dict[str, str]    = {}
 
-            tools: _ToolList = list(self._base_tools()) + list(make_planner_tools(
-                self._cfg.approval_svc, plan_event, plan_data,
-                exit_event=exit_event,
-            ))
+            tools: _ToolList = (
+                list(self._base_tools())
+                + list(make_planner_tools(
+                    self._cfg.approval_svc, plan_event, plan_data,
+                    exit_event=exit_event,
+                ))
+                + make_questions_tool(self._cfg.approval_svc)
+            )
 
             text: str = ctx.intent if attempt == 1 else _PLAN_REMINDER
 

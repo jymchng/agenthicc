@@ -260,3 +260,110 @@ def make_reviewer_tools(
         }
 
     return [approve_review, reject_review]
+
+
+def _validate_questions(questions: object) -> list[str]:
+    """Return a list of human-readable problem strings, empty when valid."""
+    if not isinstance(questions, list) or not questions:
+        return ["questions must be a non-empty list"]
+    problems: list[str] = []
+    for i, q in enumerate(questions):
+        if not isinstance(q, dict):
+            problems.append(f"question[{i}] must be a dict, got {type(q).__name__}")
+            continue
+        if not q.get("id"):
+            problems.append(f"question[{i}] missing required key 'id'")
+        if not q.get("text"):
+            problems.append(f"question[{i}] missing required key 'text'")
+        opts = q.get("options")
+        if not opts:
+            problems.append(f"question[{i}] missing required key 'options'")
+        elif not isinstance(opts, list) or len(opts) == 0:
+            problems.append(f"question[{i}].options must be a non-empty list of strings")
+    return problems
+
+
+def make_questions_tool(
+    approval_svc: Any,   # ApprovalService | None
+) -> list:
+    """Return [ask_user] as a @tool()-decorated callable.
+
+    ask_user() presents a QuestionsOverlay to the user and blocks until all
+    questions are answered.  Returns a dict mapping question id → answer string.
+
+    approval_svc=None → returns {"cancelled": True} immediately (headless/tests).
+    """
+    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+
+    @_tool()
+    async def ask_user(questions: list) -> dict:
+        """Present the user with a set of questions and collect their answers.
+
+        Each question must be a dict with:
+          - "id"      (str)  — key in the returned answer dict
+          - "text"    (str)  — question shown to the user
+          - "options" (list) — selectable choices as plain strings
+
+        A free-text fallback ("Other — type your answer") is always added
+        automatically — do not include it in options.
+
+        Returns a dict mapping each question id to the answer string, or
+        {"cancelled": True} if the user cancels.
+
+        On invalid input returns {"error": ..., "problems": [...]} so you
+        can correct the format and retry.
+
+        Example:
+            ask_user([
+                {
+                    "id": "language",
+                    "text": "Which language should we use?",
+                    "options": ["Python", "TypeScript", "Go"]
+                },
+                {
+                    "id": "framework",
+                    "text": "Which framework?",
+                    "options": ["FastAPI", "Django", "Flask"]
+                }
+            ])
+
+        Args:
+            questions: list of {id, text, options} dicts.
+        """
+        if approval_svc is None:
+            return {"cancelled": True}
+
+        problems = _validate_questions(questions)
+        if problems:
+            return {
+                "error": "invalid questions format — fix the problems below and retry",
+                "problems": problems,
+                "expected_format": {
+                    "id": "str",
+                    "text": "str",
+                    "options": ["str", "...at least one option"],
+                },
+            }
+
+        import asyncio as _asyncio  # noqa: PLC0415
+        import uuid as _uuid        # noqa: PLC0415
+        import json as _json        # noqa: PLC0415
+        from agenthicc.tools.approval import ApprovalRequest  # noqa: PLC0415
+
+        req = ApprovalRequest(
+            tool_name="Questions",
+            tool_use_id=_uuid.uuid4().hex,
+            tool_input={"questions": questions},
+            capabilities=frozenset(),
+            event=_asyncio.Event(),
+            kind="questions",
+        )
+        response = await approval_svc.request_approval(req)
+        if not response.allowed:
+            return {"cancelled": True}
+        try:
+            return _json.loads(response.message)
+        except Exception:  # noqa: BLE001
+            return {"error": "failed to parse answers"}
+
+    return [ask_user]

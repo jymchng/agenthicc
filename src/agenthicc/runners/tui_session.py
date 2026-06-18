@@ -14,6 +14,12 @@ if TYPE_CHECKING:
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import SendMessageCommand, InterruptAgentCommand
 
+def _make_session_tools(approval_svc: Any) -> list:
+    """Tools injected into every interactive agent turn (Auto mode + plan phase)."""
+    from agenthicc.workflows.phase_tools import make_questions_tool  # noqa: PLC0415
+    return make_questions_tool(approval_svc)
+
+
 def _build_agent_runner(llm_cfg: Any, *, cassette_dir: Path | None = None) -> Any:
     """Build a lauren-ai AgentRunnerBase wired to a SignalBus."""
     if llm_cfg is None:
@@ -367,14 +373,18 @@ class TUISession:
             req = app_state.pending_approval()
             from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay           # noqa: PLC0415
             from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay  # noqa: PLC0415
+            from agenthicc.tui.workspace.overlays.questions import QuestionsOverlay         # noqa: PLC0415
             if req is not None:
-                if getattr(req, "kind", "tool") == "plan_review":
+                kind = getattr(req, "kind", "tool")
+                if kind == "plan_review":
                     overlay = PlanApprovalOverlay(req, approval_svc, workspace.overlays.hide)
+                elif kind == "questions":
+                    overlay = QuestionsOverlay(req, approval_svc, workspace.overlays.hide)
                 else:
                     overlay = ApprovalOverlay(req, approval_svc, workspace.overlays.hide)
                 workspace.overlays.show(overlay)
             else:
-                if isinstance(workspace.overlays.widget, (ApprovalOverlay, PlanApprovalOverlay)):
+                if isinstance(workspace.overlays.widget, (ApprovalOverlay, PlanApprovalOverlay, QuestionsOverlay)):
                     workspace.overlays.hide()
 
         app_state.pending_approval.subscribe(_on_approval_change)
@@ -491,7 +501,10 @@ class TUISession:
                     exec_cfg=ctx.cfg.execution,
                     skills=ctx.skills,
                     mention_cache=ctx.mention_cache,
-                    project_plugin_tools=ctx.project_plugins.all_tools,
+                    project_plugin_tools=(
+                        ctx.project_plugins.all_tools
+                        + _make_session_tools(ctx.approval_svc)
+                    ),
                     mcp_registry=ctx.mcp_registry,
                     active_agent="default",
                     completed_turns=self._turn_count,
