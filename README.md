@@ -341,14 +341,6 @@ Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
 
 | Feature | Description |
 |---|---|
-| **Event-sourced kernel** | MPSC queue → pure reducer → immutable `AppState`. Every state transition is an appended event; full replay from `events.jsonl`. |
-| **Parallel DAG executor** | Intents compile to dependency DAGs; ready nodes run concurrently up to `max_parallel_tasks`. |
-| **Tool-only agent comms** | Agents never call Python directly — all inter-agent signalling goes through typed communication tools (`agent_spawn`, `agent_send_message`, `task_create`, `workflow_modify`). Full observability and replay for free. |
-| **Lifecycle hooks** | `LifecycleHook.on_before/on_after/on_error` at intent, workflow node, task, agent, and tool-call granularity. Loaded from TOML dotpaths at startup. |
-| **3-tier memory** | Session (in-process LRU+TTL), project (SQLite namespaced KV + artifact table), global (user-wide SQLite). Reads never block; writes serialised per tier. |
-| **Full-screen TUI** | `prompt_toolkit` HSplit layout: scrolling transcript viewport, status line, input bar always pinned to the last row. Braille spinners for live tool calls. |
-| **Headless API** | FastAPI server with intent submission, status polling, state summary, and WebSocket stream. Optional Bearer auth. |
-| **lauren-ai integration** | Agent runners are lauren-ai `AgentRunnerBase` subclasses; `LaurenToolHookAdapter` bridges agenthicc lifecycle hooks to lauren-ai `ToolHook`. |
 
 ---
 
@@ -369,16 +361,7 @@ uv add "agenthicc[tui,api,dev]"
 
 # pip
 pip install agenthicc
-pip install "agenthicc[tui]"
-pip install "agenthicc[api]"
 ```
-
-| Extra | What you get |
-|---|---|
-| *(none)* | Core kernel, runtime, memory, workflow engine |
-| `[tui]` | Full-screen TUI (`prompt_toolkit>=3.0`) |
-| `[api]` | Headless REST+WebSocket server (`fastapi`, `uvicorn`, `websockets`) |
-| `[dev]` | Test tooling (`pytest`, `pytest-asyncio`, `hypothesis`, `pyte`, `httpx`) |
 
 ---
 
@@ -446,9 +429,6 @@ allowed_paths = ["/workspace"]
 [tools]
 allowed = ["read_file", "write_file", "run_tests"]
 
-[api]
-host = "127.0.0.1"
-port = 8000
 ```
 
 **3. Run the TUI**
