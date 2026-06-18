@@ -66,19 +66,7 @@ def _has_cycle(graph: dict[str, set[str]]) -> bool:
 
 
 def _detect_cycle(graph: dict[str, set[str]]) -> bool:
-    """Use ``agenthicc.workflow.dag.detect_cycle`` when available.
-
-    The workflow module is developed in parallel; fall back to the inline
-    DFS when it is not importable (or its signature does not match).
-    """
-    try:
-        from agenthicc.workflows.dag import detect_cycle  # noqa: PLC0415
-    except ImportError:
-        return _has_cycle(graph)
-    try:
-        return bool(detect_cycle(graph))
-    except Exception:
-        return _has_cycle(graph)
+    return _has_cycle(graph)
 
 
 class CommunicationTools:

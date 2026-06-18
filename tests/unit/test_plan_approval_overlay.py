@@ -191,25 +191,27 @@ class TestPlanApprovalSelecting:
         assert isinstance(result, Group)
 
     def test_plan_content_in_render(self):
+        from rich.console import Console
         ov, _, _ = _make_overlay("My important plan step")
         result = ov.render()
-        text = " ".join(r.plain if hasattr(r, "plain") else "" for r in result.renderables)
-        assert "My important plan step" in text
+        console = Console(width=80, highlight=False)
+        with console.capture() as cap:
+            console.print(result)
+        assert "My important plan step" in cap.get()
 
     def test_plan_scroll_indicator_shown(self):
-        # 20 lines > _PLAN_VISIBLE_LINES (10) → scroll indicator appears
-        long_plan = "\n".join(f"Step {i}" for i in range(20))
+        # 25 lines > _PLAN_VISIBLE_LINES (20) → scroll indicator appears
+        long_plan = "\n".join(f"Step {i}" for i in range(25))
         ov, _, _ = _make_overlay(long_plan)
         result = ov.render()
         combined = " ".join(
             r.plain if hasattr(r, "plain") else str(r)
             for r in result.renderables
         )
-        # New scroll indicator format: "lines A–B of Total"
-        assert "lines" in combined and "of 20" in combined
+        assert "lines" in combined and "of 25" in combined
 
     def test_scroll_down_with_bracket(self):
-        long_plan = "\n".join(f"Step {i}" for i in range(20))
+        long_plan = "\n".join(f"Step {i}" for i in range(25))
         ov, _, _ = _make_overlay(long_plan)
         assert ov._plan_scroll == 0
         ov.handle_key(Key.CHAR, "]")
@@ -230,12 +232,12 @@ class TestPlanApprovalSelecting:
         assert ov._plan_scroll == 0   # cannot go below 0
 
     def test_scroll_clamped_at_bottom(self):
-        long_plan = "\n".join(f"Step {i}" for i in range(20))
+        long_plan = "\n".join(f"Step {i}" for i in range(25))
         ov, _, _ = _make_overlay(long_plan)
-        # max_scroll = 20 - 10 = 10
-        ov._plan_scroll = 10
+        # max_scroll = 25 - 20 = 5
+        ov._plan_scroll = 5
         ov.handle_key(Key.CHAR, "]")
-        assert ov._plan_scroll == 10  # cannot go past max
+        assert ov._plan_scroll == 5  # cannot go past max
 
     def test_short_plan_no_scroll_indicator(self):
         # 3 lines ≤ _PLAN_VISIBLE_LINES → no scroll indicator

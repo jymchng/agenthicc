@@ -5,7 +5,7 @@ import abc
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agenthicc.workflows.config import WorkflowConfig
+    pass
 
 
 class BaseWorkflowRunner(abc.ABC):
