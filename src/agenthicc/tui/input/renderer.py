@@ -42,7 +42,7 @@ def build_prompt(
     """
     if in_trigger:
         content = "".join(buf) + mention_suffix + f"\x1b[1m{CURSOR_CHAR}\x1b[0m"
-        return f"\x1b[1;32m{PROMPT_CHAR}\x1b[0m {content}"
+        return f"\x1b[1;33m{PROMPT_CHAR}\x1b[0m {content}"
 
     raw_lines: list[list[str]] = []
     current: list[str] = []
@@ -75,7 +75,7 @@ def build_prompt(
             )
         else:
             line_text = "".join(ln)
-        prefix = f"\x1b[1;32m{PROMPT_CHAR}\x1b[0m " if i == 0 else _INDENT
+        prefix = f"\x1b[1;33m{PROMPT_CHAR}\x1b[0m " if i == 0 else _INDENT
         rendered.append(prefix + line_text)
 
     return "\n\r".join(rendered)

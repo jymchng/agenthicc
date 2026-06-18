@@ -90,7 +90,7 @@ class StatusComponent:
             state_text = agent_st.name.title()
 
         colors = {
-            "idle": "dim", "thinking": "yellow", "running": "cyan",
+            "idle": "white", "thinking": "yellow", "running": "cyan",
             "recovering": "red", "error": "red", "complete": "green",
         }
         color = colors.get(state_name, "dim")

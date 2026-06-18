@@ -43,7 +43,7 @@ class PromptOverlay(Overlay):
         before = _e("".join(buf[:cursor]))
         after  = _e("".join(buf[cursor:]))
         return (
-            f"[bold green]{PROMPT_CHAR}[/bold green] "
+            f"[bold yellow]{PROMPT_CHAR}[/bold yellow] "
             f"{before}[bold]{CURSOR_CHAR}[/bold]{after}"
         )
 

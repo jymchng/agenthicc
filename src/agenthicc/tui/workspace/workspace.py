@@ -19,9 +19,9 @@ from agenthicc.tui.workspace.components import StatusComponent, ComposerComponen
 from agenthicc.tui.workspace.overlay import OverlayHost
 
 
-def _border(cols: int) -> Any:
+def _border(cols: int):
     from rich.text import Text  # noqa: PLC0415
-    return Text("─" * cols, style="dim")
+    return Text("─" * cols, style="yellow dim")
 
 
 def _get_cols() -> int:
