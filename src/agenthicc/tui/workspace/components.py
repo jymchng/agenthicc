@@ -264,7 +264,7 @@ class FooterComponent:
         # Row 1: mode string — derived from AppState.active_mode (PRD-75)
         from agenthicc.tui.runtime.mode_manager import build_mode_str  # noqa: PLC0415
         mode     = self._state.active_mode()
-        mode_line = _fit(f"  [dim]{build_mode_str(mode)}[/dim]", cols)
+        mode_line = _fit(f"  {build_mode_str(mode)}", cols)
 
         # Row 2: notification > paste hint > normal state hints
         notif = conv.notification()

@@ -23,6 +23,7 @@ class RuntimeMode:
     """A named execution context for the agent."""
     name:                 str
     badge:                str            = "⏵⏵"
+    color:                str            = "white"       # Rich color for badge + name
     description:          str            = ""
     system_prompt_suffix: str            = ""
     blocked_capabilities: frozenset[str] = field(default_factory=frozenset)
@@ -92,6 +93,7 @@ def build_default_registry(
             reg.register(RuntimeMode(
                 name=mode.name,
                 badge=getattr(mode, "label", mode.name),
+                color=getattr(mode, "colour", "white"),
                 description=getattr(mode, "description", ""),
                 system_prompt_suffix=getattr(mode, "system_patch", ""),
                 blocked_capabilities=_BLOCKED.get(mode.name, frozenset()),
@@ -102,11 +104,12 @@ def build_default_registry(
     except Exception as exc:  # noqa: BLE001
         log.warning("Could not load modes from agenthicc.modes: %s", exc)
     if not reg.get("Auto"):
-        reg.register(RuntimeMode(name="Auto", badge="⏵⏵", description="Automatic"))
+        reg.register(RuntimeMode(name="Auto", badge="⏵⏵", color="green", description="Automatic"))
     if not reg.get("Guard"):
         reg.register(RuntimeMode(
             name="Guard",
             badge="⏸⏸",
+            color="yellow",
             description=(
                 "All tools are allowed, but side-effecting tools "
                 "require explicit approval before each execution."
@@ -124,6 +127,7 @@ def build_default_registry(
         reg.register(RuntimeMode(
             name="Replay",
             badge="⏮",
+            color="dim",
             description=(
                 "Replaying a previous session. "
                 "All tools are blocked until replay completes."
@@ -183,4 +187,5 @@ class ModeManager:
 
 
 def build_mode_str(mode: RuntimeMode) -> str:
-    return f"{mode.badge} {mode.name}  (shift+tab to cycle){_NEW_LINE_HINT}"
+    c = mode.color
+    return f"[{c}]{mode.badge} {mode.name}[/{c}][dim]  (shift+tab to cycle){_NEW_LINE_HINT}[/dim]"
