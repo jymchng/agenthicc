@@ -92,7 +92,8 @@ to call `console.print()`.  All events for one batch are flushed in a single
 | # | Feature | Expected behaviour |
 |---|---|---|
 | 2.1 | Turn header | `● assistant (model-name)  HH:MM:SS` printed once when the agent starts. |
-| 2.2 | User message | `❯ text` printed when the user submits. |
+| 2.2 | User message | `❯ text` printed when the user submits. The `❯` is **bold yellow** in all four rendering contexts (see §2.2a). |
+| 2.2a | `❯` rendering paths | The chevron appears in four independent code paths that must always share the same colour. **(1)** `tui/input/renderer.py` — raw ANSI `\x1b[1;33m` for the CBREAK input bar (Live block not running). **(2)** `tui/workspace/components.py` `ComposerComponent` — Rich `style="bold yellow"` inside the Live Group. **(3)** `tui/workspace/overlays/prompt.py` `PromptOverlay._render_prompt_line()` — Rich markup `[bold yellow]` for overlay text-input states. **(4)** `tui/workspace/appender.py` `user_message` event — Rich markup `[bold yellow]` echoed to the scroll buffer. When changing the chevron colour all four must be updated. |
 | 2.3 | Tool call line | `  ⎿ tool_name(key=val, …)  ✓/✗  Nms` printed when a call completes. Full args always shown. |
 | 2.4 | Tool output preview | Up to 4 lines of output shown indented below the tool call line. |
 | 2.5 | LLM text | Markdown-rendered text printed after each LLM sub-turn. |

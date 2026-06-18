@@ -194,7 +194,7 @@ def _render_multiline(buf: list[str], cursor: int) -> Any:
     for i, ln in enumerate(lines):
         t = Text()
         t.append(f"{PROMPT_CHAR} " if i == 0 else "  ",
-                 style="bold green" if i == 0 else "")
+                 style="bold yellow" if i == 0 else "")
         if i == cursor_line:
             t.append("".join(ln[:cursor_col]))
             t.append(CURSOR_CHAR, style="bold")

@@ -138,7 +138,7 @@ class ScrollBufferAppender:
                 from rich.markup import escape as _e
                 text = ev.payload.get("text", "")
                 self._console.print(
-                    f"[bold green]❯[/bold green] {_e(text)}",
+                    f"[bold yellow]❯[/bold yellow] {_e(text)}",
                     markup=True, highlight=False,
                 )
 

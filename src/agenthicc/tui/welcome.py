@@ -41,29 +41,29 @@ def _left_column(model: str, cwd: str) -> Any:
     hero.add_column(no_wrap=True)            # title / subtitle
 
     hero.add_row(
-        Text(_MASCOT_LINES[0], style="bold bright_white"),
-        Text("AGENTHICC", style="bold white"),
+        Text(_MASCOT_LINES[0], style="bold bright_yellow"),
+        Text("AGENTHICC", style="bold yellow"),
     )
     hero.add_row(
-        Text(_MASCOT_LINES[1], style="bold bright_white"),
+        Text(_MASCOT_LINES[1], style="bold bright_yellow"),
         Text("state-driven agent operating system", style="dim"),
     )
     hero.add_row(
-        Text(_MASCOT_LINES[2], style="bold bright_white"),
+        Text(_MASCOT_LINES[2], style="bold bright_yellow"),
         Text(""),
     )
 
     parts: list[Any] = [
         hero,
         Text(""),
-        Text("Welcome back!", style="bold white"),
+        Text("Welcome back!", style="bold yellow"),
         Text(""),
     ]
 
     if model:
         meta = Text()
         meta.append("Model  ", style="dim")
-        meta.append(model, style="dim cyan")
+        meta.append(model, style="dim yellow")
         parts.append(meta)
 
     if cwd:
@@ -79,25 +79,25 @@ def _left_column(model: str, cwd: str) -> Any:
 
 def _right_column() -> Any:
     parts: list[Any] = [
-        Text("Tips for getting started", style="bold white"),
+        Text("Tips for getting started", style="bold yellow"),
         Text(""),
         Text.assemble(
             ("Run ", "dim"),
-            ("/init", "cyan"),
+            ("/init", "yellow"),
             (" to create a ", "dim"),
-            ("AGENTS.md", "cyan"),
+            ("AGENTS.md", "yellow"),
             (" file with instructions for agenthicc", "dim"),
         ),
         Text(""),
         Rule(style="dim"),
         Text(""),
-        Text("What's new", style="bold white"),
+        Text("What's new", style="bold yellow"),
         Text(""),
     ]
 
     for entry in _CHANGELOG:
         line = Text()
-        line.append("• ", style="cyan")
+        line.append("• ", style="yellow")
         line.append(entry, style="dim")
         parts.append(line)
 
@@ -116,7 +116,7 @@ def render_welcome(model: str = "", cwd: str = "") -> Align:
     panel = Panel(
         body,
         box=box.ROUNDED,
-        border_style="steel_blue1",
+        border_style="yellow",
         padding=(1, 3),
         expand=True,
     )
