@@ -8,6 +8,18 @@ all answers.
 State machine:
     SELECTING  — ↑↓ option, ←→ question, Enter confirm/submit, Esc cancel
     TYPING     — free-text entry for the "Other" option of the current question
+
+Height stability
+----------------
+The options area is always rendered as exactly ``_opt_rows`` lines (computed
+dynamically from the terminal height), padded with blank rows when a question
+has fewer options than the tallest question.  This keeps the overlay height
+constant while navigating between questions.
+
+Fixed overhead = 18 lines (workspace blank + status + 2 borders + overlay
+header + top-border + nav + 2 blanks + question + blank-after-options +
+bottom-border + hint + workspace bottom-border + footer-with-workflow-line).
+opt_rows = min(max_opts_any_question, max(2, rows − 18)).
 """
 from __future__ import annotations
 
@@ -51,9 +63,10 @@ class Question:
 
 @dataclass
 class _QState:
-    cursor:   int  = 0      # highlighted option index
-    answer:   str  = ""     # confirmed answer (option label or typed text)
-    answered: bool = False
+    cursor:     int  = 0      # highlighted option index (absolute)
+    answer:     str  = ""     # confirmed answer (option label or typed text)
+    answered:   bool = False
+    opt_scroll: int  = 0      # index of first visible option in the viewport
 
 
 class _Mode(Enum):
@@ -90,6 +103,9 @@ class QuestionsOverlay(PromptOverlay):
         ]
         self._states: list[_QState] = [_QState() for _ in self._questions]
 
+        # Cached from last render — read by _handle_selecting.
+        self._opt_rows: int = 2
+
     # ── Overlay interface ──────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
@@ -97,9 +113,10 @@ class QuestionsOverlay(PromptOverlay):
         self._mode    = _Mode.SELECTING
         self._current = 0
         for s in self._states:
-            s.cursor   = 0
-            s.answer   = ""
-            s.answered = False
+            s.cursor     = 0
+            s.answer     = ""
+            s.answered   = False
+            s.opt_scroll = 0
 
     def on_unmount(self) -> None:
         pass
@@ -159,14 +176,37 @@ class QuestionsOverlay(PromptOverlay):
         self._service.respond(allowed=True, message=json.dumps(answers))
         self._close()
 
+    def _clamp_opt_scroll(self, q_idx: int) -> None:
+        """Ensure opt_scroll keeps the cursor inside the visible options window."""
+        st       = self._states[q_idx]
+        n        = len(self._opts(q_idx))
+        opt_rows = self._opt_rows
+        # Cursor below viewport → scroll down.
+        if st.cursor >= st.opt_scroll + opt_rows:
+            st.opt_scroll = st.cursor - opt_rows + 1
+        # Cursor above viewport → scroll up.
+        if st.cursor < st.opt_scroll:
+            st.opt_scroll = st.cursor
+        # Clamp scroll to valid range.
+        st.opt_scroll = max(0, min(st.opt_scroll, max(0, n - opt_rows)))
+
     # ── SELECTING ─────────────────────────────────────────────────────────────
 
     def _render_selecting(self) -> Any:
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
 
-        cols     = shutil.get_terminal_size((80, 24)).columns
+        term     = shutil.get_terminal_size((80, 24))
+        cols     = term.columns
+        rows     = term.lines
         border_w = min(cols, 66)
+
+        # Max options (including "Other") across all questions.
+        max_opts = max((len(self._opts(i)) for i in range(len(self._questions))), default=2)
+        # Overhead = 18 lines (see module docstring).
+        opt_rows       = min(max_opts, max(2, rows - 18))
+        self._opt_rows = opt_rows   # read by _handle_selecting
+
         lines: list[Any] = []
 
         n_ans   = sum(1 for s in self._states if s.answered)
@@ -195,12 +235,19 @@ class QuestionsOverlay(PromptOverlay):
         lines.append(Text(f"  {q.text}"))
         lines.append(Text(""))
 
-        # Options
+        # Options viewport — always exactly opt_rows lines.
         opts = self._opts(q_idx)
-        for i, opt in enumerate(opts):
-            is_cursor  = i == st.cursor
-            is_other   = self._is_other_idx(q_idx, i)
-            is_answer  = (
+        n    = len(opts)
+        self._clamp_opt_scroll(q_idx)
+        scroll     = st.opt_scroll
+        end        = min(scroll + opt_rows, n)
+        shown      = end - scroll
+
+        for i in range(scroll, end):
+            opt       = opts[i]
+            is_cursor = i == st.cursor
+            is_other  = self._is_other_idx(q_idx, i)
+            is_answer = (
                 st.answered and (
                     (is_other and self._is_free_text_answer(q_idx))
                     or (not is_other and st.answer == opt)
@@ -220,6 +267,10 @@ class QuestionsOverlay(PromptOverlay):
 
             lines.append(Text(f"  {indicator} {label}", style=style))
 
+        # Pad to exactly opt_rows for height stability.
+        for _ in range(opt_rows - shown):
+            lines.append(Text(""))
+
         lines.append(Text(""))
         lines.append(Text(_BORDER * border_w, style="dim"))
 
@@ -238,16 +289,25 @@ class QuestionsOverlay(PromptOverlay):
                 self._close()
             return True
 
-        q_idx = self._current
-        st    = self._states[q_idx]
-        opts  = self._opts(q_idx)
-        n     = len(opts)
+        q_idx    = self._current
+        st       = self._states[q_idx]
+        opts     = self._opts(q_idx)
+        n        = len(opts)
+        opt_rows = self._opt_rows
 
         match key:
             case Key.UP:
                 st.cursor = (st.cursor - 1) % n
+                if st.cursor == n - 1:            # wrapped to bottom
+                    st.opt_scroll = max(0, n - opt_rows)
+                elif st.cursor < st.opt_scroll:   # scrolled above viewport
+                    st.opt_scroll = st.cursor
             case Key.DOWN:
                 st.cursor = (st.cursor + 1) % n
+                if st.cursor == 0:                          # wrapped to top
+                    st.opt_scroll = 0
+                elif st.cursor >= st.opt_scroll + opt_rows: # scrolled below
+                    st.opt_scroll = st.cursor - opt_rows + 1
             case Key.LEFT:
                 self._current = max(0, self._current - 1)
             case Key.RIGHT:
