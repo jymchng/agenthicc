@@ -106,17 +106,6 @@ class StatusComponent:
             l1_parts.append(
                 f"[dim] │[/dim] [cyan]↑ {inp:,}[/cyan] [green]↓ {out:,}[/green]"
             )
-        # PRD-81: workflow phase badge
-        try:
-            _wf = self._state.workflow_run()
-            if isinstance(getattr(_wf, "current_phase", None), str):
-                _n     = getattr(_wf, "current_phase_index", 0) + 1
-                _total = getattr(_wf, "total_phases", 0)
-                l1_parts.append(
-                    f"[dim] │[/dim] Phase {_n}/{_total}: {_e(_wf.current_phase)}"
-                )
-        except Exception:  # noqa: BLE001
-            pass
         while len(l1_parts) > 1 and _vlen("".join(l1_parts)) > cols:
             l1_parts.pop()
         line1 = "".join(l1_parts)
@@ -298,12 +287,13 @@ class FooterComponent:
             if (isinstance(getattr(_wf, "status", None), str)
                     and _wf.status == "running"
                     and isinstance(getattr(_wf, "workflow_name", None), str)):
-                _n    = getattr(_wf, "current_phase_index", 0) + 1
-                _tot  = getattr(_wf, "total_phases", 0)
-                _cp   = getattr(_wf, "current_phase", None)
-                _info = f"Phase {_n}/{_tot}: {_e(_cp)}" if isinstance(_cp, str) else "Done"
+                _n      = getattr(_wf, "current_phase_index", 0) + 1
+                _tot    = getattr(_wf, "total_phases", 0)
+                _cp     = getattr(_wf, "current_phase", None)
+                _badge  = self._state.active_mode().badge
+                _phase  = f"  {_n}/{_tot}  {_e(_cp)}" if isinstance(_cp, str) else f"  {_n}/{_tot}"
                 extra.append(Text.from_markup(
-                    _fit(f"  [dim]Workflow: {_e(_wf.workflow_name)}  │  {_info}[/dim]", cols)
+                    _fit(f"  [dim]{_e(_badge)} {_e(_wf.workflow_name)}{_phase}[/dim]", cols)
                 ))
         except Exception:  # noqa: BLE001
             pass

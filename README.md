@@ -98,8 +98,6 @@ Current State:
 
 ---------------------------------------------------------------------------------------------------------------------------------------
 
-  ⎿ request_plan_approval  ✗  0ms
-
 ❊ ↻ Thinking │ 4m 24s │ ↑ 290,266 ↓ 4,022 │ Phase 1/4: plan
 openai/poolside/laguna-m.1
 473badbb-358b-4ba8-b1ae-5fb53bcd6f3e │  1 turn │  $0.302
@@ -124,9 +122,9 @@ openai/poolside/laguna-m.1
 ──────────────────────────────────────────────────────────────────
   ↑↓ options  [ up  ] down  Enter select  Esc deny
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  PLAN Plan  (shift+tab to cycle)  │  ctrl+j = ↵
-ESC Cancel  │  (LLM responding to tool error)
-  Workflow: code_plan  │  Phase 1/4: plan
+  ◈ Plan  (shift+tab to cycle)
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+  ◈ code_plan  1/4  plan
 ```
 
 ### Plan Mode to Execution Mode
@@ -163,11 +161,128 @@ openai/poolside/laguna-m.1
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯ ▌
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  AUTO Auto  (shift+tab to cycle)  │  ctrl+j = ↵
-ESC Cancel  │  (LLM responding to tool error)
-  Workflow: code_plan  │  Phase 2/4: execute
+  ⏵⏵ Auto  (shift+tab to cycle)
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+  ◈ code_plan  2/4  execute
 ```
 
+### Agent Asking User **ONE** Question
+
+```
+❀ Thinking │ 2m 45s │ ↑ 698,939 ↓ 5,954
+openai/deepseek-v4-flash
+c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  1 turn │  $0.717
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ❓ Questions  (0 of 1 answered)
+──────────────────────────────────────────────────────────────────
+    Question 1 of 1                                            ○
+
+  What kind of enhancement do you want?
+
+  ▶ New CLI feature (e.g. --version, --json output, --clipboard)
+    Performance optimization (e.g. speed up generation)
+    Bug fix / polish (e.g. fix broken README badges, edge cases)
+
+──────────────────────────────────────────────────────────────────
+  ↑↓ option   ←→ question   Enter confirm   Esc cancel
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ◈ Plan  (shift+tab to cycle)
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+  ◈ code_plan  1/4  plan
+```
+
+### Agent Asking User Multiple Questions:
+
+```
+❀ Thinking │ 3m 29s │ ↑ 747,313 ↓ 6,197
+openai/deepseek-v4-flash
+c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  1 turn │  $0.766
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ❓ Questions  (0 of 3 answered)
+──────────────────────────────────────────────────────────────────
+    Question 1 of 3 ▶                                      ○ ○ ○
+
+  What area of the project should the enhancement focus on?
+
+  ▶ CLI / user-facing commands
+    Password generation itself (new algorithms, templates)
+    Vault / storage / encryption
+
+──────────────────────────────────────────────────────────────────
+  ↑↓ option   ←→ question   Enter confirm   Esc cancel
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ◈ Plan  (shift+tab to cycle)
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+  ◈ code_plan  1/4  plan
+
+✾ Thinking │ 4m 17s │ ↑ 747,313 ↓ 6,197
+openai/deepseek-v4-flash
+c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  1 turn │  $0.766
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ❓ Questions  (1 of 3 answered)
+──────────────────────────────────────────────────────────────────
+  ◀ Question 2 of 3 ▶                                      ● ○ ○
+
+  How much code change are you willing to accept?
+
+    30-50 lines (moderate feature)
+  ▶ I'll trust your judgment
+    Other — type your answer
+
+──────────────────────────────────────────────────────────────────
+  ↑↓ option   ←→ question   Enter confirm   Esc cancel
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ◈ Plan  (shift+tab to cycle)
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+  ◈ code_plan  1/4  plan
+
+✽ Thinking │ 4m 31s │ ↑ 747,313 ↓ 6,197
+openai/deepseek-v4-flash
+c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  1 turn │  $0.766
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ❓ Questions  (2 of 3 answered)
+──────────────────────────────────────────────────────────────────
+  ◀ Question 3 of 3                                        ● ● ○
+
+  Who is the primary beneficiary of this enhancement?
+
+  ▶ End users (better UX, new features)
+    Developers (better DX, tooling, CI)
+    Both - something visible and practical
+
+──────────────────────────────────────────────────────────────────
+  ↑↓ option   ←→ question   Enter confirm   Esc cancel
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ◈ Plan  (shift+tab to cycle)
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+  ◈ code_plan  1/4  plan
+```
+
+### Agent Implementing the Changes
+
+```
+Now I have everything. Let me implement all changes systematically.                                                                    
+
+Change 1: Add import json to cli.py                                                                                                    
+  Modified: password_generator/cli.py
+  ⎿ patch_file(path='password_generator/cli.p, old_content='import argparse\nimport , new_content='import argparse\nimport )  ✓  3ms
+Change 2: Add global --json flag to root parser                                                                                        
+  Modified: password_generator/cli.py
+  ⎿ patch_file(old_content='    parser = argparse.Ar, new_content='    parser = argparse.Ar, path='password_generator/cli.p)  ✓  3ms
+Change 3: Modify cmd_generate for JSON output                                                                                          
+  Modified: password_generator/cli.py
+  ⎿ patch_file(old_content='    for pw in passwords:, new_content='    if args.json:\n     , path='password_generator/cli.p)  ✓  3ms
+
+❀ Thinking │ 1m 3s │ ↑ 991,944 ↓ 6,130
+openai/deepseek-v4-flash
+c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  3 turns │  $0.957
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ ▌
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ Auto  (shift+tab to cycle)
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+  ⏵⏵ code_plan  2/4  execute
+```
 ---
 
 ## Features

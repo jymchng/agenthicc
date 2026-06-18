@@ -15,7 +15,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-_NEW_LINE_HINT = "  │  ctrl+j = ↵"
+_NEW_LINE_HINT = ""
 
 
 @dataclass(frozen=True)
