@@ -45,10 +45,11 @@ _MAX_REVIEW_ATTEMPTS:  int = 10
 # ── system prompts ────────────────────────────────────────────────────────────
 
 _PLAN_PROMPT: str = (
-    "You are in the PLANNING phase. First explore the repository to understand "
-    "the codebase. Then produce a detailed implementation plan. Use "
-    "request_plan_approval() to present the plan for human review, and "
-    "finalize_plan() once it is approved."
+    "You are in the PLANNING phase. Explore only the parts of the codebase "
+    "directly relevant to the user's intent — do not do a general repository "
+    "survey. Produce a focused implementation plan that addresses exactly what "
+    "was asked, nothing more. Use request_plan_approval() to present the plan "
+    "for human review, and finalize_plan() once it is approved."
 )
 _PLAN_REMINDER: str = (
     "You have not yet finalized the plan. Return to the task described above, "

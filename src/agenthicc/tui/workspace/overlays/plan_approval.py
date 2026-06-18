@@ -19,7 +19,7 @@ from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlays.prompt import PromptOverlay
 
 _BORDER = "─"
-_PLAN_VISIBLE_LINES = 10   # plan lines shown in the viewport at once
+_PLAN_VISIBLE_LINES = 20   # plan lines shown in the viewport at once
 
 # (label, allowed, needs_prompt)
 _OPTIONS: list[tuple[str, bool, bool]] = [
@@ -78,9 +78,10 @@ class PlanApprovalOverlay(PromptOverlay):
     # ── SELECTING ─────────────────────────────────────────────────────────────
 
     def _render_selecting(self) -> Any:
-        from rich.console import Group        # noqa: PLC0415
+        from rich.console import Group          # noqa: PLC0415
+        from rich.markdown import Markdown    # noqa: PLC0415
+        from rich.padding import Padding      # noqa: PLC0415
         from rich.text import Text            # noqa: PLC0415
-        from rich.markup import escape as _e  # noqa: PLC0415
 
         cols       = shutil.get_terminal_size((80, 24)).columns
         border_w   = min(cols, 66)
@@ -98,8 +99,7 @@ class PlanApprovalOverlay(PromptOverlay):
             self._plan_scroll = scroll   # clamp in case terminal was resized
             visible     = plan_lines[scroll : scroll + _PLAN_VISIBLE_LINES]
 
-            for ln in visible:
-                lines.append(Text.from_markup(f"  [dim]{_e(ln[:cols - 4])}[/dim]"))
+            lines.append(Padding(Markdown("\n".join(visible)), pad=(0, 0, 0, 2)))
 
             # Scroll position indicator (only when plan overflows viewport)
             if total > _PLAN_VISIBLE_LINES:
