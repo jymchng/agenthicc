@@ -58,28 +58,31 @@ _PLAN_REMINDER: str = (
 )
 
 _EXECUTE_PROMPT: str = (
-    "You are in the EXECUTION phase. You already explored and planned in the "
-    "previous phase — do NOT re-explore. Implement the approved plan step by "
-    "step using tools. When ALL tasks are complete, call "
-    "mark_execute_complete() with a brief summary. Do not stop without calling it."
+    "You are in the EXECUTION phase. The approved plan is provided below — "
+    "implement it step by step using tools. Do NOT re-explore or re-plan. "
+    "When ALL tasks are complete, call mark_execute_complete() with a brief "
+    "summary. Do not stop without calling it."
 )
 _EXECUTE_REMINDER: str = (
     "Continue implementing — you have not yet called mark_execute_complete(). "
-    "Resume from where you left off and complete all remaining tasks. Call "
+    "Resume from where you left off and complete all remaining tasks. "
+    "The approved plan is in your system prompt. Call "
     "mark_execute_complete() once everything is done."
 )
 
 _REVIEW_PROMPT: str = (
-    "You are in the REVIEW phase. Inspect the changes you just made and run "
-    "the tests. Call approve_review(summary) if all tests pass and the code is "
-    "correct, or reject_review(reason) if there are issues that need fixing. "
+    "You are in the REVIEW phase. The EXECUTE phase has just completed. "
+    "The approved plan and execution summary are provided below. "
+    "Inspect the changes that were made and run the tests. Call "
+    "approve_review(summary) if all tests pass and the code is correct, or "
+    "reject_review(reason) if there are issues that need fixing. "
     "You MUST call one of these two tools."
 )
 _REVIEW_REMINDER: str = (
-    "You have not yet called approve_review() or reject_review(). Review the "
-    "implementation now and call one of these tools: approve_review(summary) "
-    "if all tests pass and the code is correct, or reject_review(reason) if "
-    "there are issues that need fixing."
+    "You have not yet called approve_review() or reject_review(). "
+    "The approved plan and execution summary are in your system prompt. "
+    "Review the implementation now and call approve_review(summary) if "
+    "everything is correct, or reject_review(reason) if there are issues."
 )
 
 _SUMMARIZE_PROMPT: str = (
@@ -327,6 +330,10 @@ class CodePlanRunner(BaseWorkflowRunner):
         """Loop until mark_execute_complete() fires; return REVIEW or FAILED."""
         from agenthicc.workflows.phase_tools import make_executor_tools  # noqa: PLC0415
 
+        # Embed the approved plan in the system prompt so every retry turn has
+        # it as persistent context, independent of conversation-history trimming.
+        system_prompt: str = _EXECUTE_PROMPT + f"\n\n[APPROVED PLAN]\n{ctx.plan}"
+
         for attempt in range(1, _MAX_EXECUTE_ATTEMPTS + 1):
             execute_event: asyncio.Event  = asyncio.Event()
             execute_data:  dict[str, str] = {}
@@ -344,7 +351,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             try:
                 await self._run_turn(
                     text, tools=tools, mode="Auto",
-                    system_prompt=_EXECUTE_PROMPT, max_turns=40, ctx=ctx,
+                    system_prompt=system_prompt, max_turns=40, ctx=ctx,
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
@@ -365,6 +372,14 @@ class CodePlanRunner(BaseWorkflowRunner):
         """Loop until approve_review() or reject_review() fires; return SUMMARIZE, EXECUTE, or FAILED."""
         from agenthicc.workflows.phase_tools import make_reviewer_tools  # noqa: PLC0415
 
+        # Embed accumulated context in the system prompt so every retry turn
+        # has the full picture, independent of conversation-history trimming.
+        system_prompt: str = _REVIEW_PROMPT
+        if ctx.plan:
+            system_prompt += f"\n\n[APPROVED PLAN]\n{ctx.plan}"
+        if ctx.execute_summary:
+            system_prompt += f"\n\n[EXECUTION SUMMARY]\n{ctx.execute_summary}"
+
         for attempt in range(1, _MAX_REVIEW_ATTEMPTS + 1):
             review_event: asyncio.Event  = asyncio.Event()
             review_data:  dict[str, str] = {}
@@ -373,12 +388,15 @@ class CodePlanRunner(BaseWorkflowRunner):
                 list(self._base_tools())
                 + list(make_reviewer_tools(review_event, review_data))
             )
-            text: str = ctx.intent if attempt == 1 else _REVIEW_REMINDER
+            text: str = (
+                f"Execution complete. Review the implementation for: {ctx.intent}"
+                + (f"\n\nExecution summary: {ctx.execute_summary}" if ctx.execute_summary else "")
+            ) if attempt == 1 else _REVIEW_REMINDER
 
             try:
                 await self._run_turn(
                     text, tools=tools, mode=None,
-                    system_prompt=_REVIEW_PROMPT, max_turns=8, ctx=ctx,
+                    system_prompt=system_prompt, max_turns=8, ctx=ctx,
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
