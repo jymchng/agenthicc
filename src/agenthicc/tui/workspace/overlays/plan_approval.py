@@ -74,6 +74,8 @@ class PlanApprovalOverlay(PromptOverlay):
         # Pre-rendered line cache — rebuilt on mount and on terminal width change.
         self._rendered_lines: list[Text] = []
         self._render_width:   int        = 0
+        # Cached plan_visible from last render — read by _handle_selecting.
+        self._plan_visible:   int        = _PLAN_VISIBLE_LINES
 
     # ── Overlay interface ──────────────────────────────────────────────────────
 
@@ -84,6 +86,7 @@ class PlanApprovalOverlay(PromptOverlay):
         self._plan_scroll    = 0
         self._rendered_lines = []   # force rebuild on first render
         self._render_width   = 0
+        self._plan_visible   = _PLAN_VISIBLE_LINES
 
     def on_unmount(self) -> None:
         pass
@@ -125,8 +128,15 @@ class PlanApprovalOverlay(PromptOverlay):
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
 
-        cols     = shutil.get_terminal_size((80, 24)).columns
-        border_w = min(cols, 66)
+        term             = shutil.get_terminal_size((80, 24))
+        cols             = term.columns
+        rows             = term.lines
+        border_w         = min(cols, 66)
+        # Overhead = workspace chrome (blank+status+2 borders+footer) +
+        # overlay fixed chrome (header+top-border+indicator+bottom-border+
+        # 3 options+bottom-border+hint) = 18 lines.
+        plan_visible     = min(_PLAN_VISIBLE_LINES, max(4, rows - 18))
+        self._plan_visible = plan_visible   # read by _handle_selecting
         lines: list[Any] = []
 
         lines.append(Text.from_markup("[bold cyan]  📋 Plan Review[/bold cyan]"))
@@ -141,26 +151,26 @@ class PlanApprovalOverlay(PromptOverlay):
                 self._build_rendered_lines(plan_text, content_width)
 
             total  = len(self._rendered_lines)
-            scroll = max(0, min(self._plan_scroll, max(0, total - _PLAN_VISIBLE_LINES)))
+            scroll = max(0, min(self._plan_scroll, max(0, total - plan_visible)))
             self._plan_scroll = scroll   # clamp in case terminal was resized
 
-            visible = self._rendered_lines[scroll : scroll + _PLAN_VISIBLE_LINES]
+            visible = self._rendered_lines[scroll : scroll + plan_visible]
             for ln in visible:
                 # Prepend 2-space indent; append_text preserves all ANSI spans.
                 prefixed = Text("  ")
                 prefixed.append_text(ln)
                 lines.append(prefixed)
-            # Pad to exactly _PLAN_VISIBLE_LINES rows so the overlay height is
+            # Pad to exactly plan_visible rows so the overlay height is
             # constant on every redraw.  Varying height causes the Rich Live
             # block to under-clear the previous render, bleeding old content.
-            for _ in range(_PLAN_VISIBLE_LINES - len(visible)):
+            for _ in range(plan_visible - len(visible)):
                 lines.append(Text(""))
 
             # Indicator row — always emitted (blank when not needed) to keep
             # the total line count fixed regardless of scroll position.
-            if total > _PLAN_VISIBLE_LINES:
+            if total > plan_visible:
                 first  = scroll + 1
-                last   = min(scroll + _PLAN_VISIBLE_LINES, total)
+                last   = min(scroll + plan_visible, total)
                 above  = scroll > 0
                 below  = last < total
                 prefix = "↑ · " if above else ""
@@ -171,7 +181,7 @@ class PlanApprovalOverlay(PromptOverlay):
                 lines.append(Text(""))   # fixed-height placeholder
         else:
             lines.append(Text("  [no plan content]", style="dim"))
-            for _ in range(_PLAN_VISIBLE_LINES - 1):
+            for _ in range(plan_visible - 1):
                 lines.append(Text(""))
             lines.append(Text(""))   # indicator row placeholder
 
@@ -209,7 +219,7 @@ class PlanApprovalOverlay(PromptOverlay):
             case Key.CHAR if ch == "[":
                 self._plan_scroll = max(0, self._plan_scroll - 1)
             case Key.CHAR if ch == "]":
-                max_scroll = max(0, total - _PLAN_VISIBLE_LINES)
+                max_scroll = max(0, total - self._plan_visible)
                 self._plan_scroll = min(max_scroll, self._plan_scroll + 1)
             case _:
                 pass

@@ -63,11 +63,14 @@ class Workspace:
         self._live = Live(
             self._build(),
             console=self._console,
-            auto_refresh=False,   # no background _RefreshThread
-            transient=True,       # prevents ghost Live-content in the scroll buffer
+            auto_refresh=False,        # no background _RefreshThread
+            transient=True,            # prevents ghost Live-content in the scroll buffer
             # (with transient=False, console.print() while Live is active orphans
             # old Live content into the scroll buffer, causing repeated status-bar
             # lines in the transcript)
+            vertical_overflow="crop",  # silently clip when overlay exceeds terminal height;
+            # "ellipsis" (default) injects a "..." on the last visible row which
+            # is visually confusing inside the plan content area
         )
         self._live.start()
 

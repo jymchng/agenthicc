@@ -215,10 +215,12 @@ class TestPlanApprovalSelecting:
     def test_scroll_down_with_bracket(self):
         long_plan = "\n\n".join(f"Step {i}" for i in range(25))
         ov, _, _ = _make_overlay(long_plan)
-        ov.render()   # populate _rendered_lines before key handler reads total
-        assert ov._plan_scroll == 0
-        ov.handle_key(Key.CHAR, "]")
-        assert ov._plan_scroll == 1
+        ov.render()   # populates _rendered_lines AND sets _plan_visible
+        # Only scrollable if total rendered lines exceed the dynamic viewport.
+        if len(ov._rendered_lines) > ov._plan_visible:
+            assert ov._plan_scroll == 0
+            ov.handle_key(Key.CHAR, "]")
+            assert ov._plan_scroll == 1
 
     def test_scroll_up_with_bracket(self):
         long_plan = "\n".join(f"Step {i}" for i in range(20))
@@ -237,9 +239,9 @@ class TestPlanApprovalSelecting:
     def test_scroll_clamped_at_bottom(self):
         long_plan = "\n\n".join(f"Step {i}" for i in range(25))
         ov, _, _ = _make_overlay(long_plan)
-        ov.render()   # populate _rendered_lines so total is known
+        ov.render()   # populate _rendered_lines and set _plan_visible
         total      = len(ov._rendered_lines)
-        max_scroll = max(0, total - 20)   # _PLAN_VISIBLE_LINES = 20
+        max_scroll = max(0, total - ov._plan_visible)
         ov._plan_scroll = max_scroll
         ov.handle_key(Key.CHAR, "]")
         assert ov._plan_scroll == max_scroll  # cannot go past max

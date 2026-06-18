@@ -500,8 +500,9 @@ is available in the execute phase without any re-exploration.
 
 | # | Feature | Expected behaviour |
 |---|---|---|
-| 16.21 | Plan display | The overlay shows up to 10 lines of the plan in a scrollable viewport. |
-| 16.22 | Scrolling | `[` scrolls the plan viewport up one line; `]` scrolls down. Clamped at top and bottom. A scroll indicator (`↑ · lines A–B of Total · ↓`) is shown when the plan overflows. |
+| 16.21 | Plan display | The overlay renders the plan as Markdown in a scrollable viewport. The viewport height adapts to the terminal: `plan_visible = min(20, max(4, rows − 18))`, where 18 is the fixed chrome overhead (workspace blank + status + 2 borders + overlay header + top-border + indicator + bottom-border + 3 options + bottom-border + hint + workspace bottom-border + footer-with-workflow-line). The overlay height is therefore constant on every redraw — the content area is always padded to exactly `plan_visible` rows plus a fixed indicator row — preventing the Rich Live block from bleeding old content when the height would otherwise vary. |
+| 16.21a | Dynamic viewport by terminal size | `plan_visible` is recomputed on every render from the live terminal dimensions (`shutil.get_terminal_size()`). Representative values: \| Terminal rows \| `plan_visible` \| \|---\|---\| \| 24 \| 6 \| \| 30 \| 12 \| \| 40 \| 20 (max) \| |
+| 16.22 | Scrolling | `[` scrolls the plan viewport up one line; `]` scrolls down. Clamped at top and bottom. A scroll indicator (`↑ · lines A–B of Total · ↓`) is shown when the plan overflows the dynamic viewport. |
 | 16.23 | Three options | `▶ Approve`, `Reject — add feedback`, `Approve — add instructions`. Navigated with `↑`/`↓`, confirmed with `Enter`. |
 | 16.24 | Prompt input | Options 2 and 3 enter a PROMPTING state where the user types feedback or instructions. `Enter` submits; `Esc` returns to SELECTING. |
 | 16.25 | Approval feedback to planner | The user's typed message is returned as `response.message` and delivered to the planner as the `feedback` or `instructions` field of the tool result. |
