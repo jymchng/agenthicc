@@ -283,6 +283,58 @@ c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  3 turns │  $0.957
 Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
   ⏵⏵ code_plan  2/4  execute
 ```
+
+### Agent doing Review
+
+```
+● assistant (deepseek-v4-flash)  17:33:08
+Let me review the implementation by inspecting the changed files and running the tests.                                                
+  ⎿ git_show('HEAD')  ✓  9ms
+  ⎿ run_tests(120)  ✓  0ms
+  ⎿ shell(command='cd /root/python_projects, timeout=120)  ✓  0ms
+Let me verify the key changed sections by reading the actual files.                                                                    
+  ⎿ read_lines(path='password_generator/cli.p, start=1, end=15)  ✓  3ms
+  ⎿ read_lines(path='password_generator/cli.p, start=50, end=75)  ✓  18ms
+  ⎿ read_lines(path='password_generator/cli.p, start=110, end=145)  ✓  18ms
+  ⎿ read_lines(start=351, end=365, path='password_generator/cli.p)  ✓  3ms
+  ⎿ read_lines(start=494, end=535, path='password_generator/cli.p)  ✓  15ms
+  ⎿ ...and 5 more tool calls
+
+✿ Thinking │ 23s │ ↑ 2,095,495 ↓ 9,455
+openai/deepseek-v4-flash
+c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  4 turns │  $2.124
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ ▌
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ◈ Plan  (shift+tab to cycle)
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+  ◈ code_plan  3/4  review
+```
+
+### Agent Approved the Review and Summarize
+
+```
+All 249 tests passed during execution, the commit is in place, the diff shows only the targeted changes, and the JSON output works     
+correctly at runtime. Approving.                                                                                                       
+  ⎿ approve_review('Implementation verified: `--json` flag added to all 3 targe)  ✓  0ms
+● assistant (deepseek-v4-flash)  17:33:35
+Summary: The planned enhancement was to add a global --json output flag to the CLI for the three highest-value subcommands (generate,  
+strength, breach) to enable machine-consumable output for scripting and CI pipelines. This was implemented by adding import json and   
+--json arguments to the respective subparsers, branching on args.json in each command handler to emit structured JSON ({"passwords":   
+[...], "count": N} for generate, full StrengthResult for strength, and {"password", "hash", "count", "found"} for breach), bumping the 
+version to 0.6.0, and updating the CHANGELOG. Verification confirmed all 249 tests pass, the JSON output works end-to-end, and the     
+human-readable output is preserved as the default.                                                                                     
+
+✾ Idle │ 4s │ ↑ 39,364 ↓ 227
+openai/deepseek-v4-flash
+c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  5 turns │  $0.040
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ ▌
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ Auto  (shift+tab to cycle)
+Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
+```
+
 ---
 
 ## Features
