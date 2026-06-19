@@ -11,12 +11,11 @@ Adding a new trigger char or a new mode requires no changes here.
 """
 from __future__ import annotations
 
-import sys
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agenthicc.tui.cbreak_reader import Key, raw_mode, read_key
+from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.input.buffer import InputBuffer
 from agenthicc.tui.input.history import HistoryNavigator
 from agenthicc.tui.input.paste import PasteState
@@ -92,25 +91,21 @@ class UnifiedInputSession:
     async def run(self) -> None:
         """Block until the user exits (Ctrl+C twice or Ctrl+D on empty)."""
         import asyncio as _asyncio  # noqa: PLC0415
+        from agenthicc.tui.terminal.backend import get_backend  # noqa: PLC0415
 
-        # Non-interactive environment (pipe, CI, redirect) — exit cleanly so
-        # TUISession.run() cancels background tasks via its finally block.
-        if not sys.stdin.isatty():
-            return
-
-        try:
-            fd = sys.stdin.fileno()
-        except Exception:  # noqa: BLE001
-            # stdin backed by io.StringIO or similar — no real file descriptor.
+        backend = get_backend()
+        if not backend.is_interactive():
+            # Non-interactive environment (pipe, CI, redirect, Windows without
+            # a console) — exit cleanly so TUISession cancels tasks normally.
             return
 
         loop = _asyncio.get_event_loop()
-        with raw_mode(fd):
+        with backend.enter_raw_mode():
             while True:
                 try:
                     # run_in_executor lets the event loop service other tasks
                     # (agent streaming, workspace redraws, tick loop, etc.)
-                    key, ch = await loop.run_in_executor(None, read_key, fd)
+                    key, ch = await loop.run_in_executor(None, backend.read_key)
                 except KeyboardInterrupt:
                     self._state.conversation.notification.set(None)
                     return

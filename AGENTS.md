@@ -48,6 +48,11 @@ model = "claude-sonnet-4-6"
 | `src/agenthicc/api/server.py` | `create_app(processor, api_key)`: FastAPI lifespan, `POST /v1/intents`, `GET /v1/intents/{id}`, `GET /v1/state/summary`, `WS /v1/ws` |
 | `src/agenthicc/config.py` | `AgenthiccConfig` + sub-dataclasses; `load_config()`; `deep_merge()`; `to_system_settings()`; `to_security_policy()` |
 | `src/agenthicc/security.py` | `build_policy_from_config()`: `SecuritySettings` → kernel `SecurityPolicy` |
+| `src/agenthicc/tui/terminal/backend.py` | `TerminalBackend` Protocol; `get_backend()` factory — the only permitted `os.name` branch |
+| `src/agenthicc/tui/terminal/posix_backend.py` | `PosixBackend` — wraps `cbreak_reader.raw_mode` / `read_key`; owns all POSIX terminal setup |
+| `src/agenthicc/tui/terminal/windows_backend.py` | `WindowsBackend` — exclusive owner of all `msvcrt` calls; no other file may import `msvcrt` |
+| `src/agenthicc/tui/cbreak_reader.py` | `Key` enum (canonical — imported by 11 files); `raw_mode(fd)`; `read_key(fd)` — used only by `PosixBackend` |
+| `src/agenthicc/tui/terminal_caps.py` | `TerminalCapabilities` frozen dataclass; `TerminalCapabilityDetector.detect()` |
 | `llms-full.txt` | Full API reference for LLMs — must stay in sync with public symbols |
 | `llms.txt` | Short package overview — update when public API changes |
 | `tests/conftest.py` | Shared fixtures: `processor`, `pool`, `comm_tools`, `minimal_state`, `running_processor` |
@@ -309,6 +314,17 @@ If you change a `CommunicationTools` method signature, update:
 1. `runtime/comm_tools.py` — the method itself
 2. `llms-full.txt` — the method's section
 3. Any tests in `tests/unit/test_comm_tools.py` that call the old signature
+
+## Terminal backend rules (PRD-105/106)
+
+- **`get_backend()`** in `tui/terminal/backend.py` is the **only** place that may branch on `os.name` for terminal decisions.
+- **No application code** may import `msvcrt`, `termios`, or `tty` directly — all platform-specific terminal calls are confined to `posix_backend.py` and `windows_backend.py`.
+- **`Key` enum** lives in `cbreak_reader.py` and stays there — all 11 existing importers use that path; do not create a second definition.
+- **`unified_session.run()`** calls `get_backend()` and checks `backend.is_interactive()` before entering `enter_raw_mode()` — if not interactive, it returns cleanly so `TUISession` can cancel tasks normally.
+- **`PosixBackend.enter_raw_mode()`** on a non-TTY fd yields without configuring the terminal (passthrough); never crashes.
+- **`WindowsBackend.enter_raw_mode()`** is a no-op; `msvcrt.getwch()` already bypasses line buffering.
+
+---
 
 ## Key invariants
 

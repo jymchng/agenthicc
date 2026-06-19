@@ -690,6 +690,50 @@ terminal-dependent features degrade gracefully when unavailable.
 
 ---
 
+## 22. Windows Terminal Backend — msvcrt (PRD-106)
+
+A platform-independent `TerminalBackend` abstraction replaces direct
+`termios`/`tty` calls in application code.  Windows uses an `msvcrt` backend;
+POSIX uses the existing `cbreak_reader` logic behind a `PosixBackend` wrapper.
+
+### Package layout
+
+```
+tui/terminal/
+├── __init__.py          re-exports TerminalBackend, get_backend
+├── backend.py           TerminalBackend Protocol + get_backend() factory
+├── posix_backend.py     PosixBackend — wraps cbreak_reader.raw_mode / read_key
+└── windows_backend.py   WindowsBackend — exclusive owner of all msvcrt calls
+```
+
+### Factory rule
+
+`get_backend()` is the **only** permitted platform-specific branch:
+
+```python
+if os.name == "nt":   → WindowsBackend
+else:                 → PosixBackend
+```
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 22.1 | Backend abstraction | `TerminalBackend` Protocol exposes `is_interactive()`, `read_key()`, `enter_raw_mode()`, `restore()`. |
+| 22.2 | POSIX backend | `PosixBackend` delegates to `cbreak_reader.raw_mode` and `cbreak_reader.read_key`; no termios calls leak outside. |
+| 22.3 | Windows backend | `WindowsBackend` uses `msvcrt.getwch()` for input; no termios/tty/fcntl imports. |
+| 22.4 | Factory selection | `get_backend()` returns `WindowsBackend` when `os.name == "nt"`, `PosixBackend` otherwise. |
+| 22.5 | `unified_session.run()` uses backend | `run()` calls `get_backend()`, checks `is_interactive()`, enters `backend.enter_raw_mode()`, and calls `backend.read_key()` via `run_in_executor`. |
+| 22.6 | Backend isolation | No file outside `tui/terminal/windows_backend.py` imports `msvcrt`. |
+| 22.7 | Key enum unchanged | `Key` stays in `cbreak_reader`; all 11 existing importers continue to work without change. |
+| 22.8 | Printable Unicode input | `WindowsBackend.read_key()` returns `(Key.CHAR, ch)` for printable Unicode via `msvcrt.getwch()`. |
+| 22.9 | Arrow keys on Windows | `\xe0H/P/K/M` → `UP/DOWN/LEFT/RIGHT`; `\xe0G/O` → `HOME/END`. |
+| 22.10 | Shift+Tab on Windows | `\x00\x0f` → `Key.SHIFT_TAB`. |
+| 22.11 | Ctrl+C on Windows | `\x03` → `Key.CTRL_C`; cancellation works correctly. |
+| 22.12 | `enter_raw_mode` no-op on Windows | `WindowsBackend.enter_raw_mode()` is a no-op context manager; `msvcrt.getwch()` bypasses line buffering without setup. |
+| 22.13 | Non-interactive exit | `backend.is_interactive()` returns False in CI/pipe/redirect; `run()` returns cleanly without crashing. |
+| 22.14 | PosixBackend passthrough on non-TTY fd | `enter_raw_mode()` on a non-TTY fd yields without configuring the terminal (tcgetattr guard). |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.
