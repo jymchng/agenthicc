@@ -5,6 +5,7 @@ so the panel lands in the normal scroll buffer.
 """
 from __future__ import annotations
 
+import shutil
 from typing import Any
 
 from rich import box
@@ -33,12 +34,12 @@ _CHANGELOG = [
 
 # ── left column ───────────────────────────────────────────────────────────────
 
-def _left_column(model: str, cwd: str) -> Any:
+def _left_column(model: str, cwd: str, left_w: int = 46) -> Any:
     # Mascot + title: line-for-line alignment.
     # Fixed width on the mascot column prevents Rich from squishing it.
     hero = Table.grid(padding=(0, 2, 0, 0))
     hero.add_column(no_wrap=True, width=9)   # mascot — widest line is 8 chars
-    hero.add_column(no_wrap=True)            # title / subtitle
+    hero.add_column()                        # title / subtitle — wraps on narrow terminals
 
     hero.add_row(
         Text(_MASCOT_LINES[0], style="bold bright_yellow"),
@@ -67,9 +68,14 @@ def _left_column(model: str, cwd: str) -> Any:
         parts.append(meta)
 
     if cwd:
+        _label = "Dir    "   # 7 chars
+        _path  = str(cwd)
+        _avail = left_w - len(_label)
+        if len(_path) > _avail:
+            _path = _path[:max(4, _avail - 1)] + "…"
         wd = Text()
-        wd.append("Dir    ", style="dim")
-        wd.append(str(cwd), style="dim")
+        wd.append(_label, style="dim")
+        wd.append(_path, style="dim")
         parts.append(wd)
 
     return Group(*parts)
@@ -108,10 +114,18 @@ def _right_column() -> Any:
 
 def render_welcome(model: str = "", cwd: str = "") -> Align:
     """Return a Rich renderable for the startup welcome screen."""
+    # Compute column widths from the live terminal size.
+    # Panel overhead = border(2) + padding(3+3) = 8 cols.
+    # Body separator padding = 4 cols between the two columns.
+    # Left column gets ~40 % of the usable space, clamped to [32, 48].
+    term_cols = shutil.get_terminal_size((80, 24)).columns
+    usable    = max(60, term_cols - 8)
+    left_w    = min(48, max(32, (usable - 4) * 2 // 5))
+
     body = Table.grid(padding=(0, 4, 0, 0))
-    body.add_column(min_width=46)   # left — mascot + metadata
-    body.add_column()               # right — tips + changelog (takes remainder)
-    body.add_row(_left_column(model, cwd), _right_column())
+    body.add_column(width=left_w)   # left — exact computed width
+    body.add_column()               # right — takes remainder
+    body.add_row(_left_column(model, cwd, left_w), _right_column())
 
     panel = Panel(
         body,
