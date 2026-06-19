@@ -734,6 +734,41 @@ else:                 → PosixBackend
 
 ---
 
+## 23. File-Creation Diff Preview (10-line cap)
+
+When a tool writes a file that did not previously exist (`old_lines == []`), the
+scroll buffer renders a compact creation preview instead of a full diff.
+
+Detection: `file_modified` event where `old_lines` is an empty list.  No new
+event type is required.
+
+Visual output:
+
+```
+● Create(src/path/to/file.py)
+└─ Created 42 lines
+
+  1 + def hello():
+  2 +     return "world"
+  3 + ...
+  ⋯ +39 more lines
+```
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 23.1 | Create detection | `old_lines == []` in a `file_modified` event is the trigger; tool name is not used. |
+| 23.2 | Compact preview | First 10 lines rendered with green `+` background; syntax-highlighted. |
+| 23.3 | Truncation indicator | When the file has more than 10 lines: `⋯ +N more lines` (dim green) is shown below the table. |
+| 23.4 | No truncation for short files | Files with ≤ 10 lines show all lines; no truncation indicator. |
+| 23.5 | Header | `● Create(path)` header in green + bold. |
+| 23.6 | Summary | `└─ Created N line(s)` (green); always shows total line count, not preview count. |
+| 23.7 | Line limit constant | `diff_renderer.CREATE_PREVIEW_LINES = 10` is the single source of truth. |
+| 23.8 | Update path unchanged | Non-empty `old_lines` continues to use `render_file_diff` with full context diff. |
+| 23.9 | Public API | `diff_renderer.render_file_create(path, new_lines, *, max_lines, language)` is exported. |
+| 23.10 | Empty file | A zero-line file shows the header and `Created 0 lines` without crashing. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

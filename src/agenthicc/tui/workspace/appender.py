@@ -260,20 +260,29 @@ def _render_thinking_step(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 
 @register_renderer("file_modified")
 def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    from agenthicc.tui.diff_renderer import render_file_diff  # noqa: PLC0415
+    from agenthicc.tui.diff_renderer import render_file_diff, render_file_create  # noqa: PLC0415
     path      = ev.payload.get("path", "")
     old_lines = ev.payload.get("old_lines")
     new_lines = ev.payload.get("new_lines")
     tool      = ev.payload.get("tool", "write_file")
-    op        = _TOOL_OP.get(tool, "Update")
+    lang      = _lang_for_path(path)
+
     if old_lines is not None and new_lines is not None:
-        self._console.print(
-            render_file_diff(path, old_lines, new_lines, operation=op,
-                             language=_lang_for_path(path)),
-            highlight=False,
-        )
+        if old_lines == []:
+            # File creation — show compact preview capped at 10 lines.
+            self._console.print(
+                render_file_create(path, new_lines, language=lang),
+                highlight=False,
+            )
+        else:
+            op = _TOOL_OP.get(tool, "Update")
+            self._console.print(
+                render_file_diff(path, old_lines, new_lines, operation=op, language=lang),
+                highlight=False,
+            )
     else:
         from rich.markup import escape as _e  # noqa: PLC0415
+        op = _TOOL_OP.get(tool, "Update")
         self._console.print(
             f"  [dim]{op}:[/dim] [cyan]{_e(path)}[/cyan]",
             markup=True, highlight=False,

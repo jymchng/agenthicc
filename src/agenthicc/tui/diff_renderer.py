@@ -30,7 +30,10 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
-__all__ = ["render_file_diff"]
+__all__ = ["render_file_diff", "render_file_create"]
+
+#: Maximum lines shown in a file-creation preview (FR: show 10 lines).
+CREATE_PREVIEW_LINES: int = 10
 
 # ── palette ───────────────────────────────────────────────────────────────────
 
@@ -99,6 +102,14 @@ def _header(path: str, operation: str) -> Text:
         (f"{operation}(", "bold"),
         (path, "blue underline"),
         (")", "bold"),
+    )
+
+
+def _create_summary(n_lines: int) -> Text:
+    word = "line" if n_lines == 1 else "lines"
+    return Text.assemble(
+        ("└─ ", "dim"),
+        (f"Created {n_lines} {word}", "green"),
     )
 
 
@@ -318,3 +329,52 @@ def render_file_diff(
         Text(""),
         Padding(table, pad=(0, 0, 0, 2)),
     )
+
+
+def render_file_create(
+    path:      str,
+    new_lines: list[str],
+    *,
+    max_lines: int = CREATE_PREVIEW_LINES,
+    language:  str = "python",
+) -> Any:
+    """Render a file-creation event showing at most *max_lines* lines.
+
+    Visual output::
+
+        ● Create(src/path/to/file.py)
+        └─ Created 42 lines
+
+        1 + def hello():
+        2 +     return "world"
+        ⋯ +40 more lines
+    """
+    n_total  = len(new_lines)
+    preview  = new_lines[:max_lines]
+    hl       = _highlight_block(preview, language)
+
+    table = Table.grid(padding=(0, 1))
+    table.add_column(justify="right",  no_wrap=True)   # line number
+    table.add_column(justify="center", no_wrap=True)   # +
+    table.add_column(no_wrap=False)                    # code
+
+    for idx, (raw, h) in enumerate(zip(preview, hl)):
+        _add_row(table, idx + 1, raw, h, None)   # pure add — no del pair
+
+    parts: list[Any] = [
+        _header(path, "Create"),
+        _create_summary(n_total),
+        Text(""),
+        Padding(table, pad=(0, 0, 0, 2)),
+    ]
+    if n_total > max_lines:
+        parts.append(
+            Padding(
+                Text.assemble(
+                    ("⋯ ", "dim"),
+                    (f"+{n_total - max_lines} more lines", "dim green"),
+                ),
+                pad=(0, 0, 0, 2),
+            )
+        )
+    return Group(*parts)
