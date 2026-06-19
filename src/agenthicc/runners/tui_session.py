@@ -51,6 +51,17 @@ def _build_agent_runner(llm_cfg: LLMConfig | None, *, cassette_dir: Path | None 
     return AgentRunnerBase(transport=transport, signals=SignalBus())
 
 
+def _fmt_exc(exc: BaseException) -> str:
+    """Format an exception as 'ExceptionType: message' for scroll-buffer display.
+
+    Never returns a bare ``str(exc)`` — the exception class name is always
+    included so users can identify the failure type (e.g. ``ReadTimeout``).
+    """
+    name = type(exc).__name__
+    msg  = str(exc).strip()
+    return f"{name}: {msg}" if msg else name
+
+
 def _reset_terminal_on_exit() -> None:
     try:
         sys.stdout.write("\x1b[m\x1b[?2004l\x1b[?25h")
@@ -537,7 +548,9 @@ class TUISession:
         _active_wf_name = ctx.app_state.active_mode().default_workflow
         _wf_defn = ctx.workflow_registry.get(_active_wf_name) if _active_wf_name else None
 
-        try:
+        _timeout = ctx.cfg.execution.turn_timeout_s
+
+        async def _run_inner() -> None:
             if _wf_defn is not None:
                 import dataclasses as _dc                                      # noqa: PLC0415
                 from agenthicc.workflows.code_plan import CodePlanRunner       # noqa: PLC0415
@@ -588,6 +601,19 @@ class TUISession:
                     memory_router=ctx.memory_router,
                     semantic_index=ctx.semantic_index,
                 )
+
+        try:
+            if _timeout and _timeout > 0:
+                await asyncio.wait_for(_run_inner(), timeout=_timeout)
+            else:
+                await _run_inner()
+        except asyncio.TimeoutError:
+            ctx.app_state.conversation.close_turn(
+                error=(
+                    f"TimeoutError: Turn timed out after {_timeout:.0f}s — "
+                    "the agent or a tool may be stuck on a slow network call."
+                )
+            )
         finally:
             self._input_session.set_mode(InputMode.IDLE)
             self._turn_count += 1
@@ -602,13 +628,19 @@ class TUISession:
     async def agent_task_body(self, text: str) -> None:
         """Wrap run_turn with error handling; advance queue on completion."""
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
+        conv = self._ctx.app_state.conversation
         try:
             await self.run_turn(text)
         except asyncio.CancelledError:
-            self._ctx.app_state.conversation.end_turn()
+            # close_turn() is idempotent — inner layers may have already called it.
+            conv.close_turn()
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:
-            self._ctx.app_state.conversation.fail_turn(str(exc))
+            # Only emit an error event if the turn is still open; if _stream()
+            # already closed it (via its own finally), this is a no-op.
+            conv.close_turn(
+                error=_fmt_exc(exc) if conv.is_turn_active else None
+            )
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             self._agent_task = None
@@ -719,10 +751,13 @@ class TUISession:
                     "✓ Workflow resumed and complete — switched to Auto mode"
                 )
         except asyncio.CancelledError:
-            ctx.app_state.conversation.end_turn()
+            ctx.app_state.conversation.close_turn()
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:
-            ctx.app_state.conversation.fail_turn(str(exc))
+            conv = ctx.app_state.conversation
+            conv.close_turn(
+                error=_fmt_exc(exc) if conv.is_turn_active else None
+            )
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             self._agent_task = None
@@ -853,6 +888,22 @@ def _run_tui(ctx: CLIContext) -> None:
     except ImportError:
         print("error: TUI requires rich — pip install agenthicc", file=sys.stderr)
         sys.exit(1)
+
+    # Crash-safe terminal restore (PRD-107, Layer 5).
+    # Cover all exit paths: normal exit (finally below), atexit, SIGTERM, SIGHUP.
+    import atexit    # noqa: PLC0415
+    import signal as _signal  # noqa: PLC0415
+    atexit.register(_reset_terminal_on_exit)
+
+    def _sig_exit(signum: int, frame: object) -> None:
+        _reset_terminal_on_exit()
+        sys.exit(0)
+
+    try:
+        _signal.signal(_signal.SIGTERM, _sig_exit)
+        _signal.signal(_signal.SIGHUP,  _sig_exit)
+    except (AttributeError, OSError):
+        pass   # Windows / non-TTY environments
 
     resume_id: str | None = ctx.resume_id
     if resume_id is None and ctx.continue_session:

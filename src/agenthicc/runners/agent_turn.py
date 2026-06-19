@@ -98,9 +98,20 @@ class AgentTurnRunner:
         self._inject_skills()
 
         agent_instance, active_runner = self._build_agent()
-        await self._stream(agent_instance, agent_text, active_runner)
 
-        await self._emit_intent_complete()
+        # Always emit IntentStatusChanged — success or failure — so the kernel
+        # intent never stays permanently at "pending" after an exception.
+        _intent_status = "complete"
+        try:
+            await self._stream(agent_instance, agent_text, active_runner)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            _intent_status = "failed"
+            raise
+        except Exception:
+            _intent_status = "failed"
+            raise
+        finally:
+            await self._emit_intent_complete(status=_intent_status)
 
     # ── step 1: model resolution ──────────────────────────────────────────────
 
@@ -388,27 +399,31 @@ class AgentTurnRunner:
 
         except (asyncio.CancelledError, KeyboardInterrupt):
             if ctx.conv_store:
-                ctx.conv_store.end_turn()
+                ctx.conv_store.close_turn()
             raise   # must propagate so task.cancel() terminates the workflow runner
         except Exception as exc:
             if ctx.conv_store:
+                # Emit one well-formatted error event with the exception class name.
+                # Do NOT call fail_turn/close_turn here — the finally block handles
+                # state cleanup idempotently, preventing the double-fail bug.
                 ctx.conv_store.append_event("error", {
                     "message": f"{type(exc).__name__}: {exc}"
                 })
-                ctx.conv_store.fail_turn(str(exc))
         finally:
             self._turn_active = False
             if ctx.conv_store:
-                ctx.conv_store.end_turn()
+                # close_turn() is idempotent — safe even when CancelledError path
+                # already called it above.
+                ctx.conv_store.close_turn()
 
     # ── step 9: kernel completion event ───────────────────────────────────────
 
-    async def _emit_intent_complete(self) -> None:
+    async def _emit_intent_complete(self, status: str = "complete") -> None:
         from agenthicc.kernel import Event  # noqa: PLC0415
         await self._ctx.processor.emit(
             Event.create("IntentStatusChanged", {
                 "intent_id": self._intent_id,
-                "status":    "complete",
+                "status":    status,
             })
         )
 

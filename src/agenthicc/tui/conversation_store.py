@@ -141,22 +141,43 @@ class ConversationStore:
         self.agent_state.set(AgentState.THINKING)
         return turn
 
-    def end_turn(self) -> None:
-        if self._current_turn:
-            self._current_turn.state = AgentState.COMPLETE
-            self.append_event("turn_complete", {})
+    @property
+    def is_turn_active(self) -> bool:
+        """True when a turn is currently open (between begin_turn and close_turn)."""
+        return self._current_turn is not None
+
+    def close_turn(self, *, error: str | None = None) -> None:
+        """Idempotent single cleanup path — always returns to IDLE.
+
+        Safe to call multiple times; subsequent calls are no-ops.
+
+        Parameters
+        ----------
+        error:
+            Human-readable error string including the exception class name
+            (``"ReadTimeout: ..."``) or ``None`` for a clean exit.
+            When set, appends an ``error`` scroll-buffer event and marks the
+            turn as ``AgentState.ERROR`` internally before resetting to IDLE.
+        """
+        if self._current_turn is not None:
+            if error:
+                self._current_turn.state = AgentState.ERROR
+                self.append_event("error", {"message": error})
+            else:
+                self._current_turn.state = AgentState.COMPLETE
+                self.append_event("turn_complete", {})
         self._current_turn = None
-        self.agent_state.set(AgentState.IDLE)
+        self.agent_state.set(AgentState.IDLE)   # ALWAYS IDLE — invariant
         self.active_tool.set("")
         self._start_time = 0.0
 
+    def end_turn(self) -> None:
+        """Close the turn successfully. Prefer ``close_turn()`` for new code."""
+        self.close_turn()
+
     def fail_turn(self, error: str) -> None:
-        if self._current_turn:
-            self._current_turn.state = AgentState.ERROR
-            self.append_event("error", {"message": error})
-        self._current_turn = None
-        self.agent_state.set(AgentState.ERROR)
-        self.active_tool.set("")
+        """Close the turn with an error. Prefer ``close_turn(error=...)`` for new code."""
+        self.close_turn(error=error)
 
     # ── tool state ────────────────────────────────────────────────────────────
 

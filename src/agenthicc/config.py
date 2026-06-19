@@ -119,6 +119,7 @@ class ExecutionSettings:
     max_parallel_tasks: int = 4
     agent_pool_size: int = 16
     max_agent_turns: int = 200      # max agentic-loop iterations per intent
+    turn_timeout_s: float = 0.0    # per-turn watchdog; 0 = no limit
     # LLM provider selection
     provider: str = "anthropic"
     model: str = ""            # empty → use PROVIDER_DEFAULT_MODELS[provider]

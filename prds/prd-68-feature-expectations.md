@@ -772,6 +772,48 @@ Visual output:
 
 ---
 
+## 24. TUI Turn Recovery — Always-Recoverable Agent Turns (PRD-107)
+
+After any exception raised during an agent turn (network timeout, tool crash,
+LLM error, cancellation), the TUI returns to a clean, interactive `IDLE` state.
+
+### Root causes fixed
+
+| Bug | Old behaviour | Fixed behaviour |
+|---|---|---|
+| Double `fail_turn()` at two layers | `agent_state = ERROR` after exception | `agent_state = IDLE` always |
+| `fail_turn()` set `ERROR` not `IDLE` | Status bar showed ERROR until restart | `close_turn()` always ends at IDLE |
+| No turn timeout | Hung `ReadTimeout` locked TUI forever | `asyncio.wait_for` watchdog per turn |
+| `_emit_intent_complete()` not in `finally` | Kernel intent stayed `"pending"` forever | Intent always marked `complete` or `failed` |
+| No SIGTERM/SIGHUP handler | Terminal left in raw mode after hard kill | `atexit` + signal handlers restore terminal |
+
+### Key API: `ConversationStore.close_turn()`
+
+```python
+store.close_turn()                          # success path
+store.close_turn(error="ReadTimeout: ...")  # error path — still ends IDLE
+```
+
+Idempotent — safe to call multiple times. `end_turn()` and `fail_turn()` are
+now thin wrappers that call `close_turn()`.
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 24.1 | `agent_state` always IDLE after exception | After any tool or LLM exception, `agent_state` returns to `IDLE`. Never stuck at `ERROR`. |
+| 24.2 | `InputMode` always IDLE after exception | `InputMode.STREAMING` → `InputMode.IDLE` on every exit path. |
+| 24.3 | Exactly one error event per exception | The scroll buffer shows one error block per failure. No duplicates. |
+| 24.4 | Error class name always shown | Error display format is `ExceptionType: message` (e.g. `ReadTimeout: ...`). `_fmt_exc()` is the single formatter. |
+| 24.5 | `close_turn()` is idempotent | Calling `close_turn()` multiple times is safe and leaves no bad state. |
+| 24.6 | `close_turn(error=None)` emits `turn_complete` | Successful turn emits a blank-line `turn_complete` event. |
+| 24.7 | `close_turn(error=...)` emits `error` event | Error turn emits the error message to the scroll buffer (exactly once). |
+| 24.8 | `is_turn_active` property | `ConversationStore.is_turn_active` is `True` between `begin_turn` and `close_turn`. Used by callers to avoid duplicate error events. |
+| 24.9 | Turn watchdog | `execution.turn_timeout_s` (default `0` = no limit) cancels hung turns after N seconds. `TimeoutError: Turn timed out after Ns` appears in the scroll buffer. |
+| 24.10 | Kernel intent always completed | `IntentStatusChanged(status="complete"/"failed")` is emitted in `AgentTurnRunner.run()`'s `finally`. |
+| 24.11 | Crash-safe terminal restore | `atexit.register(_reset_terminal_on_exit)` + `SIGTERM`/`SIGHUP` handlers installed in `_run_tui()`. |
+| 24.12 | `--resume` terminal is clean | ECHO/ICANON/cursor restored before process exits, so the next `--resume` finds the terminal in a usable state. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.
