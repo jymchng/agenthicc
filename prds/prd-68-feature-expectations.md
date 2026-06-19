@@ -649,6 +649,27 @@ A release is shippable when:
 
 ---
 
+## 20. Default Global Skills Bootstrap (PRD-104)
+
+On first launch agenthicc automatically populates `~/.agenthicc/skills/` with a
+curated set of starter skills.  These are loaded through the normal skill
+discovery pipeline — no special runtime path exists.
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 20.1 | Auto-install on first launch | `~/.agenthicc/skills/` is created if absent; missing default skills are written. |
+| 20.2 | Six built-in skills | `review`, `refactor`, `architect`, `docs`, `debug`, `commit` are installed. |
+| 20.3 | Normal skill format | Each skill is a directory with a `SKILL.md` using standard YAML frontmatter. |
+| 20.4 | No overwrite | A skill directory that already exists is left untouched. |
+| 20.5 | Deletion marker | Deleting a default skill records `"deleted"` in `~/.agenthicc/default_skills.json`; the skill is not recreated on subsequent launches. |
+| 20.6 | Project skills still win | A project-local skill with the same slug overrides the default. |
+| 20.7 | Startup message | `Installed N default skill(s).` printed at `[dim]` when skills are newly installed. |
+| 20.8 | Opt-out via TOML | `[skills] install_default_skills = false` disables bootstrap entirely. |
+| 20.9 | Custom directory | `[skills] default_skill_directory = "..."` overrides the default `~/.agenthicc/skills` root. |
+| 20.10 | Skill metadata | Each default `SKILL.md` carries `source: default` and `version: 1` frontmatter fields. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

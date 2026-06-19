@@ -188,9 +188,26 @@ async def _build_session_context(
     mode_manager.set_by_name("Auto")
 
     # ── skills / plugins ─────────────────────────────────────────────────────
+    from agenthicc.skills.bootstrap import bootstrap_default_skills  # noqa: PLC0415
     from agenthicc.skills.loader import discover_skills as _ds       # noqa: PLC0415
+
+    _skill_global_dir = (
+        Path(cfg.skills.default_skill_directory).expanduser()
+        if cfg.skills.default_skill_directory
+        else Path.home() / ".agenthicc"
+    )
+    _n_installed = bootstrap_default_skills(
+        global_dir=_skill_global_dir,
+        enabled=cfg.skills.install_default_skills,
+    )
+    if _n_installed:
+        console.print(
+            f"[dim]Installed {_n_installed} default skill(s).[/dim]",
+            markup=True,
+        )
+
     skills = _ds(project_dir=Path(".agenthicc"),
-                 user_dir=Path.home() / ".agenthicc")
+                 user_dir=_skill_global_dir)
 
     from agenthicc.plugins.discovery import (                        # noqa: PLC0415
         discover_project_tools, warn_conflicts, _scan_directory,

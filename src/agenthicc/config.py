@@ -43,6 +43,7 @@ __all__ = [
     "PROVIDER_DEFAULT_MODELS",
     "PROVIDER_ENV_SHORTCUTS",
     "SecuritySettings",
+    "SkillsSettings",
     "StorageS3Settings",
     "StorageSettings",
     "SUPPORTED_PROVIDERS",
@@ -219,6 +220,13 @@ class AgentsSettings:
 
 
 @dataclass
+class SkillsSettings:
+    """[skills] section — default skill bootstrap configuration."""
+    install_default_skills: bool = True
+    default_skill_directory: str = ""  # empty = ~/.agenthicc/skills
+
+
+@dataclass
 class StorageS3Settings:
     """S3/S3-compatible storage credentials and configuration."""
     bucket: str = ""
@@ -253,6 +261,7 @@ class AgenthiccConfig:
     security:  SecuritySettings   = field(default_factory=SecuritySettings)
     api:       ApiSettings        = field(default_factory=ApiSettings)
     plugins:   PluginSettings     = field(default_factory=PluginSettings)
+    skills:    SkillsSettings     = field(default_factory=SkillsSettings)
     agents:    AgentsSettings      = field(default_factory=AgentsSettings)
     storage:   StorageSettings    = field(default_factory=StorageSettings)
 
