@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.config import ExecutionSettings
     from agenthicc.kernel.processor import EventProcessor
+    from agenthicc.memory.router import MemoryRouter
+    from agenthicc.memory.vector import SemanticIndex
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.tui.conversation_store import AppState, ConversationStore
@@ -52,6 +54,10 @@ class AgentTurnContext:
 
     # ── approval / hooks ──────────────────────────────────────────────────────
     approval_svc: "ApprovalService | None" = None
+
+    # ── memory (PRD-101) ──────────────────────────────────────────────────────
+    memory_router:        "MemoryRouter | None"  = None
+    semantic_index:       "SemanticIndex | None" = None
 
     # ── output capture ────────────────────────────────────────────────────────
     output_collector:     "list[str] | None" = None

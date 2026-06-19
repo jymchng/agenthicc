@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from agenthicc.kernel.processor import EventProcessor
+    from agenthicc.memory.router import MemoryRouter
+    from agenthicc.memory.vector import SemanticIndex
     from agenthicc.tui.conversation_store import ConversationStore, AppState
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.mentions.cache import MentionCache
@@ -34,4 +36,6 @@ class WorkflowConfig:
     mcp_registry:    Any             # McpToolRegistry | None
     mention_cache:   "MentionCache"
     agents_registry: "AgentsRegistry"
-    completed_turns: int = field(default=0)
+    memory_router:   "MemoryRouter | None"  = field(default=None)
+    semantic_index:  "SemanticIndex | None" = field(default=None)
+    completed_turns: int                    = field(default=0)

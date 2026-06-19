@@ -509,6 +509,8 @@ class CodePlanRunner(BaseWorkflowRunner):
                 approval_svc=self._cfg.approval_svc,
                 output_collector=[],
                 system_prompt_suffix=system_prompt,
+                memory_router=self._cfg.memory_router,
+                semantic_index=self._cfg.semantic_index,
             )
         finally:
             if mode is not None and self._mode_manager is not None:
@@ -517,6 +519,7 @@ class CodePlanRunner(BaseWorkflowRunner):
     def _base_tools(self) -> _ToolList:
         """Return capability-filtered project tools for the current mode."""
         from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
+        from agenthicc.workflows.memory_tools import make_memory_tools   # noqa: PLC0415
 
         mode_blocked        = self._cfg.app_state.active_mode().blocked_capabilities
         all_tools: _ToolList = list(self._cfg.plugin_tools)
@@ -526,7 +529,12 @@ class CodePlanRunner(BaseWorkflowRunner):
             except Exception:  # noqa: BLE001
                 pass
 
-        return [
+        filtered: _ToolList = [
             tool for tool in all_tools
             if not (get_tool_capabilities(tool) & mode_blocked)
         ]
+        # Memory tools carry no capability restrictions — always available.
+        filtered = filtered + make_memory_tools(
+            self._cfg.memory_router, self._cfg.semantic_index
+        )
+        return filtered

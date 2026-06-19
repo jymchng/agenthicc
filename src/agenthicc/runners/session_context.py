@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.kernel.processor import EventProcessor
+    from agenthicc.memory.router import MemoryRouter
+    from agenthicc.memory.vector import SemanticIndex
     from agenthicc.tui.conversation_store import AppState
     from agenthicc.tui.runtime import CommandBus, ModeManager
     from agenthicc.tui.runtime.session_log import SessionEventLog
@@ -62,3 +64,7 @@ class SessionContext:
 
     # ── ui ────────────────────────────────────────────────────────────────────
     console:            "Console"
+
+    # ── memory (PRD-101) ──────────────────────────────────────────────────────
+    memory_router:      "MemoryRouter | None"  = None
+    semantic_index:     "SemanticIndex | None" = None

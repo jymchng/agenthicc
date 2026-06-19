@@ -377,6 +377,12 @@ class AgentTurnRunner:
                     current_turn = []
                     if turn_text and ctx.conv_store:
                         ctx.conv_store.append_event("text", {"text": turn_text})
+                    # Auto-index completed turn text for semantic search (PRD-101).
+                    if turn_text and ctx.semantic_index is not None:
+                        doc_id = f"{self._intent_id}_{ctx.completed_turns}"
+                        asyncio.create_task(
+                            ctx.semantic_index.add(doc_id, turn_text)
+                        )
 
         except (asyncio.CancelledError, KeyboardInterrupt):
             if ctx.conv_store:
@@ -425,6 +431,8 @@ async def _run_agent_turn(
     approval_svc: ApprovalService | None = None,
     output_collector: list[str] | None = None,
     system_prompt_suffix: str = "",
+    memory_router: Any = None,
+    semantic_index: Any = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -448,5 +456,7 @@ async def _run_agent_turn(
         approval_svc=approval_svc,
         output_collector=output_collector,
         system_prompt_suffix=system_prompt_suffix,
+        memory_router=memory_router,
+        semantic_index=semantic_index,
     )
     await AgentTurnRunner(ctx).run()

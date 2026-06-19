@@ -14,10 +14,18 @@ if TYPE_CHECKING:
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import SendMessageCommand, InterruptAgentCommand
 
-def _make_session_tools(approval_svc: Any) -> list:
+def _make_session_tools(
+    approval_svc: Any,
+    memory_router: Any = None,
+    semantic_index: Any = None,
+) -> list:
     """Tools injected into every interactive agent turn (Auto mode + plan phase)."""
     from agenthicc.workflows.phase_tools import make_questions_tool  # noqa: PLC0415
-    return make_questions_tool(approval_svc)
+    from agenthicc.workflows.memory_tools import make_memory_tools   # noqa: PLC0415
+    return (
+        make_questions_tool(approval_svc)
+        + make_memory_tools(memory_router, semantic_index)
+    )
 
 
 def _build_agent_runner(llm_cfg: Any, *, cassette_dir: Path | None = None) -> Any:
@@ -214,6 +222,22 @@ async def _build_session_context(
     from lauren_ai._memory import ShortTermMemory                # noqa: PLC0415
     session_memory = ShortTermMemory(max_tokens=32_000)
 
+    # ── three-tier memory (PRD-101) ───────────────────────────────────────────
+    from agenthicc.memory.layers import (                        # noqa: PLC0415
+        ProjectMemoryLayer, GlobalMemoryLayer, SessionMemoryLayer,
+    )
+    from agenthicc.memory.router import MemoryRouter             # noqa: PLC0415
+    from agenthicc.memory.vector import SemanticIndex            # noqa: PLC0415
+    _project_memory = ProjectMemoryLayer(Path(".agenthicc") / "memory" / "project.db")
+    _global_memory  = GlobalMemoryLayer()
+    _session_layer  = SessionMemoryLayer()
+    _memory_router  = MemoryRouter(
+        session_layer=_session_layer,
+        project_layer=_project_memory,
+        global_layer=_global_memory,
+    )
+    _semantic_index = SemanticIndex()
+
     # ── command registry + trigger registry ──────────────────────────────────
     from agenthicc.tui.trigger import TriggerManager                      # noqa: PLC0415
     from agenthicc.tui.triggers.at_mention import AtMentionTrigger        # noqa: PLC0415
@@ -312,6 +336,8 @@ async def _build_session_context(
         session_id=session_id,
         model_label=model_label,
         console=console,
+        memory_router=_memory_router,
+        semantic_index=_semantic_index,
     )
 
 
@@ -353,6 +379,8 @@ class TUISession:
             mcp_registry=ctx.mcp_registry,
             mention_cache=ctx.mention_cache,
             agents_registry=ctx.agents_registry,
+            memory_router=ctx.memory_router,
+            semantic_index=ctx.semantic_index,
         )
 
     # ── internal helpers ──────────────────────────────────────────────────────
@@ -503,12 +531,18 @@ class TUISession:
                     mention_cache=ctx.mention_cache,
                     project_plugin_tools=(
                         ctx.project_plugins.all_tools
-                        + _make_session_tools(ctx.approval_svc)
+                        + _make_session_tools(
+                            ctx.approval_svc,
+                            memory_router=ctx.memory_router,
+                            semantic_index=ctx.semantic_index,
+                        )
                     ),
                     mcp_registry=ctx.mcp_registry,
                     active_agent="default",
                     completed_turns=self._turn_count,
                     approval_svc=ctx.approval_svc,
+                    memory_router=ctx.memory_router,
+                    semantic_index=ctx.semantic_index,
                 )
         finally:
             self._input_session.set_mode(InputMode.IDLE)
