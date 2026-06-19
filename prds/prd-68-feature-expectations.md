@@ -670,6 +670,26 @@ discovery pipeline — no special runtime path exists.
 
 ---
 
+## 21. Cross-Platform Terminal Capability Detection (PRD-105)
+
+Agenthicc never crashes on startup due to missing terminal APIs.  All
+terminal-dependent features degrade gracefully when unavailable.
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 21.1 | No `ModuleNotFoundError: termios` | `import termios`/`import tty` inside `raw_mode()` are wrapped in `try/except ImportError`; missing module yields a passthrough context instead of crashing. |
+| 21.2 | No `termios.error: Inappropriate ioctl` | `termios.tcgetattr(fd)` is wrapped in `try/except`; a non-TTY fd (pipe, redirect) yields a passthrough context instead of crashing. |
+| 21.3 | Non-TTY `run()` exits cleanly | `UnifiedInputSession.run()` checks `sys.stdin.isatty()` first; returns immediately on non-interactive stdin so `TUISession.run()` cancels background tasks normally. |
+| 21.4 | No `fileno()` crash | `sys.stdin.fileno()` in `run()` is wrapped in `try/except`; an `io.StringIO`-backed stdin returns cleanly. |
+| 21.5 | Centralized capability model | `tui/terminal_caps.py` exports `TerminalCapabilities` (frozen dataclass) and `TerminalCapabilityDetector.detect()`. |
+| 21.6 | Capability fields | `is_tty`, `supports_raw_mode`, `supports_alt_screen`, `supports_colors`, `supports_mouse`, `supports_resize_events` all probed at runtime. |
+| 21.7 | SIGWINCH already safe | `workspace.py` SIGWINCH handler is wrapped in `try/except (AttributeError, OSError)` — no change needed. |
+| 21.8 | Shutdown always safe | `_reset_terminal_on_exit()` is fully wrapped in `try/except` — terminal restoration never re-raises. |
+| 21.9 | Windows startup succeeds | No Unix-only import escapes a guard; Windows users launch without `ModuleNotFoundError`. |
+| 21.10 | CI/pipe startup succeeds | Non-TTY launch (GitHub Actions, redirected stdin) exits the input loop cleanly without crashing. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

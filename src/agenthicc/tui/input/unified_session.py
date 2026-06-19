@@ -92,7 +92,18 @@ class UnifiedInputSession:
     async def run(self) -> None:
         """Block until the user exits (Ctrl+C twice or Ctrl+D on empty)."""
         import asyncio as _asyncio  # noqa: PLC0415
-        fd = sys.stdin.fileno()
+
+        # Non-interactive environment (pipe, CI, redirect) — exit cleanly so
+        # TUISession.run() cancels background tasks via its finally block.
+        if not sys.stdin.isatty():
+            return
+
+        try:
+            fd = sys.stdin.fileno()
+        except Exception:  # noqa: BLE001
+            # stdin backed by io.StringIO or similar — no real file descriptor.
+            return
+
         loop = _asyncio.get_event_loop()
         with raw_mode(fd):
             while True:

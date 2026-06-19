@@ -67,10 +67,18 @@ def raw_mode(fd: int) -> Generator[int, None, None]:
     * Write ``\\x1b[?25l`` (hide OS cursor) and ``\\x1b[?2004h`` (enable bracketed
       paste) while active; restore on exit.
     """
-    import atexit     # noqa: PLC0415
-    import termios   # noqa: PLC0415
-    import sys       # noqa: PLC0415
-    import tty       # noqa: PLC0415
+    import atexit  # noqa: PLC0415
+    import sys     # noqa: PLC0415
+
+    # Guard: termios and tty are Unix-only.  When unavailable (Windows, some CI
+    # environments) yield the fd without raw-mode setup and return — the keyboard
+    # read loop still runs in line-buffered mode rather than crashing.
+    try:
+        import termios  # noqa: PLC0415
+        import tty      # noqa: PLC0415
+    except ImportError:
+        yield fd
+        return
 
     # Belt-and-suspenders: if ECHO is already off when we enter raw_mode it
     # means a previous raw_mode context hasn't finished its cleanup yet (race
@@ -85,7 +93,13 @@ def raw_mode(fd: int) -> Generator[int, None, None]:
     except Exception:  # noqa: BLE001
         pass
 
-    old = termios.tcgetattr(fd)
+    # Guard: tcgetattr fails with "Inappropriate ioctl for device" when fd is a
+    # redirected pipe or non-TTY.  Degrade to passthrough instead of crashing.
+    try:
+        old = termios.tcgetattr(fd)
+    except Exception:  # noqa: BLE001
+        yield fd
+        return
 
     def _restore() -> None:
         """Restore terminal to pre-CBREAK state.
