@@ -13,7 +13,6 @@ dependencies = [
     "anyio>=4.0",
     "typing-extensions>=4.11",
     "rich>=13.0",
-    "websockets>=12.0",
     "httpx>=0.27",
 ]
 
