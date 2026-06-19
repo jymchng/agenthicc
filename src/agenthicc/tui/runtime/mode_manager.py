@@ -103,6 +103,30 @@ def build_default_registry(
             ))
     except Exception as exc:  # noqa: BLE001
         log.warning("Could not load modes from agenthicc.modes: %s", exc)
+
+    # Load user-provided mode plugins from ~/.agenthicc/modes/ (user-global)
+    # and .agenthicc/modes/ (project-local).  Project plugins override
+    # user-global; both override builtins of the same name.
+    try:
+        from agenthicc.modes.plugin_loader import discover_mode_plugins  # noqa: PLC0415
+        _plugins = discover_mode_plugins()  # uses CWD/.agenthicc and ~/.agenthicc defaults
+        for _m in _plugins.all_modes:
+            reg.register(RuntimeMode(
+                name=_m.name,
+                badge=getattr(_m, "label", _m.name),
+                color=getattr(_m, "colour", "white"),
+                description=getattr(_m, "description", ""),
+                system_prompt_suffix=getattr(_m, "system_patch", ""),
+                blocked_capabilities=_BLOCKED.get(_m.name, frozenset()),
+                approval_required=_APPROVAL.get(_m.name, frozenset()),
+                default_workflow=_default.get(_m.name),
+                workflows=tuple(_available.get(_m.name, [])),
+            ))
+        for _f in _plugins.failed:
+            log.warning("Failed to load mode plugin %s: %s", _f.path, _f.error)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not load mode plugins: %s", exc)
+
     if not reg.get("Auto"):
         reg.register(RuntimeMode(name="Auto", badge="⏵⏵", color="green", description="Automatic"))
     if not reg.get("Guard"):
