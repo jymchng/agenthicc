@@ -106,6 +106,7 @@ to call `console.print()`.  All events for one batch are flushed in a single
 | 2.12 | Single-flush batch | `ScrollBufferAppender._flush_batch()` wraps all `console.print()` calls for one batch in a single `with console:` context — one terminal write per batch, no intermediate renders. |
 | 2.13 | Tool group collapse — configurable threshold | Consecutive `tool_complete` events between two `text` events form a group. The first `max_live_tool_calls` (default 5, configurable via `[tools] max_live_tool_calls` in `agenthicc.toml`) are printed individually to the scroll buffer. Tool calls beyond that threshold are not printed immediately. `ScrollBufferAppender` reads the threshold from `ToolSettings.max_live_tool_calls` passed through `Workspace` at construction. |
 | 2.14 | Tool group collapse — live overflow indicator | While a tool group is over threshold, `ConversationStore.live_tool_overflow: Signal[int]` is updated with the current overflow count on each arriving call. `FooterComponent` renders a live `  ⎿ ...and N more tool call(s)` row in the footer that increments in real time. When the group closes (`text` or `error` event), the signal is reset to 0 (footer row disappears) and a permanent `  ⎿ ...and N more tool call(s)` line is printed to the scroll buffer. `FooterComponent.height()` accounts for this extra row when computing the Live block height. |
+| 2.15 | Scroll-buffer event renderer registry | `ScrollBufferAppender` dispatches `ConversationEvent.kind` through a module-level `_RENDERERS: dict[str, Callable]` rather than a `match` block. Each renderer is registered with `@register_renderer("kind")` at module load time. Adding a new event kind requires only adding a new `@register_renderer` function — no changes to `_render_one()`. The registry, decorator, and all built-in renderers live in `tui/workspace/appender.py`. |
 
 ---
 
@@ -581,6 +582,43 @@ is available in the execute phase without any re-exploration.
 | 16.44 | Configurable threshold | The number of individually-rendered tool calls before collapsing is `ToolSettings.max_live_tool_calls` (default 5). Set via `[tools] max_live_tool_calls = N` in `agenthicc.toml`. Passed to `Workspace` → `ScrollBufferAppender` at startup. |
 | 16.45 | Live overflow bridge | While a tool group exceeds the threshold, `ConversationStore.live_tool_overflow: Signal[int]` holds the current overflow count. The workspace renders `⎿ ...and N more tool call(s)` directly above the status bar (flush against the scroll-buffer content, no blank line between it and the last printed tool call). |
 | 16.46 | Permanent scroll-buffer record | When the group closes (`text` or `error` event), `live_tool_overflow` is reset to 0 (bridge disappears) and a permanent `⎿ ...and N more tool call(s)` line is appended to the scroll buffer. |
+
+---
+
+## 17. Extensibility Registries
+
+Three dispatch tables eliminate `if/elif` / `match` chains and make each
+extension point open-closed: new behaviour is added by registering a new
+entry, never by editing the dispatcher.
+
+### 17.1 Scroll-buffer event renderer registry (`appender.py`)
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 17.1 | Registry location | `_RENDERERS: dict[str, _EventRenderer]` at module level in `tui/workspace/appender.py`. Populated at import time by `@register_renderer` decorators. |
+| 17.2 | Decorator | `@register_renderer("kind")` — maps a `ConversationEvent.kind` string to a callable `(ScrollBufferAppender, ConversationEvent) -> None`. |
+| 17.3 | Dispatcher | `ScrollBufferAppender._render_one()` does `renderer = _RENDERERS.get(ev.kind); if renderer: renderer(self, ev)`. Unknown kinds are silently ignored. |
+| 17.4 | Built-in renderers | `turn_start`, `user_message`, `tool_complete`, `text`, `thinking_step`, `file_modified`, `error`, `mention_chips` — all registered at module load time in the same file. |
+| 17.5 | Adding a new kind | Define a module-level function decorated with `@register_renderer("new_kind")` anywhere that imports the appender module. No changes to `_render_one()` needed. |
+
+### 17.2 Approval overlay factory registry (`tui_session.py`)
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 17.6 | Registry location | `_overlay_registry: dict[str, type[Overlay]]` built inline inside `_on_approval_change()` in `tui_session.py`. |
+| 17.7 | Dispatch | `factory = _overlay_registry.get(kind, ApprovalOverlay)` — `ApprovalRequest.kind` selects the overlay class; the default (`ApprovalOverlay`) handles all unregistered kinds. |
+| 17.8 | Built-in entries | `"plan_review"` → `PlanApprovalOverlay`, `"questions"` → `QuestionsOverlay`. All others fall back to `ApprovalOverlay`. |
+| 17.9 | Adding a new overlay kind | Add an entry to `_overlay_registry` in `_on_approval_change()` and import the new overlay class. |
+
+### 17.3 Kernel bridge event handler registry (`kernel_bridge.py`)
+
+| # | Feature | Expected behaviour |
+|---|---|---|
+| 17.10 | Registry location | `_EVENT_HANDLERS: dict[str, _InjectedHandler]` at module level in `tui/runtime/kernel_bridge.py`. Populated at import time by `@register_event_handler` decorators. |
+| 17.11 | Decorator | `@register_event_handler("type")` — maps an event `type` string (from the legacy `inject_event()` bridge) to a callable `(KernelBridge, dict) -> None`. |
+| 17.12 | Dispatcher | `KernelBridge.inject_event()` does `handler = _EVENT_HANDLERS.get(event.get("type", "")); if handler: handler(self, event)`. |
+| 17.13 | Built-in handlers | `"agent_state_change"`, `"session_summary"`, `"notification"` — registered at module load time. |
+| 17.14 | Adding a new event type | Define a module-level function decorated with `@register_event_handler("new_type")`. No changes to `inject_event()` needed. |
 
 ---
 

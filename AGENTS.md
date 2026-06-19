@@ -177,7 +177,79 @@ model = "claude-sonnet-4-6"
 4. For WebSocket endpoints, follow the pattern in the existing `/v1/ws` handler:
    subscribe, accept, loop, unsubscribe in `finally`.
 
-### 7. Extending memory tiers
+### 7. Adding a new scroll-buffer event renderer
+
+New `ConversationEvent` kinds are rendered by registering a function with
+`@register_renderer` in `tui/workspace/appender.py` — no edits to
+`_render_one()` are needed.
+
+1. Define a module-level function **after** the `ScrollBufferAppender` class
+   definition in `tui/workspace/appender.py`:
+   ```python
+   @register_renderer("my_event")
+   def _render_my_event(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+       from rich.markup import escape as _e  # noqa: PLC0415
+       text = ev.payload.get("text", "")
+       self._console.print(f"  {_e(text)}", markup=True, highlight=False)
+   ```
+2. Emit the new event kind from `AgentTurnRunner` or wherever appropriate:
+   ```python
+   ctx.conv_store.append_event("my_event", {"text": "something happened"})
+   ```
+3. The function receives `self` (the appender instance) and `ev`
+   (`ConversationEvent`).  Call `self._flush_group_summary()` at the start if
+   the new event should close an open tool group.
+4. Add a test that creates a `ScrollBufferAppender`, calls `_flush_batch()`
+   with a `ConversationEvent(kind="my_event", ...)`, and asserts the expected
+   `console.print()` call.
+
+**Important:** renderers must be defined **after the class closes** in the
+file.  Placing a `@register_renderer` function inside the class body or before
+the class ends causes it to become a nested function, not a module-level
+renderer.
+
+### 8. Adding a new approval overlay kind
+
+New `ApprovalRequest.kind` values are mapped to overlay classes via the
+`_overlay_registry` dict in `tui_session._on_approval_change()`.
+
+1. Create a new overlay class (subclass `PromptOverlay` or `Overlay` from
+   `tui/workspace/overlay.py`) in `tui/workspace/overlays/`.
+2. Add an entry to `_overlay_registry` inside `_on_approval_change()` in
+   `runners/tui_session.py`:
+   ```python
+   _overlay_registry = {
+       "plan_review": PlanApprovalOverlay,
+       "questions":   QuestionsOverlay,
+       "my_kind":     MyNewOverlay,        # ← add here
+   }
+   ```
+3. Import the new class at the top of `_on_approval_change()`.
+4. Emit the approval request with the new kind from a tool or agent:
+   ```python
+   req = ApprovalRequest(kind="my_kind", ...)
+   await approval_svc.request_approval(req)
+   ```
+
+### 9. Adding a new kernel bridge event handler
+
+The legacy `inject_event()` bridge in `tui/runtime/kernel_bridge.py` dispatches
+on `event["type"]` through `_EVENT_HANDLERS`.  New types are registered with
+`@register_event_handler`.
+
+1. Define a module-level function **after the `KernelBridge` class** in
+   `tui/runtime/kernel_bridge.py`:
+   ```python
+   @register_event_handler("my_event_type")
+   def _handle_my_event(self: KernelBridge, event: dict) -> None:
+       value = event.get("value", "")
+       self._conv.some_signal.set(value)
+   ```
+2. The function receives `self` (the `KernelBridge` instance) and `event`
+   (the raw dict from the legacy bridge).
+3. No changes to `inject_event()` are needed.
+
+### 10. Extending memory tiers
 
 1. Add methods to the appropriate layer class in `memory/layers.py`:
    - `SessionMemoryLayer` for ephemeral in-process data

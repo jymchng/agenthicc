@@ -298,9 +298,17 @@ async def _build_session_context(
     )
 
     # ── PRD-83: AgentRunComplete reconciliation handler ───────────────────────
+    # Per-run baseline captured just before each run; the handler uses it so
+    # that set_tokens() produces the correct SESSION total (baseline + run).
     _runner_signals = getattr(agent_runner, "_signals", None)
     if _runner_signals is not None:
         from lauren_ai._signals import AgentRunComplete as _ARC  # noqa: PLC0415
+
+        # Baseline tokens accumulated before the current run began.
+        # Updated at run-start (AgentRunStarted) when that signal is available;
+        # for now we update it optimistically at the end of each completed run
+        # so the next run's baseline is correct.
+        _baseline: list[tuple[int, int, float]] = [(0, 0, 0.0)]
 
         @_runner_signals.on(_ARC)
         async def _on_agent_run_complete(sig: AgentRunComplete) -> None:
@@ -309,7 +317,15 @@ async def _build_session_context(
             if usage is not None:
                 inp = int(getattr(usage, "input_tokens", 0) or 0)
                 out = int(getattr(usage, "output_tokens", 0) or 0)
-                app_state.conversation.set_tokens(inp, out, cost)
+                base_inp, base_out, base_cost = _baseline[0]
+                # Authoritative session total = pre-run baseline + this run's total.
+                app_state.conversation.set_tokens(
+                    base_inp + inp,
+                    base_out + out,
+                    base_cost + cost,
+                )
+                # Advance baseline for the next run.
+                _baseline[0] = (base_inp + inp, base_out + out, base_cost + cost)
 
     # ── resume: restore previous context ─────────────────────────────────────
     if resume_id:
