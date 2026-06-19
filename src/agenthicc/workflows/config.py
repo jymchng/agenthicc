@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
+    from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.skills.loader import SkillDef
     from agenthicc.tui.conversation_store import ConversationStore, AppState
     from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.agents.registry import AgentsRegistry
     from agenthicc.config import AgenthiccConfig
@@ -31,9 +34,9 @@ class WorkflowConfig:
     agent_runner:    "AgentRunnerBase"
     approval_svc:    "ApprovalService | None"
     cfg:             "AgenthiccConfig"
-    skills:          dict
-    plugin_tools:    list
-    mcp_registry:    Any             # McpToolRegistry | None
+    skills:          "dict[str, SkillDef]"
+    plugin_tools:    "PluginToolSet"
+    mcp_registry:    "McpToolRegistry | None"
     mention_cache:   "MentionCache"
     agents_registry: "AgentsRegistry"
     memory_router:   "MemoryRouter | None"  = field(default=None)

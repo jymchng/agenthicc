@@ -12,11 +12,16 @@ Key properties:
 from __future__ import annotations
 
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.workspace.appender import ScrollBufferAppender
 from agenthicc.tui.workspace.components import StatusComponent, ComposerComponent, FooterComponent
 from agenthicc.tui.workspace.overlay import OverlayHost
+
+if TYPE_CHECKING:
+    from rich.console import Console, RenderableType
+    from rich.live import Live
+    from agenthicc.tui.conversation_store import AppState
 
 
 def _border(cols: int):
@@ -35,7 +40,7 @@ def _get_cols() -> int:
 class Workspace:
     """Root component — owns the terminal for the application lifetime."""
 
-    def __init__(self, app_state: Any, console: Any, max_live_tool_calls: int = 5) -> None:
+    def __init__(self, app_state: AppState, console: Console, max_live_tool_calls: int = 5) -> None:
         self._state   = app_state
         self._console = console
 
@@ -48,8 +53,8 @@ class Workspace:
             max_live_tool_calls=max_live_tool_calls,
         )
 
-        self._live: Any | None = None
-        self._unsubs: list[Any] = []
+        self._live:   Live | None              = None
+        self._unsubs: list[Callable[[], None]] = []
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -123,12 +128,12 @@ class Workspace:
 
     # ── rendering ─────────────────────────────────────────────────────────────
 
-    def _build(self) -> Any:
+    def _build(self) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
         cols = _get_cols()
 
-        parts: list[Any] = []
+        parts: list[RenderableType] = []
 
         # Overflow bridge — flush against the scroll-buffer tool-call sequence
         # when a group exceeds the threshold.  The blank separator follows it so
@@ -187,7 +192,7 @@ class Workspace:
             import traceback  # noqa: PLC0415
             traceback.print_exc(file=sys.stderr)
 
-    def _on_sigwinch(self, _signum: int, _frame: Any) -> None:
+    def _on_sigwinch(self, _signum: int, _frame: object) -> None:
         try:
             import asyncio  # noqa: PLC0415
             loop = asyncio.get_event_loop()

@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from rich.console import Console
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.commands.registry import UnifiedCommandRegistry
+    from agenthicc.skills.loader import SkillDef
     from agenthicc.tui.menu import MenuWidget
+    from agenthicc.tui.runtime.mode_manager import ModeManager
 
 __all__ = [
     "Command",
@@ -25,20 +30,20 @@ class CommandContext:
     when the renderer was a partial duck-type.
     """
 
-    text: str               # full text the user submitted, e.g. "/model gpt-4o"
-    args: str               # everything after the command name, e.g. "gpt-4o"
-    model: Any              # model name string (or legacy TranscriptModel)
-    console: Any            # Rich Console
-    config: Any             # AgenthiccConfig (live, mutable)
+    text: str                       # full text the user submitted, e.g. "/model gpt-4o"
+    args: str                       # everything after the command name, e.g. "gpt-4o"
+    model: str                      # model label string
+    console: "Console"              # Rich Console
+    config: "AgenthiccConfig"       # live, mutable config
     session_id: str = ""
 
-    skills: dict = field(default_factory=dict)  # slug → SkillDef
-    command_registry: Any = None                # UnifiedCommandRegistry
-    mode_manager: Any = None                    # ModeManager
-    set_pending_skill: Any = None               # callable(body: str) → None
-    set_pending_menu: Any = None                # callable(Overlay) → None  (workspace.overlays.show)
-    close_overlay: Any = None                   # callable() → None        (workspace.overlays.hide)
-    set_pending_replay: Any = None              # callable(session_id: str) → None
+    skills: "dict[str, SkillDef]" = field(default_factory=dict)
+    command_registry: "UnifiedCommandRegistry | None" = None
+    mode_manager: "ModeManager | None" = None
+    set_pending_skill: "Callable[[str], None] | None" = None
+    set_pending_menu: "Callable[[object], None] | None" = None
+    close_overlay: "Callable[[], None] | None" = None
+    set_pending_replay: "Callable[[str], None] | None" = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

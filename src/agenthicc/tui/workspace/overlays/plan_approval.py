@@ -27,13 +27,15 @@ from __future__ import annotations
 
 import shutil
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlays.prompt import PromptOverlay
 
 if TYPE_CHECKING:
+    from rich.console import RenderableType
     from rich.text import Text
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 
 _BORDER = "─"
 _PLAN_VISIBLE_LINES = 20   # plan lines shown in the viewport at once
@@ -58,8 +60,8 @@ class PlanApprovalOverlay(PromptOverlay):
 
     def __init__(
         self,
-        req: Any,                    # ApprovalRequest with kind="plan_review"
-        service: Any,                # ApprovalService
+        req: ApprovalRequest,
+        service: ApprovalService,
         close_fn: Callable[[], None],
     ) -> None:
         super().__init__()
@@ -91,7 +93,7 @@ class PlanApprovalOverlay(PromptOverlay):
     def on_unmount(self) -> None:
         pass
 
-    def render(self) -> Any:
+    def render(self) -> RenderableType:
         if self._state == _State.PROMPTING:
             return self._render_prompting()
         return self._render_selecting()
@@ -124,7 +126,7 @@ class PlanApprovalOverlay(PromptOverlay):
 
     # ── SELECTING ─────────────────────────────────────────────────────────────
 
-    def _render_selecting(self) -> Any:
+    def _render_selecting(self) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
 
@@ -140,7 +142,7 @@ class PlanApprovalOverlay(PromptOverlay):
         # plan_visible = max(1, rows − 19) — floor at 1 so the footer always fits.
         plan_visible     = min(_PLAN_VISIBLE_LINES, max(1, rows - 19))
         self._plan_visible = plan_visible
-        lines: list[Any] = []
+        lines: list[RenderableType] = []
 
         lines.append(Text.from_markup("[bold cyan]  📋 Plan Review[/bold cyan]"))
         lines.append(Text(_BORDER * border_w, style="dim"))
@@ -242,14 +244,14 @@ class PlanApprovalOverlay(PromptOverlay):
 
     # ── PROMPTING ─────────────────────────────────────────────────────────────
 
-    def _render_prompting(self) -> Any:
+    def _render_prompting(self) -> RenderableType:
         from rich.console import Group        # noqa: PLC0415
         from rich.text import Text            # noqa: PLC0415
         from rich.markup import escape as _e  # noqa: PLC0415
 
         cols  = shutil.get_terminal_size((80, 24)).columns
         label = _OPTIONS[self._pending_option][0]
-        lines: list[Any] = []
+        lines: list[RenderableType] = []
 
         lines.append(Text.from_markup(
             f"[bold cyan]  📋 Plan Review[/bold cyan]"

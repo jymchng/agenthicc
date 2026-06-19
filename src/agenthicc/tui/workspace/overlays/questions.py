@@ -26,7 +26,11 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlays.prompt import PromptOverlay
@@ -35,7 +39,7 @@ _BORDER       = "─"
 _OTHER_LABEL  = "Other — type your answer"
 
 
-def _str_option(opt: Any) -> str:
+def _str_option(opt: object) -> str:
     """Normalise an option to a plain string.
 
     The LLM sometimes passes dicts (e.g. {'id': 'a', 'label': 'Frontend …'})
@@ -81,8 +85,8 @@ class QuestionsOverlay(PromptOverlay):
 
     def __init__(
         self,
-        req:      Any,
-        service:  Any,
+        req:      ApprovalRequest,
+        service:  ApprovalService,
         close_fn: Callable[[], None],
     ) -> None:
         super().__init__()
@@ -121,7 +125,7 @@ class QuestionsOverlay(PromptOverlay):
     def on_unmount(self) -> None:
         pass
 
-    def render(self) -> Any:
+    def render(self) -> RenderableType:
         if not self._questions:
             return self._render_empty()
         if self._mode == _Mode.TYPING:
@@ -192,7 +196,7 @@ class QuestionsOverlay(PromptOverlay):
 
     # ── SELECTING ─────────────────────────────────────────────────────────────
 
-    def _render_selecting(self) -> Any:
+    def _render_selecting(self) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
 
@@ -208,7 +212,7 @@ class QuestionsOverlay(PromptOverlay):
         opt_rows       = min(max_opts, max(1, rows - 19))
         self._opt_rows = opt_rows   # read by _handle_selecting
 
-        lines: list[Any] = []
+        lines: list[RenderableType] = []
 
         n_ans   = sum(1 for s in self._states if s.answered)
         n_total = len(self._questions)
@@ -338,14 +342,14 @@ class QuestionsOverlay(PromptOverlay):
 
     # ── TYPING ────────────────────────────────────────────────────────────────
 
-    def _render_typing(self) -> Any:
+    def _render_typing(self) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
 
         cols     = shutil.get_terminal_size((80, 24)).columns
         border_w = min(cols, 66)
         q        = self._questions[self._current]
-        lines: list[Any] = []
+        lines: list[RenderableType] = []
 
         lines.append(Text.from_markup(
             f"[bold cyan]  ❓ Question {self._current + 1} of {len(self._questions)}"
@@ -386,7 +390,7 @@ class QuestionsOverlay(PromptOverlay):
 
     # ── fallback when no questions parsed ─────────────────────────────────────
 
-    def _render_empty(self) -> Any:
+    def _render_empty(self) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
         cols = shutil.get_terminal_size((80, 24)).columns

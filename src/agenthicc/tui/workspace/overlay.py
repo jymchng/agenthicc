@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.cbreak_reader import Key
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
+    from agenthicc.tui.conversation_store import AppState
 
 
 class Overlay(ABC):
@@ -19,7 +23,7 @@ class Overlay(ABC):
         """Called when overlay is dismissed."""
 
     @abstractmethod
-    def render(self) -> Any:
+    def render(self) -> RenderableType:
         """Return a Rich renderable for the Live region."""
 
     @abstractmethod
@@ -30,9 +34,9 @@ class Overlay(ABC):
 class OverlayHost:
     """Manages the single active overlay. Part of the Live region."""
 
-    def __init__(self, app_state: Any) -> None:
-        self._state:   Any         = app_state
-        self._overlay: Overlay | None = None
+    def __init__(self, app_state: AppState) -> None:
+        self._state:   AppState           = app_state
+        self._overlay: Overlay | None     = None
         self._redraw:  Callable[[], None] | None = None
 
     def set_redraw_callback(self, fn: Callable[[], None]) -> None:
@@ -65,7 +69,7 @@ class OverlayHost:
         if self._redraw:
             self._redraw()
 
-    def render(self) -> Any:
+    def render(self) -> RenderableType | None:
         if self._overlay:
             return self._overlay.render()
         return None

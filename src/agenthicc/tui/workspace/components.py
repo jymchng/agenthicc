@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
+    from agenthicc.tui.conversation_store import AppState
 
 # Flower icons that cycle during agent runs
 _FLOWERS = ("✿", "❀", "❁", "❃", "✾", "❋", "✽", "❊")
@@ -66,10 +70,10 @@ class StatusComponent:
     Line 2: {model_name} │ Tokens: Nk │ $N.NNNN
     """
 
-    def __init__(self, app_state: Any) -> None:
+    def __init__(self, app_state: AppState) -> None:
         self._state = app_state
 
-    def render(self) -> Any:
+    def render(self) -> RenderableType:
         from rich.text import Text           # noqa: PLC0415
         from rich.console import Group       # noqa: PLC0415
         from rich.markup import escape as _e # noqa: PLC0415
@@ -157,7 +161,7 @@ class StatusComponent:
 
 # ── multi-line composer helper ────────────────────────────────────────────────
 
-def _render_multiline(buf: list[str], cursor: int) -> Any:
+def _render_multiline(buf: list[str], cursor: int) -> RenderableType:
     """Build one Rich Text per logical line; return as a Group.
 
     Used by ComposerComponent.render() when the buffer contains '\\n'.
@@ -211,10 +215,10 @@ def _render_multiline(buf: list[str], cursor: int) -> Any:
 class ComposerComponent:
     """Renders ❯ text▌ from InputState signals."""
 
-    def __init__(self, app_state: Any) -> None:
+    def __init__(self, app_state: AppState) -> None:
         self._state = app_state
 
-    def render(self) -> Any:
+    def render(self) -> RenderableType:
         from rich.text import Text                              # noqa: PLC0415
         from agenthicc.tui.input.renderer import build_prompt  # noqa: PLC0415
 
@@ -251,10 +255,10 @@ class ComposerComponent:
 class FooterComponent:
     """Renders mode string + context hints.  Always 2 rows."""
 
-    def __init__(self, app_state: Any) -> None:
+    def __init__(self, app_state: AppState) -> None:
         self._state = app_state
 
-    def render(self) -> Any:
+    def render(self) -> RenderableType:
         from rich.text import Text     # noqa: PLC0415
         from rich.console import Group # noqa: PLC0415
 
@@ -280,7 +284,7 @@ class FooterComponent:
             hints_str  = _build_hints(raw_hints, cols)
 
         # PRD-81: optional workflow progress row
-        extra: list[Any] = []
+        extra: list[RenderableType] = []
         try:
             from rich.markup import escape as _e  # noqa: PLC0415
             _wf = self._state.workflow_run()

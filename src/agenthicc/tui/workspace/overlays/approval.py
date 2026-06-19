@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import json
 import shutil
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlay import Overlay
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 
 _BORDER_CHAR = "─"
 
@@ -40,8 +44,8 @@ class ApprovalOverlay(Overlay):
 
     def __init__(
         self,
-        req: Any,                    # ApprovalRequest (avoid circular import)
-        service: Any,                # ApprovalService
+        req: ApprovalRequest,
+        service: ApprovalService,
         close_fn: Callable[[], None],
     ) -> None:
         self._req      = req
@@ -59,7 +63,7 @@ class ApprovalOverlay(Overlay):
     def on_unmount(self) -> None:
         pass
 
-    def render(self) -> Any:
+    def render(self) -> RenderableType:
         from rich.console import Group        # noqa: PLC0415
         from rich.text import Text            # noqa: PLC0415
         from rich.markup import escape as _e  # noqa: PLC0415
@@ -68,7 +72,7 @@ class ApprovalOverlay(Overlay):
         req      = self._req
         cap_tags = _cap_str(req.capabilities)
 
-        lines: list[Any] = []
+        lines: list[RenderableType] = []
 
         # ── header ────────────────────────────────────────────────────────────
         lines.append(Text.from_markup(

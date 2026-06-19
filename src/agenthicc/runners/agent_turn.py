@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from lauren_ai._signals import ToolCallStarted, ToolCallComplete
     from agenthicc.config import ExecutionSettings
     from agenthicc.kernel.processor import EventProcessor
+    from agenthicc.memory.router import MemoryRouter
+    from agenthicc.memory.vector import SemanticIndex
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.plugins.registry import PluginTool
     from agenthicc.skills.loader import SkillDef
@@ -431,8 +433,8 @@ async def _run_agent_turn(
     approval_svc: ApprovalService | None = None,
     output_collector: list[str] | None = None,
     system_prompt_suffix: str = "",
-    memory_router: Any = None,
-    semantic_index: Any = None,
+    memory_router: MemoryRouter | None = None,
+    semantic_index: SemanticIndex | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 

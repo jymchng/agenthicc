@@ -15,9 +15,13 @@ Architecture: PRD-60 §7, PRD-66 §3.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.conversation_store import ConversationEvent
+
+if TYPE_CHECKING:
+    from rich.console import Console
+    from agenthicc.tui.conversation_store import AppState
 
 
 _TOOL_OP: dict[str, str] = {
@@ -68,10 +72,10 @@ class ScrollBufferAppender:
     on the asyncio event-loop thread (not on background threads).
     """
 
-    def __init__(self, app_state: Any, console: Any, max_live_tool_calls: int = 5) -> None:
-        self._state   = app_state
-        self._console = console
-        self._unsub: Any = None
+    def __init__(self, app_state: AppState, console: Console, max_live_tool_calls: int = 5) -> None:
+        self._state:   AppState                  = app_state
+        self._console: Console                   = console
+        self._unsub:   Callable[[], None] | None = None
         self._max_tool_calls: int = max_live_tool_calls
         # Small batch buffer to coalesce rapid events (e.g. many tool completions)
         self._pending: list[ConversationEvent] = []

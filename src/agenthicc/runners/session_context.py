@@ -6,7 +6,7 @@ No logic lives here.  ``TUISession`` reads from this context;
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -24,6 +24,9 @@ if TYPE_CHECKING:
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.config import AgenthiccConfig
     from agenthicc.tui.trigger import TriggerManager
+    from agenthicc.commands.registry import UnifiedCommandRegistry
+    from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.tools.mcp import McpToolRegistry
 
 
 @dataclass
@@ -46,7 +49,7 @@ class SessionContext:
     # ── registries ────────────────────────────────────────────────────────────
     workflow_registry:  "WorkflowRegistry"
     agents_registry:    "AgentsRegistry"
-    cmd_registry:       Any     # UnifiedCommandRegistry; Any avoids circular import
+    cmd_registry:       "UnifiedCommandRegistry"
     trigger_registry:   "TriggerManager"
 
     # ── resources ─────────────────────────────────────────────────────────────
@@ -54,8 +57,8 @@ class SessionContext:
     session_memory:     "ShortTermMemory"
     mention_cache:      "MentionCache"
     skills:             dict
-    project_plugins:    Any     # ProjectPlugins
-    mcp_registry:       Any     # McpToolRegistry | None
+    project_plugins:    "PluginToolSet"
+    mcp_registry:       "McpToolRegistry | None"
 
     # ── config ────────────────────────────────────────────────────────────────
     cfg:                "AgenthiccConfig"
