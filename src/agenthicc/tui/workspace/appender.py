@@ -140,6 +140,7 @@ class ScrollBufferAppender:
                 self._console.print(
                     f"[bold yellow]❯[/bold yellow] {_e(text)}",
                     markup=True, highlight=False,
+                    style="on grey11",
                 )
 
             case "tool_complete":
