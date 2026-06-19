@@ -6,11 +6,19 @@ import dataclasses
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agenthicc.workflows.config import WorkflowConfig
-    from agenthicc.workflows.plugin import WorkflowDefinition
+    from agenthicc.workflows.plugin import (
+        PhaseOutput,
+        PhaseSpec,
+        WorkflowContext,
+        WorkflowDefinition,
+        WorkflowRun,
+    )
+    from agenthicc.tui.runtime.mode_manager import ModeManager
+    from lauren_ai._memory import ShortTermMemory
 
 log = logging.getLogger(__name__)
 
@@ -30,9 +38,9 @@ class WorkflowRunner:
 
     def __init__(
         self,
-        definition:   "WorkflowDefinition",
-        config:       "WorkflowConfig",
-        mode_manager: Any = None,
+        definition:   WorkflowDefinition,
+        config:       WorkflowConfig,
+        mode_manager: ModeManager | None = None,
     ) -> None:
         self._def          = definition
         self._cfg          = config          # WorkflowConfig; AgenthiccConfig via self._cfg.cfg
@@ -47,8 +55,8 @@ class WorkflowRunner:
         self._model_id   = _transport_model or config.cfg.execution.effective_model()
 
         # Set during run() / resume() — not constructor state.
-        self._run_id:        str = ""
-        self._shared_memory: Any = None
+        self._run_id:        str                    = ""
+        self._shared_memory: ShortTermMemory | None = None
 
     # ── public entry points ───────────────────────────────────────────────────
 
@@ -82,7 +90,7 @@ class WorkflowRunner:
         start_phase = self._def.first_phase().name if self._def.first_phase() else None
         await self._run_phase_loop(intent, context, wf_run, run_id, start_phase)
 
-    async def resume(self, context: Any) -> None:
+    async def resume(self, context: WorkflowContext) -> None:
         """Resume a workflow from a pre-populated WorkflowContext.
 
         Phases already present in ``context.phase_outputs`` are skipped;
@@ -129,8 +137,8 @@ class WorkflowRunner:
     async def _run_phase_loop(
         self,
         intent:      str,
-        context:     Any,  # WorkflowContext
-        wf_run:      Any,  # WorkflowRun (local; evolved via dataclasses.replace)
+        context:     WorkflowContext,
+        wf_run:      WorkflowRun,
         run_id:      str,
         start_phase: str | None,
     ) -> None:
@@ -286,7 +294,7 @@ class WorkflowRunner:
 
     # ── resume helpers ────────────────────────────────────────────────────────
 
-    def _find_resume_phase(self, context: Any) -> str | None:
+    def _find_resume_phase(self, context: WorkflowContext) -> str | None:
         """Walk the phase-transition graph to find the first incomplete phase."""
         completed  = set(context.phase_outputs.keys())
         phase_name = self._def.first_phase().name if self._def.first_phase() else None
@@ -308,7 +316,7 @@ class WorkflowRunner:
 
     # ── phase execution ───────────────────────────────────────────────────────
 
-    async def _run_phase(self, spec: Any, intent: str, context: Any) -> Any:
+    async def _run_phase(self, spec: PhaseSpec, intent: str, context: WorkflowContext) -> PhaseOutput:
         from agenthicc.workflows.plugin import PhaseOutput, _parse_output_schema  # noqa: PLC0415
         from agenthicc.runners.agent_turn import _run_agent_turn                 # noqa: PLC0415
 
@@ -574,7 +582,7 @@ class WorkflowRunner:
             duration_s=time.monotonic() - t0,
         )
 
-    async def _run_human_phase(self, spec: Any, context: Any) -> Any:
+    async def _run_human_phase(self, spec: PhaseSpec, context: WorkflowContext) -> PhaseOutput:
         from agenthicc.workflows.plugin import PhaseOutput  # noqa: PLC0415
 
         if self._cfg.approval_svc is None:
@@ -612,7 +620,7 @@ class WorkflowRunner:
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    def _filter_tools(self, spec: Any) -> list:
+    def _filter_tools(self, spec: PhaseSpec) -> list[object]:
         from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
 
         mode_blocked  = self._cfg.app_state.active_mode().blocked_capabilities
@@ -635,22 +643,22 @@ class WorkflowRunner:
             result.append(tool)
         return result
 
-    def _determine_transition(self, spec: Any, output: Any) -> str | None:
+    def _determine_transition(self, spec: PhaseSpec, output: PhaseOutput) -> str | None:
         if output.metadata and "__next_phase__" in output.metadata:
             return output.metadata["__next_phase__"] or None
         if output.approved is False and spec.on_reject:
             return spec.on_reject
         return spec.next
 
-    def _build_phase_prompt(self, spec: Any, intent: str, context: Any) -> str:
+    def _build_phase_prompt(self, spec: PhaseSpec, intent: str, context: WorkflowContext) -> str:
         ctx_block = context.as_system_block()
         return f"{ctx_block}\n\nTask: {intent}"
 
 
 def build_workflow_runner(
-    definition:  Any,
+    definition:   WorkflowDefinition,
     *,
-    config:      "WorkflowConfig",
-    mode_manager: Any | None = None,
+    config:       WorkflowConfig,
+    mode_manager: ModeManager | None = None,
 ) -> WorkflowRunner:
     return WorkflowRunner(definition, config, mode_manager)

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import os
 
 import pytest
 
@@ -70,7 +71,7 @@ def _intent_from_meta(meta_path: Path, fallback: str = "enhance this repo") -> s
     ),
 )
 @pytest.mark.timeout(600)
-async def test_plan_mode_end_to_end_orchestration() -> None:
+async def test_plan_mode_end_to_end_orchestration(tmp_path, monkeypatch) -> None:
     """Verify that the code_plan workflow still routes through all four phases.
 
     What this catches:
@@ -84,9 +85,10 @@ async def test_plan_mode_end_to_end_orchestration() -> None:
         approvals_path=PLAN_MODE_APPROVALS if PLAN_MODE_APPROVALS.exists() else None,
         intent=_intent_from_meta(PLAN_MODE_META),
     )
-
+    
+    monkeypatch.chdir(tmp_path)  # ensure no local files are read/written during replay
     result: ReplayResult = await run_headless_replay(cassette)
-
+    
     # ── structural assertions ─────────────────────────────────────────────────
     assert result.status == "complete", (
         f"Workflow did not reach 'complete'.  Status: {result.status!r}. "
