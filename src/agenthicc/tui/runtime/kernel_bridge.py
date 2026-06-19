@@ -3,9 +3,21 @@ ConversationStore mutations (PRD-66 §2)."""
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Callable
 
 from agenthicc.tui.conversation_store import ConversationStore, AgentState
+
+# ── event handler registry ────────────────────────────────────────────────────
+_InjectedHandler = Callable[["KernelBridge", dict], None]
+_EVENT_HANDLERS: dict[str, _InjectedHandler] = {}
+
+
+def register_event_handler(kind: str) -> Callable[[_InjectedHandler], _InjectedHandler]:
+    """Decorator: register a handler for inject_event() events of type *kind*."""
+    def decorator(fn: _InjectedHandler) -> _InjectedHandler:
+        _EVENT_HANDLERS[kind] = fn
+        return fn
+    return decorator
 
 
 class KernelBridge:
@@ -76,37 +88,47 @@ class KernelBridge:
             )
 
     def inject_event(self, event: dict) -> None:
-        """Manually inject a stream event (used by the legacy agent_turn.py bridge)."""
-        kind = event.get("type", "")
+        """Dispatch a stream event to the registered handler for its type."""
+        handler = _EVENT_HANDLERS.get(event.get("type", ""))
+        if handler is not None:
+            handler(self, event)
 
-        if kind == "agent_state_change":
-            state_name = event.get("state", "idle").lower()
-            mapping = {
-                "idle":     AgentState.IDLE,
-                "thinking": AgentState.THINKING,
-                "running":  AgentState.RUNNING,
-                "complete": AgentState.COMPLETE,
-                "error":    AgentState.ERROR,
-            }
-            if state_name in mapping:
-                self._conv.agent_state.set(mapping[state_name])
-            tool = event.get("tool")
-            if tool is not None:
-                self._conv.active_tool.set(tool)
 
-        elif kind == "session_summary":
-            sid   = event.get("session_id", "")
-            model = event.get("model_name", "")
-            if sid:
-                self._conv.session_id.set(sid)
-            if model:
-                self._conv.model_name.set(model)
+# ── built-in handlers ─────────────────────────────────────────────────────────
 
-        elif kind == "notification":
-            text = event.get("text")
-            self._conv.notification.set(text)
-            if text:
-                asyncio.get_event_loop().call_later(
-                    3.0,
-                    lambda: self._conv.notification.set(None),
-                )
+@register_event_handler("agent_state_change")
+def _handle_agent_state_change(self: KernelBridge, event: dict) -> None:
+    mapping = {
+        "idle":     AgentState.IDLE,
+        "thinking": AgentState.THINKING,
+        "running":  AgentState.RUNNING,
+        "complete": AgentState.COMPLETE,
+        "error":    AgentState.ERROR,
+    }
+    state_name = event.get("state", "idle").lower()
+    if state_name in mapping:
+        self._conv.agent_state.set(mapping[state_name])
+    tool = event.get("tool")
+    if tool is not None:
+        self._conv.active_tool.set(tool)
+
+
+@register_event_handler("session_summary")
+def _handle_session_summary(self: KernelBridge, event: dict) -> None:
+    sid   = event.get("session_id", "")
+    model = event.get("model_name", "")
+    if sid:
+        self._conv.session_id.set(sid)
+    if model:
+        self._conv.model_name.set(model)
+
+
+@register_event_handler("notification")
+def _handle_notification(self: KernelBridge, event: dict) -> None:
+    text = event.get("text")
+    self._conv.notification.set(text)
+    if text:
+        asyncio.get_event_loop().call_later(
+            3.0,
+            lambda: self._conv.notification.set(None),
+        )

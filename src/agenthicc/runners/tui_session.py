@@ -409,17 +409,21 @@ class TUISession:
             from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay           # noqa: PLC0415
             from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay  # noqa: PLC0415
             from agenthicc.tui.workspace.overlays.questions import QuestionsOverlay         # noqa: PLC0415
+
+            # Registry maps ApprovalRequest.kind → overlay class.
+            # Add new overlay kinds by extending this dict — no if/elif needed.
+            _overlay_registry = {
+                "plan_review": PlanApprovalOverlay,
+                "questions":   QuestionsOverlay,
+            }
+            _overlay_default = ApprovalOverlay
+
             if req is not None:
-                kind = getattr(req, "kind", "tool")
-                if kind == "plan_review":
-                    overlay = PlanApprovalOverlay(req, approval_svc, workspace.overlays.hide)
-                elif kind == "questions":
-                    overlay = QuestionsOverlay(req, approval_svc, workspace.overlays.hide)
-                else:
-                    overlay = ApprovalOverlay(req, approval_svc, workspace.overlays.hide)
-                workspace.overlays.show(overlay)
+                kind    = getattr(req, "kind", "tool")
+                factory = _overlay_registry.get(kind, _overlay_default)
+                workspace.overlays.show(factory(req, approval_svc, workspace.overlays.hide))
             else:
-                if isinstance(workspace.overlays.widget, (ApprovalOverlay, PlanApprovalOverlay, QuestionsOverlay)):
+                if isinstance(workspace.overlays.widget, tuple(_overlay_registry.values()) + (_overlay_default,)):
                     workspace.overlays.hide()
 
         app_state.pending_approval.subscribe(_on_approval_change)

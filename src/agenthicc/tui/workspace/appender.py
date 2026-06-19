@@ -19,6 +19,21 @@ from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.conversation_store import ConversationEvent
 
+# ── event renderer registry ───────────────────────────────────────────────────
+# Maps ConversationEvent.kind → bound-method-compatible handler.
+# Register new event kinds by calling register_renderer() from any module that
+# defines a new ConversationEvent kind — no edits to _render_one() needed.
+_EventRenderer = Callable[["ScrollBufferAppender", ConversationEvent], None]
+_RENDERERS: dict[str, _EventRenderer] = {}
+
+
+def register_renderer(kind: str) -> Callable[[_EventRenderer], _EventRenderer]:
+    """Decorator: register a function as the renderer for *kind* events."""
+    def decorator(fn: _EventRenderer) -> _EventRenderer:
+        _RENDERERS[kind] = fn
+        return fn
+    return decorator
+
 if TYPE_CHECKING:
     from rich.console import Console
     from agenthicc.tui.conversation_store import AppState
@@ -128,103 +143,10 @@ class ScrollBufferAppender:
     # ── rendering ─────────────────────────────────────────────────────────────
 
     def _render_one(self, ev: ConversationEvent) -> None:
-        match ev.kind:
-            case "turn_start":
-                self._group_count = 0
-                agent_name = ev.payload.get("agent_name", "assistant")
-                self._console.print(
-                    f"[bold cyan]●[/bold cyan] [bold]{agent_name}[/bold]"
-                    f"  [dim]{_hhmmss(ev.timestamp)}[/dim]",
-                    markup=True, highlight=False,
-                )
-
-            case "user_message":
-                from rich.markup import escape as _e
-                text = ev.payload.get("text", "")
-                self._console.print(
-                    f"[bold yellow]❯[/bold yellow] {_e(text)}",
-                    markup=True, highlight=False,
-                    style="on grey11",
-                )
-
-            case "tool_complete":
-                self._group_count += 1
-                if self._group_count <= self._max_tool_calls:
-                    self._render_tool_complete(ev.payload)
-                else:
-                    # Beyond threshold: update the live overflow signal so the
-                    # FooterComponent shows a live "⎿ …and N more" indicator.
-                    overflow = self._group_count - self._max_tool_calls
-                    self._state.conversation.live_tool_overflow.set(overflow)
-
-            case "text":
-                self._flush_group_summary()
-                text = ev.payload.get("text", "")
-                if text.strip():
-                    from rich.markdown import Markdown  # noqa: PLC0415
-                    self._console.print(Markdown(text), end="")
-
-            case "thinking_step":
-                from rich.markup import escape as _e
-                step = ev.payload.get("step", "")
-                done = ev.payload.get("done", False)
-                icon = "[green]✓[/green]" if done else "[yellow]→[/yellow]"
-                self._console.print(
-                    f"  {icon} [dim]{_e(step)}[/dim]",
-                    markup=True, highlight=False,
-                )
-
-            case "file_modified":
-                from agenthicc.tui.diff_renderer import render_file_diff  # noqa: PLC0415
-                path      = ev.payload.get("path", "")
-                old_lines = ev.payload.get("old_lines")
-                new_lines = ev.payload.get("new_lines")
-                tool      = ev.payload.get("tool", "write_file")
-                op        = _TOOL_OP.get(tool, "Update")
-                if old_lines is not None and new_lines is not None:
-                    self._console.print(
-                        render_file_diff(
-                            path, old_lines, new_lines,
-                            operation=op,
-                            language=_lang_for_path(path),
-                        ),
-                        highlight=False,
-                    )
-                else:
-                    from rich.markup import escape as _e  # noqa: PLC0415
-                    self._console.print(
-                        f"  [dim]{op}:[/dim] [cyan]{_e(path)}[/cyan]",
-                        markup=True, highlight=False,
-                    )
-
-            case "error":
-                self._flush_group_summary()
-                from rich.markup import escape as _e
-                msg    = ev.payload.get("message", "")
-                detail = ev.payload.get("detail", "")
-                self._console.print(
-                    f"\n[red bold]ERROR[/red bold] {_e(msg)}",
-                    markup=True, highlight=False,
-                )
-                if detail:
-                    self._console.print(
-                        f"[dim]{_e(detail[:500])}[/dim]",
-                        markup=True, highlight=False,
-                    )
-
-            case "mention_chips":
-                from rich.markup import escape as _e
-                for chip in ev.payload.get("chips", []):
-                    raw     = chip.get("raw", "")
-                    preview = chip.get("content_preview", "")
-                    self._console.print(
-                        f"  [dim]@[/dim][cyan]{_e(raw.lstrip('@'))}[/cyan]"
-                        + (f"  [dim]{_e(preview[:60])}[/dim]" if preview else ""),
-                        markup=True, highlight=False,
-                    )
-
-            case _:
-                pass
+        """Dispatch to the registered renderer for ev.kind; silently ignore unknown kinds."""
+        renderer = _RENDERERS.get(ev.kind)
+        if renderer is not None:
+            renderer(self, ev)
 
     def _flush_group_summary(self) -> None:
         """Close the current tool group: reset the live signal, print permanent record."""
@@ -278,3 +200,110 @@ class ScrollBufferAppender:
             markup=True, highlight=False,
         )
         self._console.print(f"[dim]{'─' * cols}[/dim]", markup=True, highlight=False)
+
+
+# ── built-in renderers — registered at module load time, after class is complete ──
+
+@register_renderer("turn_start")
+def _render_turn_start(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    self._group_count = 0
+    agent_name = ev.payload.get("agent_name", "assistant")
+    self._console.print(
+        f"[bold cyan]●[/bold cyan] [bold]{agent_name}[/bold]"
+        f"  [dim]{_hhmmss(ev.timestamp)}[/dim]",
+        markup=True, highlight=False,
+    )
+
+
+@register_renderer("user_message")
+def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    from rich.markup import escape as _e  # noqa: PLC0415
+    text = ev.payload.get("text", "")
+    self._console.print(
+        f"[bold yellow]❯[/bold yellow] {_e(text)}",
+        markup=True, highlight=False,
+        style="on grey11",
+    )
+
+
+@register_renderer("tool_complete")
+def _render_tool_complete_ev(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    self._group_count += 1
+    if self._group_count <= self._max_tool_calls:
+        self._render_tool_complete(ev.payload)
+    else:
+        overflow = self._group_count - self._max_tool_calls
+        self._state.conversation.live_tool_overflow.set(overflow)
+
+
+@register_renderer("text")
+def _render_text(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    self._flush_group_summary()
+    text = ev.payload.get("text", "")
+    if text.strip():
+        from rich.markdown import Markdown  # noqa: PLC0415
+        self._console.print(Markdown(text), end="")
+
+
+@register_renderer("thinking_step")
+def _render_thinking_step(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    from rich.markup import escape as _e  # noqa: PLC0415
+    step = ev.payload.get("step", "")
+    done = ev.payload.get("done", False)
+    icon = "[green]✓[/green]" if done else "[yellow]→[/yellow]"
+    self._console.print(
+        f"  {icon} [dim]{_e(step)}[/dim]",
+        markup=True, highlight=False,
+    )
+
+
+@register_renderer("file_modified")
+def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    from agenthicc.tui.diff_renderer import render_file_diff  # noqa: PLC0415
+    path      = ev.payload.get("path", "")
+    old_lines = ev.payload.get("old_lines")
+    new_lines = ev.payload.get("new_lines")
+    tool      = ev.payload.get("tool", "write_file")
+    op        = _TOOL_OP.get(tool, "Update")
+    if old_lines is not None and new_lines is not None:
+        self._console.print(
+            render_file_diff(path, old_lines, new_lines, operation=op,
+                             language=_lang_for_path(path)),
+            highlight=False,
+        )
+    else:
+        from rich.markup import escape as _e  # noqa: PLC0415
+        self._console.print(
+            f"  [dim]{op}:[/dim] [cyan]{_e(path)}[/cyan]",
+            markup=True, highlight=False,
+        )
+
+
+@register_renderer("error")
+def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    self._flush_group_summary()
+    from rich.markup import escape as _e  # noqa: PLC0415
+    msg    = ev.payload.get("message", "")
+    detail = ev.payload.get("detail", "")
+    self._console.print(
+        f"\n[red bold]ERROR[/red bold] {_e(msg)}",
+        markup=True, highlight=False,
+    )
+    if detail:
+        self._console.print(
+            f"[dim]{_e(detail[:500])}[/dim]",
+            markup=True, highlight=False,
+        )
+
+
+@register_renderer("mention_chips")
+def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    from rich.markup import escape as _e  # noqa: PLC0415
+    for chip in ev.payload.get("chips", []):
+        raw     = chip.get("raw", "")
+        preview = chip.get("content_preview", "")
+        self._console.print(
+            f"  [dim]@[/dim][cyan]{_e(raw.lstrip('@'))}[/cyan]"
+            + (f"  [dim]{_e(preview[:60])}[/dim]" if preview else ""),
+            markup=True, highlight=False,
+        )
