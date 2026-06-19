@@ -9,7 +9,7 @@ description = "State-driven agent operating system for autonomous software engin
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "lauren-ai[all]",
+    "lauren-ai[anthropic,openai,ollama,litellm]",
     "anyio>=4.0",
     "typing-extensions>=4.11",
     "rich>=13.0",
