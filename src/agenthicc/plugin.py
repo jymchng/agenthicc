@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from agenthicc.tools.base import Tool
-from agenthicc.tools.hooks import LifecycleHook
 
 __all__ = [
     "AgenthiccPlugin",
@@ -274,8 +273,8 @@ class PluginRegistry:
                 # the integration fixture which has a running processor task.
                 pass
 
-    def register_hook(self, entity_type: str, stage: str, hook: LifecycleHook) -> None:
-        """Register a lifecycle hook with the live :class:`~agenthicc.tools.hooks.HookRunner`.
+    def register_hook(self, entity_type: str, stage: str, hook: Any) -> None:
+        """Register a lifecycle hook with the live hook runner.
 
         No-op when the registry was constructed without a *hook_runner*.
         """
