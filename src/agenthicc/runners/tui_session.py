@@ -6,18 +6,25 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._config import LLMConfig
+    from lauren_ai._signals import AgentRunComplete
+    from agenthicc.memory.router import MemoryRouter
+    from agenthicc.memory.vector import SemanticIndex
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.tui.workspace import Workspace
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import SendMessageCommand, InterruptAgentCommand
+    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.workflows.plugin import WorkflowDefinition, WorkflowContext
 
 def _make_session_tools(
-    approval_svc: Any,
-    memory_router: Any = None,
-    semantic_index: Any = None,
+    approval_svc: ApprovalService | None,
+    memory_router: MemoryRouter | None = None,
+    semantic_index: SemanticIndex | None = None,
 ) -> list:
     """Tools injected into every interactive agent turn (Auto mode + plan phase)."""
     from agenthicc.workflows.phase_tools import make_questions_tool  # noqa: PLC0415
@@ -28,7 +35,7 @@ def _make_session_tools(
     )
 
 
-def _build_agent_runner(llm_cfg: Any, *, cassette_dir: Path | None = None) -> Any:
+def _build_agent_runner(llm_cfg: LLMConfig | None, *, cassette_dir: Path | None = None) -> AgentRunnerBase | None:
     """Build a lauren-ai AgentRunnerBase wired to a SignalBus."""
     if llm_cfg is None:
         return None
@@ -153,7 +160,7 @@ async def _build_session_context(
     command_bus = CommandBus()
 
     from agenthicc.tools.approval import ApprovalService         # noqa: PLC0415
-    approval_svc: Any = ApprovalService(app_state)
+    approval_svc: ApprovalService = ApprovalService(app_state)
     if cassette_dir is not None:
         from agenthicc.testing.recording_approval import RecordingApprovalService  # noqa: PLC0415
         approval_svc = RecordingApprovalService(
@@ -296,7 +303,7 @@ async def _build_session_context(
         from lauren_ai._signals import AgentRunComplete as _ARC  # noqa: PLC0415
 
         @_runner_signals.on(_ARC)
-        async def _on_agent_run_complete(sig: Any) -> None:
+        async def _on_agent_run_complete(sig: AgentRunComplete) -> None:
             usage = getattr(sig, "total_usage", None)
             cost  = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
             if usage is not None:
@@ -649,7 +656,7 @@ class TUISession:
             )
             return
 
-    async def _resume_workflow_task(self, wf_defn: Any, context: Any) -> None:
+    async def _resume_workflow_task(self, wf_defn: WorkflowDefinition, context: WorkflowContext) -> None:
         """Resume a WorkflowRunner with error handling matching agent_task_body."""
         from agenthicc.tui.input.unified_session import InputMode        # noqa: PLC0415
         from agenthicc.workflows.code_plan import CodePlanRunner          # noqa: PLC0415

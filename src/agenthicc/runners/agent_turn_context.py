@@ -7,7 +7,7 @@ reads from this context; call sites construct it and pass it to the runner.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
 
 
@@ -46,7 +47,7 @@ class AgentTurnContext:
     skills:               "dict | None"       = None
     mention_cache:        "MentionCache | None" = None
     project_plugin_tools: "list | None"       = None
-    mcp_registry:         Any                 = None
+    mcp_registry:         "McpToolRegistry | None" = None
 
     # ── agent identity ────────────────────────────────────────────────────────
     active_agent:     "str | None" = None   # None → "default"

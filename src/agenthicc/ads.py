@@ -6,7 +6,11 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.auth import AuthClient
+    from agenthicc.kernel.processor import EventProcessor
 
 __all__ = ["AdRotator", "AdRecord", "AdCache"]
 
@@ -67,8 +71,8 @@ class AdRotator:
 
     def __init__(
         self,
-        auth_client: Any,          # AuthClient
-        processor: Any | None,     # EventProcessor -- may be None (headless)
+        auth_client: AuthClient,
+        processor: EventProcessor | None,
         cache_path: Path = Path(".agenthicc/ads_cache.json"),
     ) -> None:
         self._auth = auth_client
