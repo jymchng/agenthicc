@@ -107,6 +107,8 @@ to call `console.print()`.  All events for one batch are flushed in a single
 | 2.13 | Tool group collapse — configurable threshold | Consecutive `tool_complete` events between two `text` events form a group. The first `max_live_tool_calls` (default 5, configurable via `[tools] max_live_tool_calls` in `agenthicc.toml`) are printed individually to the scroll buffer. Tool calls beyond that threshold are not printed immediately. `ScrollBufferAppender` reads the threshold from `ToolSettings.max_live_tool_calls` passed through `Workspace` at construction. |
 | 2.14 | Tool group collapse — live overflow indicator | While a tool group is over threshold, `ConversationStore.live_tool_overflow: Signal[int]` is updated with the current overflow count on each arriving call. `FooterComponent` renders a live `  ⎿ ...and N more tool call(s)` row in the footer that increments in real time. When the group closes (`text` or `error` event), the signal is reset to 0 (footer row disappears) and a permanent `  ⎿ ...and N more tool call(s)` line is printed to the scroll buffer. `FooterComponent.height()` accounts for this extra row when computing the Live block height. |
 | 2.15 | Scroll-buffer event renderer registry | `ScrollBufferAppender` dispatches `ConversationEvent.kind` through a module-level `_RENDERERS: dict[str, Callable]` rather than a `match` block. Each renderer is registered with `@register_renderer("kind")` at module load time. Adding a new event kind requires only adding a new `@register_renderer` function — no changes to `_render_one()`. The registry, decorator, and all built-in renderers live in `tui/workspace/appender.py`. |
+| 2.16 | Blank line after user message | The `user_message` renderer calls `console.print()` (blank line) immediately after printing `❯ text`. One blank line always separates the user message from the first line of the agent turn that follows. |
+| 2.17 | Blank line after LLM turn | `ConversationStore.end_turn()` emits a `turn_complete` event when a turn finishes. The `turn_complete` renderer calls `console.print()` (blank line). One blank line always follows the last line of each complete LLM turn. No blank line is inserted after individual LLM sub-turn text chunks — only after the whole turn. |
 
 ---
 
@@ -327,6 +329,7 @@ the standard way to annotate tools.
 | 11.3 | `--continue` | Finds the most recent session for the current directory and resumes it. |
 | 11.4 | Session persistence | All conversation events are persisted to `~/.agenthicc/sessions/<id>/conversation.jsonl`. |
 | 11.5 | Terminal restored on exit | After any exit path (Ctrl+C ×2, Ctrl+D, exception), ECHO, ICANON, cursor visibility, and bracketed paste are all restored. No broken terminal. |
+| 11.6 | Welcome screen — single print | `print_welcome()` calls `console.print(render_welcome(...))` exactly once; no surrounding blank lines are added. Dynamic column widths come from `shutil.get_terminal_size()`. The welcome box uses a yellow-dim border. |
 
 ---
 
@@ -598,7 +601,7 @@ entry, never by editing the dispatcher.
 | 17.1 | Registry location | `_RENDERERS: dict[str, _EventRenderer]` at module level in `tui/workspace/appender.py`. Populated at import time by `@register_renderer` decorators. |
 | 17.2 | Decorator | `@register_renderer("kind")` — maps a `ConversationEvent.kind` string to a callable `(ScrollBufferAppender, ConversationEvent) -> None`. |
 | 17.3 | Dispatcher | `ScrollBufferAppender._render_one()` does `renderer = _RENDERERS.get(ev.kind); if renderer: renderer(self, ev)`. Unknown kinds are silently ignored. |
-| 17.4 | Built-in renderers | `turn_start`, `user_message`, `tool_complete`, `text`, `thinking_step`, `file_modified`, `error`, `mention_chips` — all registered at module load time in the same file. |
+| 17.4 | Built-in renderers | `turn_start`, `user_message`, `tool_complete`, `text`, `thinking_step`, `file_modified`, `error`, `mention_chips`, `turn_complete` — all registered at module load time in the same file. `turn_complete` emits a blank line after the full LLM turn (see §2.17). |
 | 17.5 | Adding a new kind | Define a module-level function decorated with `@register_renderer("new_kind")` anywhere that imports the appender module. No changes to `_render_one()` needed. |
 
 ### 17.2 Approval overlay factory registry (`tui_session.py`)
