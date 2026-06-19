@@ -1,5 +1,65 @@
 # PRD-79 — CLI Revamp: Decorator-Based Subcommands, CLIContext, Configuration Wiring, and User-Defined Commands
 
+## Implementation status — **NOT STARTED**
+
+None of the four fixes in this PRD have been implemented.  The sections below
+describe the target design; the "Current state" section describes what actually
+exists in the codebase today.
+
+---
+
+## Current state
+
+### Files that exist
+
+```
+src/agenthicc/cli/
+  __init__.py        — empty package marker
+  auth.py            — _do_login(), _do_logout(), _do_whoami() handlers
+  config.py          — _do_config_show(), _do_config_init() handlers
+  parser.py          — _parse_args() → argparse.Namespace (no CLIContext)
+src/agenthicc/__main__.py  — main() with if/elif dispatch (~30 lines)
+```
+
+### What does NOT exist yet
+
+- `cli/registry.py` — no `@command`, `@group`, `_Entry`, `_REGISTRY`, `_discover`
+- `cli/context.py` — no `CLIContext`, no `CLIFlags`
+- `cli/commands/` directory — no decorator-based command modules
+- `CLIFlags` / `BehaviourSettings` / `PluginSettings.strict_cli_shadow` in config
+- `AppState.cli_flags` in `tui/conversation_store.py`
+- `--dangerously-skip-permissions` flag or `ApprovalGate` bypass
+- User-defined command discovery from `~/.agenthicc/cli/` or `.agenthicc/cli/`
+- Trust mechanism (`agenthicc trust cli` / `trusted_cli.json`)
+- Provenance badges in `--help`
+
+### Current `main()` (what dispatch looks like today)
+
+```python
+# __main__.py
+def main() -> None:
+    args = _parse_args()           # returns argparse.Namespace
+    if args.command == "config":
+        ...
+    elif args.command == "login":
+        asyncio.run(_do_login())
+    elif args.command == "logout":
+        ...
+    elif args.headless:
+        asyncio.run(_run_headless())
+    else:
+        _run_tui(args)
+```
+
+### Current subcommands
+
+`login`, `logout`, `whoami`, `sessions`, `config show`, `config init` — all
+hard-coded in `cli/parser.py` with static `add_subparsers()` calls.  Adding a
+new subcommand currently requires editing `parser.py`, `__main__.py`, and a
+handler file.
+
+---
+
 ## Background
 
 The current CLI has three structural problems:
@@ -790,25 +850,45 @@ always silent.  Shadowing another user-controlled layer is a potential surprise
 
 ## File changes
 
-| File | Change |
-|---|---|
-| `cli/registry.py` | **New** — `_Entry` (with `source`), `_REGISTRY`, `_GROUPS`, `_LOADING_SOURCE` ContextVar, `command()`, `group()`, `_add_params()`, `_as_tree()`, `_wire()`, `_call()`, `_discover()`, `_discover_directory()`, `_load_toml_commands()` |
-| `cli/context.py` | **New** — `CLIFlags`, `CLIContext` dataclasses |
-| `cli/commands/` | **New directory** — one file per built-in command domain (`sessions.py`, `plugin.py`, `config.py`, `auth.py`) |
-| `cli/commands/trust.py` | **New built-in** — `@command("trust", "cli")` writes `.agenthicc/trusted_cli.json` |
-| `cli/parser.py` | Returns `(CLIContext, argparse.Namespace)`; iterates `_as_tree()` to build argparse; adds `--dangerously-skip-permissions` |
-| `__main__.py` | `main()` — 6 lines; dispatch via `_entry` attribute set by `set_defaults` |
-| `config.py` | Add `BehaviourSettings`; add `behaviour` field to `AgenthiccConfig`; parse in `_dict_to_config()` |
-| `tui/conversation_store.py` | Add `cli_flags: CLIFlags` to `AppState` |
-| `runners/tui_session.py` | Add `cli_flags` param to `_run_tui_session()`; accept `CLIContext` in `_run_tui()` |
-| `runners/headless.py` | Accept `CLIContext`; respect `cli_flags` |
-| `tools/approval.py` (PRD-78) | `ApprovalGate` checks `app_state.cli_flags.dangerously_skip_permissions` first |
-| `~/.agenthicc/cli/*.py` | User-global Python command plugins (discovered at startup) |
-| `.agenthicc/cli/*.py` | Project-local Python command plugins (trusted, then discovered) |
-| `.agenthicc/cli.toml` | Optional TOML shorthand for shell-wrapping commands |
-| `.agenthicc/trusted_cli.json` | Trust manifest written by `agenthicc trust cli` |
-| `config.py` — `PluginSettings` | Add `strict_cli_shadow: bool = False` field |
-| `cli/registry.py` | `_discover()` detects user↔project conflicts; warns or errors based on `strict_cli_shadow` |
+| File | Status | Change |
+|---|---|---|
+| `cli/registry.py` | **Create** | `_Entry` (with `source`), `_REGISTRY`, `_GROUPS`, `_LOADING_SOURCE` ContextVar, `command()`, `group()`, `_add_params()`, `_as_tree()`, `_wire()`, `_call()`, `_discover()`, `_discover_directory()`, `_load_toml_commands()` |
+| `cli/context.py` | **Create** | `CLIFlags`, `CLIContext` dataclasses |
+| `cli/commands/` | **Create directory** | One file per built-in command domain; migrate existing handlers from `cli/auth.py` and `cli/config.py` to use `@command` decorators |
+| `cli/commands/sessions.py` | **Create** | `@command("sessions", "list")` and `@command("sessions", "show")` replacing current `_do_sessions()` |
+| `cli/commands/auth.py` | **Create** (migrate from `cli/auth.py`) | `@command("login")`, `@command("logout")`, `@command("whoami")` |
+| `cli/commands/config.py` | **Create** (migrate from `cli/config.py`) | `@command("config", "show")`, `@command("config", "init")` |
+| `cli/commands/trust.py` | **Create** | `@command("trust", "cli")` writes `.agenthicc/trusted_cli.json` |
+| `cli/parser.py` | **Rewrite** | Replace `_parse_args()` with `parse_cli()` returning `(CLIContext, Namespace)`; iterate `_as_tree()`; add `--dangerously-skip-permissions` |
+| `cli/auth.py` | **Remove** after migrating to `cli/commands/auth.py` | |
+| `cli/config.py` | **Remove** after migrating to `cli/commands/config.py` | |
+| `__main__.py` | **Rewrite** | `main()` shrinks to ~6 lines; dispatch via `_entry` attribute set by `set_defaults`; no more `if/elif` chain |
+| `config.py` | **Modify** | Add `BehaviourSettings` dataclass; add `behaviour` field to `AgenthiccConfig`; add `strict_cli_shadow: bool = False` to `PluginSettings`; parse `[behaviour]` in `_dict_to_config()` |
+| `tui/conversation_store.py` | **Modify** | Add `cli_flags: CLIFlags` field to `AppState`; set to `CLIFlags()` in `AppState.create()` |
+| `runners/tui_session.py` | **Modify** | Add `cli_flags: CLIFlags | None` param to `_run_tui_session()`; change `_run_tui(args)` to `_run_tui(ctx: CLIContext)`; assign `app_state.cli_flags` at startup |
+| `runners/headless.py` | **Modify** | Accept `ctx: CLIContext`; pass through `cli_flags` |
+| `tools/approval.py` | **Modify** | `ApprovalGate.before_tool_call()` checks `app_state.cli_flags.dangerously_skip_permissions` first, before any mode-based check |
+| `~/.agenthicc/cli/*.py` | Runtime artifact | User-global Python command plugins (discovered at startup without trust step) |
+| `.agenthicc/cli/*.py` | Runtime artifact | Project-local Python command plugins (require `agenthicc trust cli` first) |
+| `.agenthicc/cli.toml` | Runtime artifact | Optional TOML shorthand for shell-wrapping commands |
+| `.agenthicc/trusted_cli.json` | Runtime artifact | Trust manifest written by `agenthicc trust cli` |
+
+---
+
+## Recommended implementation order
+
+The four fixes have dependencies; implement in this order to keep the codebase
+working at every step:
+
+1. **`cli/context.py`** — `CLIFlags` and `CLIContext` (no deps; pure dataclasses)
+2. **`config.py`** — `BehaviourSettings` + `PluginSettings.strict_cli_shadow` (isolated)
+3. **`tui/conversation_store.py`** — `AppState.cli_flags` field
+4. **`cli/registry.py`** — decorator registry and argparse wiring (no external deps)
+5. **`cli/commands/`** — migrate existing handlers; add new command modules
+6. **`cli/parser.py`** + **`__main__.py`** — wire registry into argparse; shrink `main()`
+7. **`runners/tui_session.py`** + **`runners/headless.py`** — add `cli_flags` parameter flow
+8. **`tools/approval.py`** — `ApprovalGate` bypass check (depends on steps 1+3+7)
+9. **Fix 4 discovery** — `_discover_directory()`, `_load_toml_commands()`, trust mechanism (can be done in parallel with steps 5–8)
 
 ---
 
