@@ -1,7 +1,6 @@
 """TUI session — starts the reactive runtime (PRD-58 to PRD-67, PRD-93)."""
 from __future__ import annotations
 
-import argparse
 import asyncio
 import os
 import sys
@@ -12,6 +11,7 @@ if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
     from lauren_ai._signals import AgentRunComplete
+    from agenthicc.cli.context import CLIContext, CLIFlags
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.runners.session_context import SessionContext
@@ -749,6 +749,7 @@ async def _run_tui_session(
     resume_id: str | None = None,
     cli_overrides: list[str] | None = None,
     record_cassette: str | None = None,
+    cli_flags: CLIFlags | None = None,
 ) -> None:
     """Reactive TUI session — single entry point, no legacy branches."""
     from agenthicc.tui.workspace import Workspace                        # noqa: PLC0415
@@ -757,6 +758,9 @@ async def _run_tui_session(
     cassette_base: Path | None = Path(record_cassette) if record_cassette else None
 
     ctx = await _build_session_context(resume_id, cli_overrides, cassette_base)
+    # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
+    if cli_flags is not None:
+        ctx.app_state.cli_flags = cli_flags
     workspace = Workspace(
         ctx.app_state, ctx.console,
         max_live_tool_calls=ctx.cfg.tools.max_live_tool_calls,
@@ -806,29 +810,25 @@ def _write_cassette_meta(cassette_dir: Path, session_id: str) -> None:
 
 # ── sync entry point (unchanged) ─────────────────────────────────────────────
 
-def _run_tui(args: argparse.Namespace) -> None:
+def _run_tui(ctx: CLIContext) -> None:
     try:
         from rich.console import Console  # noqa: F401
     except ImportError:
         print("error: TUI requires rich — pip install agenthicc", file=sys.stderr)
         sys.exit(1)
 
-    cli_overrides = getattr(args, "set_overrides", [])
-    resume_id: str | None = None
-    if getattr(args, "resume", None):
-        resume_id = args.resume
-    elif getattr(args, "continue_session", False):
+    resume_id: str | None = ctx.resume_id
+    if resume_id is None and ctx.continue_session:
         resume_id = find_latest_session_for_cwd()
         if resume_id is None:
             print("No previous session found for this directory. Starting fresh.")
 
-    record_cassette: str | None = getattr(args, "record_cassette", None)
-
     try:
         asyncio.run(_run_tui_session(
             resume_id=resume_id,
-            cli_overrides=cli_overrides,
-            record_cassette=record_cassette,
+            cli_overrides=list(ctx.set_overrides),
+            record_cassette=ctx.record_cassette,
+            cli_flags=ctx.flags,
         ))
     except Exception as exc:
         print(f"TUI error: {exc}", file=sys.stderr)

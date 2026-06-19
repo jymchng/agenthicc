@@ -86,13 +86,14 @@ class TestArgParsing:
     def test_config_show_subcommand(self):
         with patch("sys.argv", ["agenthicc", "config", "show"]):
             args = _parse_args()
-        assert args.command == "config"
-        assert args.config_command == "show"
+        assert getattr(args, "_entry", None) is not None
+        assert args._entry.path == ("config", "show")
 
     def test_config_init_subcommand(self):
         with patch("sys.argv", ["agenthicc", "config", "init"]):
             args = _parse_args()
-        assert args.config_command == "init"
+        assert getattr(args, "_entry", None) is not None
+        assert args._entry.path == ("config", "init")
 
     def test_config_init_force_flag(self):
         with patch("sys.argv", ["agenthicc", "config", "init", "--force"]):

@@ -126,6 +126,11 @@ class ApprovalGate:
         from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
         from agenthicc.tools.capabilities import CAPABILITIES_KEY   # noqa: PLC0415
 
+        # PRD-79: --dangerously-skip-permissions bypasses all approval prompts.
+        if getattr(self._app_state, "cli_flags", None) is not None:
+            if self._app_state.cli_flags.dangerously_skip_permissions:
+                return BeforeToolHookDecision.proceed()
+
         mode     = self._app_state.active_mode()
         required = mode.approval_required
         if not required:

@@ -185,25 +185,29 @@ class TestMainParseArgs:
         with patch("sys.argv", ["agenthicc", "login"]):
             from agenthicc.cli.parser import _parse_args
             args = _parse_args()
-        assert args.command == "login"
+        assert getattr(args, "_entry", None) is not None
+        assert args._entry.path == ("login",)
 
     def test_logout_command(self):
         with patch("sys.argv", ["agenthicc", "logout"]):
             from agenthicc.cli.parser import _parse_args
             args = _parse_args()
-        assert args.command == "logout"
+        assert getattr(args, "_entry", None) is not None
+        assert args._entry.path == ("logout",)
 
     def test_whoami_command(self):
         with patch("sys.argv", ["agenthicc", "whoami"]):
             from agenthicc.cli.parser import _parse_args
             args = _parse_args()
-        assert args.command == "whoami"
+        assert getattr(args, "_entry", None) is not None
+        assert args._entry.path == ("whoami",)
 
-    def test_sessions_command(self):
-        with patch("sys.argv", ["agenthicc", "sessions"]):
+    def test_sessions_list_command(self):
+        with patch("sys.argv", ["agenthicc", "sessions", "list"]):
             from agenthicc.cli.parser import _parse_args
             args = _parse_args()
-        assert args.command == "sessions"
+        assert getattr(args, "_entry", None) is not None
+        assert args._entry.path == ("sessions", "list")
 
     def test_no_args_default_values(self):
         with patch("sys.argv", ["agenthicc"]):
@@ -212,7 +216,7 @@ class TestMainParseArgs:
         assert args.headless is False
         assert args.continue_session is False
         assert args.resume is None
-        assert args.command is None
+        assert getattr(args, "_entry", None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -220,74 +224,62 @@ class TestMainParseArgs:
 # ---------------------------------------------------------------------------
 
 class TestMainDispatching:
-    def test_main_login_calls_do_login(self, monkeypatch):
-        """main() with command='login' calls asyncio.run(_do_login())."""
-        import agenthicc.__main__ as m
-
-        async def fake_do_login():
-            pass
-
-        monkeypatch.setattr(m, "_do_login", fake_do_login)
-
-        coroutines_run = []
-
-        def capturing_asyncio_run(coro):
-            coroutines_run.append(type(coro).__name__)
-            coro.close()  # prevent unawaited-coroutine warning
-
-        with patch("sys.argv", ["agenthicc", "login"]):
-            with patch("agenthicc.__main__.asyncio.run", side_effect=capturing_asyncio_run):
-                m.main()
-        assert len(coroutines_run) == 1
-
-    def test_main_logout_calls_do_logout(self, monkeypatch):
-        """main() with command='logout' calls asyncio.run(_do_logout())."""
-        import agenthicc.__main__ as m
-
-        async def fake_do_logout():
-            pass
-
-        monkeypatch.setattr(m, "_do_logout", fake_do_logout)
-
-        coroutines_run = []
-
-        def capturing_asyncio_run(coro):
-            coroutines_run.append(type(coro).__name__)
-            coro.close()
-
-        with patch("sys.argv", ["agenthicc", "logout"]):
-            with patch("agenthicc.__main__.asyncio.run", side_effect=capturing_asyncio_run):
-                m.main()
-        assert len(coroutines_run) == 1
-
-    def test_main_whoami_calls_do_whoami(self, monkeypatch):
-        """main() with command='whoami' calls _do_whoami()."""
+    def test_main_login_dispatches_via_registry(self, monkeypatch):
+        """main() with 'login' dispatches to the login handler via the registry."""
         import agenthicc.__main__ as m
 
         called = []
-        monkeypatch.setattr(m, "_do_whoami", lambda: called.append(True))
+
+        def fake_call(entry, ctx, ns):
+            called.append(entry.path)
+
+        monkeypatch.setattr(m, "_call", fake_call)
+
+        with patch("sys.argv", ["agenthicc", "login"]):
+            m.main()
+
+        assert any("login" in p for p in called)
+
+    def test_main_logout_dispatches_via_registry(self, monkeypatch):
+        """main() with 'logout' dispatches to the logout handler via the registry."""
+        import agenthicc.__main__ as m
+
+        called = []
+
+        def fake_call(entry, ctx, ns):
+            called.append(entry.path)
+
+        monkeypatch.setattr(m, "_call", fake_call)
+
+        with patch("sys.argv", ["agenthicc", "logout"]):
+            m.main()
+
+        assert any("logout" in p for p in called)
+
+    def test_main_whoami_dispatches_via_registry(self, monkeypatch):
+        """main() with 'whoami' dispatches to the whoami handler via the registry."""
+        import agenthicc.__main__ as m
+
+        called = []
+
+        def fake_call(entry, ctx, ns):
+            called.append(entry.path)
+
+        monkeypatch.setattr(m, "_call", fake_call)
 
         with patch("sys.argv", ["agenthicc", "whoami"]):
             m.main()
-        assert called == [True]
 
-    def test_main_sessions_calls_do_sessions(self, monkeypatch):
-        """main() with command='sessions' calls _do_sessions()."""
+        assert any("whoami" in p for p in called)
+
+    def test_main_headless_calls_run_headless(self, monkeypatch):
+        """main() with --headless calls asyncio.run(_run_headless(ctx))."""
         import agenthicc.__main__ as m
 
         called = []
-        monkeypatch.setattr(m, "_do_sessions", lambda: called.append(True))
 
-        with patch("sys.argv", ["agenthicc", "sessions"]):
-            m.main()
-        assert called == [True]
-
-    def test_main_headless_calls_run_headless(self, monkeypatch):
-        """main() with --headless calls asyncio.run(_run_headless())."""
-        import agenthicc.__main__ as m
-
-        async def fake_run_headless():
-            pass
+        async def fake_run_headless(ctx=None):
+            called.append(ctx)
 
         monkeypatch.setattr(m, "_run_headless", fake_run_headless)
 
@@ -303,15 +295,17 @@ class TestMainDispatching:
         assert len(coroutines_run) == 1
 
     def test_main_no_command_runs_tui(self, monkeypatch):
-        """main() with no command calls _run_tui(args)."""
+        """main() with no command calls _run_tui(ctx) with a CLIContext."""
         import agenthicc.__main__ as m
+        from agenthicc.cli.context import CLIContext
 
         called_with = []
-        monkeypatch.setattr(m, "_run_tui", lambda args: called_with.append(args))
+        monkeypatch.setattr(m, "_run_tui", lambda ctx: called_with.append(ctx))
 
         with patch("sys.argv", ["agenthicc"]):
             m.main()
         assert len(called_with) == 1
+        assert isinstance(called_with[0], CLIContext)
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +315,8 @@ class TestMainDispatching:
 class TestDoWhoami:
     def test_whoami_when_logged_in(self, capsys, monkeypatch):
         """Mocked AuthClient.current_bundle() returns a bundle; email is printed."""
-        import agenthicc.__main__ as m
+        from agenthicc.cli.commands.auth import whoami
+        from agenthicc.cli.context import CLIContext
         from agenthicc.auth import TokenBundle
 
         bundle = TokenBundle(
@@ -337,7 +332,7 @@ class TestDoWhoami:
         mock_client.current_bundle.return_value = bundle
 
         with patch("agenthicc.auth.AuthClient", return_value=mock_client):
-            m._do_whoami()
+            whoami(CLIContext())
 
         captured = capsys.readouterr()
         assert "alice@example.com" in captured.out
@@ -345,13 +340,14 @@ class TestDoWhoami:
 
     def test_whoami_when_not_logged_in(self, capsys):
         """Mocked AuthClient.current_bundle() returns None; 'Not logged in' printed."""
-        import agenthicc.__main__ as m
+        from agenthicc.cli.commands.auth import whoami
+        from agenthicc.cli.context import CLIContext
 
         mock_client = MagicMock()
         mock_client.current_bundle.return_value = None
 
         with patch("agenthicc.auth.AuthClient", return_value=mock_client):
-            m._do_whoami()
+            whoami(CLIContext())
 
         captured = capsys.readouterr()
         assert "Not logged in" in captured.out
@@ -410,14 +406,19 @@ class TestDoSessions:
 # ---------------------------------------------------------------------------
 
 class TestRunTui:
+    def _make_ctx(self, **kwargs):
+        from agenthicc.cli.context import CLIContext, CLIFlags
+        defaults = dict(resume_id=None, headless=False, continue_session=False,
+                        set_overrides=(), flags=CLIFlags(), record_cassette=None)
+        defaults.update(kwargs)
+        return CLIContext(**defaults)
+
     def test_tui_import_error_exits(self, monkeypatch):
         """_run_tui exits with code 1 when TUI libs are missing."""
-        import agenthicc.__main__ as m
-        import argparse
+        import agenthicc.runners.tui_session as ts
 
-        args = argparse.Namespace(headless=False, continue_session=False, resume=None, command=None)
+        ctx = self._make_ctx()
 
-        # Simulate missing 'rich' by having the import raise
         real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
         def fake_import(name, *a, **kw):
@@ -428,17 +429,15 @@ class TestRunTui:
         monkeypatch.setattr("builtins.__import__", fake_import)
 
         with pytest.raises(SystemExit) as exc_info:
-            m._run_tui(args)
+            ts._run_tui(ctx)
         assert exc_info.value.code == 1
 
     def test_tui_continue_no_previous_session_prints_message(self, capsys, monkeypatch):
         """--continue with no prior session prints 'No previous session found'."""
         import agenthicc.runners.tui_session as ts
-        import argparse
 
-        args = argparse.Namespace(headless=False, continue_session=True, resume=None, command=None)
+        ctx = self._make_ctx(continue_session=True)
 
-        # Ensure _find_latest_session_for_cwd returns None (no sessions registered)
         monkeypatch.setattr(ts, "_find_latest_session_for_cwd", lambda: None)
 
         async def noop_tui_session(resume_id=None, **kwargs):
@@ -447,13 +446,11 @@ class TestRunTui:
         monkeypatch.setattr(ts, "_run_tui_session", noop_tui_session)
 
         def consuming_asyncio_run(coro):
-            # Close the coroutine to avoid unawaited-coroutine warning
             coro.close()
 
-        # Patch rich and prompt_toolkit so the import check passes
         with patch.dict("sys.modules", {"rich.console": MagicMock()}):
             with patch("agenthicc.runners.tui_session.asyncio.run", side_effect=consuming_asyncio_run):
-                ts._run_tui(args)
+                ts._run_tui(ctx)
 
         captured = capsys.readouterr()
         assert "No previous session found" in captured.out
@@ -461,10 +458,9 @@ class TestRunTui:
     def test_tui_resume_sets_resume_id(self, monkeypatch):
         """--resume <id> passes the id to _run_tui_session."""
         import agenthicc.runners.tui_session as ts
-        import argparse
 
         resume_id_used = []
-        args = argparse.Namespace(headless=False, continue_session=False, resume="myresumeid", command=None)
+        ctx = self._make_ctx(resume_id="myresumeid")
 
         async def capturing_tui_session(resume_id=None, **kwargs):
             resume_id_used.append(resume_id)
@@ -473,27 +469,26 @@ class TestRunTui:
 
         with patch.dict("sys.modules", {"rich.console": MagicMock()}):
             with patch("agenthicc.runners.tui_session.asyncio.run", side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro)):
-                ts._run_tui(args)
+                ts._run_tui(ctx)
 
         assert resume_id_used == ["myresumeid"]
 
     def test_tui_exception_exits_with_code_1(self, monkeypatch, capsys):
         """If asyncio.run raises, _run_tui exits with code 1."""
         import agenthicc.runners.tui_session as ts
-        import argparse
 
-        args = argparse.Namespace(headless=False, continue_session=False, resume=None, command=None)
+        ctx = self._make_ctx()
 
         monkeypatch.setattr(ts, "_find_latest_session_for_cwd", lambda: None)
 
         def raising_asyncio_run(coro):
-            coro.close()  # prevent unawaited-coroutine warning
+            coro.close()
             raise RuntimeError("boom")
 
         with patch.dict("sys.modules", {"rich.console": MagicMock()}):
             with patch("agenthicc.runners.tui_session.asyncio.run", side_effect=raising_asyncio_run):
                 with pytest.raises(SystemExit) as exc_info:
-                    ts._run_tui(args)
+                    ts._run_tui(ctx)
 
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
@@ -506,8 +501,9 @@ class TestRunTui:
 
 class TestDoLogin:
     async def test_do_login_prints_email_and_plan(self, capsys):
-        """_do_login() calls AuthClient.login() and prints the returned bundle info."""
-        import agenthicc.__main__ as m
+        """login() calls AuthClient.login() and prints the returned bundle info."""
+        from agenthicc.cli.commands.auth import login
+        from agenthicc.cli.context import CLIContext
         from agenthicc.auth import TokenBundle
 
         bundle = TokenBundle(
@@ -523,7 +519,7 @@ class TestDoLogin:
         mock_client.login = AsyncMock(return_value=bundle)
 
         with patch("agenthicc.auth.AuthClient", return_value=mock_client):
-            await m._do_login()
+            await login(CLIContext())
 
         captured = capsys.readouterr()
         assert "bob@example.com" in captured.out
@@ -532,14 +528,18 @@ class TestDoLogin:
 
 class TestDoLogout:
     async def test_do_logout_prints_logged_out(self, capsys):
-        """_do_logout() calls AuthClient.logout() and prints 'Logged out.'"""
-        import agenthicc.__main__ as m
+        """logout() calls AuthClient.logout() and prints 'Logged out.'"""
+        from agenthicc.cli.commands.auth import logout
+        from agenthicc.cli.context import CLIContext
+
+        from agenthicc.cli.commands.auth import logout
+        from agenthicc.cli.context import CLIContext
 
         mock_client = MagicMock()
         mock_client.logout = AsyncMock()
 
         with patch("agenthicc.auth.AuthClient", return_value=mock_client):
-            await m._do_logout()
+            await logout(CLIContext())
 
         captured = capsys.readouterr()
         assert "Logged out." in captured.out
@@ -552,7 +552,7 @@ class TestDoLogout:
 class TestRunHeadless:
     async def test_run_headless_emits_ready_on_eof(self, capsys, tmp_path):
         """_run_headless prints ready JSON then exits cleanly on EOF stdin."""
-        import agenthicc.__main__ as m
+        from agenthicc.runners.headless import _run_headless
 
         # Empty stdin → immediate EOF
         lines = iter([""])
@@ -566,7 +566,7 @@ class TestRunHeadless:
 
             loop.run_in_executor = fake_executor
             try:
-                await m._run_headless()
+                await _run_headless()
             finally:
                 loop.run_in_executor = original_run_in_executor
 
@@ -577,14 +577,12 @@ class TestRunHeadless:
 
     def test_run_headless_skips_empty_lines_is_handled(self):
         """Headless mode ignores empty/whitespace-only input lines."""
-        # This is a lightweight structural test — the logic is in _run_headless
-        import agenthicc.__main__ as m
-        # Verify the function exists and is callable
-        assert callable(m._run_headless)
+        from agenthicc.runners.headless import _run_headless
+        assert callable(_run_headless)
 
     async def test_run_headless_processes_input_and_emits_intent(self, capsys):
         """_run_headless reads a text line, emits IntentCreated, prints result JSON."""
-        import agenthicc.__main__ as m
+        from agenthicc.runners.headless import _run_headless
 
         # Return "hello world" then EOF
         input_lines = iter(["hello world\n", ""])
@@ -597,7 +595,7 @@ class TestRunHeadless:
 
         loop.run_in_executor = fake_executor
         try:
-            await m._run_headless()
+            await _run_headless()
         finally:
             loop.run_in_executor = original_exec
 
@@ -611,7 +609,7 @@ class TestRunHeadless:
 
     async def test_run_headless_skips_whitespace_only_lines(self, capsys):
         """_run_headless skips whitespace-only input and doesn't emit any event."""
-        import agenthicc.__main__ as m
+        from agenthicc.runners.headless import _run_headless
 
         input_lines = iter(["   \n", "\t\n", ""])
 
@@ -623,7 +621,7 @@ class TestRunHeadless:
 
         loop.run_in_executor = fake_executor
         try:
-            await m._run_headless()
+            await _run_headless()
         finally:
             loop.run_in_executor = original_exec
 
@@ -636,7 +634,7 @@ class TestRunHeadless:
 
     async def test_run_headless_timeout_path(self, capsys):
         """_run_headless prints error JSON when wait_for times out."""
-        import agenthicc.__main__ as m
+        from agenthicc.runners.headless import _run_headless
 
         input_lines = iter(["do something\n", ""])
 
@@ -652,7 +650,7 @@ class TestRunHeadless:
         loop.run_in_executor = fake_executor
         try:
             with patch("asyncio.wait_for", side_effect=instant_timeout):
-                await m._run_headless()
+                await _run_headless()
         finally:
             loop.run_in_executor = original_exec
 

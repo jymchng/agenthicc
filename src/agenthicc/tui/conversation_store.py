@@ -264,6 +264,7 @@ class AppState:
 
     def __init__(self) -> None:
         from agenthicc.tui.runtime.mode_manager import RuntimeMode  # noqa: PLC0415
+        from agenthicc.cli.context import CLIFlags                  # noqa: PLC0415
         self.conversation = ConversationStore()
         self.input        = InputState()
         self.active_mode: Signal[RuntimeMode] = Signal(
@@ -275,6 +276,8 @@ class AppState:
         self.pending_approval: Signal[Any]   = Signal(None)
         # PRD-81: holds WorkflowRun | None; set by WorkflowRunner during execution.
         self.workflow_run:     Signal[Any]   = Signal(None)
+        # PRD-79: ephemeral CLI flags — frozen after startup, read by ApprovalGate etc.
+        self.cli_flags: CLIFlags = CLIFlags()
 
     @classmethod
     def create(cls) -> "AppState":

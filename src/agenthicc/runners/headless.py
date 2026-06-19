@@ -5,12 +5,21 @@ import asyncio
 import json
 import sys
 import uuid
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.cli.context import CLIContext
 
 
-async def _run_headless() -> None:
+async def _run_headless(ctx: CLIContext | None = None) -> None:
     from agenthicc.kernel import AppState, Event, EventProcessor, SecurityPolicy, SystemSettings
 
     state = AppState.create(settings=SystemSettings(), policy=SecurityPolicy())
+
+    # PRD-79: apply CLIFlags from the CLI context.
+    if ctx is not None:
+        state.cli_flags = ctx.flags
+
     processor = EventProcessor(initial_state=state, persist=False)
     sub = processor.subscribe()
     proc_task = asyncio.create_task(processor.run())

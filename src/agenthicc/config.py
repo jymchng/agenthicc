@@ -35,6 +35,7 @@ __all__ = [
     "AgentSettings",
     "AgentsSettings",
     "ApiSettings",
+    "BehaviourSettings",
     "ExecutionSettings",
     "MemorySettings",
     "PluginSettings",
@@ -180,6 +181,19 @@ class PluginSettings:
     disabled: list[str] = field(default_factory=list)
     trust_file: str = ".agenthicc/trusted_plugins.json"
     audit_file: str = ".agenthicc/plugin_audit.jsonl"
+    strict_cli_shadow: bool = False
+
+
+@dataclass
+class BehaviourSettings:
+    """[behaviour] section — non-security developer convenience defaults.
+
+    These MAY live in TOML.  Security-bypassing flags must NOT live here —
+    they belong in CLIFlags (cli/context.py) so they can never be silently
+    persisted across invocations.
+    """
+    verbose: bool = False
+    confirm_exits: bool = True
 
 
 @dataclass
@@ -231,15 +245,16 @@ class StorageSettings:
 
 @dataclass
 class AgenthiccConfig:
-    execution: ExecutionSettings = field(default_factory=ExecutionSettings)
-    hooks: dict[str, list[str]] = field(default_factory=dict)
-    tools: ToolSettings = field(default_factory=ToolSettings)
-    memory: MemorySettings = field(default_factory=MemorySettings)
-    security: SecuritySettings = field(default_factory=SecuritySettings)
-    api: ApiSettings = field(default_factory=ApiSettings)
-    plugins: PluginSettings = field(default_factory=PluginSettings)
-    agents: AgentsSettings = field(default_factory=AgentsSettings)
-    storage: StorageSettings = field(default_factory=StorageSettings)
+    execution: ExecutionSettings  = field(default_factory=ExecutionSettings)
+    behaviour: BehaviourSettings  = field(default_factory=BehaviourSettings)
+    hooks:     dict[str, list[str]] = field(default_factory=dict)
+    tools:     ToolSettings       = field(default_factory=ToolSettings)
+    memory:    MemorySettings     = field(default_factory=MemorySettings)
+    security:  SecuritySettings   = field(default_factory=SecuritySettings)
+    api:       ApiSettings        = field(default_factory=ApiSettings)
+    plugins:   PluginSettings     = field(default_factory=PluginSettings)
+    agents:    AgentsSettings      = field(default_factory=AgentsSettings)
+    storage:   StorageSettings    = field(default_factory=StorageSettings)
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""
@@ -486,8 +501,15 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
         default_backend=raw_storage.get("default_backend", "linux"),
     )
 
+    beh = data.get("behaviour", {})
+    behaviour = BehaviourSettings(
+        verbose=bool(beh.get("verbose", False)),
+        confirm_exits=bool(beh.get("confirm_exits", True)),
+    )
+
     return AgenthiccConfig(
         execution=execution,
+        behaviour=behaviour,
         hooks=hooks,
         tools=tools,
         memory=memory,
