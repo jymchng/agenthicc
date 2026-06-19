@@ -139,6 +139,4 @@ def render_welcome(model: str = "", cwd: str = "") -> Align:
 
 def print_welcome(console: Any, model: str = "", cwd: str = "") -> None:
     """Print the welcome panel to *console* (call before the Live block starts)."""
-    console.print()
     console.print(render_welcome(model=model, cwd=cwd))
-    console.print()

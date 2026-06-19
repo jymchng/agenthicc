@@ -224,6 +224,7 @@ def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> N
         markup=True, highlight=False,
         style="on grey11",
     )
+    self._console.print()
 
 
 @register_renderer("tool_complete")
@@ -294,6 +295,11 @@ def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
             f"[dim]{_e(detail[:500])}[/dim]",
             markup=True, highlight=False,
         )
+
+
+@register_renderer("turn_complete")
+def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    self._console.print()
 
 
 @register_renderer("mention_chips")

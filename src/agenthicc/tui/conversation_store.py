@@ -144,6 +144,7 @@ class ConversationStore:
     def end_turn(self) -> None:
         if self._current_turn:
             self._current_turn.state = AgentState.COMPLETE
+            self.append_event("turn_complete", {})
         self._current_turn = None
         self.agent_state.set(AgentState.IDLE)
         self.active_tool.set("")
