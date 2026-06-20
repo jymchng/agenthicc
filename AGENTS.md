@@ -271,6 +271,79 @@ on `event["type"]` through `_EVENT_HANDLERS`.  New types are registered with
 
 ---
 
+## How to add a new slash command
+
+Adding a slash command requires **two independent steps** that are easy to
+get wrong separately:
+
+### Step 1 — Register in `BUILTIN_COMMANDS` (makes it visible in the trigger picker)
+
+Every slash command **must** appear in `commands/builtins.py:BUILTIN_COMMANDS`
+regardless of where its execution logic lives.  The trigger picker
+(`SlashCommandTrigger.get_matches()`) only calls `registry.matches(partial)` —
+it is completely unaware of commands that are handled elsewhere.
+
+```python
+# commands/builtins.py — add to BUILTIN_COMMANDS list
+Command(
+    name="/my-command",
+    description="One-line description shown in the dropdown right column",
+    argument_hint="[optional-arg]",   # shown as usage hint
+    group="Built-in",
+    handler=_cmd_my_command,          # None is valid — see Step 2 note
+),
+```
+
+### Step 2 — Provide execution logic
+
+**Option A — Handler in the registry (preferred for stateless commands)**
+
+Write a `_cmd_my_command(ctx: CommandContext) -> bool` function and set it as
+`handler=` on the `Command`.  The `CommandDispatcher` calls it automatically
+when the user submits `/my-command`.
+
+```python
+def _cmd_my_command(ctx: CommandContext) -> bool:
+    ctx.console.print("Hello from /my-command!")
+    return True   # True = handled
+```
+
+**Option B — Intercept in `TUISession.route()` (required for session-stateful commands)**
+
+When the handler needs access to `TUISession` fields (e.g.
+`self._workflow_override`, `self._agent_task`), intercept the command in
+`route()` *before* `dispatch_slash()` is called, and set `handler=None` in the
+registry entry.  The `None` handler is intentional — it signals "display only;
+handled elsewhere".
+
+```python
+# runners/tui_session.py — TUISession.route()
+def route(self, msg: str) -> bool:
+    if not msg.startswith("/"):
+        return False
+    parts = msg.split(None, 1)
+    if parts[0] == "/my-command":            # intercept before dispatch_slash
+        return self._handle_my_command(parts[1] if len(parts) > 1 else "")
+    if self.dispatch_slash(msg):
+        ...
+```
+
+### The critical lesson
+
+**Registering in `BUILTIN_COMMANDS` and providing execution logic are
+independent requirements.**  Missing either one causes a different silent
+failure:
+
+| Missing | Symptom |
+|---|---|
+| Not in `BUILTIN_COMMANDS` | Command works when typed in full but **never appears in the trigger picker dropdown** |
+| No handler / not intercepted | Command appears in the picker but **does nothing when submitted** |
+
+The `/workflow` command (PRD-114) was initially missing from `BUILTIN_COMMANDS`
+and therefore invisible in the trigger picker even though it executed correctly.
+
+---
+
 ## Common errors
 
 | Error | Cause | Fix |

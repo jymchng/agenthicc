@@ -132,7 +132,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     # ── public entry points ───────────────────────────────────────────────────
 
-    async def run(self, intent: str) -> None:
+    async def run(self, intent: str) -> CodePlanContext:
         from lauren_ai._memory import ShortTermMemory       # noqa: PLC0415
         from agenthicc.kernel import Event                  # noqa: PLC0415
         from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
@@ -236,6 +236,8 @@ class CodePlanRunner(BaseWorkflowRunner):
             wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
             self._cfg.conv_store.append_event("error", {"message": str(exc)})
+
+        return ctx  # PRD-114: subclasses receive typed context via super().run()
 
     async def resume(self, context: WorkflowContext) -> None:
         """Resume from a WorkflowContext (legacy --resume path)."""
@@ -466,6 +468,63 @@ class CodePlanRunner(BaseWorkflowRunner):
         except Exception as exc:
             log.error("_summarize error: %s", exc)
         return CodePlanState.COMPLETE
+
+    # ── public extension API (PRD-114) ────────────────────────────────────────
+
+    async def run_phase(
+        self,
+        *,
+        intent:        str,
+        text:          str,
+        system_prompt: str,
+        mode:          str | None = None,
+        max_turns:     int = 10,
+        shared_memory: object | None = None,
+    ) -> None:
+        """Execute one additional agent phase using this runner's tool set.
+
+        This is the **stable public surface** for composite workflow authors.
+        It delegates to the private ``_run_turn()`` + ``_base_tools()`` so
+        that internal implementation details remain free to change.
+
+        Parameters
+        ----------
+        intent:
+            The original user intent string — included in the system prompt so
+            the agent keeps the original goal in context.
+        text:
+            The user-turn text sent to the LLM for this phase.  Typically
+            includes key outputs from prior phases (plan, execute summary, …).
+        system_prompt:
+            Full system-prompt for this phase.  Replaces any role default.
+        mode:
+            Optional mode name (e.g. ``"Auto"``) to switch for this phase.
+            Restored automatically on exit.
+        max_turns:
+            Maximum LLM sub-turns (tool-call → response cycles).
+        shared_memory:
+            ``ShortTermMemory`` instance to use.  Pass ``ctx.shared_memory``
+            to carry the full prior conversation context into this phase.
+            ``None`` creates an isolated memory for this phase only.
+        """
+        from lauren_ai._memory import ShortTermMemory as _STM  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.state import CodePlanContext  # noqa: PLC0415
+
+        # Build a minimal CodePlanContext so _run_turn() has a shared_memory.
+        _sm = shared_memory or _STM(max_tokens=32_000)
+        _ctx = CodePlanContext(
+            intent=intent,
+            run_id=self._run_id or "extension",
+            shared_memory=_sm,
+        )
+        await self._run_turn(
+            text,
+            tools=self._base_tools(),
+            mode=mode,
+            system_prompt=system_prompt,
+            max_turns=max_turns,
+            ctx=_ctx,
+        )
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

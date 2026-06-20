@@ -81,7 +81,19 @@ class ConversationStore:
         self.cost_usd:         Signal[float]                  = Signal(0.0)
         self.session_id:       Signal[str]                    = Signal("")
         self.model_name:       Signal[str]      = Signal("")
-        self.notification:     Signal[str | None] = Signal(None)
+        self.notification:        Signal[str | None] = Signal(None)
+        self.workflow_override:   Signal[str | None] = Signal(None)
+        """Name of the /workflow-selected override (PRD-114).  None = mode default."""
+        # Internal: per-line notification stack.  Each entry is a mutable
+        # list [text, timer_handle] so the dismiss closure can update the
+        # handle after call_later() returns.
+        # notify_transient() appends; each dismiss closure removes only its own
+        # entry, leaving other lines untouched.
+        self._notification_lines: list[list] = []
+        # True while _sync_notification_signal() is writing to self.notification.
+        # Prevents the notification.subscribe callback from treating our own
+        # write as an "external clear".
+        self._notification_syncing: bool = False
         # Counts consecutive tool_complete events in the current group.
         # Resets to 0 when a text event or turn_start arrives.
         # Drives the collapsed "…and N more" summary in the scroll buffer.
@@ -116,6 +128,8 @@ class ConversationStore:
         # ── internal ──────────────────────────────────────────────────────────
         self._current_turn: ConversationTurn | None = None
         self._event_subscribers: list[Callable[[ConversationEvent], None]] = []
+        # Subscribe to detect external notification.set(None) and cancel stacked timers.
+        self.notification.subscribe(lambda _: self._on_notification_externally_cleared())
 
     # ── tick ──────────────────────────────────────────────────────────────────
 
@@ -129,6 +143,68 @@ class ConversationStore:
                 self._flower_frame = (self._flower_frame + 1) % 8
 
     # ── turn lifecycle ────────────────────────────────────────────────────────
+
+    def notify_transient(self, message: str, duration: float = 2.0) -> None:
+        """Append a transient notification line that auto-dismisses after *duration* seconds.
+
+        Multiple calls while notifications are still visible stack vertically —
+        each new message appears on its own line below any existing ones.  Each
+        line carries its own independent timer and is removed when its timer
+        fires, leaving the other lines untouched.
+
+        A direct ``notification.set(None)`` call from anywhere cancels all
+        stacked lines and their timers immediately (via the subscription set up
+        in ``__init__``).
+
+        Safe to call with no running event loop (headless / tests): the message
+        is set persistently with no dismiss scheduled.
+        """
+        import asyncio  # noqa: PLC0415
+
+        # Mutable list [text, handle] so the dismiss closure can update the
+        # handle reference after call_later() returns.
+        entry: list = [message, None]
+
+        def _dismiss() -> None:
+            # Remove only this entry; leave other stacked lines alone.
+            self._notification_lines = [
+                e for e in self._notification_lines if e is not entry
+            ]
+            self._sync_notification_signal()
+
+        self._notification_lines.append(entry)
+        self._sync_notification_signal()
+
+        try:
+            loop = asyncio.get_running_loop()
+            entry[1] = loop.call_later(duration, _dismiss)
+        except RuntimeError:
+            pass  # no running event loop — stays persistent (tests/headless)
+
+    def _sync_notification_signal(self) -> None:
+        """Recompute the notification signal from the current line stack."""
+        lines = [e[0] for e in self._notification_lines]
+        self._notification_syncing = True
+        try:
+            self.notification.set("\n".join(lines) if lines else None)
+        finally:
+            self._notification_syncing = False
+
+    def _on_notification_externally_cleared(self) -> None:
+        """Cancel all stacked transient lines when notification is set to None externally."""
+        if self._notification_syncing:
+            return  # our own write — ignore
+        if self.notification() is not None:
+            return  # only care about set(None)
+        # Cancel all pending dismiss timers and drop the stack.
+        for entry in self._notification_lines:
+            handle = entry[1]
+            if handle is not None:
+                try:
+                    handle.cancel()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._notification_lines.clear()
 
     def begin_turn(self, agent_name: str, turn_id: str | None = None) -> ConversationTurn:
         tid = turn_id or str(uuid.uuid4())

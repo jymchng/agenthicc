@@ -10,7 +10,6 @@ requires registering it in TriggerManager — no changes here.
 """
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Protocol
 
 from agenthicc.tui.cbreak_reader import Key
@@ -343,11 +342,7 @@ class ModeCycleCapability:
         if key != Key.SHIFT_TAB:
             return _PASS
         new_mode = session._modes.cycle()   # writes app_state.active_mode internally
-        session._state.conversation.notification.set(f"❖ Switched to {new_mode.name} mode")
-        asyncio.get_running_loop().call_later(
-            2.0,
-            lambda: session._state.conversation.notification.set(None),
-        )
+        session._state.conversation.notify_transient(f"❖ Switched to {new_mode.name} mode")
         return _CONSUMED
 
 

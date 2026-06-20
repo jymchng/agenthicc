@@ -1081,6 +1081,55 @@ hardcoded defaults  →  user-global + extends chain  →  project file + extend
 
 ---
 
+## 31. Composite Workflows via Runner Inheritance (PRD-114)
+
+End users extend existing workflows by subclassing the runner and plugin.
+`CodePlanRunner.run()` returns a typed context so subclasses can call
+`ctx = await super().run(intent)` and continue with additional phases.
+`/workflow <name>` switches the active workflow within the current mode.
+
+### Pattern (end user writes one file)
+
+```python
+class CodePlanDocsRunner(CodePlanRunner):
+    async def run(self, intent: str) -> None:
+        ctx = await super().run(intent)          # full code_plan unchanged
+        await self.run_phase(                    # public stable API
+            intent=intent,
+            text=f"[PLAN]\n{ctx.plan}\n\nUpdate docs.",
+            system_prompt="You are a documentation writer.",
+            mode="Auto", max_turns=10,
+            shared_memory=ctx.shared_memory,
+        )
+
+class CodePlanDocs(CodePlan):
+    name = "code_plan_docs"
+    mode_bindings = ["Plan"]
+
+    @classmethod
+    def runner_factory(cls, defn, config, mode_manager):
+        return CodePlanDocsRunner(config, mode_manager)
+```
+
+Activate: `/workflow code_plan_docs` · Deactivate: `/workflow reset`
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 31.1 | `BaseWorkflowRunner.run()` returns `Any` | ABC contract allows subclasses to declare tighter return types. |
+| 31.2 | `CodePlanRunner.run()` returns `CodePlanContext` | Subclasses receive fully populated context: `ctx.plan`, `ctx.execute_summary`, `ctx.review_summary`, `ctx.shared_memory`. |
+| 31.3 | `WorkflowRunner.run()` returns `WorkflowContext` | Symmetric change for the generic runner. |
+| 31.4 | `CodePlanRunner.run_phase()` public API | Stable extension point: `run_phase(intent, text, system_prompt, mode, max_turns, shared_memory)`. Delegates to `_run_turn()` + `_base_tools()` internally. |
+| 31.5 | `super().run()` pattern works | `ctx = await super().run(intent)` in a subclass runner returns typed context. |
+| 31.6 | `code_plan` is unchanged in logic | Only the `return ctx` statement is added; all internal phases, retry caps, and state machine are identical. |
+| 31.7 | `/workflow <name>` command | Sets `TUISession._workflow_override` and `ConversationStore.workflow_override` signal. Shows notification. |
+| 31.8 | `/workflow reset` | Clears the override; reverts to mode's `default_workflow`. |
+| 31.9 | Unknown workflow name | Shows available workflows in the notification; does not crash. |
+| 31.10 | Status bar `⬡ name` indicator | `ComposerComponent` shows `⬡ workflow-name` (cyan dim) when an override is active. |
+| 31.11 | Plugin discovered automatically | Composite plugin in `.agenthicc/workflows/` requires no extra registration. |
+| 31.12 | `/create-workflow` default skill | Bootstrap installs a skill that guides the LLM on writing workflows, including the composite `run_phase()` pattern. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

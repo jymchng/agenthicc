@@ -414,11 +414,12 @@ class TUISession:
         self._input_session = input_session
 
         # Mutable session state
-        self._pending_skill_body: list[str]           = []
-        self._msg_queue:          list[str]           = []
-        self._agent_task:         asyncio.Task | None = None
-        self._turn_count:         int                 = 0
-        self._pending_replay_id:  str | None          = None
+        self._pending_skill_body:  list[str]           = []
+        self._msg_queue:           list[str]           = []
+        self._agent_task:          asyncio.Task | None = None
+        self._turn_count:          int                 = 0
+        self._pending_replay_id:   str | None          = None
+        self._workflow_override:   str | None          = None  # PRD-114: /workflow command
 
         from agenthicc.commands import CommandDispatcher          # noqa: PLC0415
         from agenthicc.workflows.config import WorkflowConfig      # noqa: PLC0415
@@ -501,10 +502,33 @@ class TUISession:
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
+    def _handle_workflow_command(self, args: str) -> bool:
+        """Handle /workflow <name> | reset (PRD-114)."""
+        name = args.strip()
+        conv = self._ctx.app_state.conversation
+        if not name or name == "reset":
+            self._workflow_override = None
+            conv.workflow_override.set(None)
+            conv.notify_transient("↩ Workflow reset to mode default")
+            return True
+        defn = self._ctx.workflow_registry.get(name)
+        if defn is None:
+            available = ", ".join(self._ctx.workflow_registry.names()) or "none"
+            conv.notify_transient(f"⚠ Unknown workflow: {name!r}  (available: {available})")
+            return True
+        self._workflow_override = name
+        conv.workflow_override.set(name)
+        conv.notify_transient(f"⚡ Workflow → {name}")
+        return True
+
     def route(self, msg: str) -> bool:
         """Return True if msg is a slash command and was dispatched."""
         if not msg.startswith("/"):
             return False
+        # PRD-114: /workflow is handled locally — not via the command registry.
+        parts = msg.split(None, 1)
+        if parts[0] == "/workflow":
+            return self._handle_workflow_command(parts[1] if len(parts) > 1 else "")
         if self.dispatch_slash(msg):
             # Check if a replay was requested by the command handler.
             if self._pending_replay_id:
@@ -551,7 +575,11 @@ class TUISession:
         if self._pending_skill_body:
             text = self._pending_skill_body.pop() + "\n\n" + text
 
-        _active_wf_name = ctx.app_state.active_mode().default_workflow
+        # PRD-114: /workflow override takes priority over mode default.
+        _active_wf_name = (
+            self._workflow_override
+            or ctx.app_state.active_mode().default_workflow
+        )
         _wf_defn = ctx.workflow_registry.get(_active_wf_name) if _active_wf_name else None
 
         _timeout = ctx.cfg.execution.turn_timeout_s

@@ -222,6 +222,142 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`.
 - Never mention file names in the subject unless the change is trivially
   file-scoped (e.g. `docs(README): fix typo`).
 """,
+
+    "create-workflow": """\
+---
+name: Create Workflow
+description: Guide the LLM to write a new agenthicc workflow plugin
+source: default
+version: 1
+disallowAutoTriggering: true
+---
+
+You are an expert agenthicc workflow author.
+
+## Your job
+
+Help the user write a new agenthicc workflow plugin, either from scratch or
+by extending an existing one such as ``code_plan``.
+
+## Workflow plugin basics
+
+Every workflow is a ``WorkflowPlugin`` subclass placed in
+``.agenthicc/workflows/<name>.py``.  The minimal structure:
+
+```python
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+class MyWorkflow(WorkflowPlugin):
+    name          = "my_workflow"
+    description   = "What this workflow does."
+    mode_bindings = ["Auto"]   # mode that auto-triggers it; [] = manual only
+    phases        = [
+        PhaseSpec(name="step1", agent_type="auto", max_turns=20),
+        PhaseSpec(name="step2", agent_type="auto", max_turns=10, next=None),
+    ]
+```
+
+Activate with ``/workflow my_workflow`` in the TUI.
+
+## PhaseSpec key fields
+
+| Field | Purpose |
+|---|---|
+| ``name`` | Unique within the workflow; used in ``next`` and ``on_reject`` |
+| ``agent_type`` | ``"auto"``, ``"planner"``, ``"executor"``, ``"reviewer"``, ``"explorer"``, ``"verifier"``, ``"human"`` |
+| ``next`` | Next phase name; ``None`` ends the workflow |
+| ``on_reject`` | Phase to jump to when ``approved=False`` |
+| ``max_turns`` | LLM sub-turns limit |
+| ``mode_override`` | E.g. ``"Auto"`` to unlock write tools for one phase |
+| ``system_prompt_override`` | Replaces the role's default system prompt entirely |
+| ``output_schema`` | ``"plan"``, ``"review_result"``, or ``"free_text"`` |
+| ``max_iterations`` | Retry ceiling per phase; ``-1`` = unlimited |
+
+## Extending code_plan (composite workflow)
+
+To add phases after all four code_plan phases:
+
+```python
+from agenthicc.workflows.code_plan import CodePlanRunner
+from agenthicc.workflows.code_plan.definition import CodePlan
+from agenthicc.workflows.plugin import WorkflowPlugin
+
+class MyExtendedRunner(CodePlanRunner):
+    async def run(self, intent: str) -> None:
+        ctx = await super().run(intent)  # runs Plan→Execute→Review→Summary
+        # ctx.plan, ctx.execute_summary, ctx.review_summary, ctx.shared_memory
+        await self.run_phase(
+            intent=intent,
+            text=f"[PLAN]\\n{ctx.plan}\\n\\nDo extra work here.",
+            system_prompt="You are doing extra post-implementation work.",
+            mode="Auto",
+            max_turns=10,
+            shared_memory=ctx.shared_memory,
+        )
+
+class MyExtendedWorkflow(CodePlan):
+    name          = "my_extended_workflow"
+    mode_bindings = ["Plan"]
+
+    @classmethod
+    def runner_factory(cls, defn, config, mode_manager):
+        return MyExtendedRunner(config, mode_manager)
+```
+
+## run_phase() API (CodePlanRunner only)
+
+| Parameter | Type | Description |
+|---|---|---|
+| ``intent`` | ``str`` | Original user intent |
+| ``text`` | ``str`` | User-turn text for this phase |
+| ``system_prompt`` | ``str`` | Full system prompt for this phase |
+| ``mode`` | ``str \\| None`` | Mode override (e.g. ``"Auto"``); restored after |
+| ``max_turns`` | ``int`` | LLM sub-turn limit (default 10) |
+| ``shared_memory`` | ``ShortTermMemory \\| None`` | Pass ``ctx.shared_memory`` to carry full context |
+
+## Common patterns
+
+**Plan + Execute only (no review):**
+```python
+phases = [
+    PhaseSpec(name="plan", agent_type="planner", output_schema="plan", next="execute"),
+    PhaseSpec(name="execute", agent_type="executor", mode_override="Auto"),
+]
+```
+
+**Retry loop:**
+```python
+PhaseSpec(name="review", agent_type="reviewer",
+          output_schema="review_result",
+          on_reject="execute", max_iterations=3)
+```
+
+**Human approval gate:**
+```python
+PhaseSpec(name="human_check", agent_type="human", next="execute", on_reject="plan")
+```
+
+## File placement
+
+```
+.agenthicc/workflows/my_workflow.py    ← project-local (preferred)
+~/.agenthicc/workflows/my_workflow.py  ← user-global
+```
+
+## Activate
+
+```
+/workflow my_workflow_name
+/workflow reset   ← revert to mode default
+```
+
+## What to produce
+
+1. The complete ``.agenthicc/workflows/<name>.py`` file.
+2. A brief explanation of each phase's purpose.
+3. Any TOML configuration needed (e.g. ``[workflows.my_workflow]`` section).
+4. How to activate it.
+""",
 }
 
 # ── marker file helpers ───────────────────────────────────────────────────────

@@ -92,6 +92,7 @@ class Workspace:
             self._state.pending_approval,  # PRD-78: approval overlay
             self._state.workflow_run,              # PRD-81: workflow progress
             conv.live_tool_overflow,               # overflow bridge row
+            conv.workflow_override,                # PRD-114: /workflow indicator
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
 

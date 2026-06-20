@@ -60,8 +60,13 @@ class WorkflowRunner:
 
     # ── public entry points ───────────────────────────────────────────────────
 
-    async def run(self, intent: str) -> None:
-        """Start a fresh workflow run for the given intent."""
+    async def run(self, intent: str) -> WorkflowContext:
+        """Start a fresh workflow run for the given intent.
+
+        Returns the populated ``WorkflowContext`` so that subclasses can call
+        ``ctx = await super().run(intent)`` and continue with additional phases
+        (PRD-114 composite workflow pattern).
+        """
         from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun  # noqa: PLC0415
         from lauren_ai._memory import ShortTermMemory                       # noqa: PLC0415
         from agenthicc.kernel import Event                                  # noqa: PLC0415
@@ -89,6 +94,7 @@ class WorkflowRunner:
 
         start_phase = self._def.first_phase().name if self._def.first_phase() else None
         await self._run_phase_loop(intent, context, wf_run, run_id, start_phase)
+        return context
 
     async def resume(self, context: WorkflowContext) -> None:
         """Resume a workflow from a pre-populated WorkflowContext.

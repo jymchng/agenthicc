@@ -7,6 +7,6 @@ from agenthicc.workflows.code_plan.definition import CodePlan, CodePlanParams
 
 __all__ = [
     "CodePlanState", "CodePlanContext",
-    "CodePlanRunner",
+    "CodePlanRunner",   # run() → CodePlanContext; run_phase() public ext. API
     "CodePlan", "CodePlanParams",
 ]

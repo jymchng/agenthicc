@@ -342,6 +342,16 @@ BUILTIN_COMMANDS: list[Command] = [
         group="Built-in",
         handler=_cmd_mode,
     ),
+    Command(
+        name="/workflow",
+        description="Switch the active workflow within the current mode",
+        argument_hint="<name> | reset",
+        group="Built-in",
+        # No handler: /workflow is intercepted in TUISession.route() before
+        # dispatch_slash() so it can access session-local state.  The entry
+        # exists here solely so the trigger picker displays and completes it.
+        handler=None,
+    ),
 ]
 
 

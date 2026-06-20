@@ -265,26 +265,43 @@ class FooterComponent:
         conv = self._state.conversation
         cols = _get_cols()
 
-        # Row 1: mode string — derived from AppState.active_mode (PRD-75)
+        # Row 1: mode string — derived from AppState.active_mode (PRD-75).
+        # When a /workflow override is active, append ⬡ workflow-name indicator.
         from agenthicc.tui.runtime.mode_manager import build_mode_str  # noqa: PLC0415
+        from rich.markup import escape as _e_m                          # noqa: PLC0415
         mode     = self._state.active_mode()
-        mode_line = _fit(f"  {build_mode_str(mode)}", cols)
+        _wf_ovr_raw = conv.workflow_override()
+        _wf_ovr  = _wf_ovr_raw if isinstance(_wf_ovr_raw, str) else None
+        _wf_suffix = f"  [cyan dim]⬡ {_e_m(_wf_ovr)}[/cyan dim]" if _wf_ovr else ""
+        mode_line = _fit(f"  {build_mode_str(mode)}{_wf_suffix}", cols)
 
-        # Row 2: notification > paste hint > normal state hints
+        # Row 2+: notification (may be multi-line) > paste hint > normal hints.
+        # Multi-line notifications (from stacked notify_transient() calls or
+        # explicit \n in the message) each get their own rendered row.
         notif = conv.notification()
         if notif:
-            hints_str = _fit(f"[dim]{notif}[/dim]", cols)
+            notif_lines = notif.split("\n")
+            hints_str = _fit(f"[dim]{notif_lines[0]}[/dim]", cols)
+            # Extra lines rendered after Group — collected here, appended below.
+            _extra_notif_lines = [
+                Text.from_markup(_fit(f"[dim]{ln}[/dim]", cols))
+                for ln in notif_lines[1:]
+            ]
         elif self._state.input.paste_condensed():
+            _extra_notif_lines = []
             hints_str = _build_hints(
                 "Ctrl+V Expand paste  Backspace Delete  Enter Submit as-is", cols
             )
         else:
+            _extra_notif_lines = []
             state_name = conv.agent_state().name.lower()
             raw_hints  = _HINTS.get(state_name, _HINTS["idle"])
             hints_str  = _build_hints(raw_hints, cols)
 
         # PRD-81: optional workflow progress row
         extra: list[RenderableType] = []
+        # Extra notification lines from stacked notify_transient() calls.
+        extra.extend(_extra_notif_lines)
         try:
             from rich.markup import escape as _e  # noqa: PLC0415
             _wf = self._state.workflow_run()
@@ -302,7 +319,6 @@ class FooterComponent:
         except Exception:  # noqa: BLE001
             pass
 
-
         return Group(
             Text.from_markup(mode_line),
             Text.from_markup(hints_str),
@@ -311,6 +327,13 @@ class FooterComponent:
 
     def height(self, cols: int) -> int:  # noqa: ARG002
         extra = 0
+        # Extra notification lines (stacked notify_transient calls or \n in message)
+        try:
+            notif = self._state.conversation.notification()
+            if notif and isinstance(notif, str):
+                extra += notif.count("\n")   # each \n adds one more row
+        except Exception:  # noqa: BLE001
+            pass
         try:
             _wf = self._state.workflow_run()
             if (getattr(_wf, "status", None) == "running"
