@@ -118,7 +118,10 @@ class StatusComponent:
         if not model:
             return Text.from_markup(line1)
 
-        # ── line 2: model name only ───────────────────────────────────────────
+        # ── line 2: model name (PRD-118: phase override wins when active) ─────
+        _wf = self._state.workflow_run()
+        if _wf is not None and _wf.status == "running" and _wf.current_phase_model:
+            model = _wf.current_phase_model
         line2 = _fit(f"[dim]{_e(model)}[/dim]", cols)
 
         # ── line 3: session ID + turns + cost ────────────────────────────────────

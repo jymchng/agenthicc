@@ -425,20 +425,22 @@ class AppState:
         if current is not None and _dc.is_dataclass(current):
             updated = _dc.replace(
                 current,
-                workflow_name       = workflow_name,
-                current_phase       = phase_name,
-                current_phase_index = phase_index,
-                total_phases        = total_phases,
-                status              = "running",
+                workflow_name        = workflow_name,
+                current_phase        = phase_name,
+                current_phase_index  = phase_index,
+                total_phases         = total_phases,
+                status               = "running",
+                current_phase_model  = model_id,
             )
         else:
             updated = WorkflowRun(
-                run_id              = run_id,
-                workflow_name       = workflow_name,
-                intent              = intent,
-                current_phase       = phase_name,
-                current_phase_index = phase_index,
-                total_phases        = total_phases,
-                status              = "running",
+                run_id               = run_id,
+                workflow_name        = workflow_name,
+                intent               = intent,
+                current_phase        = phase_name,
+                current_phase_index  = phase_index,
+                total_phases         = total_phases,
+                status               = "running",
+                current_phase_model  = model_id,
             )
         self.workflow_run.set(updated)

@@ -191,6 +191,11 @@ class WorkflowRun:
     Used by the TUI to display "Phase N/M" where N = current_phase_index + 1.
     Stays fixed at the definition position regardless of how many times the
     phase is retried via on_reject, so plan always shows Phase 1/M."""
+    current_phase_model: str            = ""
+    """Model override active for the current phase (PRD-118).
+    Non-empty when the phase uses a per-phase model that differs from the
+    global ``execution.model``; the status bar shows this instead of the
+    session model while the run is active.  Empty string = show session model."""
 
 
 @dataclasses.dataclass
