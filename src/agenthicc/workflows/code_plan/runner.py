@@ -104,6 +104,10 @@ _PHASE_INDEX: dict[str, int] = {
 class CodePlanRunner(BaseWorkflowRunner):
     """State-machine runner for the code_plan workflow.
 
+    Subclasses override ``workflow_name`` and ``total_phases`` so that
+    ``app_state.workflow_run`` always reflects the actual running workflow name
+    rather than the hardcoded ``"code_plan"`` string.
+
     Parameters
     ----------
     config:
@@ -111,6 +115,12 @@ class CodePlanRunner(BaseWorkflowRunner):
     mode_manager:
         ModeManager for per-phase mode overrides (None = headless).
     """
+
+    #: Workflow name written to app_state.workflow_run.  Subclasses must
+    #: override this to match their WorkflowPlugin.name.
+    workflow_name:  str = "code_plan"
+    #: Total number of phases shown in the "N/M" status-bar counter.
+    total_phases:   int = 4
 
     def __init__(
         self,
@@ -148,16 +158,16 @@ class CodePlanRunner(BaseWorkflowRunner):
 
         wf_run: WorkflowRun = WorkflowRun(
             run_id=run_id,
-            workflow_name="code_plan",
+            workflow_name=self.workflow_name,
             intent=intent,
             current_phase="plan".title(),
-            total_phases=4,
+            total_phases=self.total_phases,
         )
         self._cfg.app_state.workflow_run.set(wf_run)
 
         await self._cfg.processor.emit(Event.create("WorkflowRunStarted", {
             "run_id":        run_id,
-            "workflow_name": "code_plan",
+            "workflow_name": self.workflow_name,
             "intent":        intent,
             "phase_names":   ["plan", "execute", "review", "summarize"],
         }))
@@ -177,7 +187,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 await self._cfg.processor.emit(Event.create("WorkflowPhaseStarted", {
                     "run_id":        run_id,
                     "phase_name":    phase_name,
-                    "workflow_name": "code_plan",
+                    "workflow_name": self.workflow_name,
                 }))
 
                 match state:
@@ -222,7 +232,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
             await self._cfg.processor.emit(Event.create("WorkflowRunCompleted", {
                 "run_id":        run_id,
-                "workflow_name": "code_plan",
+                "workflow_name": self.workflow_name,
                 "phases_run":    len(wf_run.phase_history),
                 "status":        final_status,
             }))
@@ -278,10 +288,10 @@ class CodePlanRunner(BaseWorkflowRunner):
         self._run_id = context.run_id
         wf_run: WorkflowRun = WorkflowRun(
             run_id=context.run_id,
-            workflow_name="code_plan",
+            workflow_name=self.workflow_name,
             intent=context.intent,
             current_phase=state.name.lower(),
-            total_phases=4,
+            total_phases=self.total_phases,
         )
         self._cfg.app_state.workflow_run.set(wf_run)
 
