@@ -693,7 +693,7 @@ terminal-dependent features degrade gracefully when unavailable.
 
 ---
 
-## 22. Windows Terminal Backend — msvcrt (PRD-106)
+## 22. Windows Terminal Backend — msvcrt + ConPTY (PRD-106)
 
 A platform-independent `TerminalBackend` abstraction replaces direct
 `termios`/`tty` calls in application code.  Windows uses an `msvcrt` backend;
@@ -729,11 +729,15 @@ else:                 → PosixBackend
 | 22.7 | Key enum unchanged | `Key` stays in `cbreak_reader`; all 11 existing importers continue to work without change. |
 | 22.8 | Printable Unicode input | `WindowsBackend.read_key()` returns `(Key.CHAR, ch)` for printable Unicode via `msvcrt.getwch()`. |
 | 22.9 | Arrow keys on Windows | `\xe0H/P/K/M` → `UP/DOWN/LEFT/RIGHT`; `\xe0G/O` → `HOME/END`. |
-| 22.10 | Shift+Tab on Windows | `\x00\x0f` → `Key.SHIFT_TAB`. |
-| 22.11 | Ctrl+C on Windows | `\x03` → `Key.CTRL_C`; cancellation works correctly. |
-| 22.12 | `enter_raw_mode` no-op on Windows | `WindowsBackend.enter_raw_mode()` is a no-op context manager; `msvcrt.getwch()` bypasses line buffering without setup. |
-| 22.13 | Non-interactive exit | `backend.is_interactive()` returns False in CI/pipe/redirect; `run()` returns cleanly without crashing. |
-| 22.14 | PosixBackend passthrough on non-TTY fd | `enter_raw_mode()` on a non-TTY fd yields without configuring the terminal (tcgetattr guard). |
+| 22.10 | Shift+Tab — legacy console | `\x00\x0f` (BIOS scan code 15) → `Key.SHIFT_TAB` in CMD and legacy PowerShell. |
+| 22.11 | Shift+Tab — ConPTY | `\x1b[Z` (VT sequence from Windows Terminal, VS Code, new PowerShell) → `Key.SHIFT_TAB` via CSI parser. |
+| 22.12 | Ctrl+C on Windows | `\x03` → `Key.CTRL_C`; cancellation works correctly. |
+| 22.13 | `enter_raw_mode` no-op on Windows | `WindowsBackend.enter_raw_mode()` is a no-op context manager; `msvcrt.getwch()` bypasses line buffering without setup. |
+| 22.14 | Non-interactive exit | `backend.is_interactive()` returns False in CI/pipe/redirect; `run()` returns cleanly without crashing. |
+| 22.15 | PosixBackend passthrough on non-TTY fd | `enter_raw_mode()` on a non-TTY fd yields without configuring the terminal (tcgetattr guard). |
+| 22.16 | Lone ESC preserved | `\x1b` with no following characters (`msvcrt.kbhit()` = False) returns `Key.ESC`, not `Key.SHIFT_TAB`. |
+| 22.17 | VT arrow keys on ConPTY | `\x1b[A/B/C/D` → `UP/DOWN/LEFT/RIGHT`; `\x1b[H/F` → `HOME/END` via `_CSI_KEYS` table. |
+| 22.18 | ConPTY detection mechanism | `msvcrt.kbhit()` is used (not `select.select`, which is unavailable for Windows console handles) to detect whether more characters follow `\x1b`. |
 
 ---
 

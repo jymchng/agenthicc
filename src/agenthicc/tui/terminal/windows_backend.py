@@ -3,11 +3,10 @@
 All ``msvcrt`` usage is confined to this module.  No other file in the
 application may import ``msvcrt`` directly.
 
-Extended key mapping
---------------------
-Windows sends two-character sequences for special keys.  The first character
-is ``\\x00`` or ``\\xe0``; the second is a scan code.  The table below
-normalises these into platform-independent ``Key`` values.
+Two input formats are handled (PRD-106 Amendment — ConPTY support)
+-------------------------------------------------------------------
+
+**BIOS scan codes** — legacy CMD, old PowerShell without VT processing:
 
     Prefix  Scan  Key
     ──────  ────  ──────────
@@ -17,8 +16,27 @@ normalises these into platform-independent ``Key`` values.
     \\xe0    M     RIGHT
     \\xe0    G     HOME
     \\xe0    O     END
-    \\xe0    S     (Delete — ignored)
     \\x00    \\x0f  SHIFT_TAB
+
+**VT/ANSI CSI sequences** — modern ConPTY environments (Windows Terminal,
+VS Code integrated terminal, new PowerShell with VT processing enabled).
+ConPTY translates keyboard input to the same escape sequences as Linux/macOS,
+so ``\\x1b[Z`` (Shift+Tab) must be parsed instead of being truncated to ESC.
+
+    Sequence  Key
+    ────────  ──────────
+    \\x1b[Z   SHIFT_TAB
+    \\x1b[A   UP
+    \\x1b[B   DOWN
+    \\x1b[C   RIGHT
+    \\x1b[D   LEFT
+    \\x1b[H   HOME
+    \\x1b[F   END
+
+Detection: after reading ``\\x1b``, ``msvcrt.kbhit()`` is polled.  If more
+characters are pending the sequence is read; if not, a lone ESC is returned.
+``select.select`` is not available for Windows console handles; ``kbhit()`` is
+the correct Windows equivalent.
 """
 from __future__ import annotations
 
@@ -30,8 +48,9 @@ from agenthicc.tui.cbreak_reader import Key
 
 __all__ = ["WindowsBackend"]
 
-# ── extended key scan-code table ─────────────────────────────────────────────
-# Prefix \xe0 — cursor and editing keys on modern keyboards / terminals.
+# ── BIOS scan-code tables (legacy CMD / old PowerShell) ──────────────────────
+
+# Prefix \xe0 — cursor and editing keys on modern keyboards.
 _EXT_E0: dict[str, Key] = {
     "H": Key.UP,
     "P": Key.DOWN,
@@ -44,13 +63,28 @@ _EXT_E0: dict[str, Key] = {
 
 # Prefix \x00 — function / special keys on legacy keyboards.
 _EXT_00: dict[str, Key] = {
-    "\x0f": Key.SHIFT_TAB,   # Shift+Tab
-    "H":    Key.UP,           # also routed here on some terminals
+    "\x0f": Key.SHIFT_TAB,   # Shift+Tab (BIOS scan code 15)
+    "H":    Key.UP,
     "P":    Key.DOWN,
     "K":    Key.LEFT,
     "M":    Key.RIGHT,
     "G":    Key.HOME,
     "O":    Key.END,
+}
+
+# ── VT/ANSI CSI table (ConPTY: Windows Terminal, VS Code, new PowerShell) ────
+# ConPTY translates keyboard input to the same escape sequences used on Linux.
+# These are the sequences that arrive after \x1b[ has been consumed.
+_CSI_KEYS: dict[str, Key] = {
+    "Z":  Key.SHIFT_TAB,   # \x1b[Z  — the primary fix; fixes mode cycling on ConPTY
+    "A":  Key.UP,           # \x1b[A
+    "B":  Key.DOWN,         # \x1b[B
+    "C":  Key.RIGHT,        # \x1b[C
+    "D":  Key.LEFT,         # \x1b[D
+    "H":  Key.HOME,         # \x1b[H
+    "F":  Key.END,          # \x1b[F
+    "1~": Key.HOME,         # \x1b[1~
+    "4~": Key.END,          # \x1b[4~
 }
 
 
@@ -86,7 +120,25 @@ class WindowsBackend:
         if ch == "\x15":            return (Key.CTRL_U, "")
         if ch == "\x16":            return (Key.CTRL_V, "")
         if ch == "@":               return (Key.AT, "")
-        if ch == "\x1b":            return (Key.ESC, "")
+        if ch == "\x1b":
+            # ConPTY (Windows Terminal, VS Code, new PowerShell) delivers VT
+            # sequences such as \x1b[Z for Shift+Tab rather than BIOS scan
+            # codes.  Poll kbhit() — the Windows equivalent of select() for
+            # console handles — to distinguish a lone ESC from a CSI sequence.
+            if not msvcrt.kbhit():
+                return (Key.ESC, "")
+            nxt = msvcrt.getwch()
+            if nxt != "[":
+                # e.g. \x1b\x1b (alt+esc) or unknown Alt sequence
+                return (Key.ESC, "")
+            # Accumulate the CSI parameter + final byte until a letter or ~.
+            seq = ""
+            while msvcrt.kbhit():
+                c = msvcrt.getwch()
+                seq += c
+                if c.isalpha() or c == "~":
+                    break
+            return (_CSI_KEYS.get(seq, Key.ESC), "")
 
         # ── extended two-byte sequences ───────────────────────────────────────
         if ch == "\xe0":
