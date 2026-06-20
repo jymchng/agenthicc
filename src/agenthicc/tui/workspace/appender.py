@@ -315,10 +315,25 @@ def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
     for chip in ev.payload.get("chips", []):
-        raw     = chip.get("raw", "")
-        preview = chip.get("content_preview", "")
+        raw  = chip.get("raw", "")
+        kind = chip.get("kind", "file")
+        ok   = chip.get("ok", True)
+        path = _e(raw.lstrip("@"))
+
+        # Verb mirrors what actually happened: Read for files/globs/URLs,
+        # Listed for directories.  Failed resolutions show the error glyph.
+        if kind == "directory":
+            verb  = "Listed"
+            color = "cyan"
+        elif kind == "url":
+            verb  = "Fetched"
+            color = "cyan"
+        else:
+            verb  = "Read"
+            color = "cyan"
+
+        icon = "" if ok else "[red]✗[/red] "
         self._console.print(
-            f"  [dim]@[/dim][cyan]{_e(raw.lstrip('@'))}[/cyan]"
-            + (f"  [dim]{_e(preview[:60])}[/dim]" if preview else ""),
+            f"  [dim]⎿[/dim] {icon}[bold]{verb}[/bold]([{color}]{path}[/{color}])",
             markup=True, highlight=False,
         )

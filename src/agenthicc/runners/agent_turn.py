@@ -260,8 +260,9 @@ class AgentTurnRunner:
         if injected and ctx.conv_store:
             chips = [
                 {
-                    "raw":             r.mention.raw,
-                    "content_preview": (r.block or "")[:80] if r.ok else "",
+                    "raw":  r.mention.raw,
+                    "kind": r.mention.kind.value,   # "file" | "directory" | "url" | "glob" | "unresolved"
+                    "ok":   getattr(r, "ok", True),
                 }
                 for r in injected
             ]
