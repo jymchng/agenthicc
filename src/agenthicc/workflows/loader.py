@@ -16,9 +16,10 @@ log = logging.getLogger(__name__)
 
 
 def load_builtin_workflows() -> list[WorkflowDefinition]:
-    """Return WorkflowDefinition objects for all builtin workflows."""
-    from agenthicc.workflows.builtins import (  # noqa: PLC0415
-        Architect, CodePlan, PlanOnly, ReviewOnly, Supervised,
+    """Return WorkflowDefinition objects for all builtin workflows (PRD-112)."""
+    from agenthicc.workflows.code_plan.definition import CodePlan       # noqa: PLC0415
+    from agenthicc.workflows.default.definition import (                 # noqa: PLC0415
+        Architect, PlanOnly, ReviewOnly, Supervised,
     )
     return [
         cls().to_definition(source="builtin")

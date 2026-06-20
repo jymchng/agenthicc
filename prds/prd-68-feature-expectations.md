@@ -945,6 +945,89 @@ runner = wf_defn.build_runner(config, mode_manager)
 
 ---
 
+## 28. Per-Workflow Tunable Parameters — `WorkflowParams` (PRD-111)
+
+Each workflow plugin may declare a typed `WorkflowParams` subclass holding its
+tunable parameters.  Parameters are loaded from TOML, CLI `--set`, and the
+existing config layering model.  The primary use case is per-phase model
+selection — the execute phase of `code_plan` can use a cheaper model than the
+plan or review phases.
+
+### Mechanism
+
+```
+[workflows.code_plan]              ← agenthicc.toml
+execute_model = "claude-haiku-4-5"
+plan_model    = ""                 # empty → use execution.model
+```
+
+`WorkflowParams` (base) → `CodePlanParams` (specialised) → stored in
+`WorkflowConfig.params` → `WorkflowRunner` applies `params.model_for_phase()`
+per phase via `dataclasses.replace(exec_cfg, model=phase_model)`.
+
+```
+# Priority order (highest → lowest)
+CLI --set workflows.code_plan.execute_model=...
+.agenthicc/agenthicc.toml [workflows.code_plan]
+~/.agenthicc/agenthicc.toml [workflows.code_plan]
+CodePlanParams field defaults ("")
+```
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 28.1 | `WorkflowParams` base | Dataclass with `get_phase_models() → dict[str, str]` and `model_for_phase(phase, fallback) → str`. |
+| 28.2 | Empty model = global | `model_for_phase()` returns *fallback* when the map value is `""`. |
+| 28.3 | `CodePlanParams` | Typed subclass with `plan_model`, `execute_model`, `review_model`, `summary_model` string fields. |
+| 28.4 | `WorkflowPlugin.params_factory(source)` | Default returns `WorkflowParams()` ignoring source. Override in subclasses. |
+| 28.5 | `CodePlan.params_factory(source)` | Constructs `CodePlanParams` from source dict; unknown keys are silently filtered. |
+| 28.6 | `WorkflowDefinition.params_factory` field | Carries the bound classmethod (same pattern as `runner_factory`). |
+| 28.7 | `WorkflowDefinition.build_params(source)` | Delegates to `params_factory` or returns `WorkflowParams()`. |
+| 28.8 | `to_definition()` stores factory | `type(self).params_factory` bound to definition at plugin discovery time. |
+| 28.9 | `WorkflowConfig.params` field | `WorkflowParams \| None`; populated in `run_turn()` and `_resume_workflow_task()` before calling `build_runner()`. |
+| 28.10 | `AgenthiccConfig.workflows` | `dict[str, dict[str, Any]]` populated from `[workflows]` TOML section. |
+| 28.11 | Per-phase model override | `WorkflowRunner._run_phase()` calls `params.model_for_phase()` and applies the result via `dataclasses.replace(exec_cfg, model=…)`. |
+| 28.12 | No-params fallback | When `params is None` or phase has no override, the global `execution.model` is used unchanged. |
+| 28.13 | Third-party extensibility | A custom `WorkflowPlugin` overriding `params_factory()` automatically gets per-workflow TOML config with no changes to the runner. |
+| 28.14 | All builtins carry factory | Every `WorkflowDefinition` from `load_builtin_workflows()` has a non-None `params_factory`. |
+
+---
+
+## 29. Workflow Package Structure Reorganisation (PRD-112)
+
+Code-plan-specific classes live inside `workflows/code_plan/`; generic
+workflow infrastructure lives inside the new `workflows/default/` subpackage.
+Old import paths are retained as backward-compat shims.
+
+### New layout
+
+```
+workflows/
+  code_plan/
+    __init__.py      exports CodePlan, CodePlanParams, CodePlanRunner, …
+    definition.py    CodePlan (WorkflowPlugin), CodePlanParams  ← was in builtins.py
+    runner.py        CodePlanRunner (unchanged)
+    state.py         CodePlanState, CodePlanContext (unchanged)
+  default/           ← NEW subpackage
+    __init__.py
+    definition.py    PlanOnly, ReviewOnly, Supervised, Architect  ← was in builtins.py
+    runner.py        WorkflowRunner, build_workflow_runner  ← was top-level runner.py
+  builtins.py        re-export shim (backward compat)
+  runner.py          re-export shim (backward compat)
+```
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 29.1 | `CodePlan` canonical location | Defined in `workflows/code_plan/definition.py`; importable from `agenthicc.workflows.code_plan`. |
+| 29.2 | `CodePlanParams` canonical location | Same file and package as `CodePlan`. |
+| 29.3 | `WorkflowRunner` canonical location | Defined in `workflows/default/runner.py`; importable from `agenthicc.workflows.default`. |
+| 29.4 | Generic workflows canonical location | `PlanOnly`, `ReviewOnly`, `Supervised`, `Architect` defined in `workflows/default/definition.py`. |
+| 29.5 | Backward-compat shims | `from agenthicc.workflows.runner import WorkflowRunner` and `from agenthicc.workflows.builtins import CodePlan` both continue to work. |
+| 29.6 | `workflows/__init__.py` exports all | All public symbols (both subpackages) importable from `agenthicc.workflows`. |
+| 29.7 | `loader.py` uses canonical paths | `load_builtin_workflows()` imports from `code_plan.definition` and `default.definition`. |
+| 29.8 | No regressions | All existing tests pass after restructuring. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

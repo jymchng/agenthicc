@@ -12,12 +12,41 @@ import dataclasses
 import re
 import time
 from dataclasses import field
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from agenthicc.workflows.base import BaseWorkflowRunner
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.tui.runtime.mode_manager import ModeManager
+
+
+# ── WorkflowParams — per-workflow tunable parameters (PRD-111) ───────────────
+
+@dataclasses.dataclass
+class WorkflowParams:
+    """Tunable parameters for one workflow run.
+
+    Distinct from ``WorkflowConfig`` (session-scoped infrastructure).
+    Subclasses add typed fields for workflow-specific settings such as
+    per-phase model overrides and override ``get_phase_models()`` to expose
+    those fields as a phase → model mapping.
+
+    Populated from ``[workflows.<name>]`` in TOML, ``--set`` CLI overrides,
+    or environment variables; defaults come from field declarations.
+    """
+
+    def get_phase_models(self) -> dict[str, str]:
+        """Return a mapping of phase name → model ID.
+
+        Empty string values mean "use the global execution model".
+        Override in subclasses to expose typed per-phase model fields.
+        """
+        return {}
+
+    def model_for_phase(self, phase_name: str, fallback: str) -> str:
+        """Return the model to use for *phase_name*, or *fallback* when unset."""
+        m = self.get_phase_models().get(phase_name, "")
+        return m if m else fallback
 
 
 # ── PhaseRole — typed string constants matching builtin agent type names ──────
@@ -162,6 +191,27 @@ class WorkflowDefinition:
     plugin class's ``runner_factory`` classmethod.
     """
 
+    params_factory: Callable[..., WorkflowParams] | None = dataclasses.field(
+        default=None, repr=False, compare=False, hash=False,
+    )
+    """Callable that constructs the tunable params for this workflow (PRD-111).
+
+    Signature: ``(source: dict[str, Any]) -> WorkflowParams``.
+    ``None`` means return a base ``WorkflowParams()`` with no overrides.
+    Populated automatically by ``WorkflowPlugin.to_definition()`` from the
+    plugin class's ``params_factory`` classmethod.
+    """
+
+    def build_params(self, source: dict[str, Any]) -> WorkflowParams:
+        """Construct ``WorkflowParams`` from *source* (merged TOML/CLI/env dict).
+
+        Delegates to the stored ``params_factory`` when present; returns a
+        base ``WorkflowParams()`` with no overrides otherwise.
+        """
+        if self.params_factory is not None:
+            return self.params_factory(source)
+        return WorkflowParams()
+
     def build_runner(
         self,
         config: WorkflowConfig,
@@ -175,7 +225,7 @@ class WorkflowDefinition:
         """
         if self.runner_factory is not None:
             return self.runner_factory(self, config, mode_manager)
-        from agenthicc.workflows.runner import WorkflowRunner  # noqa: PLC0415
+        from agenthicc.workflows.default.runner import WorkflowRunner  # noqa: PLC0415
         return WorkflowRunner(self, config, mode_manager)
 
     def get_phase(self, name: str) -> PhaseSpec | None:
@@ -294,6 +344,16 @@ class WorkflowPlugin(abc.ABC):
     phases:        list[PhaseSpec] = []
 
     @classmethod
+    def params_factory(cls, source: dict[str, Any]) -> WorkflowParams:
+        """Build ``WorkflowParams`` from *source* (PRD-111).
+
+        Default: ignore *source*, return base ``WorkflowParams`` with no phase
+        model overrides.  Override in subclasses that declare a specialised
+        ``Params`` inner dataclass (e.g. ``CodePlan.Params``).
+        """
+        return WorkflowParams()
+
+    @classmethod
     def runner_factory(
         cls,
         defn: WorkflowDefinition,
@@ -306,7 +366,7 @@ class WorkflowPlugin(abc.ABC):
         Override in subclasses that need a specialized runner (e.g. a
         state-machine runner that ignores the phase graph).
         """
-        from agenthicc.workflows.runner import WorkflowRunner  # noqa: PLC0415
+        from agenthicc.workflows.default.runner import WorkflowRunner  # noqa: PLC0415
         return WorkflowRunner(defn, config, mode_manager)
 
     def to_definition(
@@ -319,7 +379,8 @@ class WorkflowPlugin(abc.ABC):
             mode_bindings=tuple(self.mode_bindings),
             source=source,
             path=path,
-            runner_factory=type(self).runner_factory,  # bind class's factory
+            runner_factory=type(self).runner_factory,   # PRD-110
+            params_factory=type(self).params_factory,   # PRD-111
         )
 
     def determine_transition(

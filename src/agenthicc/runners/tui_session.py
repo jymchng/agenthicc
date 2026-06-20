@@ -558,8 +558,14 @@ class TUISession:
         async def _run_inner() -> None:
             if _wf_defn is not None:
                 import dataclasses as _dc  # noqa: PLC0415
+                # PRD-111: build per-workflow params from merged TOML/CLI/env config.
+                _wf_params = _wf_defn.build_params(
+                    ctx.cfg.workflows.get(_wf_defn.name, {})
+                )
                 _wf_config = _dc.replace(
-                    self._wf_config_base, completed_turns=self._turn_count,
+                    self._wf_config_base,
+                    completed_turns=self._turn_count,
+                    params=_wf_params,
                 )
                 # Each WorkflowDefinition carries its own runner_factory (PRD-110).
                 # No name-based branching here — the plugin owns the runner choice.
@@ -732,8 +738,10 @@ class TUISession:
         self._input_session.set_mode(InputMode.STREAMING)
         ctx.approval_svc.reset_turn_memory()
         try:
-            # Each WorkflowDefinition carries its own runner_factory (PRD-110).
-            runner = wf_defn.build_runner(self._wf_config_base, ctx.mode_manager)
+            import dataclasses as _dc  # noqa: PLC0415
+            _wf_params = wf_defn.build_params(ctx.cfg.workflows.get(wf_defn.name, {}))
+            _wf_config  = _dc.replace(self._wf_config_base, params=_wf_params)
+            runner = wf_defn.build_runner(_wf_config, ctx.mode_manager)
             await runner.resume(context)
             # PRD-89: exit workflow-bound mode after completion
             _wf_result = ctx.app_state.workflow_run()

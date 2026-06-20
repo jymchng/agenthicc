@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.agents.registry import AgentsRegistry
     from agenthicc.config import AgenthiccConfig
+    from agenthicc.workflows.plugin import WorkflowParams
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,8 @@ class WorkflowConfig:
     mcp_registry:    "McpToolRegistry | None"
     mention_cache:   "MentionCache"
     agents_registry: "AgentsRegistry"
-    memory_router:   "MemoryRouter | None"  = field(default=None)
-    semantic_index:  "SemanticIndex | None" = field(default=None)
-    completed_turns: int                    = field(default=0)
+    memory_router:   "MemoryRouter | None"    = field(default=None)
+    semantic_index:  "SemanticIndex | None"   = field(default=None)
+    completed_turns: int                      = field(default=0)
+    params:          "WorkflowParams | None"  = field(default=None)
+    """Per-workflow tunable parameters (phase model overrides, etc.) — PRD-111."""

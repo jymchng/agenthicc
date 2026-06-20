@@ -269,6 +269,9 @@ class AgenthiccConfig:
     skills:    SkillsSettings     = field(default_factory=SkillsSettings)
     agents:    AgentsSettings      = field(default_factory=AgentsSettings)
     storage:   StorageSettings    = field(default_factory=StorageSettings)
+    workflows: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Per-workflow tunable parameter overrides loaded from ``[workflows.<name>]``
+    TOML sections (PRD-111).  E.g. ``cfg.workflows["code_plan"]["execute_model"]``."""
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""
@@ -521,6 +524,13 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
         confirm_exits=bool(beh.get("confirm_exits", True)),
     )
 
+    # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)
+    workflows: dict[str, dict[str, Any]] = {
+        name: dict(params)
+        for name, params in data.get("workflows", {}).items()
+        if isinstance(params, dict)
+    }
+
     return AgenthiccConfig(
         execution=execution,
         behaviour=behaviour,
@@ -530,6 +540,7 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
         security=security,
         api=api,
         storage=storage_settings,
+        workflows=workflows,
     )
 
 
