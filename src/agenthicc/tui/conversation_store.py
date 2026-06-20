@@ -12,9 +12,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 
 from agenthicc.reactive import Signal, Computed
+
+if TYPE_CHECKING:
+    import asyncio as _asyncio
+    from agenthicc.tools.approval import ApprovalRequest
+    from agenthicc.workflows.plugin import WorkflowRun
 
 
 # ── Agent state ───────────────────────────────────────────────────────────────
@@ -46,10 +51,10 @@ EventKind = Literal[
 @dataclass
 class ConversationEvent:
     event_id:  str
-    kind:      str          # EventKind
-    payload:   dict
+    kind:      str               # EventKind
+    payload:   dict[str, object]
     timestamp: float = field(default_factory=time.time)
-    rendered:  bool = False  # True once ScrollBufferAppender has printed it
+    rendered:  bool  = False     # True once ScrollBufferAppender has printed it
 
 
 @dataclass
@@ -59,6 +64,16 @@ class ConversationTurn:
     timestamp:  float = field(default_factory=time.time)
     events:     list[ConversationEvent] = field(default_factory=list)
     state:      AgentState = AgentState.THINKING
+
+
+# ── Notification entry ────────────────────────────────────────────────────────
+
+@dataclass
+class _NotificationEntry:
+    """One stacked transient notification line with its auto-dismiss timer."""
+
+    text:   str
+    handle: _asyncio.TimerHandle | None = field(default=None)
 
 
 # ── Store ─────────────────────────────────────────────────────────────────────
@@ -84,12 +99,10 @@ class ConversationStore:
         self.notification:        Signal[str | None] = Signal(None)
         self.workflow_override:   Signal[str | None] = Signal(None)
         """Name of the /workflow-selected override (PRD-114).  None = mode default."""
-        # Internal: per-line notification stack.  Each entry is a mutable
-        # list [text, timer_handle] so the dismiss closure can update the
-        # handle after call_later() returns.
+        # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
-        # entry, leaving other lines untouched.
-        self._notification_lines: list[list] = []
+        # entry by identity, leaving other lines untouched.
+        self._notification_lines: list[_NotificationEntry] = []
         # True while _sync_notification_signal() is writing to self.notification.
         # Prevents the notification.subscribe callback from treating our own
         # write as an "external clear".
@@ -161,12 +174,10 @@ class ConversationStore:
         """
         import asyncio  # noqa: PLC0415
 
-        # Mutable list [text, handle] so the dismiss closure can update the
-        # handle reference after call_later() returns.
-        entry: list = [message, None]
+        entry = _NotificationEntry(text=message)
 
         def _dismiss() -> None:
-            # Remove only this entry; leave other stacked lines alone.
+            # Remove only this entry by identity; leave other lines alone.
             self._notification_lines = [
                 e for e in self._notification_lines if e is not entry
             ]
@@ -177,13 +188,13 @@ class ConversationStore:
 
         try:
             loop = asyncio.get_running_loop()
-            entry[1] = loop.call_later(duration, _dismiss)
+            entry.handle = loop.call_later(duration, _dismiss)
         except RuntimeError:
             pass  # no running event loop — stays persistent (tests/headless)
 
     def _sync_notification_signal(self) -> None:
         """Recompute the notification signal from the current line stack."""
-        lines = [e[0] for e in self._notification_lines]
+        lines = [e.text for e in self._notification_lines]
         self._notification_syncing = True
         try:
             self.notification.set("\n".join(lines) if lines else None)
@@ -198,10 +209,9 @@ class ConversationStore:
             return  # only care about set(None)
         # Cancel all pending dismiss timers and drop the stack.
         for entry in self._notification_lines:
-            handle = entry[1]
-            if handle is not None:
+            if entry.handle is not None:
                 try:
-                    handle.cancel()
+                    entry.handle.cancel()
                 except Exception:  # noqa: BLE001
                     pass
         self._notification_lines.clear()
@@ -290,7 +300,7 @@ class ConversationStore:
     def append_event(
         self,
         kind: str,
-        payload: dict,
+        payload: dict[str, object],
         event_id: str | None = None,
     ) -> ConversationEvent:
         ev = ConversationEvent(
@@ -371,9 +381,9 @@ class AppState:
         self.overlay:           Signal[str]  = Signal("")     # active overlay name
         self.modal_open:        Signal[bool] = Signal(False)
         # PRD-78: non-None when an agent tool is paused waiting for approval.
-        self.pending_approval: Signal[Any]   = Signal(None)
+        self.pending_approval: Signal[ApprovalRequest | None]  = Signal(None)
         # PRD-81: holds WorkflowRun | None; set by WorkflowRunner during execution.
-        self.workflow_run:     Signal[Any]   = Signal(None)
+        self.workflow_run:     Signal[WorkflowRun | None]      = Signal(None)
         # PRD-79: ephemeral CLI flags — frozen after startup, read by ApprovalGate etc.
         self.cli_flags: CLIFlags = CLIFlags()
 

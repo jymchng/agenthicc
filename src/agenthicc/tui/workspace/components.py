@@ -302,22 +302,20 @@ class FooterComponent:
         extra: list[RenderableType] = []
         # Extra notification lines from stacked notify_transient() calls.
         extra.extend(_extra_notif_lines)
-        try:
-            from rich.markup import escape as _e  # noqa: PLC0415
-            _wf = self._state.workflow_run()
-            if (isinstance(getattr(_wf, "status", None), str)
-                    and _wf.status == "running"
-                    and isinstance(getattr(_wf, "workflow_name", None), str)):
-                _n      = getattr(_wf, "current_phase_index", 0) + 1
-                _tot    = getattr(_wf, "total_phases", 0)
-                _cp     = getattr(_wf, "current_phase", None)
-                _badge  = self._state.active_mode().badge
-                _phase  = f"  {_n}/{_tot}  {_e(_cp)}" if isinstance(_cp, str) else f"  {_n}/{_tot}"
-                extra.append(Text.from_markup(
-                    _fit(f"  [dim]{_e(_badge)} {_e(_wf.workflow_name)}{_phase}[/dim]", cols)
-                ))
-        except Exception:  # noqa: BLE001
-            pass
+        from rich.markup import escape as _e  # noqa: PLC0415
+        _wf = self._state.workflow_run()
+        if _wf is not None and _wf.status == "running":
+            _n     = _wf.current_phase_index + 1
+            _tot   = _wf.total_phases
+            _badge = self._state.active_mode().badge
+            _phase = (
+                f"  {_n}/{_tot}  {_e(_wf.current_phase)}"
+                if _wf.current_phase is not None
+                else f"  {_n}/{_tot}"
+            )
+            extra.append(Text.from_markup(
+                _fit(f"  [dim]{_e(_badge)} {_e(_wf.workflow_name)}{_phase}[/dim]", cols)
+            ))
 
         return Group(
             Text.from_markup(mode_line),
@@ -334,13 +332,9 @@ class FooterComponent:
                 extra += notif.count("\n")   # each \n adds one more row
         except Exception:  # noqa: BLE001
             pass
-        try:
-            _wf = self._state.workflow_run()
-            if (getattr(_wf, "status", None) == "running"
-                    and getattr(_wf, "workflow_name", None)):
-                extra += 1
-        except Exception:  # noqa: BLE001
-            pass
+        _wf = self._state.workflow_run()
+        if _wf is not None and _wf.status == "running":
+            extra += 1
         return 2 + extra
 
 
