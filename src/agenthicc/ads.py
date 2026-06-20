@@ -117,13 +117,12 @@ class AdRotator:
 
     async def _fetch_ads(self) -> None:
         try:
-            import httpx
+            from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
             token = await self._auth.get_token()
-            async with httpx.AsyncClient() as client:
+            async with agenthicc_http_client(timeout=5.0) as client:
                 resp = await client.get(
                     AGENTHICC_ADS_URL,
                     headers={"Authorization": f"Bearer {token}"},
-                    timeout=5.0,
                 )
                 resp.raise_for_status()
                 data = resp.json()

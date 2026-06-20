@@ -126,7 +126,8 @@ async def _check_robots(url: str, user_agent: str = "agenthicc") -> bool:
             import httpx  # noqa: PLC0415
         except ImportError:
             return True
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+        async with agenthicc_http_client(timeout=5.0) as client:
             try:
                 resp = await client.get(robots_url)
                 rp.parse(resp.text.splitlines())
@@ -156,9 +157,9 @@ async def _format_url_block(
 
     # Fetch
     try:
-        import httpx  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
 
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with agenthicc_http_client(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "agenthicc/1.0"})
             resp.raise_for_status()
             ct = resp.headers.get("content-type", "")

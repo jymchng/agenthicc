@@ -265,9 +265,9 @@ class AuthClient:
         )
 
     async def _revoke(self, access_token: str) -> None:
-        import httpx
+        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
         try:
-            async with httpx.AsyncClient() as client:
+            async with agenthicc_http_client(timeout=10.0) as client:
                 await client.post(AGENTHICC_REVOKE_URL, data={
                     "token": access_token,
                     "client_id": AGENTHICC_CLIENT_ID,
