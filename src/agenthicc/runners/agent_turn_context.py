@@ -31,7 +31,7 @@ class AgentTurnContext:
 
     # ── required ──────────────────────────────────────────────────────────────
     text:      str
-    runner:    "AgentRunnerBase"     # transport + signals
+    runner:    "AgentRunnerBase | None"     # transport + signals
     processor: "EventProcessor"      # kernel event bus
 
     # ── memory ────────────────────────────────────────────────────────────────
