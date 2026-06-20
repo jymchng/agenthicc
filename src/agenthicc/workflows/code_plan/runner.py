@@ -122,6 +122,15 @@ class CodePlanRunner(BaseWorkflowRunner):
     #: Total number of phases shown in the "N/M" status-bar counter.
     total_phases:   int = 4
 
+    # Per-phase model overrides (PRD-115).  Empty string = use global execution.model.
+    # Override as class attributes in subclasses, or set via TOML:
+    #   [workflows.code_plan]
+    #   plan_model = "deepseek-v4-pro"
+    plan_model:    str = ""
+    execute_model: str = ""
+    review_model:  str = ""
+    summary_model: str = ""
+
     def __init__(
         self,
         config:       WorkflowConfig,
@@ -323,6 +332,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
         from agenthicc.workflows.phase_tools import make_questions_tool  # noqa: PLC0415
 
+        self._set_phase("plan", 0, ctx)
         exit_event: asyncio.Event = asyncio.Event()
 
         for attempt in range(1, _MAX_PLAN_ATTEMPTS + 1):
@@ -345,6 +355,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                     text, tools=tools, mode=None,
                     system_prompt=_PLAN_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
                     max_turns=20, ctx=ctx,
+                    model_override=self._phase_model("plan"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
@@ -368,6 +379,8 @@ class CodePlanRunner(BaseWorkflowRunner):
     async def _execute(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until mark_execute_complete() fires; return REVIEW or FAILED."""
         from agenthicc.workflows.phase_tools import make_executor_tools  # noqa: PLC0415
+
+        self._set_phase("execute", 1, ctx)
 
         # Embed intent + approved plan in the system prompt so every retry turn
         # has full context, independent of conversation-history trimming.
@@ -395,6 +408,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 await self._run_turn(
                     text, tools=tools, mode="Auto",
                     system_prompt=system_prompt, max_turns=40, ctx=ctx,
+                    model_override=self._phase_model("execute"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
@@ -414,6 +428,7 @@ class CodePlanRunner(BaseWorkflowRunner):
     async def _review(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until approve_review() or reject_review() fires; return SUMMARIZE, EXECUTE, or FAILED."""
         from agenthicc.workflows.phase_tools import make_reviewer_tools  # noqa: PLC0415
+        self._set_phase("review", 2, ctx)
 
         # Embed accumulated context in the system prompt so every retry turn
         # has the full picture, independent of conversation-history trimming.
@@ -440,6 +455,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 await self._run_turn(
                     text, tools=tools, mode=None,
                     system_prompt=system_prompt, max_turns=8, ctx=ctx,
+                    model_override=self._phase_model("review"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
@@ -462,6 +478,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _summarize(self, ctx: CodePlanContext) -> CodePlanState:
         """Single turn; always returns COMPLETE."""
+        self._set_phase("summarize", 3, ctx)
         text: str = (
             f"Task: {ctx.intent}\n\n"
             f"What was implemented: {ctx.execute_summary or '(see conversation)'}\n"
@@ -472,6 +489,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 text, tools=self._base_tools(), mode=None,
                 system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
                 max_turns=4, ctx=ctx,
+                model_override=self._phase_model("summarize"),
             )
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
@@ -536,25 +554,67 @@ class CodePlanRunner(BaseWorkflowRunner):
             ctx=_ctx,
         )
 
+    # ── phase helpers (PRD-115) ───────────────────────────────────────────────
+
+    def _phase_model(self, phase_name: str) -> str:
+        """Return the model override for *phase_name*, or '' for global default.
+
+        Priority:
+        1. ``WorkflowParams.model_for_phase()`` — populated from TOML / CLI.
+        2. Class attribute ``{phase_name}_model`` — static subclass default.
+        3. Empty string — caller falls back to global ``execution.model``.
+        """
+        if self._cfg.params is not None:
+            m = self._cfg.params.model_for_phase(phase_name, "")
+            if m:
+                return m
+        return getattr(self, f"{phase_name}_model", "") or ""
+
+    def _set_phase(self, phase_name: str, phase_index: int, ctx: CodePlanContext) -> None:
+        """Update all workflow TUI state for the current phase in one call."""
+        self._cfg.app_state.update_workflow_phase(
+            workflow_name = self.workflow_name,
+            phase_name    = phase_name,
+            phase_index   = phase_index,
+            total_phases  = self.total_phases,
+            run_id        = ctx.run_id,
+            intent        = ctx.intent,
+            model_id      = self._phase_model(phase_name) or self._model_id,
+        )
+
     # ── helpers ───────────────────────────────────────────────────────────────
 
     async def _run_turn(
         self,
-        text:          str,
+        text:           str,
         *,
-        tools:         _ToolList,
-        mode:          str | None,
-        system_prompt: str,
-        max_turns:     int,
-        ctx:           CodePlanContext,
+        tools:          _ToolList,
+        mode:           str | None,
+        system_prompt:  str,
+        max_turns:      int,
+        ctx:            CodePlanContext,
+        model_override: str = "",
     ) -> None:
-        """Run one agent turn, optionally switching mode for its duration."""
+        """Run one agent turn, optionally switching mode for its duration.
+
+        When *model_override* is non-empty, a modified copy of ``exec_cfg`` is
+        built with ``model=model_override`` so that ``AgentTurnRunner._resolve_model()``
+        picks up the per-phase model (PRD-115).
+        """
         from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
             if self._mode_manager.set_by_name(mode) is None:
                 log.warning("_run_turn: mode %r not found — keeping current mode", mode)
+
+        # Build exec_cfg — replace model when a per-phase override is requested.
+        _base_exec = self._cfg.cfg.execution
+        exec_cfg = (
+            dataclasses.replace(_base_exec, model=model_override)
+            if model_override and dataclasses.is_dataclass(_base_exec)
+            else _base_exec
+        )
 
         if self._cfg.approval_svc is not None and ctx.shared_memory is not None:
             ctx.shared_memory.ensure_valid()
@@ -568,7 +628,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 max_agent_turns=max_turns,
                 conv_store=self._cfg.conv_store,
                 app_state=self._cfg.app_state,
-                exec_cfg=self._cfg.cfg.execution,
+                exec_cfg=exec_cfg,
                 skills=self._cfg.skills,
                 mention_cache=self._cfg.mention_cache,
                 project_plugin_tools=tools,

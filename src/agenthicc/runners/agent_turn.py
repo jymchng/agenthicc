@@ -116,9 +116,17 @@ class AgentTurnRunner:
     # ── step 1: model resolution ──────────────────────────────────────────────
 
     def _resolve_model(self) -> None:
-        transport  = getattr(self._ctx.runner, "_transport", None)
-        cfg        = getattr(transport, "_config", None)
-        self._model_id    = getattr(cfg, "model", "unknown") if cfg else "unknown"
+        ctx = self._ctx
+        # PRD-115: exec_cfg.model carries per-phase overrides from WorkflowParams
+        # (PRD-111) and CodePlanRunner class attributes / _run_turn(model_override).
+        # Use it when non-empty; fall back to the transport's baked-in config.
+        override = getattr(ctx.exec_cfg, "model", "") if ctx.exec_cfg else ""
+        if override:
+            self._model_id = override
+        else:
+            transport = getattr(ctx.runner, "_transport", None)
+            cfg       = getattr(transport, "_config", None)
+            self._model_id = getattr(cfg, "model", "unknown") if cfg else "unknown"
         self._model_short = self._model_id.split("/")[-1]
 
     # ── step 2: kernel event ──────────────────────────────────────────────────

@@ -380,3 +380,55 @@ class AppState:
     @classmethod
     def create(cls) -> "AppState":
         return cls()
+
+    def update_workflow_phase(
+        self,
+        *,
+        workflow_name:  str,
+        phase_name:     str,
+        phase_index:    int,
+        total_phases:   int,
+        run_id:         str,
+        intent:         str,
+        model_id:       str = "",
+    ) -> None:
+        """Atomically update all workflow TUI state from a phase's parameters.
+
+        Replaces scattered ``dataclasses.replace(wf_run, ...) + workflow_run.set()``
+        boilerplate in each phase method.  Creates a fresh ``WorkflowRun`` when
+        no run is currently set.
+
+        Parameters
+        ----------
+        workflow_name:  Registry name of the running workflow (e.g. ``"code_plan"``).
+        phase_name:     Current phase identifier (e.g. ``"plan"``).
+        phase_index:    0-based position of this phase in the workflow graph.
+        total_phases:   Total phase count shown in the ``N/M`` status-bar counter.
+        run_id:         UUID hex for the current run.
+        intent:         Original user intent string.
+        model_id:       Model string shown in phase display (optional).
+        """
+        import dataclasses as _dc  # noqa: PLC0415
+        from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
+
+        current = self.workflow_run()
+        if current is not None and _dc.is_dataclass(current):
+            updated = _dc.replace(
+                current,
+                workflow_name       = workflow_name,
+                current_phase       = phase_name,
+                current_phase_index = phase_index,
+                total_phases        = total_phases,
+                status              = "running",
+            )
+        else:
+            updated = WorkflowRun(
+                run_id              = run_id,
+                workflow_name       = workflow_name,
+                intent              = intent,
+                current_phase       = phase_name,
+                current_phase_index = phase_index,
+                total_phases        = total_phases,
+                status              = "running",
+            )
+        self.workflow_run.set(updated)

@@ -1130,6 +1130,45 @@ Activate: `/workflow code_plan_docs` · Deactivate: `/workflow reset`
 
 ---
 
+## 32. Per-Phase Model Override and Phase-Aware TUI Updates (PRD-115)
+
+### Bug fixed: per-phase model was silently ignored
+
+`AgentTurnRunner._resolve_model()` previously read only the transport's baked-in model, ignoring `exec_cfg.model` entirely. PRD-111's `WorkflowParams` per-phase override constructed the right `exec_cfg` but the modified model never reached `@agent_decorator`. This is now fixed.
+
+### `AppState.update_workflow_phase()`
+
+Single atomic method replacing scattered `dataclasses.replace(wf_run, ...) + workflow_run.set()` boilerplate in each phase method.
+
+### Per-phase model class attributes + TOML config
+
+```toml
+[workflows.code_plan]
+plan_model    = "deepseek-v4-pro"    # flagship for planning
+execute_model = "deepseek-v4-flash"  # cheap for execution
+```
+
+Or as a subclass static override:
+```python
+class CodePlanDocsRunner(CodePlanRunner):
+    plan_model = "deepseek-v4-pro"
+```
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 32.1 | `_resolve_model()` priority | `exec_cfg.model` (non-empty) > transport config > `"unknown"`. |
+| 32.2 | PRD-111 WorkflowRunner fix | `WorkflowRunner`'s `WorkflowParams` per-phase model now reaches `@agent_decorator`. |
+| 32.3 | `AppState.update_workflow_phase()` | Sets `workflow_run` signal atomically from named args; creates fresh `WorkflowRun` if none exists. |
+| 32.4 | Per-phase class attrs | `CodePlanRunner.plan_model`, `execute_model`, `review_model`, `summary_model` default to `""`. |
+| 32.5 | TOML config path | `[workflows.code_plan] plan_model = "..."` overrides only the plan phase model. |
+| 32.6 | Priority: TOML > class attr | `_phase_model(name)` reads `WorkflowParams.model_for_phase()` first, class attr second. |
+| 32.7 | `_run_turn(model_override=...)` | Non-empty override replaces `exec_cfg.model` before calling `_run_agent_turn`. |
+| 32.8 | `_set_phase(name, index, ctx)` | Calls `update_workflow_phase` with all runner invariants filled; each phase uses it. |
+| 32.9 | Subclass override | `class MyRunner(CodePlanRunner): plan_model = "model"` applies for plan phase only. |
+| 32.10 | No override → global model | Empty string falls back to `execution.model` from global config. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.
