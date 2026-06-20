@@ -1028,6 +1028,59 @@ workflows/
 
 ---
 
+## 30. Configuration Inheritance via `extends` (PRD-113)
+
+Any agenthicc TOML config file may declare parent files using an `extends`
+key.  Parents are loaded and merged first; the declaring file is applied on
+top.  Users maintain one base config and layer environment-specific overrides
+without duplicating shared settings.
+
+### Syntax
+
+```toml
+# agenthicc-dev.toml
+extends = "agenthicc.toml"          # single parent (relative to this file)
+
+[execution]
+model = "claude-haiku-4-5"          # only the override; rest inherited
+```
+
+```toml
+extends = ["../../shared/team.toml", "secrets.toml"]   # list — merged left-to-right
+```
+
+### Config file selection
+
+```bash
+agenthicc --config agenthicc-dev.toml        # --config flag (already in CLI parser, now wired)
+AGENTHICC_CONFIG=agenthicc-dev.toml agenthicc  # env var alternative
+```
+
+### Merge order (unchanged semantics, extends applied at each layer)
+
+```
+hardcoded defaults  →  user-global + extends chain  →  project file + extends chain  →  env vars  →  --set
+```
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 30.1 | Single parent | `extends = "base.toml"` loads the parent first, merges child on top. |
+| 30.2 | List of parents | `extends = ["a.toml", "b.toml"]` merges left-to-right; child wins. |
+| 30.3 | Relative paths | Parent paths resolve relative to the file containing `extends`, not CWD. |
+| 30.4 | `~` expansion | `extends = "~/.agenthicc/team-base.toml"` expands the home directory. |
+| 30.5 | Chained extends | A parent's own `extends` is resolved recursively (grandparent → parent → child). |
+| 30.6 | Deep merge | Only differing keys need to appear in child; parent keys are fully inherited. |
+| 30.7 | `extends` stripped | The `extends` key never appears in `AgenthiccConfig` or `_dict_to_config` input. |
+| 30.8 | Cycle detection | Any cycle raises `ConfigExtendsCycleError` immediately. |
+| 30.9 | Missing parent | A non-existent file named in `extends` raises `FileNotFoundError`. |
+| 30.10 | `--config <file>` wired | `CLIContext.config_path` is now threaded through to `load_config(config_path=…)`. |
+| 30.11 | `AGENTHICC_CONFIG` env var | Sets the project-level config file path when `--config` is not given. |
+| 30.12 | `--config` beats env var | An explicit `--config` flag takes priority over `AGENTHICC_CONFIG`. |
+| 30.13 | User-global also resolves extends | `~/.agenthicc/agenthicc.toml` may itself use `extends`. |
+| 30.14 | No regression | All existing config tests pass; missing files still silently skipped at auto-discovery. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

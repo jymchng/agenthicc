@@ -56,6 +56,8 @@ __all__ = [
     "_coerce_env",
     "_find_config_file",
     "_parse_mcp_servers",
+    "_resolve_extends",
+    "ConfigExtendsCycleError",
 ]
 
 PROJECT_FILE = "agenthicc.toml"
@@ -444,9 +446,100 @@ def _apply_cli_overrides(config: dict[str, Any], overrides: list[str]) -> dict[s
 # ── loading ──────────────────────────────────────────────────────────────
 
 
+class ConfigExtendsCycleError(Exception):
+    """Raised when an ``extends`` chain contains a cycle."""
+
+
 def _read_toml(path: Path) -> dict[str, Any]:
     with open(path, "rb") as f:
         return tomllib.load(f)
+
+
+def _resolve_extends(
+    path: Path,
+    _seen: frozenset[Path] | None = None,
+) -> dict[str, Any]:
+    """Read *path* and recursively resolve its ``extends`` chain (PRD-113).
+
+    Returns a fully-merged dict: parents first (left-to-right), the current
+    file's values applied on top.  The ``extends`` key is stripped from the
+    returned dict so it never reaches ``_dict_to_config``.
+
+    Parameters
+    ----------
+    path:
+        Absolute or relative path to a TOML config file.
+    _seen:
+        Accumulated set of resolved absolute paths — used for cycle detection.
+        Callers should not pass this; it is threaded through recursion.
+
+    Raises
+    ------
+    ConfigExtendsCycleError
+        When the extends chain forms a cycle.
+    FileNotFoundError
+        When a file named in ``extends`` does not exist.
+    """
+    resolved = path.resolve()
+    seen = _seen if _seen is not None else frozenset()
+    if resolved in seen:
+        raise ConfigExtendsCycleError(
+            f"Circular extends detected: {path} is already in the inheritance chain"
+        )
+    seen = seen | {resolved}
+
+    data = _read_toml(path)
+    extends_raw = data.pop("extends", None)
+
+    if not extends_raw:
+        return data
+
+    # Normalise to list of strings
+    if isinstance(extends_raw, str):
+        parents = [extends_raw]
+    elif isinstance(extends_raw, list):
+        parents = [str(e) for e in extends_raw]
+    else:
+        import warnings  # noqa: PLC0415
+        warnings.warn(
+            f"Invalid 'extends' value in {path}: expected str or list, "
+            f"ignoring (got {type(extends_raw).__name__})",
+            stacklevel=2,
+        )
+        return data
+
+    base_dir = path.parent
+    merged: dict[str, Any] = {}
+
+    for parent_str in parents:
+        parent_path = (base_dir / Path(parent_str).expanduser()).resolve()
+        if not parent_path.is_file():
+            raise FileNotFoundError(
+                f"Config 'extends' refers to a non-existent file: {parent_path}"
+                f" (referenced from {path})"
+            )
+        parent_data = _resolve_extends(parent_path, seen)
+        merged = deep_merge(merged, parent_data)
+
+    return deep_merge(merged, data)
+
+
+def _load_toml_with_extends(path: Path) -> dict[str, Any]:
+    """Like ``_load_toml_safe`` but also resolves ``extends`` chains.
+
+    Returns ``{}`` on ``FileNotFoundError`` / ``PermissionError``; warns on
+    invalid TOML syntax.  Propagates ``ConfigExtendsCycleError``.
+    """
+    import warnings  # noqa: PLC0415
+    try:
+        return _resolve_extends(path)
+    except (FileNotFoundError, PermissionError):
+        return {}
+    except ConfigExtendsCycleError:
+        raise
+    except tomllib.TOMLDecodeError as exc:
+        warnings.warn(f"Invalid TOML in {path}: {exc}", stacklevel=3)
+        return {}
 
 
 def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
@@ -553,6 +646,7 @@ def load_config(
     user_path: str | Path | None = None,
     env_overrides: bool = True,
     cli_overrides: list[str] | None = None,
+    config_path: str | Path | None = None,
 ) -> AgenthiccConfig:
     """Load and merge configuration into a typed :class:`AgenthiccConfig`.
 
@@ -578,25 +672,36 @@ def load_config(
     """
     merged: dict[str, Any] = {}
 
-    # 2. User-global config (~/.agenthicc/agenthicc.toml) — shared defaults
+    # PRD-113: --config / AGENTHICC_CONFIG override the auto-discovered project file.
+    # Priority: explicit config_path arg > AGENTHICC_CONFIG env var > auto-discovery.
+    if config_path is None:
+        import os as _os  # noqa: PLC0415
+        _env_cfg = _os.environ.get("AGENTHICC_CONFIG", "").strip()
+        if _env_cfg:
+            config_path = _env_cfg
+
+    # 2. User-global config (~/.agenthicc/agenthicc.toml) — shared defaults.
+    # extends chains in the user-global file are also resolved.
     if user_path is not None:
         user_file: Path | None = Path(user_path)
         if user_file.is_file():
-            merged = deep_merge(merged, _read_toml(user_file))
+            merged = deep_merge(merged, _resolve_extends(user_file))
     else:
         user_file = _find_config_file(USER_CONFIG_CANDIDATES)
         if user_file is not None:
-            merged = deep_merge(merged, _load_toml_safe(user_file))
+            merged = deep_merge(merged, _load_toml_with_extends(user_file))
 
-    # 3. Per-project config (.agenthicc/agenthicc.toml) — overrides user-global
-    if project_path is not None:
-        project_file: Path | None = Path(project_path)
+    # 3. Per-project config — overrides user-global.
+    # config_path (from --config or AGENTHICC_CONFIG) takes priority over project_path.
+    effective_project = config_path or project_path
+    if effective_project is not None:
+        project_file: Path | None = Path(effective_project)
         if project_file.is_file():
-            merged = deep_merge(merged, _read_toml(project_file))
+            merged = deep_merge(merged, _resolve_extends(project_file))
     else:
         project_file = _find_config_file(PROJECT_CONFIG_CANDIDATES)
         if project_file is not None:
-            merged = deep_merge(merged, _load_toml_safe(project_file))
+            merged = deep_merge(merged, _load_toml_with_extends(project_file))
 
     # 4. Environment variable overrides (AGENTHICC_*) — override both config files
     if env_overrides:

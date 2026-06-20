@@ -97,6 +97,7 @@ async def _build_session_context(
     resume_id: str | None,
     cli_overrides: list[str] | None,
     record_cassette_dir: Path | None = None,
+    config_path: str | None = None,
 ) -> SessionContext:
     """Construct all session-scoped singletons and return a SessionContext."""
     from rich.console import Console                              # noqa: PLC0415
@@ -145,7 +146,7 @@ async def _build_session_context(
     processor = EventProcessor(initial_state=k_state, persist=True)
 
     # ── config / LLM ─────────────────────────────────────────────────────────
-    cfg = load_config(cli_overrides=cli_overrides or [])
+    cfg = load_config(cli_overrides=cli_overrides or [], config_path=config_path)
 
     # PRD-108: configure shared HTTP client timeout from config before any tool runs.
     from agenthicc.tools.http import configure as _configure_http  # noqa: PLC0415
@@ -826,6 +827,7 @@ async def _run_tui_session(
     cli_overrides: list[str] | None = None,
     record_cassette: str | None = None,
     cli_flags: CLIFlags | None = None,
+    config_path: str | None = None,
 ) -> None:
     """Reactive TUI session — single entry point, no legacy branches."""
     from agenthicc.tui.workspace import Workspace                        # noqa: PLC0415
@@ -833,7 +835,8 @@ async def _run_tui_session(
 
     cassette_base: Path | None = Path(record_cassette) if record_cassette else None
 
-    ctx = await _build_session_context(resume_id, cli_overrides, cassette_base)
+    ctx = await _build_session_context(resume_id, cli_overrides, cassette_base,
+                                        config_path=config_path)
     # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
     if cli_flags is not None:
         ctx.app_state.cli_flags = cli_flags
@@ -921,6 +924,7 @@ def _run_tui(ctx: CLIContext) -> None:
             cli_overrides=list(ctx.set_overrides),
             record_cassette=ctx.record_cassette,
             cli_flags=ctx.flags,
+            config_path=ctx.config_path,
         ))
     except Exception as exc:
         print(f"TUI error: {exc}", file=sys.stderr)
