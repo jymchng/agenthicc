@@ -360,8 +360,12 @@ class CodePlanRunner(BaseWorkflowRunner):
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as exc:
-                log.error("_plan attempt %d error: %s", attempt, exc)
-                break
+                # PRD-117: only permanent errors reach here — _stream() swallows
+                # transient errors and returns normally.  Exit immediately with a
+                # clear diagnostic instead of the generic "exhausted N attempts".
+                ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+                log.error("_plan permanent error on attempt %d: %s", attempt, exc)
+                return CodePlanState.FAILED
 
             # Exit takes priority — check before plan finalization.
             if exit_event.is_set():
@@ -413,8 +417,10 @@ class CodePlanRunner(BaseWorkflowRunner):
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as exc:
-                log.error("_execute attempt %d error: %s", attempt, exc)
-                break
+                # PRD-117: permanent error — exit immediately with clear reason.
+                ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+                log.error("_execute permanent error on attempt %d: %s", attempt, exc)
+                return CodePlanState.FAILED
 
             if execute_event.is_set():
                 ctx.execute_summary = execute_data.get("summary", "")
@@ -460,8 +466,10 @@ class CodePlanRunner(BaseWorkflowRunner):
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as exc:
-                log.error("_review attempt %d error: %s", attempt, exc)
-                break
+                # PRD-117: permanent error — exit immediately with clear reason.
+                ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+                log.error("_review permanent error on attempt %d: %s", attempt, exc)
+                return CodePlanState.FAILED
 
             if review_event.is_set():
                 action: str = review_data.get("action", "reject")

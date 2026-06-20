@@ -1233,6 +1233,42 @@ class WorkflowEntry:
 
 ---
 
+## 34. Permanent Error Early Exit for Workflow Phase Loops (PRD-117)
+
+HTTP 4xx errors (except 429) during a workflow phase exit immediately with a
+single clear diagnostic instead of retrying up to the maximum attempt cap.
+
+**Before:** `TransportError: 400 — model 'gpt-4o' not supported` appeared
+10 times followed by `code_plan failed: Plan phase exhausted 10 attempts`.
+
+**After:** One error event, immediate exit, TUI returns to idle.
+
+### How it works
+
+`_is_permanent_error(exc)` checks the HTTP status code on the exception and
+its chained causes.  `_stream()` re-raises permanent errors after emitting
+the TUI error event (the `finally` block still runs → `close_turn()` called).
+The phase loop's `except Exception` catches the re-raised error, sets
+`ctx.fail_reason` to the actual message, and returns `FAILED` immediately.
+
+Transient errors (5xx, network, timeouts, 429 rate-limit) continue to be
+swallowed by `_stream()` — phase loops still retry those normally.
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 34.1 | `_http_status_code(exc)` | Returns the HTTP status integer from `exc`, its `__cause__`, or `__context__`; `None` when absent. |
+| 34.2 | `_is_permanent_error(exc)` | `True` for 4xx (except 429); `False` for 5xx, no-status, 429. |
+| 34.3 | `_stream()` re-raises 4xx | Emits TUI error event then re-raises; `finally` still runs (`close_turn()` called). |
+| 34.4 | `_stream()` swallows 5xx | Transient errors are still swallowed; phase loops retry as before. |
+| 34.5 | `_plan()` exits on first 4xx | Returns `CodePlanState.FAILED` on attempt 1; `ctx.fail_reason` = exception message. |
+| 34.6 | `_execute()` exits on first 4xx | Same — returns `FAILED` immediately, not after exhausting 10 attempts. |
+| 34.7 | `_review()` exits on first 4xx | Same. |
+| 34.8 | 429 retried, not permanent | Rate-limit is treated as transient — phase loop continues. |
+| 34.9 | Single TUI error message | User sees one error event, not 10 identical ones. |
+| 34.10 | Clear `fail_reason` | `ctx.fail_reason` contains the exception type + message, not "exhausted N attempts". |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

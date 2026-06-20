@@ -17,6 +17,51 @@ from typing import TYPE_CHECKING, Any
 
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 
+
+# ── Permanent-error detection (PRD-117) ───────────────────────────────────────
+
+def _http_status_code(exc: BaseException) -> int | None:
+    """Return the HTTP status code carried by *exc*, or ``None``.
+
+    Checks the exception itself and then its chained ``__cause__`` /
+    ``__context__`` — necessary for SDK wrappers like ``TransportError``
+    that wrap an inner ``BadRequestError`` which holds the real status.
+    """
+    for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if candidate is None:
+            continue
+        code = getattr(candidate, "status_code", None)
+        if isinstance(code, int):
+            return code
+    return None
+
+
+def _is_permanent_error(exc: BaseException) -> bool:
+    """Return ``True`` for errors that will *never* succeed on retry.
+
+    HTTP 4xx responses (except 429 rate-limit) are structurally permanent:
+    the same request will always be rejected regardless of how many times
+    it is retried.  HTTP 5xx, network timeouts, and connection errors are
+    transient and worth retrying.
+
+    Parameters
+    ----------
+    exc:
+        The exception raised by the LLM transport or SDK.
+
+    Returns
+    -------
+    bool
+        ``True``  → exit the phase immediately, do not retry.
+        ``False`` → swallow and let the phase loop decide.
+    """
+    status = _http_status_code(exc)
+    if status is None:
+        return False
+    # 429 is rate-limited — transient, worth waiting and retrying.
+    # All other 4xx are client errors (bad model name, bad API key, …) — permanent.
+    return 400 <= status < 500 and status != 429
+
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
@@ -418,6 +463,12 @@ class AgentTurnRunner:
                 ctx.conv_store.append_event("error", {
                     "message": f"{type(exc).__name__}: {exc}"
                 })
+            if _is_permanent_error(exc):
+                # PRD-117: HTTP 4xx errors are structurally permanent — retrying
+                # will always produce the same failure.  Re-raise so the phase
+                # loop can exit immediately instead of exhausting its retry cap.
+                # _stream()'s finally block still runs → close_turn() is called.
+                raise
         finally:
             self._turn_active = False
             if ctx.conv_store:
