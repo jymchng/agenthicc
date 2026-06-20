@@ -861,6 +861,50 @@ http_timeout_s = 30.0   # 0.0 = no read timeout
 
 ---
 
+## 26. Case-Insensitive @Mention Matching (PRD-109)
+
+All `@mention` candidates are matched case-insensitively using `str.casefold()`.
+Original filesystem casing is always preserved in display and insertion.
+
+### Matching engine — `mentions/matcher.py`
+
+`filter_and_rank(query, items)` is the single implementation used by all
+mention providers.  Ranking tiers (lower = better):
+
+| Rank | Tier | Example: `@read` → `docs/README.md` |
+|---|---|---|
+| 0 | Exact match | query == filename or full path |
+| 1 | Filename prefix | `README.md` starts with `read` |
+| 2 | Path-segment prefix | any segment (`README.md`) starts with query |
+| 3 | Filename substring | query appears inside the filename |
+| 4 | Path substring | query appears anywhere in the full path |
+| 5 | Fuzzy | `rdm` → `README.md` (chars in order) |
+
+Within each tier results are sorted alphabetically by casefolded display string
+(deterministic ordering).
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 26.1 | Case-insensitive prefix | `@re`, `@RE`, `@Read` all match `README.md`. |
+| 26.2 | Case preserved in display | Display and insertion always use actual filesystem casing. |
+| 26.3 | Path-segment matching | `@read` matches `docs/README.md` because `README.md` is a path segment. |
+| 26.4 | Substring matching | `@note` matches `release_notes.md`. |
+| 26.5 | Fuzzy matching | `@rdm` matches `README.md` (sequential character containment in filename). |
+| 26.6 | Ranking order | Exact → filename prefix → segment prefix → filename substr → path substr → fuzzy. |
+| 26.7 | Deterministic | Identical query produces identical ordering. |
+| 26.8 | `str.casefold()` not `str.lower()` | Unicode-safe normalisation throughout. |
+| 26.9 | Cross-platform | Identical results on Linux, macOS, Windows regardless of filesystem semantics. |
+| 26.10 | Directory matching | `@doc` matches `docs/`, `Documentation.md`, `docstrings.py`. |
+| 26.11 | Centralised engine | `mentions/matcher.py` is the single matching implementation; `at_mention.py` and all future providers call `filter_and_rank()`. |
+| 26.12 | Candidate pool | Top-level entries **and** their immediate children are all added to the pool before filtering, enabling path-segment matching without recursive crawl. |
+| 26.13 | Performance — ≤ 10 ms | Matching completes within 10 ms for repositories containing ≤ 10,000 candidates. No visible UI lag while typing. |
+| 26.14 | Normalisation is O(1) per call | `casefold()` is applied at comparison time, not pre-indexed. No per-keystroke re-normalisation overhead beyond the string comparison itself. |
+| 26.15 | No slash-command regression | Skills served via `SlashCommandTrigger` use a separate registry path and are unaffected by the `@mention` matcher change. |
+| 26.16 | UX — prefix before substring | `@read` shows `README.md` above `release_notes.md`; filename-prefix results always appear before substring results. |
+| 26.17 | UX — `@rdm` fuzzy matches `README.md` | Sequential character containment (`r` … `d` … `m` all present in order inside `readme.md`) returns a result. Characters not in order do not match. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.
