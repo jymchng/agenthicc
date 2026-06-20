@@ -738,6 +738,8 @@ else:                 → PosixBackend
 | 22.16 | Lone ESC preserved | `\x1b` with no following characters (`msvcrt.kbhit()` = False) returns `Key.ESC`, not `Key.SHIFT_TAB`. |
 | 22.17 | VT arrow keys on ConPTY | `\x1b[A/B/C/D` → `UP/DOWN/LEFT/RIGHT`; `\x1b[H/F` → `HOME/END` via `_CSI_KEYS` table. |
 | 22.18 | ConPTY detection mechanism | `msvcrt.kbhit()` is used (not `select.select`, which is unavailable for Windows console handles) to detect whether more characters follow `\x1b`. |
+| 22.19 | Input bar visible on startup | `WindowsBackend.enter_raw_mode()` writes `\x1b[?25l\x1b[?2004h` and calls `sys.stdout.flush()` before yielding. This drains Rich's buffered Live block (including the `❯ ▌` input bar) from the OS stdout buffer to the terminal immediately — matching the side-effect of `cbreak_reader.raw_mode()`'s `sys.stdout.flush()` on POSIX. Without this, the input bar is rendered but invisible until the first keypress. |
+| 22.20 | Terminal restored on Windows exit | `enter_raw_mode()`'s `finally` block and `restore()` write `\x1b[m\x1b[?2004l\x1b[?25h` (reset SGR, disable bracketed paste, show cursor). Harmlessly ignored by legacy CMD/PowerShell; honoured by ConPTY terminals. |
 
 ---
 

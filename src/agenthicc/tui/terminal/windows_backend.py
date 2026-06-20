@@ -158,8 +158,43 @@ class WindowsBackend:
 
     @contextmanager
     def enter_raw_mode(self) -> Generator[None, None, None]:
-        """No-op: ``msvcrt.getwch()`` already bypasses line buffering."""
-        yield
+        """Flush stdout so the initial Live block is immediately visible.
+
+        On POSIX, ``cbreak_reader.raw_mode()`` writes ANSI escape codes and
+        calls ``sys.stdout.flush()`` before yielding.  That flush has a critical
+        side effect: it drains whatever Rich had queued in the OS stdout buffer
+        from ``live.start()``, making the input bar (``❯ ▌``) immediately
+        visible on screen.
+
+        Without this flush, the Windows backend's no-op ``enter_raw_mode()``
+        leaves Rich's rendered content sitting in the OS output buffer until the
+        first keypress — the input bar is present but invisible.
+
+        ConPTY environments (Windows Terminal, VS Code, new PowerShell) honour
+        the VT sequences; legacy CMD/PowerShell ignores them harmlessly.
+        """
+        sys.stdout.write(
+            "\x1b[?25l"    # hide OS cursor (matches POSIX raw_mode behaviour)
+            "\x1b[?2004h"  # enable bracketed paste
+        )
+        sys.stdout.flush()  # ← flushes Rich's buffered Live block to the terminal
+        try:
+            yield
+        finally:
+            try:
+                sys.stdout.write(
+                    "\x1b[m"       # reset SGR attributes
+                    "\x1b[?2004l"  # disable bracketed paste
+                    "\x1b[?25h"    # restore cursor visibility
+                )
+                sys.stdout.flush()
+            except Exception:  # noqa: BLE001
+                pass
 
     def restore(self) -> None:
-        """No-op: nothing was configured, nothing to restore."""
+        """Best-effort terminal restore (cursor + paste mode)."""
+        try:
+            sys.stdout.write("\x1b[m\x1b[?2004l\x1b[?25h")
+            sys.stdout.flush()
+        except Exception:  # noqa: BLE001
+            pass
