@@ -38,6 +38,21 @@ def _backend():
     return GraphApiOutlookBackend(token=os.getenv("MSGRAPH_TOKEN", ""))
 
 
+async def _safe_call(coro):
+    """Wrap any backend coroutine; convert network errors to a clean error dict.
+
+    Prevents _OutlookNetworkError (wrapping ReadTimeout / ConnectTimeout from
+    Graph API calls) from propagating to the agent turn layer and ending the
+    turn.  The agent receives {"ok": False, "error": "...", "recoverable": True}
+    and can decide how to proceed.
+    """
+    from agenthicc.tools.outlook import _OutlookNetworkError  # noqa: PLC0415
+    try:
+        return await coro
+    except _OutlookNetworkError as exc:
+        return {"ok": False, "error": str(exc), "recoverable": True}
+
+
 @tool_network_read
 @tool()
 async def list_emails(
@@ -52,7 +67,7 @@ async def list_emails(
         n: Maximum number of emails to return (default 20).
         unread_only: Only return unread messages when True.
     """
-    return await _backend().list_emails(folder=folder, n=n, unread_only=unread_only)
+    return await _safe_call(_backend().list_emails(folder=folder, n=n, unread_only=unread_only))
 
 
 @tool_network_read
@@ -63,7 +78,7 @@ async def read_email(email_id: str) -> dict:
     Args:
         email_id: The email identifier returned by list_emails or search_emails.
     """
-    return await _backend().read_email(email_id=email_id)
+    return await _safe_call(_backend().read_email(email_id=email_id))
 
 
 @tool_network_write
@@ -84,8 +99,8 @@ async def send_email(
         cc: Optional list of CC email addresses.
         attachments: Optional list of file paths to attach.
     """
-    return await _backend().send_email(
-        to=to, subject=subject, body=body, cc=cc, attachments=attachments
+    return await _safe_call(
+        _backend().send_email(to=to, subject=subject, body=body, cc=cc, attachments=attachments)
     )
 
 
@@ -103,7 +118,7 @@ async def reply_email(
         body: Reply body text.
         reply_all: If True, reply to all recipients (default False).
     """
-    return await _backend().reply_email(email_id=email_id, body=body, reply_all=reply_all)
+    return await _safe_call(_backend().reply_email(email_id=email_id, body=body, reply_all=reply_all))
 
 
 @tool_network_search
@@ -120,7 +135,7 @@ async def search_emails(
         folder: Folder to search within (default: Inbox).
         n: Maximum number of results to return (default 20).
     """
-    return await _backend().search_emails(query=query, folder=folder, n=n)
+    return await _safe_call(_backend().search_emails(query=query, folder=folder, n=n))
 
 
 @tool_network_write
@@ -132,14 +147,14 @@ async def move_email(email_id: str, destination: str) -> dict:
         email_id: The email identifier to move.
         destination: Name of the destination folder (e.g. "Archive").
     """
-    return await _backend().move_email(email_id=email_id, destination=destination)
+    return await _safe_call(_backend().move_email(email_id=email_id, destination=destination))
 
 
 @tool_network_read
 @tool()
 async def list_folders() -> list:
     """List all available Outlook mail folders."""
-    return await _backend().list_folders()
+    return await _safe_call(_backend().list_folders())
 
 
 @tool_network_read
@@ -151,7 +166,7 @@ async def calendar_events(start_date: str, end_date: str) -> list:
         start_date: Start of the range in ISO-8601 format (e.g. "2026-06-01").
         end_date: End of the range in ISO-8601 format (e.g. "2026-06-30").
     """
-    return await _backend().calendar_events(start_date=start_date, end_date=end_date)
+    return await _safe_call(_backend().calendar_events(start_date=start_date, end_date=end_date))
 
 
 @tool_network_write
@@ -172,8 +187,8 @@ async def create_event(
         attendees: Optional list of attendee email addresses.
         body: Optional event description / agenda.
     """
-    return await _backend().create_event(
-        subject=subject, start=start, end=end, attendees=attendees, body=body
+    return await _safe_call(
+        _backend().create_event(subject=subject, start=start, end=end, attendees=attendees, body=body)
     )
 
 

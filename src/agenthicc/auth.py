@@ -31,6 +31,14 @@ class NotLoggedInError(Exception):
     """Raised when an authenticated operation is attempted without a token."""
 
 
+class AuthNetworkError(Exception):
+    """Raised when an OAuth HTTP call fails due to a network or timeout error.
+
+    Callers (CLI login command, token refresh) catch this and display a
+    human-readable message rather than a raw httpx traceback.
+    """
+
+
 @dataclass
 class TokenBundle:
     access_token: str
@@ -193,17 +201,29 @@ class AuthClient:
     async def _exchange_code(
         self, code: str, code_verifier: str, redirect_uri: str
     ) -> TokenBundle:
-        import httpx
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(AGENTHICC_TOKEN_URL, data={
-                "grant_type": "authorization_code",
-                "client_id": AGENTHICC_CLIENT_ID,
-                "code": code,
-                "code_verifier": code_verifier,
-                "redirect_uri": redirect_uri,
-            })
-            resp.raise_for_status()
-            data = resp.json()
+        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+        import httpx  # noqa: PLC0415
+        try:
+            async with agenthicc_http_client(timeout=15.0) as client:
+                resp = await client.post(AGENTHICC_TOKEN_URL, data={
+                    "grant_type": "authorization_code",
+                    "client_id": AGENTHICC_CLIENT_ID,
+                    "code": code,
+                    "code_verifier": code_verifier,
+                    "redirect_uri": redirect_uri,
+                })
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.TimeoutException as exc:
+            raise AuthNetworkError(
+                f"Auth server timed out ({type(exc).__name__}). "
+                "Check your connection and try again."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise AuthNetworkError(
+                f"Auth request failed ({type(exc).__name__}: {exc}). "
+                "Check your connection and try again."
+            ) from exc
         return TokenBundle(
             access_token=data["access_token"],
             refresh_token=data["refresh_token"],
@@ -214,15 +234,27 @@ class AuthClient:
         )
 
     async def _refresh(self, bundle: TokenBundle) -> TokenBundle:
-        import httpx
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(AGENTHICC_TOKEN_URL, data={
-                "grant_type": "refresh_token",
-                "client_id": AGENTHICC_CLIENT_ID,
-                "refresh_token": bundle.refresh_token,
-            })
-            resp.raise_for_status()
-            data = resp.json()
+        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+        import httpx  # noqa: PLC0415
+        try:
+            async with agenthicc_http_client(timeout=15.0) as client:
+                resp = await client.post(AGENTHICC_TOKEN_URL, data={
+                    "grant_type": "refresh_token",
+                    "client_id": AGENTHICC_CLIENT_ID,
+                    "refresh_token": bundle.refresh_token,
+                })
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.TimeoutException as exc:
+            raise AuthNetworkError(
+                f"Token refresh timed out ({type(exc).__name__}). "
+                "Check your connection and try again."
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise AuthNetworkError(
+                f"Token refresh failed ({type(exc).__name__}: {exc}). "
+                "Check your connection and try again."
+            ) from exc
         return TokenBundle(
             access_token=data["access_token"],
             refresh_token=data.get("refresh_token", bundle.refresh_token),

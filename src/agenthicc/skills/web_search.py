@@ -36,16 +36,23 @@ class SearchWebTool(Tool):
         return {"ok": False, "error": f"Unknown search engine: {self._engine!r}"}
 
     async def _brave_search(self, query: str, n: int) -> dict:
-        import httpx  # noqa: PLC0415
-        async with httpx.AsyncClient() as client:
-            r = await client.get(
-                "https://api.search.brave.com/res/v1/web/search",
-                params={"q": query, "count": n},
-                headers={"Accept": "application/json", "X-Subscription-Token": self._api_key},
-                timeout=10.0,
-            )
-            r.raise_for_status()
-            data = r.json()
+        from agenthicc.tools.http import agenthicc_http_client, is_network_error  # noqa: PLC0415
+        try:
+            async with agenthicc_http_client() as client:
+                r = await client.get(
+                    "https://api.search.brave.com/res/v1/web/search",
+                    params={"q": query, "count": n},
+                    headers={"Accept": "application/json",
+                             "X-Subscription-Token": self._api_key},
+                )
+                r.raise_for_status()
+                data = r.json()
+        except Exception as exc:
+            if is_network_error(exc):
+                return {"ok": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "recoverable": True}
+            raise
         results = [
             {"title": item.get("title", ""), "url": item.get("url", ""),
              "description": item.get("description", "")}
@@ -67,15 +74,21 @@ class FetchPageTool(Tool):
     }
 
     async def execute(self, args: dict, context: dict) -> Any:
-        import httpx  # noqa: PLC0415
+        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
         url = args["url"]
         timeout = float(args.get("timeout", 15.0))
         try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                r = await client.get(url, timeout=timeout, headers={"User-Agent": "agenthicc/1.0"})
+            async with agenthicc_http_client(
+                timeout=timeout, follow_redirects=True
+            ) as client:
+                r = await client.get(url, headers={"User-Agent": "agenthicc/1.0"})
                 r.raise_for_status()
             text = re.sub(r"<[^>]+>", " ", r.text)
             text = re.sub(r"\s+", " ", text).strip()
             return {"ok": True, "url": url, "content": text[:8000], "status_code": r.status_code}
         except Exception as exc:
-            return {"ok": False, "url": url, "error": str(exc)}
+            # Always include the exception class name so the agent can identify
+            # the failure type (e.g. ReadTimeout vs HTTPStatusError).
+            return {"ok": False, "url": url,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "recoverable": True}

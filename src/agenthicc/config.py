@@ -144,6 +144,10 @@ class ToolSettings:
     allowed: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
     max_live_tool_calls: int = 5
+    http_timeout_s: float = 30.0
+    """Read timeout in seconds for all outbound HTTP tool calls (PRD-108).
+    Set via ``[tools] http_timeout_s = N`` in agenthicc.toml.
+    Use ``0.0`` to disable the read timeout (unbounded)."""
     """Maximum tool completions rendered individually in the scroll buffer
     before collapsing the rest into a live "…and N more tool calls" indicator.
     Set via [tools] max_live_tool_calls = N in agenthicc.toml."""

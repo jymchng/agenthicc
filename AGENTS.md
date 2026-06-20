@@ -36,6 +36,7 @@ model = "claude-sonnet-4-6"
 | `src/agenthicc/workflow/executor.py` | `WorkflowExecutor`: drives a `Workflow` through its DAG; re-dispatches newly ready nodes |
 | `src/agenthicc/workflow/modify.py` | `WorkflowModifier`: thin wrapper around `CommunicationTools.workflow_modify` with pre-validation |
 | `src/agenthicc/tools/base.py` | `ToolBase` ABC; `ToolResult` dataclass (`ok`, `value`, `error`, `duration_ms`) |
+| `src/agenthicc/tools/http.py` | `agenthicc_http_client()` — shared async HTTP client; `configure(timeout_s)` — set at startup from `ToolSettings.http_timeout_s`; `is_network_error(exc)` — classifies network/timeout exceptions |
 | `src/agenthicc/tools/executor.py` | `ToolExecutor`: name lookup, sandbox call, hook orchestration, `ToolCallStarted` / `ToolCallComplete` events |
 | `src/agenthicc/tools/hooks.py` | `LifecycleHook` ABC; `HookRegistry` (`(entity_type, stage)` → list); `HookRunner` (`asyncio.gather`); `LaurenToolHookAdapter`; `load_hook_from_dotpath` |
 | `src/agenthicc/tools/sandbox.py` | `ToolSandbox`: `ResourceLimits`; CPU/memory enforcement (`resource.setrlimit`); path allow-list check |
@@ -314,6 +315,15 @@ If you change a `CommunicationTools` method signature, update:
 1. `runtime/comm_tools.py` — the method itself
 2. `llms-full.txt` — the method's section
 3. Any tests in `tests/unit/test_comm_tools.py` that call the old signature
+
+## HTTP tool safety rules (PRD-108)
+
+- **Never** use `httpx.AsyncClient()` directly in a tool — always use `agenthicc_http_client()` from `tools/http.py`.
+- **All tools** that make HTTP calls must catch network errors with `is_network_error(exc)` and return `{"ok": False, "error": f"{type(exc).__name__}: {exc}", "recoverable": True}` — never let a `ReadTimeout` propagate to `_stream()`.
+- **Outlook tools** raise `_OutlookNetworkError` in `_get()`/`_post()`; agent_tools.py catches it via `_safe_call()`.
+- **Auth calls** (`_exchange_code`, `_refresh`) raise `AuthNetworkError` on timeout — callers must catch it and show a human-readable message.
+- **Timeout default**: `ToolSettings.http_timeout_s = 30.0`; `_build_session_context()` calls `tools.http.configure()` after loading config.
+- **Connect timeout**: always 10 s regardless of read timeout — set inside `agenthicc_http_client()`.
 
 ## Terminal backend rules (PRD-105/106)
 

@@ -13,6 +13,14 @@ __all__ = ["GraphApiOutlookBackend", "OutlookBackend", "OutlookToolKit"]
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
+class _OutlookNetworkError(Exception):
+    """Raised by _get()/_post() when a network/timeout error occurs.
+
+    Caught by OutlookToolKit agent tools to return {"ok": False, ...} instead
+    of propagating to the agent turn layer.
+    """
+
+
 class OutlookBackend(abc.ABC):
     @abc.abstractmethod
     async def list_emails(self, folder: str, n: int, unread_only: bool) -> list[dict]: ...
@@ -44,18 +52,32 @@ class GraphApiOutlookBackend(OutlookBackend):
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
 
     async def _get(self, path: str) -> Any:
-        import httpx  # noqa: PLC0415
-        async with httpx.AsyncClient() as c:
-            r = await c.get(f"{GRAPH_BASE}{path}", headers=self._headers(), timeout=15.0)
-            r.raise_for_status()
-            return r.json()
+        from agenthicc.tools.http import agenthicc_http_client, is_network_error  # noqa: PLC0415
+        try:
+            async with agenthicc_http_client() as c:
+                r = await c.get(f"{GRAPH_BASE}{path}", headers=self._headers())
+                r.raise_for_status()
+                return r.json()
+        except Exception as exc:
+            if is_network_error(exc):
+                raise _OutlookNetworkError(
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            raise
 
     async def _post(self, path: str, body: dict) -> Any:
-        import httpx  # noqa: PLC0415
-        async with httpx.AsyncClient() as c:
-            r = await c.post(f"{GRAPH_BASE}{path}", json=body, headers=self._headers(), timeout=15.0)
-            r.raise_for_status()
-            return r.json() if r.content else {}
+        from agenthicc.tools.http import agenthicc_http_client, is_network_error  # noqa: PLC0415
+        try:
+            async with agenthicc_http_client() as c:
+                r = await c.post(f"{GRAPH_BASE}{path}", json=body, headers=self._headers())
+                r.raise_for_status()
+                return r.json() if r.content else {}
+        except Exception as exc:
+            if is_network_error(exc):
+                raise _OutlookNetworkError(
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            raise
 
     async def list_emails(self, folder: str = "Inbox", n: int = 20, unread_only: bool = False) -> list[dict]:
         params = f"$top={n}&$select=id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview"

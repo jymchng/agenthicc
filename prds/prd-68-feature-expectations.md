@@ -818,6 +818,47 @@ now thin wrappers that call `close_turn()`.
 
 ---
 
+## 25. HTTP Timeout Safety — No ReadTimeout Kills a Turn (PRD-108)
+
+Network errors from tool HTTP calls return a clean error dict to the agent
+instead of propagating to the agent turn layer and ending the turn.
+
+### Tools affected
+
+| Tool | Endpoint | Error boundary |
+|---|---|---|
+| `SearchWebTool` (`search_web`) | `api.search.brave.com` | `try/except` in `_brave_search()` → `{"ok": False, "recoverable": True}` |
+| All Outlook tools | `graph.microsoft.com` | `_get()`/`_post()` raise `_OutlookNetworkError`; `_safe_call()` in `agent_tools.py` converts to dict |
+| `FetchPageTool` (`fetch_page`) | arbitrary URLs | existing `try/except` updated to include exception class name |
+| Auth OAuth calls | `agenthicc.ai/oauth/token` | `AuthNetworkError` with human-readable message; never a raw traceback |
+
+### Shared HTTP client
+
+All tool HTTP calls go through `agenthicc.tools.http.agenthicc_http_client()`.
+Timeout is configured once at session startup from `[tools] http_timeout_s`.
+
+```toml
+[tools]
+http_timeout_s = 30.0   # 0.0 = no read timeout
+```
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 25.1 | Shared client | All tool HTTP calls use `agenthicc_http_client()` — no bare `httpx.AsyncClient()` in tools. |
+| 25.2 | Configurable timeout | `ToolSettings.http_timeout_s = 30.0` (default); overridable via `[tools]` TOML. |
+| 25.3 | Connect timeout always bounded | Connect timeout is always 10 s regardless of read timeout. |
+| 25.4 | Zero timeout = unbounded | `http_timeout_s = 0.0` → `httpx.Timeout(None, connect=10)` (no read limit). |
+| 25.5 | `is_network_error()` classifier | Returns True for `httpx.TimeoutException`, `httpx.HTTPError`, `TimeoutError`, `ConnectionError`, botocore errors. |
+| 25.6 | `SearchWebTool` never propagates | `ReadTimeout` / `ConnectTimeout` from Brave API returns `{"ok": False, "recoverable": True}`. |
+| 25.7 | Outlook tools never propagate | `_get()`/`_post()` raise `_OutlookNetworkError`; `_safe_call()` converts to error dict. |
+| 25.8 | `FetchPageTool` error includes class name | `{"ok": False, "error": "ReadTimeout: ...", "recoverable": True}` — class name always present. |
+| 25.9 | Auth `AuthNetworkError` | `_exchange_code()` and `_refresh()` raise `AuthNetworkError` on timeout; never a bare `ReadTimeout`. |
+| 25.10 | Auth error is human-readable | `AuthNetworkError` message includes the exception class name AND advice to check the connection. |
+| 25.11 | Non-network errors still propagate | `ValueError`, `KeyError`, etc. from tools are not caught by network boundaries — they propagate normally. |
+| 25.12 | `configure()` called at startup | `_build_session_context()` calls `tools.http.configure(cfg.tools.http_timeout_s)` after `load_config()`. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

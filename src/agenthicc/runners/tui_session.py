@@ -146,6 +146,11 @@ async def _build_session_context(
 
     # ── config / LLM ─────────────────────────────────────────────────────────
     cfg = load_config(cli_overrides=cli_overrides or [])
+
+    # PRD-108: configure shared HTTP client timeout from config before any tool runs.
+    from agenthicc.tools.http import configure as _configure_http  # noqa: PLC0415
+    _configure_http(cfg.tools.http_timeout_s)
+
     console = Console(highlight=False, markup=True, force_terminal=True)
     try:
         llm_cfg = build_llm_config(cfg.execution)
