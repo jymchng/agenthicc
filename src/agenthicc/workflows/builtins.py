@@ -101,6 +101,18 @@ class CodePlan(WorkflowPlugin):
     ]
 
 
+    @classmethod
+    def runner_factory(
+        cls,
+        defn: WorkflowPlugin,  # type: ignore[override]
+        config: object,
+        mode_manager: object,
+    ) -> object:
+        """Return a CodePlanRunner — ignores defn; uses its own state machine."""
+        from agenthicc.workflows.code_plan import CodePlanRunner  # noqa: PLC0415
+        return CodePlanRunner(config, mode_manager)  # type: ignore[return-value]
+
+
 class ReviewOnly(WorkflowPlugin):
     name          = "review_only"
     description   = "Read-only review pass — inspect and provide structured feedback."

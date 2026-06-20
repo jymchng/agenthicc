@@ -557,18 +557,13 @@ class TUISession:
 
         async def _run_inner() -> None:
             if _wf_defn is not None:
-                import dataclasses as _dc                                      # noqa: PLC0415
-                from agenthicc.workflows.code_plan import CodePlanRunner       # noqa: PLC0415
-                from agenthicc.workflows.runner import WorkflowRunner           # noqa: PLC0415
+                import dataclasses as _dc  # noqa: PLC0415
                 _wf_config = _dc.replace(
                     self._wf_config_base, completed_turns=self._turn_count,
                 )
-                # code_plan uses the dedicated state-machine runner;
-                # all other workflows use the generic runner.
-                if _wf_defn.name == "code_plan":
-                    _wf_runner = CodePlanRunner(_wf_config, ctx.mode_manager)
-                else:
-                    _wf_runner = WorkflowRunner(_wf_defn, _wf_config, ctx.mode_manager)
+                # Each WorkflowDefinition carries its own runner_factory (PRD-110).
+                # No name-based branching here — the plugin owns the runner choice.
+                _wf_runner = _wf_defn.build_runner(_wf_config, ctx.mode_manager)
                 await _wf_runner.run(text)
                 # PRD-89: exit workflow-bound mode after successful completion
                 _wf_result = ctx.app_state.workflow_run()
@@ -732,17 +727,13 @@ class TUISession:
 
     async def _resume_workflow_task(self, wf_defn: WorkflowDefinition, context: WorkflowContext) -> None:
         """Resume a WorkflowRunner with error handling matching agent_task_body."""
-        from agenthicc.tui.input.unified_session import InputMode        # noqa: PLC0415
-        from agenthicc.workflows.code_plan import CodePlanRunner          # noqa: PLC0415
-        from agenthicc.workflows.runner import WorkflowRunner              # noqa: PLC0415
+        from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
         ctx = self._ctx
         self._input_session.set_mode(InputMode.STREAMING)
         ctx.approval_svc.reset_turn_memory()
         try:
-            if wf_defn.name == "code_plan":
-                runner = CodePlanRunner(self._wf_config_base, ctx.mode_manager)
-            else:
-                runner = WorkflowRunner(wf_defn, self._wf_config_base, ctx.mode_manager)
+            # Each WorkflowDefinition carries its own runner_factory (PRD-110).
+            runner = wf_defn.build_runner(self._wf_config_base, ctx.mode_manager)
             await runner.resume(context)
             # PRD-89: exit workflow-bound mode after completion
             _wf_result = ctx.app_state.workflow_run()

@@ -905,6 +905,46 @@ Within each tier results are sorted alphabetically by casefolded display string
 
 ---
 
+## 27. Workflow Runner Dispatch via Factory Method (PRD-110)
+
+Runner selection for each workflow is owned by the workflow plugin itself,
+not by the caller.  `tui_session.py` calls `defn.build_runner()` and receives
+the correct runner — no branching on workflow name.
+
+### Mechanism
+
+`WorkflowPlugin.runner_factory(cls, defn, config, mode_manager)` is a
+classmethod that returns the appropriate `BaseWorkflowRunner`.  The default
+implementation returns `WorkflowRunner`; `CodePlan` overrides it to return
+`CodePlanRunner`.  `WorkflowPlugin.to_definition()` stores the bound
+classmethod on `WorkflowDefinition.runner_factory` so the factory travels with
+the definition through the registry.
+
+```python
+# Before — hardcoded name check duplicated in two places:
+if wf_defn.name == "code_plan":
+    runner = CodePlanRunner(config, mode_manager)
+else:
+    runner = WorkflowRunner(wf_defn, config, mode_manager)
+
+# After — single call, no name check:
+runner = wf_defn.build_runner(config, mode_manager)
+```
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 27.1 | `runner_factory` field | `WorkflowDefinition` has a `runner_factory: Callable | None` field (compare=False, hash=False). |
+| 27.2 | `build_runner()` method | `WorkflowDefinition.build_runner(config, mode_manager)` delegates to `runner_factory` or falls back to `WorkflowRunner`. |
+| 27.3 | Default factory | `WorkflowPlugin.runner_factory()` returns `WorkflowRunner(defn, config, mode_manager)`. |
+| 27.4 | `CodePlan` override | `CodePlan.runner_factory()` returns `CodePlanRunner(config, mode_manager)` — ignores `defn` by design. |
+| 27.5 | `to_definition()` carries factory | `WorkflowPlugin.to_definition()` stores `type(self).runner_factory` on the `WorkflowDefinition`. |
+| 27.6 | No name-based dispatch | `tui_session.py` contains no `if … name == "code_plan":` runner-selection branch. |
+| 27.7 | No `CodePlanRunner` import in `tui_session` | Dispatch imports are gone; the factory is resolved inside `build_runner()`. |
+| 27.8 | Third-party extensibility | A `WorkflowPlugin` subclass with a custom `runner_factory()` override automatically uses its own runner without any changes to `tui_session.py`. |
+| 27.9 | All builtins carry factories | Every `WorkflowDefinition` returned by `load_builtin_workflows()` has a non-None `runner_factory`. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

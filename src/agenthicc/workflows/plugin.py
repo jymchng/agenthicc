@@ -12,6 +12,12 @@ import dataclasses
 import re
 import time
 from dataclasses import field
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from agenthicc.workflows.base import BaseWorkflowRunner
+    from agenthicc.workflows.config import WorkflowConfig
+    from agenthicc.tui.runtime.mode_manager import ModeManager
 
 
 # ── PhaseRole — typed string constants matching builtin agent type names ──────
@@ -145,6 +151,33 @@ class WorkflowDefinition:
     Set to a positive integer to add an opt-in safety net for workflows that
     should not loop indefinitely (e.g. a workflow with no per-phase max_iterations)."""
 
+    runner_factory: Callable[..., BaseWorkflowRunner] | None = dataclasses.field(
+        default=None, repr=False, compare=False, hash=False,
+    )
+    """Callable that constructs the runner for this workflow (PRD-110).
+
+    Signature: ``(defn, config, mode_manager) -> BaseWorkflowRunner``.
+    ``None`` means fall back to the generic ``WorkflowRunner``.
+    Populated automatically by ``WorkflowPlugin.to_definition()`` from the
+    plugin class's ``runner_factory`` classmethod.
+    """
+
+    def build_runner(
+        self,
+        config: WorkflowConfig,
+        mode_manager: ModeManager | None = None,
+    ) -> BaseWorkflowRunner:
+        """Construct and return the runner appropriate for this workflow.
+
+        Delegates to the stored ``runner_factory`` callable when present;
+        falls back to the generic ``WorkflowRunner`` otherwise.  This is the
+        single dispatch point — callers never branch on workflow name.
+        """
+        if self.runner_factory is not None:
+            return self.runner_factory(self, config, mode_manager)
+        from agenthicc.workflows.runner import WorkflowRunner  # noqa: PLC0415
+        return WorkflowRunner(self, config, mode_manager)
+
     def get_phase(self, name: str) -> PhaseSpec | None:
         for phase in self.phases:
             if phase.name == name:
@@ -260,6 +293,22 @@ class WorkflowPlugin(abc.ABC):
     mode_bindings: list[str]      = []
     phases:        list[PhaseSpec] = []
 
+    @classmethod
+    def runner_factory(
+        cls,
+        defn: WorkflowDefinition,
+        config: WorkflowConfig,
+        mode_manager: ModeManager | None,
+    ) -> BaseWorkflowRunner:
+        """Build and return the runner for this workflow type (PRD-110).
+
+        Default implementation returns the generic ``WorkflowRunner``.
+        Override in subclasses that need a specialized runner (e.g. a
+        state-machine runner that ignores the phase graph).
+        """
+        from agenthicc.workflows.runner import WorkflowRunner  # noqa: PLC0415
+        return WorkflowRunner(defn, config, mode_manager)
+
     def to_definition(
         self, source: str = "user", path: str | None = None,
     ) -> WorkflowDefinition:
@@ -270,6 +319,7 @@ class WorkflowPlugin(abc.ABC):
             mode_bindings=tuple(self.mode_bindings),
             source=source,
             path=path,
+            runner_factory=type(self).runner_factory,  # bind class's factory
         )
 
     def determine_transition(
