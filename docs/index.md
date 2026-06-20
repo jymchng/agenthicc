@@ -149,6 +149,7 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 - [Getting Started](guides/quickstart.md) — install, first run, concepts
 - [TUI Guide](guides/tui.md) — full layout reference, key bindings, slash commands
 - [Writing Agents](guides/agents.md) — CommunicationTools, tool-only rule, examples
+- [Writing Workflows](guides/workflows.md) — PhaseSpec, agent types, params, troubleshooting, ergonomics findings
 - [Memory & Artifacts](guides/memory.md) — three-tier memory, TTL, artifact sharing
 - [Lifecycle Hooks](guides/hooks.md) — LifecycleHook ABC, HookRunner, recovery
 - [Configuration](guides/configuration.md) — complete TOML reference
