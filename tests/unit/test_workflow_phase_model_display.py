@@ -256,8 +256,12 @@ def test_status_component_uses_session_model_when_workflow_complete() -> None:
     state.conversation._thinking_frame = 0
     state.conversation._flower_frame = 0
 
+    from rich.console import Console
     comp = StatusComponent(state)
-    rendered_str = str(comp.render())
+    console = Console(highlight=False, markup=False, no_color=True, width=120)
+    with console.capture() as cap:
+        console.print(comp.render())
+    rendered_str = cap.get()
 
     # Workflow complete — session model shown, not phase model
     assert "claude-opus" in rendered_str

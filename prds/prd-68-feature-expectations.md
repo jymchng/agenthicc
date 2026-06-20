@@ -1269,6 +1269,31 @@ swallowed by `_stream()` — phase loops still retry those normally.
 
 ---
 
+## 35. Per-Phase Model Display in Status Bar (PRD-118)
+
+When a workflow phase runs with a per-phase model override, the status bar
+line 2 shows the **actual model in use** instead of the global session model.
+The display reverts automatically when the workflow ends — no cleanup needed.
+
+```
+# During execute phase with execute_model = "deepseek-v4-flash":
+deepseek-v4-flash           ← actual phase model
+
+# After workflow completes:
+openai/deepseek-v4-flash    ← session model restored
+```
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 35.1 | `WorkflowRun.current_phase_model: str` | New field, defaults to `""`. Non-empty when phase uses a model override. |
+| 35.2 | `update_workflow_phase(model_id=...)` stored | Both the `dataclasses.replace` and fresh-`WorkflowRun` branches write `model_id` to `current_phase_model`. |
+| 35.3 | Empty `model_id` stored as `""` | No override; status bar shows session model. |
+| 35.4 | Status bar line 2 — phase model wins | When `wf_run.status == "running"` and `current_phase_model != ""`, line 2 shows `current_phase_model`. |
+| 35.5 | Status bar line 2 — session model reverts | When run ends (`status != "running"`) or `current_phase_model == ""`, line 2 shows `conv.model_name()`. |
+| 35.6 | No `Any` introduced | `current_phase_model` is typed `str`; no type regressions. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.
