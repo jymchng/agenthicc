@@ -1,4 +1,4 @@
-"""Integration tests: WorkflowRunner with mocked _run_phase (PRD-87)."""
+"""Integration tests: WorkflowRunner with mocked _run_phase (PRD-87, PRD-116)."""
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +9,7 @@ import pytest
 from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
 from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.plugin import (
-    PhaseOutput, PhaseRole, PhaseSpec, WorkflowDefinition,
+    PhaseOutput, PhaseRole, PhaseSpec, WorkflowPlugin,
 )
 
 pytestmark = pytest.mark.integration
@@ -38,12 +38,18 @@ async def processor(tmp_path):
     await asyncio.gather(t, return_exceptions=True)
 
 
-def _make_workflow(*specs: PhaseSpec) -> WorkflowDefinition:
-    return WorkflowDefinition(name="test_wf", phases=specs)
+def _make_plugin(*specs: PhaseSpec) -> type[WorkflowPlugin]:
+    _phases = list(specs)
+
+    class _TestWorkflow(WorkflowPlugin):
+        name = "test_wf"
+        phases = _phases
+
+    return _TestWorkflow
 
 
-def _make_runner(wf, app_state, processor):
-    from agenthicc.workflows.runner import WorkflowRunner
+def _make_runner(wf: type[WorkflowPlugin], app_state, processor):
+    from agenthicc.workflows import WorkflowRunner
     from agenthicc.workflows.config import WorkflowConfig
     agents_registry = MagicMock()
     agent_runner = MagicMock()
@@ -79,7 +85,7 @@ def _patch_run_phase(runner, outputs: dict[str, PhaseOutput]):
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 async def test_single_phase_workflow_completes(app_state, processor):
-    wf     = _make_workflow(PhaseSpec(name="plan", agent_type=PhaseRole.PLANNER))
+    wf     = _make_plugin(PhaseSpec(name="plan", agent_type=PhaseRole.PLANNER))
     runner = _make_runner(wf, app_state, processor)
     _patch_run_phase(runner, {"plan": PhaseOutput(
         phase_name="plan", role="planner", full_text="Step 1. Step 2.",
@@ -92,7 +98,7 @@ async def test_single_phase_workflow_completes(app_state, processor):
 
 
 async def test_two_phase_sequential(app_state, processor):
-    wf = _make_workflow(
+    wf = _make_plugin(
         PhaseSpec(name="plan",    agent_type=PhaseRole.PLANNER, next="execute"),
         PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR),
     )
@@ -111,7 +117,7 @@ async def test_on_reject_loops_back_and_eventually_completes(app_state, processo
     """on_reject routes back; second review approves; workflow completes."""
     call_count: dict[str, int] = {}
 
-    wf = _make_workflow(
+    wf = _make_plugin(
         PhaseSpec(name="plan",   agent_type=PhaseRole.PLANNER,  next="review"),
         PhaseSpec(name="review", agent_type=PhaseRole.REVIEWER, on_reject="plan"),
     )
@@ -139,7 +145,7 @@ async def test_on_reject_loops_back_and_eventually_completes(app_state, processo
 
 async def test_per_phase_max_iterations_stops_loop(app_state, processor):
     """Per-phase max_iterations terminates a phase that keeps rejecting."""
-    wf = _make_workflow(
+    wf = _make_plugin(
         PhaseSpec(name="plan",   agent_type=PhaseRole.PLANNER,  next="review"),
         PhaseSpec(name="review", agent_type=PhaseRole.REVIEWER,
                   on_reject="plan", max_iterations=2),
@@ -160,19 +166,18 @@ async def test_per_phase_max_iterations_stops_loop(app_state, processor):
 
 
 async def test_opt_in_global_cap_stops_infinite_loop(app_state, processor):
-    """max_total_phase_runs on WorkflowDefinition provides an opt-in hard ceiling."""
-    from agenthicc.workflows.plugin import WorkflowDefinition
+    """max_total_phase_runs on a WorkflowPlugin subclass provides an opt-in hard ceiling."""
     call_count: dict[str, int] = {}
 
-    wf = WorkflowDefinition(
-        name="test_wf",
-        phases=(
+    class _CappedWf(WorkflowPlugin):
+        name = "test_wf"
+        phases = [
             PhaseSpec(name="plan",   agent_type=PhaseRole.PLANNER,  next="review"),
             PhaseSpec(name="review", agent_type=PhaseRole.REVIEWER, on_reject="plan"),
-        ),
-        max_total_phase_runs=3,   # hard ceiling: plan + review + plan = 3, then stop
-    )
-    runner = _make_runner(wf, app_state, processor)
+        ]
+        max_total_phase_runs = 3  # hard ceiling: plan + review + plan = 3, then stop
+
+    runner = _make_runner(_CappedWf, app_state, processor)
 
     async def _phase(spec, intent, context):
         call_count[spec.name] = call_count.get(spec.name, 0) + 1
@@ -190,8 +195,8 @@ async def test_opt_in_global_cap_stops_infinite_loop(app_state, processor):
 
 
 async def test_no_global_cap_by_default(app_state, processor):
-    """Default WorkflowDefinition has no global cap; only per-phase limits apply."""
-    wf = _make_workflow(
+    """Default WorkflowPlugin has no global cap; only per-phase limits apply."""
+    wf = _make_plugin(
         PhaseSpec(name="plan",      next="execute"),
         PhaseSpec(name="execute",   next="review"),
         PhaseSpec(name="review",    next="summarize"),
@@ -205,7 +210,7 @@ async def test_no_global_cap_by_default(app_state, processor):
 
 
 async def test_workflow_run_signal_updates(app_state, processor):
-    wf = _make_workflow(
+    wf = _make_plugin(
         PhaseSpec(name="plan",    agent_type=PhaseRole.PLANNER,  next="execute"),
         PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR),
     )
@@ -223,7 +228,7 @@ async def test_workflow_run_signal_updates(app_state, processor):
 
 async def test_parallel_phases(app_state, processor):
     called: list[str] = []
-    wf = _make_workflow(
+    wf = _make_plugin(
         PhaseSpec(name="exp_a", agent_type=PhaseRole.EXPLORER,
                   parallel_with=("exp_b",), next="plan"),
         PhaseSpec(name="exp_b", agent_type=PhaseRole.EXPLORER,
@@ -246,7 +251,7 @@ async def test_parallel_phases(app_state, processor):
 
 
 async def test_dynamic_next_override(app_state, processor):
-    wf = _make_workflow(
+    wf = _make_plugin(
         PhaseSpec(name="plan",    agent_type=PhaseRole.PLANNER,  next="execute"),
         PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR),
     )

@@ -43,54 +43,21 @@ def test_workflow_runner_defined_in_default_runner() -> None:
     assert WorkflowRunner.__module__ == "agenthicc.workflows.default.runner"
 
 
-@pytest.mark.unit
-def test_generic_workflows_in_default_definition() -> None:
-    from agenthicc.workflows.default.definition import (
-        Architect, PlanOnly, ReviewOnly, Supervised,
-    )
-    assert PlanOnly.name == "plan_only"
-    assert ReviewOnly.name == "review_only"
-    assert Supervised.name == "supervised"
-    assert Architect.name == "architect"
-
-
-@pytest.mark.unit
-def test_generic_workflows_importable_from_default_package() -> None:
-    from agenthicc.workflows.default import (
-        Architect, PlanOnly, ReviewOnly, Supervised,
-    )
-    for cls in (PlanOnly, ReviewOnly, Supervised, Architect):
-        assert issubclass(cls, __import__(
-            "agenthicc.workflows.plugin", fromlist=["WorkflowPlugin"]
-        ).WorkflowPlugin)
-
-
 # ── Backward-compat shims still work ─────────────────────────────────────────
 
 @pytest.mark.unit
 def test_old_runner_path_still_works() -> None:
-    from agenthicc.workflows.runner import WorkflowRunner
+    from agenthicc.workflows import WorkflowRunner
     from agenthicc.workflows.default.runner import WorkflowRunner as WR2
     assert WorkflowRunner is WR2
 
 
 @pytest.mark.unit
 def test_old_builtins_code_plan_still_works() -> None:
-    from agenthicc.workflows.builtins import CodePlan
+    from agenthicc.workflows import CodePlan
     from agenthicc.workflows.code_plan.definition import CodePlan as CP2
     assert CodePlan is CP2
 
-
-@pytest.mark.unit
-def test_old_builtins_generic_workflows_still_work() -> None:
-    from agenthicc.workflows.builtins import PlanOnly, ReviewOnly, Supervised, Architect
-    from agenthicc.workflows.default.definition import (
-        PlanOnly as PO2, ReviewOnly as RO2, Supervised as S2, Architect as A2,
-    )
-    assert PlanOnly is PO2
-    assert ReviewOnly is RO2
-    assert Supervised is S2
-    assert Architect is A2
 
 
 # ── Top-level __init__ exports all symbols ────────────────────────────────────
@@ -110,11 +77,6 @@ def test_workflows_init_exports_code_plan() -> None:
     ).WorkflowParams)
 
 
-@pytest.mark.unit
-def test_workflows_init_exports_generic_workflows() -> None:
-    from agenthicc.workflows import Architect, PlanOnly, ReviewOnly, Supervised
-    for cls in (PlanOnly, ReviewOnly, Supervised, Architect):
-        assert cls.name  # all have non-empty names
 
 
 # ── loader uses canonical paths ───────────────────────────────────────────────
@@ -125,10 +87,6 @@ def test_load_builtin_workflows_returns_all_five() -> None:
     defs = load_builtin_workflows()
     names = {d.name for d in defs}
     assert "code_plan" in names
-    assert "plan_only" in names
-    assert "review_only" in names
-    assert "supervised" in names
-    assert "architect" in names
 
 
 @pytest.mark.unit

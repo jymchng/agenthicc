@@ -92,8 +92,6 @@ class CodePlan(WorkflowPlugin):
     name          = "code_plan"
     mode_bindings = ["Plan"]          # bound to exactly one mode
 
-class PlanOnly(WorkflowPlugin):
-    name          = "plan_only"
     mode_bindings = ["Review"]        # bound to a different mode
 
 class Supervised(WorkflowPlugin):

@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 
 def _make_tools(approved: bool = True, feedback: str = ""):
     """Return (request_plan_approval, finalize_plan, plan_event, plan_data)."""
-    from agenthicc.workflows.phase_tools import make_planner_tools
+    from agenthicc.workflows.code_plan.phase_tools import make_planner_tools
 
     approval_svc = MagicMock()
     response = MagicMock()
@@ -60,7 +60,7 @@ class TestApprovalGate:
 
     async def test_approval_state_resets_on_each_request(self):
         """A rejection followed by approval followed by finalize succeeds."""
-        from agenthicc.workflows.phase_tools import make_planner_tools
+        from agenthicc.workflows.code_plan.phase_tools import make_planner_tools
 
         plan_event = asyncio.Event()
         plan_data  = {}
@@ -101,7 +101,7 @@ class TestApprovalGate:
 
     async def test_headless_auto_approves(self):
         """approval_svc=None auto-approves, allowing finalize_plan."""
-        from agenthicc.workflows.phase_tools import make_planner_tools
+        from agenthicc.workflows.code_plan.phase_tools import make_planner_tools
 
         plan_event = asyncio.Event()
         plan_data  = {}

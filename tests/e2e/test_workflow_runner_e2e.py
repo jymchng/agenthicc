@@ -1,4 +1,4 @@
-"""E2E tests: WorkflowRunner with real AgentsRegistry + MockTransport (PRD-87).
+"""E2E tests: WorkflowRunner with real AgentsRegistry + MockTransport (PRD-87, PRD-116).
 
 NOTE: no ``from __future__ import annotations`` — @agent() inspects annotations
 at decoration time.
@@ -16,8 +16,8 @@ from lauren_ai._transport._mock import MockTransport
 from agenthicc.agents.registry import build_agents_registry
 from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
 from agenthicc.tui.conversation_store import AppState as TUIAppState
-from agenthicc.workflows.plugin import PhaseRole, PhaseSpec, WorkflowDefinition
-from agenthicc.workflows.runner import WorkflowRunner
+from agenthicc.workflows.plugin import PhaseRole, PhaseSpec, WorkflowPlugin
+from agenthicc.workflows import WorkflowRunner
 
 pytestmark = pytest.mark.e2e
 
@@ -58,7 +58,7 @@ async def processor(tmp_path):
     await asyncio.gather(t, return_exceptions=True)
 
 
-def _make_wf_runner(wf, app_state, processor, mock_transport, agents_registry=None):
+def _make_wf_runner(wf: type[WorkflowPlugin], app_state, processor, mock_transport, agents_registry=None):
     from unittest.mock import MagicMock
     from agenthicc.workflows.config import WorkflowConfig
     agent_runner = AgentRunnerBase(transport=mock_transport, signals=SignalBus())
@@ -85,11 +85,11 @@ async def test_e2e_single_phase_auto_workflow(app_state, processor, tmp_path):
     mock = MockTransport()
     mock.queue_response(_completion("I completed the task."))
 
-    wf = WorkflowDefinition(
-        name="test_wf",
-        phases=(PhaseSpec(name="do_it", agent_type=PhaseRole.AUTO),),
-    )
-    runner = _make_wf_runner(wf, app_state, processor, mock)
+    class _SinglePhaseWf(WorkflowPlugin):
+        name = "test_wf"
+        phases = [PhaseSpec(name="do_it", agent_type=PhaseRole.AUTO)]
+
+    runner = _make_wf_runner(_SinglePhaseWf, app_state, processor, mock)
     await runner.run("Do the thing")
 
     wf_run = app_state.workflow_run()
@@ -105,15 +105,15 @@ async def test_e2e_two_phase_plan_execute(app_state, processor, tmp_path):
     mock.queue_response(_completion("<plan>Step 1: do X. Step 2: do Y.</plan>", n=1))
     mock.queue_response(_completion("Executed step 1. Executed step 2.", n=2))
 
-    wf = WorkflowDefinition(
-        name="test_wf",
-        phases=(
+    class _TwoPhaseWf(WorkflowPlugin):
+        name = "test_wf"
+        phases = [
             PhaseSpec(name="plan",    agent_type=PhaseRole.PLANNER,
                       output_schema="plan", next="execute"),
             PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR),
-        ),
-    )
-    runner = _make_wf_runner(wf, app_state, processor, mock)
+        ]
+
+    runner = _make_wf_runner(_TwoPhaseWf, app_state, processor, mock)
     await runner.run("Refactor auth")
 
     wf_run = app_state.workflow_run()
@@ -129,15 +129,15 @@ async def test_e2e_reviewer_approves_first_try(app_state, processor, tmp_path):
     mock.queue_response(_completion("Implementation complete.", n=1))
     mock.queue_response(_completion("<review>approved</review>", n=2))
 
-    wf = WorkflowDefinition(
-        name="test_wf",
-        phases=(
+    class _ReviewWf(WorkflowPlugin):
+        name = "test_wf"
+        phases = [
             PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR, next="review"),
             PhaseSpec(name="review",  agent_type=PhaseRole.REVIEWER,
                       output_schema="review_result", on_reject="execute"),
-        ),
-    )
-    runner = _make_wf_runner(wf, app_state, processor, mock)
+        ]
+
+    runner = _make_wf_runner(_ReviewWf, app_state, processor, mock)
     await runner.run("Implement and review")
 
     wf_run = app_state.workflow_run()
@@ -155,16 +155,16 @@ async def test_e2e_opt_in_cap_stops_rejection_loop(app_state, processor, tmp_pat
     mock.queue_response(_completion("Implementation attempt 2.", n=3))
     # review(2) would need a 4th response but the cap fires after execute(2)
 
-    wf = WorkflowDefinition(
-        name="test_wf",
-        phases=(
+    class _CappedWf(WorkflowPlugin):
+        name = "test_wf"
+        phases = [
             PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR, next="review"),
             PhaseSpec(name="review",  agent_type=PhaseRole.REVIEWER,
                       output_schema="review_result", on_reject="execute"),
-        ),
-        max_total_phase_runs=3,
-    )
-    runner = _make_wf_runner(wf, app_state, processor, mock)
+        ]
+        max_total_phase_runs = 3
+
+    runner = _make_wf_runner(_CappedWf, app_state, processor, mock)
     await runner.run("Implement and review")
 
     wf_run = app_state.workflow_run()
@@ -194,14 +194,14 @@ async def test_e2e_workflow_context_injected(app_state, processor, tmp_path):
     mock.queue_response(_completion("Exploration done: found auth module.", n=1))
     mock.queue_response(_completion("<plan>Step 1</plan>", n=2))
 
-    wf = WorkflowDefinition(
-        name="test_wf",
-        phases=(
+    class _ContextWf(WorkflowPlugin):
+        name = "test_wf"
+        phases = [
             PhaseSpec(name="explore", agent_type=PhaseRole.EXPLORER, next="plan"),
             PhaseSpec(name="plan",    agent_type=PhaseRole.PLANNER,  output_schema="plan"),
-        ),
-    )
-    wf_runner = _make_wf_runner(wf, app_state, processor, mock)
+        ]
+
+    wf_runner = _make_wf_runner(_ContextWf, app_state, processor, mock)
 
     # Intercept _build_phase_prompt to capture what the planner receives
     original_prompt = wf_runner._build_phase_prompt

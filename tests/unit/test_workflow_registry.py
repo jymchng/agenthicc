@@ -1,4 +1,4 @@
-"""Unit tests for workflow/registry.py and workflow/loader.py (PRD-87)."""
+"""Unit tests for workflow/registry.py and workflow/loader.py (PRD-87, PRD-116)."""
 from __future__ import annotations
 
 import textwrap
@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agenthicc.workflows.loader import load_python_workflows
-from agenthicc.workflows.plugin import PhaseRole, WorkflowDefinition
+from agenthicc.workflows.plugin import PhaseRole, PhaseSpec, WorkflowPlugin
 from agenthicc.workflows.registry import WorkflowRegistry, build_workflow_registry
 
 pytestmark = pytest.mark.unit
@@ -15,8 +15,25 @@ pytestmark = pytest.mark.unit
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _make_defn(name: str, source: str = "builtin", **kwargs) -> WorkflowDefinition:
-    return WorkflowDefinition(name=name, source=source, **kwargs)
+def _make_plugin(
+    name: str,
+    description: str = "",
+    mode_bindings: tuple[str, ...] = (),
+    phases: tuple[PhaseSpec, ...] = (),
+    **_kwargs,
+) -> type[WorkflowPlugin]:
+    _phases = list(phases)
+    _mode_bindings = list(mode_bindings)
+    _description = description
+
+    class _Plugin(WorkflowPlugin):
+        pass
+
+    _Plugin.name = name
+    _Plugin.description = _description
+    _Plugin.mode_bindings = _mode_bindings
+    _Plugin.phases = _phases
+    return _Plugin
 
 
 def _write_py(tmp_path: Path, content: str, filename: str = "test_wf.py") -> Path:
@@ -30,9 +47,9 @@ def _write_py(tmp_path: Path, content: str, filename: str = "test_wf.py") -> Pat
 class TestWorkflowRegistry:
     def test_register_and_get(self):
         registry = WorkflowRegistry()
-        defn = _make_defn("my_workflow")
-        registry.register(defn)
-        assert registry.get("my_workflow") is defn
+        plugin_cls = _make_plugin("my_workflow")
+        registry.register(plugin_cls)
+        assert registry.get("my_workflow") is plugin_cls
 
     def test_get_missing_returns_none(self):
         assert WorkflowRegistry().get("does_not_exist") is None
@@ -40,25 +57,27 @@ class TestWorkflowRegistry:
     def test_all_returns_all(self):
         registry = WorkflowRegistry()
         for i in range(3):
-            registry.register(_make_defn(f"wf_{i}"))
+            registry.register(_make_plugin(f"wf_{i}"))
         assert len(registry.all()) == 3
 
     def test_later_registration_wins(self):
         registry = WorkflowRegistry()
-        registry.register(_make_defn("my_wf", description="first"))
-        registry.register(_make_defn("my_wf", description="second"))
-        assert registry.get("my_wf").description == "second"
+        registry.register(_make_plugin("my_wf", description="first"))
+        registry.register(_make_plugin("my_wf", description="second"))
+        result = registry.get("my_wf")
+        assert result is not None
+        assert result.description == "second"
 
     def test_names(self):
         registry = WorkflowRegistry()
         for n in ("alpha", "beta", "gamma"):
-            registry.register(_make_defn(n))
+            registry.register(_make_plugin(n))
         assert set(registry.names()) == {"alpha", "beta", "gamma"}
 
     def test_mode_default_map(self):
         registry = WorkflowRegistry()
-        registry.register(_make_defn("wf_a", mode_bindings=("Plan",)))
-        registry.register(_make_defn("wf_b", mode_bindings=("Plan", "Review")))
+        registry.register(_make_plugin("wf_a", mode_bindings=("Plan",)))
+        registry.register(_make_plugin("wf_b", mode_bindings=("Plan", "Review")))
         m = registry.mode_default_map()
         # first-registered wins for Plan
         assert m["Plan"] == "wf_a"
@@ -66,8 +85,8 @@ class TestWorkflowRegistry:
 
     def test_mode_available_map(self):
         registry = WorkflowRegistry()
-        registry.register(_make_defn("wf_a", mode_bindings=("Plan",)))
-        registry.register(_make_defn("wf_b", mode_bindings=("Plan", "Review")))
+        registry.register(_make_plugin("wf_a", mode_bindings=("Plan",)))
+        registry.register(_make_plugin("wf_b", mode_bindings=("Plan", "Review")))
         m = registry.mode_available_map()
         assert set(m["Plan"]) == {"wf_a", "wf_b"}
         assert m["Review"] == ["wf_b"]
@@ -76,67 +95,34 @@ class TestWorkflowRegistry:
 # ── TestBuildWorkflowRegistry ─────────────────────────────────────────────────
 
 class TestBuildWorkflowRegistry:
-    def test_includes_builtins(self):
-        registry = build_workflow_registry()
-        assert "plan_only" in registry.names()
-        assert "supervised" in registry.names()
-        assert "architect" in registry.names()
-
-    def test_plan_only_has_one_phase(self):
-        defn = build_workflow_registry().get("plan_only")
-        assert defn is not None
-        assert len(defn.phases) == 1
-        assert defn.phases[0].name == "plan"
-
-    def test_supervised_has_three_phases(self):
-        defn = build_workflow_registry().get("supervised")
-        assert len(defn.phases) == 3
-
-    def test_architect_has_four_phases(self):
-        defn = build_workflow_registry().get("architect")
-        assert len(defn.phases) == 4
-
-    def test_plan_only_source_is_builtin(self):
-        assert build_workflow_registry().get("plan_only").source == "builtin"
-
-    def test_plan_only_mode_bindings(self):
-        defn = build_workflow_registry().get("plan_only")
-        # plan_only now binds Review; Plan mode is served by code_plan
-        assert "Review" in defn.mode_bindings
 
     def test_code_plan_mode_bindings(self):
-        defn = build_workflow_registry().get("code_plan")
-        assert defn is not None
-        assert "Plan" in defn.mode_bindings
+        plugin_cls = build_workflow_registry().get("code_plan")
+        assert plugin_cls is not None
+        assert "Plan" in plugin_cls.mode_bindings
 
     def test_code_plan_has_four_phases(self):
         # Single-agent workflow: plan / execute / review / summarize.
         # explore phase removed — exploration happens during plan phase.
-        defn = build_workflow_registry().get("code_plan")
-        assert len(defn.phases) == 4
-        assert set(defn.phase_names()) == {"plan", "execute", "review", "summarize"}
+        plugin_cls = build_workflow_registry().get("code_plan")
+        assert plugin_cls is not None
+        assert len(plugin_cls.phases) == 4
+        assert set(plugin_cls.phase_names()) == {"plan", "execute", "review", "summarize"}
 
     def test_code_plan_all_phases_use_auto_agent(self):
-        defn = build_workflow_registry().get("code_plan")
-        assert all(p.agent_type == "auto" for p in defn.phases)
+        plugin_cls = build_workflow_registry().get("code_plan")
+        assert plugin_cls is not None
+        assert all(p.agent_type == "auto" for p in plugin_cls.phases)
 
     def test_code_plan_phases_have_system_prompt_override(self):
-        defn = build_workflow_registry().get("code_plan")
-        assert all(p.system_prompt_override for p in defn.phases)
-
-    def test_architect_phase_names(self):
-        names = build_workflow_registry().get("architect").phase_names()
-        assert set(names) == {"explore", "plan", "execute", "verify"}
+        plugin_cls = build_workflow_registry().get("code_plan")
+        assert plugin_cls is not None
+        assert all(p.system_prompt_override for p in plugin_cls.phases)
 
     def test_mode_default_map_has_plan(self):
         m = build_workflow_registry().mode_default_map()
         assert "Plan" in m
         assert m["Plan"] == "code_plan"
-
-    def test_mode_available_map_has_review(self):
-        m = build_workflow_registry().mode_available_map()
-        assert "Review" in m
-        assert "plan_only" in m["Review"]
 
     def test_user_dir_missing_does_not_fail(self, tmp_path):
         registry = build_workflow_registry(user_dir=tmp_path / "nonexistent")
@@ -145,10 +131,6 @@ class TestBuildWorkflowRegistry:
     def test_project_dir_missing_does_not_fail(self, tmp_path):
         registry = build_workflow_registry(project_dir=tmp_path / "no_project")
         assert isinstance(registry, WorkflowRegistry)
-
-    def test_plan_only_uses_planner_agent_type(self):
-        defn = build_workflow_registry().get("plan_only")
-        assert defn.phases[0].agent_type == PhaseRole.PLANNER
 
 
 # ── TestPythonLoader ──────────────────────────────────────────────────────────
@@ -169,9 +151,9 @@ class TestPythonLoader:
         path = _write_py(tmp_path, content)
         results = load_python_workflows(path, "user")
         assert len(results) == 1
-        defn = results[0]
-        assert defn.name == "my_plugin_workflow"
-        assert len(defn.phases) == 2
+        plugin_cls = results[0]
+        assert plugin_cls.name == "my_plugin_workflow"
+        assert len(plugin_cls.phases) == 2
 
     def test_load_python_source_stored(self, tmp_path):
         content = """
@@ -181,8 +163,12 @@ class TestPythonLoader:
                 name = "sourced"
                 phases = [PhaseSpec(name="p")]
         """
-        results = load_python_workflows(_write_py(tmp_path, content), "project")
-        assert results[0].source == "project"
+        registry = WorkflowRegistry()
+        for plugin_cls in load_python_workflows(_write_py(tmp_path, content), "project"):
+            registry.register(plugin_cls, source="project")
+        entry = registry.get_entry("sourced")
+        assert entry is not None
+        assert entry.source == "project"
 
     def test_load_python_multiple_plugins(self, tmp_path):
         content = """
@@ -198,7 +184,7 @@ class TestPythonLoader:
         """
         results = load_python_workflows(_write_py(tmp_path, content), "user")
         assert len(results) == 2
-        assert {d.name for d in results} == {"alpha_wf", "beta_wf"}
+        assert {cls.name for cls in results} == {"alpha_wf", "beta_wf"}
 
     def test_load_python_base_class_not_included(self, tmp_path):
         content = """

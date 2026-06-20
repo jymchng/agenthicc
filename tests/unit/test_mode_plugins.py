@@ -354,8 +354,8 @@ def test_plugin_in_cycle_reachable_from_debug(tmp_path):
     for mode in result.modes:
         reg.register(mode)
 
-    # Extra is appended after Debug; cycling from Debug should reach Extra
-    assert reg.next_after("Debug").name == "Extra"
+    # Extra is appended after Safe; cycling from Safe should reach Extra
+    assert reg.next_after("Safe").name == "Extra"
     # And Extra wraps back to Auto
     assert reg.next_after("Extra").name == "Auto"
 

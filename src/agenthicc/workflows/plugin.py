@@ -12,10 +12,10 @@ import dataclasses
 import re
 import time
 from dataclasses import field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agenthicc.workflows.base import BaseWorkflowRunner
+    from agenthicc.workflows.base_runner import BaseWorkflowRunner
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.tui.runtime.mode_manager import ModeManager
 
@@ -152,95 +152,6 @@ class PhaseSpec:
         return ROLE_DEFAULT_ALLOWED.get(self.agent_type)
 
 
-# ── WorkflowDefinition ────────────────────────────────────────────────────────
-
-@dataclasses.dataclass(frozen=True)
-class WorkflowDefinition:
-    name: str
-    """Unique workflow identifier; used in WorkflowRegistry lookups and kernel event payloads."""
-
-    description: str = ""
-    """Human-readable summary shown in mode menus and help text."""
-
-    phases: tuple[PhaseSpec, ...] = ()
-    """Ordered tuple of PhaseSpec nodes defining the workflow graph."""
-
-    mode_bindings: tuple[str, ...] = ()
-    """RuntimeMode names that automatically trigger this workflow when the user sends a message."""
-
-    source: str = "builtin"
-    """Origin of this definition: 'builtin', 'user', or 'project'."""
-
-    path: str | None = None
-    """Filesystem path of the .py file that defined this workflow (None for builtins)."""
-
-    max_total_phase_runs: int = 0
-    """Hard ceiling on total phase runs across all phases for one workflow run.
-    0 (default) means no global cap — the execute↔review loop can iterate freely.
-    Set to a positive integer to add an opt-in safety net for workflows that
-    should not loop indefinitely (e.g. a workflow with no per-phase max_iterations)."""
-
-    runner_factory: Callable[..., BaseWorkflowRunner] | None = dataclasses.field(
-        default=None, repr=False, compare=False, hash=False,
-    )
-    """Callable that constructs the runner for this workflow (PRD-110).
-
-    Signature: ``(defn, config, mode_manager) -> BaseWorkflowRunner``.
-    ``None`` means fall back to the generic ``WorkflowRunner``.
-    Populated automatically by ``WorkflowPlugin.to_definition()`` from the
-    plugin class's ``runner_factory`` classmethod.
-    """
-
-    params_factory: Callable[..., WorkflowParams] | None = dataclasses.field(
-        default=None, repr=False, compare=False, hash=False,
-    )
-    """Callable that constructs the tunable params for this workflow (PRD-111).
-
-    Signature: ``(source: dict[str, Any]) -> WorkflowParams``.
-    ``None`` means return a base ``WorkflowParams()`` with no overrides.
-    Populated automatically by ``WorkflowPlugin.to_definition()`` from the
-    plugin class's ``params_factory`` classmethod.
-    """
-
-    def build_params(self, source: dict[str, Any]) -> WorkflowParams:
-        """Construct ``WorkflowParams`` from *source* (merged TOML/CLI/env dict).
-
-        Delegates to the stored ``params_factory`` when present; returns a
-        base ``WorkflowParams()`` with no overrides otherwise.
-        """
-        if self.params_factory is not None:
-            return self.params_factory(source)
-        return WorkflowParams()
-
-    def build_runner(
-        self,
-        config: WorkflowConfig,
-        mode_manager: ModeManager | None = None,
-    ) -> BaseWorkflowRunner:
-        """Construct and return the runner appropriate for this workflow.
-
-        Delegates to the stored ``runner_factory`` callable when present;
-        falls back to the generic ``WorkflowRunner`` otherwise.  This is the
-        single dispatch point — callers never branch on workflow name.
-        """
-        if self.runner_factory is not None:
-            return self.runner_factory(self, config, mode_manager)
-        from agenthicc.workflows.default.runner import WorkflowRunner  # noqa: PLC0415
-        return WorkflowRunner(self, config, mode_manager)
-
-    def get_phase(self, name: str) -> PhaseSpec | None:
-        for phase in self.phases:
-            if phase.name == name:
-                return phase
-        return None
-
-    def first_phase(self) -> PhaseSpec | None:
-        return self.phases[0] if self.phases else None
-
-    def phase_names(self) -> list[str]:
-        return [phase.name for phase in self.phases]
-
-
 # ── Runtime output types ──────────────────────────────────────────────────────
 
 @dataclasses.dataclass
@@ -333,59 +244,80 @@ def _parse_output_schema(text: str, schema: str | None) -> dict | None:
 # ── WorkflowPlugin ABC ────────────────────────────────────────────────────────
 
 class WorkflowPlugin(abc.ABC):
-    """ABC for Python workflow definitions.
+    """ABC for Python workflow definitions (PRD-116).
 
-    Subclasses set name, description, mode_bindings, and phases as class
-    attributes.  to_definition() converts them to a WorkflowDefinition.
+    Subclasses declare workflow identity and behaviour as class attributes and
+    override the three factory classmethods to return specialised objects.
+
+    The registry stores the plugin *class* (wrapped in a ``WorkflowEntry`` for
+    provenance).  Agenthicc calls ``build_runner()``, ``build_params()``, and
+    the query helpers directly on the class.
     """
-    name:          str            = ""
-    description:   str            = ""
-    mode_bindings: list[str]      = []
-    phases:        list[PhaseSpec] = []
+
+    # ── Class-level identity / structure (set as class attributes) ────────────
+    name:                 str             = ""
+    description:          str             = ""
+    mode_bindings:        list[str]       = []
+    phases:               list[PhaseSpec] = []
+    max_total_phase_runs: int             = 0
+    """Hard ceiling on total phase runs (0 = no cap)."""
+
+    # ── Query helpers ─────────────────────────────────────────────────────────
 
     @classmethod
-    def params_factory(cls, source: dict[str, Any]) -> WorkflowParams:
-        """Build ``WorkflowParams`` from *source* (PRD-111).
+    def first_phase(cls) -> PhaseSpec | None:
+        """Return the first phase, or ``None`` if the workflow has no phases."""
+        return cls.phases[0] if cls.phases else None
 
-        Default: ignore *source*, return base ``WorkflowParams`` with no phase
-        model overrides.  Override in subclasses that declare a specialised
-        ``Params`` inner dataclass (e.g. ``CodePlan.Params``).
+    @classmethod
+    def get_phase(cls, name: str) -> PhaseSpec | None:
+        """Return the phase named *name*, or ``None``."""
+        return next((p for p in cls.phases if p.name == name), None)
+
+    @classmethod
+    def phase_names(cls) -> list[str]:
+        """Return an ordered list of phase names."""
+        return [p.name for p in cls.phases]
+
+    # ── Factory classmethods (override to return specialised objects) ─────────
+
+    @classmethod
+    def build_runner(
+        cls,
+        config:       WorkflowConfig,
+        mode_manager: ModeManager | None,
+    ) -> BaseWorkflowRunner:
+        """Return the runner for this workflow.
+
+        Default: generic ``WorkflowRunner`` driven by ``cls.phases``.
+        Override to return a specialised runner (e.g. ``CodePlanRunner``).
+        """
+        from agenthicc.workflows.default.runner import WorkflowRunner  # noqa: PLC0415
+        return WorkflowRunner(cls, config, mode_manager)
+
+    @classmethod
+    def build_params(cls, source: dict[str, Any]) -> WorkflowParams:
+        """Return typed params built from *source* (merged TOML/CLI/env dict).
+
+        Default: returns base ``WorkflowParams()`` with no phase model overrides.
+        Override to return a specialised ``WorkflowParams`` subclass.
         """
         return WorkflowParams()
 
-    @classmethod
-    def runner_factory(
-        cls,
-        defn: WorkflowDefinition,
-        config: WorkflowConfig,
-        mode_manager: ModeManager | None,
-    ) -> BaseWorkflowRunner:
-        """Build and return the runner for this workflow type (PRD-110).
 
-        Default implementation returns the generic ``WorkflowRunner``.
-        Override in subclasses that need a specialized runner (e.g. a
-        state-machine runner that ignores the phase graph).
-        """
-        from agenthicc.workflows.default.runner import WorkflowRunner  # noqa: PLC0415
-        return WorkflowRunner(defn, config, mode_manager)
+# ── WorkflowEntry — registry provenance record (PRD-116) ─────────────────────
+# Defined after WorkflowPlugin so it can annotate type[WorkflowPlugin].
 
-    def to_definition(
-        self, source: str = "user", path: str | None = None,
-    ) -> WorkflowDefinition:
-        return WorkflowDefinition(
-            name=self.name,
-            description=self.description,
-            phases=tuple(self.phases),
-            mode_bindings=tuple(self.mode_bindings),
-            source=source,
-            path=path,
-            runner_factory=type(self).runner_factory,   # PRD-110
-            params_factory=type(self).params_factory,   # PRD-111
-        )
+@dataclasses.dataclass(frozen=True)
+class WorkflowEntry:
+    """Registry artifact: plugin class + discovery provenance.
 
-    def determine_transition(
-        self, spec: PhaseSpec, output: PhaseOutput, ctx: WorkflowContext,
-    ) -> str | None:
-        if output.approved is False and spec.on_reject:
-            return spec.on_reject
-        return spec.next
+    The registry stores one ``WorkflowEntry`` per workflow name.  All
+    workflow metadata is accessed via ``plugin_cls.*``; ``source`` and
+    ``path`` record where the plugin was discovered.
+    """
+
+    plugin_cls: type[WorkflowPlugin]
+    source:     str        = "builtin"  # "builtin" | "user" | "project"
+    path:       str | None = None       # filesystem path for user / project plugins
+

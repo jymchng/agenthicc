@@ -1,183 +1,70 @@
-"""Tests for workflow runner dispatch via factory method (PRD-110)."""
+"""Tests for workflow runner dispatch via build_runner classmethod (PRD-110, PRD-116)."""
 from __future__ import annotations
 
 import pytest
 
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowDefinition, WorkflowPlugin
-from agenthicc.workflows.builtins import CodePlan, PlanOnly, ReviewOnly
+from agenthicc.workflows.code_plan.definition import CodePlan
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 from agenthicc.workflows.loader import load_builtin_workflows
 
 
-# ── WorkflowPlugin.runner_factory default ────────────────────────────────────
+# ── WorkflowPlugin.build_runner default ──────────────────────────────────────
 
 @pytest.mark.unit
-def test_plugin_default_runner_factory_returns_workflow_runner() -> None:
-    """The default runner_factory produces a WorkflowRunner."""
-    from agenthicc.workflows.runner import WorkflowRunner
+def test_plugin_default_build_runner_returns_workflow_runner() -> None:
+    """The default build_runner() produces a WorkflowRunner."""
+    from agenthicc.workflows import WorkflowRunner
     from unittest.mock import MagicMock
 
     class MyWorkflow(WorkflowPlugin):
         name  = "my_workflow"
         phases = [PhaseSpec(name="phase1")]
 
-    defn = MyWorkflow().to_definition()
-    assert defn.runner_factory is not None
-    runner = defn.build_runner(MagicMock(), None)
+    runner = MyWorkflow.build_runner(MagicMock(), None)
     assert isinstance(runner, WorkflowRunner)
 
 
 @pytest.mark.unit
-def test_code_plan_runner_factory_is_overridden() -> None:
-    """CodePlan.runner_factory underlying function differs from the default."""
-    # Python classmethods create new wrappers on each access; compare __func__.
-    assert CodePlan.runner_factory.__func__ is not WorkflowPlugin.runner_factory.__func__
+def test_code_plan_build_runner_is_overridden() -> None:
+    """CodePlan.build_runner is overridden and differs from the default."""
+    assert CodePlan.build_runner.__func__ is not WorkflowPlugin.build_runner.__func__
 
 
-@pytest.mark.unit
-def test_plan_only_uses_default_runner_factory() -> None:
-    """PlanOnly uses the inherited generic runner factory."""
-    assert PlanOnly.runner_factory.__func__ is WorkflowPlugin.runner_factory.__func__
-
+# ── build_runner() produces correct runner types ─────────────────────────────
 
 @pytest.mark.unit
-def test_review_only_uses_default_runner_factory() -> None:
-    """ReviewOnly uses the inherited generic runner factory."""
-    assert ReviewOnly.runner_factory.__func__ is WorkflowPlugin.runner_factory.__func__
+def test_custom_workflow_build_runner_returns_workflow_runner() -> None:
+    """A custom WorkflowPlugin subclass with no override returns a WorkflowRunner."""
+    from agenthicc.workflows import WorkflowRunner
+    from unittest.mock import MagicMock
 
-
-# ── to_definition() carries factory ──────────────────────────────────────────
-
-@pytest.mark.unit
-def test_to_definition_carries_runner_factory() -> None:
-    """to_definition() stores a non-None runner_factory on the definition."""
     class CustomWorkflow(WorkflowPlugin):
         name   = "custom"
         phases = [PhaseSpec(name="p")]
 
-    defn = CustomWorkflow().to_definition()
-    assert defn.runner_factory is not None
-    # Factory's underlying function matches the class's classmethod.
-    assert defn.runner_factory.__func__ is CustomWorkflow.runner_factory.__func__
-
-
-@pytest.mark.unit
-def test_code_plan_definition_carries_override_factory() -> None:
-    defn = CodePlan().to_definition(source="builtin")
-    assert defn.runner_factory is not None
-    assert defn.runner_factory.__func__ is CodePlan.runner_factory.__func__
-    assert defn.runner_factory.__func__ is not WorkflowPlugin.runner_factory.__func__
-
-
-@pytest.mark.unit
-def test_plan_only_definition_carries_default_factory() -> None:
-    defn = PlanOnly().to_definition(source="builtin")
-    assert defn.runner_factory is not None
-    assert defn.runner_factory.__func__ is WorkflowPlugin.runner_factory.__func__
-
-
-# ── WorkflowDefinition.build_runner() ────────────────────────────────────────
-
-@pytest.mark.unit
-def test_build_runner_none_factory_returns_workflow_runner() -> None:
-    """When runner_factory is None, build_runner() falls back to WorkflowRunner."""
-    from agenthicc.workflows.runner import WorkflowRunner
-    from unittest.mock import MagicMock
-
-    defn = WorkflowDefinition(
-        name="test",
-        phases=(PhaseSpec(name="p"),),
-        runner_factory=None,
-    )
-    mock_config = MagicMock()
-    runner = defn.build_runner(mock_config, None)
+    runner = CustomWorkflow.build_runner(MagicMock(), None)
     assert isinstance(runner, WorkflowRunner)
 
 
 @pytest.mark.unit
-def test_build_runner_custom_factory_is_called() -> None:
-    """build_runner() delegates to the stored factory."""
-    sentinel = object()
-    calls: list = []
-
-    def my_factory(defn, config, mode_manager):
-        calls.append((defn, config, mode_manager))
-        return sentinel  # type: ignore[return-value]
-
-    defn = WorkflowDefinition(
-        name="test",
-        phases=(PhaseSpec(name="p"),),
-        runner_factory=my_factory,
-    )
-    result = defn.build_runner("cfg", "mm")  # type: ignore[arg-type]
-    assert result is sentinel
-    assert calls == [(defn, "cfg", "mm")]
-
-
-@pytest.mark.unit
-def test_build_runner_passes_defn_as_first_arg() -> None:
-    """The factory receives the WorkflowDefinition as its first argument."""
-    received_defn: list = []
-
-    def capture(defn, config, mode_manager):
-        received_defn.append(defn)
-        from agenthicc.workflows.runner import WorkflowRunner
-        from unittest.mock import MagicMock
-        return WorkflowRunner(defn, MagicMock(), mode_manager)
-
-    defn = WorkflowDefinition(
-        name="test",
-        phases=(PhaseSpec(name="p"),),
-        runner_factory=capture,
-    )
-    from unittest.mock import MagicMock
-    defn.build_runner(MagicMock(), None)
-    assert received_defn[0] is defn
-
-
-# ── CodePlan factory builds CodePlanRunner ───────────────────────────────────
-
-@pytest.mark.unit
-def test_code_plan_factory_builds_code_plan_runner() -> None:
-    """CodePlan.runner_factory returns a CodePlanRunner instance."""
+def test_code_plan_build_runner_builds_code_plan_runner() -> None:
+    """CodePlan.build_runner() returns a CodePlanRunner instance."""
     from agenthicc.workflows.code_plan import CodePlanRunner
     from unittest.mock import MagicMock
 
-    defn = CodePlan().to_definition(source="builtin")
-    mock_config = MagicMock()
-    runner = defn.build_runner(mock_config, None)
+    runner = CodePlan.build_runner(MagicMock(), None)
     assert isinstance(runner, CodePlanRunner)
-
-
-@pytest.mark.unit
-def test_plan_only_factory_builds_workflow_runner() -> None:
-    """PlanOnly.build_runner() returns a WorkflowRunner instance."""
-    from agenthicc.workflows.runner import WorkflowRunner
-    from unittest.mock import MagicMock
-
-    defn = PlanOnly().to_definition(source="builtin")
-    runner = defn.build_runner(MagicMock(), None)
-    assert isinstance(runner, WorkflowRunner)
 
 
 # ── load_builtin_workflows integration ───────────────────────────────────────
 
 @pytest.mark.unit
-def test_load_builtin_workflows_all_have_factories() -> None:
-    """All builtin WorkflowDefinitions carry a non-None runner_factory."""
-    for defn in load_builtin_workflows():
-        assert defn.runner_factory is not None, (
-            f"Workflow {defn.name!r} has no runner_factory"
+def test_load_builtin_workflows_all_have_build_runner() -> None:
+    """All builtin WorkflowPlugin classes expose a build_runner classmethod."""
+    for plugin_cls in load_builtin_workflows():
+        assert callable(getattr(plugin_cls, "build_runner", None)), (
+            f"Workflow {plugin_cls.name!r} has no build_runner"
         )
-
-
-@pytest.mark.unit
-def test_load_builtin_workflows_code_plan_factory_differs() -> None:
-    """The code_plan builtin definition carries the CodePlan-specific factory."""
-    defs = {d.name: d for d in load_builtin_workflows()}
-    code_plan_defn = defs["code_plan"]
-    plan_only_defn = defs["plan_only"]
-
-    assert code_plan_defn.runner_factory is not plan_only_defn.runner_factory
 
 
 # ── No name-based dispatch in tui_session ────────────────────────────────────

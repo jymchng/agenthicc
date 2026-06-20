@@ -6,7 +6,12 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agenthicc.workflows.code_plan.runner import CodePlanRunner
+    from agenthicc.workflows.config import WorkflowConfig
+    from agenthicc.tui.runtime.mode_manager import ModeManager
 
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
@@ -111,18 +116,17 @@ class CodePlan(WorkflowPlugin):
     ]
 
     @classmethod
-    def runner_factory(
+    def build_runner(
         cls,
-        defn: WorkflowPlugin,  # type: ignore[override]
-        config: object,
-        mode_manager: object,
-    ) -> object:
-        """Return a CodePlanRunner — ignores defn; uses its own state machine."""
+        config:       WorkflowConfig,
+        mode_manager: ModeManager | None,
+    ) -> CodePlanRunner:
+        """Return a CodePlanRunner — uses its own state machine (PRD-116)."""
         from agenthicc.workflows.code_plan.runner import CodePlanRunner  # noqa: PLC0415
-        return CodePlanRunner(config, mode_manager)  # type: ignore[return-value]
+        return CodePlanRunner(config, mode_manager)
 
     @classmethod
-    def params_factory(cls, source: dict[str, Any]) -> WorkflowParams:
-        """Build ``CodePlanParams`` from *source* (PRD-111)."""
+    def build_params(cls, source: dict[str, Any]) -> WorkflowParams:
+        """Build ``CodePlanParams`` from *source* (PRD-111, PRD-116)."""
         known = {f.name for f in dataclasses.fields(CodePlanParams)}
         return CodePlanParams(**{k: v for k, v in source.items() if k in known})

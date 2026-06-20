@@ -14,7 +14,7 @@ if TYPE_CHECKING:
         PhaseOutput,
         PhaseSpec,
         WorkflowContext,
-        WorkflowDefinition,
+        WorkflowPlugin,
         WorkflowRun,
     )
     from agenthicc.tui.runtime.mode_manager import ModeManager
@@ -24,12 +24,12 @@ log = logging.getLogger(__name__)
 
 
 class WorkflowRunner:
-    """Executes a phase-based workflow.
+    """Executes a phase-based workflow (PRD-116).
 
     Parameters
     ----------
-    definition:
-        The ``WorkflowDefinition`` describing phases and transitions.
+    plugin_cls:
+        The ``WorkflowPlugin`` subclass describing phases and transitions.
     config:
         A ``WorkflowConfig`` holding all session-scoped singletons.
     mode_manager:
@@ -38,11 +38,11 @@ class WorkflowRunner:
 
     def __init__(
         self,
-        definition:   WorkflowDefinition,
+        plugin_cls:   type[WorkflowPlugin],
         config:       WorkflowConfig,
         mode_manager: ModeManager | None = None,
     ) -> None:
-        self._def          = definition
+        self._plugin       = plugin_cls
         self._cfg          = config          # WorkflowConfig; AgenthiccConfig via self._cfg.cfg
         self._mode_manager = mode_manager
 
@@ -75,24 +75,24 @@ class WorkflowRunner:
         run_id       = uuid.uuid4().hex
         self._run_id = run_id
 
-        context = WorkflowContext(intent=intent, run_id=run_id, workflow_name=self._def.name)
+        context = WorkflowContext(intent=intent, run_id=run_id, workflow_name=self._plugin.name)
         wf_run  = WorkflowRun(
             run_id=run_id,
-            workflow_name=self._def.name,
+            workflow_name=self._plugin.name,
             intent=intent,
-            current_phase=self._def.first_phase().name if self._def.first_phase() else None,
-            total_phases=len(self._def.phases),
+            current_phase=self._plugin.first_phase().name if self._plugin.first_phase() else None,
+            total_phases=len(self._plugin.phases),
         )
         self._cfg.app_state.workflow_run.set(wf_run)
 
         await self._cfg.processor.emit(Event.create("WorkflowRunStarted", {
             "run_id":        run_id,
-            "workflow_name": self._def.name,
+            "workflow_name": self._plugin.name,
             "intent":        intent,
-            "phase_names":   self._def.phase_names(),
+            "phase_names":   self._plugin.phase_names(),
         }))
 
-        start_phase = self._def.first_phase().name if self._def.first_phase() else None
+        start_phase = self._plugin.first_phase().name if self._plugin.first_phase() else None
         await self._run_phase_loop(intent, context, wf_run, run_id, start_phase)
         return context
 
@@ -122,10 +122,10 @@ class WorkflowRunner:
         ]
         wf_run = WorkflowRun(
             run_id=run_id,
-            workflow_name=self._def.name,
+            workflow_name=self._plugin.name,
             intent=context.intent,
             current_phase=None,
-            total_phases=len(self._def.phases),
+            total_phases=len(self._plugin.phases),
             phase_history=phase_history,
         )
         self._cfg.app_state.workflow_run.set(wf_run)
@@ -157,9 +157,9 @@ class WorkflowRunner:
 
         try:
             while phase_name is not None:
-                spec = self._def.get_phase(phase_name)
+                spec = self._plugin.get_phase(phase_name)
                 if spec is None:
-                    log.error("Workflow %s: unknown phase %r", self._def.name, phase_name)
+                    log.error("Workflow %s: unknown phase %r", self._plugin.name, phase_name)
                     wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
                     self._cfg.app_state.workflow_run.set(wf_run)
                     return
@@ -172,13 +172,13 @@ class WorkflowRunner:
                 if spec.max_iterations != -1 and count >= spec.max_iterations:
                     log.warning(
                         "Workflow %s: phase %r hit max_iterations=%d",
-                        self._def.name, phase_name, spec.max_iterations,
+                        self._plugin.name, phase_name, spec.max_iterations,
                     )
                     wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
                     self._cfg.app_state.workflow_run.set(wf_run)
                     self._cfg.conv_store.append_event("error", {
                         "message": (
-                            f"Workflow '{self._def.name}': phase '{phase_name}' exceeded "
+                            f"Workflow '{self._plugin.name}': phase '{phase_name}' exceeded "
                             f"max_iterations={spec.max_iterations}. Stopping."
                         )
                     })
@@ -187,26 +187,26 @@ class WorkflowRunner:
 
                 # Opt-in global cap — only enforced when max_total_phase_runs > 0.
                 # Default is 0 (unlimited) so the execute↔review loop can iterate freely.
-                _max_total = self._def.max_total_phase_runs
+                _max_total = self._plugin.max_total_phase_runs
                 if _max_total > 0:
                     _total_runs = sum(iteration_counts.values())
                     if _total_runs >= _max_total:
                         log.warning(
                             "Workflow %s: global cap reached (%d/%d phase runs). Stopping.",
-                            self._def.name, _total_runs, _max_total,
+                            self._plugin.name, _total_runs, _max_total,
                         )
                         wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
                         self._cfg.app_state.workflow_run.set(wf_run)
                         self._cfg.conv_store.append_event("error", {
                             "message": (
-                                f"Workflow '{self._def.name}' stopped after {_total_runs} phase "
+                                f"Workflow '{self._plugin.name}' stopped after {_total_runs} phase "
                                 f"runs (limit: {_max_total}). Use /auto to continue manually."
                             )
                         })
                         return
 
                 phase_idx = next(
-                    (i for i, p in enumerate(self._def.phases) if p.name == phase_name), 0
+                    (i for i, p in enumerate(self._plugin.phases) if p.name == phase_name), 0
                 )
                 wf_run = dataclasses.replace(
                     wf_run,
@@ -217,9 +217,9 @@ class WorkflowRunner:
 
                 if spec.parallel_with:
                     peer_specs = [spec] + [
-                        self._def.get_phase(n)
+                        self._plugin.get_phase(n)
                         for n in spec.parallel_with
-                        if self._def.get_phase(n) is not None
+                        if self._plugin.get_phase(n) is not None
                     ]
                     outputs = await asyncio.gather(
                         *[self._run_phase(ps, intent, context) for ps in peer_specs],
@@ -247,7 +247,7 @@ class WorkflowRunner:
 
                 await self._cfg.processor.emit(Event.create("WorkflowPhaseStarted", {
                     "run_id": run_id, "phase_name": phase_name,
-                    "workflow_name": self._def.name,
+                    "workflow_name": self._plugin.name,
                 }))
 
                 output = await self._run_phase(spec, intent, context)
@@ -281,7 +281,7 @@ class WorkflowRunner:
             self._cfg.app_state.workflow_run.set(wf_run)
             await self._cfg.processor.emit(Event.create("WorkflowRunCompleted", {
                 "run_id":        run_id,
-                "workflow_name": self._def.name,
+                "workflow_name": self._plugin.name,
                 "phases_run":    len(wf_run.phase_history),
                 "status":        "complete",
             }))
@@ -295,7 +295,7 @@ class WorkflowRunner:
             wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
             self._cfg.conv_store.append_event("error", {
-                "message": f"Workflow '{self._def.name}' failed: {exc}"
+                "message": f"Workflow '{self._plugin.name}' failed: {exc}"
             })
 
     # ── resume helpers ────────────────────────────────────────────────────────
@@ -303,7 +303,7 @@ class WorkflowRunner:
     def _find_resume_phase(self, context: WorkflowContext) -> str | None:
         """Walk the phase-transition graph to find the first incomplete phase."""
         completed  = set(context.phase_outputs.keys())
-        phase_name = self._def.first_phase().name if self._def.first_phase() else None
+        phase_name = self._plugin.first_phase().name if self._plugin.first_phase() else None
         seen: set[str] = set()
 
         while phase_name is not None:
@@ -312,7 +312,7 @@ class WorkflowRunner:
             seen.add(phase_name)
             if phase_name not in completed:
                 return phase_name
-            spec = self._def.get_phase(phase_name)
+            spec = self._plugin.get_phase(phase_name)
             if spec is None:
                 return None
             output = context.phase_outputs[phase_name]
@@ -345,7 +345,7 @@ class WorkflowRunner:
         review_event:  asyncio.Event | None = None
         review_data:   dict                 = {}
         if self._cfg.approval_svc is not None:
-            from agenthicc.workflows.phase_tools import (   # noqa: PLC0415
+            from agenthicc.workflows.code_plan.phase_tools import (   # noqa: PLC0415
                 make_planner_tools, make_executor_tools, make_reviewer_tools,
             )
             plan_event = asyncio.Event()
@@ -677,10 +677,4 @@ class WorkflowRunner:
         return f"{ctx_block}\n\nTask: {intent}"
 
 
-def build_workflow_runner(
-    definition:   WorkflowDefinition,
-    *,
-    config:       WorkflowConfig,
-    mode_manager: ModeManager | None = None,
-) -> WorkflowRunner:
-    return WorkflowRunner(definition, config, mode_manager)
+# build_workflow_runner() removed in PRD-116 — use plugin_cls.build_runner() instead.

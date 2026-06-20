@@ -1169,6 +1169,70 @@ class CodePlanDocsRunner(CodePlanRunner):
 
 ---
 
+## 33. Remove `WorkflowDefinition` — `WorkflowPlugin` as Registry Artifact (PRD-116)
+
+`WorkflowDefinition` is deleted.  The registry stores plugin *classes* directly
+(wrapped in `WorkflowEntry` for provenance).  All workflow metadata lives on
+`WorkflowPlugin` class attributes and classmethods.
+
+### Before → After
+
+```python
+# Before
+defn = WorkflowDefinition(name="x", phases=(...))
+registry.register(defn)
+runner = defn.build_runner(config, mode_manager)
+
+# After
+class MyWorkflow(WorkflowPlugin):
+    name = "x"
+    phases = [...]
+registry.register(MyWorkflow, source="user")
+runner = MyWorkflow.build_runner(config, mode_manager)
+```
+
+### New on `WorkflowPlugin`
+
+| Addition | Purpose |
+|---|---|
+| `max_total_phase_runs: int = 0` | Class attr moved from `WorkflowDefinition` |
+| `first_phase() -> PhaseSpec \| None` | Classmethod query helper |
+| `get_phase(name) -> PhaseSpec \| None` | Classmethod query helper |
+| `phase_names() -> list[str]` | Classmethod query helper |
+| `build_runner(config, mode_manager) -> BaseWorkflowRunner` | Factory classmethod (replaces `runner_factory`) |
+| `build_params(source) -> WorkflowParams` | Factory classmethod (replaces `params_factory`) |
+
+### `WorkflowEntry` — provenance record
+
+```python
+@dataclass(frozen=True)
+class WorkflowEntry:
+    plugin_cls: type[WorkflowPlugin]
+    source: str        # "builtin" | "user" | "project"
+    path: str | None   # filesystem path for user plugins
+```
+
+### Deleted
+
+`WorkflowDefinition`, `WorkflowPlugin.to_definition()`, `WorkflowPlugin.runner_factory`,
+`WorkflowPlugin.params_factory`, `WorkflowPlugin.determine_transition()` (dead code),
+`build_workflow_runner()` (orphan factory).
+
+| # | Requirement | Expected behaviour |
+|---|---|---|
+| 33.1 | `WorkflowDefinition` gone | `from agenthicc.workflows.plugin import WorkflowDefinition` raises `ImportError`. |
+| 33.2 | Registry stores classes | `registry.get(name)` returns `type[WorkflowPlugin] \| None`. |
+| 33.3 | `WorkflowEntry` provenance | `registry.get_entry(name)` returns `WorkflowEntry(plugin_cls, source, path)`. |
+| 33.4 | `build_runner()` factory | `PluginCls.build_runner(config, mode_manager)` — default returns `WorkflowRunner(PluginCls, ...)`. |
+| 33.5 | `build_params()` factory | `PluginCls.build_params(source_dict)` — default returns `WorkflowParams()`. |
+| 33.6 | `WorkflowRunner` takes plugin class | `WorkflowRunner(PluginCls, config, mode_manager)` — reads `PluginCls.phases` etc. |
+| 33.7 | `max_total_phase_runs` on plugin | `WorkflowPlugin.max_total_phase_runs = 0` class attr; subclasses override. |
+| 33.8 | Loader returns classes | `load_builtin_workflows()` returns `list[type[WorkflowPlugin]]`. |
+| 33.9 | Backward-compat shims | `from agenthicc.workflows.builtins import CodePlan` still works. |
+| 33.10 | No `Any` | No `typing.Any` in any changed file. |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

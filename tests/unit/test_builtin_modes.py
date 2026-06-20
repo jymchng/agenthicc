@@ -25,7 +25,7 @@ pytestmark = pytest.mark.unit
 # Fixture
 # ---------------------------------------------------------------------------
 
-_EXPECTED_ORDER = ["Auto", "Plan", "Ask", "Review", "Safe", "Debug"]
+_EXPECTED_ORDER = ["Auto", "Plan", "Safe"]
 
 
 def _reg():
@@ -40,7 +40,7 @@ def _reg():
 
 def test_build_default_registry_returns_six_modes():
     reg = _reg()
-    assert len(reg) == 6
+    assert len(reg) == 3
 
 
 def test_build_default_registry_mode_names():
@@ -67,7 +67,7 @@ def test_cycle_order_matches_expected():
     for _ in range(6):
         current = reg.next_after(current).name
         visited.append(current)
-    assert visited == ["Plan", "Ask", "Review", "Safe", "Debug", "Auto"]
+    assert visited == ["Plan", "Safe", "Auto", "Plan", "Safe", "Auto"]
 
 
 def test_cycle_wraps_from_debug_to_auto():
@@ -156,78 +156,6 @@ def test_plan_colour():
 
 
 # ---------------------------------------------------------------------------
-# Ask mode
-# ---------------------------------------------------------------------------
-
-
-def test_ask_no_tool_filter():
-    reg = _reg()
-    ask = reg.get("Ask")
-    assert ask is not None
-    assert ask.tool_filter is None
-
-
-def test_ask_system_patch_contains_ask():
-    reg = _reg()
-    ask = reg.get("Ask")
-    assert "ASK" in ask.system_patch
-
-
-def test_ask_system_patch_non_empty():
-    reg = _reg()
-    ask = reg.get("Ask")
-    assert ask.system_patch
-
-
-def test_ask_colour():
-    reg = _reg()
-    ask = reg.get("Ask")
-    assert ask.colour == "cyan"
-
-
-# ---------------------------------------------------------------------------
-# Review mode
-# ---------------------------------------------------------------------------
-
-
-def test_review_has_tool_filter():
-    reg = _reg()
-    review = reg.get("Review")
-    assert review is not None
-    assert review.tool_filter is not None
-
-
-def test_review_blocks_run_bash():
-    reg = _reg()
-    review = reg.get("Review")
-    assert review.tool_filter("run_bash", {}) is False
-
-
-def test_review_allows_git_diff():
-    reg = _reg()
-    review = reg.get("Review")
-    assert review.tool_filter("git_diff", {}) is True
-
-
-def test_review_allows_read_file():
-    reg = _reg()
-    review = reg.get("Review")
-    assert review.tool_filter("read_file", {}) is True
-
-
-def test_review_blocks_write_file():
-    reg = _reg()
-    review = reg.get("Review")
-    assert review.tool_filter("write_file", {}) is False
-
-
-def test_review_colour():
-    reg = _reg()
-    review = reg.get("Review")
-    assert review.colour == "blue"
-
-
-# ---------------------------------------------------------------------------
 # Safe mode
 # ---------------------------------------------------------------------------
 
@@ -261,48 +189,6 @@ def test_safe_colour():
     reg = _reg()
     safe = reg.get("Safe")
     assert safe.colour == "red"
-
-
-# ---------------------------------------------------------------------------
-# Debug mode
-# ---------------------------------------------------------------------------
-
-
-def test_debug_no_tool_filter():
-    reg = _reg()
-    debug = reg.get("Debug")
-    assert debug is not None
-    assert debug.tool_filter is None
-
-
-def test_debug_post_hook_is_not_none():
-    reg = _reg()
-    debug = reg.get("Debug")
-    assert debug.post_hook is not None
-
-
-def test_debug_post_hook_returns_content_plus_debug():
-    reg = _reg()
-    debug = reg.get("Debug")
-    result = debug.post_hook("my response", None)
-    assert "my response" in result
-    assert "DEBUG" in result
-
-
-def test_debug_post_hook_appends_to_response():
-    reg = _reg()
-    debug = reg.get("Debug")
-    original = "Original agent response."
-    result = debug.post_hook(original, None)
-    # Original content comes first, then debug info appended
-    assert result.startswith(original)
-    assert len(result) > len(original)
-
-
-def test_debug_colour():
-    reg = _reg()
-    debug = reg.get("Debug")
-    assert debug.colour == "magenta"
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agenthicc.workflows.base import BaseWorkflowRunner
+from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.code_plan import CodePlanRunner
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.code_plan.definition import CodePlan
@@ -210,13 +210,8 @@ def test_composite_plugin_subclasses_code_plan() -> None:
         name = "my_composite"
         mode_bindings = ["Plan"]
 
-        @classmethod
-        def runner_factory(cls, defn, config, mode_manager):
-            return CodePlanRunner(config, mode_manager)
-
-    defn = _MyPlugin().to_definition(source="user")
-    assert defn.name == "my_composite"
-    assert "Plan" in defn.mode_bindings
+    assert _MyPlugin.name == "my_composite"
+    assert "Plan" in _MyPlugin.mode_bindings
 
 
 @pytest.mark.unit
@@ -229,7 +224,7 @@ def test_composite_plugin_registered_in_registry() -> None:
         mode_bindings = []
 
     registry = WorkflowRegistry()
-    registry.register(_MyPlugin().to_definition(source="user"))
+    registry.register(_MyPlugin, source="user")
     assert registry.get("my_composite_v2") is not None
     assert registry.get("code_plan") is None   # only registered one
 

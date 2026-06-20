@@ -39,7 +39,7 @@ def test_mode_cycle_all_builtin():
         mode = manager.cycle()
         visited.add(mode.name)
 
-    assert visited == {"Auto", "Plan", "Ask", "Review", "Safe", "Debug"}
+    assert visited == {"Auto", "Plan", "Safe",}
 
     # The 6th cycle wrapped back to Auto; the 7th continues from Auto → Plan.
     seventh = manager.cycle()
@@ -69,41 +69,6 @@ def test_apply_to_agent_plan_mode():
     assert plan_mode is not None
     assert "PLAN" in system
     assert system.startswith(plan_mode.system_patch[:20])
-
-
-# ---------------------------------------------------------------------------
-# 3. test_debug_post_hook_appends_stats
-# ---------------------------------------------------------------------------
-
-
-def test_debug_post_hook_appends_stats():
-    """Debug mode post_hook appends a DEBUG footer to the agent response."""
-    registry = build_default_registry()
-    manager = ModeManager(registry)
-    manager.set("Debug")
-
-    active = manager.active
-    assert active is not None
-    assert active.post_hook is not None
-
-    # Build a renderer mock whose _status has the fields _debug_post_hook reads.
-    mock_renderer = MagicMock()
-    mock_status = MagicMock()
-    mock_status.intent_started_at = 0
-    mock_status.input_tokens = 100
-    mock_status.output_tokens = 50
-    mock_status.session_cost_usd = 0.001
-    # _debug_post_hook reads these names from context._status:
-    mock_status.elapsed = 0.0
-    mock_status.tokens_in = 100
-    mock_status.tokens_out = 50
-    mock_status.cost = 0.001
-    mock_renderer._status = mock_status
-
-    result = active.post_hook("Hello.", mock_renderer)
-
-    assert "Hello." in result
-    assert "DEBUG" in result
 
 
 # ---------------------------------------------------------------------------

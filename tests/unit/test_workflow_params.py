@@ -1,4 +1,4 @@
-"""Tests for per-workflow tunable parameters (PRD-111)."""
+"""Tests for per-workflow tunable parameters (PRD-111, PRD-116)."""
 from __future__ import annotations
 
 import dataclasses
@@ -6,10 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowDefinition, WorkflowParams, WorkflowPlugin
-from agenthicc.workflows.builtins import CodePlan, CodePlanParams, PlanOnly, ReviewOnly
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 from agenthicc.workflows.loader import load_builtin_workflows
 from agenthicc.config import AgenthiccConfig
+from agenthicc.workflows.code_plan import CodePlanParams, CodePlan
 
 
 # ── WorkflowParams base ───────────────────────────────────────────────────────
@@ -88,108 +88,70 @@ def test_code_plan_params_is_workflow_params_subclass() -> None:
     assert issubclass(CodePlanParams, WorkflowParams)
 
 
-# ── WorkflowPlugin.params_factory default ────────────────────────────────────
+# ── WorkflowPlugin.build_params default ──────────────────────────────────────
 
 @pytest.mark.unit
-def test_default_params_factory_returns_base_workflow_params() -> None:
+def test_default_build_params_returns_base_workflow_params() -> None:
     class MyWorkflow(WorkflowPlugin):
         name   = "my"
         phases = [PhaseSpec(name="p")]
 
-    result = MyWorkflow.params_factory({})
+    result = MyWorkflow.build_params({})
     assert type(result) is WorkflowParams
 
 
 @pytest.mark.unit
-def test_default_params_factory_ignores_source() -> None:
-    result = WorkflowPlugin.params_factory({"anything": "value"})
+def test_default_build_params_ignores_source() -> None:
+    result = WorkflowPlugin.build_params({"anything": "value"})
     assert type(result) is WorkflowParams
     assert result.get_phase_models() == {}
 
 
 @pytest.mark.unit
-def test_code_plan_params_factory_builds_code_plan_params() -> None:
-    result = CodePlan.params_factory({"execute_model": "claude-haiku-4-5"})
+def test_code_plan_build_params_constructs_code_plan_params() -> None:
+    result = CodePlan.build_params({"execute_model": "claude-haiku-4-5"})
     assert isinstance(result, CodePlanParams)
     assert result.execute_model == "claude-haiku-4-5"
 
 
 @pytest.mark.unit
-def test_code_plan_params_factory_filters_unknown_keys() -> None:
-    result = CodePlan.params_factory({"execute_model": "X", "unknown": "Y"})
+def test_code_plan_build_params_filters_unknown_keys() -> None:
+    result = CodePlan.build_params({"execute_model": "X", "unknown": "Y"})
     assert isinstance(result, CodePlanParams)
     assert result.execute_model == "X"
     assert not hasattr(result, "unknown")
 
 
 @pytest.mark.unit
-def test_code_plan_params_factory_empty_source_uses_defaults() -> None:
-    result = CodePlan.params_factory({})
+def test_code_plan_build_params_empty_source_uses_defaults() -> None:
+    result = CodePlan.build_params({})
     assert isinstance(result, CodePlanParams)
     assert result.execute_model == ""
 
 
-# ── WorkflowDefinition.build_params ──────────────────────────────────────────
+# ── plugin_cls.build_params() ─────────────────────────────────────────────────
 
 @pytest.mark.unit
-def test_build_params_none_factory_returns_base() -> None:
-    defn = WorkflowDefinition(name="test", phases=(PhaseSpec(name="p"),))
-    result = defn.build_params({"anything": "x"})
+def test_build_params_base_plugin_returns_base() -> None:
+    class _TestWf(WorkflowPlugin):
+        name = "test"
+        phases = [PhaseSpec(name="p")]
+
+    result = _TestWf.build_params({"anything": "x"})
     assert type(result) is WorkflowParams
 
 
 @pytest.mark.unit
-def test_build_params_delegates_to_factory() -> None:
-    calls: list = []
-
-    def my_factory(source):
-        calls.append(source)
-        return WorkflowParams()
-
-    defn = WorkflowDefinition(
-        name="test", phases=(PhaseSpec(name="p"),),
-        params_factory=my_factory,
-    )
-    defn.build_params({"key": "val"})
-    assert calls == [{"key": "val"}]
+def test_code_plan_build_params_differs_from_default() -> None:
+    from agenthicc.workflows import CodePlan
+    assert CodePlan.build_params.__func__ is not WorkflowPlugin.build_params.__func__
 
 
 @pytest.mark.unit
-def test_code_plan_definition_build_params_constructs_code_plan_params() -> None:
-    defn = CodePlan().to_definition(source="builtin")
-    result = defn.build_params({"execute_model": "claude-haiku-4-5"})
-    assert isinstance(result, CodePlanParams)
-    assert result.execute_model == "claude-haiku-4-5"
-
-
-@pytest.mark.unit
-def test_plan_only_definition_build_params_returns_base() -> None:
-    defn = PlanOnly().to_definition(source="builtin")
-    result = defn.build_params({"execute_model": "anything"})
-    assert type(result) is WorkflowParams
-
-
-# ── to_definition() carries params_factory ───────────────────────────────────
-
-@pytest.mark.unit
-def test_to_definition_carries_params_factory() -> None:
-    defn = CodePlan().to_definition(source="builtin")
-    assert defn.params_factory is not None
-    assert defn.params_factory.__func__ is CodePlan.params_factory.__func__
-
-
-@pytest.mark.unit
-def test_plan_only_to_definition_carries_default_factory() -> None:
-    defn = PlanOnly().to_definition(source="builtin")
-    assert defn.params_factory is not None
-    assert defn.params_factory.__func__ is WorkflowPlugin.params_factory.__func__
-
-
-@pytest.mark.unit
-def test_all_builtins_carry_params_factory() -> None:
-    for defn in load_builtin_workflows():
-        assert defn.params_factory is not None, (
-            f"Workflow {defn.name!r} has no params_factory"
+def test_all_builtins_have_build_params() -> None:
+    for plugin_cls in load_builtin_workflows():
+        assert callable(getattr(plugin_cls, "build_params", None)), (
+            f"Workflow {plugin_cls.name!r} has no build_params"
         )
 
 
@@ -225,8 +187,7 @@ def test_load_config_parses_workflows_section(tmp_path) -> None:
 def test_end_to_end_phase_model_resolution() -> None:
     """Simulate the full path: TOML → build_params → model_for_phase."""
     cfg_workflows = {"execute_model": "claude-haiku-4-5", "plan_model": ""}
-    defn = CodePlan().to_definition(source="builtin")
-    params = defn.build_params(cfg_workflows)
+    params = CodePlan.build_params(cfg_workflows)
 
     # Execute phase uses cheap model
     assert params.model_for_phase("execute", "claude-opus") == "claude-haiku-4-5"

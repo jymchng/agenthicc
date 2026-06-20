@@ -173,43 +173,12 @@ def build_default_registry() -> ModeRegistry:
     ))
 
     registry.register(Mode(
-        name="Ask",
-        label="?",
-        description="Question-and-answer mode — no tool filter; ask before acting.",
-        colour="cyan",
-        system_patch=_ASK_PATCH,
-        tool_filter=None,
-        source_id="builtin",
-    ))
-
-    registry.register(Mode(
-        name="Review",
-        label="⊙",
-        description="Code review mode — read and diff only; block write and exec.",
-        colour="blue",
-        system_patch=_REVIEW_PATCH,
-        tool_filter=_review_filter,
-        source_id="builtin",
-    ))
-
-    registry.register(Mode(
         name="Safe",
         label="⊘",
         description="Safe mode — read-only; all writes and exec tools blocked.",
         colour="red",
         system_patch=_SAFE_PATCH,
         tool_filter=_safe_filter,
-        source_id="builtin",
-    ))
-
-    registry.register(Mode(
-        name="Debug",
-        label="⚙",
-        description="Debug mode — full tool access with response annotation.",
-        colour="magenta",
-        system_patch=_DEBUG_PATCH,
-        tool_filter=None,
-        post_hook=_debug_post_hook,
         source_id="builtin",
     ))
 

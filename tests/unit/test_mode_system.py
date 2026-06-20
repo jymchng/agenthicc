@@ -364,7 +364,7 @@ def test_manager_cycle_six_modes_full_loop():
     names = []
     for _ in range(6):
         names.append(mgr.cycle().name)
-    assert names == ["Plan", "Ask", "Review", "Safe", "Debug", "Auto"]
+    assert names == ["Plan", "Safe", "Auto", "Plan", "Safe", "Auto"]
 
 
 def test_manager_cycle_raises_on_empty_registry():

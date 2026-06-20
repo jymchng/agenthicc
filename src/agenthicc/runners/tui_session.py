@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import SendMessageCommand, InterruptAgentCommand
     from agenthicc.tools.approval import ApprovalService
-    from agenthicc.workflows.plugin import WorkflowDefinition, WorkflowContext
+    from agenthicc.workflows.plugin import WorkflowContext, WorkflowPlugin
 
 def _make_session_tools(
     approval_svc: ApprovalService | None,
@@ -27,7 +27,7 @@ def _make_session_tools(
     semantic_index: SemanticIndex | None = None,
 ) -> list:
     """Tools injected into every interactive agent turn (Auto mode + plan phase)."""
-    from agenthicc.workflows.phase_tools import make_questions_tool  # noqa: PLC0415
+    from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
     from agenthicc.workflows.memory_tools import make_memory_tools   # noqa: PLC0415
     return (
         make_questions_tool(approval_svc)
@@ -580,25 +580,24 @@ class TUISession:
             self._workflow_override
             or ctx.app_state.active_mode().default_workflow
         )
-        _wf_defn = ctx.workflow_registry.get(_active_wf_name) if _active_wf_name else None
+        _plugin_cls = ctx.workflow_registry.get(_active_wf_name) if _active_wf_name else None
 
         _timeout = ctx.cfg.execution.turn_timeout_s
 
         async def _run_inner() -> None:
-            if _wf_defn is not None:
+            if _plugin_cls is not None:
                 import dataclasses as _dc  # noqa: PLC0415
-                # PRD-111: build per-workflow params from merged TOML/CLI/env config.
-                _wf_params = _wf_defn.build_params(
-                    ctx.cfg.workflows.get(_wf_defn.name, {})
+                # PRD-116: build per-workflow params from merged TOML/CLI/env config.
+                _wf_params = _plugin_cls.build_params(
+                    ctx.cfg.workflows.get(_plugin_cls.name, {})
                 )
                 _wf_config = _dc.replace(
                     self._wf_config_base,
                     completed_turns=self._turn_count,
                     params=_wf_params,
                 )
-                # Each WorkflowDefinition carries its own runner_factory (PRD-110).
-                # No name-based branching here — the plugin owns the runner choice.
-                _wf_runner = _wf_defn.build_runner(_wf_config, ctx.mode_manager)
+                # Plugin owns runner construction — no name-based branching.
+                _wf_runner = _plugin_cls.build_runner(_wf_config, ctx.mode_manager)
                 await _wf_runner.run(text)
                 # PRD-89: exit workflow-bound mode after successful completion
                 _wf_result = ctx.app_state.workflow_run()
@@ -760,7 +759,7 @@ class TUISession:
             )
             return
 
-    async def _resume_workflow_task(self, wf_defn: WorkflowDefinition, context: WorkflowContext) -> None:
+    async def _resume_workflow_task(self, wf_defn: type[WorkflowPlugin], context: WorkflowContext) -> None:
         """Resume a WorkflowRunner with error handling matching agent_task_body."""
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
         ctx = self._ctx
@@ -942,7 +941,7 @@ def _run_tui(ctx: CLIContext) -> None:
 
     resume_id: str | None = ctx.resume_id
     if resume_id is None and ctx.continue_session:
-        resume_id = find_latest_session_for_cwd()
+        resume_id = _find_latest_session_for_cwd()
         if resume_id is None:
             print("No previous session found for this directory. Starting fresh.")
 

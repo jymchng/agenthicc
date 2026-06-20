@@ -66,14 +66,23 @@ class AtMentionTrigger(TriggerHandlerBase):
             search_dir = cwd / dir_part
             if not search_dir.is_dir():
                 return []
-            candidates: list[MatchItem] = []
+            # Subdirectory navigation uses strict case-insensitive PREFIX matching
+            # only — NOT substring or fuzzy.  The user has already chosen the
+            # directory; the suffix is the start of the filename they want.
+            # Using filter_and_rank here would make "." match every file that has
+            # an extension (substring hit), so "@docs/." would populate the picker
+            # with all docs instead of returning no results.
+            prefix_cf = file_prefix.casefold()
+            results: list[MatchItem] = []
             for entry in self._iter_dir(search_dir):
                 if entry.name.startswith("."):
                     continue
+                if prefix_cf and not entry.name.casefold().startswith(prefix_cf):
+                    continue
                 suffix = "/" if entry.is_dir() else ""
                 display_path = f"{dir_part}/{entry.name}{suffix}"
-                candidates.append(MatchItem(display=display_path, value=display_path))
-            return filter_and_rank(file_prefix, candidates)
+                results.append(MatchItem(display=display_path, value=display_path))
+            return results
 
         # ── top-level search: build candidate pool then rank ─────────────────
         if not cwd.is_dir():

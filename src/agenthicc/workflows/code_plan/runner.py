@@ -21,7 +21,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
-from agenthicc.workflows.base import BaseWorkflowRunner
+from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 
 if TYPE_CHECKING:
@@ -328,9 +328,9 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _plan(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until finalize_plan() or exit_code_plan() fires; return EXECUTE, EXITED, or FAILED."""
-        from agenthicc.workflows.phase_tools import make_planner_tools  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_planner_tools  # noqa: PLC0415
 
-        from agenthicc.workflows.phase_tools import make_questions_tool  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
 
         self._set_phase("plan", 0, ctx)
         exit_event: asyncio.Event = asyncio.Event()
@@ -378,7 +378,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _execute(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until mark_execute_complete() fires; return REVIEW or FAILED."""
-        from agenthicc.workflows.phase_tools import make_executor_tools  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_executor_tools  # noqa: PLC0415
 
         self._set_phase("execute", 1, ctx)
 
@@ -427,7 +427,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _review(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until approve_review() or reject_review() fires; return SUMMARIZE, EXECUTE, or FAILED."""
-        from agenthicc.workflows.phase_tools import make_reviewer_tools  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import make_reviewer_tools  # noqa: PLC0415
         self._set_phase("review", 2, ctx)
 
         # Embed accumulated context in the system prompt so every retry turn

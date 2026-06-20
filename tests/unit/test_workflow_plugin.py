@@ -1,4 +1,4 @@
-"""Unit tests: workflow/plugin.py — PhaseSpec, WorkflowDefinition, WorkflowContext (PRD-87)."""
+"""Unit tests: workflow/plugin.py — PhaseSpec, WorkflowPlugin, WorkflowContext (PRD-87, PRD-116)."""
 from __future__ import annotations
 
 import pytest
@@ -6,8 +6,7 @@ import pytest
 from agenthicc.agents.plugin import READ_CAPS
 from agenthicc.tools.capabilities import ToolCapability
 from agenthicc.workflows.plugin import (
-    PhaseRole, PhaseSpec, WorkflowContext, WorkflowDefinition,
-    WorkflowPlugin, PhaseOutput, _parse_output_schema,
+    PhaseRole, PhaseSpec, WorkflowContext, WorkflowPlugin, PhaseOutput, _parse_output_schema,
 )
 
 pytestmark = pytest.mark.unit
@@ -67,24 +66,34 @@ class TestPhaseSpec:
             spec.name = "changed"  # type: ignore[misc]
 
 
-class TestWorkflowDefinition:
-    def _wf(self, *names):
-        return WorkflowDefinition(name="wf", phases=tuple(PhaseSpec(name=n) for n in names))
+class TestWorkflowPlugin:
+    def _plugin(self, *names: str) -> type[WorkflowPlugin]:
+        specs = tuple(PhaseSpec(name=n) for n in names)
+
+        class _Wf(WorkflowPlugin):
+            name = "wf"
+            phases = list(specs)
+
+        return _Wf
 
     def test_get_phase_found(self):
-        assert self._wf("plan", "execute").get_phase("plan").name == "plan"
+        assert self._plugin("plan", "execute").get_phase("plan").name == "plan"
 
     def test_get_phase_missing(self):
-        assert self._wf("plan").get_phase("x") is None
+        assert self._plugin("plan").get_phase("x") is None
 
     def test_first_phase(self):
-        assert self._wf("plan", "execute").first_phase().name == "plan"
+        assert self._plugin("plan", "execute").first_phase().name == "plan"
 
     def test_first_phase_empty(self):
-        assert WorkflowDefinition(name="wf").first_phase() is None
+        class _Empty(WorkflowPlugin):
+            name = "wf"
+            phases = []
+
+        assert _Empty.first_phase() is None
 
     def test_phase_names(self):
-        assert self._wf("a", "b", "c").phase_names() == ["a", "b", "c"]
+        assert self._plugin("a", "b", "c").phase_names() == ["a", "b", "c"]
 
 
 class TestWorkflowContext:
@@ -131,24 +140,57 @@ class TestParseOutputSchema:
         assert _parse_output_schema("hi", "other") == {"raw": "hi"}
 
 
-class TestWorkflowPlugin:
-    def test_to_definition(self):
+class TestWorkflowPluginSubclass:
+    def test_name_and_mode_bindings(self):
         class MyWf(WorkflowPlugin):
             name = "my_wf"
             description = "d"
             mode_bindings = ["Plan"]
             phases = [PhaseSpec(name="p", agent_type=PhaseRole.PLANNER)]
-        defn = MyWf().to_definition(source="user", path="/tmp/x.py")
-        assert defn.name == "my_wf" and "Plan" in defn.mode_bindings
+
+        assert MyWf.name == "my_wf"
+        assert "Plan" in MyWf.mode_bindings
 
     def test_transition_approved(self):
+        from unittest.mock import MagicMock
+        from agenthicc.workflows import WorkflowRunner
+        from agenthicc.workflows.config import WorkflowConfig
+
+        class _Wf(WorkflowPlugin):
+            name = "wf"
+            phases = [PhaseSpec(name="p", next="q", on_reject="p")]
+
+        app_state = MagicMock()
+        app_state.active_mode.return_value.blocked_capabilities = frozenset()
+        cfg = WorkflowConfig(
+            conv_store=MagicMock(), app_state=app_state, processor=MagicMock(),
+            agent_runner=MagicMock(), approval_svc=None, cfg=MagicMock(),
+            skills={}, plugin_tools=[], mcp_registry=None,
+            mention_cache=MagicMock(), agents_registry=MagicMock(),
+        )
+        runner = WorkflowRunner(_Wf, cfg)
         spec = PhaseSpec(name="p", next="q", on_reject="p")
         out  = PhaseOutput(phase_name="p", role="r", approved=True)
-        ctx  = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
-        assert WorkflowPlugin().determine_transition(spec, out, ctx) == "q"
+        assert runner._determine_transition(spec, out) == "q"
 
     def test_transition_rejected(self):
+        from unittest.mock import MagicMock
+        from agenthicc.workflows import WorkflowRunner
+        from agenthicc.workflows.config import WorkflowConfig
+
+        class _Wf(WorkflowPlugin):
+            name = "wf"
+            phases = [PhaseSpec(name="p", next="q", on_reject="retry")]
+
+        app_state = MagicMock()
+        app_state.active_mode.return_value.blocked_capabilities = frozenset()
+        cfg = WorkflowConfig(
+            conv_store=MagicMock(), app_state=app_state, processor=MagicMock(),
+            agent_runner=MagicMock(), approval_svc=None, cfg=MagicMock(),
+            skills={}, plugin_tools=[], mcp_registry=None,
+            mention_cache=MagicMock(), agents_registry=MagicMock(),
+        )
+        runner = WorkflowRunner(_Wf, cfg)
         spec = PhaseSpec(name="p", next="q", on_reject="retry")
         out  = PhaseOutput(phase_name="p", role="r", approved=False)
-        ctx  = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
-        assert WorkflowPlugin().determine_transition(spec, out, ctx) == "retry"
+        assert runner._determine_transition(spec, out) == "retry"

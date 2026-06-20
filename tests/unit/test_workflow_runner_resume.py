@@ -1,4 +1,4 @@
-"""Unit tests for WorkflowRunner.resume() and _find_resume_phase() (PRD-94)."""
+"""Unit tests for WorkflowRunner.resume() and _find_resume_phase() (PRD-94, PRD-116)."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -10,20 +10,26 @@ from agenthicc.workflows.plugin import (
     PhaseOutput,
     PhaseSpec,
     WorkflowContext,
-    WorkflowDefinition,
+    WorkflowPlugin,
 )
-from agenthicc.workflows.runner import WorkflowRunner
+from agenthicc.workflows import WorkflowRunner
 
 pytestmark = pytest.mark.unit
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _make_definition(phases: list[PhaseSpec]) -> WorkflowDefinition:
-    return WorkflowDefinition(name="test_wf", phases=tuple(phases))
+def _make_plugin(phases: list[PhaseSpec]) -> type[WorkflowPlugin]:
+    _phases = list(phases)
+
+    class _TestWorkflow(WorkflowPlugin):
+        name = "test_wf"
+
+    _TestWorkflow.phases = _phases
+    return _TestWorkflow
 
 
-def _make_runner(definition: WorkflowDefinition) -> WorkflowRunner:
+def _make_runner(plugin_cls: type[WorkflowPlugin]) -> WorkflowRunner:
     """Build a WorkflowRunner with all dependencies mocked."""
     app_state = MagicMock()
     app_state.active_mode.return_value.blocked_capabilities = frozenset()
@@ -41,7 +47,7 @@ def _make_runner(definition: WorkflowDefinition) -> WorkflowRunner:
         mention_cache=MagicMock(),
         agents_registry=MagicMock(),
     )
-    runner = WorkflowRunner(definition, cfg)
+    runner = WorkflowRunner(plugin_cls, cfg)
     # Stub processor.emit
     runner._cfg.processor.emit = AsyncMock()
     return runner
@@ -51,30 +57,30 @@ def _make_runner(definition: WorkflowDefinition) -> WorkflowRunner:
 
 class TestFindResumePhase:
     def test_empty_context_returns_first_phase(self):
-        defn = _make_definition([
+        plugin_cls = _make_plugin([
             PhaseSpec(name="plan", next="execute"),
             PhaseSpec(name="execute"),
         ])
-        runner = _make_runner(defn)
+        runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         assert runner._find_resume_phase(ctx) == "plan"
 
     def test_first_phase_done_returns_second(self):
-        defn = _make_definition([
+        plugin_cls = _make_plugin([
             PhaseSpec(name="plan", next="execute"),
             PhaseSpec(name="execute"),
         ])
-        runner = _make_runner(defn)
+        runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="done", approved=True))
         assert runner._find_resume_phase(ctx) == "execute"
 
     def test_all_phases_done_returns_none(self):
-        defn = _make_definition([
+        plugin_cls = _make_plugin([
             PhaseSpec(name="plan", next="execute"),
             PhaseSpec(name="execute"),
         ])
-        runner = _make_runner(defn)
+        runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="p", approved=True))
         ctx.add_output(PhaseOutput(phase_name="execute", role="executor", full_text="e"))
@@ -82,28 +88,28 @@ class TestFindResumePhase:
 
     def test_on_reject_path_skipped_if_phase_approved(self):
         """When plan was approved, on_reject branch is ignored."""
-        defn = _make_definition([
+        plugin_cls = _make_plugin([
             PhaseSpec(name="plan", next="execute", on_reject="plan"),
             PhaseSpec(name="execute"),
         ])
-        runner = _make_runner(defn)
+        runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="p", approved=True))
         assert runner._find_resume_phase(ctx) == "execute"
 
     def test_no_phases_returns_none(self):
-        defn = _make_definition([])
-        runner = _make_runner(defn)
+        plugin_cls = _make_plugin([])
+        runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         assert runner._find_resume_phase(ctx) is None
 
     def test_cycle_guard(self):
         """If phase graph has a cycle of already-completed phases, returns None."""
-        defn = _make_definition([
+        plugin_cls = _make_plugin([
             PhaseSpec(name="a", next="b"),
             PhaseSpec(name="b", next="a"),
         ])
-        runner = _make_runner(defn)
+        runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         ctx.add_output(PhaseOutput(phase_name="a", role="r", full_text=""))
         ctx.add_output(PhaseOutput(phase_name="b", role="r", full_text=""))
@@ -115,10 +121,10 @@ class TestFindResumePhase:
 
 class TestWorkflowRunnerResume:
     async def test_resume_all_done_marks_complete(self):
-        defn = _make_definition([
+        plugin_cls = _make_plugin([
             PhaseSpec(name="plan", next=None),
         ])
-        runner = _make_runner(defn)
+        runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="run1", workflow_name="test_wf")
         ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="done", approved=True))
 
@@ -129,11 +135,11 @@ class TestWorkflowRunnerResume:
         assert runner._run_id == "run1"
 
     async def test_resume_missing_phase_runs_it(self):
-        defn = _make_definition([
+        plugin_cls = _make_plugin([
             PhaseSpec(name="plan", next="execute"),
             PhaseSpec(name="execute", next=None),
         ])
-        runner = _make_runner(defn)
+        runner = _make_runner(plugin_cls)
         # Pre-populate plan phase only
         ctx = WorkflowContext(intent="x", run_id="run1", workflow_name="test_wf")
         ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="plan done", approved=True))
@@ -151,16 +157,16 @@ class TestWorkflowRunnerResume:
         assert called_with == ["execute"]
 
     async def test_resume_sets_run_id_on_self(self):
-        defn = _make_definition([PhaseSpec(name="plan")])
-        runner = _make_runner(defn)
+        plugin_cls = _make_plugin([PhaseSpec(name="plan")])
+        runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="my-run-id", workflow_name="wf")
         ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="done"))
         await runner.resume(ctx)
         assert runner._run_id == "my-run-id"
 
     async def test_resume_initialises_shared_memory(self):
-        defn = _make_definition([PhaseSpec(name="plan")])
-        runner = _make_runner(defn)
+        plugin_cls = _make_plugin([PhaseSpec(name="plan")])
+        runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         ctx.add_output(PhaseOutput(phase_name="plan", role="p", full_text=""))
         assert runner._shared_memory is None
