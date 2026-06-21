@@ -84,7 +84,8 @@ class StatusComponent:
         cols = _get_cols()
 
         _frame     = conv.frame()
-        flower     = _FLOWERS[_frame % len(_FLOWERS)]
+        # Flower animates only while the agent is active; frozen at index 0 when idle.
+        flower     = _FLOWERS[_frame % len(_FLOWERS)] if conv.is_running() or conv.compaction_active() else _FLOWERS[0]
         agent_st   = conv.agent_state()
         state_name = agent_st.name.lower()
 

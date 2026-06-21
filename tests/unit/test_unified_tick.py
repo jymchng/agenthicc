@@ -127,20 +127,43 @@ class TestFrameDrivesAnimation:
         state.workflow_run.return_value = None
         return state
 
-    def test_flower_changes_with_frame(self) -> None:
+    def test_flower_is_static_when_idle(self) -> None:
+        """Flower must not change when agent is idle and compaction is off."""
         from rich.console import Console  # noqa: PLC0415
         from agenthicc.tui.workspace.components import StatusComponent, _FLOWERS  # noqa: PLC0415
 
         results: set[str] = set()
         for i in range(len(_FLOWERS)):
-            state = self._make_state(frame=i)
+            state = self._make_state(frame=i)  # idle, compaction off
             comp = StatusComponent(state)
             console = Console(highlight=False, markup=False, no_color=True, width=120)
             with console.capture() as cap:
                 console.print(comp.render())
-            results.add(cap.get()[0])  # first char is the flower
+            results.add(cap.get()[0])
 
-        assert len(results) == len(_FLOWERS), "All flowers should appear across frame values"
+        assert len(results) == 1, "Flower must be fixed when idle"
+        assert results == {_FLOWERS[0]}
+
+    def test_flower_animates_when_running(self) -> None:
+        """Flower must cycle through values when the agent is running."""
+        from rich.console import Console  # noqa: PLC0415
+        from agenthicc.tui.workspace.components import StatusComponent, _FLOWERS  # noqa: PLC0415
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        results: set[str] = set()
+        for i in range(len(_FLOWERS)):
+            state = self._make_state(frame=i)
+            state.conversation.is_running.return_value = True
+            state.conversation.agent_state.return_value = MagicMock(name="THINKING")
+            state.conversation.agent_state().name = "THINKING"
+            state.conversation.elapsed_s = float(i)
+            comp = StatusComponent(state)
+            console = Console(highlight=False, markup=False, no_color=True, width=120)
+            with console.capture() as cap:
+                console.print(comp.render())
+            results.add(cap.get()[0])
+
+        assert len(results) == len(_FLOWERS), "All flowers should appear when running"
 
     def test_compaction_spinner_changes_with_frame(self) -> None:
         from rich.console import Console  # noqa: PLC0415
