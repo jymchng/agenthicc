@@ -137,11 +137,10 @@ def test_status_component_uses_phase_model_when_set() -> None:
     state.workflow_run.return_value = wf
     state.conversation.agent_state.return_value = MagicMock(name="IDLE")
     state.conversation.active_tool.return_value = ""
-    state.conversation.elapsed_s.return_value = 0.0
+    state.conversation.elapsed_s = 0.0
     state.conversation.notification.return_value = None
     state.conversation.workflow_override.return_value = None
-    state.conversation._thinking_frame = 0
-    state.conversation._flower_frame = 0
+    state.conversation.frame.return_value = 0
     state.conversation.compaction_active.return_value = False
 
     from rich.console import Console
@@ -179,11 +178,10 @@ def test_status_component_uses_session_model_when_no_phase_override() -> None:
     state.workflow_run.return_value = wf
     state.conversation.agent_state.return_value = MagicMock(name="IDLE")
     state.conversation.active_tool.return_value = ""
-    state.conversation.elapsed_s.return_value = 0.0
+    state.conversation.elapsed_s = 0.0
     state.conversation.notification.return_value = None
     state.conversation.workflow_override.return_value = None
-    state.conversation._thinking_frame = 0
-    state.conversation._flower_frame = 0
+    state.conversation.frame.return_value = 0
     state.conversation.compaction_active.return_value = False
 
     from rich.console import Console
@@ -213,11 +211,10 @@ def test_status_component_reverts_to_session_model_after_workflow_ends() -> None
     state.workflow_run.return_value = None   # no active workflow
     state.conversation.agent_state.return_value = MagicMock(name="IDLE")
     state.conversation.active_tool.return_value = ""
-    state.conversation.elapsed_s.return_value = 0.0
+    state.conversation.elapsed_s = 0.0
     state.conversation.notification.return_value = None
     state.conversation.workflow_override.return_value = None
-    state.conversation._thinking_frame = 0
-    state.conversation._flower_frame = 0
+    state.conversation.frame.return_value = 0
     state.conversation.compaction_active.return_value = False
 
     from rich.console import Console
@@ -253,11 +250,10 @@ def test_status_component_uses_session_model_when_workflow_complete() -> None:
     state.workflow_run.return_value = wf
     state.conversation.agent_state.return_value = MagicMock(name="IDLE")
     state.conversation.active_tool.return_value = ""
-    state.conversation.elapsed_s.return_value = 0.0
+    state.conversation.elapsed_s = 0.0
     state.conversation.notification.return_value = None
     state.conversation.workflow_override.return_value = None
-    state.conversation._thinking_frame = 0
-    state.conversation._flower_frame = 0
+    state.conversation.frame.return_value = 0
     state.conversation.compaction_active.return_value = False
 
     from rich.console import Console

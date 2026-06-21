@@ -83,7 +83,7 @@ class Workspace:
         conv = self._state.conversation
         inp  = self._state.input
         for sig in (
-            conv.agent_state, conv.active_tool, conv.elapsed_s,
+            conv.agent_state, conv.active_tool, conv.frame,
             conv.model_name, conv.tokens_in, conv.tokens_out, conv.cost_usd,
             conv.notification,
             self._state.active_mode,       # PRD-75: single mode signal
@@ -93,8 +93,7 @@ class Workspace:
             self._state.workflow_run,              # PRD-81: workflow progress
             conv.live_tool_overflow,               # overflow bridge row
             conv.workflow_override,                # PRD-114: /workflow indicator
-            conv.compaction_active,                # PRD-119: compaction spinner
-            conv.compact_tick,                     # PRD-119: spinner animation driver
+            conv.compaction_active,                # PRD-119: compaction on/off toggle
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
 

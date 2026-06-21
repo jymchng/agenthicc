@@ -83,15 +83,16 @@ class StatusComponent:
         conv = self._state.conversation
         cols = _get_cols()
 
-        flower     = _FLOWERS[conv._flower_frame % len(_FLOWERS)]
+        _frame     = conv.frame()
+        flower     = _FLOWERS[_frame % len(_FLOWERS)]
         agent_st   = conv.agent_state()
         state_name = agent_st.name.lower()
 
         if conv.is_running():
             if state_name == "recovering":
-                state_text = "↻ " + _thinking_markup(conv._thinking_frame)
+                state_text = "↻ " + _thinking_markup(_frame)
             else:
-                state_text = _thinking_markup(conv._thinking_frame)
+                state_text = _thinking_markup(_frame)
         else:
             state_text = agent_st.name.title()
 
@@ -103,7 +104,7 @@ class StatusComponent:
 
         # ── line 1: state animation + elapsed + tokens + active tool ────────────
         l1_parts = [f"{flower} [{color}]{state_text}[/{color}]"]
-        elapsed = conv.elapsed_s()
+        elapsed = conv.elapsed_s
         if elapsed > 0:
             l1_parts.append(f"[dim] │[/dim] {_fmt_elapsed(elapsed)}")
         inp = conv.tokens_in()
@@ -125,7 +126,7 @@ class StatusComponent:
         if _wf is not None and _wf.status == "running" and _wf.current_phase_model:
             model = _wf.current_phase_model
         if conv.compaction_active():
-            _sp = _COMPACT_SPINNER[conv.compact_tick() % len(_COMPACT_SPINNER)]
+            _sp = _COMPACT_SPINNER[_frame % len(_COMPACT_SPINNER)]
             line2 = _fit(f"[yellow]{_sp} Compacting…[/yellow]", cols)
         else:
             line2 = _fit(f"[dim]{_e(model)}[/dim]", cols)

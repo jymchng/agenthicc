@@ -90,7 +90,10 @@ class ConversationStore:
         self.turns:            Signal[list[ConversationTurn]] = Signal([])
         self.agent_state:      Signal[AgentState]             = Signal(AgentState.IDLE)
         self.active_tool:      Signal[str]                    = Signal("")
-        self.elapsed_s:        Signal[float]                  = Signal(0.0)
+        self.frame:            Signal[int]                    = Signal(0)
+        """Universal animation counter — increments every 50 ms unconditionally (PRD-120).
+        All animated elements (flower, thinking, compact spinner) derive their frame index
+        from ``frame() % N``.  The workspace subscribes once for all animation redraws."""
         self.tokens_in:        Signal[int]                    = Signal(0)
         self.tokens_out:       Signal[int]                    = Signal(0)
         self.cost_usd:         Signal[float]                  = Signal(0.0)
@@ -101,8 +104,6 @@ class ConversationStore:
         """Name of the /workflow-selected override (PRD-114).  None = mode default."""
         self.compaction_active:   Signal[bool]       = Signal(False)
         """True while a compaction LLM call is in flight (PRD-119)."""
-        self.compact_tick:        Signal[int]        = Signal(0)
-        """Increments every tick while compaction_active — drives spinner redraws."""
         # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
         # entry by identity, leaving other lines untouched.
@@ -137,10 +138,8 @@ class ConversationStore:
             self.tokens_in, self.tokens_out,
         )
 
-        # ── animation frames (driven by tick) ────────────────────────────────
-        self._thinking_frame: int = 0
-        self._flower_frame:   int = 0
-        self._start_time:     float = 0.0
+        # ── animation (driven by tick) ────────────────────────────────────────
+        self._start_time: float = 0.0
 
         # ── internal ──────────────────────────────────────────────────────────
         self._current_turn: ConversationTurn | None = None
@@ -150,19 +149,18 @@ class ConversationStore:
 
     # ── tick ──────────────────────────────────────────────────────────────────
 
-    def tick(self) -> None:
-        """Advance animation frames and elapsed timer. Called every ~50 ms."""
-        # PRD-119: advance compact_tick independently so the compaction spinner
-        # animates even when the session is otherwise idle (agent_state = IDLE).
-        if self.compaction_active():
-            self.compact_tick.set(self.compact_tick() + 1)
+    @property
+    def elapsed_s(self) -> float:
+        """Seconds since the current turn started, or 0.0 when idle."""
+        return time.monotonic() - self._start_time if self._start_time else 0.0
 
-        if self.agent_state() not in (AgentState.IDLE, AgentState.COMPLETE):
-            elapsed = time.monotonic() - self._start_time if self._start_time else 0.0
-            if abs(elapsed - self.elapsed_s()) >= 0.1:
-                self.elapsed_s.set(elapsed)
-                self._thinking_frame += 1
-                self._flower_frame = (self._flower_frame + 1) % 8
+    def tick(self) -> None:
+        """Advance the universal frame counter. Called every ~50 ms unconditionally.
+
+        All animated UI elements derive their frame index from ``frame() % N``
+        (PRD-120).  No per-feature branches needed here.
+        """
+        self.frame.set(self.frame() + 1)
 
     # ── turn lifecycle ────────────────────────────────────────────────────────
 
@@ -231,8 +229,6 @@ class ConversationStore:
         self._current_turn = turn
         self.turns.set(self.turns.get() + [turn])
         self._start_time = time.monotonic()
-        self.elapsed_s.set(0.0)
-        self._thinking_frame = 0
         self.agent_state.set(AgentState.THINKING)
         return turn
 

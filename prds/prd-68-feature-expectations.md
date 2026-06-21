@@ -1324,6 +1324,34 @@ Automatically summarise an oversized conversation history into a compact two-mes
 
 ---
 
+## 37. Unified Tick Frame Counter (PRD-120)
+
+Consolidates five separate animation-related fields (`_thinking_frame`, `_flower_frame`, `elapsed_s` Signal, `compact_tick`, and their assorted `tick()` branches) into a single `frame: Signal[int]` that increments unconditionally every 50 ms. All animated UI elements derive their frame index from `frame() % N`.
+
+### Before vs After
+
+| Before | After |
+|---|---|
+| `_thinking_frame: int` | removed |
+| `_flower_frame: int` | removed |
+| `elapsed_s: Signal[float]` (display + redraw) | `elapsed_s: @property → float` (display only) |
+| `compact_tick: Signal[int]` (compaction redraw) | removed |
+| 3 workspace subscriptions for animation | 1 subscription (`frame`) |
+| `tick()` has conditional branches per feature | `tick()` is one line: `self.frame.set(self.frame() + 1)` |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 37.1 | `frame` increments on every `tick()` call, regardless of agent state or compaction state |
+| 37.2 | `frame` never resets between turns — all consumers use `frame() % N` |
+| 37.3 | `elapsed_s` is a read-only property returning `time.monotonic() - _start_time` (0.0 when idle) |
+| 37.4 | `compact_tick`, `_thinking_frame`, `_flower_frame` do not exist on `ConversationStore` |
+| 37.5 | Workspace subscribes to `frame` (not `elapsed_s` or `compact_tick`) for animation redraws |
+| 37.6 | Flower, thinking animation, and compaction spinner all read `conv.frame() % N` |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

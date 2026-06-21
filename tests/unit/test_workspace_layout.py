@@ -14,15 +14,15 @@ def _make_conv(model_name: str = "anthropic/claude-opus-4-8") -> MagicMock:
     conv.agent_state.return_value = MagicMock(name="IDLE")
     conv.agent_state().name = "IDLE"
     conv.is_running.return_value = False
-    conv.elapsed_s.return_value = 0.0
+    conv.elapsed_s = 0.0
     conv.active_tool.return_value = ""
     conv.session_id.return_value = "abc-123"
     conv.turn_count.return_value = 0
     conv.cost_usd.return_value = 0.0
     conv.tokens_in.return_value = 0
     conv.tokens_out.return_value = 0
-    conv._flower_frame = 0
-    conv._thinking_frame = 0
+    conv.frame.return_value = 0
+    conv.compaction_active.return_value = False
     return conv
 
 
