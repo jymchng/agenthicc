@@ -393,6 +393,22 @@ class AgentTurnRunner:
             signals=getattr(ctx.runner, "_signals", None),
             global_hooks=hooks or None,
         )
+
+        # PRD-124: inject spawn_subagents into every turn so any agent can
+        # optionally spawn a concurrent subagent pool.
+        if ctx.runner is not None:
+            from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+            spawn_tool = make_spawn_subagents_tool(
+                parent_runner=ctx.runner,
+                parent_model=self._model_id,
+                all_tools=list(registry.tools),
+                app_state=ctx.app_state,
+                processor=ctx.processor,
+                conv_store=ctx.conv_store,
+            )
+            registry.register(spawn_tool, source="builtin")
+            populate_agent_tools(agent_instance, registry.tools)
+
         return agent_instance, active_runner
 
     # ── step 8: streaming loop ────────────────────────────────────────────────

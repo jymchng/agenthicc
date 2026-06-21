@@ -202,6 +202,20 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
     else:
         result_commands = []
 
+    # PRD-124 Phase 5: extract optional SUBAGENT_TYPES list.
+    # Plugin files may export SUBAGENT_TYPES = [SubagentTypeSpec(...), ...]
+    # to register custom subagent types into the global DEFAULT_REGISTRY.
+    raw_sa_types = getattr(module, "SUBAGENT_TYPES", None)
+    if raw_sa_types is not None:
+        from agenthicc.subagents.types import SubagentTypeSpec, DEFAULT_REGISTRY  # noqa: PLC0415
+        for spec in (raw_sa_types if isinstance(raw_sa_types, (list, tuple)) else []):
+            if isinstance(spec, SubagentTypeSpec):
+                DEFAULT_REGISTRY.register(spec)
+                log.debug("Plugin %s: registered subagent type %r", path, spec.name)
+            else:
+                log.warning("Plugin %s: non-SubagentTypeSpec item in SUBAGENT_TYPES skipped: %r",
+                            path, spec)
+
     return LoadResult(path=path, tools=valid, commands=result_commands)
 
 

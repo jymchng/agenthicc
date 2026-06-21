@@ -94,6 +94,7 @@ class Workspace:
             conv.live_tool_overflow,               # overflow bridge row
             conv.workflow_override,                # PRD-114: /workflow indicator
             conv.compaction_active,                # PRD-119: compaction on/off toggle
+            conv.subagent_pool_state,              # PRD-124: subagent pool progress
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
 

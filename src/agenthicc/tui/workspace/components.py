@@ -114,6 +114,11 @@ class StatusComponent:
             l1_parts.append(
                 f"[dim] │[/dim] [cyan]↑ {inp:,}[/cyan] [green]↓ {out:,}[/green]"
             )
+        _pool = conv.subagent_pool_state()
+        if _pool is not None:
+            l1_parts.append(
+                f"[dim] │[/dim] [magenta]{_pool.done}/{_pool.total} subagents[/magenta]"
+            )
         while len(l1_parts) > 1 and _vlen("".join(l1_parts)) > cols:
             l1_parts.pop()
         line1 = "".join(l1_parts)
@@ -328,6 +333,13 @@ class FooterComponent:
                 _fit(f"  [dim]{_e(_badge)} {_e(_wf.workflow_name)}{_phase}[/dim]", cols)
             ))
 
+        # PRD-124: optional subagent worker grid row
+        _pool = conv.subagent_pool_state()
+        if _pool is not None:
+            extra.append(Text.from_markup(
+                _fit(_build_worker_grid(_pool, cols), cols)
+            ))
+
         return Group(
             Text.from_markup(mode_line),
             Text.from_markup(hints_str),
@@ -346,10 +358,40 @@ class FooterComponent:
         _wf = self._state.workflow_run()
         if _wf is not None and _wf.status == "running":
             extra += 1
+        if self._state.conversation.subagent_pool_state() is not None:
+            extra += 1
         return 2 + extra
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+_WORKER_STATUS_ICONS = {
+    "pending": "○",
+    "running": "⠸",   # static char; frame cycling done by status bar spinner
+    "done":    "✓",
+    "failed":  "✗",
+}
+_WORKER_STATUS_COLORS = {
+    "pending": "dim",
+    "running": "cyan",
+    "done":    "green",
+    "failed":  "red",
+}
+
+
+def _build_worker_grid(pool: object, cols: int) -> str:
+    """Render a compact one-line worker grid for the footer."""
+    from rich.markup import escape as _e  # noqa: PLC0415
+    workers = getattr(pool, "workers", [])
+    cells: list[str] = []
+    for w in workers:
+        icon  = _WORKER_STATUS_ICONS.get(w.status, "?")
+        color = _WORKER_STATUS_COLORS.get(w.status, "dim")
+        label = _e(w.label)
+        cells.append(f"[{color}]{icon}[/{color}] {label}")
+    row = "  " + "  ".join(cells)
+    return _fit(row, cols)
+
 
 def _vlen(markup: str) -> int:
     from agenthicc.tui.rendering import visible_len  # noqa: PLC0415

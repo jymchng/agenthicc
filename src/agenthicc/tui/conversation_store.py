@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     import asyncio as _asyncio
     from agenthicc.tools.approval import ApprovalRequest
     from agenthicc.workflows.plugin import WorkflowRun
+    from agenthicc.subagents.pool import SubagentPoolState
 
 
 # ── Agent state ───────────────────────────────────────────────────────────────
@@ -45,6 +46,14 @@ EventKind = Literal[
     "mention_chips",
     "user_message",
     "tokens",
+    # Subagent pool events (PRD-124 Phase 3)
+    "subagent_pool_started",
+    "subagent_worker_done",
+    "subagent_pool_done",
+    # Cached pool result for resume detection (PRD-124 Phase 4)
+    "subagent_pool_result",
+    # Generic text line from internal systems (compactor, subagents, etc.)
+    "system",
 ]
 
 
@@ -104,6 +113,8 @@ class ConversationStore:
         """Name of the /workflow-selected override (PRD-114).  None = mode default."""
         self.compaction_active:   Signal[bool]       = Signal(False)
         """True while a compaction LLM call is in flight (PRD-119)."""
+        self.subagent_pool_state: Signal[SubagentPoolState | None] = Signal(None)
+        """Live state of the active SubagentPool — None when no pool is running (PRD-124)."""
         # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
         # entry by identity, leaving other lines untouched.

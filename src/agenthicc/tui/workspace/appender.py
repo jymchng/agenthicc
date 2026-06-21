@@ -353,3 +353,66 @@ def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> 
             f"  [dim]⎿[/dim] {icon}[bold]{verb}[/bold]([{color}]{path}[/{color}])",
             markup=True, highlight=False,
         )
+
+
+# ── Generic system text (compactor, etc.) ─────────────────────────────────────
+
+@register_renderer("system")
+def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    text = str(ev.payload.get("text", ""))
+    if text:
+        self._console.print(f"[dim]{text}[/dim]", markup=False, highlight=False)
+
+
+# ── Subagent pool renderers (PRD-124 Phase 3) ─────────────────────────────────
+
+@register_renderer("subagent_pool_started")
+def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    from rich.markup import escape as _e  # noqa: PLC0415
+    total = ev.payload.get("total", 0)
+    workers = ev.payload.get("workers", [])
+    self._console.print(
+        f"  [bold]▶ Spawning {total} subagent{'s' if total != 1 else ''}[/bold]",
+        markup=True, highlight=False,
+    )
+    for w in workers:
+        label = _e(str(w.get("label", "")))
+        task  = _e(str(w.get("task", w.get("type", "")))[:80])
+        self._console.print(
+            f"  [dim]⎿[/dim] [cyan]{label}[/cyan]  [dim]{task}[/dim]",
+            markup=True, highlight=False,
+        )
+
+
+@register_renderer("subagent_worker_done")
+def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    from rich.markup import escape as _e  # noqa: PLC0415
+    ok    = bool(ev.payload.get("ok", True))
+    label = _e(str(ev.payload.get("label", "")))
+    done  = ev.payload.get("done", 0)
+    total = ev.payload.get("total", 0)
+    ms    = float(ev.payload.get("duration_ms", 0.0))
+    dur   = f"  [dim]{ms / 1_000:.1f}s[/dim]"
+    if ok:
+        self._console.print(
+            f"  [green]✓[/green] [{done}/{total}] [cyan]{label}[/cyan]{dur}",
+            markup=True, highlight=False,
+        )
+    else:
+        error = _e(str(ev.payload.get("error", "failed"))[:80])
+        self._console.print(
+            f"  [red]✗[/red] [{done}/{total}] [cyan]{label}[/cyan]  [dim]{error}[/dim]",
+            markup=True, highlight=False,
+        )
+
+
+@register_renderer("subagent_pool_done")
+def _render_subagent_pool_done(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    succeeded = ev.payload.get("succeeded", 0)
+    total     = ev.payload.get("total", 0)
+    failed    = ev.payload.get("failed", 0)
+    suffix    = f"  [red]{failed} failed[/red]" if failed else ""
+    self._console.print(
+        f"  [bold]◈ {succeeded}/{total} subagent{'s' if total != 1 else ''} complete[/bold]{suffix}",
+        markup=True, highlight=False,
+    )
