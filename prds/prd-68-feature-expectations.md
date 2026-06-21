@@ -1294,6 +1294,36 @@ openai/deepseek-v4-flash    ← session model restored
 
 ---
 
+## 36. Conversation Compaction (PRD-119)
+
+Automatically summarise an oversized conversation history into a compact two-message form before each LLM turn, preventing "context window exceeded" 400 errors when large tool results accumulate.
+
+### Architecture
+
+| Component | Role |
+|---|---|
+| `src/agenthicc/memory/compactor.py` | `should_compact()` / `compact_memory()` — pure async functions |
+| `ExecutionSettings.auto_compact` | Toggle (default `True`); TOML key `[execution] auto_compact` |
+| `ExecutionSettings.compact_threshold_tokens` | Fire threshold (default `1_000_000`); TOML key `[execution] compact_threshold_tokens` |
+| `ConversationStore.compaction_active` | `Signal[bool]` — `True` while the summarisation LLM call is in flight |
+| `StatusComponent.render()` | Shows `⠋ Compacting…` spinner on line 2 when `compaction_active` is `True` |
+| `AgentTurnRunner._stream()` | Calls `compact_memory()` after `ensure_valid()`, before `run_stream()` |
+| `/compact` command | Triggers compaction on the session memory; intercepted in `TUISession.route()` |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 36.1 | `should_compact` returns `False` when `auto_compact=False` or `token_estimate < compact_threshold_tokens` |
+| 36.2 | `compact_memory` replaces `memory._messages` with exactly two messages: `role:"user"` summary and `role:"assistant"` acknowledgement |
+| 36.3 | `compaction_active` is `False` after both successful and failed compaction (enforced by `finally`) |
+| 36.4 | Status bar shows a cycling `⠋`-style spinner with `" Compacting…"` label while the LLM call is in flight |
+| 36.5 | `/compact` triggers `compact_memory` on the current session memory and shows a `notify_transient` confirmation |
+| 36.6 | `auto_compact` and `compact_threshold_tokens` are readable from `[execution]` TOML section |
+| 36.7 | Default `compact_threshold_tokens` is `1_000_000` (matches DeepSeek model's context window) |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

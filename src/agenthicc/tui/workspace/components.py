@@ -11,6 +11,8 @@ if TYPE_CHECKING:
 # Flower icons that cycle during agent runs
 _FLOWERS = ("✿", "❀", "❁", "❃", "✾", "❋", "✽", "❊")
 _THINKING = "Thinking"
+# Spinner frames shown while compaction LLM call is in flight (PRD-119)
+_COMPACT_SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 # Hint strings per agent state.
 # During thinking/running the user can still type (to queue a message), use
@@ -118,11 +120,15 @@ class StatusComponent:
         if not model:
             return Text.from_markup(line1)
 
-        # ── line 2: model name (PRD-118: phase override wins when active) ─────
+        # ── line 2: model name (PRD-118: phase override; PRD-119: compaction spinner)
         _wf = self._state.workflow_run()
         if _wf is not None and _wf.status == "running" and _wf.current_phase_model:
             model = _wf.current_phase_model
-        line2 = _fit(f"[dim]{_e(model)}[/dim]", cols)
+        if conv.compaction_active():
+            _sp = _COMPACT_SPINNER[conv._thinking_frame % len(_COMPACT_SPINNER)]
+            line2 = _fit(f"[yellow]{_sp} Compacting…[/yellow]", cols)
+        else:
+            line2 = _fit(f"[dim]{_e(model)}[/dim]", cols)
 
         # ── line 3: session ID + turns + cost ────────────────────────────────────
         sid   = conv.session_id()

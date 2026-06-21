@@ -415,6 +415,21 @@ class AgentTurnRunner:
         if ctx.session_memory is not None:
             ctx.session_memory.ensure_valid()
 
+        # PRD-119: auto-compact when token estimate crosses the configured threshold.
+        # Called BEFORE run_stream() so the current user message has not yet been
+        # added to memory — only the prior history is compacted.
+        if ctx.session_memory is not None:
+            from agenthicc.memory.compactor import should_compact, compact_memory  # noqa: PLC0415
+            if should_compact(ctx.session_memory, ctx.exec_cfg):
+                _transport = getattr(ctx.runner, "_transport", None)
+                if _transport is not None:
+                    await compact_memory(
+                        ctx.session_memory,
+                        _transport,
+                        model=self._model_id,
+                        conv_store=ctx.conv_store,
+                    )
+
         try:
             stream = await active_runner.run_stream(
                 agent_instance, agent_text,

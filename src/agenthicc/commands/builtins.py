@@ -352,6 +352,14 @@ BUILTIN_COMMANDS: list[Command] = [
         # exists here solely so the trigger picker displays and completes it.
         handler=None,
     ),
+    Command(
+        name="/compact",
+        description="Summarise conversation history to free context-window space",
+        group="Built-in",
+        # No handler: /compact is intercepted in TUISession.route() before
+        # dispatch_slash() so it can access session memory directly.
+        handler=None,
+    ),
 ]
 
 

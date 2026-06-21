@@ -521,14 +521,39 @@ class TUISession:
         conv.notify_transient(f"⚡ Workflow → {name}")
         return True
 
+    async def _handle_compact_command(self) -> None:
+        """Handle /compact — compact the current session memory (PRD-119)."""
+        from agenthicc.memory.compactor import compact_memory  # noqa: PLC0415
+
+        ctx  = self._ctx
+        conv = ctx.app_state.conversation
+        mem  = ctx.session_memory
+
+        if mem is None or not mem._messages:
+            conv.notify_transient("⎋ Nothing to compact")
+            return
+
+        transport = getattr(ctx.agent_runner, "_transport", None)
+        if transport is None:
+            conv.notify_transient("⚠ No transport available for compaction")
+            return
+
+        model = ctx.cfg.execution.effective_model()
+        await compact_memory(mem, transport, model=model, conv_store=conv)
+        conv.notify_transient("⎋ Compacted")
+
     def route(self, msg: str) -> bool:
         """Return True if msg is a slash command and was dispatched."""
         if not msg.startswith("/"):
             return False
         # PRD-114: /workflow is handled locally — not via the command registry.
+        # PRD-119: /compact likewise — needs access to session memory.
         parts = msg.split(None, 1)
         if parts[0] == "/workflow":
             return self._handle_workflow_command(parts[1] if len(parts) > 1 else "")
+        if parts[0] == "/compact":
+            asyncio.create_task(self._handle_compact_command(), name="compact")
+            return True
         if self.dispatch_slash(msg):
             # Check if a replay was requested by the command handler.
             if self._pending_replay_id:

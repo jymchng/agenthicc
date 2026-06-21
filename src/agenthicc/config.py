@@ -122,6 +122,9 @@ class ExecutionSettings:
     agent_pool_size: int = 16
     max_agent_turns: int = 200      # max agentic-loop iterations per intent
     turn_timeout_s: float = 0.0    # per-turn watchdog; 0 = no limit
+    # Conversation compaction (PRD-119)
+    auto_compact: bool = True
+    compact_threshold_tokens: int = 1_000_000
     # LLM provider selection
     provider: str = "anthropic"
     model: str = ""            # empty → use PROVIDER_DEFAULT_MODELS[provider]
@@ -550,6 +553,8 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
         max_parallel_tasks=ex.get("max_parallel_tasks", 4),
         agent_pool_size=ex.get("agent_pool_size", 16),
         max_agent_turns=int(ex.get("max_agent_turns", 200)),
+        auto_compact=bool(ex.get("auto_compact", True)),
+        compact_threshold_tokens=int(ex.get("compact_threshold_tokens", 1_000_000)),
         provider=str(ex.get("provider", "anthropic")),
         model=str(ex.get("model", "")),
         api_key=str(ex.get("api_key", "")),

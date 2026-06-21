@@ -99,6 +99,8 @@ class ConversationStore:
         self.notification:        Signal[str | None] = Signal(None)
         self.workflow_override:   Signal[str | None] = Signal(None)
         """Name of the /workflow-selected override (PRD-114).  None = mode default."""
+        self.compaction_active:   Signal[bool]       = Signal(False)
+        """True while a compaction LLM call is in flight (PRD-119)."""
         # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
         # entry by identity, leaving other lines untouched.
