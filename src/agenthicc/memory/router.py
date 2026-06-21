@@ -7,7 +7,7 @@ layers directly.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Callable
 
 from .layers import (
     GlobalMemoryLayer,
@@ -74,7 +74,7 @@ class MemoryRouter:
         tier: str | MemoryTier = "session",
         namespace: str = "default",
         agent_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Read ``key`` from ``tier``.  Returns ``{"found": bool, "value": ...}``."""
         resolved = MemoryTier(tier)
         if not self._check(agent_id, resolved, "read"):
@@ -91,12 +91,12 @@ class MemoryRouter:
     async def write(
         self,
         key: str,
-        value: Any,
+        value: object,
         tier: str | MemoryTier = "session",
         namespace: str = "default",
         ttl: float | None = None,
         agent_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Write ``key=value`` to ``tier``.  Returns ``{"ok": bool, "key": key}``.
 
         ``ttl`` (seconds) applies to the session tier only; it is silently
@@ -121,7 +121,7 @@ class MemoryRouter:
         content: str | bytes,
         content_type: str = "text/plain",
         published_by: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Store a content-addressed artifact in the project layer.
 
         Returns ``{"artifact_id": <sha256 hex>, "size_bytes": int}``.  The
@@ -144,7 +144,7 @@ class MemoryRouter:
         self,
         artifact_id: str,
         agent_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Fetch an artifact by id.
 
         Returns ``{"found": bool, "content": bytes | None, "content_type": ...}``.

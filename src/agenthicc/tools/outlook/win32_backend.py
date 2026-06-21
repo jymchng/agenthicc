@@ -10,7 +10,6 @@ gracefully rather than raising.
 from __future__ import annotations
 
 import sys
-from typing import Any
 
 __all__ = [
     "Win32OutlookBackend",
@@ -26,18 +25,18 @@ except ImportError:  # pragma: no cover
     WIN32_AVAILABLE = False
 
 
-_NOT_WINDOWS: dict[str, Any] = {
+_NOT_WINDOWS: dict[str, object] = {
     "ok": False,
     "error": "win32 Outlook is only available on Windows (pywin32 not installed or not on win32 platform)",
 }
 
 
-def _outlook_app() -> Any:  # pragma: no cover
+def _outlook_app() -> object:  # pragma: no cover
     """Return (or create) the Outlook Application COM object."""
     return win32com.client.Dispatch("Outlook.Application")  # type: ignore[name-defined]
 
 
-def _ns() -> Any:  # pragma: no cover
+def _ns() -> object:  # pragma: no cover
     """Return the MAPI namespace from the Outlook application."""
     return _outlook_app().GetNamespace("MAPI")
 
@@ -384,7 +383,7 @@ def excel_read_range(path: str, sheet: str = "Sheet1",
         wb = excel.Workbooks.Open(path)
         ws = wb.Sheets(sheet)
         rng = ws.Range(range_str)
-        data: list[list[Any]] = []
+        data: list[list[object]] = []
         for row in rng.Value:
             data.append([cell for cell in row])
         wb.Close(False)
@@ -395,7 +394,7 @@ def excel_read_range(path: str, sheet: str = "Sheet1",
         return {"ok": False, "error": str(exc)}
 
 
-def run_vba_macro(macro_name: str, args: list[Any] | None = None) -> dict:
+def run_vba_macro(macro_name: str, args: list[object] | None = None) -> dict:
     """Run a VBA macro in the currently open Outlook session.
 
     Args:

@@ -13,7 +13,7 @@ import asyncio
 import os
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 
@@ -81,7 +81,7 @@ if TYPE_CHECKING:
 
 # ── formatting helper (module-level, unchanged) ───────────────────────────────
 
-def _fmt_args(args: dict[str, Any]) -> str:
+def _fmt_args(args: dict[str, object]) -> str:
     from rich.markup import escape as _e  # noqa: PLC0415
     items = list(args.items())
     if not items:
@@ -115,7 +115,7 @@ class AgentTurnRunner:
         self._turn_active:    bool = True
 
         # Tool tracking — populated by signal handlers.
-        self._tool_args:      dict[str, dict[str, Any]]  = {}
+        self._tool_args:      dict[str, dict[str, object]]  = {}
         self._tool_names:     dict[str, str]            = {}
         self._file_snapshots: dict[str, tuple[str, str]] = {}
 
@@ -347,7 +347,7 @@ class AgentTurnRunner:
 
     # ── step 7: build @agent class and runner ─────────────────────────────────
 
-    def _build_agent(self) -> tuple[Any, AgentRunnerBase]:
+    def _build_agent(self) -> tuple[object, AgentRunnerBase]:
         """Construct the @agent-decorated class, populate meta.tools, build runner.
 
         Returns (agent_instance, active_runner).
@@ -421,7 +421,7 @@ class AgentTurnRunner:
 
     async def _stream(
         self,
-        agent_instance: Any,
+        agent_instance: object,
         agent_text: str,
         active_runner: AgentRunnerBase,
     ) -> None:

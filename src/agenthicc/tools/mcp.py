@@ -7,8 +7,11 @@ import os
 import re
 import shlex
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from agenthicc.kernel.processor import EventProcessor
 
 from agenthicc.tools.base import Tool
 from agenthicc.kernel import Event
@@ -59,10 +62,10 @@ class McpServerConfig:
     auto_connect: bool = True
     reconnect_attempts: int = 3
     reconnect_delay_seconds: float = 1.0
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "McpServerConfig":
+    def from_dict(cls, d: dict[str, object]) -> "McpServerConfig":
         """Build from a raw dict, silently ignoring unknown keys."""
         allowed = set(cls.__dataclass_fields__)  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in d.items() if k in allowed})
@@ -82,7 +85,7 @@ class McpToolSchema:
 
     name: str
     description: str
-    input_schema: dict[str, Any]  # verbatim MCP inputSchema JSON
+    input_schema: dict[str, object]  # verbatim MCP inputSchema JSON
 
 
 class McpToolCallError(RuntimeError):
@@ -110,14 +113,14 @@ class AgenthiccMcpTool(Tool):
         return self._schema.description
 
     @property
-    def parameters(self) -> dict[str, Any]:  # type: ignore[override]
+    def parameters(self) -> dict[str, object]:  # type: ignore[override]
         return self._schema.input_schema
 
     async def execute(
         self,
-        args: dict[str, Any],
-        context: dict[str, Any],
-    ) -> Any:
+        args: dict[str, object],
+        context: dict[str, object],
+    ) -> object:
         tool_call_id = context.get("tool_call_id", "")
         return await self._bridge.call_tool(
             self._schema.name, args, tool_call_id=tool_call_id
@@ -129,7 +132,7 @@ class AgenthiccMcpTool(Tool):
 # ---------------------------------------------------------------------------
 
 
-def _extract_tool_content(result: Any) -> Any:
+def _extract_tool_content(result: object) -> object:
     """Extract the usable payload from an MCP ``CallToolResult``."""
     content = getattr(result, "content", None)
     if not content:
@@ -143,7 +146,7 @@ def _extract_tool_content(result: Any) -> Any:
     ]
 
 
-def _extract_text_content(result: Any) -> str:
+def _extract_text_content(result: object) -> str:
     """Extract a plain-text summary from an MCP result (used for error messages)."""
     content = getattr(result, "content", [])
     return " ".join(getattr(b, "text", str(b)) for b in content) if content else str(result)
@@ -165,11 +168,11 @@ class McpToolBridge:
     def __init__(
         self,
         config: McpServerConfig,
-        event_processor: Any | None = None,
+        event_processor: EventProcessor | None = None,
     ) -> None:
         self._cfg = config
         self._events = event_processor
-        self._client: Any = None
+        self._client: object = None
         self._lock = asyncio.Lock()
         self._connected = False
 
@@ -219,7 +222,7 @@ class McpToolBridge:
                 f"after {self._cfg.reconnect_attempts + 1} attempts: {last_exc}"
             )
 
-    async def _build_client(self) -> Any:
+    async def _build_client(self) -> object:
         """Instantiate (but do not connect) the appropriate McpServer client."""
         url = self._cfg.resolved_url()
         token = self._cfg.resolved_token() or None
@@ -269,9 +272,9 @@ class McpToolBridge:
     async def call_tool(
         self,
         tool_name: str,
-        args: dict[str, Any],
+        args: dict[str, object],
         tool_call_id: str = "",
-    ) -> Any:
+    ) -> object:
         """Call a tool on the remote MCP server and return the extracted result."""
         if not self._connected:
             raise McpToolCallError(f"Server {self._cfg.name!r} is not connected")
@@ -307,7 +310,7 @@ class McpToolRegistry:
     :meth:`discover_all` to connect and enumerate all tools.
     """
 
-    def __init__(self, event_processor: Any | None = None) -> None:
+    def __init__(self, event_processor: EventProcessor | None = None) -> None:
         self._events = event_processor
         self._bridges: dict[str, McpToolBridge] = {}
         self._tools: dict[str, AgenthiccMcpTool] = {}

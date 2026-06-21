@@ -49,6 +49,7 @@ omit = ["tests/*"]
 
 [dependency-groups]
 dev = [
+    "keyring>=25.7.0",
     "pytest-cov>=7.1.0",
 ]
 

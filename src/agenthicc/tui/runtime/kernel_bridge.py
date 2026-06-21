@@ -3,7 +3,10 @@ ConversationStore mutations (PRD-66 §2)."""
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from agenthicc.kernel.processor import EventProcessor
 
 from agenthicc.tui.conversation_store import ConversationStore, AgentState
 
@@ -30,13 +33,13 @@ class KernelBridge:
 
     def __init__(
         self,
-        processor: Any,           # agenthicc.kernel.EventProcessor
+        processor: EventProcessor,
         conversation: ConversationStore,
     ) -> None:
         self._proc  = processor
         self._conv  = conversation
         self._task: asyncio.Task | None = None
-        self._prev:  Any = None
+        self._prev: object = None
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run(), name="kernel-bridge")
@@ -57,7 +60,7 @@ class KernelBridge:
         finally:
             self._proc.unsubscribe(queue)
 
-    def _on_state(self, state: Any) -> None:
+    def _on_state(self, state: object) -> None:
         prev = self._prev
         self._prev = state
 

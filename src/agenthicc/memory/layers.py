@@ -27,7 +27,6 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 __all__ = [
     "ArtifactRecord",
@@ -57,7 +56,7 @@ class SessionEntry:
     """A single entry in the session-layer LRU cache."""
 
     key: str
-    value: Any
+    value: object
     namespace: str = "default"
     created_at: float = field(default_factory=time.monotonic)
     expires_at: float | None = None  # monotonic deadline; None = no expiry
@@ -103,7 +102,7 @@ class SessionMemoryLayer:
 
     # -- read path (lock-free) ------------------------------------------------
 
-    def get(self, key: str, *, namespace: str = "default") -> tuple[bool, Any]:
+    def get(self, key: str, *, namespace: str = "default") -> tuple[bool, object]:
         """Return ``(found, value)``.  Lazily evicts an expired entry."""
         ns_key = self._ns_key(key, namespace)
         entry = self._cache.get(ns_key)
@@ -125,7 +124,7 @@ class SessionMemoryLayer:
     async def set(
         self,
         key: str,
-        value: Any,
+        value: object,
         *,
         namespace: str = "default",
         ttl: float | None = None,
@@ -239,10 +238,10 @@ class ProjectMemoryLayer:
 
     # -- key-value API ----------------------------------------------------------
 
-    async def get(self, key: str, *, namespace: str = "default") -> tuple[bool, Any]:
+    async def get(self, key: str, *, namespace: str = "default") -> tuple[bool, object]:
         """Return ``(found, value)`` with the value JSON-decoded."""
 
-        def _read() -> tuple[bool, Any]:
+        def _read() -> tuple[bool, object]:
             with self._connect() as conn:
                 row = conn.execute(
                     "SELECT value FROM kv WHERE namespace = ? AND key = ?",
@@ -254,7 +253,7 @@ class ProjectMemoryLayer:
 
         return await asyncio.to_thread(_read)
 
-    async def set(self, key: str, value: Any, *, namespace: str = "default") -> None:
+    async def set(self, key: str, value: object, *, namespace: str = "default") -> None:
         """Insert or overwrite ``key`` in ``namespace`` (value JSON-encoded)."""
         serialised = json.dumps(value, default=str)
         now = time.time()

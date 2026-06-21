@@ -7,10 +7,9 @@ module exposes that same logic without touching testing infrastructure.
 from __future__ import annotations
 
 import contextlib
-from typing import Any
 
 
-def populate_agent_tools(agent_instance: Any, tools: list) -> None:
+def populate_agent_tools(agent_instance: object, tools: list[object]) -> None:
     """Populate ``meta.tools`` on *agent_instance* from *tools*.
 
     *tools* is the list of tool classes previously passed to ``@use_tools()``.

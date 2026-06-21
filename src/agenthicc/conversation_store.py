@@ -15,7 +15,6 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
 
 __all__ = ["ConversationStore"]
 
@@ -69,7 +68,7 @@ class ConversationStore:
         )
         self._conn.commit()
 
-    def save_memory_snapshot(self, session_id: str, snapshot: Any) -> None:
+    def save_memory_snapshot(self, session_id: str, snapshot: object) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO memory_snapshots VALUES (?,?,?)",
             (session_id, json.dumps(snapshot, default=str), time.time()),
@@ -85,21 +84,21 @@ class ConversationStore:
         ).fetchone()
         return row[0] if row else 0
 
-    def load_turns(self, session_id: str) -> list[dict[str, Any]]:
+    def load_turns(self, session_id: str) -> list[dict[str, object]]:
         """Return turns ordered by index: [{user: ..., assistant: ..., timestamp: ..., model_short: ...}, ...]."""
         rows = self._conn.execute(
             "SELECT turn_index, role, content, timestamp, model_short "
             "FROM turns WHERE session_id=? ORDER BY turn_index",
             (session_id,),
         ).fetchall()
-        by_idx: dict[int, dict[str, Any]] = {}
+        by_idx: dict[int, dict[str, object]] = {}
         for turn_index, role, content, timestamp, model_short in rows:
             if turn_index not in by_idx:
                 by_idx[turn_index] = {"timestamp": timestamp, "model_short": model_short}
             by_idx[turn_index][role] = content
         return [by_idx[i] for i in sorted(by_idx)]
 
-    def load_memory_snapshot(self, session_id: str) -> Any:
+    def load_memory_snapshot(self, session_id: str) -> object:
         """Return the most recent ShortTermMemory snapshot dict, or None."""
         row = self._conn.execute(
             "SELECT snapshot_json FROM memory_snapshots WHERE session_id=?",

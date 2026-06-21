@@ -5,7 +5,7 @@ import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable, Type, TypeVar
+from typing import Callable, Type, TypeVar
 
 E = TypeVar("E", bound="DomainEvent")
 
@@ -67,7 +67,7 @@ class AgentInterrupted(DomainEvent):
 class ToolStarted(DomainEvent):
     tool_use_id: str = ""
     name:        str = ""
-    args:        Any = field(default_factory=dict)   # dict not hashable; Any
+    args:        dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,6 @@ Capability convenience sets replace the old tool_access strings:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from agenthicc.tools.capabilities import ToolCapability
 
@@ -69,7 +68,7 @@ ROLE_DEFAULT_ALLOWED: dict[str, frozenset[ToolCapability] | None] = {
 class AgentDefinition:
     """Registry entry: maps a name to a @agent(...)-decorated class."""
     name:                 str
-    agent_class:          Any                            # @agent(model=None,system=…) class
+    agent_class:          type                           # @agent(model=None,system=…) class
     allowed_capabilities: frozenset[ToolCapability] | None = None
     source:               str                            = "builtin"
 

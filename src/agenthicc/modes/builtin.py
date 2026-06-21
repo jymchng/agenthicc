@@ -7,8 +7,6 @@ pre-populated with all six modes in canonical cycle order.
 """
 from __future__ import annotations
 
-from typing import Any
-
 from .mode import Mode
 from .registry import ModeRegistry
 
@@ -54,17 +52,17 @@ _SAFE_ALLOWED: frozenset[str] = frozenset({
 })
 
 
-def _plan_filter(tool_name: str, kwargs: dict[str, Any]) -> bool:
+def _plan_filter(tool_name: str, kwargs: dict[str, object]) -> bool:
     """Allow only read/inspect tools and non-destructive git commands."""
     return tool_name in _PLAN_REVIEW_ALLOWED
 
 
-def _review_filter(tool_name: str, kwargs: dict[str, Any]) -> bool:
+def _review_filter(tool_name: str, kwargs: dict[str, object]) -> bool:
     """Allow only read/inspect and diff tools (same set as Plan)."""
     return tool_name in _PLAN_REVIEW_ALLOWED
 
 
-def _safe_filter(tool_name: str, kwargs: dict[str, Any]) -> bool:
+def _safe_filter(tool_name: str, kwargs: dict[str, object]) -> bool:
     """Allow only a conservative read-only set (no git blame/grep)."""
     return tool_name in _SAFE_ALLOWED
 
@@ -73,7 +71,7 @@ def _safe_filter(tool_name: str, kwargs: dict[str, Any]) -> bool:
 # Post-hook for Debug mode
 # ---------------------------------------------------------------------------
 
-def _debug_post_hook(response: str, context: Any) -> str:
+def _debug_post_hook(response: str, context: object) -> str:
     """Append a DEBUG footer with timing and token metadata to every agent response.
 
     Reads ``elapsed``, ``tokens_in``, ``tokens_out``, and ``cost`` from

@@ -2,17 +2,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 __all__ = ["Mode", "ToolFilter", "ModeHook"]
 
 # A callable that receives (tool_name, tool_kwargs) and returns True if the tool
 # should be allowed for this mode.
-ToolFilter = Callable[[str, dict[str, Any]], bool]
+ToolFilter = Callable[[str, dict[str, object]], bool]
 
 # A callable that receives (prompt_text, renderer_or_context) and returns a
 # (possibly modified) string. Used for pre/post hooks around agent calls.
-ModeHook = Callable[[str, Any], str]
+ModeHook = Callable[[str, object], str]
 
 _COLOUR_MAP: dict[str, str] = {
     "white": "\x1b[37m",

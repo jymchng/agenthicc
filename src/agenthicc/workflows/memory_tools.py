@@ -10,12 +10,16 @@ tool payloads without any post-processing by the caller.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.memory.router import MemoryRouter
+    from agenthicc.memory.vector import SemanticIndex
 
 
 def make_memory_tools(
-    memory_router: Any,    # MemoryRouter | None
-    semantic_index: Any,   # SemanticIndex | None
+    memory_router: MemoryRouter | None,
+    semantic_index: SemanticIndex | None,
 ) -> list:
     """Return agent-callable memory tools.
 

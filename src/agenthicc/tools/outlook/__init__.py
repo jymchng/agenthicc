@@ -4,7 +4,6 @@ from __future__ import annotations
 import abc
 import os
 import urllib.parse
-from typing import Any
 
 from agenthicc.tools.base import Tool
 
@@ -51,7 +50,7 @@ class GraphApiOutlookBackend(OutlookBackend):
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self._token}", "Content-Type": "application/json"}
 
-    async def _get(self, path: str) -> Any:
+    async def _get(self, path: str) -> object:
         from agenthicc.tools.http import agenthicc_http_client, is_network_error  # noqa: PLC0415
         try:
             async with agenthicc_http_client() as c:
@@ -65,7 +64,7 @@ class GraphApiOutlookBackend(OutlookBackend):
                 ) from exc
             raise
 
-    async def _post(self, path: str, body: dict) -> Any:
+    async def _post(self, path: str, body: dict) -> object:
         from agenthicc.tools.http import agenthicc_http_client, is_network_error  # noqa: PLC0415
         try:
             async with agenthicc_http_client() as c:
@@ -158,7 +157,7 @@ class GraphApiOutlookBackend(OutlookBackend):
 
     async def create_event(self, subject: str, start: str, end: str,
                            attendees: list[str] | None = None, body: str | None = None) -> dict:
-        event: dict[str, Any] = {
+        event: dict[str, object] = {
             "subject": subject,
             "start": {"dateTime": start, "timeZone": "UTC"},
             "end": {"dateTime": end, "timeZone": "UTC"},

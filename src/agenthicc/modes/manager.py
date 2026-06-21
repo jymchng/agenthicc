@@ -1,8 +1,6 @@
 """ModeManager — tracks the currently active Mode and applies it to agent calls."""
 from __future__ import annotations
 
-from typing import Any
-
 from .mode import Mode
 from .registry import ModeRegistry
 
@@ -93,8 +91,8 @@ class ModeManager:
     def apply_to_agent(
         self,
         base_system: str,
-        registry_tools: list[Any],
-    ) -> tuple[str, list[Any]]:
+        registry_tools: list[object],
+    ) -> tuple[str, list[object]]:
         """Return a (system_prompt, tools) pair shaped by the active mode.
 
         Transformations applied:

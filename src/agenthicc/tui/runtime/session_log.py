@@ -6,7 +6,10 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.tui.conversation_store import AppState
 
 from agenthicc.tui.conversation_store import ConversationEvent
 
@@ -126,7 +129,7 @@ class SessionEventLog:
 
 # ── Session restoration ───────────────────────────────────────────────────────
 
-async def restore_session(session_id: str, app_state: Any) -> None:
+async def restore_session(session_id: str, app_state: AppState) -> None:
     """Restore a previous session's metrics into ConversationStore."""
     from agenthicc.tui.conversation_store import ConversationTurn  # noqa: PLC0415
 

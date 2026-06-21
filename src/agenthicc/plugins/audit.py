@@ -4,7 +4,6 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -14,7 +13,7 @@ _AUDIT_FILE = Path(".agenthicc/plugin_audit.jsonl")
 def record_call(
     agent_name: str,
     tool_name: str,
-    args: dict[str, Any],
+    args: dict[str, object],
     ok: bool,
     duration_ms: float,
     error: str | None = None,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any
 from uuid import uuid4
 
 __all__ = [
@@ -55,7 +54,7 @@ class Intent:
     status: IntentStatus
     workflow_id: str | None
     created_at: float
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
     error: str | None = None
 
 
@@ -67,7 +66,7 @@ class WorkflowNode:
     dependencies: frozenset[str]
     status: NodeStatus
     agent_id: str | None = None
-    result: Any = None
+    result: object = None
     error: str | None = None
 
 
@@ -91,7 +90,7 @@ class Task:
     status: NodeStatus
     assigned_agent_id: str | None
     created_at: float
-    result: Any = None
+    result: object = None
 
 
 @dataclass(frozen=True)
@@ -102,7 +101,7 @@ class AgentInstance:
     current_task_id: str | None
     parent_agent_id: str | None
     created_at: float
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -110,7 +109,7 @@ class ToolRegistration:
     tool_id: str
     name: str
     description: str
-    parameters_schema: dict[str, Any]
+    parameters_schema: dict[str, object]
     is_builtin: bool = False
     source_agent_id: str | None = None
 
@@ -119,7 +118,7 @@ class ToolRegistration:
 class PermissionRule:
     tool_pattern: str
     action: str  # "allow" | "deny" | "require_confirmation"
-    conditions: dict[str, Any] = field(default_factory=dict)
+    conditions: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -150,7 +149,7 @@ class AppState:
     tasks: dict[str, Task]
     agents: dict[str, AgentInstance]
     tools: dict[str, ToolRegistration]
-    hooks: dict[str, dict[str, Any]]
+    hooks: dict[str, dict[str, object]]
     snapshot_index: int
     settings: SystemSettings
     policy: SecurityPolicy
@@ -193,5 +192,5 @@ class AppState:
     def with_tool(self, tool: ToolRegistration) -> AppState:
         return replace(self, tools={**self.tools, tool.name: tool})
 
-    def with_hook(self, hook_id: str, hook_spec: dict[str, Any]) -> AppState:
+    def with_hook(self, hook_id: str, hook_spec: dict[str, object]) -> AppState:
         return replace(self, hooks={**self.hooks, hook_id: hook_spec})

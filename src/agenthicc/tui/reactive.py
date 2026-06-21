@@ -29,7 +29,7 @@ Usage::
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Callable
 
 
 class _Observable:
@@ -77,7 +77,7 @@ class ReactiveProperty:
     equality; for scalars it uses ``!=``.
     """
 
-    def __init__(self, default: Any = None, *, default_factory: Any = None) -> None:
+    def __init__(self, default: object = None, *, default_factory: Callable[[], object] | None = None) -> None:
         self._default = default
         self._factory = default_factory
         self._attr: str = ""   # filled in by __set_name__
@@ -85,17 +85,17 @@ class ReactiveProperty:
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr = f"_rp_{name}"
 
-    def _get_default(self) -> Any:
+    def _get_default(self) -> object:
         return self._factory() if self._factory is not None else self._default
 
-    def __get__(self, obj: Any, objtype: Any = None) -> Any:
+    def __get__(self, obj: object, objtype: type | None = None) -> object:
         if obj is None:
             return self
         if not hasattr(obj, self._attr):
             return self._get_default()
         return object.__getattribute__(obj, self._attr)
 
-    def __set__(self, obj: Any, value: Any) -> None:
+    def __set__(self, obj: object, value: object) -> None:
         prev = self.__get__(obj)
         object.__setattr__(obj, self._attr, value)
         changed = (

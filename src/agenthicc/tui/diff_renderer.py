@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import difflib
 from io import StringIO
-from typing import Any
+from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.console import Group
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
 from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
@@ -267,7 +270,7 @@ def render_file_diff(
     context:   int = 3,
     language:  str = "python",
     operation: str = "Update",
-) -> Any:
+) -> "RenderableType":
     """Render a GitHub-style diff between *old_lines* and *new_lines*.
 
     Parameters
@@ -337,7 +340,7 @@ def render_file_create(
     *,
     max_lines: int = CREATE_PREVIEW_LINES,
     language:  str = "python",
-) -> Any:
+) -> "RenderableType":
     """Render a file-creation event showing at most *max_lines* lines.
 
     Visual output::
@@ -361,7 +364,7 @@ def render_file_create(
     for idx, (raw, h) in enumerate(zip(preview, hl)):
         _add_row(table, idx + 1, raw, h, None)   # pure add — no del pair
 
-    parts: list[Any] = [
+    parts: list[RenderableType] = [
         _header(path, "Create"),
         _create_summary(n_total),
         Text(""),

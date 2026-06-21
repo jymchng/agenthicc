@@ -5,7 +5,6 @@ import importlib.util
 import inspect
 import logging
 from pathlib import Path
-from typing import Any
 
 from agenthicc.agents.plugin import AgentDefinition, AgentPlugin
 
@@ -55,7 +54,7 @@ class AgentsRegistry:
         filtered_tools: list,
         model_id: str,
         base_system_prompt: str = "",
-    ) -> tuple[Any, Any]:
+    ) -> tuple[object, object]:
         """Create a per-turn (agent_class, instance) for AgentRunnerBase.run_stream().
 
         Reads the role-specific system prompt from the registered @agent(...) class

@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ def _parse_skill(skill_dir: Path) -> SkillDef | None:
     try:
         import yaml
         raw = skill_md.read_text(encoding="utf-8")
-        meta: dict[str, Any] = {}
+        meta: dict[str, object] = {}
         if raw.startswith("---"):
             parts = raw.split("---", 2)
             if len(parts) >= 3:

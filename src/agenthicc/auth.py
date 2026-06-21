@@ -9,7 +9,6 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 __all__ = [
     "AuthClient",
@@ -56,7 +55,7 @@ class TokenBundle:
     def is_pro(self) -> bool:
         return self.plan in ("pro", "enterprise")
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "access_token": self.access_token,
             "refresh_token": self.refresh_token,
@@ -67,7 +66,7 @@ class TokenBundle:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TokenBundle:
+    def from_dict(cls, data: dict[str, object]) -> TokenBundle:
         return cls(**{k: data[k] for k in cls.__dataclass_fields__})
 
 

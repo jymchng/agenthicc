@@ -21,7 +21,6 @@ import json
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 
@@ -36,10 +35,10 @@ class CassetteEntry:
     tool_names_available:  list[str]
     response_content:      str
     response_stop_reason:  str
-    response_tool_calls:   list[dict[str, Any]]   # [{"name", "tool_use_id", "input"}]
+    response_tool_calls:   list[dict[str, object]]   # [{"name", "tool_use_id", "input"}]
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> CassetteEntry:
+    def from_dict(cls, d: dict[str, object]) -> CassetteEntry:
         resp = d.get("response", {})
         return cls(
             index=int(d.get("index", 0)),
@@ -63,7 +62,7 @@ class ApprovalEntry:
     remember_all: bool
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> ApprovalEntry:
+    def from_dict(cls, d: dict[str, object]) -> ApprovalEntry:
         return cls(
             index=int(d.get("index", 0)),
             kind=str(d.get("kind", "tool")),
@@ -170,7 +169,7 @@ class SessionCassette:
 
     # ── Transport / approval conversion ───────────────────────────────────────
 
-    def to_mock_transport(self) -> Any:
+    def to_mock_transport(self) -> object:
         """Return a configured MockTransport with all responses queued.
 
         Each cassette entry is converted to a sequence of

@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlay import Overlay
@@ -21,17 +24,17 @@ class HelpOverlay(Overlay):
 
     def __init__(
         self,
-        registry: Any,
+        registry: object,
         on_close: Callable[[], None],
         initial_query: str = "",
     ) -> None:
         self._registry  = registry
         self._on_close  = on_close
         self._view      = _View.LIST
-        self._detail_cmd: Any = None   # Command currently shown in DETAIL_VIEW
+        self._detail_cmd: object = None   # Command currently shown in DETAIL_VIEW
 
         # Build flat row list: str = group header, Command = selectable row.
-        self._rows: list[Any] = []
+        self._rows: list[object] = []
         if registry is not None:
             for group in registry.groups():
                 cmds = registry.commands_for_group(group)
@@ -73,7 +76,7 @@ class HelpOverlay(Overlay):
     def on_unmount(self) -> None:
         pass
 
-    def render(self) -> Any:
+    def render(self) -> "RenderableType":
         if self._view == _View.DETAIL:
             return self._render_detail()
         return self._render_list()
@@ -103,7 +106,7 @@ class HelpOverlay(Overlay):
 
     # ── Rendering ─────────────────────────────────────────────────────────────
 
-    def _render_list(self) -> Any:
+    def _render_list(self) -> "RenderableType":
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
 
@@ -120,7 +123,7 @@ class HelpOverlay(Overlay):
         )
         visible = self._rows[self._scroll : self._scroll + self._MAX_VISIBLE]
         sep = Text("─" * 60, style="dim")
-        lines: list[Any] = [sep]
+        lines: list[RenderableType] = [sep]
 
         for local_i, row in enumerate(visible):
             row_idx = self._scroll + local_i
@@ -149,7 +152,7 @@ class HelpOverlay(Overlay):
         ]
         return Group(*lines)
 
-    def _render_detail(self) -> Any:
+    def _render_detail(self) -> "RenderableType":
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
 
@@ -161,7 +164,7 @@ class HelpOverlay(Overlay):
         arg_hint = cmd.argument_hint or "(none)"
         sep = Text("─" * 60, style="dim")
 
-        lines: list[Any] = [
+        lines: list[RenderableType] = [
             sep,
             Text.from_markup(f"  [bold cyan]{cmd.name}[/bold cyan]"),
             Text(""),

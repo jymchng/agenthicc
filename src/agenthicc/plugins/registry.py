@@ -4,11 +4,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
-PluginTool = Callable[..., Any]
+PluginTool = Callable[..., object]
 
 __all__ = ["ToolRegistry", "build_registry"]
 
@@ -62,7 +62,7 @@ class ToolRegistry:
             lines.append(f"- **{name}**: {doc}")
         return "\n".join(lines)
 
-    def summary_log(self) -> dict[str, Any]:
+    def summary_log(self) -> dict[str, object]:
         """Serialisable tool count summary for session log."""
         return {"total_tools": len(self._by_name), "names": self.names}
 

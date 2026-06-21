@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import posixpath
 import re
-from typing import Any
 
 from .backend import FilesystemBackend, FileStat, FileEntry, GrepMatch
 
@@ -294,8 +293,8 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
 
     def batch_read(
         self, paths: list[str], encoding: str = "utf-8"
-    ) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
+    ) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
         for path in paths:
             try:
                 content = self.read_text(path, encoding)
@@ -306,8 +305,8 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
 
     def batch_write(
         self, files: list[dict[str, str]], create_parents: bool = True
-    ) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
+    ) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
         for f in files:
             path, content = f["path"], f["content"]
             try:
@@ -317,8 +316,8 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
                 results.append({"path": path, "ok": False, "error": str(exc), "bytes_written": 0})
         return results
 
-    def batch_delete(self, paths: list[str]) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
+    def batch_delete(self, paths: list[str]) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
         for path in paths:
             try:
                 self.delete(path)

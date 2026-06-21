@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any
 
 __all__ = ["SemanticIndex"]
 
@@ -57,7 +56,7 @@ class _FallbackStore:
         content: str,
         *,
         id: str,
-        metadata: dict[str, Any] | None = None,  # noqa: ARG002
+        metadata: dict[str, object] | None = None,  # noqa: ARG002
         embedding: list[float] | None = None,
     ) -> str:
         if embedding is not None:

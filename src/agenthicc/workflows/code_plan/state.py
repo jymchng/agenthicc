@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import dataclasses
 from enum import Enum, auto
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lauren_ai._memory import ShortTermMemory
 
 
 class CodePlanState(Enum):
@@ -45,4 +48,4 @@ class CodePlanContext:
     review_summary:   str       = ""   # set after REVIEW phase (approve)
     rejection_reason: str       = ""   # set when REVIEW rejects
     fail_reason:      str       = ""   # set on FAILED
-    shared_memory:    Any       = None # ShortTermMemory shared across all phases
+    shared_memory:    ShortTermMemory | None = None  # shared across all phases

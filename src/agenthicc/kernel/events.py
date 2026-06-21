@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 from uuid import uuid4
 
 __all__ = ["Effect", "EffectType", "Event"]
@@ -16,7 +15,7 @@ class Event:
     event_id: str
     event_type: str
     timestamp: float
-    payload: dict[str, Any]
+    payload: dict[str, object]
     source_agent_id: str | None = None
     tool_call_id: str | None = None
 
@@ -24,7 +23,7 @@ class Event:
     def create(
         cls,
         event_type: str,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         source_agent_id: str | None = None,
         tool_call_id: str | None = None,
     ) -> Event:
@@ -37,7 +36,7 @@ class Event:
             tool_call_id=tool_call_id,
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "event_id": self.event_id,
             "event_type": self.event_type,
@@ -48,7 +47,7 @@ class Event:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Event:
+    def from_dict(cls, data: dict[str, object]) -> Event:
         return cls(
             event_id=data["event_id"],
             event_type=data["event_type"],
@@ -72,4 +71,4 @@ class EffectType(str, Enum):
 @dataclass(frozen=True)
 class Effect:
     effect_type: EffectType
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, object] = field(default_factory=dict)

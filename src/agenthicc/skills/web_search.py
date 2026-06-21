@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 from agenthicc.tools.base import Tool
 
@@ -26,7 +25,7 @@ class SearchWebTool(Tool):
         self._engine = engine
         self._max_results = max_results
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict, context: dict) -> dict[str, object]:
         if not self._api_key:
             return {"ok": False, "error": "No API key configured for web search"}
         query = args["query"]
@@ -73,7 +72,7 @@ class FetchPageTool(Tool):
         "required": ["url"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict, context: dict) -> dict[str, object]:
         from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
         url = args["url"]
         timeout = float(args.get("timeout", 15.0))

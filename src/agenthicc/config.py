@@ -22,7 +22,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agenthicc.kernel import SecurityPolicy, SystemSettings
 
@@ -221,7 +221,7 @@ class AgentsSettings:
     agents: dict[str, AgentSettings] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict[str, dict[str, Any]]) -> "AgentsSettings":
+    def from_dict(cls, d: dict[str, dict[str, object]]) -> "AgentsSettings":
         fields = {f for f in AgentSettings.__dataclass_fields__}
         return cls(agents={
             name: AgentSettings(**{k: v for k, v in cfg.items() if k in fields})
@@ -274,7 +274,7 @@ class AgenthiccConfig:
     skills:    SkillsSettings     = field(default_factory=SkillsSettings)
     agents:    AgentsSettings      = field(default_factory=AgentsSettings)
     storage:   StorageSettings    = field(default_factory=StorageSettings)
-    workflows: dict[str, dict[str, Any]] = field(default_factory=dict)
+    workflows: dict[str, dict[str, object]] = field(default_factory=dict)
     """Per-workflow tunable parameter overrides loaded from ``[workflows.<name>]``
     TOML sections (PRD-111).  E.g. ``cfg.workflows["code_plan"]["execute_model"]``."""
 
@@ -293,7 +293,7 @@ class AgenthiccConfig:
         return build_policy_from_config(self)
 
 
-def _parse_mcp_servers(raw_list: list[dict[str, Any]]) -> list[McpServerConfig]:
+def _parse_mcp_servers(raw_list: list[dict[str, object]]) -> list[McpServerConfig]:
     """Convert raw TOML dicts to McpServerConfig objects (graceful if mcp.py unavailable)."""
     try:
         from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
@@ -305,7 +305,7 @@ def _parse_mcp_servers(raw_list: list[dict[str, Any]]) -> list[McpServerConfig]:
 # ── merging ──────────────────────────────────────────────────────────────
 
 
-def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def deep_merge(base: dict[str, object], override: dict[str, object]) -> dict[str, object]:
     """Recursively merge ``override`` into ``base``.
 
     Nested dicts merge recursively; scalars and lists in ``override``
@@ -320,7 +320,7 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return result
 
 
-def _flatten_hooks(data: dict[str, Any], prefix: str = "") -> dict[str, list[str]]:
+def _flatten_hooks(data: dict[str, object], prefix: str = "") -> dict[str, list[str]]:
     """Flatten nested hook tables into ``{"intent.pre_validate": [...]}`` form."""
     flat: dict[str, list[str]] = {}
     for key, value in data.items():
@@ -343,7 +343,7 @@ def _find_config_file(candidates: list[Path]) -> Path | None:
     return None
 
 
-def _load_toml_safe(path: Path) -> dict[str, Any]:
+def _load_toml_safe(path: Path) -> dict[str, object]:
     """Load TOML file; return {} on error, warn on invalid syntax."""
     import warnings  # noqa: PLC0415
 
@@ -377,7 +377,7 @@ def _coerce_env(value: str) -> bool | int | float | str:
     return value
 
 
-def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
+def _apply_env_overrides(config: dict[str, object]) -> dict[str, object]:
     """Apply AGENTHICC_<SECTION>_<KEY> environment variables and provider shortcuts.
 
     Env vars always override both user-global and per-project config files.
@@ -432,7 +432,7 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def _apply_cli_overrides(config: dict[str, Any], overrides: list[str]) -> dict[str, Any]:
+def _apply_cli_overrides(config: dict[str, object], overrides: list[str]) -> dict[str, object]:
     """Apply --set section.key=value overrides (highest priority)."""
     for override in overrides:
         if "=" not in override:
@@ -453,7 +453,7 @@ class ConfigExtendsCycleError(Exception):
     """Raised when an ``extends`` chain contains a cycle."""
 
 
-def _read_toml(path: Path) -> dict[str, Any]:
+def _read_toml(path: Path) -> dict[str, object]:
     with open(path, "rb") as f:
         return tomllib.load(f)
 
@@ -461,7 +461,7 @@ def _read_toml(path: Path) -> dict[str, Any]:
 def _resolve_extends(
     path: Path,
     _seen: frozenset[Path] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Read *path* and recursively resolve its ``extends`` chain (PRD-113).
 
     Returns a fully-merged dict: parents first (left-to-right), the current
@@ -512,7 +512,7 @@ def _resolve_extends(
         return data
 
     base_dir = path.parent
-    merged: dict[str, Any] = {}
+    merged: dict[str, object] = {}
 
     for parent_str in parents:
         parent_path = (base_dir / Path(parent_str).expanduser()).resolve()
@@ -527,7 +527,7 @@ def _resolve_extends(
     return deep_merge(merged, data)
 
 
-def _load_toml_with_extends(path: Path) -> dict[str, Any]:
+def _load_toml_with_extends(path: Path) -> dict[str, object]:
     """Like ``_load_toml_safe`` but also resolves ``extends`` chains.
 
     Returns ``{}`` on ``FileNotFoundError`` / ``PermissionError``; warns on
@@ -545,7 +545,7 @@ def _load_toml_with_extends(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
+def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     """Build an AgenthiccConfig from a merged dict."""
     ex = data.get("execution", {})
     execution = ExecutionSettings(
@@ -623,7 +623,7 @@ def _dict_to_config(data: dict[str, Any]) -> AgenthiccConfig:
     )
 
     # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)
-    workflows: dict[str, dict[str, Any]] = {
+    workflows: dict[str, dict[str, object]] = {
         name: dict(params)
         for name, params in data.get("workflows", {}).items()
         if isinstance(params, dict)
@@ -675,7 +675,7 @@ def load_config(
     syntax).  When paths are auto-discovered, bad files produce a warning and
     are skipped.
     """
-    merged: dict[str, Any] = {}
+    merged: dict[str, object] = {}
 
     # PRD-113: --config / AGENTHICC_CONFIG override the auto-discovered project file.
     # Priority: explicit config_path arg > AGENTHICC_CONFIG env var > auto-discovery.

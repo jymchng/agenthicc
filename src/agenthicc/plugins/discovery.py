@@ -10,11 +10,11 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 log = logging.getLogger(__name__)
 
-PluginTool = Callable[..., Any]
+PluginTool = Callable[..., object]
 
 __all__ = [
     "LoadResult", "PluginToolSet",

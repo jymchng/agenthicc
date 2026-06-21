@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.tui.conversation_store import AppState
 
 __all__ = [
     "ApprovalRequest",
@@ -55,7 +58,7 @@ class ApprovalService:
     tool calls don't race on the single pending_approval signal slot.
     """
 
-    def __init__(self, app_state: Any) -> None:
+    def __init__(self, app_state: AppState) -> None:
         self._app_state        = app_state
         self._response:        ApprovalResponse | None = None
         self._remembered_turn: frozenset = frozenset()
@@ -118,11 +121,11 @@ class ApprovalGate:
     If ToolCapabilityGate aborts (hard block), this hook never runs.
     """
 
-    def __init__(self, app_state: Any, service: ApprovalService) -> None:
+    def __init__(self, app_state: AppState, service: ApprovalService) -> None:
         self._app_state = app_state
         self._service   = service
 
-    async def before_tool_call(self, ctx: Any) -> Any:
+    async def before_tool_call(self, ctx: object) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
         from agenthicc.tools.capabilities import CAPABILITIES_KEY   # noqa: PLC0415
 
@@ -156,10 +159,10 @@ class ApprovalGate:
             "error": f"User denied permission to run '{ctx.tool_name}'.",
         })
 
-    async def after_tool_call(self, result: Any, ctx: Any) -> Any:
+    async def after_tool_call(self, result: object, ctx: object) -> object:
         from lauren_ai._tools._hooks import AfterToolHookDecision  # noqa: PLC0415
         return AfterToolHookDecision.proceed()
 
-    async def on_tool_error(self, exc: Exception, ctx: Any) -> Any:
+    async def on_tool_error(self, exc: Exception, ctx: object) -> object:
         from lauren_ai._tools._hooks import ErrorToolHookDecision  # noqa: PLC0415
         return ErrorToolHookDecision.reraise()

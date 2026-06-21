@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
-
 __all__ = ["AgentPool", "AgentRecord"]
 
 
@@ -26,9 +24,9 @@ class AgentRecord:
 
     agent_id: str
     agent_type: str
-    runner: Any = None
+    runner: object = None
     current_task_id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class AgentPool:

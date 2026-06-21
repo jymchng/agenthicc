@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
-
 from agenthicc.tools.base import Tool
 
 __all__ = ["GitToolKit"]
@@ -38,7 +36,7 @@ class GitStatusTool(Tool):
     description = "Show working tree status: branch, staged/unstaged/untracked files."
     parameters: dict = {"type": "object", "properties": {}, "required": []}
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         rc, out, err = await _run_git(root, ["status", "--porcelain=v1", "-b"])
         if rc != 0:
@@ -82,7 +80,7 @@ class GitDiffTool(Tool):
         },
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         cmd = ["diff"]
         if args.get("staged"):
@@ -118,7 +116,7 @@ class GitLogTool(Tool):
         },
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         n = int(args.get("n", 10))
         fmt = "%H\x1f%h\x1f%an\x1f%ai\x1f%s"
@@ -153,7 +151,7 @@ class GitAddTool(Tool):
         "required": ["paths"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         paths = args.get("paths", [])
         rc, out, err = await _run_git(root, ["add", "--", *paths])
@@ -172,7 +170,7 @@ class GitCommitTool(Tool):
         "required": ["message"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         cmd = ["commit", "-m", args["message"]]
         if args.get("author"):
@@ -197,7 +195,7 @@ class GitCheckoutTool(Tool):
         "required": ["branch"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         cmd = ["checkout"]
         if args.get("create"):
@@ -215,7 +213,7 @@ class GitBranchTool(Tool):
         "properties": {"pattern": {"type": "string"}},
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         cmd = ["branch", "-a", "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)"]
         if args.get("pattern"):
@@ -250,7 +248,7 @@ class GitBlameTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         cmd = ["blame", "--line-porcelain"]
         start = int(args.get("start_line", 1))
@@ -296,7 +294,7 @@ class GitGrepTool(Tool):
         "required": ["pattern"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         cmd = ["grep", "-n", "--line-number", args["pattern"], args.get("ref", "HEAD")]
         rc, out, err = await _run_git(root, cmd)
@@ -333,7 +331,7 @@ class GitShowTool(Tool):
         "properties": {"ref": {"type": "string", "default": "HEAD"}},
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         ref = args.get("ref", "HEAD")
         fmt = "%H\x1f%an\x1f%ai\x1f%B"
@@ -370,7 +368,7 @@ class GitStashTool(Tool):
         },
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         root = context.get("workspace_root", ".")
         action = args.get("action", "push")
         cmd = ["stash", action]

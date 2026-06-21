@@ -23,9 +23,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from agenthicc.config import AgenthiccConfig
     from agenthicc.testing.cassette import SessionCassette
     from agenthicc.testing.mock_approval import MockApprovalService
 
@@ -56,9 +57,9 @@ class _HeadlessProcessor:
     """No-op EventProcessor that collects emitted kernel events for assertions."""
 
     def __init__(self) -> None:
-        self._events: list[dict[str, Any]] = []
+        self._events: list[dict[str, object]] = []
 
-    async def emit(self, event: Any) -> None:
+    async def emit(self, event: object) -> None:
         self._events.append({
             "type": getattr(event, "event_type", ""),
             "payload": dict(getattr(event, "payload", {}) or {}),
@@ -67,7 +68,7 @@ class _HeadlessProcessor:
     def get_state(self) -> None:
         return None
 
-    def events_of_type(self, event_type: str) -> list[dict[str, Any]]:
+    def events_of_type(self, event_type: str) -> list[dict[str, object]]:
         return [e for e in self._events if e["type"] == event_type]
 
 
@@ -77,7 +78,7 @@ async def run_headless_replay(
     cassette: SessionCassette,
     *,
     intent: str | None = None,
-    cfg: Any = None,
+    cfg: "AgenthiccConfig | None" = None,
 ) -> ReplayResult:
     """Run *cassette* through :class:`~agenthicc.workflows.code_plan.CodePlanRunner`.
 
@@ -154,7 +155,7 @@ async def run_headless_replay(
     # ── Collect tool_complete events from conv_store ──────────────────────────
     tools_called: list[str] = []
 
-    def _record_event(ev: Any) -> None:
+    def _record_event(ev: object) -> None:
         if getattr(ev, "kind", "") == "tool_complete":
             tools_called.append(ev.payload.get("name", ""))
 

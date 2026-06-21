@@ -6,7 +6,6 @@ import datetime
 import fnmatch
 import re
 import time
-from typing import Any
 
 from .backend import FileEntry, FileStat, GrepMatch
 
@@ -42,7 +41,7 @@ class S3FilesystemBackend:
         self._bucket = bucket
         self._prefix = prefix.lstrip("/")
 
-        client_kwargs: dict[str, Any] = {"region_name": region}
+        client_kwargs: dict[str, object] = {"region_name": region}
         if endpoint_url:
             client_kwargs["endpoint_url"] = endpoint_url
         if path_style and endpoint_url:
@@ -282,7 +281,7 @@ class S3FilesystemBackend:
             prefix += "/"
 
         paginator = self._s3.get_paginator("list_objects_v2")
-        kwargs: dict[str, Any] = {"Bucket": self._bucket, "Prefix": prefix}
+        kwargs: dict[str, object] = {"Bucket": self._bucket, "Prefix": prefix}
         if not recursive:
             kwargs["Delimiter"] = "/"
 
@@ -381,14 +380,14 @@ class S3FilesystemBackend:
     # Batch helpers
     # ------------------------------------------------------------------
 
-    def _read_one(self, path: str, encoding: str) -> dict[str, Any]:
+    def _read_one(self, path: str, encoding: str) -> dict[str, object]:
         try:
             content = self.read_text(path, encoding=encoding)
             return {"path": path, "content": content, "ok": True, "error": None}
         except Exception as exc:
             return {"path": path, "content": None, "ok": False, "error": str(exc)}
 
-    def _write_one(self, f: dict[str, Any], create_parents: bool) -> dict[str, Any]:
+    def _write_one(self, f: dict[str, object], create_parents: bool) -> dict[str, object]:
         path: str = f["path"]
         content: str = f.get("content", "")
         encoding: str = f.get("encoding", "utf-8")
@@ -467,7 +466,7 @@ class S3FilesystemBackend:
 # Private helper — avoids importing botocore at module load time
 # ------------------------------------------------------------------
 
-def _make_path_style_config() -> Any:
+def _make_path_style_config() -> object:
     from botocore.config import Config  # noqa: PLC0415
 
     return Config(s3={"addressing_style": "path"})

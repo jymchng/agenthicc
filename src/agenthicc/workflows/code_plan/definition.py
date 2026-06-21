@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agenthicc.workflows.code_plan.runner import CodePlanRunner
@@ -126,7 +126,7 @@ class CodePlan(WorkflowPlugin):
         return CodePlanRunner(config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: dict[str, Any]) -> WorkflowParams:
+    def build_params(cls, source: dict[str, object]) -> WorkflowParams:
         """Build ``CodePlanParams`` from *source* (PRD-111, PRD-116)."""
         known = {f.name for f in dataclasses.fields(CodePlanParams)}
         return CodePlanParams(**{k: v for k, v in source.items() if k in known})

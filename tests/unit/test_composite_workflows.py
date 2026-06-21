@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,10 +17,10 @@ from agenthicc.workflows.plugin import WorkflowPlugin
 
 @pytest.mark.unit
 def test_base_runner_run_return_type_is_any() -> None:
-    """run() return annotation is Any so subclasses may narrow it."""
+    """run() return annotation is object so subclasses may narrow it."""
     import inspect
     hints = inspect.get_annotations(BaseWorkflowRunner.run, eval_str=True)
-    assert hints.get("return") is Any
+    assert hints.get("return") is object
 
 
 @pytest.mark.unit

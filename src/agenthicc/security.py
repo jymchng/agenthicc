@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import fnmatch
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from agenthicc.kernel import PermissionRule, SecurityPolicy
@@ -122,7 +122,7 @@ class AgentCapabilityScope:
         )
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "AgentCapabilityScope":
+    def from_dict(cls, data: dict[str, object]) -> "AgentCapabilityScope":
         """Deserialise from a plain dict (e.g. from the event log)."""
         raw_allowed = data.get("allowed_tools")
         raw_comm = data.get("allowed_comm_tools")
@@ -134,7 +134,7 @@ class AgentCapabilityScope:
             max_spawn_depth=int(data.get("max_spawn_depth", 3)),
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         """Serialise to a plain dict suitable for JSON / TOML."""
         return {
             "allowed_tools": (
@@ -248,7 +248,7 @@ class PermissionChecker:
     def check(
         self,
         tool_name: str,
-        conditions: dict[str, Any] | None = None,
+        conditions: dict[str, object] | None = None,
         agent_id: str | None = None,
     ) -> str:
         """Return ``'allow'``, ``'deny'``, or ``'require_confirmation'``.
@@ -271,7 +271,7 @@ class PermissionChecker:
         return self._check_global(tool_name, conditions)
 
     def _check_global(
-        self, tool_name: str, conditions: dict[str, Any] | None
+        self, tool_name: str, conditions: dict[str, object] | None
     ) -> str:
         """Run the ordered global permission-rule table."""
         call_conditions = conditions or {}
@@ -286,7 +286,7 @@ class PermissionChecker:
     # ── condition evaluation ─────────────────────────────────────────────
 
     def _conditions_match(
-        self, rule: PermissionRule, call_conditions: dict[str, Any]
+        self, rule: PermissionRule, call_conditions: dict[str, object]
     ) -> bool:
         for key, expected in rule.conditions.items():
             if key == "path_prefix":
@@ -301,7 +301,7 @@ class PermissionChecker:
         return True
 
     @staticmethod
-    def _path_prefix_matches(expected: Any, call_conditions: dict[str, Any]) -> bool:
+    def _path_prefix_matches(expected: object, call_conditions: dict[str, object]) -> bool:
         path = str(call_conditions.get("path", ""))
         if not path:
             return False
@@ -309,7 +309,7 @@ class PermissionChecker:
         return any(path.startswith(str(prefix)) for prefix in prefixes)
 
     @staticmethod
-    def _network_domain_matches(expected: Any, call_conditions: dict[str, Any]) -> bool:
+    def _network_domain_matches(expected: object, call_conditions: dict[str, object]) -> bool:
         host = call_conditions.get("host")
         if host is None:
             url = str(call_conditions.get("url", ""))

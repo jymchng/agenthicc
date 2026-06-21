@@ -4,7 +4,11 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from agenthicc.config import AgenthiccConfig
+    from rich.console import RenderableType
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlay import Overlay
@@ -20,8 +24,8 @@ class _Field:
     section_name: str
     field_name:   str
     label:        str
-    value:        Any
-    default:      Any
+    value:        object
+    default:      object
     field_type:   type
     editable:     bool
     changed:      bool = False
@@ -34,7 +38,7 @@ class _Section:
     expanded: bool = True
 
 
-def _build_sections(cfg: Any) -> list[_Section]:
+def _build_sections(cfg: "AgenthiccConfig | None") -> list[_Section]:
     if cfg is None:
         return []
     ATTRS = ["execution", "memory", "security", "api", "plugins"]
@@ -73,7 +77,7 @@ class ConfigMenuOverlay(Overlay):
     name = "config"
     _MAX_VISIBLE = 12
 
-    def __init__(self, cfg: Any, on_close: Callable[[], None]) -> None:
+    def __init__(self, cfg: "AgenthiccConfig | None", on_close: Callable[[], None]) -> None:
         self._cfg      = cfg
         self._on_close = on_close
         self._sections = _build_sections(cfg)
@@ -89,7 +93,7 @@ class ConfigMenuOverlay(Overlay):
     def on_unmount(self) -> None:
         pass
 
-    def render(self) -> Any:
+    def render(self) -> "RenderableType":
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
 

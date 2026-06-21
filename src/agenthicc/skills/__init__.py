@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import abc
 import logging
-from typing import Any
 
 from agenthicc.tools.base import Tool
 
@@ -30,7 +29,7 @@ class SkillBundle(abc.ABC):
     @property
     def required_config(self) -> list[str]: return []
     @abc.abstractmethod
-    def tools(self, config: dict[str, Any]) -> list[Tool]: ...
+    def tools(self, config: dict[str, object]) -> list[Tool]: ...
     def commands(self) -> list: return []
     def system_prompt_addition(self) -> str: return ""
 

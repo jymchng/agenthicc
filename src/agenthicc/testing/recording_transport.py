@@ -43,7 +43,7 @@ class RecordingTransport:
     runners writing to the same file.
     """
 
-    def __init__(self, inner: Any, cassette_path: Path) -> None:
+    def __init__(self, inner: object, cassette_path: Path) -> None:
         self._inner = inner
         self._path = cassette_path
         self._index = 0

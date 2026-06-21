@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import shutil
-from typing import Any, Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from rich.console import RenderableType
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlay import Overlay
@@ -26,9 +30,9 @@ class TriggerPickerOverlay(Overlay):
     def __init__(
         self,
         initial_buf: list[str],
-        registry: Any,
-        cwd: Any,
-        on_complete: Callable[[Any], None],
+        registry: object,
+        cwd: "Path",
+        on_complete: Callable[[object], None],
     ) -> None:
         from agenthicc.tui.trigger import TriggerContext   # noqa: PLC0415
         self._buf       = InputBuffer(initial_buf)
@@ -36,7 +40,7 @@ class TriggerPickerOverlay(Overlay):
         self._cwd       = cwd
         self._complete  = on_complete
         self._ctx       = TriggerContext(cwd=cwd)
-        self._trigger:  Any = None
+        self._trigger:  object = None
         self._matches:  list = []
         self._selected: int = 0   # index into self._matches
         self._scroll:   int = 0   # index of first visible item
@@ -96,7 +100,7 @@ class TriggerPickerOverlay(Overlay):
     def on_unmount(self) -> None:
         pass
 
-    def render(self) -> Any:
+    def render(self) -> "RenderableType":
         from rich.console import Group  # noqa: PLC0415
         from rich.text import Text      # noqa: PLC0415
         from agenthicc.tui.input.renderer import build_prompt  # noqa: PLC0415
@@ -108,7 +112,7 @@ class TriggerPickerOverlay(Overlay):
             mention_suffix=tchar + frag if self._trigger else "",
             in_trigger=self._trigger is not None,
         )
-        result_lines: list[Any] = [Text.from_markup(prompt)]
+        result_lines: list[RenderableType] = [Text.from_markup(prompt)]
 
         if self._matches and self._trigger:
             handler = self._trigger.handler

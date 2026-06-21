@@ -7,8 +7,6 @@ import re
 import shutil
 import stat
 from pathlib import Path
-from typing import Any
-
 from agenthicc.tools.base import Tool
 from agenthicc.tools.sandbox import WorkspaceView
 
@@ -44,7 +42,7 @@ class ReadFileTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         encoding = args.get("encoding", "utf-8")
         try:
             resolved = _view(context).resolve(args["path"])
@@ -75,7 +73,7 @@ class WriteFileTool(Tool):
         "required": ["path", "content"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -100,7 +98,7 @@ class AppendFileTool(Tool):
         "required": ["path", "content"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -124,7 +122,7 @@ class DeleteFileTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -147,7 +145,7 @@ class MoveFileTool(Tool):
         "required": ["source", "destination"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             view = _view(context)
             src = view.resolve(args["source"])
@@ -170,7 +168,7 @@ class CopyFileTool(Tool):
         "required": ["source", "destination"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             view = _view(context)
             src = view.resolve(args["source"])
@@ -197,7 +195,7 @@ class ListDirectoryTool(Tool):
         },
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args.get("path", "."))
         except PermissionError as e:
@@ -240,7 +238,7 @@ class MakeDirectoryTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -261,7 +259,7 @@ class FileExistsTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError:
@@ -286,7 +284,7 @@ class SearchFilesTool(Tool):
         "required": ["pattern"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args.get("path", "."))
         except PermissionError as e:
@@ -316,7 +314,7 @@ class GrepFilesTool(Tool):
         "required": ["pattern"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args.get("path", "."))
         except PermissionError as e:
@@ -360,7 +358,7 @@ class GetFileInfoTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -385,7 +383,7 @@ class ReadLinesTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -417,7 +415,7 @@ class PatchFileTool(Tool):
         "required": ["path", "old_content", "new_content"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -440,7 +438,7 @@ class PatchFileTool(Tool):
 class FsToolKit:
     """Factory that returns all 14 filesystem tools."""
 
-    def __init__(self, backend: Any = None) -> None:
+    def __init__(self, backend: object = None) -> None:
         self._backend = backend
 
     def tools(self, workspace_root: str = ".") -> list[Tool]:

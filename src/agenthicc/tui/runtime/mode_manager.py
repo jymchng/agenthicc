@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
-
 log = logging.getLogger(__name__)
 
 _NEW_LINE_HINT = ""
@@ -168,7 +166,7 @@ class ModeManager:
     def __init__(
         self,
         registry:      ModeRegistry | None         = None,
-        app_state:     Any                          = None,
+        app_state:     object                        = None,
         default_map:   dict[str, str] | None        = None,
         available_map: dict[str, list[str]] | None  = None,
     ) -> None:

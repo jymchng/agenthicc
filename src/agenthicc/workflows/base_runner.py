@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import abc
-from typing import Any
 
 
 class BaseWorkflowRunner(abc.ABC):
@@ -15,15 +14,15 @@ class BaseWorkflowRunner(abc.ABC):
     """
 
     @abc.abstractmethod
-    async def run(self, intent: str) -> Any:
+    async def run(self, intent: str) -> object:
         """Start a fresh run for the given user intent.
 
         Returns the runner's internal context (e.g. ``CodePlanContext`` for
         ``CodePlanRunner``, ``WorkflowContext`` for ``WorkflowRunner``).
-        The return value is typed as ``Any`` so that each concrete subclass
+        The return value is typed as ``object`` so that each concrete subclass
         may declare a tighter return type without violating the ABC contract.
         """
 
     @abc.abstractmethod
-    async def resume(self, context: Any) -> None:
+    async def resume(self, context: object) -> None:
         """Resume an interrupted run from a saved context / DataBus."""

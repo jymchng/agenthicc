@@ -14,7 +14,6 @@ Decorator order does not matter — @set_metadata and @tool() write to different
 attributes and never interfere.  Conventional style is @set_metadata above @tool().
 """
 from enum import Enum
-from typing import Any
 
 from lauren_ai._tools import TOOL_METADATA as _TOOL_METADATA, set_metadata
 
@@ -85,7 +84,7 @@ tool_network_search = set_metadata(
 )
 
 
-def get_tool_capabilities(tool: Any) -> frozenset:
+def get_tool_capabilities(tool: object) -> frozenset:
     """Return the ToolCapability frozenset stored on a @tool()-decorated function.
 
     Reads from __lauren_ai_tool_metadata__[CAPABILITIES_KEY], written by

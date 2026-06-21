@@ -4,7 +4,11 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from agenthicc.config import AgenthiccConfig
+    from rich.console import Console
 
 __all__ = [
     "MenuResultKind",
@@ -39,7 +43,7 @@ class MenuResult:
     """Value returned from MenuWidget.handle_key()."""
 
     kind: MenuResultKind
-    data: Any = None  # set when kind == DONE
+    data: object = None  # set when kind == DONE
 
     # ------------------------------------------------------------------
     # Factories
@@ -51,7 +55,7 @@ class MenuResult:
         return cls(kind=MenuResultKind.CONTINUE)
 
     @classmethod
-    def done(cls, value: Any = None) -> MenuResult:
+    def done(cls, value: object = None) -> MenuResult:
         """The menu completed normally; *value* is the result payload."""
         return cls(kind=MenuResultKind.DONE, data=value)
 
@@ -89,7 +93,7 @@ class MenuWidget(Protocol):
         """
         ...  # pragma: no cover
 
-    def handle_key(self, key: Any, ch: str) -> MenuResult:
+    def handle_key(self, key: object, ch: str) -> MenuResult:
         """Process one keystroke.
 
         Parameters
@@ -196,7 +200,7 @@ class MenuDriver:
                 prompt_str, buf, self._prev_lines
             )
 
-    def handle_key(self, key: Any, ch: str) -> MenuResult:
+    def handle_key(self, key: object, ch: str) -> MenuResult:
         """Forward *key* / *ch* to the active widget.
 
         If no widget is active, returns :meth:`MenuResult.continue_` so the
@@ -236,8 +240,8 @@ class RendererContext:
         The current session identifier string, used for display purposes.
     """
 
-    config: Any  # AgenthiccConfig live object
-    console: Any  # Rich Console
+    config: "AgenthiccConfig"
+    console: "Console"
     session_id: str = ""
 
 

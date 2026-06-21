@@ -12,8 +12,12 @@ All side-effects are expressed as events emitted on the kernel
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from lauren_ai._messaging import AgentMessageBus
+    from agenthicc.tools.mcp import McpToolRegistry
 
 from agenthicc.kernel import AppState, Event, EventProcessor, NodeStatus
 
@@ -83,8 +87,8 @@ class CommunicationTools:
         self,
         processor: EventProcessor,
         pool: AgentPool,
-        message_bus: Any | None = None,
-        mcp_registry: Any | None = None,
+        message_bus: AgentMessageBus | None = None,
+        mcp_registry: McpToolRegistry | None = None,
     ) -> None:
         self._processor = processor
         self._pool = pool
@@ -96,7 +100,7 @@ class CommunicationTools:
     async def _emit(
         self,
         event_type: str,
-        payload: dict[str, Any],
+        payload: dict[str, object],
         source_agent_id: str | None = None,
     ) -> Event:
         event = Event.create(event_type, payload, source_agent_id=source_agent_id)
@@ -113,9 +117,9 @@ class CommunicationTools:
     async def agent_spawn(
         self,
         agent_type: str,
-        config: dict[str, Any] | None = None,
+        config: dict[str, object] | None = None,
         parent_agent_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Spawn a new agent; returns the new ``agent_id``."""
         agent_id = uuid4().hex
         await self._emit(
@@ -137,9 +141,9 @@ class CommunicationTools:
     async def agent_send_message(
         self,
         to_agent_id: str,
-        message: Any,
+        message: object,
         from_agent_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Send *message* to another agent.
 
         Delivery uses the message bus when one is configured; the
@@ -188,7 +192,7 @@ class CommunicationTools:
         workflow_id: str,
         dependencies: list[str] | None = None,
         node_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Create a pending task plus its workflow node."""
         task_id = uuid4().hex
         node_id = node_id or uuid4().hex
@@ -218,7 +222,7 @@ class CommunicationTools:
             "status": "pending",
         }
 
-    async def task_assign(self, task_id: str, agent_id: str) -> dict[str, Any]:
+    async def task_assign(self, task_id: str, agent_id: str) -> dict[str, object]:
         """Explicitly assign an existing task to an agent."""
         await self._emit(
             "TaskAssigned",
@@ -235,7 +239,7 @@ class CommunicationTools:
         node_id: str,
         label: str | None = None,
         dependencies: list[str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Add or remove a node in a workflow DAG.
 
         ``add_node`` is rejected if it would introduce a cycle;
@@ -297,8 +301,8 @@ class CommunicationTools:
         self,
         level: str,
         message: str,
-        data: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+        data: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         """Append a structured log entry to the event log."""
         level = level.upper()
         if level not in _LOG_LEVELS:
@@ -311,9 +315,9 @@ class CommunicationTools:
 
     async def application_ui_update(
         self,
-        content: Any,
+        content: object,
         ui_type: str = "message",
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Push a UI update onto the event log for the TUI to render."""
         event = await self._emit(
             "UIUpdate",
@@ -328,8 +332,8 @@ class CommunicationTools:
         name: str,
         description: str,
         source_code: str,
-        parameters_schema: dict[str, Any],
-    ) -> dict[str, Any]:
+        parameters_schema: dict[str, object],
+    ) -> dict[str, object]:
         """Register a dynamically defined tool after a compile check."""
         if not name.isidentifier():
             raise ValueError(f"tool name {name!r} is not a valid identifier")
@@ -360,7 +364,7 @@ class CommunicationTools:
         transport: str = "stdio",
         name: str | None = None,
         token: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Connect to an MCP server at runtime and register its tools.
 
         Args:
@@ -389,7 +393,7 @@ class CommunicationTools:
         entity_type: str,
         stage: str,
         handler_dotpath: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """Register a lifecycle hook handler by dotted path."""
         hook_id = uuid4().hex
         await self._emit(

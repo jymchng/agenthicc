@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Callable
 
 
 def _new_id() -> str:
@@ -68,13 +68,13 @@ class CommandBus:
     def register(self, command_type: type, handler: Callable) -> None:
         self._handlers[command_type] = handler
 
-    def dispatch(self, command: Command) -> Any:
+    def dispatch(self, command: Command) -> object:
         handler = self._handlers.get(type(command))
         if handler is None:
             raise ValueError(f"No handler for {type(command).__name__}")
         return handler(command)
 
-    async def dispatch_async(self, command: Command) -> Any:
+    async def dispatch_async(self, command: Command) -> object:
         import inspect    # noqa: PLC0415
         handler = self._handlers.get(type(command))
         if handler is None:

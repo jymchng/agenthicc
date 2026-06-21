@@ -14,7 +14,7 @@ from __future__ import annotations
 __all__ = ["should_compact", "compact_memory"]
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
@@ -50,7 +50,7 @@ def should_compact(
 
 async def compact_memory(
     memory: ShortTermMemory,
-    transport: Any,
+    transport: object,
     *,
     model: str,
     conv_store: ConversationStore | None = None,
@@ -120,12 +120,12 @@ async def compact_memory(
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
-def _format_transcript(messages: list[Any]) -> str:
+def _format_transcript(messages: list[object]) -> str:
     """Render a message list as a plain-text transcript for the summariser."""
     lines: list[str] = []
     for msg in messages:
         role: str = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
-        content: Any = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        content: object = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
 
         if role == "system":
             continue  # system prompt is re-injected each turn; skip it

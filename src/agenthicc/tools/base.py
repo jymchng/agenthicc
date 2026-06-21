@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
-from typing import Any
 
 __all__ = ["Tool", "ToolResultEnvelope"]
 
@@ -21,10 +20,10 @@ class Tool(abc.ABC):
 
     name: str = ""
     description: str = ""
-    parameters: dict[str, Any] = {}
+    parameters: dict[str, object] = {}
 
     @abc.abstractmethod
-    async def execute(self, args: dict[str, Any], context: dict[str, Any]) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         """Execute the tool.
 
         :param args: Argument dict (matching :attr:`parameters`).
@@ -42,11 +41,11 @@ class ToolResultEnvelope:
     tool_call_id: str
     tool_name: str
     ok: bool
-    value: Any = None
+    value: object = None
     error: str | None = None
     duration_ms: float = 0.0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "tool_call_id": self.tool_call_id,
             "tool_name": self.tool_name,

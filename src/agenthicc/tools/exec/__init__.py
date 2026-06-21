@@ -6,8 +6,6 @@ import os
 import sys
 import tempfile
 import time
-from typing import Any
-
 from agenthicc.tools.base import Tool
 
 __all__ = ["ExecToolKit"]
@@ -29,7 +27,7 @@ async def _run_proc(
     timeout: float,
     env: dict[str, str] | None = None,
     shell: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     t0 = time.perf_counter()
     timed_out = False
     effective_env = {**os.environ, **(env or {})}
@@ -89,7 +87,7 @@ class RunBashTool(Tool):
         "required": ["command"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         cwd = args.get("cwd") or context.get("workspace_root", ".")
         return await _run_proc(
             [args["command"]], cwd=cwd,
@@ -112,7 +110,7 @@ class RunCommandTool(Tool):
         "required": ["argv"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         cwd = args.get("cwd") or context.get("workspace_root", ".")
         return await _run_proc(
             list(args["argv"]), cwd=cwd,
@@ -133,7 +131,7 @@ class RunPythonTool(Tool):
         "required": ["code"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         cwd = context.get("workspace_root", ".")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(args["code"])
@@ -162,7 +160,7 @@ class RunPythonExprTool(Tool):
         "required": ["expression"],
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         cwd = context.get("workspace_root", ".")
         code = f"_r = ({args['expression']}); print(repr(_r))"
         result = await _run_proc(
@@ -186,7 +184,7 @@ class RunTestsTool(Tool):
         },
     }
 
-    async def execute(self, args: dict, context: dict) -> Any:
+    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
         import re
         import uuid  # noqa: PLC0415
         cwd = context.get("workspace_root", ".")

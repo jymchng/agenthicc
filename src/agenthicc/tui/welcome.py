@@ -6,7 +6,7 @@ so the panel lands in the normal scroll buffer.
 from __future__ import annotations
 
 import shutil
-from typing import Any
+from typing import TYPE_CHECKING
 
 from rich import box
 from rich.align import Align
@@ -15,6 +15,9 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
+
+if TYPE_CHECKING:
+    from rich.console import Console, RenderableType
 
 # ── brand ─────────────────────────────────────────────────────────────────────
 
@@ -34,7 +37,7 @@ _CHANGELOG = [
 
 # ── left column ───────────────────────────────────────────────────────────────
 
-def _left_column(model: str, cwd: str, left_w: int = 46) -> Any:
+def _left_column(model: str, cwd: str, left_w: int = 46) -> "RenderableType":
     # Mascot + title: line-for-line alignment.
     # Fixed width on the mascot column prevents Rich from squishing it.
     hero = Table.grid(padding=(0, 2, 0, 0))
@@ -54,7 +57,7 @@ def _left_column(model: str, cwd: str, left_w: int = 46) -> Any:
         Text(""),
     )
 
-    parts: list[Any] = [
+    parts: list[RenderableType] = [
         hero,
         Text(""),
         Text("Welcome back!", style="bold yellow"),
@@ -83,8 +86,8 @@ def _left_column(model: str, cwd: str, left_w: int = 46) -> Any:
 
 # ── right column ──────────────────────────────────────────────────────────────
 
-def _right_column() -> Any:
-    parts: list[Any] = [
+def _right_column() -> "RenderableType":
+    parts: list[RenderableType] = [
         Text("Tips for getting started", style="bold yellow"),
         Text(""),
         Text.assemble(
@@ -137,6 +140,6 @@ def render_welcome(model: str = "", cwd: str = "") -> Align:
     return Align.center(panel)
 
 
-def print_welcome(console: Any, model: str = "", cwd: str = "") -> None:
+def print_welcome(console: "Console", model: str = "", cwd: str = "") -> None:
     """Print the welcome panel to *console* (call before the Live block starts)."""
     console.print(render_welcome(model=model, cwd=cwd))

@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.tools.approval import ApprovalService
 
 
 def make_planner_tools(
-    approval_svc: Any,         # ApprovalService | None
+    approval_svc: ApprovalService | None,
     plan_event:   asyncio.Event,
     plan_data:    dict,
     exit_event:   asyncio.Event | None = None,
@@ -284,7 +287,7 @@ def _validate_questions(questions: object) -> list[str]:
 
 
 def make_questions_tool(
-    approval_svc: Any,   # ApprovalService | None
+    approval_svc: ApprovalService | None,
 ) -> list:
     """Return [ask_user] as a @tool()-decorated callable.
 

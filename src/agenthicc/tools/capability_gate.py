@@ -8,7 +8,10 @@ and pass through the gate unconditionally (open-by-default).
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.tui.conversation_store import AppState
 
 from agenthicc.tools.capabilities import CAPABILITIES_KEY
 
@@ -28,10 +31,10 @@ class ToolCapabilityGate:
     - The tool function never executes.
     """
 
-    def __init__(self, app_state: Any) -> None:
+    def __init__(self, app_state: AppState) -> None:
         self._app_state = app_state
 
-    async def before_tool_call(self, ctx: Any) -> Any:
+    async def before_tool_call(self, ctx: object) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
 
         mode    = self._app_state.active_mode()
@@ -53,10 +56,10 @@ class ToolCapabilityGate:
             })
         return BeforeToolHookDecision.proceed()
 
-    async def after_tool_call(self, result: Any, ctx: Any) -> Any:
+    async def after_tool_call(self, result: object, ctx: object) -> object:
         from lauren_ai._tools._hooks import AfterToolHookDecision  # noqa: PLC0415
         return AfterToolHookDecision.proceed()
 
-    async def on_tool_error(self, exc: Exception, ctx: Any) -> Any:
+    async def on_tool_error(self, exc: Exception, ctx: object) -> object:
         from lauren_ai._tools._hooks import ErrorToolHookDecision  # noqa: PLC0415
         return ErrorToolHookDecision.reraise()

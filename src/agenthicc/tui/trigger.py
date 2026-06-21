@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from agenthicc.tui.cbreak_reader import Key
 
@@ -55,7 +55,7 @@ class TriggerContext:
 
     cwd: Path
     session_id: str = ""          # scope results to a session if needed
-    command_registry: Any = None  # CommandRegistry, for cross-trigger lookups
+    command_registry: object = None  # CommandRegistry, for cross-trigger lookups
 
 
 @runtime_checkable
