@@ -359,9 +359,11 @@ def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 
 @register_renderer("system")
 def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    from rich.markup import escape as _e  # noqa: PLC0415
     text = str(ev.payload.get("text", ""))
     if text:
-        self._console.print(f"[dim]{text}[/dim]", markup=False, highlight=False)
+        self._console.print(f"[dim]{_e(text)}[/dim]", markup=True, highlight=False)
+        self._console.print()
 
 
 # ── Subagent pool renderers (PRD-124 Phase 3) ─────────────────────────────────
