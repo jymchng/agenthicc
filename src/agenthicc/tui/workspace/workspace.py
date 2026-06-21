@@ -94,6 +94,7 @@ class Workspace:
             conv.live_tool_overflow,               # overflow bridge row
             conv.workflow_override,                # PRD-114: /workflow indicator
             conv.compaction_active,                # PRD-119: compaction spinner
+            conv.compact_tick,                     # PRD-119: spinner animation driver
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
 

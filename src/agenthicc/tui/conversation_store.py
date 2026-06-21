@@ -101,6 +101,8 @@ class ConversationStore:
         """Name of the /workflow-selected override (PRD-114).  None = mode default."""
         self.compaction_active:   Signal[bool]       = Signal(False)
         """True while a compaction LLM call is in flight (PRD-119)."""
+        self.compact_tick:        Signal[int]        = Signal(0)
+        """Increments every tick while compaction_active — drives spinner redraws."""
         # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
         # entry by identity, leaving other lines untouched.
@@ -150,6 +152,11 @@ class ConversationStore:
 
     def tick(self) -> None:
         """Advance animation frames and elapsed timer. Called every ~50 ms."""
+        # PRD-119: advance compact_tick independently so the compaction spinner
+        # animates even when the session is otherwise idle (agent_state = IDLE).
+        if self.compaction_active():
+            self.compact_tick.set(self.compact_tick() + 1)
+
         if self.agent_state() not in (AgentState.IDLE, AgentState.COMPLETE):
             elapsed = time.monotonic() - self._start_time if self._start_time else 0.0
             if abs(elapsed - self.elapsed_s()) >= 0.1:

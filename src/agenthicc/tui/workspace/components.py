@@ -125,7 +125,7 @@ class StatusComponent:
         if _wf is not None and _wf.status == "running" and _wf.current_phase_model:
             model = _wf.current_phase_model
         if conv.compaction_active():
-            _sp = _COMPACT_SPINNER[conv._thinking_frame % len(_COMPACT_SPINNER)]
+            _sp = _COMPACT_SPINNER[conv.compact_tick() % len(_COMPACT_SPINNER)]
             line2 = _fit(f"[yellow]{_sp} Compacting…[/yellow]", cols)
         else:
             line2 = _fit(f"[dim]{_e(model)}[/dim]", cols)
