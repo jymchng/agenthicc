@@ -73,6 +73,11 @@ async def compact_memory(
         conv_store.append_event("system", {"text": "⎋ Compacting conversation…"})
 
     try:
+        import asyncio  # noqa: PLC0415
+        # Yield to the event loop so the spinner repaint flushes to the terminal
+        # before the LLM call begins.
+        await asyncio.sleep(0)
+
         transcript = _format_transcript(memory._messages)
 
         completion = await transport.complete(

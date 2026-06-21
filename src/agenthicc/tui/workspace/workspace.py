@@ -93,6 +93,7 @@ class Workspace:
             self._state.workflow_run,              # PRD-81: workflow progress
             conv.live_tool_overflow,               # overflow bridge row
             conv.workflow_override,                # PRD-114: /workflow indicator
+            conv.compaction_active,                # PRD-119: compaction spinner
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
 
