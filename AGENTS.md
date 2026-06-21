@@ -389,6 +389,49 @@ If you change a `CommunicationTools` method signature, update:
 2. `llms-full.txt` — the method's section
 3. Any tests in `tests/unit/test_comm_tools.py` that call the old signature
 
+## Type hint rules
+
+Every parameter and return value in every new or modified function **must** have
+a concrete type annotation.  `Any` is forbidden when a real type is knowable.
+
+| Situation | Correct approach |
+|---|---|
+| Cross-package dependency used only for type checking | `TYPE_CHECKING` guard + concrete import |
+| File has no `from __future__ import annotations` | String annotation: `"AgentRunnerBase"` |
+| Heterogeneous list of callables | `list[object]` |
+| JSON-like payload dict | `dict[str, object]` |
+| Truly opaque return (e.g. decorated function) | `object` |
+| Circular `TYPE_CHECKING` import | Allowed — mypy/pyright handle it correctly |
+
+### Concrete rules
+
+- **Never write `Any`** in new files or modified signatures.  `object` is the
+  last resort, not `Any`.
+- **No bare `list` or `dict`** — always parameterise: `list[str]`, `dict[str, int]`.
+- **`TYPE_CHECKING` for cross-package imports** — add the import under
+  `if TYPE_CHECKING:` in the file's import block so it never runs at runtime:
+  ```python
+  from typing import TYPE_CHECKING
+  if TYPE_CHECKING:
+      from agenthicc.tui.conversation_store import ConversationStore
+  ```
+- **String annotations in files without `from __future__ import annotations`** —
+  when `@tool()` or another decorator uses `get_type_hints()` at decoration time,
+  adding `from __future__ import annotations` would break it.  Use quoted strings
+  for parameters that need `TYPE_CHECKING` imports:
+  ```python
+  def make_tool(conv_store: "ConversationStore | None" = None) -> object:
+  ```
+- **`SubagentAggregator.aggregate(results: list[SubagentResult])`** — not `list`.
+
+### Checking
+
+`uv run mypy src/agenthicc` is part of the definition of done.  A new `Any` that
+slips through will surface as a mypy warning once strict mode is enabled.  Until
+then, review every PR diff for `Any` imports and usages.
+
+---
+
 ## HTTP tool safety rules (PRD-108)
 
 - **Never** use `httpx.AsyncClient()` directly in a tool — always use `agenthicc_http_client()` from `tools/http.py`.
