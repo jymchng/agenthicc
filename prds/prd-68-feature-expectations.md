@@ -1352,6 +1352,59 @@ Consolidates five separate animation-related fields (`_thinking_frame`, `_flower
 
 ---
 
+## 38. Concurrent Typed Subagents (PRD-124)
+
+Any agent in any mode or workflow can optionally spawn a pool of specialised
+subagents to run in parallel. The parent LLM decides whether and what to spawn
+via the `spawn_subagents` tool; the pool returns a plain-text labelled digest
+the parent reads as prose.
+
+### Architecture
+
+| Component | Role |
+|---|---|
+| `src/agenthicc/subagents/types.py` | `SubagentTypeSpec`, `SubagentAggregator`, `SubagentTypeRegistry`, `DEFAULT_REGISTRY` |
+| `src/agenthicc/subagents/pool.py` | `SubagentWorker`, `SubagentPool`, `SubagentPoolState`, `WorkerState`, `AggregatedResult` |
+| `src/agenthicc/subagents/tool.py` | `make_spawn_subagents_tool()` factory — produces `spawn_subagents` `@tool()` |
+| `AgentTurnRunner._build_agent()` | Injects `spawn_subagents` into every agent turn |
+| `ConversationStore.subagent_pool_state` | `Signal[SubagentPoolState \| None]` — live pool state for TUI |
+| `StatusComponent` line 1 | `N/M subagents` counter in magenta while pool is active |
+| `FooterComponent` worker grid | Per-worker status row (`○ pending`, `⠸ running`, `✓ done`, `✗ failed`) |
+| Scroll buffer renderers | `subagent_pool_started`, `subagent_worker_done`, `subagent_pool_done` |
+| Resume cache | `subagent_pool_result` event stores fingerprint → cached text; same task set reuses result |
+| Plugin ecosystem | `SUBAGENT_TYPES = [SubagentTypeSpec(...)]` in `.agenthicc/tools/` auto-registers types; `SubagentAggregator` for custom digests |
+
+### Built-in subagent types
+
+| Type | Writes | Executes | Purpose |
+|---|---|---|---|
+| `explorer` | ✗ | ✗ | Read-only codebase investigation |
+| `planner` | ✗ | ✗ | Produces a numbered implementation plan |
+| `implementer` | ✓ | expr-only | Carries out a scoped code change |
+| `tester` | ✓ | ✓ | Writes or runs tests |
+| `reviewer` | ✗ | expr-only | Reviews code, returns APPROVED / NEEDS CHANGES |
+| `documenter` | ✓ | ✗ | Writes or updates documentation |
+| `verifier` | ✗ | ✓ | Adversarially checks a requirement holds |
+| `researcher` | ✗ | ✗ | Searches local files to answer a question |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 38.1 | `spawn_subagents(tasks=[...])` available in every agent turn (all modes and workflows) |
+| 38.2 | Workers run concurrently bounded by `asyncio.Semaphore(max_concurrent)` |
+| 38.3 | Each worker uses an isolated `ShortTermMemory` and the parent's transport |
+| 38.4 | `ToolCapabilityGate` enforces capability intersection per worker |
+| 38.5 | Scroll buffer shows `▶ Spawning N`, per-worker `✓/✗ [N/M]`, and `◈ N/M complete` |
+| 38.6 | Status bar shows `N/M subagents` counter while pool is active |
+| 38.7 | Footer shows per-worker status grid while pool is active |
+| 38.8 | `subagent_pool_result` event enables resume: same task fingerprint returns cached result |
+| 38.9 | `SUBAGENT_TYPES` in plugin files registers custom types into `DEFAULT_REGISTRY` |
+| 38.10 | `SubagentAggregator` subclass produces custom text digest for a named type |
+| 38.11 | No `Any` in public signatures — concrete types throughout |
+
+---
+
 ## Known Lauren-AI gaps (future PRDs)
 
 These are friction points in agenthicc that require reaching into private lauren-ai internals.

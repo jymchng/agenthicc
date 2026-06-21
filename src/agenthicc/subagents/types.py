@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.subagents.pool import SubagentResult
 
 __all__ = [
     "SubagentTypeSpec",
@@ -27,7 +31,7 @@ class SubagentAggregator:
     #: Type name this aggregator handles (matches ``SubagentTypeSpec.name``).
     agent_type: str = ""
 
-    def aggregate(self, results: list) -> str:
+    def aggregate(self, results: list[SubagentResult]) -> str:
         """Convert a list of ``SubagentResult`` objects into a plain-text digest.
 
         :param results: ``SubagentResult`` instances for this type only.

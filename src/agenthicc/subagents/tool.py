@@ -7,21 +7,30 @@ Postponed evaluation (PEP 563) breaks that inspection.
 import hashlib
 import json
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING
+
+from agenthicc.subagents.pool import SubagentTask
+from agenthicc.subagents.types import SubagentTypeRegistry
+
+if TYPE_CHECKING:
+    from lauren_ai._agents._runner import AgentRunnerBase
+    from agenthicc.kernel.processor import EventProcessor
+    from agenthicc.tui.conversation_store import ConversationStore
+    from agenthicc.tui.conversation_store import AppState
 
 __all__ = ["make_spawn_subagents_tool"]
 
 
 def make_spawn_subagents_tool(
-    parent_runner: Any,
-    parent_model:  str,
-    all_tools:     list,
+    parent_runner:  "AgentRunnerBase",
+    parent_model:   str,
+    all_tools:      list[object],
     max_concurrent: int = 4,
-    app_state:     Any | None = None,
-    processor:     Any | None = None,
-    conv_store:    Any | None = None,
-    registry:      Any | None = None,
-) -> Any:
+    app_state:      "AppState | None" = None,
+    processor:      "EventProcessor | None" = None,
+    conv_store:     "ConversationStore | None" = None,
+    registry:       SubagentTypeRegistry | None = None,
+) -> object:
     """Return a ``spawn_subagents`` @tool()-decorated function.
 
     Closes over *parent_runner* and *parent_model* so the tool can build
@@ -161,13 +170,13 @@ def make_spawn_subagents_tool(
 
 # ── resume helpers ────────────────────────────────────────────────────────────
 
-def _tasks_fingerprint(tasks: list) -> str:
+def _tasks_fingerprint(tasks: list[SubagentTask]) -> str:
     """Return a short hash of the (type, task_description) pairs, order-insensitive."""
     pairs = sorted((t.agent_type, t.task_description) for t in tasks)
     return hashlib.md5(json.dumps(pairs, ensure_ascii=False).encode()).hexdigest()[:16]  # noqa: S324
 
 
-def _find_cached_result(conv_store: Any | None, fingerprint: str) -> str | None:
+def _find_cached_result(conv_store: "ConversationStore | None", fingerprint: str) -> str | None:
     """Scan conv_store turn events for a matching subagent_pool_result.
 
     Returns the cached ``text`` string when found, or ``None``.

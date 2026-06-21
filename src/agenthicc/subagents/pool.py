@@ -5,12 +5,15 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from agenthicc.subagents.types import SubagentTypeSpec, SubagentTypeRegistry, DEFAULT_REGISTRY
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
+    from agenthicc.kernel.processor import EventProcessor
+    from agenthicc.tools.capability_gate import ToolCapabilityGate
+    from agenthicc.tui.conversation_store import AppState, ConversationStore
 
 __all__ = [
     "WorkerState",
@@ -98,8 +101,8 @@ class SubagentWorker:
         index:         int,
         parent_runner: AgentRunnerBase,
         parent_model:  str,
-        all_tools:     list[Any],
-        app_state:     Any | None = None,
+        all_tools:     list[object],
+        app_state:     AppState | None = None,
     ) -> None:
         self._task          = task
         self._spec          = spec
@@ -187,7 +190,7 @@ class SubagentWorker:
         agent_instance = _SubAgent()
         populate_agent_tools(agent_instance, filtered)
 
-        hooks: list[Any] = []
+        hooks: list[ToolCapabilityGate] = []
         if self._app_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
             hooks.append(ToolCapabilityGate(self._app_state))
@@ -226,11 +229,11 @@ class SubagentPool:
         tasks:          list[SubagentTask],
         parent_runner:  AgentRunnerBase,
         parent_model:   str,
-        all_tools:      list[Any],
+        all_tools:      list[object],
         max_concurrent: int = 4,
-        app_state:      Any | None = None,
-        processor:      Any | None = None,
-        conv_store:     Any | None = None,
+        app_state:      AppState | None = None,
+        processor:      EventProcessor | None = None,
+        conv_store:     ConversationStore | None = None,
         registry:       SubagentTypeRegistry = DEFAULT_REGISTRY,
     ) -> None:
         self.pool_id        = uuid.uuid4().hex
@@ -349,7 +352,7 @@ class SubagentPool:
         if self._conv_store is not None and hasattr(self._conv_store, "subagent_pool_state"):
             self._conv_store.subagent_pool_state.set(state)
 
-    def _append_scroll_event(self, kind: str, payload: dict[str, Any]) -> None:
+    def _append_scroll_event(self, kind: str, payload: dict[str, object]) -> None:
         if self._conv_store is not None and hasattr(self._conv_store, "append_event"):
             self._conv_store.append_event(kind, payload)
 
@@ -476,11 +479,11 @@ async def run_pool(
     tasks:          list[SubagentTask],
     parent_runner:  AgentRunnerBase,
     parent_model:   str,
-    all_tools:      list[Any],
+    all_tools:      list[object],
     max_concurrent: int = 4,
-    app_state:      Any | None = None,
-    processor:      Any | None = None,
-    conv_store:     Any | None = None,
+    app_state:      AppState | None = None,
+    processor:      EventProcessor | None = None,
+    conv_store:     ConversationStore | None = None,
     registry:       SubagentTypeRegistry = DEFAULT_REGISTRY,
 ) -> AggregatedResult:
     """Create a SubagentPool and run it.  Convenience wrapper."""
