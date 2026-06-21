@@ -306,8 +306,24 @@ def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
         )
 
 
+def _fmt_worked(seconds: float) -> str:
+    """Format elapsed seconds as a human-readable worked-for string."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s} second{'s' if s != 1 else ''}"
+    m, sec = divmod(s, 60)
+    mins = f"{m} min{'s' if m != 1 else ''}"
+    return f"{mins} {sec} second{'s' if sec != 1 else ''}" if sec else mins
+
+
 @register_renderer("turn_complete")
 def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    elapsed = float(ev.payload.get("elapsed_s", 0.0))
+    if elapsed >= 1.0:
+        self._console.print(
+            f"[dim]✾ Worked for {_fmt_worked(elapsed)}[/dim]",
+            markup=True, highlight=False,
+        )
     self._console.print()
 
 

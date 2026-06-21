@@ -250,13 +250,17 @@ class ConversationStore:
             When set, appends an ``error`` scroll-buffer event and marks the
             turn as ``AgentState.ERROR`` internally before resetting to IDLE.
         """
+        # Capture elapsed before clearing _start_time.
+        elapsed = self.elapsed_s
         if self._current_turn is not None:
             if error:
                 self._current_turn.state = AgentState.ERROR
                 self.append_event("error", {"message": error})
             else:
                 self._current_turn.state = AgentState.COMPLETE
-                self.append_event("turn_complete", {})
+            # Always emit turn_complete (with elapsed) so the scroll buffer can
+            # print "✾ Worked for …" regardless of success or error path.
+            self.append_event("turn_complete", {"elapsed_s": elapsed})
         self._current_turn = None
         self.agent_state.set(AgentState.IDLE)   # ALWAYS IDLE — invariant
         self.active_tool.set("")
