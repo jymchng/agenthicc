@@ -253,6 +253,7 @@ class AgentTurnRunner:
         args    = self._tool_args.pop(tid, {})
         conv    = self._ctx.conv_store
 
+        showed_diff = False
         if tid in self._file_snapshots:
             rel_path, original = self._file_snapshots.pop(tid)
             full = (
@@ -274,19 +275,24 @@ class AgentTurnRunner:
                         "new_lines": new_lines,
                         "tool":      name,
                     })
+                    showed_diff = True
             except Exception:  # noqa: BLE001
                 pass
 
         if conv:
             conv.clear_tool(success=success)
-            conv.append_event("tool_complete", {
-                "tool_use_id":  tid,
-                "name":         name,
-                "success":      success,
-                "args_str":     _fmt_args(args),
-                "dur_str":      f"  [dim]{ms:.0f}ms[/dim]" if ms else "",
-                "output_lines": [],
-            })
+            # Skip the generic tool_complete line when a file-diff was already
+            # rendered — the diff is more informative and the duplicate line
+            # ("⎿ write_file(...)  ✓  4ms") is visual noise below the diff.
+            if not showed_diff:
+                conv.append_event("tool_complete", {
+                    "tool_use_id":  tid,
+                    "name":         name,
+                    "success":      success,
+                    "args_str":     _fmt_args(args),
+                    "dur_str":      f"  [dim]{ms:.0f}ms[/dim]" if ms else "",
+                    "output_lines": [],
+                })
 
     # ── step 5: @mention injection ────────────────────────────────────────────
 
@@ -446,12 +452,27 @@ class AgentTurnRunner:
                         conv_store=ctx.conv_store,
                     )
 
+        # PRD-119 gap: pre-run compaction fires once, but huge tool results
+        # (e.g. list_directory recursive) can balloon memory within a single
+        # run_stream() call across multiple turns.  Wire lauren-ai's built-in
+        # per-turn summarisation so it fires at ~80% of the model's context
+        # window, preventing a mid-loop 400 "context length exceeded" error.
+        _auto_compact = bool(getattr(ctx.exec_cfg, "auto_compact", True))
+        _threshold    = int(getattr(ctx.exec_cfg, "compact_threshold_tokens", 1_000_000))
+        # memory_window_tokens tells lauren-ai the budget; summarize_at is the
+        # fraction at which to trigger summarisation (0.8 → fires at 80%).
+        _window_tokens = max(1, int(_threshold * 0.8))
+
         try:
             stream = await active_runner.run_stream(
                 agent_instance, agent_text,
                 memory=ctx.session_memory,
                 config_override=_AgentConfig(
-                    max_turns=ctx.max_agent_turns, parallel_tool_calls=True
+                    max_turns=ctx.max_agent_turns,
+                    parallel_tool_calls=True,
+                    memory_window_tokens=_window_tokens,
+                    summarize_at=1.0 if _auto_compact else None,
+                    summary_model=self._model_id,
                 ),
             )
             async for chunk in stream:
