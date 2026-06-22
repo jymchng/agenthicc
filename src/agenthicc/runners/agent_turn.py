@@ -48,9 +48,20 @@ def _is_transient_network_error(exc: BaseException) -> bool:
     :return: ``True`` when the error is a retriable network-level failure.
     :rtype: bool
     """
+    # Library-specific timeout / connection error type names.  We deliberately
+    # do NOT match the bare builtin ``TimeoutError`` because in Python 3.11+
+    # ``asyncio.TimeoutError is TimeoutError`` — matching it would retry
+    # ``asyncio.wait_for`` timeouts (e.g. a tool's own watchdog), masking
+    # programming errors.  Genuine network timeouts surface under the
+    # httpx / anthropic names below.
     _TRANSIENT_NAMES = frozenset({
-        "ReadTimeout", "ConnectTimeout", "ConnectError",
-        "TimeoutError", "NetworkError", "RemoteDisconnected",
+        # httpx
+        "ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout",
+        "ConnectError", "ReadError", "WriteError", "RemoteProtocolError",
+        # anthropic / openai SDK
+        "APITimeoutError", "APIConnectionError",
+        # generic
+        "NetworkError", "RemoteDisconnected",
     })
     try:
         from lauren_ai._exceptions import TransientTransportError  # noqa: PLC0415
@@ -93,6 +104,7 @@ def _is_permanent_error(exc: BaseException) -> bool:
     return 400 <= status < 500 and status != 429
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
     from lauren_ai._signals import ToolCallStarted, ToolCallComplete
@@ -434,6 +446,13 @@ class AgentTurnRunner:
         # optionally spawn a concurrent subagent pool.
         if ctx.runner is not None:
             from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+            from agenthicc.runners.retry import RetryConfig  # noqa: PLC0415
+            _ec = ctx.exec_cfg
+            _subagent_retry = RetryConfig(
+                max_retries=int(getattr(_ec, "transport_max_retries", 3)),
+                base_delay_s=float(getattr(_ec, "transport_retry_base_delay_s", 1.0)),
+                max_total_duration_s=float(getattr(_ec, "transport_retry_max_total_s", 0.0)),
+            )
             spawn_tool = make_spawn_subagents_tool(
                 parent_runner=ctx.runner,
                 parent_model=self._model_id,
@@ -442,6 +461,7 @@ class AgentTurnRunner:
                 processor=ctx.processor,
                 conv_store=ctx.conv_store,
                 tool_registry=registry,
+                retry_config=_subagent_retry,
             )
             registry.register(spawn_tool, source="builtin")
             populate_agent_tools(agent_instance, registry.tools)
@@ -494,7 +514,12 @@ class AgentTurnRunner:
         # fraction at which to trigger summarisation (0.8 → fires at 80%).
         _window_tokens = max(1, int(_threshold * 0.8))
 
-        try:
+        # PRD-126: one streaming attempt — the unit retried on transient network
+        # errors.  The user message is added inside run_stream(), so the retry
+        # helper snapshots session_memory before each attempt and restores it on
+        # a transient failure, guaranteeing a clean pre-turn history every time.
+        async def _stream_once() -> None:
+            local_turn: list[str] = []
             stream = await active_runner.run_stream(
                 agent_instance, agent_text,
                 memory=ctx.session_memory,
@@ -508,7 +533,7 @@ class AgentTurnRunner:
             )
             async for chunk in stream:
                 if chunk.delta:
-                    current_turn.append(chunk.delta)
+                    local_turn.append(chunk.delta)
                     if ctx.output_collector is not None:
                         ctx.output_collector.append(chunk.delta)
 
@@ -523,8 +548,8 @@ class AgentTurnRunner:
                     ctx.conv_store.add_tokens(u.input_tokens, u.output_tokens, cst)
 
                 if chunk.stop_reason is not None:
-                    turn_text = "".join(current_turn).strip()
-                    current_turn = []
+                    turn_text = "".join(local_turn).strip()
+                    local_turn = []
                     if turn_text and ctx.conv_store:
                         ctx.conv_store.append_event("text", {"text": turn_text})
                     # Auto-index completed turn text for semantic search (PRD-101).
@@ -534,6 +559,8 @@ class AgentTurnRunner:
                             ctx.semantic_index.add(doc_id, turn_text)
                         )
 
+        try:
+            await self._stream_with_retry(_stream_once)
         except (asyncio.CancelledError, KeyboardInterrupt):
             if ctx.conv_store:
                 ctx.conv_store.close_turn()
@@ -552,12 +579,69 @@ class AgentTurnRunner:
                 # loop can exit immediately instead of exhausting its retry cap.
                 # _stream()'s finally block still runs → close_turn() is called.
                 raise
+            # Transient errors that survive _stream_with_retry are swallowed here
+            # (PRD-117): the phase loop re-runs the whole turn and decides.
         finally:
             self._turn_active = False
             if ctx.conv_store:
                 # close_turn() is idempotent — safe even when CancelledError path
                 # already called it above.
                 ctx.conv_store.close_turn()
+
+    # ── transport retry wrapper (PRD-126) ─────────────────────────────────────
+
+    async def _stream_with_retry(self, stream_once: Callable[[], Awaitable[None]]) -> None:
+        """Run one streaming attempt with snapshot-rollback retry.
+
+        Delegates to the shared :func:`~agenthicc.runners.retry.run_with_transport_retry`.
+        Snapshots ``session_memory`` before each attempt; on a transient network
+        error it restores the snapshot, resets approval-turn state so any gate is
+        re-presented, then retries.  Reads bounds from ``ctx.exec_cfg``.
+        """
+        from agenthicc.runners.retry import RetryConfig, run_with_transport_retry  # noqa: PLC0415
+
+        ctx = self._ctx
+        exec_cfg = ctx.exec_cfg
+        config = RetryConfig(
+            max_retries=int(getattr(exec_cfg, "transport_max_retries", 3)),
+            base_delay_s=float(getattr(exec_cfg, "transport_retry_base_delay_s", 1.0)),
+            max_total_duration_s=float(getattr(exec_cfg, "transport_retry_max_total_s", 0.0)),
+        )
+
+        reset_fns: list[Callable[[], None]] = []
+        if ctx.approval_svc is not None:
+            reset_fns.append(ctx.approval_svc.reset_turn_memory)
+
+        await run_with_transport_retry(
+            stream_once,
+            config=config,
+            memory=ctx.session_memory,
+            deadline_monotonic=ctx.retry_deadline_monotonic,
+            on_retry=self._emit_retry,
+            reset_fns=reset_fns,
+        )
+
+    async def _emit_retry(self, attempt: int, max_retries: int, delay: float, exc: BaseException) -> None:
+        """Observability + user notification for a scheduled transport retry."""
+        ctx = self._ctx
+        if ctx.conv_store is not None:
+            ctx.conv_store.append_event("system", {
+                "text": f"⟳ Network error — retrying ({attempt}/{max_retries})…",
+            })
+        import logging as _logging  # noqa: PLC0415
+        _logging.getLogger(__name__).warning(
+            "Transient network error on attempt %d/%d, retrying in %.1fs: %s: %s",
+            attempt, max_retries, delay, type(exc).__name__, exc,
+        )
+        if ctx.processor is not None:
+            from agenthicc.kernel import Event  # noqa: PLC0415
+            await ctx.processor.emit(Event.create("TransportRetryScheduled", {
+                "scope":       "agent_turn",
+                "attempt":     attempt,
+                "max_retries": max_retries,
+                "delay_s":     delay,
+                "error_type":  type(exc).__name__,
+            }))
 
     # ── step 9: kernel completion event ───────────────────────────────────────
 
@@ -593,6 +677,7 @@ async def _run_agent_turn(
     system_prompt_suffix: str = "",
     memory_router: MemoryRouter | None = None,
     semantic_index: SemanticIndex | None = None,
+    retry_deadline_monotonic: float | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -618,5 +703,6 @@ async def _run_agent_turn(
         system_prompt_suffix=system_prompt_suffix,
         memory_router=memory_router,
         semantic_index=semantic_index,
+        retry_deadline_monotonic=retry_deadline_monotonic,
     )
     await AgentTurnRunner(ctx).run()

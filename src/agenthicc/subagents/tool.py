@@ -31,6 +31,7 @@ def make_spawn_subagents_tool(
     conv_store:     "ConversationStore | None" = None,
     registry:       SubagentTypeRegistry | None = None,
     tool_registry:  object = None,
+    retry_config:   object | None = None,
 ) -> object:
     """Return a ``spawn_subagents`` @tool()-decorated function.
 
@@ -146,6 +147,7 @@ def make_spawn_subagents_tool(
             conv_store=conv_store,
             registry=_registry,
             tool_registry=tool_registry,
+            retry_config=retry_config,
         )
         result = await pool.run()
 

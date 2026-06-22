@@ -1,5 +1,14 @@
 # PRD-126 — Transport Retry with Memory Rollback
 
+> **Architecture revision (gap fixes):** retry lives at the single choke point
+> — inside `AgentTurnRunner._stream()` — not scattered across call sites.  This
+> is both the cleanest boundary (every workflow phase, `run_phase`, and direct
+> TUI turn flows through it) and the *only* place the retry can fire: `_stream`
+> catches transient errors and previously swallowed them (PRD-117), so a
+> call-site wrapper could never observe them.  The retry is implemented by the
+> shared helper `agenthicc.runners.retry.run_with_transport_retry`, also used
+> by subagent workers (which call `runner.run()` directly).
+
 ## Problem
 
 Occasional `ReadTimeout` errors from the LLM provider (e.g. Anthropic's
@@ -22,68 +31,74 @@ The underlying issue is twofold:
 
 ## Solution
 
-### 1. New `ExecutionSettings` fields
+### 1. `ExecutionSettings` fields
 
 ```python
-transport_max_retries:        int   = 3    # 0 = disabled
+transport_max_retries:        int   = 3    # TURN-level retry (memory-safe); 0 = disabled
 transport_retry_base_delay_s: float = 1.0  # first backoff; doubles each attempt
+transport_retry_max_total_s:  float = 0.0  # wall-clock ceiling; 0 = no cap
+llm_sdk_max_retries:          int   = 2    # SDK/transport internal retry (pre-stream 429/5xx)
 ```
 
-Exposed in `[execution]` TOML section.
+Two independent layers (gap 4): `transport_max_retries` is the turn-level,
+memory-safe primary mechanism; `llm_sdk_max_retries` is the SDK's internal retry
+for clean pre-stream 429/5xx, kept low to avoid a large multiplier.  The total
+wall-clock is bounded by `transport_retry_max_total_s` (gap 8).
 
-### 2. `_is_transient_network_error()` — `runners/agent_turn.py`
+### 2. Shared helper — `runners/retry.py`
 
-Complements the existing `_is_permanent_error()`:
+`run_with_transport_retry(turn_fn, *, config, memory, deadline_monotonic,
+on_retry, reset_fns)` is the single retry mechanism:
 
-```python
-def _is_transient_network_error(exc: BaseException) -> bool:
-    """True for ReadTimeout, ConnectError, and other retriable network errors."""
-```
+- snapshots `memory` before each attempt; restores on transient error (clean
+  history so `run_stream`/`runner.run` re-adds the user message correctly);
+- exponential backoff with **jitter** (gap 7);
+- **`max_total_duration_s`** wall-clock ceiling (gap 8);
+- **`deadline_monotonic`** awareness — skips a retry that cannot run before a
+  turn-timeout fires (gap 11);
+- **`reset_fns`** — side-effect rollback (approval-turn reset, gap 6);
+- async-or-sync **`on_retry`** callback for observability (gap 9).
 
-Checks for `TransientTransportError` from lauren-ai and common timeout type
-names in the exception chain.
+`CancelledError` / `KeyboardInterrupt` never retried; permanent errors propagate.
 
-### 3. `_run_turn_with_retry()` — `workflows/code_plan/runner.py`
+### 3. `_is_transient_network_error()` — `runners/agent_turn.py`
 
-Wraps `_run_turn()` with snapshot-rollback retry:
+Matches `TransientTransportError` and library-specific timeout / connection
+type names (`ReadTimeout`, `ConnectTimeout`, `PoolTimeout`, `APITimeoutError`,
+`APIConnectionError`, …).  **Excludes** the bare builtin `TimeoutError` (gap 5)
+because it is `asyncio.TimeoutError` in 3.11+ and would mask `wait_for` timeouts.
 
-```
-for attempt in range(max_retries + 1):
-    snapshot = ctx.shared_memory.snapshot()       ← checkpoint
+### 4. Retry at the single choke point — `AgentTurnRunner._stream()`
 
-    try:
-        await self._run_turn(text, ...)
-        return                                    ← success
+`_stream` runs `ensure_valid()` + compaction once, then wraps the
+`run_stream()` + chunk-consumption block in `run_with_transport_retry` via
+`_stream_with_retry()`.  Because **every** workflow phase, `run_phase`, and
+direct TUI turn flows through `_stream`, all paths get retry with no call-site
+wrappers.  Approval-turn state is reset between attempts via `reset_fns`
+(gap 6); a `TransportRetryScheduled` kernel event + scroll-buffer notification
+are emitted via `on_retry` (gap 9).
 
-    except TransientNetworkError:
-        ctx.shared_memory.restore(snapshot)       ← rollback
-        await asyncio.sleep(base_delay * 2**attempt)
-        # retry
-```
+Transient errors that survive all retries are swallowed (PRD-117) so the phase
+loop re-runs the whole turn and decides.
 
-Memory is restored to the exact pre-turn state so `run_stream()` adds the user
-message on a clean history every time.  `CancelledError` and permanent errors
-are never retried.
+### 5. Subagent workers — `subagents/pool.py` (gap 3)
 
-A scroll-buffer notification (`⟳ Network error — retrying N/M…`) is emitted
-on each retry so the user sees progress.
+Subagent workers call `runner.run()` directly (not via `_stream`), so
+`SubagentWorker._execute` wraps that call in `run_with_transport_retry` with a
+fresh per-call memory.  Retry config is threaded from `ctx.exec_cfg` through
+`make_spawn_subagents_tool` → `SubagentPool` → `SubagentWorker`.
 
-### 4. Phase methods use `_run_turn_with_retry`
+### 6. TUI turn-timeout deadline — `tui_session.py` (gap 11)
 
-`_plan`, `_execute`, `_review`, `_summarize` in `CodePlanRunner` replace their
-`_run_turn(...)` calls with `_run_turn_with_retry(...)`.
+`run_turn()` computes `retry_deadline_monotonic = monotonic() + turn_timeout_s`
+and threads it through `_run_agent_turn`, so retries are not scheduled with no
+budget left before the `asyncio.wait_for` timeout fires.
 
-### 5. TUI session — direct agent turn retry
+### 7. `build_llm_config()` — SDK retries only (gap 4)
 
-For non-workflow (Auto / Ask / Review) turns, `run_turn()` in `TUISession`
-wraps `_run_agent_turn` the same way: snapshot before, restore on transient
-error, retry up to `transport_max_retries` times.
-
-### 6. `build_llm_config()` — forward `max_retries` to transport
-
-All four provider branches (`anthropic`, `openai`, `ollama`, `litellm`) receive
-`max_retries=execution.transport_max_retries` so the transport-level retry also
-uses the configured value.
+All four provider branches receive `max_retries=execution.llm_sdk_max_retries`
+(not `transport_max_retries`), so the SDK layer and the turn layer no longer
+multiply.
 
 ## Error taxonomy
 
@@ -92,7 +107,8 @@ uses the configured value.
 | HTTP 400–499 (not 429) | True | False | Fail immediately — never retry |
 | HTTP 429, 5xx | False | False | Swallow — phase loop retries whole turn |
 | `TransientTransportError` | False | True | Snapshot-rollback retry |
-| `ReadTimeout`, `ConnectError` | False | True | Snapshot-rollback retry |
+| `ReadTimeout`, `APITimeoutError`, `ConnectError`, … | False | True | Snapshot-rollback retry |
+| bare builtin `TimeoutError` (= `asyncio.TimeoutError`) | False | **False** | Not retried (gap 5) |
 
 ## Acceptance criteria
 

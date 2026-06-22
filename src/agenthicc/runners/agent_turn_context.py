@@ -63,3 +63,9 @@ class AgentTurnContext:
     # ── output capture ────────────────────────────────────────────────────────
     output_collector:     "list[str] | None" = None
     system_prompt_suffix: str                = ""
+
+    # ── transport retry (PRD-126) ─────────────────────────────────────────────
+    #: Absolute ``time.monotonic()`` deadline for retry scheduling.  When a turn
+    #: timeout wraps the caller, this prevents scheduling a retry that cannot
+    #: meaningfully run before the timeout fires.  ``None`` = no deadline.
+    retry_deadline_monotonic: "float | None" = None

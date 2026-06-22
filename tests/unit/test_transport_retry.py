@@ -35,8 +35,22 @@ class TestIsTransientNetworkError:
         class NetworkError(Exception): pass
         assert _is_transient_network_error(NetworkError())
 
-    def test_timeout_error_builtin_is_transient(self) -> None:
-        assert _is_transient_network_error(TimeoutError())
+    def test_builtin_timeout_error_NOT_transient(self) -> None:
+        # PRD-126 gap 5: bare builtin TimeoutError IS asyncio.TimeoutError in
+        # 3.11+, so it must NOT be auto-retried (would mask wait_for timeouts).
+        assert not _is_transient_network_error(TimeoutError())
+
+    def test_api_timeout_error_is_transient(self) -> None:
+        class APITimeoutError(Exception): pass
+        assert _is_transient_network_error(APITimeoutError())
+
+    def test_api_connection_error_is_transient(self) -> None:
+        class APIConnectionError(Exception): pass
+        assert _is_transient_network_error(APIConnectionError())
+
+    def test_pool_timeout_is_transient(self) -> None:
+        class PoolTimeout(Exception): pass
+        assert _is_transient_network_error(PoolTimeout())
 
     def test_transient_via_cause_chain(self) -> None:
         class ReadTimeout(Exception): pass
@@ -111,223 +125,321 @@ class TestExecutionSettingsRetryFields:
         assert cfg.transport_max_retries == 0
 
 
-# ── _run_turn_with_retry behaviour ────────────────────────────────────────────
+# ── run_with_transport_retry (shared helper) ──────────────────────────────────
 
-class TestRunTurnWithRetry:
-    """Tests for CodePlanRunner._run_turn_with_retry using a minimal stub."""
+class _FakeMemory:
+    """Minimal ShortTermMemory-like object with snapshot/restore."""
 
-    def _make_runner(self, max_retries: int = 2, base_delay: float = 0.0):
-        """Build a minimal CodePlanRunner stub with controlled config."""
-        from agenthicc.workflows.code_plan.runner import CodePlanRunner  # noqa: PLC0415
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+        self._snapshots: list[list[str]] = []
 
-        exec_cfg = ExecutionSettings(
-            transport_max_retries=max_retries,
-            transport_retry_base_delay_s=base_delay,
-        )
-        cfg = MagicMock()
-        cfg.cfg.execution = exec_cfg
-        cfg.conv_store = MagicMock()
-        cfg.conv_store.append_event = MagicMock()
-        cfg.app_state = MagicMock()
-        cfg.agent_runner = MagicMock()
-        cfg.processor = MagicMock()
-        cfg.approval_svc = None
-        cfg.skills = {}
-        cfg.mention_cache = None
-        cfg.mcp_registry = None
-        cfg.completed_turns = 0
-        cfg.memory_router = None
-        cfg.semantic_index = None
-        cfg.params = None
+    def snapshot(self):
+        return list(self.messages)
 
-        runner = CodePlanRunner.__new__(CodePlanRunner)
-        runner._cfg = cfg
-        runner._mode_manager = None
-        runner._run_id = "test-run"
-        runner._model_id = "test-model"
-        return runner
+    def restore(self, snap) -> None:
+        self.messages = list(snap)
 
-    def _make_ctx(self, messages: list | None = None):
-        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
-        from agenthicc.workflows.code_plan.state import CodePlanContext  # noqa: PLC0415
-        mem = ShortTermMemory(max_tokens=8_000)
-        if messages:
-            for m in messages:
-                mem._messages.append(m)
-        return CodePlanContext(
-            intent="test intent",
-            run_id="test-run",
-            shared_memory=mem,
-        )
+
+class TestRunWithTransportRetry:
+    """Tests for the shared agenthicc.runners.retry.run_with_transport_retry."""
+
+    def _config(self, max_retries=2, base_delay=0.0, max_total=0.0):
+        from agenthicc.runners.retry import RetryConfig
+        return RetryConfig(max_retries=max_retries, base_delay_s=base_delay,
+                           max_total_duration_s=max_total, jitter=False)
 
     async def test_success_on_first_attempt(self) -> None:
-        runner = self._make_runner()
-        ctx = self._make_ctx()
-        call_count = [0]
-
-        async def fake_run_turn(*args, **kwargs):
-            call_count[0] += 1
-
-        runner._run_turn = fake_run_turn
-        await runner._run_turn_with_retry("text", tools=[], mode=None,
-                                           system_prompt="sp", max_turns=5, ctx=ctx)
-        assert call_count[0] == 1
+        from agenthicc.runners.retry import run_with_transport_retry
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+        await run_with_transport_retry(fn, config=self._config())
+        assert calls[0] == 1
 
     async def test_retries_on_transient_error(self) -> None:
-        from lauren_ai._exceptions import TransientTransportError  # noqa: PLC0415
-        runner = self._make_runner(max_retries=2, base_delay=0.0)
-        ctx = self._make_ctx()
-        call_count = [0]
-
-        async def fake_run_turn(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] < 3:
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            if calls[0] < 3:
                 raise TransientTransportError("timeout")
-
-        runner._run_turn = fake_run_turn
-        await runner._run_turn_with_retry("text", tools=[], mode=None,
-                                           system_prompt="sp", max_turns=5, ctx=ctx)
-        assert call_count[0] == 3
+        await run_with_transport_retry(fn, config=self._config(max_retries=2))
+        assert calls[0] == 3
 
     async def test_memory_restored_on_retry(self) -> None:
-        from lauren_ai._exceptions import TransientTransportError  # noqa: PLC0415
-        runner = self._make_runner(max_retries=1, base_delay=0.0)
-        ctx = self._make_ctx(messages=[{"role": "user", "content": "hello"}])
-        original_len = len(ctx.shared_memory._messages)
-        call_count = [0]
-
-        async def fake_run_turn(*args, **kwargs):
-            call_count[0] += 1
-            # Corrupt memory on first attempt to simulate partial turn
-            ctx.shared_memory._messages.append({"role": "assistant", "content": "partial"})
-            if call_count[0] == 1:
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        mem = _FakeMemory()
+        mem.messages = ["user-intent"]
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            mem.messages.append("partial-assistant")  # corrupt
+            if calls[0] == 1:
                 raise TransientTransportError("timeout")
-
-        runner._run_turn = fake_run_turn
-        await runner._run_turn_with_retry("text", tools=[], mode=None,
-                                           system_prompt="sp", max_turns=5, ctx=ctx)
-        # After successful second attempt, memory should have been restored before retry
-        # (the fake_run_turn appended again on attempt 2, so final length = original + 1)
-        assert call_count[0] == 2
+        await run_with_transport_retry(fn, config=self._config(max_retries=1), memory=mem)
+        # attempt 1 appended then failed → restored to ["user-intent"];
+        # attempt 2 appended once and succeeded.
+        assert mem.messages == ["user-intent", "partial-assistant"]
+        assert calls[0] == 2
 
     async def test_exhausted_retries_raises(self) -> None:
-        from lauren_ai._exceptions import TransientTransportError  # noqa: PLC0415
-        runner = self._make_runner(max_retries=2, base_delay=0.0)
-        ctx = self._make_ctx()
-
-        async def always_fails(*args, **kwargs):
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        async def fn():
             raise TransientTransportError("timeout")
-
-        runner._run_turn = always_fails
         with pytest.raises(TransientTransportError):
-            await runner._run_turn_with_retry("text", tools=[], mode=None,
-                                               system_prompt="sp", max_turns=5, ctx=ctx)
+            await run_with_transport_retry(fn, config=self._config(max_retries=2))
 
     async def test_permanent_error_not_retried(self) -> None:
-        from lauren_ai._exceptions import TransportError  # noqa: PLC0415
-        runner = self._make_runner(max_retries=3, base_delay=0.0)
-        ctx = self._make_ctx()
-        call_count = [0]
-
-        async def fail_permanent(*args, **kwargs):
-            call_count[0] += 1
-            raise TransportError("bad request", status_code=400)
-
-        runner._run_turn = fail_permanent
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransportError
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            raise TransportError("bad", status_code=400)
         with pytest.raises(TransportError):
-            await runner._run_turn_with_retry("text", tools=[], mode=None,
-                                               system_prompt="sp", max_turns=5, ctx=ctx)
-        assert call_count[0] == 1  # no retry
+            await run_with_transport_retry(fn, config=self._config(max_retries=3))
+        assert calls[0] == 1
 
     async def test_cancelled_error_not_retried(self) -> None:
-        runner = self._make_runner(max_retries=3, base_delay=0.0)
-        ctx = self._make_ctx()
-        call_count = [0]
-
-        async def fail_cancelled(*args, **kwargs):
-            call_count[0] += 1
+        from agenthicc.runners.retry import run_with_transport_retry
+        calls = [0]
+        async def fn():
+            calls[0] += 1
             raise asyncio.CancelledError()
-
-        runner._run_turn = fail_cancelled
         with pytest.raises(asyncio.CancelledError):
-            await runner._run_turn_with_retry("text", tools=[], mode=None,
-                                               system_prompt="sp", max_turns=5, ctx=ctx)
-        assert call_count[0] == 1  # no retry
+            await run_with_transport_retry(fn, config=self._config(max_retries=3))
+        assert calls[0] == 1
 
     async def test_zero_max_retries_does_not_retry(self) -> None:
-        from lauren_ai._exceptions import TransientTransportError  # noqa: PLC0415
-        runner = self._make_runner(max_retries=0, base_delay=0.0)
-        ctx = self._make_ctx()
-        call_count = [0]
-
-        async def fail_once(*args, **kwargs):
-            call_count[0] += 1
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        calls = [0]
+        async def fn():
+            calls[0] += 1
             raise TransientTransportError("timeout")
-
-        runner._run_turn = fail_once
         with pytest.raises(TransientTransportError):
-            await runner._run_turn_with_retry("text", tools=[], mode=None,
-                                               system_prompt="sp", max_turns=5, ctx=ctx)
-        assert call_count[0] == 1
+            await run_with_transport_retry(fn, config=self._config(max_retries=0))
+        assert calls[0] == 1
 
-    async def test_retry_notification_appended(self) -> None:
-        from lauren_ai._exceptions import TransientTransportError  # noqa: PLC0415
-        runner = self._make_runner(max_retries=1, base_delay=0.0)
-        ctx = self._make_ctx()
-        call_count = [0]
-
-        async def fail_once(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
+    async def test_on_retry_callback_invoked(self) -> None:
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        events = []
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            if calls[0] == 1:
                 raise TransientTransportError("timeout")
+        async def on_retry(attempt, max_r, delay, exc):
+            events.append((attempt, max_r))
+        await run_with_transport_retry(fn, config=self._config(max_retries=2),
+                                       on_retry=on_retry)
+        assert events == [(1, 2)]
 
-        runner._run_turn = fail_once
-        await runner._run_turn_with_retry("text", tools=[], mode=None,
-                                           system_prompt="sp", max_turns=5, ctx=ctx)
+    async def test_sync_on_retry_callback(self) -> None:
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        events = []
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            if calls[0] == 1:
+                raise TransientTransportError("timeout")
+        def on_retry(attempt, max_r, delay, exc):  # sync callback
+            events.append(attempt)
+        await run_with_transport_retry(fn, config=self._config(max_retries=2),
+                                       on_retry=on_retry)
+        assert events == [1]
 
-        runner._cfg.conv_store.append_event.assert_called_once()
-        call_args = runner._cfg.conv_store.append_event.call_args
-        assert call_args[0][0] == "system"
-        assert "retrying" in call_args[0][1]["text"].lower()
+    async def test_reset_fns_called_on_retry(self) -> None:
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        reset_calls = [0]
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            if calls[0] == 1:
+                raise TransientTransportError("timeout")
+        def reset():
+            reset_calls[0] += 1
+        await run_with_transport_retry(fn, config=self._config(max_retries=2),
+                                       reset_fns=[reset])
+        assert reset_calls[0] == 1
 
-    async def test_named_timeout_exception_retried(self) -> None:
+    async def test_max_total_duration_cap(self) -> None:
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            raise TransientTransportError("timeout")
+        # base_delay 10s, cap 5s → first delay (10s) exceeds remaining budget → raise
+        with pytest.raises(TransientTransportError):
+            await run_with_transport_retry(
+                fn, config=self._config(max_retries=5, base_delay=10.0, max_total=5.0))
+        assert calls[0] == 1  # no retry: delay would exceed cap
+
+    async def test_deadline_skips_retry(self) -> None:
+        import time
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            raise TransientTransportError("timeout")
+        # deadline only 0.1s away → no meaningful window for a retry
+        deadline = time.monotonic() + 0.1
+        with pytest.raises(TransientTransportError):
+            await run_with_transport_retry(
+                fn, config=self._config(max_retries=3, base_delay=1.0),
+                deadline_monotonic=deadline)
+        assert calls[0] == 1
+
+    async def test_named_timeout_retried(self) -> None:
+        from agenthicc.runners.retry import run_with_transport_retry
         class ReadTimeout(Exception): pass
-        runner = self._make_runner(max_retries=1, base_delay=0.0)
-        ctx = self._make_ctx()
-        call_count = [0]
-
-        async def fail_once(*args, **kwargs):
-            call_count[0] += 1
-            if call_count[0] == 1:
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            if calls[0] == 1:
                 raise ReadTimeout("read timeout")
+        await run_with_transport_retry(fn, config=self._config(max_retries=1))
+        assert calls[0] == 2
 
-        runner._run_turn = fail_once
-        await runner._run_turn_with_retry("text", tools=[], mode=None,
-                                           system_prompt="sp", max_turns=5, ctx=ctx)
-        assert call_count[0] == 2
+    async def test_no_memory_still_retries(self) -> None:
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+        calls = [0]
+        async def fn():
+            calls[0] += 1
+            if calls[0] == 1:
+                raise TransientTransportError("timeout")
+        await run_with_transport_retry(fn, config=self._config(max_retries=1), memory=None)
+        assert calls[0] == 2
 
 
-# ── build_llm_config passes max_retries ──────────────────────────────────────
+# ── build_llm_config uses llm_sdk_max_retries (gap 4) ─────────────────────────
 
 class TestBuildLlmConfigMaxRetries:
-    def test_anthropic_receives_max_retries(self) -> None:
+    def test_anthropic_receives_sdk_retries_not_turn_retries(self) -> None:
         from agenthicc.config import build_llm_config
         import os
         os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test")
         cfg = ExecutionSettings(
             provider="anthropic",
             model="claude-haiku-4-5",
-            transport_max_retries=5,
+            llm_sdk_max_retries=2,
+            transport_max_retries=9,   # turn-level — must NOT leak to the SDK
         )
         llm = build_llm_config(cfg)
-        assert llm.max_retries == 5
+        assert llm.max_retries == 2  # SDK retries, not the turn-level 9
 
-    def test_zero_retries_forwarded(self) -> None:
+    def test_zero_sdk_retries_forwarded(self) -> None:
         from agenthicc.config import build_llm_config
         cfg = ExecutionSettings(
             provider="anthropic",
             model="claude-haiku-4-5",
-            transport_max_retries=0,
+            llm_sdk_max_retries=0,
         )
         llm = build_llm_config(cfg)
         assert llm.max_retries == 0
+
+    def test_default_sdk_retries_is_two(self) -> None:
+        from agenthicc.config import build_llm_config
+        cfg = ExecutionSettings(provider="anthropic", model="claude-haiku-4-5")
+        llm = build_llm_config(cfg)
+        assert llm.max_retries == 2
+
+
+# ── ExecutionSettings gap-fix fields ──────────────────────────────────────────
+
+class TestNewConfigFields:
+    def test_llm_sdk_max_retries_default(self) -> None:
+        assert ExecutionSettings().llm_sdk_max_retries == 2
+
+    def test_transport_retry_max_total_default(self) -> None:
+        assert ExecutionSettings().transport_retry_max_total_s == 0.0
+
+    def test_toml_override_sdk_retries(self) -> None:
+        cfg = _dict_to_config({"execution": {"llm_sdk_max_retries": 0}})
+        assert cfg.execution.llm_sdk_max_retries == 0
+
+    def test_toml_override_max_total(self) -> None:
+        cfg = _dict_to_config({"execution": {"transport_retry_max_total_s": 120.0}})
+        assert cfg.execution.transport_retry_max_total_s == 120.0
+
+
+# ── Subagent worker retry (gap 3) ─────────────────────────────────────────────
+
+class _FakeSubRunner:
+    """Stand-in for the per-worker AgentRunnerBase built inside _execute."""
+
+    def __init__(self, behavior) -> None:
+        self._behavior = behavior
+
+    async def run(self, agent, text, *, memory, config_override):  # noqa: ANN001
+        return await self._behavior(memory, text)
+
+
+class TestSubagentWorkerRetry:
+    def _worker(self, retry_config):
+        from agenthicc.subagents.pool import SubagentWorker, SubagentTask
+        from agenthicc.subagents.types import DEFAULT_REGISTRY
+        spec = DEFAULT_REGISTRY.get("explorer")
+        task = SubagentTask("t1", "explorer", "find files")
+
+        class _Parent:
+            _transport = object()
+
+        return SubagentWorker(
+            task=task, spec=spec, index=1,
+            parent_runner=_Parent(), parent_model="m",
+            all_tools=[], retry_config=retry_config,
+        )
+
+    async def test_worker_retries_transient_error(self) -> None:
+        from agenthicc.runners.retry import RetryConfig
+        from lauren_ai._exceptions import TransientTransportError
+
+        calls = [0]
+
+        async def behavior(memory, text):
+            calls[0] += 1
+            memory._messages.append({"role": "user", "content": text})
+            if calls[0] == 1:
+                raise TransientTransportError("timeout")
+            class _Resp:
+                content = "found 3 files"
+            return _Resp()
+
+        worker = self._worker(RetryConfig(max_retries=1, base_delay_s=0.0, jitter=False))
+        with patch(
+            "lauren_ai._agents._runner.AgentRunnerBase",
+            return_value=_FakeSubRunner(behavior),
+        ):
+            result = await worker.run()
+        assert result.ok
+        assert "found 3 files" in result.text
+        assert calls[0] == 2
+
+    async def test_worker_no_retry_config_fails_once(self) -> None:
+        from lauren_ai._exceptions import TransientTransportError
+
+        calls = [0]
+
+        async def behavior(memory, text):
+            calls[0] += 1
+            raise TransientTransportError("timeout")
+
+        worker = self._worker(retry_config=None)
+        with patch(
+            "lauren_ai._agents._runner.AgentRunnerBase",
+            return_value=_FakeSubRunner(behavior),
+        ):
+            result = await worker.run()
+        assert not result.ok
+        assert calls[0] == 1

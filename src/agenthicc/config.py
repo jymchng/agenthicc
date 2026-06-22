@@ -126,8 +126,16 @@ class ExecutionSettings:
     auto_compact: bool = True
     compact_threshold_tokens: int = 1_000_000
     # Transport retry on transient network errors (PRD-126)
+    # Two independent layers (see prd-126):
+    #   transport_max_retries — TURN-level retry with memory snapshot-rollback;
+    #     the primary, memory-safe mechanism for mid-stream ReadTimeouts.
+    #   llm_sdk_max_retries — SDK/transport internal retry inside LLMConfig;
+    #     handles clean pre-stream 429/5xx.  Kept low to avoid a large
+    #     multiplier with the turn-level retry.
     transport_max_retries: int = 3
     transport_retry_base_delay_s: float = 1.0
+    transport_retry_max_total_s: float = 0.0   # wall-clock ceiling; 0 = no cap
+    llm_sdk_max_retries: int = 2
     # LLM provider selection
     provider: str = "anthropic"
     model: str = ""            # empty → use PROVIDER_DEFAULT_MODELS[provider]
@@ -560,6 +568,8 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         compact_threshold_tokens=int(ex.get("compact_threshold_tokens", 1_000_000)),
         transport_max_retries=int(ex.get("transport_max_retries", 3)),
         transport_retry_base_delay_s=float(ex.get("transport_retry_base_delay_s", 1.0)),
+        transport_retry_max_total_s=float(ex.get("transport_retry_max_total_s", 0.0)),
+        llm_sdk_max_retries=int(ex.get("llm_sdk_max_retries", 2)),
         provider=str(ex.get("provider", "anthropic")),
         model=str(ex.get("model", "")),
         api_key=str(ex.get("api_key", "")),
@@ -751,7 +761,9 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
         or None
     )
 
-    max_retries: int = execution.transport_max_retries
+    # SDK-level retries only — turn-level retry (transport_max_retries) is the
+    # memory-safe primary mechanism and is applied by the runners (PRD-126).
+    max_retries: int = execution.llm_sdk_max_retries
 
     if provider == "anthropic":
         kwargs: dict[str, str | int | None] = {"model": model, "api_key": api_key, "max_retries": max_retries}

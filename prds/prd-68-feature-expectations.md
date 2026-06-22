@@ -1473,14 +1473,23 @@ naïve transport-level retries produce a 400.
 
 ### Architecture
 
+Retry lives at the **single choke point** — `AgentTurnRunner._stream()` — via
+the shared helper `runners/retry.py::run_with_transport_retry`.  Every workflow
+phase, `run_phase`, and direct TUI turn flows through `_stream`, so all paths
+get retry with no call-site wrappers.  (This is also the only place it can fire:
+`_stream` catches transient errors and swallows them per PRD-117, so a
+call-site wrapper could never observe them.)
+
 | Component | Role |
 |---|---|
-| `ExecutionSettings.transport_max_retries` | Max retry attempts (default 3; 0 = disabled) |
-| `ExecutionSettings.transport_retry_base_delay_s` | First backoff delay in seconds (default 1.0; doubles each attempt) |
-| `_is_transient_network_error(exc)` in `agent_turn.py` | Detects `TransientTransportError` and timeout-named exceptions in the exception chain |
-| `_run_turn_with_retry()` in `code_plan/runner.py` | Snapshots `shared_memory` before each attempt; restores on transient error; emits `⟳ Network error — retrying N/M…` scroll event |
-| `run_turn()` in `tui_session.py` | Same snapshot-rollback pattern for direct (non-workflow) agent turns |
-| `build_llm_config()` | Passes `max_retries` to all provider `LLMConfig` factories so the transport layer also honours the setting |
+| `runners/retry.py::run_with_transport_retry` | Shared helper: snapshot-rollback, jitter, total-duration cap, deadline awareness, `reset_fns`, async/sync `on_retry` |
+| `runners/retry.py::RetryConfig` | `max_retries`, `base_delay_s`, `max_total_duration_s`, `jitter` |
+| `AgentTurnRunner._stream_with_retry()` | Wraps the `run_stream` + chunk loop; resets approval-turn state between attempts; emits `TransportRetryScheduled` + scroll event |
+| `_is_transient_network_error(exc)` | Matches `TransientTransportError` + library timeout names; **excludes** bare `TimeoutError` (= `asyncio.TimeoutError`) |
+| `SubagentWorker._execute()` | Wraps `runner.run()` (subagents bypass `_stream`); retry config threaded from `exec_cfg` |
+| `tui_session.run_turn()` | Computes `retry_deadline_monotonic` from `turn_timeout_s`; threaded via `_run_agent_turn` |
+| `ExecutionSettings` | `transport_max_retries` (turn-level, 3), `transport_retry_base_delay_s` (1.0), `transport_retry_max_total_s` (0=off), `llm_sdk_max_retries` (SDK, 2) |
+| `build_llm_config()` | Passes `llm_sdk_max_retries` (not `transport_max_retries`) so SDK + turn layers don't multiply |
 
 ### Error taxonomy
 
@@ -1489,26 +1498,28 @@ naïve transport-level retries produce a 400.
 | HTTP 400–499 (not 429) | Yes | No | Fail immediately |
 | HTTP 429, 5xx | No | No | Swallow → phase retries whole turn |
 | `TransientTransportError` | No | Yes | Snapshot-rollback retry |
-| `ReadTimeout`, `ConnectError`, etc. | No | Yes | Snapshot-rollback retry |
+| `ReadTimeout`, `APITimeoutError`, `ConnectError`, … | No | Yes | Snapshot-rollback retry |
+| bare builtin `TimeoutError` (= `asyncio.TimeoutError`) | No | **No** | Not retried (would mask `wait_for` timeouts) |
 
 ### Why snapshot-rollback is required
 
-`run_stream()` calls `memory.add_user(message)` internally.  A naïve retry of
-`_run_agent_turn()` with the same `ShortTermMemory` object would add the user
-message a second time, producing an invalid conversation the API immediately
-rejects with a 400 error.  Restoring the pre-turn snapshot ensures every
-attempt starts with a clean history.
+`run_stream()` / `runner.run()` call `memory.add_user(message)` internally.  A
+naïve retry with the same `ShortTermMemory` would add the user message twice,
+producing an invalid conversation the API rejects with a 400.  Restoring the
+pre-turn snapshot ensures every attempt starts with a clean history.
 
 ### Acceptance criteria
 
 | # | Criterion |
 |---|---|
-| 40.1 | `transport_max_retries` and `transport_retry_base_delay_s` in `ExecutionSettings` with correct defaults |
-| 40.2 | `_is_transient_network_error` returns True for `TransientTransportError` and timeout-named exceptions |
-| 40.3 | `_is_transient_network_error` returns False for HTTP 4xx permanent errors |
-| 40.4 | On transient error, `shared_memory` is restored to its pre-turn snapshot |
-| 40.5 | A `⟳ Network error — retrying N/M…` system event is appended on each retry |
-| 40.6 | After `transport_max_retries` exhausted, error propagates normally |
-| 40.7 | `CancelledError` is never retried |
-| 40.8 | `transport_max_retries = 0` disables retry completely |
-| 40.9 | `build_llm_config()` passes `max_retries` to all provider LLMConfig factories |
+| 40.1 | Retry config fields on `ExecutionSettings`: `transport_max_retries` (3), `transport_retry_base_delay_s` (1.0), `transport_retry_max_total_s` (0.0), `llm_sdk_max_retries` (2) |
+| 40.2 | `_is_transient_network_error` True for `TransientTransportError` + library timeout names; False for bare `TimeoutError` and HTTP 4xx |
+| 40.3 | Retry lives in `AgentTurnRunner._stream` via `run_with_transport_retry` — covers workflow phases, `run_phase`, and direct TUI turns |
+| 40.4 | On transient error, memory is restored to its pre-turn snapshot |
+| 40.5 | Approval-turn state is reset between attempts (`reset_fns`); gates re-present cleanly |
+| 40.6 | `TransportRetryScheduled` kernel event + `⟳ Network error — retrying N/M…` scroll event emitted on each retry |
+| 40.7 | Exponential backoff has jitter; `transport_retry_max_total_s` caps total wall-clock |
+| 40.8 | A retry is skipped when it cannot run before the turn-timeout deadline |
+| 40.9 | Subagent workers retry transient errors via the shared helper |
+| 40.10 | `CancelledError` never retried; `transport_max_retries = 0` disables retry |
+| 40.11 | `build_llm_config()` passes `llm_sdk_max_retries` (not `transport_max_retries`) to all providers |

@@ -128,6 +128,7 @@ class SubagentWorker:
         all_tools:     list[object],
         app_state:     AppState | None = None,
         registry:      ToolRegistry | None = None,
+        retry_config:  object | None = None,
     ) -> None:
         self._task          = task
         self._spec          = spec
@@ -137,6 +138,7 @@ class SubagentWorker:
         self._all_tools     = all_tools
         self._app_state     = app_state
         self._registry      = registry
+        self._retry_config  = retry_config
         self.label          = f"{spec.name} #{index}"
         # Expand glob patterns once at construction time.
         self._effective_allowed: frozenset[str] = _expand_allowed(
@@ -234,16 +236,34 @@ class SubagentWorker:
         from lauren_ai._config import AgentConfig  # noqa: PLC0415
 
         memory = ShortTermMemory(max_tokens=8_000)
-        response = await runner.run(
-            agent_instance,
-            self._task.task_description,
-            memory=memory,
-            config_override=AgentConfig(
-                max_turns=self._spec.max_turns,
-                parallel_tool_calls=True,
-            ),
-        )
-        return response.content or ""
+        result: dict[str, str] = {"text": ""}
+
+        async def _do_run() -> None:
+            response = await runner.run(
+                agent_instance,
+                self._task.task_description,
+                memory=memory,
+                config_override=AgentConfig(
+                    max_turns=self._spec.max_turns,
+                    parallel_tool_calls=True,
+                ),
+            )
+            result["text"] = response.content or ""
+
+        # PRD-126 gap 3: subagents call runner.run() directly (not via _stream),
+        # so they wrap it in the same snapshot-rollback retry.  The fresh per-call
+        # memory is snapshotted (empty) before each attempt and restored on a
+        # transient error so runner.run() re-adds the user message cleanly.
+        if self._retry_config is not None:
+            from agenthicc.runners.retry import run_with_transport_retry  # noqa: PLC0415
+            await run_with_transport_retry(
+                _do_run,
+                config=self._retry_config,
+                memory=memory,
+            )
+        else:
+            await _do_run()
+        return result["text"]
 
 
 # ── pool ──────────────────────────────────────────────────────────────────────
@@ -267,6 +287,7 @@ class SubagentPool:
         conv_store:     ConversationStore | None = None,
         registry:       SubagentTypeRegistry = DEFAULT_REGISTRY,
         tool_registry:  ToolRegistry | None = None,
+        retry_config:   object | None = None,
     ) -> None:
         self.pool_id         = uuid.uuid4().hex
         self._tasks          = tasks
@@ -279,6 +300,7 @@ class SubagentPool:
         self._conv_store     = conv_store
         self._registry       = registry
         self._tool_registry  = tool_registry
+        self._retry_config   = retry_config
 
     async def run(self) -> AggregatedResult:
         """Execute all tasks concurrently; return aggregated plain-text result."""
@@ -304,6 +326,7 @@ class SubagentPool:
                 all_tools=self._all_tools,
                 app_state=self._app_state,
                 registry=self._tool_registry,
+                retry_config=self._retry_config,
             )
             workers.append(w)
             worker_states.append(WorkerState(w.label, task.agent_type, "pending"))

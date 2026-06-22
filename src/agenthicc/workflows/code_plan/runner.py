@@ -351,7 +351,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             text: str = ctx.intent if attempt == 1 else _PLAN_REMINDER
 
             try:
-                await self._run_turn_with_retry(
+                await self._run_turn(
                     text, tools=tools, mode=None,
                     system_prompt=_PLAN_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
                     max_turns=20, ctx=ctx,
@@ -409,7 +409,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             )
 
             try:
-                await self._run_turn_with_retry(
+                await self._run_turn(
                     text, tools=tools, mode="Auto",
                     system_prompt=system_prompt, max_turns=40, ctx=ctx,
                     model_override=self._phase_model("execute"),
@@ -458,7 +458,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             ) if attempt == 1 else _REVIEW_REMINDER
 
             try:
-                await self._run_turn_with_retry(
+                await self._run_turn(
                     text, tools=tools, mode=None,
                     system_prompt=system_prompt, max_turns=8, ctx=ctx,
                     model_override=self._phase_model("review"),
@@ -493,7 +493,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             f"Review verdict: {ctx.review_summary or 'approved'}"
         )
         try:
-            await self._run_turn_with_retry(
+            await self._run_turn(
                 text, tools=self._base_tools(), mode=None,
                 system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
                 max_turns=4, ctx=ctx,
@@ -546,13 +546,14 @@ class CodePlanRunner(BaseWorkflowRunner):
         from lauren_ai._memory import ShortTermMemory as _STM  # noqa: PLC0415
         from agenthicc.workflows.code_plan.state import CodePlanContext  # noqa: PLC0415
 
-        # Build a minimal CodePlanContext so _run_turn() has a shared_memory.
+        # Build a minimal CodePlanContext so the turn has a shared_memory.
         _sm = shared_memory or _STM(max_tokens=32_000)
         _ctx = CodePlanContext(
             intent=intent,
             run_id=self._run_id or "extension",
             shared_memory=_sm,
         )
+        # PRD-126: composite-workflow phases get transport retry too.
         await self._run_turn(
             text,
             tools=self._base_tools(),
@@ -652,67 +653,6 @@ class CodePlanRunner(BaseWorkflowRunner):
         finally:
             if mode is not None and self._mode_manager is not None:
                 self._cfg.app_state.active_mode.set(original_mode)
-
-    async def _run_turn_with_retry(
-        self,
-        text:           str,
-        *,
-        tools:          _ToolList,
-        mode:           str | None,
-        system_prompt:  str,
-        max_turns:      int,
-        ctx:            CodePlanContext,
-        model_override: str = "",
-    ) -> None:
-        """Wrap ``_run_turn`` with snapshot-rollback retry on transient network errors.
-
-        On each ``ReadTimeout`` / ``TransientTransportError``, the shared memory
-        is restored to its pre-turn state so the next attempt can add the user
-        message on a clean history.  Permanent errors (HTTP 4xx) and
-        ``CancelledError`` are never retried (PRD-126).
-        """
-        import asyncio as _asyncio  # noqa: PLC0415
-        from agenthicc.runners.agent_turn import _is_transient_network_error  # noqa: PLC0415
-
-        exec_cfg    = self._cfg.cfg.execution
-        max_retries = getattr(exec_cfg, "transport_max_retries", 3)
-        base_delay  = getattr(exec_cfg, "transport_retry_base_delay_s", 1.0)
-        conv        = self._cfg.conv_store
-
-        for attempt in range(max_retries + 1):
-            snapshot = ctx.shared_memory.snapshot() if ctx.shared_memory is not None else None
-
-            try:
-                await self._run_turn(
-                    text, tools=tools, mode=mode,
-                    system_prompt=system_prompt, max_turns=max_turns,
-                    ctx=ctx, model_override=model_override,
-                )
-                return
-
-            except (_asyncio.CancelledError, KeyboardInterrupt):
-                raise
-
-            except BaseException as exc:  # noqa: BLE001
-                if not _is_transient_network_error(exc) or attempt >= max_retries:
-                    raise
-
-                if snapshot is not None and ctx.shared_memory is not None:
-                    ctx.shared_memory.restore(snapshot)
-
-                delay = base_delay * (2 ** attempt)
-                log.warning(
-                    "Transient network error on attempt %d/%d, retrying in %.1fs: %s: %s",
-                    attempt + 1, max_retries, delay, type(exc).__name__, exc,
-                )
-                if conv is not None:
-                    conv.append_event("system", {
-                        "text": (
-                            f"⟳ Network error — retrying "
-                            f"({attempt + 1}/{max_retries})…"
-                        ),
-                    })
-                await _asyncio.sleep(delay)
 
     def _base_tools(self) -> _ToolList:
         """Return capability-filtered project tools for the current mode."""
