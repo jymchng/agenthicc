@@ -71,3 +71,8 @@ class SessionContext:
     # ── memory (PRD-101) ──────────────────────────────────────────────────────
     memory_router:      "MemoryRouter | None"  = None
     semantic_index:     "SemanticIndex | None" = None
+
+    # ── run resumption (PRD-129 Phase 3) ──────────────────────────────────────
+    #: A plan to re-drive a turn the prior session left incomplete (crash
+    #: mid-turn).  ``None`` on a clean start.
+    pending_resume:     "object | None" = None

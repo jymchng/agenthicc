@@ -69,3 +69,11 @@ class AgentTurnContext:
     #: timeout wraps the caller, this prevents scheduling a retry that cannot
     #: meaningfully run before the timeout fires.  ``None`` = no deadline.
     retry_deadline_monotonic: "float | None" = None
+
+    # ── run resumption (PRD-129 Phase 3) ──────────────────────────────────────
+    #: When re-driving a turn that a crash interrupted, the original turn id to
+    #: reuse (so durable tool records line up).  ``None`` = a fresh turn.
+    resume_turn_id: "str | None" = None
+    #: A pre-seeded ``DurableIdempotencyLedger`` for the resumed turn, loaded with
+    #: the tools the crashed attempt already ran.  ``None`` = build a fresh one.
+    resume_ledger: "object | None" = None

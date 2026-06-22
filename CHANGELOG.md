@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Conversation durability & resumable execution (PRD-129)
+
+- **Phase 1 — idempotent tools.** A turn-scoped `IdempotencyLedger` (lauren-ai)
+  replays a tool result across a transport-retry rollback instead of re-executing
+  it, so side-effecting tools (`write_file`, `run_bash`, `git_commit`) apply once.
+  Replay is rollback-scoped (a `promote`/`committed`/`pending` model), so a
+  legitimate repeat call within one attempt still runs live; replayed results are
+  rekeyed to the current `tool_use_id`.
+- **Fixed** a provider 400 (`tool_result ... must have a corresponding tool_use
+  block`) introduced by the first-cut ledger: it deduped a repeat `(name,input)`
+  call within a single attempt and replayed a stale `tool_use_id`.
+- **Phase 2 — durable journal.** `ShortTermMemory` is now a projection of an
+  append-only, `fsync`-ed `ConversationJournal`; every transition is durable, so a
+  crash mid-turn no longer loses the in-flight turn, and `--resume` folds the
+  journal back into memory. Removed the superseded SQLite `conversation_store.py`.
+- **Phase 3 — resumable execution.** Turn-lifecycle markers + a
+  `DurableIdempotencyLedger` + a `RunCoordinator` detect a turn interrupted by a
+  hard crash and re-drive it from where it left off, replaying already-completed
+  tools. Defers to the PRD-94 workflow resume when a workflow run is in progress.
+
 ### Removed — Kernel runtime trio (PRD-128)
 
 - Deleted the unwired `agenthicc.runtime` package — `CommunicationTools`, `AgentPool`,

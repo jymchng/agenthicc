@@ -1589,3 +1589,98 @@ production code. It was superseded by lauren-ai's `AgentRunnerBase` and the
 | 42.3 | No active (non-historical-PRD) doc references the trio; `docs/reference/communication-tools.md` and `docs/guides/agents.md` are removed with no dangling `mkdocs.yml` nav entry |
 | 42.4 | `uv run pytest tests/ -q`, `uv run mypy src/agenthicc`, and `uv run ruff check src/ tests/` pass |
 | 42.5 | Phase 2 (kernel reducer / state / config pruning) is documented as a deferred follow-up |
+
+---
+
+## 43. Conversation Durability & Retry Resilience — Phases 1, 2 & 3 (PRD-129)
+
+A transport-retry (PRD-126) rolls a whole agent turn back to its pre-turn memory
+snapshot and re-runs it.  PRD-129 fixes the consequences of that design:
+already-completed tools were **re-executed** on the retry, conversation state had
+no **mid-turn durability** (only a turn-boundary SQLite snapshot, so a crash lost
+the in-flight turn), and an interrupted turn could not be **resumed**.
+
+### Phase 1 — Idempotent tool execution
+
+A turn-scoped `IdempotencyLedger` (lauren-ai `_tools/_idempotency.py`) records
+each successful tool result by `(name, canonical-input)`.  Threaded through
+`run` / `run_stream` → `AgentContext` → `_execute_single_tool`, a replayed call
+returns the recorded result instead of re-dispatching (checked *before* the HITL
+gate, so an already-approved side effect is not re-prompted).  agenthicc creates
+one ledger per turn in `AgentTurnRunner._stream`, outside the retry loop, so it
+survives across attempts.
+
+Replay is **scoped to a rollback**, not to content alone: `record` adds to a
+*pending* set, a rollback `promote`s pending → *committed*, and only *committed*
+results are replayed (consumed FIFO).  So a retried call replays its earlier
+result, but a **legitimate repeat call within one attempt** (reading a file
+twice, or after writing it) still runs live and sees fresh data.  Replayed
+results are **rekeyed to the current `tool_use_id`** — the model issues a fresh
+id every attempt, and leaking the recorded id corrupts the conversation with a
+`tool_result` that has no matching `tool_use` block (a hard provider 400).
+
+| Aspect | Expectation |
+|---|---|
+| Side-effect once | A `write_file` / `run_bash` / `git_commit` that completed before a rollback is **replayed**, not re-run, on the retry |
+| Repeat runs live | The same `(name,input)` called twice within one attempt executes both times (no content-dedup) |
+| Correct id | A replayed result's `tool_use_id` is rekeyed to the current call (no orphaned `tool_result` 400) |
+| Errors re-run | Only successful (`not is_error`) results are recorded; a failed tool runs again on retry |
+| HITL respected | A committed-replay hit skips dispatch *and* the approval gate (the effect already happened) |
+| Opt-in / inert | `idempotency_ledger=None` (default) preserves byte-identical legacy behavior |
+
+### Phase 2 — Durable ConversationJournal
+
+`ShortTermMemory` becomes a *projection* of an append-only, `fsync`-ed
+`ConversationJournal` (`memory/journal.py`).  `JournaledShortTermMemory`
+(`memory/journaled.py`) mirrors every `add_user` / `add_assistant` /
+`add_tool_results` as an `append` entry and every `restore` (retry rollback) /
+compaction as a `reset` entry.  Folding the journal reconstructs the exact
+message list, so resume and crash recovery are transparent.
+
+| Aspect | Expectation |
+|---|---|
+| Mid-turn durability | Every transition is `fsync`-ed as it happens — a crash mid-turn no longer loses the in-flight turn |
+| Resume by fold | On `--resume` (`session_id == resume_id`) the journal is folded back into memory at construction; no separate load step |
+| Rollback-correct | A retry `restore` writes a `reset`; folding honours it, so failed-attempt appends are superseded |
+| Crash-safe fold | A corrupt trailing line (crash mid-write) is skipped; everything before it is intact |
+| No dual paths | The turn-boundary SQLite `memory_snapshots` mechanism (`conversation_store.py`) is **removed**, superseded by the journal |
+
+### Phase 3 — Resumable execution (RunCoordinator)
+
+The journal gains **turn-lifecycle markers** (`turn_started`/`turn_completed`)
+and **durable tool records** (`tool_recorded`).  Every direct turn runs under a
+`DurableIdempotencyLedger` (`runners/durable_ledger.py`) that `fsync`s each tool
+result keyed by the turn id, and emits `turn_started` (with the pre-turn
+rollback point) at the start and `turn_completed` in the `finally` — so only a
+hard process death (SIGKILL) leaves a turn unmarked.  On resume,
+`RunCoordinator` (`runners/run_coordinator.py`) folds the journal for an
+incomplete turn, rolls memory back to its pre-turn point, seeds a ledger with the
+tools it already ran, and re-drives it — replaying completed side effects rather
+than repeating them.
+
+| Aspect | Expectation |
+|---|---|
+| Crash detected | A `turn_started` with no `turn_completed` is found by `fold_resume_state`; a clean session yields `None` |
+| Resume from step | The re-driven turn reuses the original `turn_id`; the seeded ledger replays already-run tools |
+| Rollback point | `JournaledShortTermMemory.rollback_to(base_count)` returns memory to the pre-turn state before re-driving |
+| Handled ≠ crash | `turn_completed` fires for success, handled errors, and cancellation — only SIGKILL flags a turn for resume |
+| Defers to workflows | Auto-resume fires only for a direct turn (no in-progress workflow); workflow crashes stay with PRD-94 |
+| Durable replay | Tool records survive a process restart — re-execution is skipped even across a crash |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 43.1 | A successful side-effecting tool requested again after a rollback (same ledger) executes exactly once |
+| 43.2 | The same `(name,input)` called twice within one attempt runs live both times (no content-dedup) |
+| 43.3 | A replayed result is rekeyed to the current `tool_use_id` (no orphaned-`tool_result` 400) |
+| 43.4 | A tool that errors is not recorded and re-runs on the next attempt |
+| 43.5 | `idempotency_ledger=None` leaves runner behavior unchanged (regression suite green) |
+| 43.6 | Folding a journal reproduces the live `ShortTermMemory` message list exactly; corrupt trailing line skipped |
+| 43.7 | Re-opening a journal path reconstructs prior history without duplication (resume) |
+| 43.8 | The SQLite `conversation_store.py` is removed; no live importer remains |
+| 43.9 | `fold_resume_state` finds an incomplete turn (no `turn_completed`) and `None` for a clean/re-driven-completed session |
+| 43.10 | A `DurableIdempotencyLedger` seeded from journal records replays them without re-execution |
+| 43.11 | Auto-resume defers to the workflow path when a workflow run is in progress |
+| 43.12 | New suites green: `test_idempotency.py` (lauren-ai), `test_conversation_journal.py`, `test_journaled_memory.py`, `test_run_resume.py` |
+| 43.13 | Phase 4 (lower the retry boundary to per-round-trip; streaming delta checkpoints) remains deferred per PRD-129 |

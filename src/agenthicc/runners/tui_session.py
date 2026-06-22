@@ -260,8 +260,15 @@ async def _build_session_context(
     from agenthicc.mentions.cache import MentionCache            # noqa: PLC0415
     mention_cache = MentionCache()
 
-    from lauren_ai._memory import ShortTermMemory                # noqa: PLC0415
-    session_memory = ShortTermMemory(max_tokens=32_000)
+    # PRD-129 Phase 2: durable conversation journal.  session_memory is a
+    # JournaledShortTermMemory — every transition is fsync'd to a per-session
+    # append-only journal, and on resume (session_id == resume_id) the journal
+    # is folded straight back into memory.  This supersedes the old SQLite
+    # memory-snapshot durability (which only checkpointed at turn boundaries).
+    from agenthicc.memory.journal import ConversationJournal, journal_path_for  # noqa: PLC0415
+    from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
+    _conversation_journal = ConversationJournal(journal_path_for(session_id))
+    session_memory = JournaledShortTermMemory(_conversation_journal, max_tokens=32_000)
 
     # ── three-tier memory (PRD-101) ───────────────────────────────────────────
     from agenthicc.memory.layers import (                        # noqa: PLC0415
@@ -362,15 +369,21 @@ async def _build_session_context(
                 _baseline[0] = (base_inp + inp, base_out + out, base_cost + cost)
 
     # ── resume: restore previous context ─────────────────────────────────────
+    # PRD-129 Phase 2: prior context is restored by folding the durable journal
+    # at construction time (session_id == resume_id), so no explicit load is
+    # needed here — only the visual marker.
+    #
+    # PRD-129 Phase 3: if the prior session died mid-turn (a turn_started with no
+    # turn_completed), build a ResumePlan so the session can re-drive that turn
+    # from where it left off — replaying already-completed tools.
+    pending_resume = None
     if resume_id:
         from rich.rule import Rule  # noqa: PLC0415
         console.print(Rule(f"[dim]resumed session {session_id[:12]}[/dim]"))
-        from agenthicc.conversation_store import ConversationStore as _LCS  # noqa: PLC0415
-        _lcs = _LCS()
-        snap = _lcs.load_memory_snapshot(resume_id)
-        if snap:
-            session_memory.restore(snap)
-        _lcs.close()
+        from agenthicc.runners.run_coordinator import RunCoordinator  # noqa: PLC0415
+        _incomplete = RunCoordinator.detect_incomplete_turn(_conversation_journal)
+        if _incomplete is not None:
+            pending_resume = RunCoordinator.build_resume_plan(_conversation_journal, _incomplete)
 
     return SessionContext(
         processor=processor,
@@ -395,6 +408,7 @@ async def _build_session_context(
         console=console,
         memory_router=_memory_router,
         semantic_index=_semantic_index,
+        pending_resume=pending_resume,
     )
 
 
@@ -589,8 +603,13 @@ class TUISession:
 
     # ── agent turn plumbing ───────────────────────────────────────────────────
 
-    async def run_turn(self, text: str) -> None:
-        """Dispatch one user message: workflow or direct agent turn."""
+    async def run_turn(self, text: str, resume: object | None = None) -> None:
+        """Dispatch one user message: workflow or direct agent turn.
+
+        *resume* (a PRD-129 ``ResumePlan``) re-drives an interrupted direct turn
+        with its original turn id and a ledger seeded with the tools that already
+        ran, so completed side effects are replayed rather than repeated.
+        """
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
         ctx = self._ctx
 
@@ -667,6 +686,8 @@ class TUISession:
                     memory_router=ctx.memory_router,
                     semantic_index=ctx.semantic_index,
                     retry_deadline_monotonic=_deadline,
+                    resume_turn_id=getattr(resume, "turn_id", None),
+                    resume_ledger=getattr(resume, "ledger", None),
                 )
 
         try:
@@ -684,20 +705,15 @@ class TUISession:
         finally:
             self._input_session.set_mode(InputMode.IDLE)
             self._turn_count += 1
-            try:
-                from agenthicc.conversation_store import ConversationStore as _LCS  # noqa: PLC0415
-                _lcs = _LCS()
-                _lcs.save_memory_snapshot(ctx.session_id, ctx.session_memory.snapshot())
-                _lcs.close()
-            except Exception:  # noqa: BLE001
-                pass
+            # PRD-129 Phase 2: no per-turn snapshot save — the JournaledShortTermMemory
+            # already fsync'd every transition durably as it happened.
 
-    async def agent_task_body(self, text: str) -> None:
+    async def agent_task_body(self, text: str, resume: object | None = None) -> None:
         """Wrap run_turn with error handling; advance queue on completion."""
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
         conv = self._ctx.app_state.conversation
         try:
-            await self.run_turn(text)
+            await self.run_turn(text, resume=resume)
         except asyncio.CancelledError:
             # close_turn() is idempotent — inner layers may have already called it.
             conv.close_turn()
@@ -792,6 +808,39 @@ class TUISession:
             )
             return
 
+    def _has_incomplete_workflow(self) -> bool:
+        from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
+        k_state = self._ctx.processor.get_state()
+        return any(
+            bool(wf.name) and wf.status not in (NodeStatus.complete, NodeStatus.failed)
+            for wf in k_state.workflows.values()
+        )
+
+    def _maybe_resume_interrupted_turn(self) -> None:
+        """PRD-129 Phase 3: re-drive a turn the prior session left incomplete.
+
+        Fires only for a *direct* turn (no in-progress workflow — those are left
+        to the workflow's own resume).  Rolls memory back to the turn's pre-turn
+        point, then re-submits the user message with a ledger seeded from the
+        tools that already ran, so completed side effects are replayed, not
+        repeated.
+        """
+        ctx = self._ctx
+        plan = ctx.pending_resume
+        if plan is None or self._has_incomplete_workflow():
+            return
+        mem = ctx.session_memory
+        rollback = getattr(mem, "rollback_to", None)
+        if callable(rollback):
+            rollback(int(getattr(plan, "base_count", 0)))
+        ctx.app_state.conversation.notification.set(
+            "↻ Resuming an interrupted turn — completed tools are replayed, not repeated…"
+        )
+        self._agent_task = asyncio.create_task(
+            self.agent_task_body(str(getattr(plan, "user_message", "")), resume=plan),
+            name="resume-turn",
+        )
+
     async def _resume_workflow_task(self, wf_defn: type[WorkflowPlugin], context: WorkflowContext) -> None:
         """Resume a WorkflowRunner with error handling matching agent_task_body."""
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
@@ -846,6 +895,9 @@ class TUISession:
         # If a previous session had an in-progress workflow, show a notification
         # but do NOT auto-start it — the user decides what to do next.
         self._notify_incomplete_workflow()
+        # PRD-129 Phase 3: auto-resume a direct turn the prior session left
+        # interrupted (no-op on a clean start or when a workflow was in progress).
+        self._maybe_resume_interrupted_turn()
         ad_task: asyncio.Task | None = None
         try:
             from agenthicc.auth import AuthClient  # noqa: PLC0415
@@ -924,6 +976,10 @@ async def _run_tui_session(
         await session.run()
     finally:
         ctx.session_log.close()
+        # PRD-129 Phase 2: close the durable conversation journal handle.
+        _close = getattr(ctx.session_memory, "close", None)
+        if callable(_close):
+            _close()
         if ctx.mcp_registry:
             await ctx.mcp_registry.shutdown()
         if cassette_base is not None:

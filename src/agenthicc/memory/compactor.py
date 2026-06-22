@@ -94,6 +94,12 @@ async def compact_memory(
             {"role": "user", "content": f"[COMPACT SUMMARY]\n{summary}"},
             {"role": "assistant", "content": _ACK},
         ]
+        # PRD-129 Phase 2: compaction replaces _messages in place, bypassing the
+        # JournaledShortTermMemory append/restore overrides — record the reset so
+        # the durable journal stays in sync with the live buffer.
+        _journal_reset = getattr(memory, "journal_reset", None)
+        if callable(_journal_reset):
+            _journal_reset()
         new_estimate = memory.token_estimate
         log.info("compactor: compacted to ~%d tokens", new_estimate)
 

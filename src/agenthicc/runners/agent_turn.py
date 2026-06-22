@@ -220,7 +220,9 @@ class AgentTurnRunner:
 
     async def _emit_intent_created(self) -> None:
         from agenthicc.kernel import Event  # noqa: PLC0415
-        self._intent_id = uuid.uuid4().hex
+        # PRD-129 Phase 3: a resumed turn reuses its original id so the durable
+        # tool ledger and journal turn markers line up.
+        self._intent_id = self._ctx.resume_turn_id or uuid.uuid4().hex
         self._agent_id  = f"agent-{self._intent_id[:8]}"
         await self._ctx.processor.emit(
             Event.create("IntentCreated", {
@@ -478,7 +480,6 @@ class AgentTurnRunner:
     ) -> None:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
         ctx           = self._ctx
-        current_turn: list[str] = []
 
         # Heal any dangling tool_calls left by an interrupted previous turn
         # (e.g. a plan-approval that was cancelled while awaiting the user's
@@ -514,6 +515,35 @@ class AgentTurnRunner:
         # fraction at which to trigger summarisation (0.8 → fires at 80%).
         _window_tokens = max(1, int(_threshold * 0.8))
 
+        # PRD-129 Phase 1/3: one idempotency ledger per turn, created OUTSIDE the
+        # retry loop so it survives across attempts.  When a transient failure
+        # rolls session_memory back to its pre-turn snapshot and the turn re-runs,
+        # any tool that already completed successfully (write_file, run_bash,
+        # git_commit, …) is replayed from the ledger instead of re-executed.
+        #
+        # When session memory is journaled, the ledger is DURABLE — every record
+        # is fsync'd to the journal keyed by this turn's id — so even a process
+        # crash mid-turn can be resumed (Phase 3) with completed tools replayed.
+        # A resumed turn arrives with a pre-seeded ledger (ctx.resume_ledger).
+        _journal = getattr(ctx.session_memory, "journal", None)
+        if ctx.resume_ledger is not None:
+            turn_ledger = ctx.resume_ledger
+        elif _journal is not None:
+            from agenthicc.runners.durable_ledger import DurableIdempotencyLedger  # noqa: PLC0415
+            turn_ledger = DurableIdempotencyLedger(_journal, self._intent_id)
+        else:
+            from lauren_ai import IdempotencyLedger  # noqa: PLC0415
+            turn_ledger = IdempotencyLedger()
+        self._turn_ledger = turn_ledger
+
+        # PRD-129 Phase 3: mark the turn's start + rollback point in the journal.
+        # On a crash the absence of a matching turn_completed (written in the
+        # finally below) flags this turn for resumption.
+        if _journal is not None and ctx.session_memory is not None:
+            _journal.turn_started(
+                self._intent_id, agent_text, len(ctx.session_memory._messages)
+            )
+
         # PRD-126: one streaming attempt — the unit retried on transient network
         # errors.  The user message is added inside run_stream(), so the retry
         # helper snapshots session_memory before each attempt and restores it on
@@ -523,6 +553,7 @@ class AgentTurnRunner:
             stream = await active_runner.run_stream(
                 agent_instance, agent_text,
                 memory=ctx.session_memory,
+                idempotency_ledger=turn_ledger,
                 config_override=_AgentConfig(
                     max_turns=ctx.max_agent_turns,
                     parallel_tool_calls=True,
@@ -587,6 +618,14 @@ class AgentTurnRunner:
                 # close_turn() is idempotent — safe even when CancelledError path
                 # already called it above.
                 ctx.conv_store.close_turn()
+            # PRD-129 Phase 3: mark the turn durably complete.  This runs for
+            # success, handled errors, and cancellation — only a hard process
+            # death (SIGKILL) skips it, leaving the turn flagged for resume.
+            if _journal is not None:
+                try:
+                    _journal.turn_completed(self._intent_id)
+                except OSError:
+                    pass
 
     # ── transport retry wrapper (PRD-126) ─────────────────────────────────────
 
@@ -608,7 +647,15 @@ class AgentTurnRunner:
             max_total_duration_s=float(getattr(exec_cfg, "transport_retry_max_total_s", 0.0)),
         )
 
+        # PRD-129: on a rollback, promote the just-executed (now rolled-back)
+        # tool results so the next attempt replays them instead of re-executing
+        # their side effects.  Promotion happens ONLY here (on a real rollback),
+        # so a legitimate repeat call within a single forward attempt still runs
+        # live and sees fresh data.
         reset_fns: list[Callable[[], None]] = []
+        _ledger = getattr(self, "_turn_ledger", None)
+        if _ledger is not None:
+            reset_fns.append(_ledger.promote)
         if ctx.approval_svc is not None:
             reset_fns.append(ctx.approval_svc.reset_turn_memory)
 
@@ -678,6 +725,8 @@ async def _run_agent_turn(
     memory_router: MemoryRouter | None = None,
     semantic_index: SemanticIndex | None = None,
     retry_deadline_monotonic: float | None = None,
+    resume_turn_id: str | None = None,
+    resume_ledger: object | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -704,5 +753,7 @@ async def _run_agent_turn(
         memory_router=memory_router,
         semantic_index=semantic_index,
         retry_deadline_monotonic=retry_deadline_monotonic,
+        resume_turn_id=resume_turn_id,
+        resume_ledger=resume_ledger,
     )
     await AgentTurnRunner(ctx).run()
