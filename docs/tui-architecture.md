@@ -626,7 +626,9 @@ The synchronous/async message bus connecting `UnifiedInputSession` to
 **Location:** `tui/runtime/domain_events.py`
 
 A separate pub/sub bus for domain events (agent lifecycle, tool calls,
-text chunks, etc.). Used internally by `agent_runtime.py`.
+text chunks, etc.) from the original PRD-61 reactive-runtime design.  Note: it
+is currently unused — the live runtime drives the UI through `ConversationStore`
+signals (`tui/conversation_store.py`) rather than this bus.
 
 **Domain event classes:** `AgentStarted` · `AgentCompleted` · `AgentFailed` ·
 `AgentInterrupted` · `ToolStarted` · `ToolCompleted` · `TextChunk` ·

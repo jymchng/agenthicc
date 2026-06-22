@@ -53,7 +53,6 @@ model = "claude-sonnet-4-6"
 | `src/agenthicc/tui/terminal/posix_backend.py` | `PosixBackend` — wraps `cbreak_reader.raw_mode` / `read_key`; owns all POSIX terminal setup |
 | `src/agenthicc/tui/terminal/windows_backend.py` | `WindowsBackend` — exclusive owner of all `msvcrt` calls; no other file may import `msvcrt` |
 | `src/agenthicc/tui/cbreak_reader.py` | `Key` enum (canonical — imported by 11 files); `raw_mode(fd)`; `read_key(fd)` — used only by `PosixBackend` |
-| `src/agenthicc/tui/terminal_caps.py` | `TerminalCapabilities` frozen dataclass; `TerminalCapabilityDetector.detect()` |
 | `llms-full.txt` | Full API reference for LLMs — must stay in sync with public symbols |
 | `llms.txt` | Short package overview — update when public API changes |
 | `tests/conftest.py` | Shared fixtures: `processor`, `pool`, `comm_tools`, `minimal_state`, `running_processor` |
@@ -237,25 +236,7 @@ New `ApprovalRequest.kind` values are mapped to overlay classes via the
    await approval_svc.request_approval(req)
    ```
 
-### 9. Adding a new kernel bridge event handler
-
-The legacy `inject_event()` bridge in `tui/runtime/kernel_bridge.py` dispatches
-on `event["type"]` through `_EVENT_HANDLERS`.  New types are registered with
-`@register_event_handler`.
-
-1. Define a module-level function **after the `KernelBridge` class** in
-   `tui/runtime/kernel_bridge.py`:
-   ```python
-   @register_event_handler("my_event_type")
-   def _handle_my_event(self: KernelBridge, event: dict) -> None:
-       value = event.get("value", "")
-       self._conv.some_signal.set(value)
-   ```
-2. The function receives `self` (the `KernelBridge` instance) and `event`
-   (the raw dict from the legacy bridge).
-3. No changes to `inject_event()` are needed.
-
-### 10. Extending memory tiers
+### 9. Extending memory tiers
 
 1. Add methods to the appropriate layer class in `memory/layers.py`:
    - `SessionMemoryLayer` for ephemeral in-process data
