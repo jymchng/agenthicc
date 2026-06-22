@@ -422,14 +422,16 @@ then, review every PR diff for `Any` imports and usages.
 - **Timeout default**: `ToolSettings.http_timeout_s = 30.0`; `_build_session_context()` calls `tools.http.configure()` after loading config.
 - **Connect timeout**: always 10 s regardless of read timeout — set inside `agenthicc_http_client()`.
 
-## Terminal backend rules (PRD-105/106)
+## Terminal backend rules (PRD-105/106/127)
 
 - **`get_backend()`** in `tui/terminal/backend.py` is the **only** place that may branch on `os.name` for terminal decisions.
-- **No application code** may import `msvcrt`, `termios`, or `tty` directly — all platform-specific terminal calls are confined to `posix_backend.py` and `windows_backend.py`.
-- **`Key` enum** lives in `cbreak_reader.py` and stays there — all 11 existing importers use that path; do not create a second definition.
+- **No application code** may import `msvcrt`, `termios`, `tty`, or call the Windows console API (`ctypes.windll.kernel32`) directly — all platform-specific terminal calls are confined to `posix_backend.py` and `windows_backend.py`.
+- **`Key` enum** lives in `cbreak_reader.py` and stays there — all importers use that path; do not create a second definition.
 - **`unified_session.run()`** calls `get_backend()` and checks `backend.is_interactive()` before entering `enter_raw_mode()` — if not interactive, it returns cleanly so `TUISession` can cancel tasks normally.
 - **`PosixBackend.enter_raw_mode()`** on a non-TTY fd yields without configuring the terminal (passthrough); never crashes.
-- **`WindowsBackend.enter_raw_mode()`** is a no-op; `msvcrt.getwch()` already bypasses line buffering.
+- **`WindowsBackend` reads keys via `ReadConsoleInputW` (PRD-127)**, not `msvcrt.getwch()`.  `getwch()` cannot report the SHIFT modifier on Tab (Shift+Tab collapses to Tab) and never sees VT input — so it broke mode cycling.  `ReadConsoleInputW` exposes `wVirtualKeyCode` + `dwControlKeyState`, making Shift+Tab unambiguous.
+- **`WindowsBackend.enter_raw_mode()`** clears `ENABLE_LINE_INPUT` / `ENABLE_ECHO_INPUT` / `ENABLE_PROCESSED_INPUT` (Ctrl+C arrives as a key event, mirroring POSIX `ISIG`-clear) and restores the saved mode on exit.  A `getwch()` fallback handles environments without a real console.
+- **Windows key decoding is a pure function** — `_decode_key_event(vk, unicode_char, ctrl_state)` — so it is unit-tested on the Linux CI.  ctypes structs use portable `c_*` types (never `ctypes.wintypes`, which only imports on Windows).
 
 ---
 

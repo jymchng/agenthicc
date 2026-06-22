@@ -1523,3 +1523,40 @@ pre-turn snapshot ensures every attempt starts with a clean history.
 | 40.9 | Subagent workers retry transient errors via the shared helper |
 | 40.10 | `CancelledError` never retried; `transport_max_retries = 0` disables retry |
 | 40.11 | `build_llm_config()` passes `llm_sdk_max_retries` (not `transport_max_retries`) to all providers |
+
+---
+
+## 41. Windows Shift+Tab Mode Cycling (PRD-127)
+
+Fixes Shift+Tab failing to cycle the operational mode on Windows.
+
+### Root cause
+
+`WindowsBackend.read_key()` read input via `msvcrt.getwch()`, which reads
+translated console key events and **cannot report the SHIFT modifier on Tab** —
+Shift+Tab collapsed to plain `Key.TAB`, which no capability consumes.  The
+VT `\x1b[Z` decode path added by PRD-106 was dead because `getwch()` never sees
+the VT byte stream (it requires `ENABLE_VIRTUAL_TERMINAL_INPUT` + raw reads,
+neither of which `getwch()` does).
+
+### Fix — `ReadConsoleInputW` via ctypes
+
+| Component | Role |
+|---|---|
+| `_decode_key_event(vk, unicode_char, ctrl_state)` | Pure decoder; `VK_TAB` + `SHIFT_PRESSED` → `Key.SHIFT_TAB`. Unit-tested on Linux |
+| `_INPUT_RECORD` / `_KEY_EVENT_RECORD` | ctypes structs with portable `c_*` types (no `ctypes.wintypes`) |
+| `_next_input_event()` | Thin `ReadConsoleInputW` reader (the only Windows-API call; monkeypatched in tests) |
+| `_read_key_console()` | Loops, skipping key-up / non-key / modifier-only events |
+| `enter_raw_mode()` | Clears `ENABLE_LINE_INPUT`/`ECHO`/`PROCESSED` input flags; restores on exit |
+| getwch fallback | Used when no real console handle is available |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 41.1 | `VK_TAB` + `SHIFT_PRESSED` decodes to `Key.SHIFT_TAB`; plain `VK_TAB` → `Key.TAB` |
+| 41.2 | `VK_RETURN` + CTRL → `CTRL_ENTER`; arrows/HOME/END/BACKSPACE/ESC decode by virtual key |
+| 41.3 | Control chars (Ctrl+C/D/U/V), `@` → `AT`, printable → `CHAR`; modifier-only → ignored |
+| 41.4 | `_read_key_console` skips key-up, non-key, and failed reads |
+| 41.5 | Module imports on Linux (portable ctypes types); decoder fully unit-tested |
+| 41.6 | getwch fallback preserved for non-console environments |
