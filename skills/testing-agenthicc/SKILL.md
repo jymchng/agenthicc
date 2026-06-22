@@ -2,7 +2,7 @@
 skill: testing-agenthicc
 version: 1.0.0
 tags: [testing, pytest, fixtures, harness, mock-transport, drain]
-summary: Complete testing guide — conftest fixtures, EventBusTestHarness, MockTransport, drain() timing, and running AgentRunner in tests.
+summary: Complete testing guide — conftest fixtures, EventBusTestHarness, MockTransport, drain() timing, and reducer/TUI/API test patterns.
 ---
 
 # Skill: Testing Agenthicc
@@ -121,42 +121,34 @@ Wraps `EventProcessor` with a capturing reducer that appends every event to
 ### Example: asserting events were emitted
 
 ```python
-async def test_task_created_event(harness):
-    from agenthicc.runtime.comm_tools import CommunicationTools
-    from agenthicc.runtime.pool import AgentPool
+async def test_intent_created_event(harness):
+    from agenthicc.kernel import Event
 
-    pool = AgentPool()
-    tools = CommunicationTools(processor=harness.processor, pool=pool)
-
-    result = await tools.task_create(
-        description="write tests",
-        workflow_id="wf-001",
+    await harness.processor.emit(
+        Event.create("IntentCreated", {"intent_id": "i-001", "raw_text": "write tests"})
     )
-
     await harness.processor.drain()
 
     # Assert the event was captured
-    events = harness.events_of_type("TaskCreated")
+    events = harness.events_of_type("IntentCreated")
     assert len(events) == 1
-    assert events[0].payload["task_id"] == result["task_id"]
-    assert events[0].payload["description"] == "write tests"
+    assert events[0].payload["intent_id"] == "i-001"
+    assert events[0].payload["raw_text"] == "write tests"
 ```
 
 ### Example: waiting for a specific event
 
 ```python
-async def test_agent_spawn_event(harness):
-    from agenthicc.runtime.comm_tools import CommunicationTools
-    from agenthicc.runtime.pool import AgentPool
+async def test_intent_status_event(harness):
+    from agenthicc.kernel import Event
 
-    pool = AgentPool()
-    tools = CommunicationTools(processor=harness.processor, pool=pool)
-
-    await tools.agent_spawn(agent_type="worker")
+    await harness.processor.emit(
+        Event.create("IntentCreated", {"intent_id": "i-002", "raw_text": "ship it"})
+    )
 
     # wait_for_event polls until the event appears or timeout
-    event = await harness.wait_for_event("AgentSpawnRequest", timeout=2.0)
-    assert event.payload["agent_type"] == "worker"
+    event = await harness.wait_for_event("IntentCreated", timeout=2.0)
+    assert event.payload["intent_id"] == "i-002"
 ```
 
 ---
@@ -214,52 +206,13 @@ def test_agent_runner_tool_call(mock_transport_factory):
         },
         "Task complete",
     ])
-    # Pass transport to _build_runner_for_agent or AgentRunnerBase directly
+    # Pass transport to AgentRunnerBase directly
     # ...
 ```
 
 Each entry is either:
 - A plain string → `Completion(stop_reason="end_turn", content=str)`.
 - A dict with `"tool_calls"` → `Completion(stop_reason="tool_use", tool_calls=[...])`.
-
----
-
-## Running AgentRunner in tests with _build_runner_for_agent
-
-```python
-async def test_full_agent_run(harness, mock_transport_factory):
-    from agenthicc.runtime._build import _build_runner_for_agent
-    from agenthicc.runtime.comm_tools import CommunicationTools
-    from agenthicc.runtime.pool import AgentPool
-
-    pool = AgentPool()
-    tools = CommunicationTools(processor=harness.processor, pool=pool)
-
-    transport = mock_transport_factory([
-        {
-            "tool_calls": [{"name": "application_log", "input": {
-                "level": "INFO", "message": "doing work",
-            }}],
-            "content": "",
-        },
-        "All done",
-    ])
-
-    runner = _build_runner_for_agent(
-        agent_id="test-agent-001",
-        agent_type="worker",
-        tools=tools,
-        processor=harness.processor,
-        transport=transport,
-    )
-
-    result = await runner.run_until_done("run the test suite")
-    assert "All done" in result.content
-
-    await harness.processor.drain()
-    log_events = harness.events_of_type("ApplicationLog")
-    assert any(e.payload["message"] == "doing work" for e in log_events)
-```
 
 ---
 
@@ -304,44 +257,6 @@ def test_tool_call_spinner():
     model.update_tool_call("tc-001", state=ToolCallState.SUCCESS, duration_ms=42.0)
     assert "✓" in entry.render()
     assert "42ms" in entry.render()
-```
-
----
-
-## Integration test patterns
-
-### Testing CommunicationTools with harness
-
-```python
-async def test_workflow_modify_cycle_guard(harness):
-    from agenthicc.runtime.comm_tools import CommunicationTools
-    from agenthicc.runtime.pool import AgentPool
-    from agenthicc.kernel import Event
-    import pytest
-
-    pool = AgentPool()
-    tools = CommunicationTools(processor=harness.processor, pool=pool)
-
-    # Create a workflow first
-    await harness.processor.emit(Event.create("WorkflowCreated", {
-        "workflow_id": "wf-001",
-        "intent_id": "i1",
-    }))
-    await harness.processor.drain()
-
-    # Add two nodes
-    await tools.task_create("task A", workflow_id="wf-001", node_id="node-a")
-    await tools.task_create("task B", workflow_id="wf-001", node_id="node-b")
-    await harness.processor.drain()
-
-    # Attempt a cycle: A -> B -> A
-    await tools.workflow_modify("wf-001", "add_node", "node-a",
-                                dependencies=["node-b"])
-    await harness.processor.drain()
-
-    with pytest.raises(ValueError, match="cycle"):
-        await tools.workflow_modify("wf-001", "add_node", "node-b",
-                                    dependencies=["node-a"])
 ```
 
 ---

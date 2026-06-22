@@ -1,7 +1,7 @@
 """TUI reactive runtime — commands and mode manager.
 
 This package implements the reactive runtime layer described in PRD-61 and
-PRD-65.  It is separate from ``agenthicc.runtime`` (the kernel agent pool).
+PRD-65.
 """
 from __future__ import annotations
 

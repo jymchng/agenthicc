@@ -28,13 +28,6 @@ model = "claude-sonnet-4-6"
 | `src/agenthicc/kernel/events.py` | `Event` dataclass (create, from_dict, to_dict); `Effect`; `EffectType` enum |
 | `src/agenthicc/kernel/reducer.py` | `root_reducer`; `_HANDLERS` dict; every per-event `_reduce_*` function; `ReducerFn` type alias |
 | `src/agenthicc/kernel/processor.py` | `EventProcessor` (MPSC queue, `run()` loop, `emit()`, `drain()`, `subscribe()`); `EffectExecutor` protocol; `NoOpEffectExecutor`; `restore_from_log()` |
-| `src/agenthicc/runtime/pool.py` | `AgentPool` (FIFO idle queue, `add()`, `acquire()`, `release()`); `AgentRecord` dataclass |
-| `src/agenthicc/runtime/comm_tools.py` | `CommunicationTools`: `agent_spawn`, `agent_send_message`, `task_create`, `task_assign`, `workflow_modify`, `application_log`, `application_ui_update`, `tool_define`, `hook_register` |
-| `src/agenthicc/runtime/scheduler.py` | `Scheduler`: Semaphore-bounded dispatch; picks ready DAG nodes; assigns agents |
-| `src/agenthicc/workflow/dag.py` | `DAGNode`, `DAG`; `detect_cycle` (iterative DFS); `topological_sort`; `ready_nodes()` |
-| `src/agenthicc/workflow/intent.py` | `IntentPlanner`: parses intent text → `WorkflowNode` spec list |
-| `src/agenthicc/workflow/executor.py` | `WorkflowExecutor`: drives a `Workflow` through its DAG; re-dispatches newly ready nodes |
-| `src/agenthicc/workflow/modify.py` | `WorkflowModifier`: thin wrapper around `CommunicationTools.workflow_modify` with pre-validation |
 | `src/agenthicc/tools/base.py` | `ToolBase` ABC; `ToolResult` dataclass (`ok`, `value`, `error`, `duration_ms`) |
 | `src/agenthicc/tools/http.py` | `agenthicc_http_client()` — shared async HTTP client; `configure(timeout_s)` — set at startup from `ToolSettings.http_timeout_s`; `is_network_error(exc)` — classifies network/timeout exceptions |
 | `src/agenthicc/tools/executor.py` | `ToolExecutor`: name lookup, sandbox call, hook orchestration, `ToolCallStarted` / `ToolCallComplete` events |
@@ -55,13 +48,10 @@ model = "claude-sonnet-4-6"
 | `src/agenthicc/tui/cbreak_reader.py` | `Key` enum (canonical — imported by 11 files); `raw_mode(fd)`; `read_key(fd)` — used only by `PosixBackend` |
 | `llms-full.txt` | Full API reference for LLMs — must stay in sync with public symbols |
 | `llms.txt` | Short package overview — update when public API changes |
-| `tests/conftest.py` | Shared fixtures: `processor`, `pool`, `comm_tools`, `minimal_state`, `running_processor` |
+| `tests/conftest.py` | Shared fixtures: `processor`, `minimal_state`, `running_processor` |
 | `tests/unit/test_appstate_reducers.py` | Pure reducer tests (no asyncio) |
-| `tests/unit/test_agent_pool.py` | `AgentPool` acquire/release/timeout tests |
-| `tests/unit/test_comm_tools.py` | `CommunicationTools` unit tests |
 | `tests/unit/test_config.py` | `load_config()` merge and validation tests |
 | `tests/integration/test_event_processor.py` | Full emit/drain/subscribe cycle |
-| `tests/integration/test_workflow_executor.py` | End-to-end workflow via events |
 | `tests/integration/test_executor_with_hooks.py` | `ToolExecutor` + `HookRunner` integration |
 | `tests/integration/test_artifact_sharing.py` | `ProjectMemoryLayer` artifact round-trip |
 | `tests/e2e/test_agent_runner_e2e.py` | Full session with lauren-ai agent runner |
@@ -91,22 +81,7 @@ model = "claude-sonnet-4-6"
 6. If the event triggers an observable state change, add an `update_tui` effect so
    `TUIEventAdapter` can react.
 
-### 2. Adding a new communication tool
-
-1. Add an `async def <name>(self, ...)` method to `CommunicationTools` in
-   `runtime/comm_tools.py`.  Keep it a plain `async` callable — no framework
-   decorators — so it can be wrapped by any adapter.
-2. Emit the correct event(s) using `await self._emit(event_type, payload)`.
-   Return a typed `dict` (never `None`).
-3. If the tool needs fresh state (reads after a prior emit), call
-   `await self._fresh_state()` to drain the queue first.
-4. If the tool is also needed by agents via lauren-ai, add it to the tool schema
-   in `tools/base.py` and register it via `ToolRegistered` at startup.
-5. Update `llms-full.txt` with the new method signature and return keys.
-6. Add a test in `tests/unit/test_comm_tools.py` using the `running_processor`
-   fixture; assert the emitted event type and the return dict keys.
-
-### 3. Adding a reducer handler
+### 2. Adding a reducer handler
 
 1. Write a pure function in `kernel/reducer.py`:
    ```python
@@ -126,7 +101,7 @@ model = "claude-sonnet-4-6"
 4. If the handler returns `Effect` objects, write a separate integration test that
    starts a processor and verifies the effects are scheduled.
 
-### 4. Adding a lifecycle hook
+### 3. Adding a lifecycle hook
 
 1. Subclass `LifecycleHook` from `tools/hooks.py` and override any subset of
    `on_before`, `on_after`, `on_error`:
@@ -148,7 +123,7 @@ model = "claude-sonnet-4-6"
    assert that `on_before` rejections prevent execution and `on_after` fires after
    a successful call.
 
-### 5. Extending the TUI
+### 4. Extending the TUI
 
 1. Add an event handler in `TUIEventAdapter._handlers` in `tui/events.py`.  The
    handler receives the new `AppState` and updates `TranscriptModel` accordingly:
@@ -167,7 +142,7 @@ model = "claude-sonnet-4-6"
 4. For layout changes, use `render_frame_ansi()` + pyte in `tests/e2e/` to
    verify the rendered output at specific terminal dimensions.
 
-### 6. Adding a new API endpoint
+### 5. Adding a new API endpoint
 
 1. Add a route inside `create_app()` in `api/server.py`:
    ```python
@@ -182,7 +157,7 @@ model = "claude-sonnet-4-6"
 4. For WebSocket endpoints, follow the pattern in the existing `/v1/ws` handler:
    subscribe, accept, loop, unsubscribe in `finally`.
 
-### 7. Adding a new scroll-buffer event renderer
+### 6. Adding a new scroll-buffer event renderer
 
 New `ConversationEvent` kinds are rendered by registering a function with
 `@register_renderer` in `tui/workspace/appender.py` — no edits to
@@ -213,7 +188,7 @@ file.  Placing a `@register_renderer` function inside the class body or before
 the class ends causes it to become a nested function, not a module-level
 renderer.
 
-### 8. Adding a new approval overlay kind
+### 7. Adding a new approval overlay kind
 
 New `ApprovalRequest.kind` values are mapped to overlay classes via the
 `_overlay_registry` dict in `tui_session._on_approval_change()`.
@@ -236,7 +211,7 @@ New `ApprovalRequest.kind` values are mapped to overlay classes via the
    await approval_svc.request_approval(req)
    ```
 
-### 9. Extending memory tiers
+### 8. Extending memory tiers
 
 1. Add methods to the appropriate layer class in `memory/layers.py`:
    - `SessionMemoryLayer` for ephemeral in-process data
@@ -329,18 +304,11 @@ and therefore invisible in the trigger picker even though it executed correctly.
 
 | Error | Cause | Fix |
 |---|---|---|
-| `TypeError: AgentPool.__init__() got unexpected keyword argument 'max_size'` | `AgentPool` takes no constructor arguments; pool size is set at `Scheduler` level via `Semaphore` | Use `AgentPool()` with no args |
-| `KeyError: 'logged'` on `application_log` result | Return dict key is `"accepted"`, not `"logged"` | Use `result["accepted"]` |
-| `KeyError: 'ok'` on `workflow_modify` add_node result | Return dict uses `"applied"`, not `"ok"` | Use `result["applied"]` |
-| `ValueError: adding node ... would create a cycle in workflow ...` | `workflow_modify(action="add_node")` raises on cycle — does not return a failure dict | Catch `ValueError`; this is the only signal that the add was rejected |
-| `TypeError: object NoneType can't be used in 'await' expression` on `pool.add(...)` | `AgentPool.add()` is synchronous — returns `None` | Remove `await`; `pool.add(record)` is a plain call |
 | `AssertionError: intent status 'pending' != 'complete'` after emitting events | Processor `run()` task not started; events queue but are never applied | Start `asyncio.create_task(processor.run())` before emitting; use the `running_processor` fixture |
 | `TimeoutError` (from `asyncio.wait_for`) inside `drain()` | `drain()` waits for the idle event; if `run()` is not scheduled the queue never drains | Ensure `processor.run()` is launched as a task before calling `drain()` |
-| `unknown tool` warning from `AgentRunnerBase` | Constructing `AgentRunnerBase(transport=...)` directly instead of using the factory | Use `_build_runner_for_agent()` which registers the comm tools correctly |
 | pyte test: input bar check on `screen.buffer[ROWS - 2]` finds status line, not input | `render_frame_ansi` writes input at `rows` (1-indexed) = `ROWS - 1` (0-indexed) | Change assertion to `screen.buffer[ROWS - 1]` |
 | `EmptyQueueError` from `MockTransport` on second LLM turn | `MockTransport` requires a pre-queued response for every LLM round-trip | Add `mock_transport.queue_response(...)` for each expected turn before running the agent |
 | `KeyError: 'status'` when checking workflow node | Accessing `node.status` on a plain `dict` instead of a `WorkflowNode` dataclass | Retrieve from `state.workflows[wf_id].nodes[node_id]` which yields a `WorkflowNode` |
-| `ValueError: agent '<id>' already registered` from `pool.add()` | Calling `pool.add()` twice for the same `agent_id` | Each agent is added once; `agent_spawn` in `CommunicationTools` already calls `pool.add()` |
 
 ---
 
@@ -364,11 +332,6 @@ If you add a new event type, update:
 2. `kernel/reducer.py` — add the handler and register in `_HANDLERS`
 3. `llms-full.txt` — add the event type section
 4. `tests/unit/test_appstate_reducers.py` — add a pure reducer test
-
-If you change a `CommunicationTools` method signature, update:
-1. `runtime/comm_tools.py` — the method itself
-2. `llms-full.txt` — the method's section
-3. Any tests in `tests/unit/test_comm_tools.py` that call the old signature
 
 ## Type hint rules
 
@@ -439,11 +402,6 @@ then, review every PR diff for `Any` imports and usages.
 
 - `root_reducer` is a pure function — no `await`, no I/O, no global state.
 - `AppState` is `frozen=True`; never mutate a field directly.
-- `AgentPool.add()` is synchronous; never `await` it.
-- `CommunicationTools.workflow_modify(action="add_node")` raises `ValueError` on
-  cycle detection — it does **not** return `{"ok": False}`.
-- `application_log` returns `{"accepted": True, ...}` — not `"logged"`.
-- `application_ui_update` returns `{"queued": True, ...}`.
 - `render_frame_ansi` places the input bar at ANSI row `rows` (1-indexed);
   the pyte buffer index for the same row is `rows - 1` (0-indexed).
 - `EventProcessor.drain()` requires `run()` to be scheduled as a task first.

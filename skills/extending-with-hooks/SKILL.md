@@ -2,7 +2,7 @@
 skill: extending-with-hooks
 version: 1.0.0
 tags: [hooks, lifecycle, recovery, audit, rate-limiting]
-summary: Implement and register LifecycleHooks for audit logging, rate limiting, recovery, and dynamic hook_register via CommunicationTools.
+summary: Implement and register LifecycleHooks for audit logging, rate limiting, and recovery via config dotpaths.
 ---
 
 # Skill: Extending with Hooks
@@ -101,24 +101,6 @@ handlers = ["myapp.hooks.RateLimitHook"]
 These are loaded by `load_config` and flattened into
 `AgenthiccConfig.hooks: dict[str, list[str]]` with dotted keys like
 `"file_write.pre_execute"`.
-
----
-
-## Dynamic registration via hook_register
-
-```python
-from agenthicc.runtime.comm_tools import CommunicationTools
-
-result = await tools.hook_register(
-    entity_type="file_write",
-    stage="pre_execute",
-    handler_dotpath="myapp.hooks.FileWriteAuditHook",
-)
-# result: {"hook_id": str, "entity_type": str, "stage": str, "registered": True}
-```
-
-This emits a `HookRegistered` kernel event. The `root_reducer` updates
-`AppState.hooks`; the `HookRegistry` picks up the new entry on next load.
 
 ---
 

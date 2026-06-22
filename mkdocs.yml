@@ -77,7 +77,6 @@ nav:
       - Architecture: guides/architecture.md
   - Reference:
       - API: reference/api.md
-      - Communication Tools: reference/communication-tools.md
 
 extra:
   social:

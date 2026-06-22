@@ -38,11 +38,6 @@ tool-only inter-agent communication, and a full-screen TUI with a pinned input b
 
 - **Event-sourced kernel** — every state change is an immutable `Event` appended
   to a JSON-lines log. Crash recovery replays the log via `restore_from_log`.
-- **Parallel DAG execution** — `DAGExecutor` discovers all ready nodes and runs
-  them concurrently behind an `asyncio.Semaphore`.
-- **Tool-only inter-agent communication** — agents never hold direct references
-  to each other. All messaging, task creation, and spawning goes through
-  `CommunicationTools`, producing a full audit trail.
 - **Three-tier memory** — session LRU/TTL, project SQLite, and global SQLite
   layers with a `MemoryRouter` that dispatches by key prefix.
 - **Lifecycle hooks everywhere** — `LifecycleHook` ABC with `pre_execute`,
@@ -133,8 +128,6 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 | Kernel state | `AppState` | Frozen, copy-on-write, event-sourced |
 | Events | `Event` | Immutable records; appended to log |
 | Event loop | `EventProcessor` | MPSC queue; applies reducer; fans out state |
-| DAG execution | `DAGExecutor` | Parallel node runner with Semaphore throttling |
-| Agent comms | `CommunicationTools` | 9 async tools; all side-effects via events |
 | Memory | `MemoryRouter` | Session / project / global tier dispatch |
 | Hooks | `HookRunner` | Pre/post/error stages; parallel gather |
 | TUI model | `TranscriptModel` | Pure Python; renderable headlessly |
@@ -148,7 +141,6 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 
 - [Getting Started](guides/quickstart.md) — install, first run, concepts
 - [TUI Guide](guides/tui.md) — full layout reference, key bindings, slash commands
-- [Writing Agents](guides/agents.md) — CommunicationTools, tool-only rule, examples
 - [Writing Workflows](guides/workflows.md) — PhaseSpec, agent types, params, troubleshooting, ergonomics findings
 - [Memory & Artifacts](guides/memory.md) — three-tier memory, TTL, artifact sharing
 - [Lifecycle Hooks](guides/hooks.md) — LifecycleHook ABC, HookRunner, recovery
@@ -158,7 +150,6 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 ## Links to reference
 
 - [Kernel reference](reference/kernel.md) — AppState, Event, EventProcessor, root_reducer
-- [Communication Tools](reference/communication-tools.md) — all 9 comm tools
 - [API reference](reference/api.md) — REST and WebSocket endpoints
 
 ## AI assistant files

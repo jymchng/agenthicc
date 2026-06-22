@@ -224,8 +224,6 @@ asyncio.run(main())
 
 ## Next steps
 
-- [Writing agents](agents.md) — build custom agents using the communication
-  tool catalog
 - [Memory guide](memory.md) — session, project, and global memory tiers
 - [Lifecycle hooks](hooks.md) — intercept and recover from any execution stage
 - [Kernel reference](../reference/kernel.md) — full `AppState`, event, and

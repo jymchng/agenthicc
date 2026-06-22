@@ -60,23 +60,7 @@ The input bar is **always** on the last row — it never scrolls off-screen.
 
 - **AppState** — immutable frozen dataclass, copy-on-write. All mutations via events.
 - **EventProcessor** — MPSC asyncio queue; applies `root_reducer` sequentially; logs events to disk.
-- **DAGExecutor** — launches ready workflow nodes concurrently via `asyncio.Semaphore`.
-- **CommunicationTools** — 9 async methods; agents call these instead of touching state.
 - **TranscriptModel** — pure Python TUI model; renders to a list of strings; no terminal deps.
-
-## Communication tools
-
-| Tool | What it does | Return key |
-|------|-------------|------------|
-| `agent_spawn` | Spawn new agent | `agent_id` |
-| `agent_send_message` | Send message to another agent | `message_id` |
-| `task_create` | Create workflow node + task | `task_id`, `node_id` |
-| `task_assign` | Assign task to agent | `assigned` |
-| `workflow_modify` | Add/remove DAG node (raises on cycle) | `applied` |
-| `application_log` | Emit structured log to TUI | `accepted`, `log_id` |
-| `application_ui_update` | Push UI message | `queued`, `update_id` |
-| `tool_define` | Register new tool from source | `tool_id`, `registered` |
-| `hook_register` | Register lifecycle hook | `hook_id`, `registered` |
 
 ## Key types by module
 
@@ -86,9 +70,6 @@ The input bar is **always** on the last row — it never scrolls off-screen.
 | `Event` | `kernel.events` | Immutable event with type + payload |
 | `EventProcessor` | `kernel.processor` | MPSC reducer loop |
 | `root_reducer` | `kernel.reducer` | Pure reducer dispatcher |
-| `DAGExecutor` | `workflow.executor` | Concurrent node runner |
-| `CommunicationTools` | `runtime.comm_tools` | All 9 agent comm tools |
-| `AgentPool` | `runtime.pool` | Idle/busy agent queue |
 | `MemoryRouter` | `memory.router` | 3-tier memory interface |
 | `TranscriptModel` | `tui.transcript` | Pure TUI model |
 | `render_frame_ansi` | `tui.app` | Full ANSI frame with pinned input bar |

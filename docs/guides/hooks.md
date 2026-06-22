@@ -234,79 +234,18 @@ class AuditHook(LifecycleHook):
 
 ---
 
-## Complete example: error-recovery hook that spawns a debugger
+## Static registration
 
-This hook intercepts `ERROR`-level failures on tasks and spawns a debugger
-agent to investigate:
-
-```python
-# myproject/hooks.py  (continued)
-
-from agenthicc.tools.hooks import LifecycleHook, RecoveryAction
-from agenthicc.runtime.comm_tools import CommunicationTools
-
-
-class DebuggerSpawnHook(LifecycleHook):
-    """On task error: escalate and spawn a debugger agent."""
-
-    def __init__(self, tools: CommunicationTools, workflow_id: str) -> None:
-        self._tools = tools
-        self._workflow_id = workflow_id
-
-    async def on_error(
-        self, entity: Any, error: BaseException, ctx: Any
-    ) -> RecoveryAction | None:
-        task_id  = getattr(entity, "task_id",  None)
-        agent_id = getattr(ctx,    "agent_id", None)
-
-        await self._tools.application_log(
-            "ERROR",
-            f"Task {task_id} failed; spawning debugger agent",
-            {"error": str(error), "task_id": task_id, "agent_id": agent_id},
-        )
-
-        await self._tools.agent_spawn(
-            "debugger",
-            config={
-                "failed_task_id":  task_id,
-                "failed_agent_id": agent_id,
-                "error_message":   str(error),
-                "workflow_id":     self._workflow_id,
-            },
-            parent_agent_id=agent_id,
-        )
-
-        # Escalate so the orchestrator can decide whether to retry or abort
-        return RecoveryAction.ESCALATE
-```
-
-Register it dynamically from the orchestrator agent:
-
-```python
-# Inside your orchestrator's run() method, after creating the workflow:
-await tools.hook_register(
-    entity_type="task",
-    stage="error",
-    handler_dotpath="myproject.hooks:DebuggerSpawnHook",
-)
-```
-
-Or statically in `agenthicc.toml`:
+Register hooks statically in `agenthicc.toml` by dotpath:
 
 ```toml
 [hooks.task]
-error = ["myproject.hooks:DebuggerSpawnHook"]
+error = ["myproject.hooks:MyRecoveryHook"]
 ```
-
-Note that for constructor-injected hooks (those requiring `tools` and
-`workflow_id`), use dynamic registration with a pre-instantiated object
-stored at a module-level attribute, or use a factory function registered via
-the dotpath mechanism.
 
 ---
 
 ## Next steps
 
-- [Writing agents](agents.md) — the `hook_register` communication tool
 - [Memory guide](memory.md) — persist hook audit records to project memory
 - [Kernel reference](../reference/kernel.md) — `HookRegistered` event and `AppState.hooks`

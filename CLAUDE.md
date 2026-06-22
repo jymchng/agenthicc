@@ -7,11 +7,6 @@ engineering built on top of lauren-ai.  It provides:
 
 - **Event-sourced kernel** — MPSC `asyncio.Queue` feeding a pure `root_reducer`;
   every state change is an appended `Event`; `AppState` is fully immutable.
-- **Parallel DAG executor** — intents compile to dependency graphs; ready nodes
-  execute concurrently bounded by `max_parallel_tasks`.
-- **Tool-only agent communication** — agents never call each other directly;
-  all inter-agent signalling goes through `CommunicationTools` methods that emit
-  typed kernel events (`agent_spawn`, `task_create`, `workflow_modify`, etc.).
 - **Lifecycle hooks** — `LifecycleHook.on_before/on_after/on_error` at intent,
   workflow node, task, agent, and tool-call granularity; loaded from TOML dotpaths.
 - **3-tier memory** — session (in-process LRU+TTL), project (SQLite KV + artifacts),
@@ -87,28 +82,6 @@ src/agenthicc/
     processor.py           EventProcessor: MPSC asyncio.Queue, run() loop, emit(), drain(),
                            subscribe()/unsubscribe(); NoOpEffectExecutor; restore_from_log()
 
-  runtime/
-    __init__.py            Re-exports AgentPool, AgentRecord, CommunicationTools, Scheduler
-    pool.py                AgentPool: FIFO idle queue + busy dict; add() (sync), acquire()
-                           (async, blocks until timeout), release(); AgentRecord dataclass
-    comm_tools.py          CommunicationTools: agent_spawn, agent_send_message, task_create,
-                           task_assign, workflow_modify, application_log, application_ui_update,
-                           tool_define, hook_register; all methods are plain async callables
-    scheduler.py           Scheduler: asyncio.Semaphore-bounded task dispatch; picks ready
-                           DAG nodes and assigns them to agents via CommunicationTools
-    comm_tools.py          (see above)
-
-  workflow/
-    __init__.py            Re-exports WorkflowExecutor, IntentPlanner, WorkflowModifier, DAG
-    dag.py                 DAGNode, DAG; detect_cycle (iterative DFS); topological_sort;
-                           ready_nodes() returns nodes with all deps satisfied
-    intent.py              IntentPlanner: parses raw intent text into a list of WorkflowNode
-                           specs; wraps the lauren-ai planner agent
-    executor.py            WorkflowExecutor: drives a Workflow through its DAG; listens for
-                           node-complete effects; re-dispatches newly ready nodes
-    modify.py              WorkflowModifier: validates and applies add_node/remove_node;
-                           thin wrapper around CommunicationTools.workflow_modify
-
   tools/
     __init__.py            Re-exports ToolExecutor, HookRegistry, HookRunner, LifecycleHook,
                            ToolSandbox
@@ -158,12 +131,10 @@ src/agenthicc/
                            a kernel SecurityPolicy (allow/deny/require_confirmation rules)
 
 tests/
-  conftest.py              Shared fixtures: processor, pool, comm_tools, minimal_state,
+  conftest.py              Shared fixtures: processor, minimal_state,
                            running_processor (starts run() as a task)
   unit/
     test_appstate_reducers.py   Pure reducer tests (no asyncio, no processor)
-    test_agent_pool.py          AgentPool acquire/release/timeout tests
-    test_comm_tools.py          CommunicationTools unit tests with a running processor
     test_config.py              load_config() merge and validation tests
     test_workflow_dag.py        DAG cycle detection, topological sort, ready_nodes
     test_hooks.py               HookRegistry, HookRunner, LaurenToolHookAdapter
@@ -197,21 +168,7 @@ return a new `AppState` sharing unchanged sub-dicts by reference (`dataclasses.r
 `with_tool`, `with_hook` helpers are the only sanctioned write paths.  This means
 any snapshot of state is permanently safe to hold; there are no "stale read" bugs.
 
-### 3. Tool-only agent communication
-
-Agents communicate exclusively through `CommunicationTools` methods, which emit
-kernel events rather than calling Python directly.  Rationale:
-
-- **Observability** — every inter-agent action is an event in the append-only log.
-- **Security** — agents cannot call arbitrary code on each other; only the typed
-  tool catalog is accessible.
-- **Replay** — a session can be replayed from the event log without re-running
-  any agent logic.
-
-Never add Python-level agent-to-agent call paths.  If a new coordination primitive
-is needed, express it as a new event type + reducer handler.
-
-### 4. prompt_toolkit HSplit with input bar on last row
+### 3. prompt_toolkit HSplit with input bar on last row
 
 `build_app()` lays out `HSplit([transcript_window, status_window, input_window])`.
 `render_frame_ansi()` writes the input bar at ANSI row `rows` (1-indexed).  In
@@ -222,15 +179,7 @@ above the status line and **never** displaces the input bar.
 **Critical**: when writing pyte tests that check the input bar, assert against
 `screen.buffer[ROWS - 1]`, not `screen.buffer[ROWS - 2]`.
 
-### 5. asyncio.Semaphore for task throttling, not threads
-
-`Scheduler` uses `asyncio.Semaphore(max_parallel_tasks)` to bound concurrency.
-Rationale: agent runners are `async def` — spawning OS threads would fight the
-GIL and add context-switch overhead.  A Semaphore is a single awaitable that
-integrates naturally with the event loop, has predictable fairness (FIFO waiters),
-and is trivially inspectable in tests.
-
-### 6. SQLite for project/global memory
+### 4. SQLite for project/global memory
 
 `ProjectMemoryLayer` and `GlobalMemoryLayer` use `sqlite3` (stdlib).  Rationale:
 zero external dependency, file-per-project isolation, atomic writes via WAL mode,
@@ -242,16 +191,9 @@ drop-in replacements — swap `layers.py` without touching `MemoryRouter`.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `TypeError: object NoneType can't be used in 'await' expression` on `pool.add(...)` | `AgentPool.add()` is synchronous, not a coroutine | Remove `await`; call `pool.add(record)` directly |
-| `ValueError: unsupported workflow action 'add'` | `workflow_modify` action parameter must be `"add_node"`, not `"add"` | Use `action="add_node"` or `action="remove_node"` |
-| `KeyError: 'logged'` on `application_log` result | The return dict uses `"accepted"`, not `"logged"` | Use `result["accepted"]` |
-| `KeyError: 'queued'` on `application_ui_update` result | The return dict uses `"queued"` — check, it should be present | Confirm you are not reading `result["ok"]`; the key is `"queued"` |
-| `ValueError: adding node ... would create a cycle` | `workflow_modify(action="add_node")` raises on cycle detection — does not return `ok=False` | Catch `ValueError`; it is the definitive signal that the add was rejected |
-| `KeyError: 'ok'` on `workflow_modify` result | `workflow_modify` returns `{"applied": True, ...}`, not `{"ok": True}` | Use `result["applied"]` |
 | `TimeoutError` in `processor.drain()` | The `run()` coroutine is not scheduled — `drain()` waits for the idle event which never fires | Start `asyncio.create_task(processor.run())` before emitting events; use the `running_processor` fixture |
 | `EventProcessor.drain()` hangs indefinitely | Processor was never started; `_idle` event is set but queue stays populated | Ensure `run()` is running as a task before calling `drain()` |
 | pyte test: input bar missing from expected row | Asserting `screen.buffer[ROWS - 2]` instead of `screen.buffer[ROWS - 1]` | `render_frame_ansi` writes input bar at `rows` (1-indexed) = `ROWS - 1` (0-indexed in pyte) |
-| `AgentPool.acquire()` blocks forever in tests | No agent was registered before calling `acquire()` | Call `pool.add(AgentRecord(...))` first, or pass `timeout=0.1` and expect `TimeoutError` |
 | `AssertionError: intent status is 'pending'` after emitting | Processor not yet running when `drain()` is called | Use `running_processor` fixture (creates `asyncio.create_task(processor.run())`) |
 
 ## Conventions

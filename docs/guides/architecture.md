@@ -23,19 +23,11 @@ structure of the codebase, and how the major subsystems fit together.
 └─────────────────────┬───────────────────────────────────────────┘
                       │  AppState (immutable, frozen)
                       ▼
-┌──────────────┬───────────────────┬──────────────────────────────┐
-│ DAGExecutor  │ IntentParser      │ WorkflowModifier             │
-│ (asyncio     │ IntentValidator   │ (cycle-guarded add/remove)   │
-│  Semaphore)  │ StaticPlanner     │                              │
-│              │ LlmPlanner        │                              │
-└──────┬───────┴───────────────────┴──────────────────────────────┘
-       │  CommunicationTools (9 async methods)
-       │  All side-effects go through processor.emit(...)
-       ▼
-┌──────────────────────────┬──────────────────────────────────────┐
-│  AgentPool (idle/busy)   │  Scheduler (assign_next)             │
-│  AgentRunnerBase         │  SignalBus bridge (lauren-ai)        │
-└──────────────────────────┴──────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  Workflow runners (CodePlanRunner / WorkflowRunner)              │
+│  drive phases → AgentRunnerBase (lauren-ai) per agent turn        │
+│  All side-effects go through processor.emit(...)                 │
+└──────────────────────────────────────────────────────────────────┘
        │
        ▼
 ┌──────────────────────────────────────────────────────────────────┐
@@ -84,45 +76,6 @@ Every change to application state flows through this sequence:
 - **Snapshot compaction**: when `events_since_snapshot` exceeds
   `SystemSettings.snapshot_every_n_events`, a lightweight snapshot is written to
   `snapshot_path`. Long-running sessions do not need to replay the full log.
-
----
-
-## Why tool-only communication
-
-Agents must communicate exclusively through `CommunicationTools`. Direct object
-references are forbidden. This constraint has three benefits:
-
-1. **Auditability**: every inter-agent interaction — message, task creation, spawn
-   — emits a kernel event. The full communication graph is in the event log.
-2. **Isolation**: agents cannot break each other by holding stale references.
-   The only shared mutable state is the kernel queue.
-3. **Replay**: because all communication is events, you can replay a run exactly
-   and observe what would have happened with different reducers or planners.
-
----
-
-## DAG execution
-
-The `DAGExecutor` drives a workflow to completion:
-
-1. Call `find_ready_nodes(workflow)` — returns all `pending` nodes whose every
-   dependency is `complete`. O(n) scan.
-2. Acquire a `Semaphore(max_parallel_tasks)` slot for each ready node.
-3. Launch each node as an `asyncio.Task` via `_build_runner_for_agent`.
-4. When a task completes (success or failure), release the semaphore slot and
-   call `find_ready_nodes` again.
-5. Repeat until no nodes are `pending` or `running`.
-
-The `asyncio.Semaphore` is the primary back-pressure mechanism. Set
-`max_parallel_tasks` in `agenthicc.toml` or `SystemSettings` to control
-concurrency.
-
-**Cycle detection** happens at two points:
-- In `WorkflowModifier.add_node` / `CommunicationTools.workflow_modify` (before
-  emitting the event).
-- In `topological_sort` (used by planners building initial workflow DAGs).
-
-Both use the same three-color iterative DFS from `detect_cycle`.
 
 ---
 

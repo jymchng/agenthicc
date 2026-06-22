@@ -264,6 +264,5 @@ router = MemoryRouter(
 
 ## Next steps
 
-- [Writing agents](agents.md) — use memory tools from within agents
 - [Lifecycle hooks](hooks.md) — hook into memory write events for auditing
 - [Kernel reference](../reference/kernel.md) — `AppState` fields for tool registrations

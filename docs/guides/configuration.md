@@ -39,11 +39,11 @@ skipped. Invalid TOML raises `tomllib.TOMLDecodeError`.
 # Default: 8
 max_concurrent_intents = 8
 
-# asyncio.Semaphore value for DAGExecutor — max workflow nodes running in parallel.
+# asyncio.Semaphore value — max workflow nodes running in parallel.
 # Default: 4
 max_parallel_tasks = 4
 
-# Maximum total agents in the AgentPool (idle + busy).
+# Maximum total agents tracked concurrently (idle + busy).
 # Default: 16
 agent_pool_size = 16
 
@@ -166,8 +166,8 @@ handlers = ["myapp.hooks.RateLimitHook"]
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `max_concurrent_intents` | int | 8 | Max intents with status `running` simultaneously |
-| `max_parallel_tasks` | int | 4 | `asyncio.Semaphore` value in `DAGExecutor` |
-| `agent_pool_size` | int | 16 | Max agents in `AgentPool` |
+| `max_parallel_tasks` | int | 4 | `asyncio.Semaphore` value bounding parallel workflow nodes |
+| `agent_pool_size` | int | 16 | Max agents tracked concurrently |
 
 ### `[tools]`
 

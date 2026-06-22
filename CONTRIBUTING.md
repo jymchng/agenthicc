@@ -45,9 +45,9 @@ replayable, and crash-recoverable.
 ### 2. Tool-only agent communication
 
 Agents interact with the world exclusively through tool calls. No agent calls another
-agent's method directly. No agent reads `AppState`. No agent emits events. Communication
-tools (`CommunicationTools`) translate agent intentions into kernel events. This gives
-full observability and replay of every inter-agent interaction.
+agent's method directly. No agent reads `AppState`. Tool calls translate agent
+intentions into kernel events, giving full observability and replay of every
+inter-agent interaction.
 
 ### 3. Parallel-first execution
 
@@ -150,9 +150,6 @@ to `llms-full.txt` to fix it.
 
 - `EventProcessor.drain()` requires the processor `run()` task to be running first —
   start it with `asyncio.create_task(processor.run())`.
-- `AgentPool.add()` is synchronous — do not `await` it.
-- `CommunicationTools.workflow_modify(action="add_node")` raises `ValueError` on cycle
-  (does not return `{"ok": False}`).
 - `render_frame_ansi()` always places the input bar on row `rows` (1-indexed ANSI) —
   pyte buffer index is `rows - 1` (0-indexed).
 - Reducer functions must be stateless pure functions — no global variables, no I/O.

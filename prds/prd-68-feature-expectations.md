@@ -1560,3 +1560,32 @@ neither of which `getwch()` does).
 | 41.4 | `_read_key_console` skips key-up, non-key, and failed reads |
 | 41.5 | Module imports on Linux (portable ctypes types); decoder fully unit-tested |
 | 41.6 | getwch fallback preserved for non-console environments |
+
+---
+
+## 42. Remove the unwired kernel runtime trio (PRD-128)
+
+The original PRD-01/PRD-03 kernel agent-execution layer — `CommunicationTools`,
+`AgentPool` / `AgentRecord`, and `Scheduler` in `src/agenthicc/runtime/` — is dead
+production code. It was superseded by lauren-ai's `AgentRunnerBase` and the
+`agenthicc.workflows` runners. This PRD removes it (Phase 1: self-contained cut).
+
+| Aspect | Expectation |
+|---|---|
+| No live importers | Nothing outside `runtime/` imported the trio; it was not re-exported at the package top level |
+| Self-referential events | Only `comm_tools.py` / `scheduler.py` emitted `AgentSpawnRequest` / `TaskCreated` / `TaskAssigned` / `WorkflowNodeAdded` / `WorkflowNodeRemoved` |
+| Effects discarded | Every live `EventProcessor` uses `NoOpEffectExecutor`; `spawn_agent` / `assign_task` / `start_workflow_node` effects were produced and dropped |
+| State unread | `AppState.agents` / `AppState.tasks` (the dicts those reducers fill) were read by no live code |
+| `mcp_connect` test-only | `CommunicationTools.mcp_connect` (PRD-30) had no live caller; the live MCP path uses `McpToolRegistry` |
+| Tests removed | `test_agent_pool.py`, `test_comm_tools.py`, `test_scheduler.py`, `test_mcp_connect.py`, `test_runtime_cycle.py` |
+| Docs synced | CLAUDE.md, AGENTS.md, CONTRIBUTING.md, README.md, `llms.txt`, `llms-full.txt`, the `docs/` site, and the reference skills no longer reference the trio (or the already-removed PRD-116 `agenthicc.workflow` package) |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 42.1 | `src/agenthicc/runtime/` no longer exists; the five trio test files are removed |
+| 42.2 | `grep -rn "agenthicc.runtime\|CommunicationTools\|AgentPool\|AgentRecord\|\bScheduler\b" src/ tests/` returns nothing |
+| 42.3 | No active (non-historical-PRD) doc references the trio; `docs/reference/communication-tools.md` and `docs/guides/agents.md` are removed with no dangling `mkdocs.yml` nav entry |
+| 42.4 | `uv run pytest tests/ -q`, `uv run mypy src/agenthicc`, and `uv run ruff check src/ tests/` pass |
+| 42.5 | Phase 2 (kernel reducer / state / config pruning) is documented as a deferred follow-up |

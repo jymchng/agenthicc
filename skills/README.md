@@ -24,7 +24,6 @@ When the user asks about the TUI, consult the skill: running-the-tui
 | Skill | File | Tags | Summary |
 |---|---|---|---|
 | `running-the-tui` | [skills/running-the-tui/SKILL.md](running-the-tui/SKILL.md) | tui, terminal, prompt_toolkit | Full guide to the interactive TUI: layout, key bindings, slash commands, HITL approval, headless mode |
-| `writing-agents` | [skills/writing-agents/SKILL.md](writing-agents/SKILL.md) | agents, comm-tools, signalbus | How to write agents wired to the kernel via CommunicationTools and SignalBus |
 | `extending-with-hooks` | [skills/extending-with-hooks/SKILL.md](extending-with-hooks/SKILL.md) | hooks, lifecycle, recovery | Implementing and registering LifecycleHooks for audit, rate limiting, and recovery |
 | `using-memory` | [skills/using-memory/SKILL.md](using-memory/SKILL.md) | memory, sqlite, artifacts | Three-tier memory architecture: session LRU, project SQLite, artifact sharing |
 | `headless-api` | [skills/headless-api/SKILL.md](headless-api/SKILL.md) | api, rest, websocket, fastapi | REST and WebSocket API: endpoints, auth, Python client examples |

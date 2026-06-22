@@ -635,11 +635,11 @@ Full reference: `agenthicc config --help` or [docs/configuration.md](./docs/conf
   │  Events persist to events.jsonl; snapshots every N events │
   └───────────────────────┬──────────────────────────────────┘
           Effects         │ AppState subscribers
-  ┌────────────┬──────────┼──────────────┐
-  │            │          │              │
-  ▼            ▼          ▼              ▼
-workflow/   runtime/   memory/        tui/ or api/
-DAG exec   AgentPool  3-tier KV    TUI / JSON-lines
+  ┌───────────────────────┼──────────────────┐
+  │                       │                  │
+  ▼                       ▼                  ▼
+workflows/             memory/        tui/ or api/
+phase runners         3-tier KV    TUI / JSON-lines
 ```
 
 ---
