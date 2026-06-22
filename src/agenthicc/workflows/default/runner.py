@@ -71,7 +71,9 @@ class WorkflowRunner:
         from lauren_ai._memory import ShortTermMemory                       # noqa: PLC0415
         from agenthicc.kernel import Event                                  # noqa: PLC0415
 
-        self._shared_memory = ShortTermMemory(max_tokens=32_000)
+        self._shared_memory = ShortTermMemory(
+            max_tokens=self._cfg.cfg.execution.session_memory_max_tokens
+        )
         run_id       = uuid.uuid4().hex
         self._run_id = run_id
 
@@ -107,7 +109,9 @@ class WorkflowRunner:
 
         run_id       = context.run_id
         self._run_id = run_id
-        self._shared_memory = ShortTermMemory(max_tokens=32_000)
+        self._shared_memory = ShortTermMemory(
+            max_tokens=self._cfg.cfg.execution.session_memory_max_tokens
+        )
 
         phase_history = [
             PhaseRunRecord(

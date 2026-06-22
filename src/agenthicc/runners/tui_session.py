@@ -268,7 +268,9 @@ async def _build_session_context(
     from agenthicc.memory.journal import ConversationJournal, journal_path_for  # noqa: PLC0415
     from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
     _conversation_journal = ConversationJournal(journal_path_for(session_id))
-    session_memory = JournaledShortTermMemory(_conversation_journal, max_tokens=32_000)
+    session_memory = JournaledShortTermMemory(
+        _conversation_journal, max_tokens=cfg.execution.session_memory_max_tokens
+    )
 
     # ── three-tier memory (PRD-101) ───────────────────────────────────────────
     from agenthicc.memory.layers import (                        # noqa: PLC0415

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Configurable session memory budget
+
+- `[execution] session_memory_max_tokens` (default 32000) sets the token budget of
+  the session conversation memory (`ShortTermMemory`).  Settable from
+  `agenthicc.toml` and the CLI (`--set execution.session_memory_max_tokens=N`), and
+  honoured by both the interactive session and the workflow runners.
+
 ### Added — Conversation durability & resumable execution (PRD-129)
 
 - **Phase 1 — idempotent tools.** A turn-scoped `IdempotencyLedger` (lauren-ai)

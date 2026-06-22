@@ -122,6 +122,10 @@ class ExecutionSettings:
     agent_pool_size: int = 16
     max_agent_turns: int = 200      # max agentic-loop iterations per intent
     turn_timeout_s: float = 0.0    # per-turn watchdog; 0 = no limit
+    # Token budget of the session ShortTermMemory — the live conversation window
+    # trimmed to fit before each LLM call.  Configurable via
+    # [execution] session_memory_max_tokens or --set execution.session_memory_max_tokens.
+    session_memory_max_tokens: int = 32_000
     # Conversation compaction (PRD-119)
     auto_compact: bool = True
     compact_threshold_tokens: int = 1_000_000
@@ -564,6 +568,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_parallel_tasks=ex.get("max_parallel_tasks", 4),
         agent_pool_size=ex.get("agent_pool_size", 16),
         max_agent_turns=int(ex.get("max_agent_turns", 200)),
+        session_memory_max_tokens=int(ex.get("session_memory_max_tokens", 32_000)),
         auto_compact=bool(ex.get("auto_compact", True)),
         compact_threshold_tokens=int(ex.get("compact_threshold_tokens", 1_000_000)),
         transport_max_retries=int(ex.get("transport_max_retries", 3)),

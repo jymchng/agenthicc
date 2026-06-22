@@ -36,8 +36,8 @@ where = ["src"]
 # Develop against the local lauren-ai checkout (mirrors the runtime
 # `uv run --index lauren-ai=file://../lauren-all/lauren-ai` workflow) so source
 # edits to the framework take effect without rebuilding/publishing a wheel.
-[tool.uv.sources]
-lauren-ai = { path = "../lauren-all/lauren-ai", editable = true }
+# [tool.uv.sources]
+# lauren-ai = { path = "../lauren-all/lauren-ai", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

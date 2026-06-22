@@ -162,7 +162,9 @@ class CodePlanRunner(BaseWorkflowRunner):
         ctx: CodePlanContext = CodePlanContext(
             intent=intent,
             run_id=run_id,
-            shared_memory=ShortTermMemory(max_tokens=32_000),
+            shared_memory=ShortTermMemory(
+                max_tokens=self._cfg.cfg.execution.session_memory_max_tokens
+            ),
         )
 
         wf_run: WorkflowRun = WorkflowRun(
@@ -272,7 +274,9 @@ class CodePlanRunner(BaseWorkflowRunner):
         ctx: CodePlanContext = CodePlanContext(
             intent=context.intent,
             run_id=context.run_id,
-            shared_memory=ShortTermMemory(max_tokens=32_000),
+            shared_memory=ShortTermMemory(
+                max_tokens=self._cfg.cfg.execution.session_memory_max_tokens
+            ),
         )
 
         if "plan" in completed:
@@ -547,7 +551,9 @@ class CodePlanRunner(BaseWorkflowRunner):
         from agenthicc.workflows.code_plan.state import CodePlanContext  # noqa: PLC0415
 
         # Build a minimal CodePlanContext so the turn has a shared_memory.
-        _sm = shared_memory or _STM(max_tokens=32_000)
+        _sm = shared_memory or _STM(
+            max_tokens=self._cfg.cfg.execution.session_memory_max_tokens
+        )
         _ctx = CodePlanContext(
             intent=intent,
             run_id=self._run_id or "extension",

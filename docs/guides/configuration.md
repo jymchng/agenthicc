@@ -47,6 +47,13 @@ max_parallel_tasks = 4
 # Default: 16
 agent_pool_size = 16
 
+# Token budget of the session conversation memory (ShortTermMemory) — the live
+# window trimmed to fit before each LLM call.  Raise it to keep more of a long
+# conversation in context; lower it to reduce per-call token usage.
+# Default: 32000
+# Also settable from the CLI: --set execution.session_memory_max_tokens=64000
+session_memory_max_tokens = 32000
+
 # ──────────────────────────────────────────────────────────
 # [tools] — tool allow/deny lists and MCP servers
 # ──────────────────────────────────────────────────────────
@@ -168,6 +175,7 @@ handlers = ["myapp.hooks.RateLimitHook"]
 | `max_concurrent_intents` | int | 8 | Max intents with status `running` simultaneously |
 | `max_parallel_tasks` | int | 4 | `asyncio.Semaphore` value bounding parallel workflow nodes |
 | `agent_pool_size` | int | 16 | Max agents tracked concurrently |
+| `session_memory_max_tokens` | int | 32000 | Token budget of the session `ShortTermMemory` (live conversation window) |
 
 ### `[tools]`
 

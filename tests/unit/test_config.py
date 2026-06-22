@@ -123,6 +123,29 @@ class TestLoadConfig:
         with pytest.raises(tomllib.TOMLDecodeError):
             load_config(project_path=bad, user_path=tmp_path / "missing.toml")
 
+    def test_session_memory_max_tokens_default(self, tmp_path):
+        config = load_config(
+            project_path=tmp_path / "missing.toml",
+            user_path=tmp_path / "missing_user.toml",
+        )
+        assert config.execution.session_memory_max_tokens == 32_000
+
+    def test_session_memory_max_tokens_from_toml(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        project.write_text("[execution]\nsession_memory_max_tokens = 64000\n")
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+        assert config.execution.session_memory_max_tokens == 64_000
+
+    def test_session_memory_max_tokens_cli_override_wins(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        project.write_text("[execution]\nsession_memory_max_tokens = 64000\n")
+        config = load_config(
+            project_path=project,
+            user_path=tmp_path / "missing.toml",
+            cli_overrides=["execution.session_memory_max_tokens=128000"],
+        )
+        assert config.execution.session_memory_max_tokens == 128_000
+
     def test_project_list_overrides_user_global_list(self, tmp_path):
         """Project list replaces user-global list entirely (lists are not merged)."""
         project = tmp_path / "agenthicc.toml"
