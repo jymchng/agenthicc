@@ -636,30 +636,60 @@ class TUISession:
                         "✓ Workflow complete — switched to Auto mode"
                     )
             else:
-                await _run_agent_turn(
-                    text, ctx.agent_runner, ctx.processor,
-                    session_memory=ctx.session_memory,
-                    max_agent_turns=ctx.cfg.execution.max_agent_turns,
-                    conv_store=ctx.app_state.conversation,
-                    app_state=ctx.app_state,
-                    exec_cfg=ctx.cfg.execution,
-                    skills=ctx.skills,
-                    mention_cache=ctx.mention_cache,
-                    project_plugin_tools=(
-                        ctx.project_plugins.all_tools
-                        + _make_session_tools(
-                            ctx.approval_svc,
-                            memory_router=ctx.memory_router,
-                            semantic_index=ctx.semantic_index,
+                # PRD-126: snapshot-rollback retry for transient network errors.
+                from agenthicc.runners.agent_turn import _is_transient_network_error  # noqa: PLC0415
+                _max_retries  = getattr(ctx.cfg.execution, "transport_max_retries", 3)
+                _base_delay   = getattr(ctx.cfg.execution, "transport_retry_base_delay_s", 1.0)
+                _conv         = ctx.app_state.conversation
+
+                async def _direct_turn() -> None:
+                    await _run_agent_turn(
+                        text, ctx.agent_runner, ctx.processor,
+                        session_memory=ctx.session_memory,
+                        max_agent_turns=ctx.cfg.execution.max_agent_turns,
+                        conv_store=_conv,
+                        app_state=ctx.app_state,
+                        exec_cfg=ctx.cfg.execution,
+                        skills=ctx.skills,
+                        mention_cache=ctx.mention_cache,
+                        project_plugin_tools=(
+                            ctx.project_plugins.all_tools
+                            + _make_session_tools(
+                                ctx.approval_svc,
+                                memory_router=ctx.memory_router,
+                                semantic_index=ctx.semantic_index,
+                            )
+                        ),
+                        mcp_registry=ctx.mcp_registry,
+                        active_agent="default",
+                        completed_turns=self._turn_count,
+                        approval_svc=ctx.approval_svc,
+                        memory_router=ctx.memory_router,
+                        semantic_index=ctx.semantic_index,
+                    )
+
+                for _attempt in range(_max_retries + 1):
+                    _snap = ctx.session_memory.snapshot() if ctx.session_memory is not None else None
+                    try:
+                        await _direct_turn()
+                        break
+                    except (asyncio.CancelledError, KeyboardInterrupt):
+                        raise
+                    except BaseException as _exc:  # noqa: BLE001
+                        if not _is_transient_network_error(_exc) or _attempt >= _max_retries:
+                            raise
+                        if _snap is not None and ctx.session_memory is not None:
+                            ctx.session_memory.restore(_snap)
+                        _delay = _base_delay * (2 ** _attempt)
+                        import logging as _log  # noqa: PLC0415
+                        _log.getLogger(__name__).warning(
+                            "Transient network error on attempt %d/%d, retrying in %.1fs: %s",
+                            _attempt + 1, _max_retries, _delay, _exc,
                         )
-                    ),
-                    mcp_registry=ctx.mcp_registry,
-                    active_agent="default",
-                    completed_turns=self._turn_count,
-                    approval_svc=ctx.approval_svc,
-                    memory_router=ctx.memory_router,
-                    semantic_index=ctx.semantic_index,
-                )
+                        _conv.append_event("system", {
+                            "text": f"⟳ Network error — retrying ({_attempt + 1}/{_max_retries})…",
+                        })
+                        await asyncio.sleep(_delay)
 
         try:
             if _timeout and _timeout > 0:

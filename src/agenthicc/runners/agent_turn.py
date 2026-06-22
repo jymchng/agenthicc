@@ -36,6 +36,36 @@ def _http_status_code(exc: BaseException) -> int | None:
     return None
 
 
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """Return ``True`` for transient network errors that are safe to retry.
+
+    Checks for :class:`~lauren_ai._exceptions.TransientTransportError` and
+    common timeout / connection error type names anywhere in the exception
+    chain (``__cause__`` and ``__context__``).  These errors are retriable
+    with a memory-snapshot rollback (PRD-126).
+
+    :param exc: The exception raised by the LLM transport or SDK.
+    :return: ``True`` when the error is a retriable network-level failure.
+    :rtype: bool
+    """
+    _TRANSIENT_NAMES = frozenset({
+        "ReadTimeout", "ConnectTimeout", "ConnectError",
+        "TimeoutError", "NetworkError", "RemoteDisconnected",
+    })
+    try:
+        from lauren_ai._exceptions import TransientTransportError  # noqa: PLC0415
+        if isinstance(exc, TransientTransportError):
+            return True
+    except ImportError:
+        pass
+    for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if candidate is None:
+            continue
+        if type(candidate).__name__ in _TRANSIENT_NAMES:
+            return True
+    return False
+
+
 def _is_permanent_error(exc: BaseException) -> bool:
     """Return ``True`` for errors that will *never* succeed on retry.
 
@@ -411,6 +441,7 @@ class AgentTurnRunner:
                 app_state=ctx.app_state,
                 processor=ctx.processor,
                 conv_store=ctx.conv_store,
+                tool_registry=registry,
             )
             registry.register(spawn_tool, source="builtin")
             populate_agent_tools(agent_instance, registry.tools)

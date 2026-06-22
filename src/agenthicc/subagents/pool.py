@@ -12,6 +12,7 @@ from agenthicc.subagents.types import SubagentTypeSpec, SubagentTypeRegistry, DE
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from agenthicc.kernel.processor import EventProcessor
+    from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.tools.capability_gate import ToolCapabilityGate
     from agenthicc.tui.conversation_store import AppState, ConversationStore
 
@@ -91,6 +92,29 @@ class AggregatedResult:
 
 # ── worker ────────────────────────────────────────────────────────────────────
 
+def _expand_allowed(
+    allowed_tools: frozenset[str],
+    registry: ToolRegistry | None,
+) -> frozenset[str]:
+    """Expand glob patterns in *allowed_tools* using *registry*.
+
+    Patterns ending in ``".*"`` (e.g. ``"fs.*"``) are expanded to all tool
+    names registered under that group.  Literal names pass through unchanged.
+    When no registry is provided, all patterns are treated as literal names
+    (backward-compatible behaviour).
+
+    :param allowed_tools: Raw frozenset from ``SubagentTypeSpec.allowed_tools``.
+    :param registry: ``ToolRegistry`` used for group-name lookups.
+    :return: Expanded frozenset of concrete tool ``__name__`` values.
+    """
+    if registry is None:
+        return allowed_tools
+    result: frozenset[str] = frozenset()
+    for pattern in allowed_tools:
+        result |= registry.glob_expand(pattern)
+    return result
+
+
 class SubagentWorker:
     """Executes one SubagentTask using an isolated AgentRunnerBase instance."""
 
@@ -103,6 +127,7 @@ class SubagentWorker:
         parent_model:  str,
         all_tools:     list[object],
         app_state:     AppState | None = None,
+        registry:      ToolRegistry | None = None,
     ) -> None:
         self._task          = task
         self._spec          = spec
@@ -111,7 +136,12 @@ class SubagentWorker:
         self._parent_model  = parent_model
         self._all_tools     = all_tools
         self._app_state     = app_state
+        self._registry      = registry
         self.label          = f"{spec.name} #{index}"
+        # Expand glob patterns once at construction time.
+        self._effective_allowed: frozenset[str] = _expand_allowed(
+            spec.allowed_tools, registry
+        )
 
     async def run(self) -> SubagentResult:
         """Execute the task; return SubagentResult regardless of success/failure."""
@@ -171,10 +201,11 @@ class SubagentWorker:
         from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
         from agenthicc.runners.tool_populator import populate_agent_tools  # noqa: PLC0415
 
-        # Filter the full tool list to only what this type is allowed to use.
+        # Filter the full tool list to the expanded allowed set.
+        # _effective_allowed already has glob patterns resolved to concrete names.
         filtered = [
             t for t in self._all_tools
-            if getattr(t, "__name__", "") in self._spec.allowed_tools
+            if getattr(t, "__name__", "") in self._effective_allowed
         ]
 
         # Build the system prompt: type prompt + optional context.
@@ -235,17 +266,19 @@ class SubagentPool:
         processor:      EventProcessor | None = None,
         conv_store:     ConversationStore | None = None,
         registry:       SubagentTypeRegistry = DEFAULT_REGISTRY,
+        tool_registry:  ToolRegistry | None = None,
     ) -> None:
-        self.pool_id        = uuid.uuid4().hex
-        self._tasks         = tasks
-        self._parent_runner = parent_runner
-        self._parent_model  = parent_model
-        self._all_tools     = all_tools
+        self.pool_id         = uuid.uuid4().hex
+        self._tasks          = tasks
+        self._parent_runner  = parent_runner
+        self._parent_model   = parent_model
+        self._all_tools      = all_tools
         self._max_concurrent = max_concurrent
-        self._app_state     = app_state
-        self._processor     = processor
-        self._conv_store    = conv_store
-        self._registry      = registry
+        self._app_state      = app_state
+        self._processor      = processor
+        self._conv_store     = conv_store
+        self._registry       = registry
+        self._tool_registry  = tool_registry
 
     async def run(self) -> AggregatedResult:
         """Execute all tasks concurrently; return aggregated plain-text result."""
@@ -270,6 +303,7 @@ class SubagentPool:
                 parent_model=self._parent_model,
                 all_tools=self._all_tools,
                 app_state=self._app_state,
+                registry=self._tool_registry,
             )
             workers.append(w)
             worker_states.append(WorkerState(w.label, task.agent_type, "pending"))
@@ -485,6 +519,7 @@ async def run_pool(
     processor:      EventProcessor | None = None,
     conv_store:     ConversationStore | None = None,
     registry:       SubagentTypeRegistry = DEFAULT_REGISTRY,
+    tool_registry:  ToolRegistry | None = None,
 ) -> AggregatedResult:
     """Create a SubagentPool and run it.  Convenience wrapper."""
     pool = SubagentPool(
@@ -497,5 +532,6 @@ async def run_pool(
         processor=processor,
         conv_store=conv_store,
         registry=registry,
+        tool_registry=tool_registry,
     )
     return await pool.run()

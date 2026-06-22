@@ -125,6 +125,9 @@ class ExecutionSettings:
     # Conversation compaction (PRD-119)
     auto_compact: bool = True
     compact_threshold_tokens: int = 1_000_000
+    # Transport retry on transient network errors (PRD-126)
+    transport_max_retries: int = 3
+    transport_retry_base_delay_s: float = 1.0
     # LLM provider selection
     provider: str = "anthropic"
     model: str = ""            # empty → use PROVIDER_DEFAULT_MODELS[provider]
@@ -555,6 +558,8 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_agent_turns=int(ex.get("max_agent_turns", 200)),
         auto_compact=bool(ex.get("auto_compact", True)),
         compact_threshold_tokens=int(ex.get("compact_threshold_tokens", 1_000_000)),
+        transport_max_retries=int(ex.get("transport_max_retries", 3)),
+        transport_retry_base_delay_s=float(ex.get("transport_retry_base_delay_s", 1.0)),
         provider=str(ex.get("provider", "anthropic")),
         model=str(ex.get("model", "")),
         api_key=str(ex.get("api_key", "")),
@@ -746,8 +751,10 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
         or None
     )
 
+    max_retries: int = execution.transport_max_retries
+
     if provider == "anthropic":
-        kwargs: dict[str, str | None] = {"model": model, "api_key": api_key}
+        kwargs: dict[str, str | int | None] = {"model": model, "api_key": api_key, "max_retries": max_retries}
         if base_url:
             kwargs["base_url"] = base_url
         return LLMConfig.for_anthropic(**kwargs)
@@ -755,19 +762,19 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
     if provider == "openai":
         # LLMConfig.for_openai passes base_url to OpenAI client, enabling any
         # OpenAI-compatible endpoint (poolside, Together, Groq, local vLLM, etc.)
-        kwargs = {"model": model, "api_key": api_key}
+        kwargs = {"model": model, "api_key": api_key, "max_retries": max_retries}
         if base_url:
             kwargs["base_url"] = base_url
         return LLMConfig.for_openai(**kwargs)
 
     if provider == "ollama":
-        kwargs: dict[str, str | None] = {"model": model}
+        kwargs: dict[str, str | int | None] = {"model": model, "max_retries": max_retries}
         if base_url:
             kwargs["base_url"] = base_url
         return LLMConfig.for_ollama(**kwargs)
 
     if provider == "litellm":
-        kwargs = {"provider": "litellm", "model": model, "api_key": api_key}
+        kwargs = {"provider": "litellm", "model": model, "api_key": api_key, "max_retries": max_retries}
         if base_url:
             kwargs["base_url"] = base_url
         return LLMConfig(**kwargs)

@@ -1419,3 +1419,96 @@ Each entry is a candidate for a lauren-ai PRD.
 | No `on_turn_start` hook | `approval_svc.reset_turn_memory()` called manually in `run_turn()` | `ToolHook.on_turn_start(ctx)` lifecycle method |
 | `_add_to_tool_map` is private but production-required | `from lauren_ai._tools import _add_to_tool_map` in `tool_populator.py` | Make public; rename to `add_to_tool_map` |
 | No `AgentConfig.memory_window_tokens` | `ShortTermMemory(max_tokens=32_000)` constructed outside runner | `AgentConfig.memory_window_tokens: int` field |
+
+---
+
+## 39. Tool Namespace (PRD-125)
+
+Groups the 50 built-in tools into named domains for structured system-prompt
+sections, cross-group collision warnings, and glob patterns in subagent specs.
+
+### Architecture
+
+| Component | Role |
+|---|---|
+| `ToolGroup` dataclass | `name`, `label`, `description`, `tools`, `priority` |
+| `ToolRegistry.register_group(group)` | Registers tools and records `tool_name → group.name` membership |
+| `ToolRegistry.glob_expand("fs.*")` | Expands to all tool `__name__` values in group `"fs"` |
+| `ToolRegistry.describe()` | Grouped Markdown sections ordered by priority |
+| `BUILTIN_GROUPS` in `agent_tools.py` | `[FS_GROUP, GIT_GROUP, EXEC_GROUP, OUTLOOK_GROUP]` |
+| `build_registry()` | Uses `register_group()` instead of flat `register_many()` |
+| `_expand_allowed(allowed, registry)` | Expands globs in `SubagentTypeSpec.allowed_tools` at pool-creation time |
+
+### Built-in groups
+
+| Group | Key | Priority | Count |
+|---|---|---|---|
+| File System | `fs` | 4 | 24 |
+| Git | `git` | 3 | 11 |
+| Shell / Exec | `exec` | 2 | 6 |
+| Outlook / Calendar | `outlook` | 1 | 9 |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 39.1 | `ToolGroup` dataclass has `name`, `label`, `description`, `tools`, `priority` |
+| 39.2 | `register_group()` records group membership for every registered tool |
+| 39.3 | `glob_expand("fs.*")` returns all 24 FS tool names |
+| 39.4 | `glob_expand("git_status")` returns `frozenset({"git_status"})` (literal pass-through) |
+| 39.5 | Cross-group shadowing emits WARNING; same-group override stays at DEBUG |
+| 39.6 | `describe()` groups tools into labelled sections with count and italic description |
+| 39.7 | `BUILTIN_GROUPS` exported from `agent_tools.py` |
+| 39.8 | `build_registry()` uses `register_group()` for all four built-in groups |
+| 39.9 | Subagent `allowed_tools=frozenset({"fs.*"})` expands to all 24 FS tool names |
+
+---
+
+## 40. Transport Retry with Memory Rollback (PRD-126)
+
+Prevents `ReadTimeout` and other transient network errors from permanently
+failing a workflow phase.  A snapshot-rollback mechanism retries the agent turn
+with a clean memory state, avoiding the double-user-message problem that makes
+naïve transport-level retries produce a 400.
+
+### Architecture
+
+| Component | Role |
+|---|---|
+| `ExecutionSettings.transport_max_retries` | Max retry attempts (default 3; 0 = disabled) |
+| `ExecutionSettings.transport_retry_base_delay_s` | First backoff delay in seconds (default 1.0; doubles each attempt) |
+| `_is_transient_network_error(exc)` in `agent_turn.py` | Detects `TransientTransportError` and timeout-named exceptions in the exception chain |
+| `_run_turn_with_retry()` in `code_plan/runner.py` | Snapshots `shared_memory` before each attempt; restores on transient error; emits `⟳ Network error — retrying N/M…` scroll event |
+| `run_turn()` in `tui_session.py` | Same snapshot-rollback pattern for direct (non-workflow) agent turns |
+| `build_llm_config()` | Passes `max_retries` to all provider `LLMConfig` factories so the transport layer also honours the setting |
+
+### Error taxonomy
+
+| Exception | Permanent? | Transient network? | Action |
+|---|---|---|---|
+| HTTP 400–499 (not 429) | Yes | No | Fail immediately |
+| HTTP 429, 5xx | No | No | Swallow → phase retries whole turn |
+| `TransientTransportError` | No | Yes | Snapshot-rollback retry |
+| `ReadTimeout`, `ConnectError`, etc. | No | Yes | Snapshot-rollback retry |
+
+### Why snapshot-rollback is required
+
+`run_stream()` calls `memory.add_user(message)` internally.  A naïve retry of
+`_run_agent_turn()` with the same `ShortTermMemory` object would add the user
+message a second time, producing an invalid conversation the API immediately
+rejects with a 400 error.  Restoring the pre-turn snapshot ensures every
+attempt starts with a clean history.
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 40.1 | `transport_max_retries` and `transport_retry_base_delay_s` in `ExecutionSettings` with correct defaults |
+| 40.2 | `_is_transient_network_error` returns True for `TransientTransportError` and timeout-named exceptions |
+| 40.3 | `_is_transient_network_error` returns False for HTTP 4xx permanent errors |
+| 40.4 | On transient error, `shared_memory` is restored to its pre-turn snapshot |
+| 40.5 | A `⟳ Network error — retrying N/M…` system event is appended on each retry |
+| 40.6 | After `transport_max_retries` exhausted, error propagates normally |
+| 40.7 | `CancelledError` is never retried |
+| 40.8 | `transport_max_retries = 0` disables retry completely |
+| 40.9 | `build_llm_config()` passes `max_retries` to all provider LLMConfig factories |
