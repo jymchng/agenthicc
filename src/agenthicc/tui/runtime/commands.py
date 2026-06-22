@@ -29,34 +29,6 @@ class InterruptAgentCommand(Command):
     pass
 
 
-@dataclass(frozen=True)
-class OpenOverlayCommand(Command):
-    name:          str = ""
-    initial_query: str = ""
-
-
-@dataclass(frozen=True)
-class CloseOverlayCommand(Command):
-    pass
-
-
-@dataclass(frozen=True)
-class ChangeModelCommand(Command):
-    provider: str = ""
-    model:    str = ""
-
-
-@dataclass(frozen=True)
-class ClearConversationCommand(Command):
-    pass
-
-
-@dataclass(frozen=True)
-class RunBuiltinCommand(Command):
-    name: str = ""   # "/config", "/model", "/status" …
-    args: str = ""
-
-
 # ── CommandBus ────────────────────────────────────────────────────────────────
 
 class CommandBus:
