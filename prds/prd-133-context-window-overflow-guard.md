@@ -1,10 +1,16 @@
 ---
 title: "PRD-133: Context-Window Overflow — Bounded Tool Output + Model-Aware Pre-Send Guard"
-status: proposal
-version: 0.1.0
+status: implemented
+version: 1.0.0
 created: 2026-06-23
 related: [prd-119-conversation-compaction, prd-126-transport-retry, prd-129-conversation-durability, prd-132-context-reuse]
 ---
+
+> **Status:** All five layers shipped.  A + C (memory char-budget invariant +
+> git-aware bounded tool output) landed first; B + D + E (model-aware budget
+> registry, exact `count_tokens` pre-send guard, graceful `AgentContextOverflowError`)
+> followed.  See Features PRD §45 for the consolidated expectations and the test
+> suites (`test_context_window_guard.py`, `test_model_context_budget.py`).
 
 # PRD-133 — Context-Window Overflow Guard
 

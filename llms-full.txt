@@ -1432,7 +1432,11 @@ class ExecutionSettings:
     model: str = ""                 # empty → PROVIDER_DEFAULT_MODELS[provider]
     api_key: str = ""               # empty → PROVIDER_API_KEY_ENVVAR[provider]
     base_url: str = ""              # Ollama / custom endpoint
+    model_context_window: int = 0   # PRD-133 B: 0 → resolve from model registry;
+                                     # set to the true window of a proxied model
 
     def effective_model(self) -> str: ...    # resolves empty model to default
     def effective_api_key(self) -> str | None: ...  # reads from env if empty
+    def effective_context_window(self) -> int: ...  # PRD-133 B: override or
+                                     # lauren_ai.context_window_for(model)
 ```

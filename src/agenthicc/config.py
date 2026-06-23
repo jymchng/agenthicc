@@ -129,6 +129,11 @@ class ExecutionSettings:
     # Conversation compaction (PRD-119)
     auto_compact: bool = True
     compact_threshold_tokens: int = 1_000_000
+    # Model context window override (PRD-133 B).  0 → resolve from the model id
+    # via lauren-ai's MODEL_CONTEXT_WINDOWS registry.  Set a positive value to
+    # tell agenthicc the true window of a proxied / unknown model (e.g. an
+    # OpenAI-compatible gateway) so the hard pre-send budget is correct.
+    model_context_window: int = 0
     # Context reuse (PRD-132).  prompt_cache: incremental prompt caching of the
     # system prompt, tools, and conversation prefix (Anthropic; no-op elsewhere)
     # so the file-heavy history is not re-billed every turn.  file_cache: a
@@ -161,6 +166,22 @@ class ExecutionSettings:
             return self.api_key
         env_var = PROVIDER_API_KEY_ENVVAR.get(self.provider)
         return os.environ.get(env_var, "") or None if env_var else None
+
+    def effective_context_window(self) -> int:
+        """Total context-window size (in tokens) of the active model.
+
+        An explicit ``model_context_window`` override wins; otherwise the value
+        is resolved from the model id via lauren-ai's
+        :data:`~lauren_ai._config.MODEL_CONTEXT_WINDOWS` registry (which falls
+        back to a conservative default for unknown / proxied models).
+
+        :return: Context-window size in tokens.
+        :rtype: int
+        """
+        if self.model_context_window > 0:
+            return self.model_context_window
+        from lauren_ai._config import context_window_for  # noqa: PLC0415
+        return context_window_for(self.effective_model())
 
 
 @dataclass
@@ -577,6 +598,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         session_memory_max_tokens=int(ex.get("session_memory_max_tokens", 32_000)),
         auto_compact=bool(ex.get("auto_compact", True)),
         compact_threshold_tokens=int(ex.get("compact_threshold_tokens", 1_000_000)),
+        model_context_window=int(ex.get("model_context_window", 0)),
         prompt_cache=bool(ex.get("prompt_cache", True)),
         file_cache=bool(ex.get("file_cache", True)),
         transport_max_retries=int(ex.get("transport_max_retries", 3)),

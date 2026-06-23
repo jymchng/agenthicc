@@ -509,11 +509,25 @@ class AgentTurnRunner:
         # run_stream() call across multiple turns.  Wire lauren-ai's built-in
         # per-turn summarisation so it fires at ~80% of the model's context
         # window, preventing a mid-loop 400 "context length exceeded" error.
+        #
+        # PRD-133 B: the live-context budget is derived from the *model's* real
+        # context window (registry or [execution] model_context_window override)
+        # instead of a hardcoded 1M constant.  usable = window − completion
+        # reservation − head-room; summarisation fires at 80% of usable, and the
+        # same window feeds lauren-ai's hard pre-send guard via
+        # AgentConfig.context_window (PRD-133 D/E) so a request can never exceed
+        # the window even if summarisation lags.
+        from lauren_ai._config import context_window_for  # noqa: PLC0415
+
         _auto_compact = bool(getattr(ctx.exec_cfg, "auto_compact", True))
-        _threshold    = int(getattr(ctx.exec_cfg, "compact_threshold_tokens", 1_000_000))
-        # memory_window_tokens tells lauren-ai the budget; summarize_at is the
-        # fraction at which to trigger summarisation (0.8 → fires at 80%).
-        _window_tokens = max(1, int(_threshold * 0.8))
+        _window = (
+            ctx.exec_cfg.effective_context_window()
+            if ctx.exec_cfg is not None
+            else context_window_for(self._model_id)
+        )
+        _max_out = _AgentConfig().max_tokens_per_turn
+        _reserve = max(4_000, _window // 25)
+        _window_tokens = max(1, _window - _max_out - _reserve)
 
         # PRD-129 Phase 1/3: one idempotency ledger per turn, created OUTSIDE the
         # retry loop so it survives across attempts.  When a transient failure
@@ -558,8 +572,9 @@ class AgentTurnRunner:
                     max_turns=ctx.max_agent_turns,
                     parallel_tool_calls=True,
                     memory_window_tokens=_window_tokens,
-                    summarize_at=1.0 if _auto_compact else None,
+                    summarize_at=0.8 if _auto_compact else None,
                     summary_model=self._model_id,
+                    context_window=_window,
                 ),
             )
             async for chunk in stream:

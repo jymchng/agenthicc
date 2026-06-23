@@ -1743,12 +1743,16 @@ session startup; disabled → the read path is unchanged.
 
 ---
 
-## 45. Context-Window Overflow Guard — Bounded Tool Output + Pre-Send Cap (PRD-133, A+C)
+## 45. Context-Window Overflow Guard — Bounded Output, Pre-Send Cap, Model-Aware Budget (PRD-133, A+B+C+D+E)
 
 A `code_plan` turn 400'd with **1.5M tokens vs a 1.048M model limit** after a
 recursive `list_directory`/`search_files` on a tree containing `.venv`/`.git`.
-Nothing guaranteed the request fit the model.  PRD-133 ships the two highest-ROI
-layers: **C** (the hard invariant) + **A** (remove the trigger).
+Nothing guaranteed the request fit the model.  PRD-133 ships all five layers:
+**C** (memory char-budget invariant) + **A** (remove the trigger), then
+**B** (model-aware budget), **D** (accurate `count_tokens` accounting), and
+**E** (graceful failure) — so the request is provably ≤ the *model's actual*
+usable window, measured exactly, with an actionable error for the irreducible
+case instead of an opaque provider 400.
 
 ### Layer C — Hard pre-send budget guarantee
 
@@ -1783,6 +1787,50 @@ truncation marker (and `read_file` still caches the full bytes).
 | Entry cap | `list_directory`/`search_files` capped at `_MAX_LIST_ENTRIES` with a `truncated` flag |
 | Read cap | `read_file`/`read_lines` capped at `_MAX_TOOL_OUTPUT_CHARS` with a marker; full bytes still cached (L1) |
 
+### Layer B — Model-aware context budget
+
+The budget is now derived from the **model's real context window** instead of a
+hardcoded 1M constant.  lauren-ai gains a `MODEL_CONTEXT_WINDOWS` registry +
+`context_window_for(model)` (longest-prefix match; conservative default for
+unknown/proxied models), and `AgentConfig.context_window` →
+`usable_context_budget` = `window − max_tokens_per_turn − max(4k, window/25)`.
+agenthicc resolves the window via `ExecutionSettings.effective_context_window()`
+— an explicit `[execution] model_context_window` override wins, else the registry
+— and `agent_turn` derives the per-turn summarisation window and the hard-guard
+ceiling from it (replacing the old `compact_threshold × 0.8` math).
+
+| Aspect | Expectation |
+|---|---|
+| Registry | `claude-opus-4-*`/`-sonnet-4-*` → 1M; `gpt-4o` → 128k; unknown → 200k default |
+| Override | `[execution] model_context_window = N` is authoritative for proxied/gateway models |
+| Derivation | summarise fires at 80 % of usable; the hard guard ceiling is the same window |
+
+### Layer D — Accurate token accounting
+
+Every transport's `count_tokens` now routes its heuristic fallback through one
+shared, **dict-safe** `estimate_message_tokens` (the runner passes dict messages
+*and* dict tool schemas — the old attribute-access heuristic raised
+`AttributeError` on exactly the non-native-endpoint path the guard needs).  The
+runner adds `_fit_to_context` at **both** `complete()` choke points: a cheap
+local estimate (≈3.5 chars/token, counts `tool_use` inputs) gates an **exact**
+`count_tokens` call, which drives truncation only when genuinely near the limit —
+no per-turn network round-trip in the common case.
+
+### Layer E — Graceful failure
+
+When a request cannot be reduced below the window even after maximal truncation —
+an irreducible mandatory item such as a single huge `tool_use` input — the runner
+raises `AgentContextOverflowError` (required/budget tokens + model, with an
+actionable message) instead of letting the provider reject it with an opaque 400.
+
+| Aspect | Expectation |
+|---|---|
+| Hard ceiling | No request is sent whose **exact** `count_tokens` exceeds `usable_context_budget` |
+| Truncatable | Oversized `tool_result` content is shrunk to fit; `tool_use`/`tool_result` pairing preserved |
+| Irreducible | A single over-window `tool_use` input → `AgentContextOverflowError`, not a 400 |
+| Cheap path | An in-budget turn does no `count_tokens` round-trip (cheap-estimate gate) |
+| Dict-safe | `count_tokens` / the guard accept the runner's dict messages **and** dict tool schemas |
+
 ### Acceptance criteria
 
 | # | Criterion |
@@ -1794,6 +1842,9 @@ truncation marker (and `read_file` still caches the full bytes).
 | 45.5 | In a git repo, `search_files`/`list_directory`/`grep_files` exclude `.gitignore`d paths via `git ls-files` |
 | 45.6 | Without git, the tools fall back to a full walk (completeness), still entry-capped |
 | 45.7 | `read_file`/`read_lines` cap output with a marker; `read_file` still caches the full content (PRD-132 L1) |
-| 45.8 | New suites green: `test_context_budget.py` (lauren-ai), `test_fs_output_bounds.py` (agenthicc) |
+| 45.8 | New suites green: `test_context_budget.py` + `test_context_window_guard.py` (lauren-ai), `test_fs_output_bounds.py` + `test_model_context_budget.py` (agenthicc) |
 | 45.9 | The `code_plan` "concise the docs" scenario no longer triggers a context-length 400 |
-| 45.10 | Layer B (model-aware budget registry) remains deferred per PRD-133 |
+| 45.10 | **Layer B**: budgets derive from `context_window_for(model)` / the `[execution] model_context_window` override, not a hardcoded constant |
+| 45.11 | **Layer D**: the pre-send guard uses exact `Transport.count_tokens`; its heuristic fallback is dict-safe for both messages and tool schemas (no `AttributeError`) |
+| 45.12 | **Layer D**: an in-budget turn skips the exact `count_tokens` round-trip via the cheap-estimate gate |
+| 45.13 | **Layer E**: an irreducible over-window request raises `AgentContextOverflowError` (actionable), never a provider 400 |
