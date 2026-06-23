@@ -96,6 +96,14 @@ def _is_permanent_error(exc: BaseException) -> bool:
         ``True``  → exit the phase immediately, do not retry.
         ``False`` → swallow and let the phase loop decide.
     """
+    # PRD-135: a context overflow that survived the proactive compaction ladder
+    # AND the hard truncation guard is irreducible — retrying the identical
+    # request always fails.  Treat as permanent so the phase surfaces the
+    # actionable message and exits instead of looping on the same request.
+    from lauren_ai import AgentContextOverflowError  # noqa: PLC0415
+
+    if isinstance(exc, AgentContextOverflowError):
+        return True
     status = _http_status_code(exc)
     if status is None:
         return False
@@ -489,34 +497,21 @@ class AgentTurnRunner:
         if ctx.session_memory is not None:
             ctx.session_memory.ensure_valid()
 
-        # PRD-119: auto-compact when token estimate crosses the configured threshold.
-        # Called BEFORE run_stream() so the current user message has not yet been
-        # added to memory — only the prior history is compacted.
-        if ctx.session_memory is not None:
-            from agenthicc.memory.compactor import should_compact, compact_memory  # noqa: PLC0415
-            if should_compact(ctx.session_memory, ctx.exec_cfg):
-                _transport = getattr(ctx.runner, "_transport", None)
-                if _transport is not None:
-                    await compact_memory(
-                        ctx.session_memory,
-                        _transport,
-                        model=self._model_id,
-                        conv_store=ctx.conv_store,
-                    )
-
-        # PRD-119 gap: pre-run compaction fires once, but huge tool results
-        # (e.g. list_directory recursive) can balloon memory within a single
-        # run_stream() call across multiple turns.  Wire lauren-ai's built-in
-        # per-turn summarisation so it fires at ~80% of the model's context
-        # window, preventing a mid-loop 400 "context length exceeded" error.
+        # PRD-135: auto-compaction is driven *inside* the run loop by lauren-ai's
+        # exact-count compaction ladder (rung 1 — proactive LLM summarisation —
+        # then the hard pre-send guard).  It fires at ``summarize_at`` of the live
+        # window on every turn, including turn 0 (the resumed/prior history plus
+        # the just-added user message), so the old pre-run `should_compact` pass
+        # is redundant and has been removed.  The manual `/compact` command still
+        # uses `compact_memory` directly.
         #
         # PRD-133 B: the live-context budget is derived from the *model's* real
         # context window (registry or [execution] model_context_window override)
         # instead of a hardcoded 1M constant.  usable = window − completion
-        # reservation − head-room; summarisation fires at 80% of usable, and the
-        # same window feeds lauren-ai's hard pre-send guard via
-        # AgentConfig.context_window (PRD-133 D/E) so a request can never exceed
-        # the window even if summarisation lags.
+        # reservation − head-room; summarisation fires at ``summarize_at`` of the
+        # live window, and the same window feeds lauren-ai's hard pre-send guard
+        # via AgentConfig.context_window (PRD-133 D/E) so a request can never
+        # exceed the window even if summarisation lags.
         from lauren_ai._config import context_window_for  # noqa: PLC0415
 
         _auto_compact = bool(getattr(ctx.exec_cfg, "auto_compact", True))
@@ -582,6 +577,11 @@ class AgentTurnRunner:
                     local_turn.append(chunk.delta)
                     if ctx.output_collector is not None:
                         ctx.output_collector.append(chunk.delta)
+
+                # PRD-135: surface auto-compaction (and other out-of-band status)
+                # to the user — it is NOT part of the assistant's content.
+                if chunk.system_notice is not None and ctx.conv_store:
+                    ctx.conv_store.append_event("system", {"text": chunk.system_notice})
 
                 # Live token update — PRD-83.
                 if chunk.usage is not None and ctx.conv_store:

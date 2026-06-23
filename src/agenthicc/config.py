@@ -126,9 +126,12 @@ class ExecutionSettings:
     # trimmed to fit before each LLM call.  Configurable via
     # [execution] session_memory_max_tokens or --set execution.session_memory_max_tokens.
     session_memory_max_tokens: int = 32_000
-    # Conversation compaction (PRD-119)
+    # Conversation compaction.  auto_compact gates the proactive LLM compaction
+    # ladder in lauren-ai's runner (PRD-135): when True, summarisation fires each
+    # turn at ``summarize_at`` of the live window, before the hard pre-send guard
+    # would lossily truncate.  There is no separate token threshold — the trigger
+    # is the model-aware live-window budget, measured exactly (PRD-133/135).
     auto_compact: bool = True
-    compact_threshold_tokens: int = 1_000_000
     # Model context window override (PRD-133 B).  0 → resolve from the model id
     # via lauren-ai's MODEL_CONTEXT_WINDOWS registry.  Set a positive value to
     # tell agenthicc the true window of a proxied / unknown model (e.g. an
@@ -597,7 +600,6 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_agent_turns=int(ex.get("max_agent_turns", 200)),
         session_memory_max_tokens=int(ex.get("session_memory_max_tokens", 32_000)),
         auto_compact=bool(ex.get("auto_compact", True)),
-        compact_threshold_tokens=int(ex.get("compact_threshold_tokens", 1_000_000)),
         model_context_window=int(ex.get("model_context_window", 0)),
         prompt_cache=bool(ex.get("prompt_cache", True)),
         file_cache=bool(ex.get("file_cache", True)),

@@ -1848,3 +1848,50 @@ actionable message) instead of letting the provider reject it with an opaque 400
 | 45.11 | **Layer D**: the pre-send guard uses exact `Transport.count_tokens`; its heuristic fallback is dict-safe for both messages and tool schemas (no `AttributeError`) |
 | 45.12 | **Layer D**: an in-budget turn skips the exact `count_tokens` round-trip via the cheap-estimate gate |
 | 45.13 | **Layer E**: an irreducible over-window request raises `AgentContextOverflowError` (actionable), never a provider 400 |
+
+## 46. Automatic LLM Compaction on Context Overflow (PRD-135)
+
+PRD-133's response to "doesn't fit" was *lossy* (truncate the middle of tool
+results, or error).  PRD-135 makes **LLM compaction the first response**: when
+the live window fills, older turns are summarised (meaning preserved) *before*
+the hard guard ever deletes characters.  This unifies the three previously
+disconnected compaction mechanisms (pre-run `should_compact`, per-turn
+summarisation, send-time truncation) into **one exact-count-driven ladder**.
+
+### The compaction ladder (runner choke point, every turn)
+
+```
+1  Drop oldest whole turns        ── lossless within the kept window
+2  LLM-compact older turns        ── _maybe_compact → _summarize_memory: a dense
+                                     rolling summary in the system prompt + the
+                                     last keep_recent turns verbatim
+3  Map-reduce compaction          ── _summarize_text chunks an oversized transcript
+                                     so the summariser's OWN call never overflows
+4  Lossy block truncation (133 C) ── only if a single recent turn still overflows
+5  Graceful error (133 E)         ── only for an irreducible mandatory item
+```
+
+| Aspect | Expectation |
+|---|---|
+| **A — exact trigger** | Compaction fires at `summarize_at × memory.max_tokens` measured by exact `count_tokens` on the **full buffer** (not char/4, not the trimmed `messages()` view) |
+| **B — overflow-proof** | The summariser map-reduces (`_summarize_text`): a history several times the window is compressed via bounded chunks, never one over-budget call |
+| **C — one representation** | A rolling summary (system prompt) + recent verbatim turns.  The redundant pre-run `should_compact`/`compact_threshold_tokens` auto path is **removed**; manual `/compact` (`compact_memory`) shares the same map-reduce summariser |
+| Boundary safe | `keep_recent` snaps so a `tool_use`/`tool_result` pair is never split (`_safe_keep_recent`); the rolling summary accumulates the prior summary (nothing lost) |
+| Rolling | Each compaction folds the *previous* summary into the new one; durable journal kept in sync (`journal_reset`, PRD-129) |
+| **D — visibility** | The user sees a `⎋ Compacting conversation…` event (a `CompletionChunk.system_notice` sentinel surfaced by the runner) when auto-compaction fires |
+| **D — convergence** | A surviving `AgentContextOverflowError` is treated as **permanent** (clear actionable message, phase exits) — never a blind re-run of the same overflowing request |
+| Compaction first | When summarisation suffices, the request fits *without* lossy truncation — meaning is preserved, not deleted |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 46.1 | Compaction triggers on the exact token count of the **full buffer** vs `summarize_at × live-window`, not the char/4 estimate (fires where the old 1M char/4 threshold never could) |
+| 46.2 | Older turns are LLM-summarised **before** any lossy block truncation; when summarisation suffices, no `truncated` marker appears |
+| 46.3 | The summariser never overflows — a transcript several times the chunk budget map-reduces into bounded calls (`_summarize_text`) |
+| 46.4 | `keep_recent` is boundary-snapped (`_safe_keep_recent`) so a `tool_use`/`tool_result` pair is never split; the rolling summary folds in the prior summary |
+| 46.5 | One representation: the pre-run `should_compact`/`compact_threshold_tokens` path is removed; auto (ladder) and manual `/compact` share `_summarize_memory`/`_summarize_text` |
+| 46.6 | `run_stream` emits a `system_notice` chunk on compaction; agenthicc surfaces it as a `⎋ Compacting conversation…` conv-store event |
+| 46.7 | A surviving `AgentContextOverflowError` is permanent (phase exits with the actionable message), not a blind re-run |
+| 46.8 | Journal stays in sync across compaction (`journal_reset`); resumed sessions carry the rolling summary forward |
+| 46.9 | New/updated suites green: `test_skill_memory_summarization.py` (lauren-ai: `_maybe_compact`, map-reduce, boundary, run_stream notice), `test_compactor.py` (agenthicc: map-reduce `compact_memory`) |

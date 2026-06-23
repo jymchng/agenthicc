@@ -563,7 +563,15 @@ class TUISession:
             return
 
         model = ctx.cfg.execution.effective_model()
-        await compact_memory(mem, transport, model=model, conv_store=conv)
+        # Bound each summariser call to the model window so compacting a history
+        # larger than the window map-reduces instead of overflowing (PRD-135 B).
+        await compact_memory(
+            mem,
+            transport,
+            model=model,
+            conv_store=conv,
+            max_input_tokens=ctx.cfg.execution.effective_context_window(),
+        )
         conv.notify_transient("⎋ Compacted")
 
     def route(self, msg: str) -> bool:
