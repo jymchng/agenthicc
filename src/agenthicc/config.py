@@ -129,6 +129,12 @@ class ExecutionSettings:
     # Conversation compaction (PRD-119)
     auto_compact: bool = True
     compact_threshold_tokens: int = 1_000_000
+    # Context reuse (PRD-132).  prompt_cache: incremental prompt caching of the
+    # system prompt, tools, and conversation prefix (Anthropic; no-op elsewhere)
+    # so the file-heavy history is not re-billed every turn.  file_cache: a
+    # durable, freshness-validated cache of file reads.
+    prompt_cache: bool = True
+    file_cache: bool = True
     # Transport retry on transient network errors (PRD-126)
     # Two independent layers (see prd-126):
     #   transport_max_retries — TURN-level retry with memory snapshot-rollback;
@@ -571,6 +577,8 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         session_memory_max_tokens=int(ex.get("session_memory_max_tokens", 32_000)),
         auto_compact=bool(ex.get("auto_compact", True)),
         compact_threshold_tokens=int(ex.get("compact_threshold_tokens", 1_000_000)),
+        prompt_cache=bool(ex.get("prompt_cache", True)),
+        file_cache=bool(ex.get("file_cache", True)),
         transport_max_retries=int(ex.get("transport_max_retries", 3)),
         transport_retry_base_delay_s=float(ex.get("transport_retry_base_delay_s", 1.0)),
         transport_retry_max_total_s=float(ex.get("transport_retry_max_total_s", 0.0)),
@@ -752,8 +760,20 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
     :raises ValueError: When the provider string is not recognised.
     :returns: A ``LLMConfig`` instance ready to pass to ``_build_transport()``.
     """
+    import dataclasses  # noqa: PLC0415
     import os  # noqa: PLC0415
     from lauren_ai._config import LLMConfig  # noqa: PLC0415
+
+    def _cache(cfg: "LLMConfig") -> "LLMConfig":
+        # PRD-132 L0: enable incremental prompt caching (system + tools +
+        # conversation prefix).  Read only by the Anthropic transport — a clean
+        # no-op for OpenAI/Ollama/litellm.
+        return dataclasses.replace(
+            cfg,
+            cache_system_prompt=execution.prompt_cache,
+            cache_tools=execution.prompt_cache,
+            cache_conversation=execution.prompt_cache,
+        )
 
     provider = execution.provider.lower()
     model = execution.effective_model()
@@ -774,7 +794,7 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
         kwargs: dict[str, str | int | None] = {"model": model, "api_key": api_key, "max_retries": max_retries}
         if base_url:
             kwargs["base_url"] = base_url
-        return LLMConfig.for_anthropic(**kwargs)
+        return _cache(LLMConfig.for_anthropic(**kwargs))
 
     if provider == "openai":
         # LLMConfig.for_openai passes base_url to OpenAI client, enabling any
@@ -782,19 +802,19 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
         kwargs = {"model": model, "api_key": api_key, "max_retries": max_retries}
         if base_url:
             kwargs["base_url"] = base_url
-        return LLMConfig.for_openai(**kwargs)
+        return _cache(LLMConfig.for_openai(**kwargs))
 
     if provider == "ollama":
         kwargs: dict[str, str | int | None] = {"model": model, "max_retries": max_retries}
         if base_url:
             kwargs["base_url"] = base_url
-        return LLMConfig.for_ollama(**kwargs)
+        return _cache(LLMConfig.for_ollama(**kwargs))
 
     if provider == "litellm":
         kwargs = {"provider": "litellm", "model": model, "api_key": api_key, "max_retries": max_retries}
         if base_url:
             kwargs["base_url"] = base_url
-        return LLMConfig(**kwargs)
+        return _cache(LLMConfig(**kwargs))
 
     supported = ", ".join(f"'{p}'" for p in SUPPORTED_PROVIDERS)
     raise ValueError(

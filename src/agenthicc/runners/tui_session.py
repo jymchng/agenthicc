@@ -272,6 +272,14 @@ async def _build_session_context(
         _conversation_journal, max_tokens=cfg.execution.session_memory_max_tokens
     )
 
+    # PRD-132 L1: install the durable, freshness-validated workspace file cache so
+    # read_file resolves unchanged files from a per-project store instead of disk.
+    if cfg.execution.file_cache:
+        from agenthicc.tools.fs.file_cache import (  # noqa: PLC0415
+            WorkspaceFileCache, configure_file_cache,
+        )
+        configure_file_cache(WorkspaceFileCache(Path(".agenthicc") / "cache" / "file-cache.db"))
+
     # ── three-tier memory (PRD-101) ───────────────────────────────────────────
     from agenthicc.memory.layers import (                        # noqa: PLC0415
         ProjectMemoryLayer, GlobalMemoryLayer, SessionMemoryLayer,
@@ -982,6 +990,14 @@ async def _run_tui_session(
         _close = getattr(ctx.session_memory, "close", None)
         if callable(_close):
             _close()
+        # PRD-132 L1: close + clear the workspace file cache.
+        from agenthicc.tools.fs.file_cache import (  # noqa: PLC0415
+            configure_file_cache, get_file_cache,
+        )
+        _fc = get_file_cache()
+        if _fc is not None:
+            _fc.close()
+            configure_file_cache(None)
         if ctx.mcp_registry:
             await ctx.mcp_registry.shutdown()
         if cassette_base is not None:

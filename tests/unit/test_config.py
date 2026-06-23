@@ -146,6 +146,33 @@ class TestLoadConfig:
         )
         assert config.execution.session_memory_max_tokens == 128_000
 
+    def test_context_reuse_flags_default_on(self, tmp_path):
+        config = load_config(
+            project_path=tmp_path / "missing.toml",
+            user_path=tmp_path / "missing_user.toml",
+        )
+        assert config.execution.prompt_cache is True
+        assert config.execution.file_cache is True
+
+    def test_context_reuse_flags_from_toml(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        project.write_text("[execution]\nprompt_cache = false\nfile_cache = false\n")
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+        assert config.execution.prompt_cache is False
+        assert config.execution.file_cache is False
+
+    def test_prompt_cache_enables_llm_caching(self, tmp_path):
+        from agenthicc.config import ExecutionSettings, build_llm_config
+
+        on = build_llm_config(
+            ExecutionSettings(provider="anthropic", model="claude-x", api_key="k", prompt_cache=True)
+        )
+        assert on.cache_system_prompt and on.cache_tools and on.cache_conversation
+        off = build_llm_config(
+            ExecutionSettings(provider="anthropic", model="claude-x", api_key="k", prompt_cache=False)
+        )
+        assert not off.cache_conversation
+
     def test_project_list_overrides_user_global_list(self, tmp_path):
         """Project list replaces user-global list entirely (lists are not merged)."""
         project = tmp_path / "agenthicc.toml"

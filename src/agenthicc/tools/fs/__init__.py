@@ -52,8 +52,24 @@ class ReadFileTool(Tool):
             return {"ok": False, "error": f"not_found: {args['path']}"}
         if resolved.stat().st_size > _MAX_FILE_SIZE:
             return {"ok": False, "error": f"file_too_large: {resolved.stat().st_size} bytes"}
+        # PRD-132 L1: serve from the durable file cache when the file is
+        # unchanged (mtime/size/encoding match); otherwise read and record.
+        from agenthicc.tools.fs.file_cache import get_file_cache  # noqa: PLC0415
+        _fc = get_file_cache()
+        _abspath = str(resolved)
+        if _fc is not None:
+            _hit = _fc.get_fresh(_abspath, encoding=encoding)
+            if _hit is not None:
+                return {
+                    "content": _hit,
+                    "size_bytes": resolved.stat().st_size,
+                    "encoding": encoding,
+                    "cached": True,
+                }
         try:
             content = await asyncio.to_thread(resolved.read_text, encoding=encoding, errors="replace")
+            if _fc is not None:
+                _fc.store(_abspath, content, encoding=encoding)
             return {"content": content, "size_bytes": resolved.stat().st_size, "encoding": encoding}
         except Exception as e:
             return {"ok": False, "error": str(e)}

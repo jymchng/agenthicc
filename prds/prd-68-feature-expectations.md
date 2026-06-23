@@ -1684,3 +1684,59 @@ than repeating them.
 | 43.11 | Auto-resume defers to the workflow path when a workflow run is in progress |
 | 43.12 | New suites green: `test_idempotency.py` (lauren-ai), `test_conversation_journal.py`, `test_journaled_memory.py`, `test_run_resume.py` |
 | 43.13 | Phase 4 (lower the retry boundary to per-round-trip; streaming delta checkpoints) remains deferred per PRD-129 |
+
+---
+
+## 44. Context Reuse — Prompt Caching + File Cache (PRD-132, L0+L1)
+
+A turn that reads many files re-paid full input price for those file contents on
+*every* later turn (prompt caching covered only system + tools, and defaulted
+off), and `read_file` re-read from disk with no durable record.  PRD-132
+implements the first two layers of the PRD-131 reuse stack.
+
+### L0 — Incremental conversation prompt caching
+
+lauren-ai marks the **last content block of the last message** with
+`cache_control: ephemeral` each request (`_apply_conversation_cache`), so the
+provider serves the file-heavy history prefix from cache (~90% cheaper) instead
+of re-billing it.  Gated by `LLMConfig.cache_conversation`; agenthicc's
+`prompt_cache` flag (default **on**) enables system + tools + conversation
+caching via `build_llm_config`.
+
+| Aspect | Expectation |
+|---|---|
+| History cached | The conversation prefix (where file reads live) is a cache breakpoint, not re-billed each turn |
+| Normalised | String message content is normalised to a text block before marking |
+| Breakpoint budget | Adds 1 breakpoint (history) atop system + tools = 3 of Anthropic's 4 |
+| Provider-safe | Cache flags are read only by the Anthropic transport — a clean no-op on OpenAI/Ollama/litellm |
+| Configurable | `[execution] prompt_cache` (default `true`); `--set execution.prompt_cache=false` |
+
+### L1 — Durable, freshness-validated workspace file cache
+
+`WorkspaceFileCache` (`tools/fs/file_cache.py`) — a per-project SQLite store
+keyed by absolute path with `(sha256, mtime, size, encoding, content)`.
+`ReadFileTool` serves a cached read **only** when the file is unchanged;
+otherwise it reads and records.  Wired via a process singleton configured at
+session startup; disabled → the read path is unchanged.
+
+| Aspect | Expectation |
+|---|---|
+| Freshness | A cached read is served only when `(mtime, size, encoding)` match; any change misses and re-reads (never stale) |
+| Durable | The cache is SQLite — a new session/process resolves a prior read |
+| Tagged | A cache hit returns `cached: True`; a miss reads disk and stores |
+| Substrate | The durable, content-addressed record is the base PRD-131 L2 (repo map) / L3 (RAG) build on |
+| Configurable | `[execution] file_cache` (default `true`) |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 44.1 | With `cache_conversation`, the request's last message carries `cache_control: ephemeral`; off → it does not |
+| 44.2 | `_apply_conversation_cache` normalises string content and adds exactly one breakpoint (the last block) |
+| 44.3 | `prompt_cache` (default `true`) enables system/tools/conversation caching; settable from TOML + `--set` |
+| 44.4 | Cache flags are a no-op on non-Anthropic providers |
+| 44.5 | `WorkspaceFileCache.get_fresh` returns content iff `(mtime, size, encoding)` match; changed/deleted file misses |
+| 44.6 | The cache is durable across `WorkspaceFileCache` instances on the same DB |
+| 44.7 | `ReadFileTool` serves a fresh hit (`cached: True`), stores on miss, and is a no-op when the cache is disabled |
+| 44.8 | New suites green: `test_prompt_cache.py` (lauren-ai), `test_file_cache.py` (agenthicc) |
+| 44.9 | L2 (repo map) and L3 (durable file RAG) remain deferred per PRD-131 |
