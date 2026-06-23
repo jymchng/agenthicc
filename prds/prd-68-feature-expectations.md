@@ -1740,3 +1740,60 @@ session startup; disabled → the read path is unchanged.
 | 44.7 | `ReadFileTool` serves a fresh hit (`cached: True`), stores on miss, and is a no-op when the cache is disabled |
 | 44.8 | New suites green: `test_prompt_cache.py` (lauren-ai), `test_file_cache.py` (agenthicc) |
 | 44.9 | L2 (repo map) and L3 (durable file RAG) remain deferred per PRD-131 |
+
+---
+
+## 45. Context-Window Overflow Guard — Bounded Tool Output + Pre-Send Cap (PRD-133, A+C)
+
+A `code_plan` turn 400'd with **1.5M tokens vs a 1.048M model limit** after a
+recursive `list_directory`/`search_files` on a tree containing `.venv`/`.git`.
+Nothing guaranteed the request fit the model.  PRD-133 ships the two highest-ROI
+layers: **C** (the hard invariant) + **A** (remove the trigger).
+
+### Layer C — Hard pre-send budget guarantee
+
+`ShortTermMemory.messages()` now ends with `_enforce_char_budget`: after the
+sliding-window trim (which never drops past the last conversational user message),
+it **truncates block contents** — never removing blocks, so `tool_use`/`tool_result`
+pairing stays valid — until the list fits the memory budget.  A single oversized
+turn (huge tool result) can no longer escape the budget, so a context-length 400
+is **structurally impossible**.
+
+| Aspect | Expectation |
+|---|---|
+| Hard cap | `messages()` output is always within `max_tokens` (chars/4), even for a single un-droppable oversized turn |
+| Floor still holds | The last conversational user message is kept (never empty list) — it's truncated, not dropped |
+| Structure preserved | `tool_use`/`tool_result` blocks survive (ids intact); only text/content strings shrink; `tool_use` inputs untouched |
+| No-op when fitting | A normal in-budget conversation is returned unchanged |
+
+### Layer A — Bound tool output at the source
+
+`list_directory` (recursive), `search_files`, and `grep_files` enumerate via
+**`git ls-files --cached --others --exclude-standard`** — the project's own
+`.gitignore` defines relevance (tracked + untracked-not-ignored), far more
+complete than a hardcoded blocklist — and **fall back to a full walk when there's
+no git** (completeness).  Results are capped at `_MAX_LIST_ENTRIES`; `read_file` /
+`read_lines` cap content at `_MAX_TOOL_OUTPUT_CHARS` (~25k tokens) with a
+truncation marker (and `read_file` still caches the full bytes).
+
+| Aspect | Expectation |
+|---|---|
+| Git-aware | In a git repo, ignored paths (`.venv`/`.git`/`node_modules`/build) are excluded via `git ls-files` |
+| Fallback | No git → full walk (read everything), capped + backstopped by Layer C |
+| Entry cap | `list_directory`/`search_files` capped at `_MAX_LIST_ENTRIES` with a `truncated` flag |
+| Read cap | `read_file`/`read_lines` capped at `_MAX_TOOL_OUTPUT_CHARS` with a marker; full bytes still cached (L1) |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 45.1 | `messages()` output never exceeds the budget, even with a single 500k-char tool result (no overflow) |
+| 45.2 | The last conversational user message survives (truncated, not dropped); list is never empty |
+| 45.3 | `tool_use`/`tool_result` pairing and ids are preserved through truncation; `tool_use` inputs untouched |
+| 45.4 | A normal in-budget conversation is returned unchanged |
+| 45.5 | In a git repo, `search_files`/`list_directory`/`grep_files` exclude `.gitignore`d paths via `git ls-files` |
+| 45.6 | Without git, the tools fall back to a full walk (completeness), still entry-capped |
+| 45.7 | `read_file`/`read_lines` cap output with a marker; `read_file` still caches the full content (PRD-132 L1) |
+| 45.8 | New suites green: `test_context_budget.py` (lauren-ai), `test_fs_output_bounds.py` (agenthicc) |
+| 45.9 | The `code_plan` "concise the docs" scenario no longer triggers a context-length 400 |
+| 45.10 | Layer B (model-aware budget registry) remains deferred per PRD-133 |

@@ -6,6 +6,7 @@ import datetime
 import re
 import shutil
 import stat
+from collections.abc import Callable
 from pathlib import Path
 from agenthicc.tools.base import Tool
 from agenthicc.tools.sandbox import WorkspaceView
@@ -13,6 +14,56 @@ from agenthicc.tools.sandbox import WorkspaceView
 __all__ = ["FsToolKit"]
 
 _MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
+
+# PRD-133 Layer A: bound tool output so a single result can't overflow the model
+# context window.  These are upstream guards; the pre-send budget guard (Layer C)
+# is the hard backstop.
+_MAX_LIST_ENTRIES = 1000                # max entries from list_directory/search_files
+_MAX_TOOL_OUTPUT_CHARS = 100_000        # ~25k tokens cap for read_file/read_lines
+
+
+def _git_keep_filter(root: Path) -> "Callable[[str], bool] | None":
+    """Return a predicate keeping only git-relevant paths, or ``None``.
+
+    Uses ``git ls-files --cached --others --exclude-standard`` so the project's
+    own ``.gitignore`` defines what is relevant (tracked + untracked-not-ignored)
+    — far more complete and correct than a hardcoded blocklist.  Returns ``None``
+    when *root* is not inside a git repo (or git is unavailable), so the caller
+    falls back to reading everything (capped + backstopped by Layer C).
+    """
+    import subprocess  # noqa: PLC0415
+
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+            cwd=str(root), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    files = {line for line in proc.stdout.splitlines() if line}
+    # A directory is relevant if it is a prefix of any relevant file.
+    relevant: set[str] = set(files)
+    for f in files:
+        parts = f.split("/")
+        for i in range(1, len(parts)):
+            relevant.add("/".join(parts[:i]))
+    return lambda relpath: relpath in relevant
+
+
+def _truncate_output(text: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> tuple[str, bool]:
+    """Cap *text* to ≤ *limit* chars (head+tail with a marker).  Returns (text, truncated)."""
+    if len(text) <= limit:
+        return text, False
+    marker = (
+        f"\n…[truncated {len(text) - limit} of {len(text)} chars — "
+        "read a line range with read_lines for the rest]…\n"
+    )
+    keep = max(0, limit - len(marker))
+    head = (keep * 2) // 3
+    tail = keep - head
+    return text[:head] + marker + (text[-tail:] if tail else ""), True
 
 
 def _view(context: dict) -> WorkspaceView:
@@ -60,17 +111,25 @@ class ReadFileTool(Tool):
         if _fc is not None:
             _hit = _fc.get_fresh(_abspath, encoding=encoding)
             if _hit is not None:
-                return {
-                    "content": _hit,
-                    "size_bytes": resolved.stat().st_size,
-                    "encoding": encoding,
-                    "cached": True,
+                # PRD-133 Layer A: cap returned content (cache keeps the full bytes).
+                _out, _trunc = _truncate_output(_hit)
+                _res: dict[str, object] = {
+                    "content": _out, "size_bytes": resolved.stat().st_size,
+                    "encoding": encoding, "cached": True,
                 }
+                if _trunc:
+                    _res["truncated"] = True
+                return _res
         try:
             content = await asyncio.to_thread(resolved.read_text, encoding=encoding, errors="replace")
             if _fc is not None:
-                _fc.store(_abspath, content, encoding=encoding)
-            return {"content": content, "size_bytes": resolved.stat().st_size, "encoding": encoding}
+                _fc.store(_abspath, content, encoding=encoding)  # store full content
+            # PRD-133 Layer A: cap returned content to bound context tokens.
+            _out, _trunc = _truncate_output(content)
+            _res = {"content": _out, "size_bytes": resolved.stat().st_size, "encoding": encoding}
+            if _trunc:
+                _res["truncated"] = True
+            return _res
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -224,25 +283,40 @@ class ListDirectoryTool(Tool):
 
         def _list():
             entries = []
+            truncated = False
+            # Recursive listings respect .gitignore via git ls-files; a flat
+            # (non-recursive) listing shows the directory's literal contents.
+            keep = _git_keep_filter(resolved) if recursive else None
             glob_fn = resolved.rglob if recursive else resolved.glob
-            for p in sorted(glob_fn(pattern)):
+            for p in glob_fn(pattern):
                 if not include_hidden and p.name.startswith("."):
                     continue
+                rel = p.relative_to(resolved)
+                if keep is not None and not keep(str(rel)):
+                    continue
+                if len(entries) >= _MAX_LIST_ENTRIES:
+                    truncated = True
+                    break
                 try:
                     s = p.stat()
                     entries.append({
                         "name": p.name,
-                        "path": str(p.relative_to(resolved)),
+                        "path": str(rel),
                         "type": "dir" if p.is_dir() else "file",
                         "size_bytes": s.st_size,
                         "modified_at": datetime.datetime.fromtimestamp(s.st_mtime).isoformat(),
                     })
                 except OSError:
                     pass
-            return entries
+            entries.sort(key=lambda e: e["path"])
+            return entries, truncated
 
-        entries = await asyncio.to_thread(_list)
-        return {"entries": entries, "count": len(entries)}
+        entries, truncated = await asyncio.to_thread(_list)
+        result: dict[str, object] = {"entries": entries, "count": len(entries)}
+        if truncated:
+            result["truncated"] = True
+            result["note"] = f"results capped at {_MAX_LIST_ENTRIES}; narrow the pattern or path"
+        return result
 
 
 class MakeDirectoryTool(Tool):
@@ -309,11 +383,29 @@ class SearchFilesTool(Tool):
         recursive = args.get("recursive", True)
 
         def _search():
+            matches = []
+            truncated = False
+            keep = _git_keep_filter(resolved)  # respect .gitignore; None → full walk
             glob_fn = resolved.rglob if recursive else resolved.glob
-            return [str(p.relative_to(resolved)) for p in sorted(glob_fn(pattern)) if p.is_file()]
+            for p in glob_fn(pattern):
+                if not p.is_file():
+                    continue
+                rel = str(p.relative_to(resolved))
+                if keep is not None and not keep(rel):
+                    continue
+                if len(matches) >= _MAX_LIST_ENTRIES:
+                    truncated = True
+                    break
+                matches.append(rel)
+            matches.sort()
+            return matches, truncated
 
-        matches = await asyncio.to_thread(_search)
-        return {"matches": matches, "count": len(matches)}
+        matches, truncated = await asyncio.to_thread(_search)
+        result: dict[str, object] = {"matches": matches, "count": len(matches)}
+        if truncated:
+            result["truncated"] = True
+            result["note"] = f"results capped at {_MAX_LIST_ENTRIES}; narrow the pattern"
+        return result
 
 
 class GrepFilesTool(Tool):
@@ -342,9 +434,12 @@ class GrepFilesTool(Tool):
         def _grep():
             compiled = re.compile(pattern)
             matches = []
+            keep = _git_keep_filter(resolved)  # respect .gitignore; None → full walk
             glob_fn = resolved.rglob if recursive else resolved.glob
             for p in sorted(glob_fn("*")):
                 if not p.is_file():
+                    continue
+                if keep is not None and not keep(str(p.relative_to(resolved))):
                     continue
                 try:
                     text = p.read_text(encoding="utf-8", errors="strict")
@@ -415,7 +510,29 @@ class ReadLinesTool(Tool):
         start = max(1, int(args.get("start", 1)))
         end = min(total, int(args["end"])) if args.get("end") else total
         selected = lines[start - 1:end]
-        return {"lines": selected, "total_lines": total, "start": start, "end": end}
+        # PRD-133 Layer A: cap output to bound context tokens.
+        out_lines: list[str] = []
+        used = 0
+        truncated = False
+        for ln in selected:
+            if used + len(ln) + 1 > _MAX_TOOL_OUTPUT_CHARS:
+                truncated = True
+                break
+            out_lines.append(ln)
+            used += len(ln) + 1
+        result: dict[str, object] = {
+            "lines": out_lines,
+            "total_lines": total,
+            "start": start,
+            "end": start - 1 + len(out_lines),
+        }
+        if truncated:
+            result["truncated"] = True
+            result["note"] = (
+                f"output capped; {len(selected) - len(out_lines)} more lines in range "
+                "— request a smaller line range"
+            )
+        return result
 
 
 class PatchFileTool(Tool):
