@@ -1,9 +1,11 @@
-"""Tests for model-aware context budgeting in agenthicc (PRD-133 B).
+"""Tests for per-model context-window configuration (PRD-136).
 
-``ExecutionSettings.effective_context_window`` resolves the active model's
-window — from an explicit ``[execution] model_context_window`` override or the
-lauren-ai registry — which feeds both the per-turn summarisation budget and the
-hard pre-send guard (lauren-ai ``AgentConfig.context_window``).
+``[memory.context_windows]`` maps model id → window (plus a ``default`` catch-all)
+and is the **single** source for the context system:
+``ExecutionSettings.effective_context_window`` resolves the active model's window
+(explicit entry → registry → config default → hardcoded), and
+``effective_usable_budget`` derives the live working window the session memory is
+sized to — which the auto-compaction trigger and the hard pre-send guard share.
 """
 
 from __future__ import annotations
@@ -15,59 +17,80 @@ from agenthicc.config import ExecutionSettings, load_config
 pytestmark = pytest.mark.unit
 
 
-class TestEffectiveContextWindow:
-    def test_resolves_from_registry(self) -> None:
-        assert ExecutionSettings(provider="anthropic", model="claude-opus-4-8").effective_context_window() == 1_000_000
-        assert ExecutionSettings(provider="openai", model="gpt-4o").effective_context_window() == 128_000
+def _exec(model: str, **windows: int) -> ExecutionSettings:
+    return ExecutionSettings(provider="openai", model=model, context_windows=dict(windows))
 
-    def test_default_model_per_provider(self) -> None:
-        # empty model → PROVIDER_DEFAULT_MODELS (claude-opus-4-8) → 1M window.
+
+class TestResolutionOrder:
+    def test_explicit_entry_wins(self) -> None:
+        e = _exec("deepseek-v4-flash", **{"deepseek-v4-flash": 250_000, "default": 1_000_000})
+        assert e.effective_context_window() == 250_000
+
+    def test_explicit_overrides_registry(self) -> None:
+        # The proxy only allows 200k even though it's named like a 1M Opus.
+        e = _exec("claude-opus-4-8", **{"claude-opus-4-8": 200_000})
+        assert e.effective_context_window() == 200_000
+
+    def test_registry_beats_config_default(self) -> None:
+        # A known model NOT listed must keep its accurate registry window — a
+        # generic default=1M must NOT inflate gpt-4o (128k) and risk overflow.
+        e = _exec("gpt-4o", default=1_000_000)
+        assert e.effective_context_window() == 128_000
+
+    def test_config_default_for_unknown_model(self) -> None:
+        e = _exec("some-proxy-model-xyz", default=1_000_000)
+        assert e.effective_context_window() == 1_000_000
+
+    def test_hardcoded_default_when_unknown_and_no_config_default(self) -> None:
+        e = _exec("some-proxy-model-xyz")
+        assert e.effective_context_window() == 200_000  # lauren-ai DEFAULT_CONTEXT_WINDOW
+
+    def test_empty_model_uses_provider_default(self) -> None:
+        # provider anthropic, empty model → claude-opus-4-8 → 1M registry.
         assert ExecutionSettings(provider="anthropic", model="").effective_context_window() == 1_000_000
 
-    def test_override_wins_over_registry(self) -> None:
-        # A proxied/unknown model behind a gateway: the override is authoritative.
-        e = ExecutionSettings(provider="openai", model="deepseek-v4-flash", model_context_window=1_048_576)
-        assert e.effective_context_window() == 1_048_576
-
-    def test_unknown_model_without_override_uses_conservative_default(self) -> None:
-        e = ExecutionSettings(provider="openai", model="deepseek-v4-flash")
-        assert e.effective_context_window() == 200_000  # DEFAULT_CONTEXT_WINDOW
+    def test_case_insensitive_model_key(self) -> None:
+        e = _exec("Claude-Opus-4-8", **{"claude-opus-4-8": 5_000_000})
+        assert e.effective_context_window() == 5_000_000
 
 
-class TestLoadConfigParsesOverride:
-    def test_model_context_window_parsed(self, tmp_path) -> None:
+class TestUsableBudget:
+    def test_usable_is_under_window(self) -> None:
+        e = _exec("m", m=200_000)
+        assert e.effective_usable_budget() == 200_000 - 4096 - max(4000, 200_000 // 25)
+        assert 0 < e.effective_usable_budget() < 200_000
+
+    def test_scales_to_large_window(self) -> None:
+        e = _exec("big", big=10_000_000)
+        # reserve scales (window // 25); always leaves head-room.
+        assert e.effective_usable_budget() == 10_000_000 - 4096 - 400_000
+
+    def test_never_negative_for_tiny_window(self) -> None:
+        e = _exec("tiny", tiny=1_000)
+        assert e.effective_usable_budget() == 1
+
+
+class TestLoadConfig:
+    def test_parses_memory_context_windows_table(self, tmp_path) -> None:
         project = tmp_path / "agenthicc.toml"
         project.write_text(
-            "[execution]\nprovider = 'openai'\nmodel = 'deepseek-v4-flash'\nmodel_context_window = 65536\n"
+            "[execution]\nmodel = 'deepseek-v4-flash'\n\n"
+            "[memory.context_windows]\n"
+            "default = 1000000\n"
+            "deepseek-v4-flash = 250000\n"
+            '"gpt-4.1" = 1000000\n'
         )
-        cfg = load_config(
-            project_path=project, user_path=tmp_path / "missing.toml", env_overrides=False
-        )
-        assert cfg.execution.model_context_window == 65536
-        assert cfg.execution.effective_context_window() == 65536
+        cfg = load_config(project_path=project, user_path=tmp_path / "missing.toml", env_overrides=False)
+        assert cfg.execution.context_windows == {
+            "default": 1_000_000,
+            "deepseek-v4-flash": 250_000,
+            "gpt-4.1": 1_000_000,  # quoted dotted id survives
+        }
+        assert cfg.execution.effective_context_window() == 250_000
 
-    def test_default_is_zero_means_registry(self, tmp_path) -> None:
+    def test_no_table_means_registry_only(self, tmp_path) -> None:
         project = tmp_path / "agenthicc.toml"
         project.write_text("[execution]\nmodel = 'gpt-4o'\n")
-        cfg = load_config(
-            project_path=project, user_path=tmp_path / "missing.toml", env_overrides=False
-        )
-        assert cfg.execution.model_context_window == 0
+        cfg = load_config(project_path=project, user_path=tmp_path / "missing.toml", env_overrides=False)
+        assert cfg.execution.context_windows == {}
         assert cfg.execution.effective_context_window() == 128_000
-
-
-class TestDerivedBudgetMath:
-    """The window→usable derivation agent_turn applies before each run."""
-
-    @staticmethod
-    def _usable(window: int, max_out: int = 4096) -> int:
-        reserve = max(4_000, window // 25)
-        return max(1, window - max_out - reserve)
-
-    def test_usable_under_window(self) -> None:
-        for model, window in (("claude-opus-4-8", 1_000_000), ("gpt-4o", 128_000)):
-            e = ExecutionSettings(provider="anthropic", model=model)
-            w = e.effective_context_window()
-            assert w == window
-            usable = self._usable(w)
-            assert 0 < usable < w  # always leaves head-room for output + framing

@@ -163,7 +163,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             intent=intent,
             run_id=run_id,
             shared_memory=ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.session_memory_max_tokens
+                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
             ),
         )
 
@@ -275,7 +275,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             intent=context.intent,
             run_id=context.run_id,
             shared_memory=ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.session_memory_max_tokens
+                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
             ),
         )
 
@@ -552,7 +552,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
         # Build a minimal CodePlanContext so the turn has a shared_memory.
         _sm = shared_memory or _STM(
-            max_tokens=self._cfg.cfg.execution.session_memory_max_tokens
+            max_tokens=self._cfg.cfg.execution.effective_usable_budget()
         )
         _ctx = CodePlanContext(
             intent=intent,

@@ -505,24 +505,21 @@ class AgentTurnRunner:
         # is redundant and has been removed.  The manual `/compact` command still
         # uses `compact_memory` directly.
         #
-        # PRD-133 B: the live-context budget is derived from the *model's* real
-        # context window (registry or [execution] model_context_window override)
-        # instead of a hardcoded 1M constant.  usable = window − completion
-        # reservation − head-room; summarisation fires at ``summarize_at`` of the
-        # live window, and the same window feeds lauren-ai's hard pre-send guard
-        # via AgentConfig.context_window (PRD-133 D/E) so a request can never
-        # exceed the window even if summarisation lags.
-        from lauren_ai._config import context_window_for  # noqa: PLC0415
-
+        # PRD-133/136: the live-context budget is derived from the model's real
+        # context window — resolved from the [memory.context_windows] map (per
+        # model) → registry → default (ExecutionSettings.effective_context_window).
+        # usable = window − completion reservation − head-room; summarisation fires
+        # at ``summarize_at`` of that live window, and the same window feeds
+        # lauren-ai's hard pre-send guard via AgentConfig.context_window
+        # (PRD-133 D/E) so a request can never exceed the window.
         _auto_compact = bool(getattr(ctx.exec_cfg, "auto_compact", True))
-        _window = (
-            ctx.exec_cfg.effective_context_window()
-            if ctx.exec_cfg is not None
-            else context_window_for(self._model_id)
-        )
-        _max_out = _AgentConfig().max_tokens_per_turn
-        _reserve = max(4_000, _window // 25)
-        _window_tokens = max(1, _window - _max_out - _reserve)
+        if ctx.exec_cfg is not None:
+            _window = ctx.exec_cfg.effective_context_window()
+            _window_tokens = ctx.exec_cfg.effective_usable_budget()
+        else:
+            from lauren_ai._config import context_window_for  # noqa: PLC0415
+            _window = context_window_for(self._model_id)
+            _window_tokens = max(1, _window - _AgentConfig().max_tokens_per_turn - max(4_000, _window // 25))
 
         # PRD-129 Phase 1/3: one idempotency ledger per turn, created OUTSIDE the
         # retry loop so it survives across attempts.  When a transient failure

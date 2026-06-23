@@ -60,6 +60,7 @@ async def processor(tmp_path):
 
 def _make_wf_runner(wf: type[WorkflowPlugin], app_state, processor, mock_transport, agents_registry=None):
     from unittest.mock import MagicMock
+    from agenthicc.config import AgenthiccConfig
     from agenthicc.workflows.config import WorkflowConfig
     agent_runner = AgentRunnerBase(transport=mock_transport, signals=SignalBus())
     cfg = WorkflowConfig(
@@ -68,7 +69,10 @@ def _make_wf_runner(wf: type[WorkflowPlugin], app_state, processor, mock_transpo
         processor=processor,
         agent_runner=agent_runner,
         approval_svc=None,
-        cfg=MagicMock(),
+        # Real config: PRD-133/136 derive numeric context-window/usable budgets
+        # from cfg.execution, so a bare MagicMock (no comparison support) breaks
+        # the compaction trigger / pre-send guard.
+        cfg=AgenthiccConfig(),
         skills={},
         plugin_tools=[],
         mcp_registry=None,

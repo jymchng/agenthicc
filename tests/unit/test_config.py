@@ -123,28 +123,25 @@ class TestLoadConfig:
         with pytest.raises(tomllib.TOMLDecodeError):
             load_config(project_path=bad, user_path=tmp_path / "missing.toml")
 
-    def test_session_memory_max_tokens_default(self, tmp_path):
+    def test_context_windows_default_empty(self, tmp_path):
+        # PRD-136: live window is derived from the model window, no fixed default.
         config = load_config(
             project_path=tmp_path / "missing.toml",
             user_path=tmp_path / "missing_user.toml",
         )
-        assert config.execution.session_memory_max_tokens == 32_000
+        assert config.execution.context_windows == {}
+        # default model (claude-opus-4-8) → usable of its 1M registry window.
+        assert config.execution.effective_usable_budget() > 900_000
 
-    def test_session_memory_max_tokens_from_toml(self, tmp_path):
+    def test_context_windows_from_toml(self, tmp_path):
         project = tmp_path / "agenthicc.toml"
-        project.write_text("[execution]\nsession_memory_max_tokens = 64000\n")
-        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
-        assert config.execution.session_memory_max_tokens == 64_000
-
-    def test_session_memory_max_tokens_cli_override_wins(self, tmp_path):
-        project = tmp_path / "agenthicc.toml"
-        project.write_text("[execution]\nsession_memory_max_tokens = 64000\n")
-        config = load_config(
-            project_path=project,
-            user_path=tmp_path / "missing.toml",
-            cli_overrides=["execution.session_memory_max_tokens=128000"],
+        project.write_text(
+            "[memory.context_windows]\n"
+            "default = 1000000\n"
+            "deepseek-v4-flash = 250000\n"
         )
-        assert config.execution.session_memory_max_tokens == 128_000
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+        assert config.execution.context_windows == {"default": 1_000_000, "deepseek-v4-flash": 250_000}
 
     def test_context_reuse_flags_default_on(self, tmp_path):
         config = load_config(

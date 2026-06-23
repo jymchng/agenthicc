@@ -83,6 +83,12 @@ USER_CONFIG_CANDIDATES = [
 
 SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "litellm")
 
+# PRD-136: live-window budget = context_window − completion reservation − head-room.
+# Mirrors lauren-ai's AgentConfig.usable_context_budget so the live window (what
+# the session memory trims to + compaction defends) agrees with the hard guard.
+_MAX_OUTPUT_TOKENS: int = 4_096
+_CONTEXT_RESERVE_MIN: int = 4_000
+
 # Default models per provider
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "anthropic": "claude-opus-4-8",
@@ -122,21 +128,20 @@ class ExecutionSettings:
     agent_pool_size: int = 16
     max_agent_turns: int = 200      # max agentic-loop iterations per intent
     turn_timeout_s: float = 0.0    # per-turn watchdog; 0 = no limit
-    # Token budget of the session ShortTermMemory — the live conversation window
-    # trimmed to fit before each LLM call.  Configurable via
-    # [execution] session_memory_max_tokens or --set execution.session_memory_max_tokens.
-    session_memory_max_tokens: int = 32_000
     # Conversation compaction.  auto_compact gates the proactive LLM compaction
     # ladder in lauren-ai's runner (PRD-135): when True, summarisation fires each
     # turn at ``summarize_at`` of the live window, before the hard pre-send guard
     # would lossily truncate.  There is no separate token threshold — the trigger
     # is the model-aware live-window budget, measured exactly (PRD-133/135).
     auto_compact: bool = True
-    # Model context window override (PRD-133 B).  0 → resolve from the model id
-    # via lauren-ai's MODEL_CONTEXT_WINDOWS registry.  Set a positive value to
-    # tell agenthicc the true window of a proxied / unknown model (e.g. an
-    # OpenAI-compatible gateway) so the hard pre-send budget is correct.
-    model_context_window: int = 0
+    # Per-model context windows (PRD-136).  The SINGLE source of truth for the
+    # context system — it replaces both the old scalar model_context_window and
+    # session_memory_max_tokens.  Populated from the ``[memory.context_windows]``
+    # TOML table: keys are model ids (lower-cased), values are token windows, and
+    # the reserved key ``"default"`` is the fallback for unknown / proxied models.
+    # The resolved window drives the hard pre-send guard, the summariser chunk
+    # size, AND the live working window; ``summarize_at`` is the working-set dial.
+    context_windows: dict[str, int] = field(default_factory=dict)
     # Context reuse (PRD-132).  prompt_cache: incremental prompt caching of the
     # system prompt, tools, and conversation prefix (Anthropic; no-op elsewhere)
     # so the file-heavy history is not re-billed every turn.  file_cache: a
@@ -171,20 +176,48 @@ class ExecutionSettings:
         return os.environ.get(env_var, "") or None if env_var else None
 
     def effective_context_window(self) -> int:
-        """Total context-window size (in tokens) of the active model.
+        """Total context-window size (in tokens) of the active model (PRD-136).
 
-        An explicit ``model_context_window`` override wins; otherwise the value
-        is resolved from the model id via lauren-ai's
-        :data:`~lauren_ai._config.MODEL_CONTEXT_WINDOWS` registry (which falls
-        back to a conservative default for unknown / proxied models).
+        Resolution order (most specific wins):
+
+        1. explicit ``[memory.context_windows]`` entry for the model (exact id);
+        2. lauren-ai's built-in :data:`~lauren_ai._config.MODEL_CONTEXT_WINDOWS`
+           registry (accurate for known models);
+        3. the config ``default`` key (the user's catch-all for unknown /
+           proxied models);
+        4. lauren-ai's hardcoded :data:`~lauren_ai._config.DEFAULT_CONTEXT_WINDOW`.
 
         :return: Context-window size in tokens.
         :rtype: int
         """
-        if self.model_context_window > 0:
-            return self.model_context_window
         from lauren_ai._config import context_window_for  # noqa: PLC0415
-        return context_window_for(self.effective_model())
+
+        model = self.effective_model().lower()
+        if model in self.context_windows:
+            return self.context_windows[model]
+        known = context_window_for(model, default=0)  # 0 → registry doesn't know it
+        if known:
+            return known
+        if "default" in self.context_windows:
+            return self.context_windows["default"]
+        return context_window_for(model)  # hardcoded library default
+
+    def effective_usable_budget(self) -> int:
+        """The live-window token budget derived from the model's context window.
+
+        ``window − completion reservation − head-room``.  This is what the
+        session :class:`~lauren_ai._memory.ShortTermMemory` is sized to (the
+        budget ``messages()`` trims to and that auto-compaction defends), and it
+        matches lauren-ai's ``AgentConfig.usable_context_budget`` so the live
+        window and the hard pre-send guard agree.  PRD-136: there is no separate
+        live-window setting — this is derived entirely from the window.
+
+        :return: Usable input-token budget for the live conversation window.
+        :rtype: int
+        """
+        window = self.effective_context_window()
+        reserve = max(_CONTEXT_RESERVE_MIN, window // 25)
+        return max(1, window - _MAX_OUTPUT_TOKENS - reserve)
 
 
 @dataclass
@@ -593,14 +626,20 @@ def _load_toml_with_extends(path: Path) -> dict[str, object]:
 def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     """Build an AgenthiccConfig from a merged dict."""
     ex = data.get("execution", {})
+    me = data.get("memory", {})
+    # PRD-136: per-model context windows live under [memory.context_windows] but
+    # are resolved by ExecutionSettings (the model is an execution concern).  Keys
+    # are lower-cased model ids (plus the reserved "default"); values are windows.
+    _context_windows = {
+        str(k).lower(): int(v) for k, v in dict(me.get("context_windows", {})).items()
+    }
     execution = ExecutionSettings(
         max_concurrent_intents=ex.get("max_concurrent_intents", 8),
         max_parallel_tasks=ex.get("max_parallel_tasks", 4),
         agent_pool_size=ex.get("agent_pool_size", 16),
         max_agent_turns=int(ex.get("max_agent_turns", 200)),
-        session_memory_max_tokens=int(ex.get("session_memory_max_tokens", 32_000)),
         auto_compact=bool(ex.get("auto_compact", True)),
-        model_context_window=int(ex.get("model_context_window", 0)),
+        context_windows=_context_windows,
         prompt_cache=bool(ex.get("prompt_cache", True)),
         file_cache=bool(ex.get("file_cache", True)),
         transport_max_retries=int(ex.get("transport_max_retries", 3)),
@@ -625,7 +664,6 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_live_tool_calls=int(to.get("max_live_tool_calls", 5)),
     )
 
-    me = data.get("memory", {})
     memory = MemorySettings(
         project_memory_path=str(me.get("project_memory_path", ".agenthicc/memory")),
         vector_db=me.get("vector_db", "sqlite-vec"),

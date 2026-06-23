@@ -1432,11 +1432,27 @@ class ExecutionSettings:
     model: str = ""                 # empty → PROVIDER_DEFAULT_MODELS[provider]
     api_key: str = ""               # empty → PROVIDER_API_KEY_ENVVAR[provider]
     base_url: str = ""              # Ollama / custom endpoint
-    model_context_window: int = 0   # PRD-133 B: 0 → resolve from model registry;
-                                     # set to the true window of a proxied model
+    # PRD-136: per-model context windows — the SINGLE source for the context
+    # system (replaces the old model_context_window + session_memory_max_tokens).
+    # Parsed from the [memory.context_windows] TOML table; key "default" is the
+    # unknown-model fallback.  Drives the hard guard, summariser chunk size, AND
+    # the live window the session memory is sized to.
+    context_windows: dict[str, int] = field(default_factory=dict)
 
     def effective_model(self) -> str: ...    # resolves empty model to default
     def effective_api_key(self) -> str | None: ...  # reads from env if empty
-    def effective_context_window(self) -> int: ...  # PRD-133 B: override or
-                                     # lauren_ai.context_window_for(model)
+    def effective_context_window(self) -> int: ...  # PRD-136: explicit entry →
+                                     # registry → config "default" → hardcoded
+    def effective_usable_budget(self) -> int: ...   # window − max_out − head-room;
+                                     # the live working window (auto-compaction defends it)
+```
+
+```toml
+# [memory.context_windows] — one knob per model (PRD-136)
+[memory.context_windows]
+default            = 1_000_000
+claude-opus-4-8    = 10_000_000
+"gpt-4.1"          = 1_000_000   # dotted ids MUST be quoted
+# Auto-compaction fires at  summarize_at × usable(window).
+# summarize_at is the working-set/cost dial; the window stays the hard ceiling.
 ```

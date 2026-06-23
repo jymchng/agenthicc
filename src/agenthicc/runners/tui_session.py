@@ -269,7 +269,7 @@ async def _build_session_context(
     from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
     _conversation_journal = ConversationJournal(journal_path_for(session_id))
     session_memory = JournaledShortTermMemory(
-        _conversation_journal, max_tokens=cfg.execution.session_memory_max_tokens
+        _conversation_journal, max_tokens=cfg.execution.effective_usable_budget()
     )
 
     # PRD-132 L1: install the durable, freshness-validated workspace file cache so

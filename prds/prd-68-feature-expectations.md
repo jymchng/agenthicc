@@ -1895,3 +1895,49 @@ summarisation, send-time truncation) into **one exact-count-driven ladder**.
 | 46.7 | A surviving `AgentContextOverflowError` is permanent (phase exits with the actionable message), not a blind re-run |
 | 46.8 | Journal stays in sync across compaction (`journal_reset`); resumed sessions carry the rolling summary forward |
 | 46.9 | New/updated suites green: `test_skill_memory_summarization.py` (lauren-ai: `_maybe_compact`, map-reduce, boundary, run_stream notice), `test_compactor.py` (agenthicc: map-reduce `compact_memory`) |
+
+## 47. Per-Model Context Windows — One Knob (PRD-136)
+
+The context system is now configured by **one** value per model. The
+`[memory.context_windows]` TOML table maps model id → window (with a reserved
+`default`), and it is the **single source of truth**: it replaces *both* the old
+scalar `[execution] model_context_window` *and* `[execution]
+session_memory_max_tokens`, which are removed.
+
+```toml
+[memory.context_windows]
+default            = 1_000_000     # fallback for unknown / proxied models
+claude-opus-4-8    = 10_000_000
+deepseek-v4-flash  = 250_000
+"gpt-4.1"          = 1_000_000     # ids containing a dot MUST be quoted in TOML
+```
+
+Everything derives from the resolved window: the hard pre-send guard ceiling, the
+summariser's map-reduce chunk budget, **and** the live working window the session
+memory is sized to (`ExecutionSettings.effective_usable_budget` = `window −
+max_output − head-room`). Auto-compaction therefore fires at `summarize_at ×
+usable(window)`, so a bigger configured window compacts later — and
+`summarize_at` is the working-set/cost dial (lower it for a cheaper steady-state
+without lowering the ceiling, so a single legitimately-huge tool result is still
+tolerated).
+
+| Aspect | Expectation |
+|---|---|
+| Single source | `[memory.context_windows]` replaces `model_context_window` **and** `session_memory_max_tokens` (both removed) |
+| Resolution | explicit model entry → lauren-ai registry → config `default` → hardcoded 200k |
+| Registry beats `default` | a known model not listed keeps its accurate registry window (a generic `default=1M` must not inflate `gpt-4o` and reintroduce overflow) |
+| Dotted ids | `"gpt-4.1" = …` (quoted) is parsed and matched |
+| One derivation | the window drives the hard guard, summariser chunk size, and the live window (`effective_usable_budget`) — model is an execution concern, so the resolver lives on `ExecutionSettings` though the TOML section is `[memory]` |
+| Cost dial | `summarize_at` shrinks the steady-state working set; the full window stays the hard ceiling |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 47.1 | `[memory.context_windows]` (default + per-model) is parsed into `ExecutionSettings.context_windows`; dotted ids supported when quoted |
+| 47.2 | `effective_context_window` resolves explicit → registry → `default` → hardcoded; an explicit entry overrides the registry, but the registry beats a generic `default` for known models |
+| 47.3 | `effective_usable_budget` = `window − max_output − max(4k, window/25)`; the session memory (TUI + workflow runners) is sized to it |
+| 47.4 | Both `model_context_window` and `session_memory_max_tokens` are removed — no separate field or code path |
+| 47.5 | Auto-compaction fires at `summarize_at × usable(window)`; a bigger window compacts later; lowering `summarize_at` shrinks the working set while the window stays the ceiling |
+| 47.6 | `context_window_for(model, default=0)` lets callers distinguish "registry knows it" from "fell back" |
+| 47.7 | Suites green: `test_model_context_budget.py` (resolution + usable budget + TOML), updated `test_config.py`; workflow e2e tests use a real config |
