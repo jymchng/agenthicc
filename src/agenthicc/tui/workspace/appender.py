@@ -12,6 +12,7 @@ This eliminates:
 
 Architecture: PRD-60 §7, PRD-66 §3.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,10 +30,13 @@ _RENDERERS: dict[str, _EventRenderer] = {}
 
 def register_renderer(kind: str) -> Callable[[_EventRenderer], _EventRenderer]:
     """Decorator: register a function as the renderer for *kind* events."""
+
     def decorator(fn: _EventRenderer) -> _EventRenderer:
         _RENDERERS[kind] = fn
         return fn
+
     return decorator
+
 
 if TYPE_CHECKING:
     from rich.console import Console
@@ -40,20 +44,36 @@ if TYPE_CHECKING:
 
 
 _TOOL_OP: dict[str, str] = {
-    "write_file":  "Update",
-    "patch_file":  "Update",
+    "write_file": "Update",
+    "patch_file": "Update",
     "append_file": "Append",
 }
 
 _LANG_MAP: dict[str, str] = {
-    "py": "python", "js": "javascript", "ts": "typescript",
-    "jsx": "jsx",   "tsx": "tsx",       "json": "json",
-    "yaml": "yaml", "yml": "yaml",      "toml": "toml",
-    "md": "markdown", "sh": "bash",     "rs": "rust",
-    "go": "go",     "rb": "ruby",       "c": "c",
-    "cpp": "cpp",   "h": "c",           "cs": "csharp",
-    "java": "java", "kt": "kotlin",     "swift": "swift",
-    "html": "html", "css": "css",       "sql": "sql",
+    "py": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "jsx": "jsx",
+    "tsx": "tsx",
+    "json": "json",
+    "yaml": "yaml",
+    "yml": "yaml",
+    "toml": "toml",
+    "md": "markdown",
+    "sh": "bash",
+    "rs": "rust",
+    "go": "go",
+    "rb": "ruby",
+    "c": "c",
+    "cpp": "cpp",
+    "h": "c",
+    "cs": "csharp",
+    "java": "java",
+    "kt": "kotlin",
+    "swift": "swift",
+    "html": "html",
+    "css": "css",
+    "sql": "sql",
 }
 
 
@@ -64,6 +84,7 @@ def _lang_for_path(path: str) -> str:
 
 def _hhmmss(ts: float) -> str:
     import time
+
     return time.strftime("%H:%M:%S", time.localtime(ts))
 
 
@@ -71,12 +92,11 @@ def _fmt_args(args: dict) -> str:
     if not args:
         return ""
     from rich.markup import escape as _e
+
     items = list(args.items())
     if len(items) == 1:
         return f"[dim]({_e(repr(items[0][1])[:60])})[/dim]"
-    return "[dim](" + ", ".join(
-        f"{_e(k)}={_e(repr(v)[:25])}" for k, v in items[:3]
-    ) + ")[/dim]"
+    return "[dim](" + ", ".join(f"{_e(k)}={_e(repr(v)[:25])}" for k, v in items[:3]) + ")[/dim]"
 
 
 class ScrollBufferAppender:
@@ -88,9 +108,9 @@ class ScrollBufferAppender:
     """
 
     def __init__(self, app_state: AppState, console: Console, max_live_tool_calls: int = 5) -> None:
-        self._state:   AppState                  = app_state
-        self._console: Console                   = console
-        self._unsub:   Callable[[], None] | None = None
+        self._state: AppState = app_state
+        self._console: Console = console
+        self._unsub: Callable[[], None] | None = None
         self._max_tool_calls: int = max_live_tool_calls
         # Small batch buffer to coalesce rapid events (e.g. many tool completions)
         self._pending: list[ConversationEvent] = []
@@ -137,7 +157,7 @@ class ScrollBufferAppender:
                     ev.rendered = True
                     try:
                         self._render_one(ev)
-                    except Exception:   # noqa: BLE001
+                    except Exception:  # noqa: BLE001
                         pass
 
     # ── rendering ─────────────────────────────────────────────────────────────
@@ -158,29 +178,34 @@ class ScrollBufferAppender:
             word = "call" if overflow == 1 else "calls"
             self._console.print(
                 f"  [dim]⎿ ...and {overflow} more tool {word}[/dim]",
-                markup=True, highlight=False,
+                markup=True,
+                highlight=False,
             )
 
     def _render_tool_complete(self, payload: dict) -> None:
         from rich.markup import escape as _e
-        name     = _e(payload.get("name", ""))
+
+        name = _e(payload.get("name", ""))
         args_str = payload.get("args_str", "")
-        icon     = "[green]✓[/green]" if payload.get("success", True) else "[red]✗[/red]"
-        dur      = payload.get("dur_str", "")
+        icon = "[green]✓[/green]" if payload.get("success", True) else "[red]✗[/red]"
+        dur = payload.get("dur_str", "")
         self._console.print(
             f"  [dim]⎿[/dim] [bold]{name}[/bold]{args_str}  {icon}{dur}",
-            markup=True, highlight=False,
+            markup=True,
+            highlight=False,
         )
         for ln in payload.get("output_lines", [])[:4]:
             self._console.print(
                 f"    [dim]{_e(str(ln)[:120])}[/dim]",
-                markup=True, highlight=False,
+                markup=True,
+                highlight=False,
             )
-        if len(payload.get("output_lines", [])) > 4:
-            extra = len(payload["output_lines"]) - 4
+        extra = int(payload.get("output_more", max(0, len(payload.get("output_lines", [])) - 4)))
+        if extra > 0:
             self._console.print(
                 f"    [dim](+{extra} more lines)[/dim]",
-                markup=True, highlight=False,
+                markup=True,
+                highlight=False,
             )
 
     # ── idle status header (printed once before each new prompt) ──────────────
@@ -188,40 +213,45 @@ class ScrollBufferAppender:
     def print_idle_header(self) -> None:
         """Print session info + separator before the input prompt."""
         import shutil
-        conv  = self._state.conversation
-        cols  = shutil.get_terminal_size((80, 24)).columns
-        sid   = conv.session_id() or "session"
+
+        conv = self._state.conversation
+        cols = shutil.get_terminal_size((80, 24)).columns
+        sid = conv.session_id() or "session"
         turns = conv.turn_count()
-        cost  = f"${conv.cost_usd():.3f}"
+        cost = f"${conv.cost_usd():.3f}"
         self._console.print(
             f" [dim]{sid}  |  {turns} turn{'s' if turns != 1 else ''}  |  {cost}[/dim]"
             f"  [cyan]↑ {conv.tokens_in():,}[/cyan]"
             f"  [green]↓ {conv.tokens_out():,}[/green]",
-            markup=True, highlight=False,
+            markup=True,
+            highlight=False,
         )
         self._console.print(f"[dim]{'─' * cols}[/dim]", markup=True, highlight=False)
 
 
 # ── built-in renderers — registered at module load time, after class is complete ──
 
+
 @register_renderer("turn_start")
 def _render_turn_start(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     self._group_count = 0
     agent_name = ev.payload.get("agent_name", "assistant")
     self._console.print(
-        f"[bold cyan]●[/bold cyan] [bold]{agent_name}[/bold]"
-        f"  [dim]{_hhmmss(ev.timestamp)}[/dim]",
-        markup=True, highlight=False,
+        f"[bold cyan]●[/bold cyan] [bold]{agent_name}[/bold]  [dim]{_hhmmss(ev.timestamp)}[/dim]",
+        markup=True,
+        highlight=False,
     )
 
 
 @register_renderer("user_message")
 def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
+
     text = ev.payload.get("text", "")
     self._console.print(
         f"[bold yellow]❯[/bold yellow] {_e(text)}",
-        markup=True, highlight=False,
+        markup=True,
+        highlight=False,
         style="on grey11",
     )
     self._console.print()
@@ -243,29 +273,33 @@ def _render_text(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     text = ev.payload.get("text", "")
     if text.strip():
         from rich.markdown import Markdown  # noqa: PLC0415
+
         self._console.print(Markdown(text), end="")
 
 
 @register_renderer("thinking_step")
 def _render_thinking_step(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
+
     step = ev.payload.get("step", "")
     done = ev.payload.get("done", False)
     icon = "[green]✓[/green]" if done else "[yellow]→[/yellow]"
     self._console.print(
         f"  {icon} [dim]{_e(step)}[/dim]",
-        markup=True, highlight=False,
+        markup=True,
+        highlight=False,
     )
 
 
 @register_renderer("file_modified")
 def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from agenthicc.tui.diff_renderer import render_file_diff, render_file_create  # noqa: PLC0415
-    path      = ev.payload.get("path", "")
+
+    path = ev.payload.get("path", "")
     old_lines = ev.payload.get("old_lines")
     new_lines = ev.payload.get("new_lines")
-    tool      = ev.payload.get("tool", "write_file")
-    lang      = _lang_for_path(path)
+    tool = ev.payload.get("tool", "write_file")
+    lang = _lang_for_path(path)
 
     if old_lines is not None and new_lines is not None:
         if old_lines == []:
@@ -282,10 +316,12 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
             )
     else:
         from rich.markup import escape as _e  # noqa: PLC0415
+
         op = _TOOL_OP.get(tool, "Update")
         self._console.print(
             f"  [dim]{op}:[/dim] [cyan]{_e(path)}[/cyan]",
-            markup=True, highlight=False,
+            markup=True,
+            highlight=False,
         )
 
 
@@ -293,16 +329,19 @@ def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     self._flush_group_summary()
     from rich.markup import escape as _e  # noqa: PLC0415
-    msg    = ev.payload.get("message", "")
+
+    msg = ev.payload.get("message", "")
     detail = ev.payload.get("detail", "")
     self._console.print(
         f"\n[red bold]ERROR[/red bold] {_e(msg)}",
-        markup=True, highlight=False,
+        markup=True,
+        highlight=False,
     )
     if detail:
         self._console.print(
             f"[dim]{_e(detail[:500])}[/dim]",
-            markup=True, highlight=False,
+            markup=True,
+            highlight=False,
         )
 
 
@@ -322,7 +361,8 @@ def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     if elapsed >= 1.0:
         self._console.print(
             f"[dim]✾ Worked for {_fmt_worked(elapsed)}[/dim]",
-            markup=True, highlight=False,
+            markup=True,
+            highlight=False,
         )
     self._console.print()
 
@@ -330,36 +370,40 @@ def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 @register_renderer("mention_chips")
 def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
+
     for chip in ev.payload.get("chips", []):
-        raw  = chip.get("raw", "")
+        raw = chip.get("raw", "")
         kind = chip.get("kind", "file")
-        ok   = chip.get("ok", True)
+        ok = chip.get("ok", True)
         path = _e(raw.lstrip("@"))
 
         # Verb mirrors what actually happened: Read for files/globs/URLs,
         # Listed for directories.  Failed resolutions show the error glyph.
         if kind == "directory":
-            verb  = "Listed"
+            verb = "Listed"
             color = "cyan"
         elif kind == "url":
-            verb  = "Fetched"
+            verb = "Fetched"
             color = "cyan"
         else:
-            verb  = "Read"
+            verb = "Read"
             color = "cyan"
 
         icon = "" if ok else "[red]✗[/red] "
         self._console.print(
             f"  [dim]⎿[/dim] {icon}[bold]{verb}[/bold]([{color}]{path}[/{color}])",
-            markup=True, highlight=False,
+            markup=True,
+            highlight=False,
         )
 
 
 # ── Generic system text (compactor, etc.) ─────────────────────────────────────
 
+
 @register_renderer("system")
 def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
+
     text = str(ev.payload.get("text", ""))
     if text:
         self._console.print(f"[dim]{_e(text)}[/dim]", markup=True, highlight=False)
@@ -368,53 +412,61 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
 
 # ── Subagent pool renderers (PRD-124 Phase 3) ─────────────────────────────────
 
+
 @register_renderer("subagent_pool_started")
 def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
+
     total = ev.payload.get("total", 0)
     workers = ev.payload.get("workers", [])
     self._console.print(
         f"  [bold]▶ Spawning {total} subagent{'s' if total != 1 else ''}[/bold]",
-        markup=True, highlight=False,
+        markup=True,
+        highlight=False,
     )
     for w in workers:
         label = _e(str(w.get("label", "")))
-        task  = _e(str(w.get("task", w.get("type", "")))[:80])
+        task = _e(str(w.get("task", w.get("type", "")))[:80])
         self._console.print(
             f"  [dim]⎿[/dim] [cyan]{label}[/cyan]  [dim]{task}[/dim]",
-            markup=True, highlight=False,
+            markup=True,
+            highlight=False,
         )
 
 
 @register_renderer("subagent_worker_done")
 def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
-    ok    = bool(ev.payload.get("ok", True))
+
+    ok = bool(ev.payload.get("ok", True))
     label = _e(str(ev.payload.get("label", "")))
-    done  = ev.payload.get("done", 0)
+    done = ev.payload.get("done", 0)
     total = ev.payload.get("total", 0)
-    ms    = float(ev.payload.get("duration_ms", 0.0))
-    dur   = f"  [dim]{ms / 1_000:.1f}s[/dim]"
+    ms = float(ev.payload.get("duration_ms", 0.0))
+    dur = f"  [dim]{ms / 1_000:.1f}s[/dim]"
     if ok:
         self._console.print(
             f"  [green]✓[/green] [{done}/{total}] [cyan]{label}[/cyan]{dur}",
-            markup=True, highlight=False,
+            markup=True,
+            highlight=False,
         )
     else:
         error = _e(str(ev.payload.get("error", "failed"))[:80])
         self._console.print(
             f"  [red]✗[/red] [{done}/{total}] [cyan]{label}[/cyan]  [dim]{error}[/dim]",
-            markup=True, highlight=False,
+            markup=True,
+            highlight=False,
         )
 
 
 @register_renderer("subagent_pool_done")
 def _render_subagent_pool_done(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     succeeded = ev.payload.get("succeeded", 0)
-    total     = ev.payload.get("total", 0)
-    failed    = ev.payload.get("failed", 0)
-    suffix    = f"  [red]{failed} failed[/red]" if failed else ""
+    total = ev.payload.get("total", 0)
+    failed = ev.payload.get("failed", 0)
+    suffix = f"  [red]{failed} failed[/red]" if failed else ""
     self._console.print(
         f"  [bold]◈ {succeeded}/{total} subagent{'s' if total != 1 else ''} complete[/bold]{suffix}",
-        markup=True, highlight=False,
+        markup=True,
+        highlight=False,
     )

@@ -38,6 +38,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `ToolResult` / `ToolResultEnvelope` | `agenthicc.tools` | Typed compatibility and adapter result envelopes |
 | `ToolSandbox` / `WorkspaceView` | `agenthicc.tools` | Timeout, resource, network, and real-path boundaries |
 | `ToolMetadata` / `ToolErrorKind` | `agenthicc.tools` | Generated catalog metadata and stable error taxonomy |
+| `SearchWebTool` / `FetchPageTool` | `agenthicc.skills.web_search` | Native lauren-ai tools for Brave search and visible page-text extraction |
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
 | `Workspace` | `agenthicc.tui.workspace` | Rich Live UI root |
 | `UnifiedInputSession` | `agenthicc.tui.input` | Lifetime input/raw-mode loop |

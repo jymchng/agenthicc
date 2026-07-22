@@ -1,8 +1,7 @@
 """Tests for HTTP timeout safety across tool layer (PRD-108)."""
+
 from __future__ import annotations
 
-import asyncio
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,10 +11,12 @@ from agenthicc.tools.http import agenthicc_http_client, configure, is_network_er
 
 # ── tools/http.py — shared factory ───────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_configure_sets_default_timeout() -> None:
     configure(45.0)
     from agenthicc.tools import http as _http
+
     assert _http._default_timeout == 45.0
     configure(30.0)  # restore
 
@@ -24,6 +25,7 @@ def test_configure_sets_default_timeout() -> None:
 def test_configure_clamps_negative_to_zero() -> None:
     configure(-5.0)
     from agenthicc.tools import http as _http
+
     assert _http._default_timeout == 0.0
     configure(30.0)  # restore
 
@@ -46,6 +48,7 @@ def test_is_network_error_oserror() -> None:
 @pytest.mark.unit
 def test_is_network_error_httpx_read_timeout() -> None:
     import httpx
+
     exc = httpx.ReadTimeout("read timed out", request=None)
     assert is_network_error(exc)
 
@@ -53,6 +56,7 @@ def test_is_network_error_httpx_read_timeout() -> None:
 @pytest.mark.unit
 def test_is_network_error_httpx_connect_timeout() -> None:
     import httpx
+
     exc = httpx.ConnectTimeout("connect timed out", request=None)
     assert is_network_error(exc)
 
@@ -60,6 +64,7 @@ def test_is_network_error_httpx_connect_timeout() -> None:
 @pytest.mark.unit
 def test_is_network_error_httpx_connect_error() -> None:
     import httpx
+
     exc = httpx.ConnectError("connection refused", request=None)
     assert is_network_error(exc)
 
@@ -78,6 +83,7 @@ def test_is_network_error_runtime_error_is_false() -> None:
 def test_is_network_error_boto_read_timeout() -> None:
     class ReadTimeoutError(Exception):
         pass
+
     assert is_network_error(ReadTimeoutError("S3 timed out"))
 
 
@@ -85,12 +91,12 @@ def test_is_network_error_boto_read_timeout() -> None:
 async def test_agenthicc_http_client_yields_client() -> None:
     async with agenthicc_http_client() as client:
         import httpx
+
         assert isinstance(client, httpx.AsyncClient)
 
 
 @pytest.mark.unit
 async def test_agenthicc_http_client_respects_timeout_override() -> None:
-    import httpx
     async with agenthicc_http_client(timeout=42.0) as client:
         # httpx.Timeout stores read timeout as a float
         assert client.timeout.read == 42.0
@@ -98,7 +104,6 @@ async def test_agenthicc_http_client_respects_timeout_override() -> None:
 
 @pytest.mark.unit
 async def test_agenthicc_http_client_zero_timeout_means_none() -> None:
-    import httpx
     configure(0.0)
     async with agenthicc_http_client() as client:
         # 0.0 → None (unbounded)
@@ -107,6 +112,7 @@ async def test_agenthicc_http_client_zero_timeout_means_none() -> None:
 
 
 # ── SearchWebTool — network error boundary ────────────────────────────────────
+
 
 @pytest.mark.unit
 async def test_search_web_tool_returns_error_dict_on_read_timeout() -> None:
@@ -118,13 +124,11 @@ async def test_search_web_tool_returns_error_dict_on_read_timeout() -> None:
 
     with patch("agenthicc.tools.http.agenthicc_http_client") as mock_cm:
         mock_client = AsyncMock()
-        mock_client.get.side_effect = httpx.ReadTimeout(
-            "Read timed out", request=MagicMock()
-        )
+        mock_client.get.side_effect = httpx.ReadTimeout("Read timed out", request=MagicMock())
         mock_cm.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await tool.execute({"query": "test query"}, {})
+        result = await tool.run("test query")
 
     assert result["ok"] is False
     assert "ReadTimeout" in result["error"]
@@ -140,13 +144,11 @@ async def test_search_web_tool_returns_error_dict_on_connect_timeout() -> None:
 
     with patch("agenthicc.tools.http.agenthicc_http_client") as mock_cm:
         mock_client = AsyncMock()
-        mock_client.get.side_effect = httpx.ConnectTimeout(
-            "Connect timed out", request=MagicMock()
-        )
+        mock_client.get.side_effect = httpx.ConnectTimeout("Connect timed out", request=MagicMock())
         mock_cm.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await tool.execute({"query": "test"}, {})
+        result = await tool.run("test")
 
     assert result["ok"] is False
     assert "ConnectTimeout" in result["error"]
@@ -166,7 +168,7 @@ async def test_search_web_tool_reraises_non_network_errors() -> None:
         mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
 
         with pytest.raises(KeyError):
-            await tool.execute({"query": "test"}, {})
+            await tool.run("test")
 
 
 @pytest.mark.unit
@@ -179,20 +181,19 @@ async def test_fetch_page_tool_error_includes_class_name() -> None:
 
     with patch("agenthicc.tools.http.agenthicc_http_client") as mock_cm:
         mock_client = AsyncMock()
-        mock_client.get.side_effect = httpx.ReadTimeout(
-            "read timed out", request=MagicMock()
-        )
+        mock_client.get.side_effect = httpx.ReadTimeout("read timed out", request=MagicMock())
         mock_cm.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await tool.execute({"url": "https://example.com"}, {})
+        result = await tool.run("https://example.com")
 
     assert result["ok"] is False
-    assert "ReadTimeout" in result["error"]   # class name present
+    assert "ReadTimeout" in result["error"]  # class name present
     assert result.get("recoverable") is True
 
 
 # ── Outlook _OutlookNetworkError boundary ─────────────────────────────────────
+
 
 @pytest.mark.unit
 async def test_outlook_get_raises_outlook_network_error_on_read_timeout() -> None:
@@ -203,9 +204,7 @@ async def test_outlook_get_raises_outlook_network_error_on_read_timeout() -> Non
 
     with patch("agenthicc.tools.http.agenthicc_http_client") as mock_cm:
         mock_client = AsyncMock()
-        mock_client.get.side_effect = httpx.ReadTimeout(
-            "read timed out", request=MagicMock()
-        )
+        mock_client.get.side_effect = httpx.ReadTimeout("read timed out", request=MagicMock())
         mock_cm.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -262,6 +261,7 @@ async def test_outlook_safe_call_passes_through_on_success() -> None:
 
 # ── auth.py — AuthNetworkError ────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 async def test_auth_exchange_code_raises_auth_network_error_on_timeout() -> None:
     import httpx
@@ -271,9 +271,7 @@ async def test_auth_exchange_code_raises_auth_network_error_on_timeout() -> None
 
     with patch("agenthicc.tools.http.agenthicc_http_client") as mock_cm:
         mock_http = AsyncMock()
-        mock_http.post.side_effect = httpx.ReadTimeout(
-            "read timed out", request=MagicMock()
-        )
+        mock_http.post.side_effect = httpx.ReadTimeout("read timed out", request=MagicMock())
         mock_cm.return_value.__aenter__ = AsyncMock(return_value=mock_http)
         mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -291,15 +289,17 @@ async def test_auth_refresh_raises_auth_network_error_on_timeout() -> None:
 
     client = AuthClient.__new__(AuthClient)
     bundle = TokenBundle(
-        access_token="old", refresh_token="rt",
-        expires_at=0.0, plan="free", email="u@e.com", user_id="u1",
+        access_token="old",
+        refresh_token="rt",
+        expires_at=0.0,
+        plan="free",
+        email="u@e.com",
+        user_id="u1",
     )
 
     with patch("agenthicc.tools.http.agenthicc_http_client") as mock_cm:
         mock_http = AsyncMock()
-        mock_http.post.side_effect = httpx.ConnectTimeout(
-            "connect timed out", request=MagicMock()
-        )
+        mock_http.post.side_effect = httpx.ConnectTimeout("connect timed out", request=MagicMock())
         mock_cm.return_value.__aenter__ = AsyncMock(return_value=mock_http)
         mock_cm.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -334,9 +334,11 @@ async def test_auth_network_error_is_not_bare_read_timeout() -> None:
 
 # ── config — http_timeout_s field ────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_tool_settings_has_http_timeout_s() -> None:
     from agenthicc.config import ToolSettings
+
     settings = ToolSettings()
     assert hasattr(settings, "http_timeout_s")
     assert settings.http_timeout_s == 30.0
@@ -345,5 +347,6 @@ def test_tool_settings_has_http_timeout_s() -> None:
 @pytest.mark.unit
 def test_tool_settings_http_timeout_s_configurable() -> None:
     from agenthicc.config import ToolSettings
+
     settings = ToolSettings(http_timeout_s=60.0)
     assert settings.http_timeout_s == 60.0

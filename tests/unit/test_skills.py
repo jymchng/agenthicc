@@ -1,4 +1,5 @@
 """Unit tests for the skills system (PRD-18)."""
+
 from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,7 +25,7 @@ class TestSkillRegistry:
     def test_docker_loads_without_config(self):
         reg = SkillRegistry()
         result = reg.load("docker")
-        assert result is True   # docker skill has empty tools list but loads
+        assert result is True  # docker skill has empty tools list but loads
 
     def test_system_prompt_empty_no_skills(self):
         assert SkillRegistry().system_prompt_suffix == ""
@@ -42,10 +43,15 @@ class TestSkillRegistry:
 
     def test_broken_skill_no_crash(self):
         from agenthicc.skills import SkillBundle
+
         class _Broken(SkillBundle):
             @property
-            def name(self): return "_broken_99"
-            def tools(self, config): raise RuntimeError("broken")
+            def name(self):
+                return "_broken_99"
+
+            def tools(self, config):
+                raise RuntimeError("broken")
+
         _BUILTIN["_broken_99"] = _Broken
         try:
             reg = SkillRegistry()
@@ -57,28 +63,28 @@ class TestSkillRegistry:
 class TestSearchWebTool:
     async def test_no_api_key_returns_error(self):
         t = SearchWebTool(api_key="")
-        r = await t.execute({"query": "test"}, {})
+        r = await t.run("test")
         assert r["ok"] is False
 
     async def test_brave_search_mocked(self):
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {"web": {"results": [
-            {"title": "T1", "url": "https://ex.com", "description": "D1"}
-        ]}}
+        mock_resp.json.return_value = {
+            "web": {"results": [{"title": "T1", "url": "https://ex.com", "description": "D1"}]}
+        }
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_resp)
         with patch("httpx.AsyncClient", return_value=mock_client):
             t = SearchWebTool(api_key="key", engine="brave")
-            r = await t.execute({"query": "hello", "n": 1}, {})
+            r = await t.run("hello", 1)
         assert r["count"] == 1
         assert r["results"][0]["title"] == "T1"
 
     async def test_unknown_engine_error(self):
         t = SearchWebTool(api_key="k", engine="unknown_engine")
-        r = await t.execute({"query": "x"}, {})
+        r = await t.run("x")
         assert r["ok"] is False
 
 
@@ -93,12 +99,12 @@ class TestFetchPageTool:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.get = AsyncMock(return_value=mock_resp)
         with patch("httpx.AsyncClient", return_value=mock_client):
-            r = await FetchPageTool().execute({"url": "https://example.com"}, {})
+            r = await FetchPageTool().run("https://example.com")
         assert r["ok"] is True
         assert "<html>" not in r["content"]
         assert "Hello" in r["content"] or "World" in r["content"]
 
     async def test_network_error_returns_ok_false(self):
         with patch("httpx.AsyncClient", side_effect=Exception("connection refused")):
-            r = await FetchPageTool().execute({"url": "https://bad.example"}, {})
+            r = await FetchPageTool().run("https://bad.example")
         assert r["ok"] is False

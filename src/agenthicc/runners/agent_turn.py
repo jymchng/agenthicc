@@ -7,18 +7,27 @@ independently testable.
 ``_run_agent_turn`` is kept as a thin compatibility shim so all existing
 call sites continue to work without modification.
 """
+
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agenthicc.runners.agent_turn_context import AgentTurnContext
+from agenthicc.tools.hooks import (
+    AfterToolHookDecision,
+    ErrorToolHookDecision,
+    LifecycleHook,
+    ToolCallContext,
+)
 
 
 # ── Permanent-error detection (PRD-117) ───────────────────────────────────────
+
 
 def _http_status_code(exc: BaseException) -> int | None:
     """Return the HTTP status code carried by *exc*, or ``None``.
@@ -54,17 +63,28 @@ def _is_transient_network_error(exc: BaseException) -> bool:
     # ``asyncio.wait_for`` timeouts (e.g. a tool's own watchdog), masking
     # programming errors.  Genuine network timeouts surface under the
     # httpx / anthropic names below.
-    _TRANSIENT_NAMES = frozenset({
-        # httpx
-        "ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout",
-        "ConnectError", "ReadError", "WriteError", "RemoteProtocolError",
-        # anthropic / openai SDK
-        "APITimeoutError", "APIConnectionError",
-        # generic
-        "NetworkError", "RemoteDisconnected",
-    })
+    _TRANSIENT_NAMES = frozenset(
+        {
+            # httpx
+            "ReadTimeout",
+            "ConnectTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+            "ConnectError",
+            "ReadError",
+            "WriteError",
+            "RemoteProtocolError",
+            # anthropic / openai SDK
+            "APITimeoutError",
+            "APIConnectionError",
+            # generic
+            "NetworkError",
+            "RemoteDisconnected",
+        }
+    )
     try:
         from lauren_ai._exceptions import TransientTransportError  # noqa: PLC0415
+
         if isinstance(exc, TransientTransportError):
             return True
     except ImportError:
@@ -111,6 +131,7 @@ def _is_permanent_error(exc: BaseException) -> bool:
     # All other 4xx are client errors (bad model name, bad API key, …) — permanent.
     return 400 <= status < 500 and status != 429
 
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -123,27 +144,71 @@ if TYPE_CHECKING:
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.plugins.registry import PluginTool
     from agenthicc.skills.loader import SkillDef
-    from agenthicc.tools.approval import ApprovalGate, ApprovalService
-    from agenthicc.tools.capability_gate import ToolCapabilityGate
+    from agenthicc.tools.approval import ApprovalService
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
 
 
 # ── formatting helper (module-level, unchanged) ───────────────────────────────
 
+
 def _fmt_args(args: dict[str, object]) -> str:
     from rich.markup import escape as _e  # noqa: PLC0415
+
     items = list(args.items())
     if not items:
         return ""
     if len(items) == 1:
         return f"[dim]({_e(repr(items[0][1])[:60])})[/dim]"
-    return "[dim](" + ", ".join(
-        f"{_e(k)}={_e(repr(v)[:25])}" for k, v in items[:3]
-    ) + ")[/dim]"
+    return "[dim](" + ", ".join(f"{_e(k)}={_e(repr(v)[:25])}" for k, v in items[:3]) + ")[/dim]"
+
+
+def _tool_output_preview(result: object) -> tuple[list[str], int]:
+    """Return a bounded preview and omitted-line count for a tool result."""
+    if isinstance(result, dict):
+        for key in ("content", "output", "stdout", "result", "error"):
+            value = result.get(key)
+            if isinstance(value, str):
+                text = value
+                break
+        else:
+            text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+    elif isinstance(result, str):
+        text = result
+    else:
+        text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+
+    lines = text.splitlines()
+    if not lines and text:
+        lines = [text]
+    return lines[:4], max(0, len(lines) - 4)
+
+
+class _ToolOutputCaptureHook(LifecycleHook):
+    """Capture tool results for the scroll-buffer completion event."""
+
+    def __init__(self, outputs: dict[str, tuple[list[str], int]]) -> None:
+        self._outputs = outputs
+
+    async def after_tool_call(
+        self,
+        result: object,
+        ctx: ToolCallContext,
+    ) -> AfterToolHookDecision:
+        self._outputs[ctx.tool_use_id] = _tool_output_preview(result)
+        return AfterToolHookDecision.proceed()
+
+    async def on_tool_error(
+        self,
+        exc: Exception,
+        ctx: ToolCallContext,
+    ) -> ErrorToolHookDecision:
+        self._outputs[ctx.tool_use_id] = ([f"{type(exc).__name__}: {exc}"], 0)
+        return ErrorToolHookDecision.reraise()
 
 
 # ── AgentTurnRunner ───────────────────────────────────────────────────────────
+
 
 class AgentTurnRunner:
     """Executes a single agent turn described by an ``AgentTurnContext``.
@@ -158,15 +223,16 @@ class AgentTurnRunner:
         self._ctx = ctx
 
         # Mutable state shared between methods and signal-handler closures.
-        self._intent_id:      str  = ""
-        self._agent_id:       str  = ""
-        self._model_id:       str  = ""
-        self._model_short:    str  = ""
-        self._turn_active:    bool = True
+        self._intent_id: str = ""
+        self._agent_id: str = ""
+        self._model_id: str = ""
+        self._model_short: str = ""
+        self._turn_active: bool = True
 
         # Tool tracking — populated by signal handlers.
-        self._tool_args:      dict[str, dict[str, object]]  = {}
-        self._tool_names:     dict[str, str]            = {}
+        self._tool_args: dict[str, dict[str, object]] = {}
+        self._tool_names: dict[str, str] = {}
+        self._tool_outputs: dict[str, tuple[list[str], int]] = {}
         self._file_snapshots: dict[str, tuple[str, str]] = {}
 
         # Content produced during the turn.
@@ -179,9 +245,10 @@ class AgentTurnRunner:
         ctx = self._ctx
         if ctx.runner is None:
             if ctx.conv_store:
-                ctx.conv_store.append_event("error", {
-                    "message": "⚠ No LLM configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
-                })
+                ctx.conv_store.append_event(
+                    "error",
+                    {"message": "⚠ No LLM configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."},
+                )
             return
 
         self._resolve_model()
@@ -189,7 +256,7 @@ class AgentTurnRunner:
         self._begin_conv_turn()
         self._register_signal_handlers()
 
-        agent_text     = await self._inject_mentions()
+        agent_text = await self._inject_mentions()
         self._inject_skills()
 
         agent_instance, active_runner = self._build_agent()
@@ -220,7 +287,7 @@ class AgentTurnRunner:
             self._model_id = override
         else:
             transport = getattr(ctx.runner, "_transport", None)
-            cfg       = getattr(transport, "_config", None)
+            cfg = getattr(transport, "_config", None)
             self._model_id = getattr(cfg, "model", "unknown") if cfg else "unknown"
         self._model_short = self._model_id.split("/")[-1]
 
@@ -228,15 +295,19 @@ class AgentTurnRunner:
 
     async def _emit_intent_created(self) -> None:
         from agenthicc.kernel import Event  # noqa: PLC0415
+
         # PRD-129 Phase 3: a resumed turn reuses its original id so the durable
         # tool ledger and journal turn markers line up.
         self._intent_id = self._ctx.resume_turn_id or uuid.uuid4().hex
-        self._agent_id  = f"agent-{self._intent_id[:8]}"
+        self._agent_id = f"agent-{self._intent_id[:8]}"
         await self._ctx.processor.emit(
-            Event.create("IntentCreated", {
-                "intent_id": self._intent_id,
-                "raw_text":  self._ctx.text,
-            })
+            Event.create(
+                "IntentCreated",
+                {
+                    "intent_id": self._intent_id,
+                    "raw_text": self._ctx.text,
+                },
+            )
         )
 
     # ── step 3: conversation turn lifecycle ───────────────────────────────────
@@ -245,10 +316,13 @@ class AgentTurnRunner:
         conv = self._ctx.conv_store
         if conv:
             conv.begin_turn(f"assistant ({self._model_short})", self._agent_id)
-            conv.append_event("turn_start", {
-                "turn_id":    self._agent_id,
-                "agent_name": f"assistant ({self._model_short})",
-            })
+            conv.append_event(
+                "turn_start",
+                {
+                    "turn_id": self._agent_id,
+                    "agent_name": f"assistant ({self._model_short})",
+                },
+            )
 
     # ── step 4: signal handlers ───────────────────────────────────────────────
 
@@ -269,9 +343,10 @@ class AgentTurnRunner:
                 return
             args = dict(getattr(sig, "input", {}) or {})
             name = getattr(sig, "tool_name", "")
-            tid  = getattr(sig, "tool_use_id", "")
+            tid = getattr(sig, "tool_use_id", "")
             self._tool_names[tid] = name
-            self._tool_args[tid]  = args
+            self._tool_args[tid] = args
+            self._tool_outputs.pop(tid, None)
             if self._ctx.conv_store:
                 self._ctx.conv_store.set_tool(name)
             if name in self._FILE_EDIT_TOOLS and args.get("path"):
@@ -284,11 +359,7 @@ class AgentTurnRunner:
             await self._handle_tool_complete(sig)
 
     async def _snapshot_file(self, tid: str, rel_path: str) -> None:
-        full = (
-            os.path.join(os.getcwd(), rel_path)
-            if not os.path.isabs(rel_path)
-            else rel_path
-        )
+        full = os.path.join(os.getcwd(), rel_path) if not os.path.isabs(rel_path) else rel_path
         try:
             original = await asyncio.to_thread(
                 lambda p=full: open(p).read() if os.path.exists(p) else ""
@@ -298,61 +369,69 @@ class AgentTurnRunner:
             pass
 
     async def _handle_tool_complete(self, sig: ToolCallComplete) -> None:
-        tid:     str        = getattr(sig, "tool_use_id", "")
-        success: bool       = bool(getattr(sig, "success", True))
-        ms:      float | None = getattr(sig, "duration_ms", None)
-        name    = self._tool_names.pop(tid, tid)
-        args    = self._tool_args.pop(tid, {})
-        conv    = self._ctx.conv_store
+        tid: str = getattr(sig, "tool_use_id", "")
+        success: bool = bool(getattr(sig, "success", True))
+        ms: float | None = getattr(sig, "duration_ms", None)
+        name = self._tool_names.pop(tid, tid)
+        args = self._tool_args.pop(tid, {})
+        conv = self._ctx.conv_store
 
         showed_diff = False
         if tid in self._file_snapshots:
             rel_path, original = self._file_snapshots.pop(tid)
-            full = (
-                os.path.join(os.getcwd(), rel_path)
-                if not os.path.isabs(rel_path)
-                else rel_path
-            )
+            full = os.path.join(os.getcwd(), rel_path) if not os.path.isabs(rel_path) else rel_path
             try:
                 new_content = await asyncio.to_thread(
                     lambda p=full: open(p).read() if os.path.exists(p) else ""
                 )
                 old_lines = original.splitlines()
                 new_lines = new_content.splitlines()
-                changed   = old_lines != new_lines
+                changed = old_lines != new_lines
                 if changed and conv:
-                    conv.append_event("file_modified", {
-                        "path":      rel_path,
-                        "old_lines": old_lines,
-                        "new_lines": new_lines,
-                        "tool":      name,
-                    })
+                    conv.append_event(
+                        "file_modified",
+                        {
+                            "path": rel_path,
+                            "old_lines": old_lines,
+                            "new_lines": new_lines,
+                            "tool": name,
+                        },
+                    )
                     showed_diff = True
             except Exception:  # noqa: BLE001
                 pass
 
         if conv:
             conv.clear_tool(success=success)
+            output_lines, output_more = self._tool_outputs.pop(tid, ([], 0))
+            if not success and not output_lines and getattr(sig, "error", None):
+                output_lines = [str(sig.error)]
             # Skip the generic tool_complete line when a file-diff was already
             # rendered — the diff is more informative and the duplicate line
             # ("⎿ write_file(...)  ✓  4ms") is visual noise below the diff.
             if not showed_diff:
-                conv.append_event("tool_complete", {
-                    "tool_use_id":  tid,
-                    "name":         name,
-                    "success":      success,
-                    "args_str":     _fmt_args(args),
-                    "dur_str":      f"  [dim]{ms:.0f}ms[/dim]" if ms else "",
-                    "output_lines": [],
-                })
+                conv.append_event(
+                    "tool_complete",
+                    {
+                        "tool_use_id": tid,
+                        "name": name,
+                        "success": success,
+                        "args_str": _fmt_args(args),
+                        "dur_str": f"  [dim]{ms:.0f}ms[/dim]" if ms else "",
+                        "output_lines": output_lines,
+                        "output_more": output_more,
+                    },
+                )
 
     # ── step 5: @mention injection ────────────────────────────────────────────
 
     async def _inject_mentions(self) -> str:
         """Resolve @mentions and emit mention chips. Returns agent_text."""
         from agenthicc.mentions.injector import (  # noqa: PLC0415
-            build_context_prefix, InjectionConfig,
+            build_context_prefix,
+            InjectionConfig,
         )
+
         ctx = self._ctx
         mention_cfg = InjectionConfig(
             mention_token_budget=getattr(ctx.exec_cfg, "mention_token_budget", 32_000),
@@ -371,9 +450,9 @@ class AgentTurnRunner:
         if injected and ctx.conv_store:
             chips = [
                 {
-                    "raw":  r.mention.raw,
-                    "kind": r.mention.kind.value,   # "file" | "directory" | "url" | "glob" | "unresolved"
-                    "ok":   getattr(r, "ok", True),
+                    "raw": r.mention.raw,
+                    "kind": r.mention.kind.value,  # "file" | "directory" | "url" | "glob" | "unresolved"
+                    "ok": getattr(r, "ok", True),
                 }
                 for r in injected
             ]
@@ -386,14 +465,15 @@ class AgentTurnRunner:
     def _inject_skills(self) -> None:
         """Find matching skills and build self._skill_suffix."""
         from agenthicc.skills.runner import (  # noqa: PLC0415
-            find_matching_skills, process_skill_body,
+            find_matching_skills,
+            process_skill_body,
         )
+
         ctx = self._ctx
         matched = find_matching_skills(ctx.text, ctx.skills or {})
         if matched:
             self._skill_suffix = "\n\n---\n\n" + "\n\n".join(
-                f"## Skill: {s.name}\n"
-                f"{process_skill_body(s, args=[], cwd=Path(os.getcwd()))}"
+                f"## Skill: {s.name}\n{process_skill_body(s, args=[], cwd=Path(os.getcwd()))}"
                 for s in matched
             )
 
@@ -406,21 +486,21 @@ class AgentTurnRunner:
         """
         from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
         from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase  # noqa: PLC0415
-        from agenthicc.plugins.registry import build_registry              # noqa: PLC0415
-        from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE   # noqa: PLC0415
+        from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
+        from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE  # noqa: PLC0415
         from agenthicc.runners.tool_populator import populate_agent_tools  # noqa: PLC0415
 
         ctx = self._ctx
 
         # Tool registry
         mcp_tools = ctx.mcp_registry.all_tools() if ctx.mcp_registry is not None else []
-        registry  = build_registry(
+        registry = build_registry(
             agent_name=ctx.active_agent or "default",
             project_plugin_tools=(ctx.project_plugin_tools or []) + mcp_tools,
         )
 
         # System prompt
-        cfg_base       = (getattr(ctx.exec_cfg, "base_system_prompt", None) or "")
+        cfg_base = getattr(ctx.exec_cfg, "base_system_prompt", None) or ""
         effective_base = cfg_base or _BASE
         system = (
             effective_base
@@ -438,12 +518,14 @@ class AgentTurnRunner:
         populate_agent_tools(agent_instance, registry.tools)
 
         # Global hooks
-        hooks: list[ToolCapabilityGate | ApprovalGate] = []
+        hooks: list[object] = [_ToolOutputCaptureHook(self._tool_outputs)]
         if ctx.app_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
+
             hooks.append(ToolCapabilityGate(ctx.app_state))
             if ctx.approval_svc is not None:
-                from agenthicc.tools.approval import ApprovalGate           # noqa: PLC0415
+                from agenthicc.tools.approval import ApprovalGate  # noqa: PLC0415
+
                 hooks.append(ApprovalGate(ctx.app_state, ctx.approval_svc))
 
         active_runner = _RunnerBase(
@@ -457,6 +539,7 @@ class AgentTurnRunner:
         if ctx.runner is not None:
             from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
             from agenthicc.runners.retry import RetryConfig  # noqa: PLC0415
+
             _ec = ctx.exec_cfg
             _subagent_retry = RetryConfig(
                 max_retries=int(getattr(_ec, "transport_max_retries", 3)),
@@ -487,7 +570,8 @@ class AgentTurnRunner:
         active_runner: AgentRunnerBase,
     ) -> None:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
-        ctx           = self._ctx
+
+        ctx = self._ctx
 
         # Heal any dangling tool_calls left by an interrupted previous turn
         # (e.g. a plan-approval that was cancelled while awaiting the user's
@@ -518,8 +602,11 @@ class AgentTurnRunner:
             _window_tokens = ctx.exec_cfg.effective_usable_budget()
         else:
             from lauren_ai._config import context_window_for  # noqa: PLC0415
+
             _window = context_window_for(self._model_id)
-            _window_tokens = max(1, _window - _AgentConfig().max_tokens_per_turn - max(4_000, _window // 25))
+            _window_tokens = max(
+                1, _window - _AgentConfig().max_tokens_per_turn - max(4_000, _window // 25)
+            )
 
         # PRD-129 Phase 1/3: one idempotency ledger per turn, created OUTSIDE the
         # retry loop so it survives across attempts.  When a transient failure
@@ -536,9 +623,11 @@ class AgentTurnRunner:
             turn_ledger = ctx.resume_ledger
         elif _journal is not None:
             from agenthicc.runners.durable_ledger import DurableIdempotencyLedger  # noqa: PLC0415
+
             turn_ledger = DurableIdempotencyLedger(_journal, self._intent_id)
         else:
             from lauren_ai import IdempotencyLedger  # noqa: PLC0415
+
             turn_ledger = IdempotencyLedger()
         self._turn_ledger = turn_ledger
 
@@ -546,9 +635,7 @@ class AgentTurnRunner:
         # On a crash the absence of a matching turn_completed (written in the
         # finally below) flags this turn for resumption.
         if _journal is not None and ctx.session_memory is not None:
-            _journal.turn_started(
-                self._intent_id, agent_text, len(ctx.session_memory._messages)
-            )
+            _journal.turn_started(self._intent_id, agent_text, len(ctx.session_memory._messages))
 
         # PRD-126: one streaming attempt — the unit retried on transient network
         # errors.  The user message is added inside run_stream(), so the retry
@@ -557,7 +644,8 @@ class AgentTurnRunner:
         async def _stream_once() -> None:
             local_turn: list[str] = []
             stream = await active_runner.run_stream(
-                agent_instance, agent_text,
+                agent_instance,
+                agent_text,
                 memory=ctx.session_memory,
                 idempotency_ledger=turn_ledger,
                 config_override=_AgentConfig(
@@ -582,7 +670,7 @@ class AgentTurnRunner:
 
                 # Live token update — PRD-83.
                 if chunk.usage is not None and ctx.conv_store:
-                    u   = chunk.usage
+                    u = chunk.usage
                     cst = (
                         u.cost_usd(self._model_id)
                         if callable(getattr(u, "cost_usd", None))
@@ -598,24 +686,20 @@ class AgentTurnRunner:
                     # Auto-index completed turn text for semantic search (PRD-101).
                     if turn_text and ctx.semantic_index is not None:
                         doc_id = f"{self._intent_id}_{ctx.completed_turns}"
-                        asyncio.create_task(
-                            ctx.semantic_index.add(doc_id, turn_text)
-                        )
+                        asyncio.create_task(ctx.semantic_index.add(doc_id, turn_text))
 
         try:
             await self._stream_with_retry(_stream_once)
         except (asyncio.CancelledError, KeyboardInterrupt):
             if ctx.conv_store:
                 ctx.conv_store.close_turn()
-            raise   # must propagate so task.cancel() terminates the workflow runner
+            raise  # must propagate so task.cancel() terminates the workflow runner
         except Exception as exc:
             if ctx.conv_store:
                 # Emit one well-formatted error event with the exception class name.
                 # Do NOT call fail_turn/close_turn here — the finally block handles
                 # state cleanup idempotently, preventing the double-fail bug.
-                ctx.conv_store.append_event("error", {
-                    "message": f"{type(exc).__name__}: {exc}"
-                })
+                ctx.conv_store.append_event("error", {"message": f"{type(exc).__name__}: {exc}"})
             if _is_permanent_error(exc):
                 # PRD-117: HTTP 4xx errors are structurally permanent — retrying
                 # will always produce the same failure.  Re-raise so the phase
@@ -680,41 +764,62 @@ class AgentTurnRunner:
             reset_fns=reset_fns,
         )
 
-    async def _emit_retry(self, attempt: int, max_retries: int, delay: float, exc: BaseException) -> None:
+    async def _emit_retry(
+        self, attempt: int, max_retries: int, delay: float, exc: BaseException
+    ) -> None:
         """Observability + user notification for a scheduled transport retry."""
         ctx = self._ctx
         if ctx.conv_store is not None:
-            ctx.conv_store.append_event("system", {
-                "text": f"⟳ Network error — retrying ({attempt}/{max_retries})…",
-            })
+            ctx.conv_store.append_event(
+                "system",
+                {
+                    "text": f"⟳ Network error — retrying ({attempt}/{max_retries})…",
+                },
+            )
         import logging as _logging  # noqa: PLC0415
+
         _logging.getLogger(__name__).warning(
             "Transient network error on attempt %d/%d, retrying in %.1fs: %s: %s",
-            attempt, max_retries, delay, type(exc).__name__, exc,
+            attempt,
+            max_retries,
+            delay,
+            type(exc).__name__,
+            exc,
         )
         if ctx.processor is not None:
             from agenthicc.kernel import Event  # noqa: PLC0415
-            await ctx.processor.emit(Event.create("TransportRetryScheduled", {
-                "scope":       "agent_turn",
-                "attempt":     attempt,
-                "max_retries": max_retries,
-                "delay_s":     delay,
-                "error_type":  type(exc).__name__,
-            }))
+
+            await ctx.processor.emit(
+                Event.create(
+                    "TransportRetryScheduled",
+                    {
+                        "scope": "agent_turn",
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "delay_s": delay,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+            )
 
     # ── step 9: kernel completion event ───────────────────────────────────────
 
     async def _emit_intent_complete(self, status: str = "complete") -> None:
         from agenthicc.kernel import Event  # noqa: PLC0415
+
         await self._ctx.processor.emit(
-            Event.create("IntentStatusChanged", {
-                "intent_id": self._intent_id,
-                "status":    status,
-            })
+            Event.create(
+                "IntentStatusChanged",
+                {
+                    "intent_id": self._intent_id,
+                    "status": status,
+                },
+            )
         )
 
 
 # ── compatibility shim ────────────────────────────────────────────────────────
+
 
 async def _run_agent_turn(
     text: str,

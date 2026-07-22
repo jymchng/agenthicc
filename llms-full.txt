@@ -666,12 +666,12 @@ class AgenthiccToolExecutor:
     ) -> None: ...
 ```
 
-Adapter around lauren-ai's canonical executor. It registers legacy `Tool`
-objects, typed `ToolBase` objects, and lauren `@tool()` callables, while adding
-capability/source/destructive catalog metadata, sandbox handles, timing, and
-stable error categories. `event_sink`, when supplied, receives lauren-ai
-`ToolCallStarted` and `ToolCallComplete` signals. `ToolExecutor` is an alias
-for this class.
+Adapter around lauren-ai's canonical executor. It registers native lauren
+`@tool()` callables or configured instances, legacy `Tool` objects, and typed
+`ToolBase` objects, while adding capability/source/destructive catalog
+metadata, sandbox handles, timing, and stable error categories. `event_sink`,
+when supplied, receives lauren-ai `ToolCallStarted` and `ToolCallComplete`
+signals. `ToolExecutor` is an alias for this class.
 
 ### ToolMetadata and catalog
 
@@ -1475,7 +1475,7 @@ class SkillRegistry:
     def load(self, name: str, config=None) -> bool
     def load_all(self, names: list[str], configs=None) -> None
     @property
-    def tools(self) -> list[Tool]: ...
+    def tools(self) -> list[object]: ...
     @property
     def system_prompt_suffix(self) -> str: ...
 ```
@@ -1483,6 +1483,32 @@ class SkillRegistry:
 Built-in skills: `"web_search"` (requires `api_key`), `"docker"`, `"database"`
 (requires `connection_string`). Broken skills log and return `False` without
 raising.
+
+### SearchWebTool
+
+```python
+@tool(name="search_web")
+class SearchWebTool:
+    def __init__(self, api_key: str, engine: str = "brave", max_results: int = 5) -> None: ...
+    async def run(self, query: str, n: int = 5) -> dict[str, object]: ...
+```
+
+Searches Brave's web API with a trimmed `query` and an optional `n` result
+limit. The limit is bounded to 20. Transport failures return a recoverable
+`{"ok": False, "error": "<ExceptionType>: <message>", "recoverable": True}`
+result; non-transport errors are raised so callers can diagnose API failures.
+
+### FetchPageTool
+
+```python
+@tool(name="fetch_page")
+class FetchPageTool:
+    async def run(self, url: str) -> dict[str, object]: ...
+```
+
+Fetches a URL through the shared HTTP client and returns response metadata plus
+visible page text. Script, style, noscript, and template contents are omitted.
+Network failures use the same recoverable result shape as `SearchWebTool`.
 
 ---
 

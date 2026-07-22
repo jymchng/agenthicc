@@ -1,9 +1,9 @@
 """Agenthicc adapter around lauren-ai's canonical tool executor.
 
 Lauren-ai owns dispatch, hook ordering, approval signals, context injection,
-and provider-facing result semantics.  This module only registers legacy
-Agenthicc ``Tool`` objects alongside lauren ``@tool()`` callables and exposes a
-small envelope with Agenthicc identity, timing, and catalog metadata.
+and provider-facing result semantics. This module registers native lauren
+``@tool()`` callables/instances alongside legacy Agenthicc ``Tool`` objects and
+exposes a small envelope with Agenthicc identity, timing, and catalog metadata.
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def normalize_result(raw: object) -> ToolResult:
 
 
 class AgenthiccToolExecutor:
-    """Register and execute both lauren callables and legacy Tool objects."""
+    """Register and execute native lauren tools and legacy Tool objects."""
 
     def __init__(
         self,
@@ -173,7 +173,7 @@ class AgenthiccToolExecutor:
         timeout_s: float | None = None,
         max_retries: int = 0,
     ) -> ToolMetadata:
-        """Register a lauren ``@tool()`` callable or Agenthicc Tool object."""
+        """Register a native lauren tool or an Agenthicc Tool object."""
         registered, metadata = self._prepare(
             tool,
             name=name,
@@ -357,10 +357,11 @@ class AgenthiccToolExecutor:
         timeout_s: float | None,
         max_retries: int,
     ) -> tuple[_RegisteredTool, ToolMetadata]:
-        if not isinstance(tool, (Tool, ToolBase)) and not callable(tool):
+        original_meta = getattr(tool, TOOL_META, None)
+        native_instance = original_meta is not None and callable(getattr(tool, "run", None))
+        if not isinstance(tool, (Tool, ToolBase)) and not callable(tool) and not native_instance:
             raise TypeError(f"Unsupported tool registration: {tool!r}")
         tool_name, description, parameters = _describe(tool, name)
-        original_meta = getattr(tool, TOOL_META, None)
         caps = capabilities if capabilities is not None else _capabilities(tool)
         if isinstance(tool, ToolBase):
             is_destructive = destructive if destructive is not None else tool.destructive

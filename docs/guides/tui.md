@@ -38,6 +38,11 @@ terminal
 `Workspace.stop()` is called once during teardown. Starting/stopping Live per
 turn causes cursor races and duplicated status lines.
 
+Terminal resize signals are debounced into one repaint after the new geometry
+settles. The workspace clears Rich's pre-resize live geometry first, so an
+active Plan Review remains a single overlay instead of leaking duplicate
+frames into scrollback.
+
 ## Modes
 
 The built-in mode cycle is Auto → Plan → Ask → Review → Safe → Debug. Modes

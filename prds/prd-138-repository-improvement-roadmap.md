@@ -81,9 +81,10 @@ release-quality concern, not editorial polish.
   is not declared in the project dependency metadata.
 - The CLI version string and package version are hard-coded independently;
   release metadata can drift.
-- The full local pytest collection currently stops at
-  `tests/unit/test_skills.py` because it imports the absent
-  `agenthicc.skills.web_search` module.
+- The missing `agenthicc.skills.web_search` module has been restored with
+  Brave search and visible page-text extraction; the full local test suite now
+  collects and passes. The remaining verification drift is the absent
+  `scripts/check_llms.py` helper described above.
 
 ### 3.3 Two state models without a first-class contract
 

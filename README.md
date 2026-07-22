@@ -109,6 +109,10 @@ The current TUI is implemented by `tui/workspace/Workspace` and consists of:
    completion;
 4. a single lifetime input session with POSIX and Windows terminal backends.
 
+The workspace treats terminal resizing as one settled repaint, clearing
+Rich's previous geometry before redrawing so an active Plan Review is not
+duplicated in the scrollback.
+
 Useful built-in slash commands include:
 
 | Command | Purpose |

@@ -4,6 +4,7 @@ Groups of ≤5 consecutive tool_complete events are printed in full.
 Groups of >5 print the first 5 and a "...and N more" summary when the
 next text or error event closes the group.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -14,7 +15,7 @@ from agenthicc.tui.workspace.appender import ScrollBufferAppender
 
 pytestmark = pytest.mark.unit
 
-_LIMIT = 5   # must match the hard-coded limit inside _render_one
+_LIMIT = 5  # must match the hard-coded limit inside _render_one
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -25,8 +26,14 @@ def _ev(kind: str, **payload) -> ConversationEvent:
 
 
 def _tool(name: str = "read_file", success: bool = True) -> ConversationEvent:
-    return _ev("tool_complete", name=name, args_str="", success=success,
-               dur_str="  [dim]5ms[/dim]", output_lines=[])
+    return _ev(
+        "tool_complete",
+        name=name,
+        args_str="",
+        success=success,
+        dur_str="  [dim]5ms[/dim]",
+        output_lines=[],
+    )
 
 
 def _make_appender() -> tuple[ScrollBufferAppender, MagicMock]:
@@ -34,7 +41,7 @@ def _make_appender() -> tuple[ScrollBufferAppender, MagicMock]:
     app_state.conversation.on_event.return_value = lambda: None
     console = MagicMock()
     console.__enter__ = MagicMock(return_value=console)
-    console.__exit__  = MagicMock(return_value=False)
+    console.__exit__ = MagicMock(return_value=False)
     return ScrollBufferAppender(app_state, console), console
 
 
@@ -46,8 +53,9 @@ def _flush(appender: ScrollBufferAppender, events: list[ConversationEvent]) -> N
 
 def _str_calls(console: MagicMock) -> list[str]:
     """Return all string args passed to console.print()."""
-    return [c.args[0] for c in console.print.call_args_list
-            if c.args and isinstance(c.args[0], str)]
+    return [
+        c.args[0] for c in console.print.call_args_list if c.args and isinstance(c.args[0], str)
+    ]
 
 
 def _tool_lines(lines: list[str]) -> list[str]:
@@ -88,6 +96,19 @@ class TestGroupCount:
 
 
 class TestSummaryLine:
+    def test_tool_output_preview_is_rendered(self):
+        appender, console = _make_appender()
+        event = _tool()
+        event.payload["output_lines"] = ["first line", "second line"]
+        event.payload["output_more"] = 3
+
+        _flush(appender, [event])
+
+        lines = _str_calls(console)
+        assert any("first line" in line for line in lines)
+        assert any("second line" in line for line in lines)
+        assert any("+3 more lines" in line for line in lines)
+
     def test_no_summary_at_limit(self):
         appender, console = _make_appender()
         _flush(appender, [_tool() for _ in range(_LIMIT)])
@@ -140,7 +161,7 @@ class TestSummaryLine:
         """Tools arriving in separate batches are counted together in one group."""
         appender, console = _make_appender()
         for _ in range(8):
-            _flush(appender, [_tool()])   # one tool per batch
+            _flush(appender, [_tool()])  # one tool per batch
         assert appender._group_count == 8
         _flush(appender, [_ev("text", text="done.")])
         lines = _str_calls(console)
@@ -156,27 +177,47 @@ class TestToolGroupCountSignal:
         store = ConversationStore()
         store.begin_turn("assistant")
         for i in range(3):
-            store.append_event("tool_complete", {
-                "name": "read_file", "args_str": "", "success": True,
-                "dur_str": "", "output_lines": [],
-            })
+            store.append_event(
+                "tool_complete",
+                {
+                    "name": "read_file",
+                    "args_str": "",
+                    "success": True,
+                    "dur_str": "",
+                    "output_lines": [],
+                },
+            )
         assert store.tool_group_count() == 3
 
     def test_resets_on_text(self):
         store = ConversationStore()
         store.begin_turn("assistant")
-        store.append_event("tool_complete", {
-            "name": "x", "args_str": "", "success": True, "dur_str": "", "output_lines": [],
-        })
+        store.append_event(
+            "tool_complete",
+            {
+                "name": "x",
+                "args_str": "",
+                "success": True,
+                "dur_str": "",
+                "output_lines": [],
+            },
+        )
         store.append_event("text", {"text": "hello"})
         assert store.tool_group_count() == 0
 
     def test_resets_on_turn_start_event(self):
         store = ConversationStore()
         store.begin_turn("assistant")
-        store.append_event("tool_complete", {
-            "name": "x", "args_str": "", "success": True, "dur_str": "", "output_lines": [],
-        })
+        store.append_event(
+            "tool_complete",
+            {
+                "name": "x",
+                "args_str": "",
+                "success": True,
+                "dur_str": "",
+                "output_lines": [],
+            },
+        )
         assert store.tool_group_count() == 1
         # Production code always calls append_event("turn_start") after begin_turn()
         store.append_event("turn_start", {"agent_name": "assistant", "turn_id": "t2"})
@@ -188,7 +229,14 @@ class TestToolGroupCountSignal:
         counts: list[int] = []
         store.tool_group_count.subscribe(lambda: counts.append(store.tool_group_count()))
         for _ in range(3):
-            store.append_event("tool_complete", {
-                "name": "x", "args_str": "", "success": True, "dur_str": "", "output_lines": [],
-            })
+            store.append_event(
+                "tool_complete",
+                {
+                    "name": "x",
+                    "args_str": "",
+                    "success": True,
+                    "dur_str": "",
+                    "output_lines": [],
+                },
+            )
         assert counts == [1, 2, 3]
