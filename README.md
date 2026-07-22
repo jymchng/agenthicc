@@ -227,9 +227,12 @@ Session artifacts live below `~/.agenthicc/sessions/`:
 Export a portable, redacted support artifact with:
 
 ```bash
+uv run agenthicc sessions inspect SESSION_ID
 uv run agenthicc sessions export SESSION_ID --output session-export.json
 ```
 
+Inspection reports artifact health, corruption, token usage, workflow status,
+and whether a turn needs resume without printing conversation or tool payloads.
 The export includes valid records from the kernel, conversation, journal, and
 cassette stores. Credential-shaped values are redacted and malformed JSONL
 records are reported in the manifest. Review prompts, tool results, paths, and

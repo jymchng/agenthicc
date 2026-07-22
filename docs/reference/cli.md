@@ -24,6 +24,7 @@ based and implemented in `cli/registry.py`.
 | `config init [--force]` | Create `.agenthicc/agenthicc.toml` |
 | `sessions list` | List saved sessions for the current directory |
 | `sessions show SESSION_ID` | Print stored event summaries |
+| `sessions inspect SESSION_ID [--json]` | Summarize durable state and resume health |
 | `sessions export SESSION_ID [--output PATH]` | Write a redacted portable session export |
 | `trust cli` | Trust project-local `.agenthicc/cli/` plugins |
 | `login` | Authenticate with agenthicc.ai |

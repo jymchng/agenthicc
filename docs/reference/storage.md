@@ -51,8 +51,14 @@ Use the CLI to inspect sessions before removing files:
 ```bash
 uv run agenthicc sessions list
 uv run agenthicc sessions show SESSION_ID
+uv run agenthicc sessions inspect SESSION_ID
 uv run agenthicc sessions export SESSION_ID --output session-export.json
 ```
+
+`sessions inspect` reads the durable artifacts without printing conversation or
+tool payloads. It reports available files, valid and corrupt record counts,
+conversation/tool/token totals, workflow completion, and whether the journal
+contains an incomplete turn that can be resumed. Add `--json` for automation.
 
 `sessions export` writes one versioned JSON document containing the kernel
 events, session metadata, conversation events, durable conversation journal,

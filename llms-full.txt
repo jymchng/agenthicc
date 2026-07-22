@@ -142,6 +142,30 @@ returned by `root_reducer`.
 
 ---
 
+### EffectExecutor
+
+```python
+class EffectExecutor(Protocol):
+    async def execute(self, effect: Effect, state: AppState) -> None: ...
+```
+
+Protocol implemented by the runtime component that performs reducer-produced
+side effects after the state transition has been applied.
+
+---
+
+### NoOpEffectExecutor
+
+```python
+class NoOpEffectExecutor:
+    async def execute(self, effect: Effect, state: AppState) -> None: ...
+```
+
+Default effect executor. It intentionally discards effects, which is useful for
+kernel-only processing and tests.
+
+---
+
 ### EffectType
 
 ```python
@@ -291,6 +315,17 @@ event types return `(state, [])` unchanged. Handled types: `IntentCreated`,
 
 **Return**: `(new_state, effects)` — both must be used; discarding effects silently
 drops side-effect scheduling.
+
+---
+
+### ReducerFn
+
+```python
+ReducerFn = Callable[[AppState, Event], tuple[AppState, list[Effect]]]
+```
+
+Type alias for pure reducers accepted by `EventProcessor` and
+`restore_from_log`.
 
 ---
 
@@ -1246,6 +1281,21 @@ Write a versioned, redacted JSON export containing the session's kernel events,
 metadata, conversation events, durable journal, and optional cassette records.
 Invalid JSONL lines are skipped and counted in the manifest; the destination is
 written atomically.
+
+### inspect_session
+
+```python
+def inspect_session(
+    session_id: str,
+    *,
+    sessions_dir: str | Path | None = None,
+) -> dict[str, object]
+```
+
+Return a redacted operational summary of durable session artifacts, including
+artifact health, kernel and conversation counts, token/cost totals, workflow
+status, and incomplete-turn resume state. Malformed JSONL lines are counted;
+conversation and tool payloads are not included in the summary.
 
 ---
 

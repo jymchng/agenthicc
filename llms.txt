@@ -43,6 +43,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `Workspace` | `agenthicc.tui.workspace` | Rich Live UI root |
 | `UnifiedInputSession` | `agenthicc.tui.input` | Lifetime input/raw-mode loop |
 | `export_session` | `agenthicc.tui.runtime.session_export` | Redacted portable session export |
+| `inspect_session` | `agenthicc.tui.runtime.session_export` | Redacted durable session health and usage summary |
 
 ## Configuration
 

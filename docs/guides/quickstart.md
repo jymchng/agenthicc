@@ -98,6 +98,8 @@ the dataclass and may not contain your checkout.
 ```bash
 uv run agenthicc sessions list
 uv run agenthicc sessions show SESSION_ID
+uv run agenthicc sessions inspect SESSION_ID
+uv run agenthicc sessions inspect SESSION_ID --json
 uv run agenthicc sessions export SESSION_ID --output session-export.json
 uv run agenthicc --continue
 uv run agenthicc --resume SESSION_ID
@@ -108,6 +110,9 @@ uses the given session id and can recover an interrupted direct turn through the
 durable conversation journal. The export command creates a redacted JSON
 support artifact containing the session's durable logs and metadata. Review
 prompts, tool results, paths, and model output before sharing the file.
+Inspection prints a safe operational summary of artifact health, corrupt lines,
+token/cost totals, workflow status, and any incomplete turn; `--json` emits the
+same summary for automation without including conversation or tool payloads.
 
 ## Next steps
 
