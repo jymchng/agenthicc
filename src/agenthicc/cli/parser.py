@@ -15,6 +15,13 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         help="Run without the TUI; emit JSON-lines to stdout.",
     )
     parser.add_argument(
+        "--workflow",
+        metavar="NAME",
+        default=None,
+        dest="workflow_name",
+        help="Run NAME for each stdin line in headless mode.",
+    )
+    parser.add_argument(
         "--config",
         metavar="PATH",
         default=None,
@@ -105,6 +112,7 @@ def _build_ctx(ns: argparse.Namespace) -> CLIContext:
         flags=flags,
         record_cassette=getattr(ns, "record_cassette", None),
         continue_session=getattr(ns, "continue_session", False),
+        workflow_name=getattr(ns, "workflow_name", None),
     )
 
 

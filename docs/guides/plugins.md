@@ -50,6 +50,11 @@ command needs a name, description, optional argument hint, and handler or an
 explicit session interceptor. `/workflow` and `/compact` demonstrate the
 session-stateful case.
 
+The default `/create-tools <instructions>` and `/create-commands <instructions>`
+skills guide the agent to author these extensions using the existing lauren-ai
+tool convention and unified command registry. They do not bypass plugin trust,
+capability metadata, or the normal test/documentation expectations.
+
 ## MCP servers
 
 Configure MCP servers with `[[tools.mcp_servers]]`. The bridge supports stdio,

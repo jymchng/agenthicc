@@ -70,6 +70,12 @@ def test_substitute_session_and_effort():
     assert result == "session=abc123 effort=high"
 
 
+def test_substitute_full_args_preserves_user_instruction():
+    body = "Create the requested feature: {args}"
+    result = substitute_args(body, ["a", "tool", "for", "weather"])
+    assert result == "Create the requested feature: a tool for weather"
+
+
 def test_find_matching_skills_by_topic():
     skills = {
         "deploy": _make_skill("deploy", ["deploy", "release"]),

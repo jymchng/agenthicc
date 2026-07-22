@@ -106,6 +106,7 @@ async def _build_session_context(
     cli_overrides: list[str] | None,
     record_cassette_dir: Path | None = None,
     config_path: str | None = None,
+    headless: bool = False,
 ) -> SessionContext:
     """Construct all session-scoped singletons and return a SessionContext."""
     from rich.console import Console  # noqa: PLC0415
@@ -163,7 +164,12 @@ async def _build_session_context(
 
     _configure_http(cfg.tools.http_timeout_s)
 
-    console = Console(highlight=False, markup=True, force_terminal=True)
+    console = Console(
+        highlight=False,
+        markup=True,
+        force_terminal=not headless,
+        quiet=headless,
+    )
     try:
         llm_cfg = build_llm_config(cfg.execution)
     except ValueError as exc:

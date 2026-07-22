@@ -8,6 +8,7 @@ based and implemented in `cli/registry.py`.
 | Option | Meaning |
 |---|---|
 | `--headless` | Read stdin and emit JSON-lines |
+| `--workflow NAME` | Run NAME for each non-empty stdin line in headless mode |
 | `--config PATH` | Select a configuration file |
 | `--version` | Print the package CLI version string |
 | `--continue` | Continue the latest session for the current directory |
@@ -26,6 +27,8 @@ based and implemented in `cli/registry.py`.
 | `sessions show SESSION_ID` | Print stored event summaries |
 | `sessions inspect SESSION_ID [--json]` | Summarize durable state and resume health |
 | `sessions export SESSION_ID [--output PATH]` | Write a redacted portable session export |
+| `workflows list [--json]` | List available workflow plugins and phase topology |
+| `workflows run NAME --intent TEXT [--json]` | Execute one workflow headlessly |
 | `trust cli` | Trust project-local `.agenthicc/cli/` plugins |
 | `login` | Authenticate with agenthicc.ai |
 | `logout` | Revoke stored credentials |
@@ -39,6 +42,12 @@ TUI commands are a separate registry from CLI subcommands. Current built-ins
 include `/help`, `/commands`, `/status`, `/history`, `/mode`, `/workflow`,
 `/model`, `/models`, `/skills`, `/mcp`, `/config`, `/compact`, `/replay`,
 `/cancel`, `/clear`, and `/expand`.
+
+Default project-authoring skills also provide `/create-tools <instructions>`
+and `/create-commands <instructions>`. They send the supplied instructions to
+the lauren-ai agent with repository-specific implementation, testing, and
+security guidance; generated Python remains subject to normal plugin trust and
+capability checks.
 
 `/workflow` and `/compact` are intercepted by `TUISession` because they need
 session-local state. Both must remain visible in picker completion as well as

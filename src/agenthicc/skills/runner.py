@@ -50,9 +50,10 @@ def substitute_args(
     session_id: str = "",
     effort: str = "medium",
 ) -> str:
-    """Replace {session}, {effort}, and positional {0}, {1}, ... placeholders."""
+    """Replace session/effort, full ``{args}``, and positional placeholders."""
     body = body.replace("{session}", session_id)
     body = body.replace("{effort}", effort)
+    body = body.replace("{args}", " ".join(args))
 
     def _replace_index(match: re.Match) -> str:
         idx = int(match.group(1))

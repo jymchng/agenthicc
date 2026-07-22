@@ -274,6 +274,16 @@ def test_create_workflow_skill_in_defaults() -> None:
 
 
 @pytest.mark.unit
+def test_create_tools_and_commands_skills_in_defaults() -> None:
+    from agenthicc.skills.bootstrap import _DEFAULTS
+
+    assert "create-tools" in _DEFAULTS
+    assert "create-commands" in _DEFAULTS
+    assert "{args}" in _DEFAULTS["create-tools"]
+    assert "{args}" in _DEFAULTS["create-commands"]
+
+
+@pytest.mark.unit
 def test_create_workflow_skill_has_required_frontmatter() -> None:
     from agenthicc.skills.bootstrap import _DEFAULTS
 
@@ -285,10 +295,26 @@ def test_create_workflow_skill_has_required_frontmatter() -> None:
 
 
 @pytest.mark.unit
+def test_create_extension_skills_preserve_security_and_registry_guidance() -> None:
+    from agenthicc.skills.bootstrap import _DEFAULTS
+
+    tools = _DEFAULTS["create-tools"]
+    commands = _DEFAULTS["create-commands"]
+    assert "WorkspaceView" in tools
+    assert "NetworkGuard" in tools
+    assert "TOOLS" in tools
+    assert "CommandContext" in commands
+    assert "COMMANDS" in commands
+    assert "trust" in commands.lower()
+
+
+@pytest.mark.unit
 def test_create_workflow_skill_bootstrap_includes_it(tmp_path) -> None:
     from agenthicc.skills.bootstrap import bootstrap_default_skills
 
     n = bootstrap_default_skills(global_dir=tmp_path)
-    assert n >= 7  # original 6 + create-workflow
+    assert n >= 9  # original 6 + three creation skills
     assert (tmp_path / "skills" / "create-workflow").is_dir()
     assert (tmp_path / "skills" / "create-workflow" / "SKILL.md").exists()
+    assert (tmp_path / "skills" / "create-tools" / "SKILL.md").exists()
+    assert (tmp_path / "skills" / "create-commands" / "SKILL.md").exists()

@@ -17,6 +17,28 @@ The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
 Workflow selection is influenced by the active mode, registry mappings, and the
 session-local `/workflow` override.
 
+## CLI and headless execution
+
+Workflows can run without the interactive workspace, which makes them usable in
+automation and CI:
+
+```bash
+uv run agenthicc workflows list --json
+uv run agenthicc workflows run code_plan --intent "Implement the requested change"
+printf '%s\n' "Run the verification workflow" \
+  | uv run agenthicc --headless --workflow code_plan
+```
+
+`workflows run` emits a single result. `--headless --workflow NAME` emits a
+ready record followed by one JSON result per non-empty stdin line, reusing one
+durable session. Both paths construct the selected plugin through
+`WorkflowPlugin.build_runner`, so specialized built-ins and project workflows
+use the same runner contract as the TUI.
+
+Headless approvals fail closed. Approval-gated actions are denied unless the
+invocation explicitly supplies `--dangerously-skip-permissions`; this flag
+should only be used in a trusted automation environment.
+
 ## Minimal plugin
 
 Place a Python file in `.agenthicc/workflows/` or

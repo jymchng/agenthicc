@@ -31,3 +31,4 @@ class CLIContext:
     flags: CLIFlags = field(default_factory=CLIFlags)
     record_cassette: str | None = None
     continue_session: bool = False
+    workflow_name: str | None = None

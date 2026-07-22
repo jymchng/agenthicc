@@ -1299,6 +1299,56 @@ conversation and tool payloads are not included in the summary.
 
 ---
 
+## Headless workflow execution — `agenthicc.runners.headless`
+
+### WorkflowExecutionResult
+
+```python
+@dataclass(frozen=True)
+class WorkflowExecutionResult:
+    session_id: str
+    workflow_name: str
+    run_id: str
+    status: str
+    phases: tuple[str, ...]
+    error: str | None = None
+```
+
+JSON-safe result for one workflow execution. `to_dict()` returns the stable
+`WorkflowRunCompleted` result shape used by the CLI and stdin runner.
+
+### execute_workflow
+
+```python
+async def execute_workflow(
+    session: SessionContext,
+    workflow_name: str,
+    intent: str,
+    *,
+    completed_turns: int = 0,
+) -> WorkflowExecutionResult
+```
+
+Construct the selected plugin through `WorkflowPlugin.build_runner` and run it
+using an already-running event processor and session context. Unknown workflow
+names and empty intents raise `ValueError`; a missing LLM raises `RuntimeError`.
+
+### run_headless_workflow
+
+```python
+async def run_headless_workflow(
+    ctx: CLIContext,
+    workflow_name: str,
+    intent: str,
+) -> WorkflowExecutionResult
+```
+
+Build a durable session, execute one workflow, and close the session resources.
+Headless approval is fail-closed unless the CLI context explicitly enables the
+dangerous-permissions flag.
+
+---
+
 ## Config — `agenthicc.config`
 
 ### load_config

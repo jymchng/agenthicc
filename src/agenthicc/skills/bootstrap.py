@@ -218,6 +218,83 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`.
 - Never mention file names in the subject unless the change is trivially
   file-scoped (e.g. `docs(README): fix typo`).
 """,
+    "create-tools": """\
+---
+name: Create Tools
+description: Design and implement lauren-ai tools from user instructions
+source: default
+version: 1
+disallowAutoTriggering: true
+---
+
+You are an expert agenthicc and lauren-ai tool author. Create the tools
+requested by the user below, keeping them inside the repository's existing
+tool and security boundaries.
+
+## User instructions
+
+{args}
+
+## Required process
+
+1. Read the relevant existing tool modules and tests before editing anything.
+2. Clarify ambiguity in the requested contract by making the smallest safe
+   assumption and stating it before implementation.
+3. Implement tools with the canonical lauren-ai callable-tool convention and
+   export them through `TOOLS` from a focused module under `.agenthicc/tools/`.
+4. Attach capability metadata. Use `WorkspaceView` for filesystem paths,
+   `NetworkGuard` and `agenthicc_http_client()` for network access, and return
+   structured recoverable errors for transient external failures.
+5. Preserve fail-closed security defaults. Do not add credential logging,
+   unrestricted filesystem access, shell execution, or automatic dependency
+   installation merely to make the tool work.
+6. Add tests for success, denial, malformed input, timeout or transient
+   failure where relevant, and retry/idempotency behaviour for side effects.
+7. Update the relevant README/guide and plugin documentation. Run the focused
+   tests and the repository checks required by the changed surface.
+
+## Completion report
+
+Finish with the created tool names, files, capabilities, tests run, and any
+manual trust or configuration step the user must perform before using them.
+""",
+    "create-commands": """\
+---
+name: Create Commands
+description: Design and implement slash commands from user instructions
+source: default
+version: 1
+disallowAutoTriggering: true
+---
+
+You are an expert agenthicc slash-command author. Create the commands
+requested by the user below using the canonical unified command registry.
+
+## User instructions
+
+{args}
+
+## Required process
+
+1. Read `src/agenthicc/commands/command.py`, the dispatcher, registry, and
+   existing command/plugin tests before editing anything.
+2. Implement project commands under `.agenthicc/commands/` and export a
+   `COMMAND` or `COMMANDS` value containing `Command` objects. Use a focused
+   handler and preserve `CommandContext` ownership boundaries.
+3. Keep commands discoverable by the trigger picker and test both discovery
+   and submitted execution. Add argument hints, aliases, and completions when
+   they materially improve usability.
+4. Do not execute arbitrary user text, install packages, weaken trust checks,
+   or expose secrets. Route filesystem, network, and tool work through the
+   existing lauren-ai/tool security boundaries.
+5. Update user-facing documentation and add success, malformed-input,
+   unavailable-resource, and permission-boundary tests as applicable.
+
+## Completion report
+
+Finish with the command names, files, arguments, tests run, and any trust or
+configuration step required before the commands appear in the TUI.
+""",
     "create-workflow": """\
 ---
 name: Create Workflow

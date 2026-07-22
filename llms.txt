@@ -10,6 +10,7 @@ The primary entry point is `agenthicc.__main__:main`.
 
 - `agenthicc` launches the Rich workspace and interactive `TUISession`.
 - `agenthicc --headless` reads non-empty stdin lines and emits JSON-lines.
+- `agenthicc --headless --workflow NAME` executes NAME for each stdin line.
 - `kernel.AppState` is frozen domain state reduced from `Event` objects.
 - `tui.conversation_store.AppState` is a separate reactive presentation model.
 - `workflows/` contains `WorkflowPlugin`, phase specs, generic runners, and the
@@ -40,6 +41,9 @@ The primary entry point is `agenthicc.__main__:main`.
 | `ToolMetadata` / `ToolErrorKind` | `agenthicc.tools` | Generated catalog metadata and stable error taxonomy |
 | `SearchWebTool` / `FetchPageTool` | `agenthicc.skills.web_search` | Native lauren-ai tools for Brave search and visible page-text extraction |
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
+| `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
+| `execute_workflow` | `agenthicc.runners.headless` | Execute a registered workflow in a session |
+| `run_headless_workflow` | `agenthicc.runners.headless` | Build, run, and close one headless workflow session |
 | `Workspace` | `agenthicc.tui.workspace` | Rich Live UI root |
 | `UnifiedInputSession` | `agenthicc.tui.input` | Lifetime input/raw-mode loop |
 | `export_session` | `agenthicc.tui.runtime.session_export` | Redacted portable session export |

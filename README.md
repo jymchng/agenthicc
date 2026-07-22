@@ -94,10 +94,16 @@ one JSON line for each non-empty input line:
 
 ```bash
 printf '%s\n' 'summarise the repository' | uv run agenthicc --headless
+printf '%s\n' 'run the workflow' | uv run agenthicc --headless --workflow code_plan
+uv run agenthicc workflows list
+uv run agenthicc workflows run code_plan --intent 'implement the feature' --json
 ```
 
-Headless mode is useful for smoke tests and pipelines. It is intentionally a
-smaller runner than the full TUI session; it does not imply a REST server.
+Headless mode is useful for smoke tests and pipelines. With `--workflow`, each
+stdin line becomes an actual workflow run and its JSON result is emitted after
+completion. Workflow execution uses the same lauren-ai runner, plugin registry,
+session persistence, capability checks, and approval boundary as the TUI. It
+does not imply a REST server.
 
 ## Terminal workspace
 
@@ -132,6 +138,8 @@ Useful built-in slash commands include:
 | `/replay [session-id]` | Replay a saved conversation |
 | `/cancel`, `/clear`, `/expand` | Control the current session or output |
 | `/mcp`, `/skills` | Inspect MCP and skill integrations |
+| `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
+| `/create-commands <instructions>` | Ask the agent to create slash commands |
 
 Use `Ctrl+C` according to the current input state; the input backend owns raw
 terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md)
