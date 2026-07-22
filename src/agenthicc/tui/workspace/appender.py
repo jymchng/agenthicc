@@ -269,6 +269,9 @@ class ScrollBufferAppender:
                 markup=True,
                 highlight=False,
             )
+        # Keep each tool call visually self-contained: output belongs directly
+        # beneath its completion summary, with one separator after the call.
+        self._console.print()
 
     # ── idle status header (printed once before each new prompt) ──────────────
 

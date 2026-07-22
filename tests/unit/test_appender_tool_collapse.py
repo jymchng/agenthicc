@@ -124,6 +124,7 @@ class TestSummaryLine:
         assert "[bold]Read[/bold]" in lines[0]
         assert "[dim]└─[/dim]" in lines[1]
         assert "[green]Completed[/green]" in lines[1]
+        assert console.print.call_args_list[-1].args == ()
 
     def test_tool_output_preview_is_rendered(self):
         appender, console = _make_appender()
@@ -150,7 +151,7 @@ class TestSummaryLine:
         assert calls[0].args[0].startswith("[green]●[/green]")
         assert calls[1].args[0].startswith("[dim]└─[/dim]")
         assert calls[2].args[0].startswith("  [dim]   1[/dim]")
-        assert all(call.args for call in calls)
+        assert calls[3].args == ()
 
     def test_no_summary_at_limit(self):
         appender, console = _make_appender()
