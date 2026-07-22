@@ -1,411 +1,175 @@
 # AGENTS.md — Agent guidance for agenthicc
 
+This is the operational companion to [CLAUDE.md](CLAUDE.md). Follow the
+repository's current source tree, not historical PRD examples. The repository
+improvement backlog is [`PRD-138`](prds/prd-138-repository-improvement-roadmap.md).
 
-## LLM Environment Variables
+## Before changing code
 
-Agenthicc needs an LLM provider API key to run agents. Set before launching:
+1. Read the relevant current module and its tests.
+2. Check `git status --short`; preserve unrelated user changes.
+3. Search for all consumers with `rg` before renaming or deleting a symbol.
+4. Confirm whether a similarly named type belongs to the kernel or reactive TUI
+   state model.
+5. Keep new behaviour inside the existing ownership boundary in `CLAUDE.md`.
 
-| Provider | Environment Variable | Notes |
-|----------|---------------------|-------|
-| Anthropic (default) | `ANTHROPIC_API_KEY` | `export ANTHROPIC_API_KEY="sk-ant-..."` |
-| OpenAI | `OPENAI_API_KEY` | Also set `execution.provider = "openai"` in config |
-| Ollama | — | No key needed; set `execution.provider = "ollama"` |
+## Current runtime boundaries
 
-The default model is `claude-opus-4-6`. Override with `--set execution.model=claude-sonnet-4-6`
-or in `.agenthicc/agenthicc.toml`:
+| Concern | Canonical implementation |
+|---|---|
+| Domain state | `src/agenthicc/kernel/state.py` (`kernel.AppState`, frozen) |
+| Domain events/effects | `src/agenthicc/kernel/events.py` |
+| Pure reduction | `src/agenthicc/kernel/reducer.py` |
+| Event loop and persistence | `src/agenthicc/kernel/processor.py` |
+| Session construction | `src/agenthicc/runners/session_context.py` |
+| Interactive orchestration | `src/agenthicc/runners/tui_session.py` |
+| Headless stdin runner | `src/agenthicc/runners/headless.py` |
+| Reactive UI state | `src/agenthicc/tui/conversation_store.py` |
+| Rich workspace | `src/agenthicc/tui/workspace/` |
+| Input and triggers | `src/agenthicc/tui/input/`, `src/agenthicc/tui/trigger.py`, `src/agenthicc/tui/triggers/` |
+| Terminal portability | `src/agenthicc/tui/terminal/`, `cbreak_reader.py` |
+| Workflow engine | `src/agenthicc/workflows/` |
+| Agent registry | `src/agenthicc/agents/` |
+| Tools and integrations | `src/agenthicc/tools/`, `agent_tools.py` |
+| Configuration/security | `config.py`, `security.py`, `tools/sandbox.py`, `plugins/trust.py` |
+| Memory and durability | `memory/`, `tools/fs/file_cache.py`, `tui/runtime/session_log.py` |
 
-```toml
-[execution]
-model = "claude-sonnet-4-6"
+There is currently no `src/agenthicc/api/`, `tui/app.py`, `tui/transcript.py`,
+`tui/events.py`, `tools/hooks.py`, or `tools/executor.py`. Do not use those
+historical paths in new work; update stale references as part of documentation
+or migration work.
+
+## Environment and commands
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."  # default
+export OPENAI_API_KEY="sk-..."         # set execution.provider=openai
+# Ollama needs no key
+
+uv sync --extra dev
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+uv run mypy src/agenthicc
+uv run pytest tests/unit -q
+uv run pytest tests/integration -q
+uv run pytest tests/e2e -q
+uv run pytest tests/ -q
+uv run agenthicc
+uv run agenthicc --headless
 ```
 
-## File ownership
-
-| Path | Owns what |
-|---|---|
-| `src/agenthicc/__init__.py` | Package root; top-level re-exports |
-| `src/agenthicc/kernel/state.py` | `AppState` (frozen), all domain dataclasses (`Intent`, `Workflow`, `WorkflowNode`, `Task`, `AgentInstance`, `ToolRegistration`, `SecurityPolicy`, `SystemSettings`); copy-on-write `with_*` helpers |
-| `src/agenthicc/kernel/events.py` | `Event` dataclass (create, from_dict, to_dict); `Effect`; `EffectType` enum |
-| `src/agenthicc/kernel/reducer.py` | `root_reducer`; `_HANDLERS` dict; every per-event `_reduce_*` function; `ReducerFn` type alias |
-| `src/agenthicc/kernel/processor.py` | `EventProcessor` (MPSC queue, `run()` loop, `emit()`, `drain()`, `subscribe()`); `EffectExecutor` protocol; `NoOpEffectExecutor`; `restore_from_log()` |
-| `src/agenthicc/tools/base.py` | `ToolBase` ABC; `ToolResult` dataclass (`ok`, `value`, `error`, `duration_ms`) |
-| `src/agenthicc/tools/http.py` | `agenthicc_http_client()` — shared async HTTP client; `configure(timeout_s)` — set at startup from `ToolSettings.http_timeout_s`; `is_network_error(exc)` — classifies network/timeout exceptions |
-| `src/agenthicc/tools/executor.py` | `ToolExecutor`: name lookup, sandbox call, hook orchestration, `ToolCallStarted` / `ToolCallComplete` events |
-| `src/agenthicc/tools/hooks.py` | `LifecycleHook` ABC; `HookRegistry` (`(entity_type, stage)` → list); `HookRunner` (`asyncio.gather`); `LaurenToolHookAdapter`; `load_hook_from_dotpath` |
-| `src/agenthicc/tools/sandbox.py` | `ToolSandbox`: `ResourceLimits`; CPU/memory enforcement (`resource.setrlimit`); path allow-list check |
-| `src/agenthicc/memory/layers.py` | `SessionMemoryLayer` (LRU+TTL), `ProjectMemoryLayer` (SQLite KV + artifacts), `GlobalMemoryLayer` (user-wide SQLite); `SessionEntry`, `ArtifactRecord`; `MemoryTier` |
-| `src/agenthicc/memory/router.py` | `MemoryRouter`: routes get/set/delete to the right tier; all-tiers fallback for get |
-| `src/agenthicc/memory/vector.py` | `VectorIndex`: sqlite-vec wrapper; `upsert()`, `nearest()` |
-| `src/agenthicc/tui/transcript.py` | `TranscriptModel`, `AgentTurnEntry`, `ToolCallEntry`, `ToolCallState`; `SPINNER_FRAMES`; `render()`; `diff_lines()` |
-| `src/agenthicc/tui/app.py` | `build_app()`, `run_headless()`, `render_frame_ansi()`; `MENU_COMMANDS`; `detect_slash_command()` |
-| `src/agenthicc/tui/events.py` | `TUIEventAdapter`: translates kernel `AppState` diffs into `TranscriptModel` mutations |
-| `src/agenthicc/api/server.py` | `create_app(processor, api_key)`: FastAPI lifespan, `POST /v1/intents`, `GET /v1/intents/{id}`, `GET /v1/state/summary`, `WS /v1/ws` |
-| `src/agenthicc/config.py` | `AgenthiccConfig` + sub-dataclasses; `load_config()`; `deep_merge()`; `to_system_settings()`; `to_security_policy()` |
-| `src/agenthicc/security.py` | `build_policy_from_config()`: `SecuritySettings` → kernel `SecurityPolicy` |
-| `src/agenthicc/tui/terminal/backend.py` | `TerminalBackend` Protocol; `get_backend()` factory — the only permitted `os.name` branch |
-| `src/agenthicc/tui/terminal/posix_backend.py` | `PosixBackend` — wraps `cbreak_reader.raw_mode` / `read_key`; owns all POSIX terminal setup |
-| `src/agenthicc/tui/terminal/windows_backend.py` | `WindowsBackend` — exclusive owner of all `msvcrt` calls; no other file may import `msvcrt` |
-| `src/agenthicc/tui/cbreak_reader.py` | `Key` enum (canonical — imported by 11 files); `raw_mode(fd)`; `read_key(fd)` — used only by `PosixBackend` |
-| `llms-full.txt` | Full API reference for LLMs — must stay in sync with public symbols |
-| `llms.txt` | Short package overview — update when public API changes |
-| `tests/conftest.py` | Shared fixtures: `processor`, `minimal_state`, `running_processor` |
-| `tests/unit/test_appstate_reducers.py` | Pure reducer tests (no asyncio) |
-| `tests/unit/test_config.py` | `load_config()` merge and validation tests |
-| `tests/integration/test_event_processor.py` | Full emit/drain/subscribe cycle |
-| `tests/integration/test_executor_with_hooks.py` | `ToolExecutor` + `HookRunner` integration |
-| `tests/integration/test_artifact_sharing.py` | `ProjectMemoryLayer` artifact round-trip |
-| `tests/e2e/test_agent_runner_e2e.py` | Full session with lauren-ai agent runner |
-| `tests/e2e/test_argon2_scenario.py` | End-to-end Argon2 refactor scenario |
-
----
+`noxfile.py` is the CI session definition. It currently contains dependency
+and documentation-check drift tracked in PRD-138; do not claim the all-session
+Nox command is a clean-checkout gate until that work is complete.
 
 ## By-task lookup
 
-### 1. Adding a new event type
+### Adding an event or reducer handler
 
-1. Add a frozen dataclass or payload description comment to `kernel/events.py` —
-   document what keys `payload` must contain.
-2. Add a `_reduce_<event_type>` function in `kernel/reducer.py`:
-   ```python
-   def _reduce_foo_happened(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
-       ...
-       return state.with_<entity>(updated), [Effect(EffectType.update_tui, {...})]
-   ```
-3. Register the handler in the `_HANDLERS` dict at the bottom of `reducer.py`:
-   ```python
-   "FooHappened": _reduce_foo_happened,
-   ```
-4. Add a unit test in `tests/unit/test_appstate_reducers.py` that constructs an
-   `Event` with the new type and asserts the returned state is correct.
-5. Update `llms-full.txt` with a `### FooHappened` section describing the payload.
-6. If the event triggers an observable state change, add an `update_tui` effect so
-   `TUIEventAdapter` can react.
+1. Document the event payload keys in `kernel/events.py`.
+2. Add a pure `_reduce_*` function and `_HANDLERS` entry in `kernel/reducer.py`.
+3. Add a synchronous reducer unit test.
+4. Add processor/effect integration coverage when observable side effects or
+   subscriptions are involved.
+5. Update `llms-full.txt` and the architecture docs for public events.
 
-### 2. Adding a reducer handler
+### Adding or changing workflow behaviour
 
-1. Write a pure function in `kernel/reducer.py`:
-   ```python
-   def _reduce_bar_updated(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
-       old = state.<entities>.get(event.payload["id"])
-       if old is None:
-           return state, []
-       updated = replace(old, field=event.payload["field"])
-       return state.with_<entity>(updated), []
-   ```
-2. Add it to `_HANDLERS`:
-   ```python
-   "BarUpdated": _reduce_bar_updated,
-   ```
-3. Add a pure unit test in `tests/unit/test_appstate_reducers.py` — no asyncio
-   needed; call `root_reducer(state, event)` directly and assert the new state.
-4. If the handler returns `Effect` objects, write a separate integration test that
-   starts a processor and verifies the effects are scheduled.
+1. Use `PhaseSpec`, `WorkflowPlugin`, and the existing registry/loader.
+2. Test normal transitions, rejection loops, retries, parallel phases, and
+   resume state.
+3. Ensure `CodePlan` metadata and `CodePlanRunner` behaviour do not become two
+   sources of truth.
+4. Preserve phase outputs, history, approval state, and summaries across
+   resume.
+5. Update `docs/guides/workflows.md` and the workflow findings in
+   `docs/reference/workflow-review.md`.
 
-### 3. Adding a lifecycle hook
+### Adding a tool or integration
 
-1. Subclass `LifecycleHook` from `tools/hooks.py` and override any subset of
-   `on_before`, `on_after`, `on_error`:
-   ```python
-   class AuditHook(LifecycleHook):
-       async def on_after(self, entity: Any, result: Any, ctx: Any) -> None:
-           logger.info("completed %s → %s", entity, result)
-   ```
-2. Register it programmatically via `HookRegistry.register(entity_type, stage, hook)`,
-   or declaratively via TOML:
-   ```toml
-   [hooks.tool_call]
-   after = ["mypackage.hooks:AuditHook"]
-   ```
-   TOML dotpaths are loaded by `load_hook_from_dotpath()` at startup.
-3. If the hook needs to abort execution, return `Rejection(reason="...")` from
-   `on_before` — the `HookRunner` will surface it to the caller.
-4. Test with a concrete subclass in `tests/integration/test_executor_with_hooks.py`;
-   assert that `on_before` rejections prevent execution and `on_after` fires after
-   a successful call.
+1. Use `Tool`/`ToolResultEnvelope` or the existing lauren-ai callable-tool
+   convention.
+2. Attach capability metadata and test the mode/capability boundary.
+3. Use `WorkspaceView` for paths, `NetworkGuard` for network destinations, and
+   `agenthicc_http_client()` for HTTP.
+4. Catch transient network errors in external tools and return a structured,
+   recoverable error where the tool contract requires it.
+5. Add tests for success, denial, malformed input, timeout, and side-effect
+   duplication on retry.
 
-### 4. Extending the TUI
+### Adding a slash command
 
-1. Add an event handler in `TUIEventAdapter._handlers` in `tui/events.py`.  The
-   handler receives the new `AppState` and updates `TranscriptModel` accordingly:
-   ```python
-   def _handle_tool_call_complete(self, state: AppState, event_payload: dict) -> None:
-       self._model.update_tool_call(
-           tool_use_id=event_payload["tool_use_id"],
-           state=ToolCallState.SUCCESS,
-           duration_ms=event_payload.get("duration_ms"),
-       )
-   ```
-2. If the new event produces visible output, update `TranscriptModel` (and
-   `render()`) in `tui/transcript.py` to include the new line format.
-3. Add tests in `tests/unit/test_tui_transcript.py` for the `TranscriptModel`
-   changes (no terminal required — `render()` returns plain strings).
-4. For layout changes, use `render_frame_ansi()` + pyte in `tests/e2e/` to
-   verify the rendered output at specific terminal dimensions.
+1. Add it to `commands/builtins.py` or the supported command plugin export.
+2. Give it a handler, or intercept it in `TUISession` when it needs session
+   fields.
+3. Test trigger-picker discovery and submitted execution separately.
+4. Keep the duplicate completion list in `tui/input/completions.py` synchronized
+   until the command-registry consolidation is completed.
 
-### 5. Adding a new API endpoint
+### Extending the TUI
 
-1. Add a route inside `create_app()` in `api/server.py`:
-   ```python
-   @app.get("/v1/agents")
-   async def list_agents(_: None = Depends(require_auth)) -> dict:
-       return {"agents": list(processor.get_state().agents.keys())}
-   ```
-2. Auth is automatic via `Depends(require_auth)` — include it on every new
-   endpoint.
-3. Add a test in `tests/integration/test_api.py` using `httpx.AsyncClient` with
-   the FastAPI `lifespan` context so the processor runs during the test.
-4. For WebSocket endpoints, follow the pattern in the existing `/v1/ws` handler:
-   subscribe, accept, loop, unsubscribe in `finally`.
+1. Add reactive fields/mutations to `tui/conversation_store.py`.
+2. Render persistent UI in `tui/workspace/`; render scroll events through
+   `ScrollBufferAppender`.
+3. Put keyboard behaviour in `tui/input/capabilities.py` and trigger behaviour
+   in `tui/triggers/`.
+4. Do not import `msvcrt`, `termios`, or `tty` outside their dedicated backend
+   modules. `get_backend()` owns platform selection and `Key` is canonical in
+   `cbreak_reader.py`.
+5. Test both interactive and non-interactive terminal paths.
 
-### 6. Adding a new scroll-buffer event renderer
+### Extending memory or persistence
 
-New `ConversationEvent` kinds are rendered by registering a function with
-`@register_renderer` in `tui/workspace/appender.py` — no edits to
-`_render_one()` are needed.
+1. Use `SessionMemoryLayer` for process-local values, `ProjectMemoryLayer` for
+   project SQLite/artifacts, and `GlobalMemoryLayer` for user-wide SQLite.
+2. Route access through `MemoryRouter`.
+3. Keep reads lock-free where the layer contract requires it and serialize
+   writes with the owning tier's lock.
+4. Add temp-directory integration tests and corruption/restart coverage for
+   durable formats.
+5. Update `docs/reference/storage.md` whenever a file or retention policy
+   changes.
 
-1. Define a module-level function **after** the `ScrollBufferAppender` class
-   definition in `tui/workspace/appender.py`:
-   ```python
-   @register_renderer("my_event")
-   def _render_my_event(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-       from rich.markup import escape as _e  # noqa: PLC0415
-       text = ev.payload.get("text", "")
-       self._console.print(f"  {_e(text)}", markup=True, highlight=False)
-   ```
-2. Emit the new event kind from `AgentTurnRunner` or wherever appropriate:
-   ```python
-   ctx.conv_store.append_event("my_event", {"text": "something happened"})
-   ```
-3. The function receives `self` (the appender instance) and `ev`
-   (`ConversationEvent`).  Call `self._flush_group_summary()` at the start if
-   the new event should close an open tool group.
-4. Add a test that creates a `ScrollBufferAppender`, calls `_flush_batch()`
-   with a `ConversationEvent(kind="my_event", ...)`, and asserts the expected
-   `console.print()` call.
+## Safety and typing rules
 
-**Important:** renderers must be defined **after the class closes** in the
-file.  Placing a `@register_renderer` function inside the class body or before
-the class ends causes it to become a nested function, not a module-level
-renderer.
+- Never weaken a security default to make a test or demo pass.
+- Resolve exact paths before destructive actions; never recursively delete a
+  broad workspace target.
+- Do not expose API keys, OAuth tokens, plugin secrets, or session contents in
+  logs or docs.
+- Use concrete parameterized annotations. Do not introduce `Any` when a real
+  type is knowable; do not use bare `list` or `dict`.
+- Use `TYPE_CHECKING` for cross-package type-only imports and quoted annotations
+  when decoration-time `get_type_hints()` requires it.
+- Frozen kernel state is updated through events/copy-on-write helpers, never by
+  direct field mutation.
+- Start `EventProcessor.run()` before emitting; `drain()` otherwise waits for a
+  loop that does not exist.
 
-### 7. Adding a new approval overlay kind
+## Required documentation updates
 
-New `ApprovalRequest.kind` values are mapped to overlay classes via the
-`_overlay_registry` dict in `tui_session._on_approval_change()`.
+Update the relevant artifacts in the same change:
 
-1. Create a new overlay class (subclass `PromptOverlay` or `Overlay` from
-   `tui/workspace/overlay.py`) in `tui/workspace/overlays/`.
-2. Add an entry to `_overlay_registry` inside `_on_approval_change()` in
-   `runners/tui_session.py`:
-   ```python
-   _overlay_registry = {
-       "plan_review": PlanApprovalOverlay,
-       "questions":   QuestionsOverlay,
-       "my_kind":     MyNewOverlay,        # ← add here
-   }
-   ```
-3. Import the new class at the top of `_on_approval_change()`.
-4. Emit the approval request with the new kind from a tool or agent:
-   ```python
-   req = ApprovalRequest(kind="my_kind", ...)
-   await approval_svc.request_approval(req)
-   ```
-
-### 8. Extending memory tiers
-
-1. Add methods to the appropriate layer class in `memory/layers.py`:
-   - `SessionMemoryLayer` for ephemeral in-process data
-   - `ProjectMemoryLayer` for per-project persistence
-   - `GlobalMemoryLayer` for user-wide persistence
-2. Update `MemoryRouter` in `memory/router.py` to route the new method to the
-   correct tier (or all tiers, for fan-out operations).
-3. Reads must never acquire a lock.  Writes must acquire `self._lock` for the
-   owning tier.
-4. Test with `tests/integration/test_artifact_sharing.py` as a reference pattern:
-   create a temp directory, instantiate the layer, call the new method, assert
-   the expected rows in SQLite.
-
----
-
-## How to add a new slash command
-
-Adding a slash command requires **two independent steps** that are easy to
-get wrong separately:
-
-### Step 1 — Register in `BUILTIN_COMMANDS` (makes it visible in the trigger picker)
-
-Every slash command **must** appear in `commands/builtins.py:BUILTIN_COMMANDS`
-regardless of where its execution logic lives.  The trigger picker
-(`SlashCommandTrigger.get_matches()`) only calls `registry.matches(partial)` —
-it is completely unaware of commands that are handled elsewhere.
-
-```python
-# commands/builtins.py — add to BUILTIN_COMMANDS list
-Command(
-    name="/my-command",
-    description="One-line description shown in the dropdown right column",
-    argument_hint="[optional-arg]",   # shown as usage hint
-    group="Built-in",
-    handler=_cmd_my_command,          # None is valid — see Step 2 note
-),
-```
-
-### Step 2 — Provide execution logic
-
-**Option A — Handler in the registry (preferred for stateless commands)**
-
-Write a `_cmd_my_command(ctx: CommandContext) -> bool` function and set it as
-`handler=` on the `Command`.  The `CommandDispatcher` calls it automatically
-when the user submits `/my-command`.
-
-```python
-def _cmd_my_command(ctx: CommandContext) -> bool:
-    ctx.console.print("Hello from /my-command!")
-    return True   # True = handled
-```
-
-**Option B — Intercept in `TUISession.route()` (required for session-stateful commands)**
-
-When the handler needs access to `TUISession` fields (e.g.
-`self._workflow_override`, `self._agent_task`), intercept the command in
-`route()` *before* `dispatch_slash()` is called, and set `handler=None` in the
-registry entry.  The `None` handler is intentional — it signals "display only;
-handled elsewhere".
-
-```python
-# runners/tui_session.py — TUISession.route()
-def route(self, msg: str) -> bool:
-    if not msg.startswith("/"):
-        return False
-    parts = msg.split(None, 1)
-    if parts[0] == "/my-command":            # intercept before dispatch_slash
-        return self._handle_my_command(parts[1] if len(parts) > 1 else "")
-    if self.dispatch_slash(msg):
-        ...
-```
-
-### The critical lesson
-
-**Registering in `BUILTIN_COMMANDS` and providing execution logic are
-independent requirements.**  Missing either one causes a different silent
-failure:
-
-| Missing | Symptom |
-|---|---|
-| Not in `BUILTIN_COMMANDS` | Command works when typed in full but **never appears in the trigger picker dropdown** |
-| No handler / not intercepted | Command appears in the picker but **does nothing when submitted** |
-
-The `/workflow` command (PRD-114) was initially missing from `BUILTIN_COMMANDS`
-and therefore invisible in the trigger picker even though it executed correctly.
-
----
-
-## Common errors
-
-| Error | Cause | Fix |
-|---|---|---|
-| `AssertionError: intent status 'pending' != 'complete'` after emitting events | Processor `run()` task not started; events queue but are never applied | Start `asyncio.create_task(processor.run())` before emitting; use the `running_processor` fixture |
-| `TimeoutError` (from `asyncio.wait_for`) inside `drain()` | `drain()` waits for the idle event; if `run()` is not scheduled the queue never drains | Ensure `processor.run()` is launched as a task before calling `drain()` |
-| pyte test: input bar check on `screen.buffer[ROWS - 2]` finds status line, not input | `render_frame_ansi` writes input at `rows` (1-indexed) = `ROWS - 1` (0-indexed) | Change assertion to `screen.buffer[ROWS - 1]` |
-| `EmptyQueueError` from `MockTransport` on second LLM turn | `MockTransport` requires a pre-queued response for every LLM round-trip | Add `mock_transport.queue_response(...)` for each expected turn before running the agent |
-| `KeyError: 'status'` when checking workflow node | Accessing `node.status` on a plain `dict` instead of a `WorkflowNode` dataclass | Retrieve from `state.workflows[wf_id].nodes[node_id]` which yields a `WorkflowNode` |
-
----
+- public Python symbols → `llms-full.txt` and, when appropriate, `llms.txt`;
+- user-visible behaviour → `README.md` and a guide under `docs/guides/`;
+- architecture or persistence → `docs/guides/architecture.md` or
+  `docs/reference/storage.md`;
+- contributor workflow → `CLAUDE.md`, this file, and
+  `docs/contributing.md`;
+- new product scope → a numbered PRD under `prds/` and the PRD index.
 
 ## Definition of done
 
-A change is complete when ALL of the following pass:
+For a code change, run the checks relevant to the touched surface and report
+any environment blocker explicitly:
 
 ```bash
-uv run ruff check src/ tests/          # ruff: 0 errors
-uv run ruff format --check src/ tests/ # format: no diffs
-uv run mypy src/agenthicc              # mypy: 0 errors
-uv run python scripts/check_llms.py   # all public symbols documented in llms-full.txt
-uv run pytest tests/ -q               # all tests pass
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+uv run mypy src/agenthicc
+uv run pytest tests/ -q
 ```
 
-If you add a public symbol, `check_llms.py` will fail — add a `### SymbolName`
-section to `llms-full.txt` to fix it.
-
-If you add a new event type, update:
-1. `kernel/events.py` — document the payload keys in a comment or docstring
-2. `kernel/reducer.py` — add the handler and register in `_HANDLERS`
-3. `llms-full.txt` — add the event type section
-4. `tests/unit/test_appstate_reducers.py` — add a pure reducer test
-
-## Type hint rules
-
-Every parameter and return value in every new or modified function **must** have
-a concrete type annotation.  `Any` is forbidden when a real type is knowable.
-
-| Situation | Correct approach |
-|---|---|
-| Cross-package dependency used only for type checking | `TYPE_CHECKING` guard + concrete import |
-| File has no `from __future__ import annotations` | String annotation: `"AgentRunnerBase"` |
-| Heterogeneous list of callables | `list[object]` |
-| JSON-like payload dict | `dict[str, object]` |
-| Truly opaque return (e.g. decorated function) | `object` |
-| Circular `TYPE_CHECKING` import | Allowed — mypy/pyright handle it correctly |
-
-### Concrete rules
-
-- **Never write `Any`** in new files or modified signatures.  `object` is the
-  last resort, not `Any`.
-- **No bare `list` or `dict`** — always parameterise: `list[str]`, `dict[str, int]`.
-- **`TYPE_CHECKING` for cross-package imports** — add the import under
-  `if TYPE_CHECKING:` in the file's import block so it never runs at runtime:
-  ```python
-  from typing import TYPE_CHECKING
-  if TYPE_CHECKING:
-      from agenthicc.tui.conversation_store import ConversationStore
-  ```
-- **String annotations in files without `from __future__ import annotations`** —
-  when `@tool()` or another decorator uses `get_type_hints()` at decoration time,
-  adding `from __future__ import annotations` would break it.  Use quoted strings
-  for parameters that need `TYPE_CHECKING` imports:
-  ```python
-  def make_tool(conv_store: "ConversationStore | None" = None) -> object:
-  ```
-- **`SubagentAggregator.aggregate(results: list[SubagentResult])`** — not `list`.
-
-### Checking
-
-`uv run mypy src/agenthicc` is part of the definition of done.  A new `Any` that
-slips through will surface as a mypy warning once strict mode is enabled.  Until
-then, review every PR diff for `Any` imports and usages.
-
----
-
-## HTTP tool safety rules (PRD-108)
-
-- **Never** use `httpx.AsyncClient()` directly in a tool — always use `agenthicc_http_client()` from `tools/http.py`.
-- **All tools** that make HTTP calls must catch network errors with `is_network_error(exc)` and return `{"ok": False, "error": f"{type(exc).__name__}: {exc}", "recoverable": True}` — never let a `ReadTimeout` propagate to `_stream()`.
-- **Outlook tools** raise `_OutlookNetworkError` in `_get()`/`_post()`; agent_tools.py catches it via `_safe_call()`.
-- **Auth calls** (`_exchange_code`, `_refresh`) raise `AuthNetworkError` on timeout — callers must catch it and show a human-readable message.
-- **Timeout default**: `ToolSettings.http_timeout_s = 30.0`; `_build_session_context()` calls `tools.http.configure()` after loading config.
-- **Connect timeout**: always 10 s regardless of read timeout — set inside `agenthicc_http_client()`.
-
-## Terminal backend rules (PRD-105/106/127)
-
-- **`get_backend()`** in `tui/terminal/backend.py` is the **only** place that may branch on `os.name` for terminal decisions.
-- **No application code** may import `msvcrt`, `termios`, `tty`, or call the Windows console API (`ctypes.windll.kernel32`) directly — all platform-specific terminal calls are confined to `posix_backend.py` and `windows_backend.py`.
-- **`Key` enum** lives in `cbreak_reader.py` and stays there — all importers use that path; do not create a second definition.
-- **`unified_session.run()`** calls `get_backend()` and checks `backend.is_interactive()` before entering `enter_raw_mode()` — if not interactive, it returns cleanly so `TUISession` can cancel tasks normally.
-- **`PosixBackend.enter_raw_mode()`** on a non-TTY fd yields without configuring the terminal (passthrough); never crashes.
-- **`WindowsBackend` reads keys via `ReadConsoleInputW` (PRD-127)**, not `msvcrt.getwch()`.  `getwch()` cannot report the SHIFT modifier on Tab (Shift+Tab collapses to Tab) and never sees VT input — so it broke mode cycling.  `ReadConsoleInputW` exposes `wVirtualKeyCode` + `dwControlKeyState`, making Shift+Tab unambiguous.
-- **`WindowsBackend.enter_raw_mode()`** clears `ENABLE_LINE_INPUT` / `ENABLE_ECHO_INPUT` / `ENABLE_PROCESSED_INPUT` (Ctrl+C arrives as a key event, mirroring POSIX `ISIG`-clear) and restores the saved mode on exit.  A `getwch()` fallback handles environments without a real console.
-- **Windows key decoding is a pure function** — `_decode_key_event(vk, unicode_char, ctrl_state)` — so it is unit-tested on the Linux CI.  ctypes structs use portable `c_*` types (never `ctypes.wintypes`, which only imports on Windows).
-
----
-
-## Key invariants
-
-- `root_reducer` is a pure function — no `await`, no I/O, no global state.
-- `AppState` is `frozen=True`; never mutate a field directly.
-- `render_frame_ansi` places the input bar at ANSI row `rows` (1-indexed);
-  the pyte buffer index for the same row is `rows - 1` (0-indexed).
-- `EventProcessor.drain()` requires `run()` to be scheduled as a task first.
-- All `LifecycleHook` methods default to no-ops — subclasses override only the
-  stages they care about.
-- `HookRunner.run_before` returns the first `Rejection` by registration order;
-  subsequent hooks still run (via `asyncio.gather`) but their results are ignored.
+Also run `uv run nox -s llms_check` when public exports change. A clean release
+gate additionally requires a successful docs build, package build/check, and
+the unit/integration/E2E matrix once the P0 packaging work in PRD-138 lands.

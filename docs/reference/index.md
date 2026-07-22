@@ -1,12 +1,18 @@
-# Reference Index
+# Reference index
 
-| Module | Description | Guide |
+| Area | Canonical source | Reference |
 |---|---|---|
-| `agenthicc.kernel` | Event-sourced AppState, EventProcessor, root_reducer | [Kernel reference](kernel.md) |
-| `agenthicc.api.server` | FastAPI REST + WebSocket endpoints | [API reference](api.md) |
-| `agenthicc.tools` | LifecycleHook, HookRunner, AgenthiccToolExecutor | [Hooks guide](../guides/hooks.md) |
-| `agenthicc.memory` | MemoryRouter, three-tier layers | [Memory guide](../guides/memory.md) |
-| `agenthicc.tui` | TranscriptModel, build_app, render_frame_ansi | [TUI guide](../guides/tui.md) |
-| `agenthicc.config` | load_config, AgenthiccConfig, deep_merge | [Config guide](../guides/configuration.md) |
+| CLI | `src/agenthicc/cli/` | [CLI](cli.md) |
+| Kernel | `src/agenthicc/kernel/` | [Kernel](kernel.md) |
+| Storage | `memory/`, `tui/runtime/`, `runners/` | [Storage](storage.md) |
+| Configuration | `src/agenthicc/config.py` | [Configuration guide](../guides/configuration.md) |
+| Workflows | `src/agenthicc/workflows/` | [Workflows guide](../guides/workflows.md) |
+| TUI | `src/agenthicc/tui/` | [TUI guide](../guides/tui.md) |
+| Tools/security | `src/agenthicc/tools/`, `security.py` | [Security guide](../guides/security.md) |
 
-For AI assistant consumption, see [llms-full.txt](../../llms-full.txt).
+For the complete exported-symbol inventory, see
+[`llms-full.txt`](https://github.com/agenthicc/agenthicc/blob/main/llms-full.txt). It is checked by the repository's LLM
+documentation session.
+
+There is no current REST API reference because `src/agenthicc/api/` is absent.
+That product decision is tracked in PRD-138.

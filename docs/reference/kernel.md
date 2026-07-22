@@ -1,34 +1,19 @@
-# Kernel Reference
+# Kernel reference
 
-The kernel (`agenthicc.kernel`) is the event-sourced core of Agenthicc.
-It exposes the immutable `AppState`, the `Event` record, the `EventProcessor`
-MPSC queue, and the `root_reducer` pure function.
+The kernel is the durable domain core in `src/agenthicc/kernel/`.
 
-See [llms-full.txt](../../llms-full.txt) for the complete API reference with
-signatures and common errors for every exported symbol.
-
-## Quick imports
+## Public surface
 
 ```python
 from agenthicc.kernel import (
     AppState,
-    AgentInstance,
-    AgentStatus,
     Effect,
-    EffectExecutor,
     EffectType,
     Event,
     EventProcessor,
     Intent,
-    IntentStatus,
-    NodeStatus,
-    NoOpEffectExecutor,
-    PermissionRule,
-    ReducerFn,
     SecurityPolicy,
     SystemSettings,
-    Task,
-    ToolRegistration,
     Workflow,
     WorkflowNode,
     restore_from_log,
@@ -36,15 +21,52 @@ from agenthicc.kernel import (
 )
 ```
 
-## Key invariants
+`kernel.__all__` is the authoritative public export list. `llms-full.txt`
+contains symbol signatures and event payload notes.
 
-- `AppState` is **frozen** — never assign to its fields directly.
-- Use `with_*` helpers (`with_intent`, `with_workflow`, etc.) for updates;
-  they return new copies and share unchanged sub-dicts by reference.
-- `root_reducer(state, event)` is a **pure function** — no IO, no async.
-- `EventProcessor.emit` is the only entry point for writes.
-- Always call `await processor.drain()` before reading state after emitting.
+## Event lifecycle
 
-For detailed documentation see:
-- [Architecture guide](../guides/architecture.md) — event-sourcing explanation
-- [llms-full.txt](../../llms-full.txt) — full symbol reference
+```python
+processor = EventProcessor(AppState.create(), persist=False)
+task = asyncio.create_task(processor.run())
+try:
+    await processor.emit(Event.create("IntentCreated", {
+        "intent_id": "i1",
+        "raw_text": "inspect the repository",
+    }))
+    await processor.drain()
+    state = processor.get_state()
+finally:
+    await processor.stop()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+```
+
+`EventProcessor` accepts many producers but applies events in one consumer
+loop. It stores an in-memory event list, optionally appends JSONL records,
+notifies bounded subscriber queues, and schedules returned effects through an
+`EffectExecutor`.
+
+## Reducers
+
+`root_reducer(state, event)` returns `(new_state, effects)`. It must be pure.
+Unknown event types are handled according to the current reducer policy; add a
+handler and a unit test for every new event.
+
+`AppState` is frozen. Use `with_intent`, `with_workflow`, `with_task`,
+`with_agent`, `with_tool`, and `with_hook` helpers inside reducers instead of
+mutating dictionaries in place.
+
+## Persistence
+
+`EventProcessor` writes serialized events to the path in
+`SystemSettings.event_log_path` and periodically writes a lightweight snapshot
+to `snapshot_path`. `restore_from_log()` replays valid lines and tolerates
+corrupt records according to its current implementation. Session paths and the
+separate conversation journal are documented in [Storage](storage.md).
+
+## Important invariant
+
+`drain()` waits for the running consumer to become idle; it cannot make
+progress if `run()` was never scheduled. This is the most common integration
+test failure in the kernel.

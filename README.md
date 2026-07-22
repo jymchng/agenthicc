@@ -1,657 +1,266 @@
-<div align="center">
+# agenthicc
 
-```
-╔══════════════════════════════════════════════════════╗
-║           a g e n t h i c c                         ║
-║   state-driven agent operating system               ║
-╚══════════════════════════════════════════════════════╝
-```
+`agenthicc` is a state-driven agent runtime for software-engineering work. It
+runs agent turns in the current project, exposes filesystem/git/command tools,
+supports configurable workflows and modes, and keeps durable session records
+for inspection and resume.
 
-</div>
+The current product surfaces are:
 
-<p align="center">
-  <em>Event-sourced kernel · parallel DAG execution · tool-only agent communication · 3-tier memory · full-screen TUI</em>
-</p>
+- a Rich Live terminal workspace with approvals, overlays, modes, slash
+  commands, workflow progress, and a pinned composer;
+- a headless stdin interface that emits JSON-lines;
+- an event-sourced kernel with immutable domain state and JSONL persistence;
+- workflow, agent, tool, skill, mode, command, and MCP extension registries;
+- session, project, and global memory plus durable conversation journaling;
+- model-aware context budgeting, compaction, transport retries, and tool-result
+  replay for interrupted turns.
 
-<p align="center">
-<a href="https://github.com/agenthicc/agenthicc/actions/workflows/tests.yml">
-  <img src="https://github.com/agenthicc/agenthicc/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests">
-</a>
-<a href="https://github.com/agenthicc/agenthicc/actions/workflows/lint.yml">
-  <img src="https://github.com/agenthicc/agenthicc/actions/workflows/lint.yml/badge.svg?branch=main" alt="Lint">
-</a>
-<a href="https://codecov.io/gh/agenthicc/agenthicc">
-  <img src="https://img.shields.io/codecov/c/github/agenthicc/agenthicc?color=%2334D058&label=coverage" alt="Coverage">
-</a>
-<a href="https://pypi.org/project/agenthicc">
-  <img src="https://img.shields.io/pypi/v/agenthicc?color=%2334D058&label=pypi%20package" alt="PyPI">
-</a>
-<a href="https://pypi.org/project/agenthicc">
-  <img src="https://img.shields.io/pypi/pyversions/agenthicc.svg?color=%2334D058" alt="Python versions">
-</a>
-<a href="https://github.com/agenthicc/agenthicc/blob/main/LICENSE">
-  <img src="https://img.shields.io/github/license/agenthicc/agenthicc.svg?color=%2334D058" alt="License">
-</a>
-<a href="https://github.com/astral-sh/ruff">
-  <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff">
-</a>
-</p>
+The REST/WebSocket API and the older prompt-toolkit `tui.app` API are not part
+of the current source tree. They are tracked as product decisions in
+[`PRD-138`](./prds/prd-138-repository-improvement-roadmap.md), not as supported
+interfaces.
 
----
+## Requirements
 
-**Documentation**: <a href="https://docs.agenthicc.dev" target="_blank">https://docs.agenthicc.dev</a>
+- Python 3.11 or newer (`3.12` and `3.13` are exercised in CI)
+- [`uv`](https://docs.astral.sh/uv/) for the recommended development workflow
+- An LLM provider: Anthropic, OpenAI, Ollama, or LiteLLM, as configured
 
-**Source Code**: <a href="https://github.com/agenthicc/agenthicc" target="_blank">https://github.com/agenthicc/agenthicc</a>
-
----
-
-## For AI Agents & Coding Assistants
-
-| Resource | What it contains |
-|---|---|
-| [`llms.txt`](./llms.txt) | 2 KB package overview — start here |
-| [`llms-full.txt`](./llms-full.txt) | Complete API reference — all public symbols, signatures, common errors |
-| [`AGENTS.md`](./AGENTS.md) | Agent rules: file ownership, by-task lookup, common errors, definition of done |
-| [`CLAUDE.md`](./CLAUDE.md) | Architecture decisions, pitfall table, commands, conventions |
-| [`skills/`](./skills/) | Copy-paste skill guides: adding events, tools, hooks, TUI extensions |
-
----
-
-## TUI Demo
-
-```
-● assistant (laguna-m.1)  15:02:51
-  ⎿ list_directory('tests')  ✓  2ms
-  ⎿ list_directory  ✓  15ms
-  ⎿ list_directory  ✓  7ms
-  ⎿ list_directory  ✓  18ms
-  ⎿ list_directory('rust_password_generator')  ✓  20ms
-  ⎿ ...and 3 more tool calls
-
-❁ ↻ Thinking │ 1m 40s │ ↑ 591,173 ↓ 3,736 │ Phase 1/4: plan
-openai/poolside/laguna-m.1
-29e1874d-3ea6-4ba5-9c2e-247376ae4a2e │  4 turns │  $0.602
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ ▌
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  PLAN Plan  (shift+tab to cycle)  │  ctrl+j = ↵
-ESC Cancel  │  (LLM responding to tool error)
-  Workflow: code_plan  │  Phase 1/4: plan
-```
-
-### Plan Mode
-
-```
-Now I have a complete understanding of the repository. Let me create a detailed enhancement plan:                                      
-
-Repository Analysis Summary                                                                                                            
-
-Current State:                                                                                                                         
-
- • A Python password generator library with a solid core implementation in password_generator/generator.py                             
- • Empty tests directory - no test coverage                                                                                            
- • Empty README.md files - no documentation                                                                                            
- • Minimal pyproject.toml configuration                                                                                                
- • Missing __init__.py for proper package imports                                                                                      
- • No CLI interface or __main__.py for direct module execution                                                                         
- • Empty rust_password_generator/ placeholder directory                                                                                
-
----------------------------------------------------------------------------------------------------------------------------------------
-
-❊ ↻ Thinking │ 4m 24s │ ↑ 290,266 ↓ 4,022 │ Phase 1/4: plan
-openai/poolside/laguna-m.1
-473badbb-358b-4ba8-b1ae-5fb53bcd6f3e │  1 turn │  $0.302
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  📋 Plan Review
-──────────────────────────────────────────────────────────────────
-  ## Repository Enhancement Plan
-  
-  Based on my analysis, the repository is a Python password generator project with a well-implemented core module but missing several
-  
-  ### 1. Package Structure Improvements
-  - **Add `password_generator/__init__.py`** - Export the `PasswordGenerator` class for clean imports
-  - **Add `password_generator/__main__.py`** - Enable running via `python -m password_generator`
-  
-  ### 2. Documentation
-  - **Update main `README.md`** - Comprehensive documentation including:
-  lines 1–10 of 52 · ↓
-──────────────────────────────────────────────────────────────────
-  ▶ Approve
-    Reject — add feedback
-    Approve — add instructions
-──────────────────────────────────────────────────────────────────
-  ↑↓ options  [ up  ] down  Enter select  Esc deny
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ◈ Plan  (shift+tab to cycle)
-Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
-  ◈ code_plan  1/4  plan
-```
-
-### Plan Mode to Execution Mode
-
-```
-Let me provide a more extensive enhancement plan:                                                                                      
-  ⎿ request_plan_approval  ✗  0ms
-  ⎿ request_plan_approval('# Repository Enhancement Plan for Python Password Generator)  ✓  178390ms
-The plan has been approved. Let me finalize it and begin execution:                                                                    
-  ⎿ finalize_plan  ✗  0ms
-  ⎿ finalize_plan('# Repository Enhancement Plan for Python Password Generator)  ✓  0ms
-The enhancement plan for the Python Password Generator repository has been fully approved and finalized. The plan includes:            
-
- 1 Comprehensive test suite with tests for character sets, password generation, edge cases, and performance                            
- 2 CLI interface with argparse supporting various options and interactive mode                                                         
- 3 Package structure improvements with proper __init__.py and __main__.py modules                                                      
- 4 Password strength estimator with entropy calculation and blacklist checking                                                         
- 5 Full documentation in README.md                                                                                                     
- 6 Enhanced pyproject.toml with metadata, entry points, and dev dependencies                                                           
- 7 GitHub Actions CI/CD workflow for testing and coverage                                                                              
-
-The execution phase will now begin automatically.                                                                                      
-● assistant (laguna-m.1)  16:42:08
-Now I'm in the execution phase. Let me implement the enhancements to the Python Password Generator repository.                         
-
-Phase 1: Create package structure files                                                                                                
-  ⎿ write_file  ✗  0ms
-  Modified: password_generator/__init__.py
-  ⎿ write_file(content='"""Password Generator - , path='password_generator/__ini)  ✓  8ms
-
-✾ ↻ Thinking │ 41s │ ↑ 188,230 ↓ 6,539 │ Phase 2/4: execute
-openai/poolside/laguna-m.1
-597e3972-d9fa-48e8-9182-62b75fc7f34b │  3 turns │  $0.208
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ ▌
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ Auto  (shift+tab to cycle)
-Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
-  ◈ code_plan  2/4  execute
-```
-
-### Agent Asking User **ONE** Question
-
-```
-❀ Thinking │ 2m 45s │ ↑ 698,939 ↓ 5,954
-openai/deepseek-v4-flash
-c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  1 turn │  $0.717
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ❓ Questions  (0 of 1 answered)
-──────────────────────────────────────────────────────────────────
-    Question 1 of 1                                            ○
-
-  What kind of enhancement do you want?
-
-  ▶ New CLI feature (e.g. --version, --json output, --clipboard)
-    Performance optimization (e.g. speed up generation)
-    Bug fix / polish (e.g. fix broken README badges, edge cases)
-
-──────────────────────────────────────────────────────────────────
-  ↑↓ option   ←→ question   Enter confirm   Esc cancel
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ◈ Plan  (shift+tab to cycle)
-Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
-  ◈ code_plan  1/4  plan
-```
-
-### Agent Asking User Multiple Questions:
-
-```
-❀ Thinking │ 3m 29s │ ↑ 747,313 ↓ 6,197
-openai/deepseek-v4-flash
-c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  1 turn │  $0.766
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ❓ Questions  (0 of 3 answered)
-──────────────────────────────────────────────────────────────────
-    Question 1 of 3 ▶                                      ○ ○ ○
-
-  What area of the project should the enhancement focus on?
-
-  ▶ CLI / user-facing commands
-    Password generation itself (new algorithms, templates)
-    Vault / storage / encryption
-
-──────────────────────────────────────────────────────────────────
-  ↑↓ option   ←→ question   Enter confirm   Esc cancel
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ◈ Plan  (shift+tab to cycle)
-Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
-  ◈ code_plan  1/4  plan
-
-✾ Thinking │ 4m 17s │ ↑ 747,313 ↓ 6,197
-openai/deepseek-v4-flash
-c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  1 turn │  $0.766
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ❓ Questions  (1 of 3 answered)
-──────────────────────────────────────────────────────────────────
-  ◀ Question 2 of 3 ▶                                      ● ○ ○
-
-  How much code change are you willing to accept?
-
-    30-50 lines (moderate feature)
-  ▶ I'll trust your judgment
-    Other — type your answer
-
-──────────────────────────────────────────────────────────────────
-  ↑↓ option   ←→ question   Enter confirm   Esc cancel
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ◈ Plan  (shift+tab to cycle)
-Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
-  ◈ code_plan  1/4  plan
-
-✽ Thinking │ 4m 31s │ ↑ 747,313 ↓ 6,197
-openai/deepseek-v4-flash
-c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  1 turn │  $0.766
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ❓ Questions  (2 of 3 answered)
-──────────────────────────────────────────────────────────────────
-  ◀ Question 3 of 3                                        ● ● ○
-
-  Who is the primary beneficiary of this enhancement?
-
-  ▶ End users (better UX, new features)
-    Developers (better DX, tooling, CI)
-    Both - something visible and practical
-
-──────────────────────────────────────────────────────────────────
-  ↑↓ option   ←→ question   Enter confirm   Esc cancel
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ◈ Plan  (shift+tab to cycle)
-Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
-  ◈ code_plan  1/4  plan
-```
-
-### Agent Implementing the Changes
-
-```
-Now I have everything. Let me implement all changes systematically.                                                                    
-
-Change 1: Add import json to cli.py                                                                                                    
-  Modified: password_generator/cli.py
-  ⎿ patch_file(path='password_generator/cli.p, old_content='import argparse\nimport , new_content='import argparse\nimport )  ✓  3ms
-Change 2: Add global --json flag to root parser                                                                                        
-  Modified: password_generator/cli.py
-  ⎿ patch_file(old_content='    parser = argparse.Ar, new_content='    parser = argparse.Ar, path='password_generator/cli.p)  ✓  3ms
-Change 3: Modify cmd_generate for JSON output                                                                                          
-  Modified: password_generator/cli.py
-  ⎿ patch_file(old_content='    for pw in passwords:, new_content='    if args.json:\n     , path='password_generator/cli.p)  ✓  3ms
-
-❀ Thinking │ 1m 3s │ ↑ 991,944 ↓ 6,130
-openai/deepseek-v4-flash
-c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  3 turns │  $0.957
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ ▌
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ Auto  (shift+tab to cycle)
-Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
-  ⏵⏵ code_plan  2/4  execute
-```
-
-### Agent doing Review
-
-```
-● assistant (deepseek-v4-flash)  17:33:08
-Let me review the implementation by inspecting the changed files and running the tests.                                                
-  ⎿ git_show('HEAD')  ✓  9ms
-  ⎿ run_tests(120)  ✓  0ms
-  ⎿ shell(command='cd /root/python_projects, timeout=120)  ✓  0ms
-Let me verify the key changed sections by reading the actual files.                                                                    
-  ⎿ read_lines(path='password_generator/cli.p, start=1, end=15)  ✓  3ms
-  ⎿ read_lines(path='password_generator/cli.p, start=50, end=75)  ✓  18ms
-  ⎿ read_lines(path='password_generator/cli.p, start=110, end=145)  ✓  18ms
-  ⎿ read_lines(start=351, end=365, path='password_generator/cli.p)  ✓  3ms
-  ⎿ read_lines(start=494, end=535, path='password_generator/cli.p)  ✓  15ms
-  ⎿ ...and 5 more tool calls
-
-✿ Thinking │ 23s │ ↑ 2,095,495 ↓ 9,455
-openai/deepseek-v4-flash
-c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  4 turns │  $2.124
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ ▌
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ◈ Plan  (shift+tab to cycle)
-Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
-  ◈ code_plan  3/4  review
-```
-
-### Agent Approved the Review and Summarize
-
-```
-All 249 tests passed during execution, the commit is in place, the diff shows only the targeted changes, and the JSON output works     
-correctly at runtime. Approving.                                                                                                       
-  ⎿ approve_review('Implementation verified: `--json` flag added to all 3 targe)  ✓  0ms
-● assistant (deepseek-v4-flash)  17:33:35
-Summary: The planned enhancement was to add a global --json output flag to the CLI for the three highest-value subcommands (generate,  
-strength, breach) to enable machine-consumable output for scripting and CI pipelines. This was implemented by adding import json and   
---json arguments to the respective subparsers, branching on args.json in each command handler to emit structured JSON ({"passwords":   
-[...], "count": N} for generate, full StrengthResult for strength, and {"password", "hash", "count", "found"} for breach), bumping the 
-version to 0.6.0, and updating the CHANGELOG. Verification confirmed all 249 tests pass, the JSON output works end-to-end, and the     
-human-readable output is preserved as the default.                                                                                     
-
-✾ Idle │ 4s │ ↑ 39,364 ↓ 227
-openai/deepseek-v4-flash
-c82cd4cc-f125-4e3a-9fa0-3c71fa597f80 │  5 turns │  $0.040
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ ▌
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ Auto  (shift+tab to cycle)
-Enter Submit  │  Ctrl+J Newline  │  /cmd  │  @Mention
-```
-
----
-
-## Features
-
-| Feature | Description |
-|---|---|
-
----
-
-## Installation
+## Install from a checkout
 
 ```bash
-# Recommended: uv
-uv add agenthicc
-
-# TUI support
-uv add "agenthicc[tui]"
-
-# Headless API server
-uv add "agenthicc[api]"
-
-# Everything (dev + tui + api)
-uv add "agenthicc[tui,api,dev]"
-
-# pip
-pip install agenthicc
+git clone https://github.com/agenthicc/agenthicc.git
+cd agenthicc
+uv sync --extra dev
 ```
 
----
-
-
-## Environment Variables — Running with an LLM
-
-Agenthicc uses **[lauren-ai](https://github.com/lauren-framework/lauren-ai)** for
-all LLM calls. You must set at least one provider API key before agents can run.
-
-### Anthropic Claude (default)
+The package exposes both `agenthicc` and `python -m agenthicc` entry points:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
+uv run agenthicc
+# equivalent:
+uv run python -m agenthicc
 ```
 
-That's the only required variable. The default model is `claude-opus-4-6`.
+The package metadata currently declares `cloud` and `dev` extras. Do not use
+the undocumented `tui` or `api` extras from older documentation; dependency
+and packaging cleanup is tracked in PRD-138.
 
-### OpenAI
+## Provider configuration
+
+Anthropic is the default provider. Set one provider's credentials before
+starting a real agent turn:
 
 ```bash
+# Anthropic
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# OpenAI
 export OPENAI_API_KEY="sk-..."
-# then set provider in config:
-# [execution]
-# provider = "openai"
-# model = "gpt-4o"
+uv run agenthicc --set execution.provider=openai --set execution.model=gpt-4o
+
+# Ollama needs no API key
+uv run agenthicc --set execution.provider=ollama --set execution.model=llama3.2
 ```
 
-### Ollama (local, no key)
+You can set the provider, model, base URL, and execution options in
+`.agenthicc/agenthicc.toml`, `agenthicc.toml`, or a user config file. See the
+[configuration guide](./docs/guides/configuration.md) for precedence and the
+supported settings.
+
+## First run
+
+Create a project config if desired:
 
 ```bash
-# No API key needed — just have Ollama running
-# [execution]
-# provider = "ollama"
-# model = "llama3.2"
+uv run agenthicc config init
 ```
 
-### Override model at launch
+Then launch the terminal workspace and enter a natural-language request:
+
+```text
+> inspect the authentication module, propose a safe refactor, and run its tests
+```
+
+The default session discovers built-in and project-local workflows, agents,
+tools, skills, modes, and MCP servers. Writes, command execution, and network
+access are subject to mode restrictions, capability metadata, security policy,
+and approval settings.
+
+For a non-interactive process, use headless mode. It prints a ready record and
+one JSON line for each non-empty input line:
 
 ```bash
-agenthicc --set execution.model=claude-haiku-4-5
+printf '%s\n' 'summarise the repository' | uv run agenthicc --headless
 ```
 
-## Quick Start
+Headless mode is useful for smoke tests and pipelines. It is intentionally a
+smaller runner than the full TUI session; it does not imply a REST server.
 
-**1. Install**
+## Terminal workspace
 
-```bash
-uv add "agenthicc[tui]"
+The current TUI is implemented by `tui/workspace/Workspace` and consists of:
+
+1. a scroll buffer for conversation, tool, workflow, and system events;
+2. a live status/composer/footer block owned by the workspace;
+3. overlays for help, configuration, approvals, questions, plans, and trigger
+   completion;
+4. a single lifetime input session with POSIX and Windows terminal backends.
+
+Useful built-in slash commands include:
+
+| Command | Purpose |
+|---|---|
+| `/help`, `/commands` | Inspect available commands |
+| `/status`, `/history` | Inspect runtime status and session events |
+| `/mode [name]` | Show or change the operating mode |
+| `/workflow <name> \| reset` | Select the workflow for later turns |
+| `/model [provider] [model]` | Inspect or switch the model selection |
+| `/config` | Open the configuration overlay |
+| `/compact` | Compact conversation memory |
+| `/replay [session-id]` | Replay a saved conversation |
+| `/cancel`, `/clear`, `/expand` | Control the current session or output |
+| `/mcp`, `/skills` | Inspect MCP and skill integrations |
+
+Use `Ctrl+C` according to the current input state; the input backend owns raw
+terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md)
+for modes, overlays, input, and platform rules.
+
+## Architecture in one picture
+
+```text
+user input
+    │
+    ▼
+TUISession / headless runner
+    │  creates turns, selects workflow, injects tools
+    ├──────────────────────────────┐
+    ▼                              ▼
+reactive TUI AppState         kernel EventProcessor
+    │                              │
+Workspace + input             Event → root_reducer → frozen kernel AppState
+    │                              │
+    └──────────────┬───────────────┘
+                   ▼
+          workflow + agent turns
+                   │
+          capability-gated tools
+                   │
+       session / project / global memory
 ```
 
-**2. Create `agenthicc.toml`** in your project root
+The kernel `AppState` and the reactive TUI `AppState` are different types with
+different responsibilities. The session runner currently owns the bridge
+between them. This boundary is documented in the [architecture guide](./docs/guides/architecture.md)
+and is a P0 design item in PRD-138.
+
+## Configuration example
 
 ```toml
+# .agenthicc/agenthicc.toml
+
 [execution]
+provider = "anthropic"
+model = "claude-opus-4-8"
+max_concurrent_intents = 8
 max_parallel_tasks = 4
-agent_pool_size    = 8
+max_agent_turns = 200
+auto_compact = true
+transport_max_retries = 3
 
 [memory]
 project_memory_path = ".agenthicc/memory"
+session_ttl_seconds = 86400
 
 [security]
-sandbox_mode  = true
-allowed_paths = ["/workspace"]
+sandbox_mode = true
+# Use the real absolute project path, not the illustrative /workspace path.
+allowed_paths = ["/absolute/path/to/project"]
+network_allow_list = []
 
 [tools]
-allowed = ["read_file", "write_file", "run_tests"]
-
+max_live_tool_calls = 5
 ```
 
-**3. Run the TUI**
+Config layers are merged in this order: built-in defaults, user config,
+project config, environment variables, then repeated `--set key=value`
+overrides. Run `uv run agenthicc config show` to inspect the effective values;
+never print secrets in support logs.
 
-```bash
-agenthicc
-```
+## Extension points
 
-**4. Type a natural language intent**
-
-```
-> Refactor auth/hashing.py to replace bcrypt with Argon2id and update the tests
-```
-
-**5. Watch it work**
-
-The planner agent decomposes your intent into a DAG, spawns specialist agents for
-each node, and streams their progress live to the transcript viewport.  Tool calls
-show spinner → checkmark with latency.  The status line tracks active agents and
-accumulated cost.
-
----
-
-## TUI Guide
-
-The TUI is the primary interface for interactive use.  It is a full-screen
-`prompt_toolkit` application that renders the kernel's event stream as a live
-transcript.
-
-### Layout overview
-
-```
-  ┌─────────────────────────────────────────────────────┐
-  │  1  TRANSCRIPT VIEWPORT                             │
-  │     Scrolling log of agent turns.                   │
-  │     Each turn: header + text lines + tool calls.    │
-  │     Tool calls show spinner while running.          │
-  │     ─────────────────────────────────────────────── │
-  │  2  STATUS LINE                                     │
-  │     <n> agents | $<cost> | <tokens> tok             │
-  │     ─────────────────────────────────────────────── │
-  │  3  INPUT BAR  (ALWAYS last row)                    │
-  │     > _                                             │
-  └─────────────────────────────────────────────────────┘
-```
-
-Callout **1 — Transcript viewport**: occupies `rows - 2` rows.  Auto-scrolls to
-the tail.  Each agent turn opens with a bullet header:
-
-```
-● agent:planner  12:34:01
-  > Analysing repository structure...
-    [tool] read_file src/auth.py          ✓  12ms
-    [tool] search_code "bcrypt"           ⣾ running…
-```
-
-The `●` bullet is followed by `agent:<name>` and a wall-clock timestamp.
-Model output lines are indented with `  > `.  Tool call lines are indented with
-`    [tool] <name>` and show one of:
-
-- `⣾` / `⣽` / `⣻` / `⢿` / `⡿` / `⣟` / `⣯` / `⣷` — braille spinner (animates while running)
-- `✓  <Nms>` — success with latency
-- `✗  <error>` — failure with message
-
-Callout **2 — Status line**: one row, style class `statusline`.  Format:
-`<n> agents | $<cost> | <tokens> tok`.  Updated after every kernel event.
-
-Callout **3 — Input bar**: the very last row, style class `input-bar`, prefixed
-`> `.  This row is ALWAYS at `rows` (1-indexed) and is NEVER displaced by menus
-or overlays.
-
-### Input bar
-
-Type any natural-language intent and press Enter.  The text is submitted to the
-kernel as an `IntentCreated` event.  The planner picks it up, synthesises a
-workflow DAG, and spawns agents.
-
-Slash commands (see table below) are intercepted before submission and open a
-floating menu overlay anchored 2 rows above the terminal bottom — the overlay
-**never** touches the input bar.
-
-Press **Escape** to dismiss the active overlay without submitting.
-
-### Transcript viewport
-
-The transcript is rendered by `TranscriptModel.render()` and displayed in a
-`prompt_toolkit` `Window` with `wrap_lines=True`.  The most recent `rows - 2`
-lines are visible; earlier output scrolls off the top.
-
-Each `AgentTurnEntry` contributes:
-
-1. A header line (`● agent:<name>  HH:MM:SS`)
-2. Zero or more model output lines (`  > <text>`)
-3. Zero or more tool call lines (`    [tool] <name>  <symbol>  <detail>`)
-4. An optional footer with token count and cost
-
-Agent turns are separated by a `────────────────────────────────────────────` rule.
-
-### Status line
-
-The status line sits between the transcript and the input bar.  It shows:
-
-```
- 3 agents | $0.042 | 14,302 tok
-```
-
-Values update after every state snapshot pushed by the kernel subscriber.
-
-### Slash commands
-
-| Command | Description |
-|---|---|
-| `/status` | Show all running agents and their current tasks as a tree.  Agents in the `busy` state show their `current_task_id`. |
-| `/approve` | Human-in-the-loop tool approval.  Lists all tool calls currently in `require_confirmation` state.  Type `y` to approve or `n` to reject each one. |
-| `/history` | Searchable event log.  Shows the last 10 events by default; type to filter by event type or agent ID.  Press Enter to inspect a full event payload. |
-| `/settings` | Live TOML editor.  Opens the merged configuration in a floating editor window.  Save with Ctrl+S; changes take effect immediately without restarting. |
-
-Dismiss any overlay with **Escape**.
-
-### Key bindings
-
-| Key | Action |
-|---|---|
-| `Enter` | Submit the current input bar text as an intent (or open a slash-command overlay) |
-| `Ctrl+C` | Exit agenthicc |
-| `↑` | Recall previous input from history |
-| `↓` | Recall next input from history |
-| `Shift+Enter` | Insert a newline in the input bar (multi-line intents) |
-| `Escape` | Dismiss the active overlay menu |
-
-### Headless mode
-
-Run without a terminal:
-
-```bash
-agenthicc --headless
-```
-
-In headless mode the TUI is replaced by `run_headless()`, which emits one
-JSON line to stdout per kernel event.  Suitable for CI, piping to `jq`, or
-integration with external dashboards.
-
-Example JSON-line output:
-
-```json
-{"ts": 1719875041.234, "event_type": "ToolCallComplete", "event_id": "a1b2c3d4", "payload": {"tool_use_id": "u123", "tool_name": "read_file", "success": true, "duration_ms": 12}, "source_agent_id": "agent-refactor-001"}
-```
-
-Key fields in every line:
-
-| Field | Type | Description |
+| Extension | Current location | Discovery |
 |---|---|---|
-| `ts` | float | Unix timestamp |
-| `event_type` | string | Kernel event class name |
-| `event_id` | string | UUID hex for deduplication |
-| `payload` | object | Event-specific data |
-| `source_agent_id` | string\|null | Emitting agent, if any |
+| Tools | `.agenthicc/tools/`, `~/.agenthicc/tools/` | `TOOLS` export; capability metadata and trust apply |
+| Agents | `.agenthicc/agents/`, `~/.agenthicc/agents/` | `AgentPlugin` subclasses or `AGENTS` export |
+| Modes | `.agenthicc/modes/`, `~/.agenthicc/modes/` | Mode plugin loader |
+| Workflows | `.agenthicc/workflows/`, `~/.agenthicc/workflows/` | `WorkflowPlugin` subclasses |
+| Skills | `.agenthicc/skills/`, `~/.agenthicc/skills/` | `SKILL.md` directories |
+| Commands | `.agenthicc/commands/`, `~/.agenthicc/commands/` | `COMMANDS` exports |
+| MCP | `[[tools.mcp_servers]]` | configured server bridge |
 
-Pipe to `jq` for filtering:
+Read the [extension guide](./docs/guides/plugins.md) before enabling project
+code or dependency installation. Project-local Python is executable code and
+must be trusted deliberately.
 
-```bash
-agenthicc --headless | jq 'select(.event_type == "ToolCallComplete")'
-```
+## Persistence and resume
 
----
+Session artifacts live below `~/.agenthicc/sessions/`:
 
-## Configuration
+- `<session-id>.jsonl` — kernel event log;
+- `<session-id>/conversation.jsonl` — rendered conversation events;
+- `<session-id>/conversation-journal.jsonl` — durable conversation-memory
+  transitions used for crash recovery and tool replay;
+- optional cassette files — recorded transport and approval interactions.
 
-Minimal `agenthicc.toml`:
+Project memory and the workspace file cache live below `.agenthicc/`; global
+memory defaults to `~/.agenthicc/global.db`. See the [storage reference](./docs/reference/storage.md)
+before deleting session or project state.
 
-```toml
-[execution]
-max_concurrent_intents = 8   # max intents running in parallel
-max_parallel_tasks     = 4   # max DAG nodes running simultaneously
-agent_pool_size        = 16  # max agents in the pool
-
-[memory]
-project_memory_path = ".agenthicc/memory"  # SQLite KV + artifact DB path
-
-[security]
-sandbox_mode  = true              # restrict tool file/network access
-allowed_paths = ["/workspace"]    # paths tools may read/write
-
-[api]
-host        = "127.0.0.1"
-port        = 8000
-api_key_env = "AGENTHICC_API_KEY" # env var holding the Bearer token
-```
-
-Full reference: `agenthicc config --help` or [docs/configuration.md](./docs/configuration.md).
-
----
-
-## Architecture
-
-```
-  ┌──────────────────────────────────────────────────────────┐
-  │  Intent (natural language text)                          │
-  └───────────────────────┬──────────────────────────────────┘
-                          │ IntentCreated event
-  ┌───────────────────────▼──────────────────────────────────┐
-  │  Kernel  (kernel/)                                        │
-  │  EventProcessor — MPSC queue → root_reducer → AppState   │
-  │  Events persist to events.jsonl; snapshots every N events │
-  └───────────────────────┬──────────────────────────────────┘
-          Effects         │ AppState subscribers
-  ┌───────────────────────┼──────────────────┐
-  │                       │                  │
-  ▼                       ▼                  ▼
-workflows/             memory/        tui/ or api/
-phase runners         3-tier KV    TUI / JSON-lines
-```
-
----
-
-## Contributing
-
-See [docs/contributing.md](./docs/contributing.md).  In brief:
+## Development
 
 ```bash
-uv sync --all-extras
-uv run pytest tests/ -q
+uv sync --extra dev
+
+# Fast checks
 uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+uv run mypy src/agenthicc
+uv run pytest tests/unit -q
+
+# Broader suites
+uv run pytest tests/integration -q
+uv run pytest tests/e2e -q
+uv run pytest tests/ -q
 ```
 
-All PRs must pass lint, type-check, and the full test suite.
+Nox contains the CI session definitions (`noxfile.py`), including the embedded
+`llms-full.txt` symbol check. Its dependency installation paths are being
+aligned with `pyproject.toml`; see [contributing](./docs/contributing.md) and
+PRD-138 before using the default all-session invocation on a clean checkout.
+
+## Documentation map
+
+- [Quickstart](./docs/guides/quickstart.md)
+- [Architecture](./docs/guides/architecture.md)
+- [Configuration](./docs/guides/configuration.md)
+- [TUI](./docs/guides/tui.md)
+- [Workflows](./docs/guides/workflows.md)
+- [Extensions and plugins](./docs/guides/plugins.md)
+- [Memory and storage](./docs/guides/memory.md)
+- [Security](./docs/guides/security.md)
+- [Testing](./docs/guides/testing.md)
+- [CLI reference](./docs/reference/cli.md)
+- [Kernel reference](./docs/reference/kernel.md)
+- [Storage reference](./docs/reference/storage.md)
+- [Repository improvement PRD](./prds/prd-138-repository-improvement-roadmap.md)
+
+AI-assisted contributors should also read [`AGENTS.md`](./AGENTS.md),
+[`CLAUDE.md`](./CLAUDE.md), [`llms.txt`](./llms.txt), and
+[`llms-full.txt`](./llms-full.txt).
+
+## License
+
+MIT. See [LICENSE](./LICENSE).

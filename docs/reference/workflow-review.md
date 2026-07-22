@@ -1,4 +1,8 @@
-# Workflow Package Review — Code Quality & Architecture
+# Workflow Package Review — Historical Findings
+
+> This is an evidence record, not a claim that every finding is still open.
+> Re-check each item against the current branch before implementing it. The
+> prioritized repository roadmap is [PRD-138](https://github.com/agenthicc/agenthicc/blob/main/prds/prd-138-repository-improvement-roadmap.md).
 
 **Package:** `src/agenthicc/workflows/`
 **Scope:** Full audit of all 17 source files

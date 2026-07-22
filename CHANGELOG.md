@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation — repository map and improvement roadmap
+
+- Rewrote the README, contributor/agent guidance, and MkDocs landing page to
+  match the current Rich workspace, headless stdin runner, kernel, workflows,
+  tools, and persistence layers.
+- Added configuration, security, extensions, testing, CLI, storage, and
+  contributor documentation, plus PRD-138 covering the remaining repository
+  improvements and implementation/documentation drift.
+- Marked the historical REST API and prompt-toolkit TUI references as planned
+  or compatibility material until their source packages exist again.
+
 ### Added — Configurable session memory budget
 
 - `[execution] session_memory_max_tokens` (default 32000) sets the token budget of

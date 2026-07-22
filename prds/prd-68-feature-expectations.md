@@ -1941,3 +1941,36 @@ tolerated).
 | 47.5 | Auto-compaction fires at `summarize_at × usable(window)`; a bigger window compacts later; lowering `summarize_at` shrinks the working set while the window stays the ceiling |
 | 47.6 | `context_window_for(model, default=0)` lets callers distinguish "registry knows it" from "fell back" |
 | 47.7 | Suites green: `test_model_context_budget.py` (resolution + usable budget + TOML), updated `test_config.py`; workflow e2e tests use a real config |
+
+## 48. Faithful Extended-Thinking Block Round-Trip (PRD-137, lauren-ai)
+
+Reasoning models (e.g. `deepseek-v4-flash` via an Anthropic-compatible gateway)
+return `thinking` / `redacted_thinking` blocks. Anthropic's rule: when a turn is
+in thinking mode and contains `tool_use`, those blocks — **with their
+signatures** — must be sent back, **before** the `tool_use` blocks, on the next
+request. agenthicc was dropping them, producing a provider 400
+("`content[].thinking` … must be passed back"). This is a **lauren-ai** fix
+(the app has no seam to fix it at): the thinking blocks are now round-tripped
+faithfully end-to-end, even when `thinking` was not explicitly requested.
+
+| Layer | Behaviour |
+|---|---|
+| **A capture** | The Anthropic streaming transport captures `signature_delta` (→ `CompletionChunk.thinking_signature`) and `redacted_thinking` blocks (→ `redacted_thinking_data`), not just `thinking_delta` text |
+| **B assemble** | `run_stream` reconstructs ordered `thinking_blocks` (text finalised on each signature; redacted blocks whole; trailing unsigned text preserved) onto the streamed `Completion` |
+| **C store** | `ShortTermMemory.add_assistant` stores thinking blocks **first** — thinking → text → tool_use (Anthropic ordering) — as dicts that round-trip via snapshot/restore + journal |
+| **D serialize** | `_content_block_to_anthropic` serializes `thinking`/`redacted_thinking` (dict + dataclass) back into the request verbatim |
+| **E immutable** | The context guard (`_block_text_field`/`_shrink_message`/`_enforce_char_budget`) never truncates thinking — the signature is verified against the exact text |
+| **F attached** | Heal/trim operate at message granularity and only *insert* synthetic tool_results — they never strip thinking from its tool-using turn |
+
+### Acceptance criteria
+
+| # | Criterion |
+|---|---|
+| 48.1 | Streaming captures the thinking **signature** and redacted data, not just text |
+| 48.2 | The streamed `Completion` carries `thinking_blocks`; `add_assistant` stores them before text/`tool_use` |
+| 48.3 | `_content_block_to_anthropic` serializes `thinking`/`redacted_thinking`; never raises on them |
+| 48.4 | A multi-turn tool-use conversation in thinking mode no longer 400s ("thinking must be passed back") |
+| 48.5 | Thinking blocks are never truncated by the context guard; only other content is |
+| 48.6 | Heal/trim keep thinking attached to its tool-using assistant turn |
+| 48.7 | Round-trip works even when `thinking` was not explicitly requested (model-emitted thinking preserved); survives snapshot/restore |
+| 48.8 | Suite green: `lauren-ai/tests/unit/test_thinking_roundtrip.py` (16 tests) |

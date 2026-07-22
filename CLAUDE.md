@@ -1,248 +1,179 @@
 # CLAUDE.md — Development guide for agenthicc
 
-## Project overview
+This file is a concise maintainer guide. The user-facing project description is
+in [README.md](README.md); the prioritized improvement backlog is
+[`PRD-138`](prds/prd-138-repository-improvement-roadmap.md).
 
-`agenthicc` is a state-driven agent operating system for autonomous software
-engineering built on top of lauren-ai.  It provides:
+## Project model
 
-- **Event-sourced kernel** — MPSC `asyncio.Queue` feeding a pure `root_reducer`;
-  every state change is an appended `Event`; `AppState` is fully immutable.
-- **Lifecycle hooks** — `LifecycleHook.on_before/on_after/on_error` at intent,
-  workflow node, task, agent, and tool-call granularity; loaded from TOML dotpaths.
-- **3-tier memory** — session (in-process LRU+TTL), project (SQLite KV + artifacts),
-  global (user-wide SQLite).
-- **Full-screen TUI** — `prompt_toolkit` HSplit; transcript viewport auto-scrolls;
-  input bar always pinned to the last terminal row.
+agenthicc is a Python 3.11+ agent runtime built around lauren-ai. The current
+interactive path is:
 
-
-## LLM Configuration
-
-Agenthicc uses lauren-ai for LLM calls. The only required env var is:
-
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."  # for Anthropic Claude (default)
-export OPENAI_API_KEY="sk-..."         # for OpenAI (set provider = "openai")
-# Ollama needs no key — just have it running locally
+```text
+CLI → session context → reactive TUI workspace
+                    ↘ workflow runner → agent turn → tools
+                                      ↘ kernel EventProcessor → reducer → log
 ```
 
-Override the model:
+There are two intentionally different state containers:
+
+- `agenthicc.kernel.state.AppState` is frozen domain state. It changes only by
+  applying events through `root_reducer` and is the durable/auditable model.
+- `agenthicc.tui.conversation_store.AppState` is mutable reactive presentation
+  state. It owns input, overlays, conversation rendering, metrics, mode display,
+  approvals, and workflow progress.
+
+Do not import one as a replacement for the other. When a feature crosses the
+boundary, document and test the bridge in `runners/tui_session.py` or the
+relevant runner context.
+
+The repository does not currently contain `agenthicc.api`, `tui.app`,
+`tui.transcript`, or the old lifecycle-hook executor modules. Do not add code or
+docs against those paths without first resolving the product decision in
+PRD-138.
+
+## Environment
+
 ```bash
-agenthicc --set execution.model=claude-sonnet-4-6
-# or in .agenthicc/agenthicc.toml:
-# [execution]
-# model = "claude-sonnet-4-6"
+export ANTHROPIC_API_KEY="sk-ant-..."  # default provider
+export OPENAI_API_KEY="sk-..."         # with execution.provider = "openai"
+# Ollama requires no key; configure execution.provider = "ollama"
 ```
 
-## Essential commands
+The default model is resolved by `config.PROVIDER_DEFAULT_MODELS`; do not copy
+a model name into documentation without checking that mapping first.
+
+## Useful commands
 
 ```bash
-# Run full test suite (all layers)
-uv run pytest tests/ -q
+uv sync --extra dev
 
-# Run by layer
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+uv run mypy src/agenthicc
 uv run pytest tests/unit -q
 uv run pytest tests/integration -q
 uv run pytest tests/e2e -q
+uv run pytest tests/ -q
 
-# Run a single file
-uv run pytest tests/unit/test_appstate_reducers.py -v
-
-# Type-check source
-uv run mypy src/agenthicc
-
-# Lint + format check
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
-
-# Check llms-full.txt coverage
-uv run python scripts/check_llms.py
-
-# Launch the TUI
-uv run agenthicc
-
-# Launch headless (JSON-lines to stdout)
-uv run agenthicc --headless
+uv run agenthicc                 # Rich TUI
+uv run agenthicc --headless     # stdin → JSON-lines
+uv run agenthicc config show
+uv run agenthicc sessions list
 ```
 
-## Repository layout
+`noxfile.py` defines CI sessions and an embedded `llms-full.txt` check. Keep
+those sessions aligned with the extras and tools declared by `pyproject.toml`;
+the current mismatch is tracked as PRD-138 P0.5.
 
-```
-src/agenthicc/
-  __init__.py              Package root; re-exports top-level symbols
+## Ownership map
 
-  kernel/
-    __init__.py            Re-exports AppState, Event, EventProcessor, all state types
-    state.py               Frozen AppState + all domain dataclasses (Intent, Workflow,
-                           WorkflowNode, Task, AgentInstance, ToolRegistration,
-                           SecurityPolicy, SystemSettings); copy-on-write with_* helpers
-    events.py              Event dataclass (event_id, event_type, payload, timestamp,
-                           source_agent_id); Effect + EffectType; Event.create / from_dict
-    reducer.py             Pure root_reducer: (AppState, Event) -> (AppState, list[Effect]);
-                           _HANDLERS dict maps event_type strings to handler functions
-    processor.py           EventProcessor: MPSC asyncio.Queue, run() loop, emit(), drain(),
-                           subscribe()/unsubscribe(); NoOpEffectExecutor; restore_from_log()
-
-  tools/
-    __init__.py            Re-exports ToolExecutor, HookRegistry, HookRunner, LifecycleHook,
-                           ToolSandbox
-    base.py                ToolBase ABC; ToolResult dataclass (ok, value, error, duration_ms)
-    executor.py            ToolExecutor: looks up tool by name, calls sandbox, runs hooks,
-                           emits ToolCallStarted / ToolCallComplete events
-    hooks.py               LifecycleHook ABC (on_before/on_after/on_error); HookRegistry
-                           (entity_type × stage → list); HookRunner (asyncio.gather);
-                           LaurenToolHookAdapter; load_hook_from_dotpath
-    sandbox.py             ToolSandbox: ResourceLimits, CPU/memory enforcement via
-                           resource.setrlimit; path allow-list check before each call
-
-  memory/
-    __init__.py            Re-exports all three layers + MemoryRouter
-    layers.py              SessionMemoryLayer (LRU+TTL), ProjectMemoryLayer (SQLite KV +
-                           artifact table), GlobalMemoryLayer (user-wide SQLite);
-                           ArtifactRecord dataclass; reads never block; writes serialised
-                           per tier via asyncio.Lock
-    router.py              MemoryRouter: routes get/set/delete to the correct tier based on
-                           the MemoryTier enum; convenience all-tiers fallback for get
-    vector.py              VectorIndex: sqlite-vec wrapper; upsert / nearest-neighbour query;
-                           used for semantic retrieval from project memory
-
-  tui/
-    __init__.py            Re-exports build_app, run_headless, render_frame_ansi,
-                           TranscriptModel
-    transcript.py          TranscriptModel (mutable); AgentTurnEntry, ToolCallEntry,
-                           ToolCallState; SPINNER_FRAMES; render() → list[str]; diff_lines()
-    app.py                 build_app(): prompt_toolkit Application; HSplit transcript /
-                           status / input; FloatContainer menu overlay; detect_slash_command;
-                           render_frame_ansi() (offline ANSI frame for pyte e2e tests);
-                           run_headless() (JSON-lines stdout mode)
-    events.py              TUIEventAdapter: subscribes to the kernel state queue and
-                           translates AppState diffs into TranscriptModel mutations
-
-  api/
-    __init__.py            Re-exports create_app
-    server.py              create_app(processor, api_key): FastAPI app with lifespan;
-                           POST /v1/intents, GET /v1/intents/{id},
-                           GET /v1/state/summary, WS /v1/ws; optional Bearer auth
-
-  config.py                AgenthiccConfig + sub-dataclasses (ExecutionSettings,
-                           ToolSettings, MemorySettings, SecuritySettings, ApiSettings);
-                           load_config() merges agenthicc.toml + ~/.agenthicc.toml;
-                           deep_merge(); to_system_settings() / to_security_policy()
-  security.py              build_policy_from_config(): translates SecuritySettings into
-                           a kernel SecurityPolicy (allow/deny/require_confirmation rules)
-
-tests/
-  conftest.py              Shared fixtures: processor, minimal_state,
-                           running_processor (starts run() as a task)
-  unit/
-    test_appstate_reducers.py   Pure reducer tests (no asyncio, no processor)
-    test_config.py              load_config() merge and validation tests
-    test_workflow_dag.py        DAG cycle detection, topological sort, ready_nodes
-    test_hooks.py               HookRegistry, HookRunner, LaurenToolHookAdapter
-    test_tui_transcript.py      TranscriptModel render, diff_lines, spinners
-  integration/
-    test_event_processor.py     Full emit/drain/subscribe cycle with real processor
-    test_workflow_executor.py   End-to-end workflow execution via events
-    test_executor_with_hooks.py ToolExecutor + HookRunner integration
-    test_artifact_sharing.py    ProjectMemoryLayer artifact store round-trip
-  e2e/
-    test_agent_runner_e2e.py    Full session with lauren-ai agent runner
-    test_argon2_scenario.py     End-to-end Argon2 refactor scenario via TUI/API
-```
-
-## Architecture decisions
-
-### 1. MPSC event queue with single-consumer reducer
-
-`EventProcessor` owns a single `asyncio.Queue[Event]`.  Any coroutine can call
-`await processor.emit(event)` (producer side); one `run()` task dequeues events
-serially, applies `root_reducer`, persists the line to `events.jsonl`, notifies
-all subscriber queues, and schedules effects.  Serial consumption means the reducer
-is always called from one coroutine — no locking needed on `AppState`.  Full
-replay from the log is possible via `restore_from_log()`.
-
-### 2. Frozen AppState with copy-on-write helpers
-
-Every field on `AppState` is immutable (`frozen=True` dataclass).  Mutations
-return a new `AppState` sharing unchanged sub-dicts by reference (`dataclasses.replace`
-+ spread operator).  The `with_intent`, `with_workflow`, `with_task`, `with_agent`,
-`with_tool`, `with_hook` helpers are the only sanctioned write paths.  This means
-any snapshot of state is permanently safe to hold; there are no "stale read" bugs.
-
-### 3. prompt_toolkit HSplit with input bar on last row
-
-`build_app()` lays out `HSplit([transcript_window, status_window, input_window])`.
-`render_frame_ansi()` writes the input bar at ANSI row `rows` (1-indexed).  In
-pyte tests, the corresponding screen buffer index is `ROWS - 1` (0-indexed).
-The menu overlay is a `Float(bottom=2)` inside a `FloatContainer` — it floats
-above the status line and **never** displaces the input bar.
-
-**Critical**: when writing pyte tests that check the input bar, assert against
-`screen.buffer[ROWS - 1]`, not `screen.buffer[ROWS - 2]`.
-
-### 4. SQLite for project/global memory
-
-`ProjectMemoryLayer` and `GlobalMemoryLayer` use `sqlite3` (stdlib).  Rationale:
-zero external dependency, file-per-project isolation, atomic writes via WAL mode,
-good enough for single-user workloads.  The `vector.py` module wraps `sqlite-vec`
-for nearest-neighbour retrieval.  If scale demands Redis or pgvector those are
-drop-in replacements — swap `layers.py` without touching `MemoryRouter`.
-
-## Common pitfalls
-
-| Symptom | Cause | Fix |
+| Area | Canonical files | Responsibility |
 |---|---|---|
-| `TimeoutError` in `processor.drain()` | The `run()` coroutine is not scheduled — `drain()` waits for the idle event which never fires | Start `asyncio.create_task(processor.run())` before emitting events; use the `running_processor` fixture |
-| `EventProcessor.drain()` hangs indefinitely | Processor was never started; `_idle` event is set but queue stays populated | Ensure `run()` is running as a task before calling `drain()` |
-| pyte test: input bar missing from expected row | Asserting `screen.buffer[ROWS - 2]` instead of `screen.buffer[ROWS - 1]` | `render_frame_ansi` writes input bar at `rows` (1-indexed) = `ROWS - 1` (0-indexed in pyte) |
-| `AssertionError: intent status is 'pending'` after emitting | Processor not yet running when `drain()` is called | Use `running_processor` fixture (creates `asyncio.create_task(processor.run())`) |
+| Package entry point | `src/agenthicc/__main__.py`, `src/agenthicc/cli/` | CLI parsing, command discovery, dispatch |
+| Kernel state | `kernel/state.py` | Frozen domain dataclasses and copy-on-write helpers |
+| Kernel events | `kernel/events.py` | Event/effect serialization and event contract |
+| Kernel reduction | `kernel/reducer.py` | Pure handlers and `_HANDLERS` registry |
+| Kernel runtime | `kernel/processor.py` | Queue, run loop, persistence, subscribers, effects |
+| Configuration | `config.py`, `security.py` | TOML/env/CLI merge and security policy translation |
+| Session orchestration | `runners/session_context.py`, `runners/tui_session.py`, `runners/headless.py` | Runtime construction, turn routing, shutdown |
+| Workflows | `workflows/` | Phase specs, runners, registry, built-in code-plan workflow |
+| Agents | `agents/` | Built-in and filesystem-discovered agent definitions |
+| Tools | `tools/`, `agent_tools.py` | Tool contracts, capabilities, approvals, MCP, FS/git/exec integrations |
+| Security | `tools/sandbox.py`, `tools/capability_gate.py`, `security.py`, `plugins/trust.py` | Paths, network, capabilities, trust |
+| Memory | `memory/`, `tools/fs/file_cache.py` | Tiers, journal, compaction, semantic index, durable file cache |
+| Reactive TUI | `tui/conversation_store.py`, `tui/workspace/`, `tui/input/` | Signals, rendering, overlays, input capabilities |
+| Terminal | `tui/terminal/`, `tui/cbreak_reader.py` | Platform-specific raw mode and key decoding |
+| Runtime commands | `commands/`, `tui/runtime/commands.py`, `tui/triggers/` | Slash commands, command bus, trigger picker |
+| Extension loading | `plugins/`, `skills/`, `modes/`, `commands/plugin_loader.py` | Discovery, validation, trust, precedence |
+| Test fixtures | `tests/conftest.py`, `tests/conftest_cassette.py` | Shared state, processor, cassette fixtures |
+| Public LLM docs | `llms.txt`, `llms-full.txt` | AI-consumed package/API documentation |
 
-## Conventions
+## Change patterns
 
-- `from __future__ import annotations` on every source file.
-- `asyncio_mode = "auto"` in pytest — every `async def test_*` runs automatically;
-  do **not** add `@pytest.mark.asyncio`.
-- Mark tests: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.e2e`.
-- Reducer handler functions are pure — no `await`, no I/O, no side effects.
-  Side effects go in `Effect` objects returned alongside the new state.
-- `ruff` for linting + formatting (`line-length = 100`).
-- All public symbols must appear in `llms-full.txt`; run `check_llms.py` to verify.
+### Adding an event
 
+1. Define the payload contract in `kernel/events.py` or its docstring.
+2. Add a pure handler in `kernel/reducer.py` and register it in `_HANDLERS`.
+3. Add a reducer unit test and, when relevant, processor/effect coverage.
+4. Update `llms-full.txt` if the event or symbol is public.
+5. Update the architecture/storage docs if the event changes persistence or UI.
 
-## New Modules (PRD-13..19)
-```
+### Adding a workflow phase or workflow
 
-  plugin.py                Plugin system (PRD-13): AgenthiccPlugin ABC, PluginRegistry
-                           discover/load/reload; register_tool/hook/command/agent_type
+1. Use `PhaseSpec` and `WorkflowPlugin` in `workflows/plugin.py`.
+2. Register through the workflow registry/loader; do not create a second
+   discovery convention.
+3. Test transitions, retries, rejection loops, parallel phases, and resume.
+4. Pass the complete `WorkflowConfig`/turn context, including memory and
+   semantic index dependencies when the phase needs them.
+5. Reconcile declarative phase metadata with runtime behaviour; an inert
+   configuration field is a bug even if the happy path works.
 
-  security.py              Permission enforcement (PRD-07 + PRD-19): PermissionChecker,
-                           AgentCapabilityScope, ScopeManager; per-agent tool scoping
+### Adding a tool
 
-  skills/
-    __init__.py            Skills system (PRD-18): SkillBundle ABC, SkillRegistry,
-                           _BUILTIN registry; load/load_all; system_prompt_suffix
-    web_search.py          SearchWebTool (Brave API), FetchPageTool (httpx)
+1. Prefer the existing lauren-ai tool decorator and capability metadata when
+   the tool is a callable; use `Tool` for a class-based integration.
+2. Return structured, JSON-serializable results and classify errors.
+3. Use `WorkspaceView` for filesystem paths and the shared HTTP client for
+   network calls. Never instantiate a private `httpx.AsyncClient` in a tool.
+4. Add capability, approval, timeout, failure, and output-bound tests.
+5. For project/user plugins, document trust and dependency requirements.
 
-  tools/
-    fs/__init__.py         14 filesystem tools (PRD-14): read_file, write_file,
-                           append_file, delete_file, move_file, copy_file,
-                           list_directory, make_directory, file_exists,
-                           search_files, grep_files, get_file_info,
-                           read_lines, patch_file; FsToolKit factory
-    git/__init__.py        11 git tools (PRD-15): git_status, git_diff, git_log,
-                           git_show, git_add, git_commit, git_checkout,
-                           git_branch, git_stash, git_blame, git_grep; GitToolKit
-    exec/__init__.py       5 exec tools (PRD-16): run_bash, run_command,
-                           run_python, run_python_expr, run_tests; ExecToolKit
-    outlook/__init__.py    9 Outlook/Graph API tools (PRD-17): list/read/send/reply/
-                           search/move emails, list_folders, calendar_events,
-                           create_event; OutlookToolKit + GraphApiOutlookBackend
-```
+### Adding a slash command
 
-### Additional Common Pitfalls (PRD-13..19)
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `PluginLoadError` on `registry.load(name)` | Plugin not yet discovered | Call `registry.discover()` before `load()` |
-| `AgentCapabilityScope.restrict()` expands the allowed set | Expecting union — it's intersection | `restrict()` always returns the MORE restrictive set |
-| `ScopeManager.can_spawn()` returns False unexpectedly | Agent already at `max_spawn_depth` | Check `get_depth(agent_id)` vs `scope.max_spawn_depth` |
-| `run_bash` timeout leaves zombie processes | `start_new_session=False` | The tool uses `start_new_session=True` and `os.killpg` — verify POSIX platform |
-| `WorkspaceView.resolve()` raises `PermissionError` on traversal | Path escapes workspace root | All fs tools catch this and return `{ok: False, error: "permission_denied:..."}` |
+1. Register it in `commands/builtins.py` or through the supported command
+   plugin loader so the trigger picker can see it.
+2. Provide a handler, or explicitly intercept it in `TUISession` when it needs
+   session-local state (as `/workflow` and `/compact` currently do).
+3. Keep completion, dispatch, aliases, argument hints, and help output in one
+   registry. The duplicate legacy list in `tui/input/completions.py` is tracked
+   for consolidation.
+4. Test both picker visibility and execution.
+
+### Extending the TUI or terminal
+
+- Presentation state belongs in `tui/conversation_store.py`.
+- Long-lived rendering belongs in `tui/workspace/`.
+- Input behaviour belongs in `tui/input/` capability handlers.
+- `get_backend()` is the only terminal-platform selection point.
+- POSIX calls stay in `posix_backend.py`; Windows console calls stay in
+  `windows_backend.py`; `Key` remains canonical in `cbreak_reader.py`.
+- Test non-TTY startup, resize, Unicode/color fallback, paste, Ctrl+C, and
+  Shift+Tab on the relevant backend.
+
+## Invariants
+
+- `root_reducer` is pure: no I/O, awaiting, mutation, or global state.
+- Kernel `AppState` is frozen; use events and `with_*` helpers.
+- Start `EventProcessor.run()` before emitting and await `drain()` before
+  asserting state.
+- A session owns and closes its processor, workspace, journal, cache, MCP
+  registry, and background tasks.
+- File access must stay inside `WorkspaceView`; network access must pass the
+  configured allow-list.
+- Child agent capability scopes may only restrict their parent.
+- Tool results and conversation transitions must remain serializable and
+  replay-safe.
+- New or modified Python signatures use concrete parameterized types; do not
+  introduce `Any` when a real type is knowable.
+- Public symbols exported by `__all__` need a `### Symbol` entry in
+  `llms-full.txt` until the checker is replaced by a generated reference.
+
+## Test placement
+
+| Test type | Location | Use |
+|---|---|---|
+| Unit | `tests/unit/` | Pure reducers, parsers, registries, configuration, rendering, security |
+| Integration | `tests/integration/` | Real processor, memory/database, plugin/tool/workflow boundaries |
+| E2E | `tests/e2e/` | Full session, cassettes, TUI/runtime and cross-component behaviour |
+
+Pytest uses `asyncio_mode = "auto"`. Use the shared fixtures and mark tests
+with the configured `unit`, `integration`, or `e2e` marker where appropriate.
+
+## Documentation rule
+
+When behaviour changes, update the relevant guide and the LLM documentation in
+the same change. If a module is removed or renamed, search the whole repository
+for its old path before declaring the migration complete. Keep historical PRDs
+as history, but label them so they cannot be mistaken for current API docs.

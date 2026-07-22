@@ -1,137 +1,81 @@
 # agenthicc
 
-> A state-driven agent operating system — event-sourced kernel, parallel DAG
-> execution, tool-only inter-agent communication, prompt_toolkit TUI with input
-> bar always pinned at the bottom.
+> A state-driven Python agent runtime for software engineering: event-sourced
+> kernel, configurable workflows, capability-gated tools, durable sessions,
+> and a Rich Live terminal workspace.
 
-## What is agenthicc?
+## Current runtime
 
-`agenthicc` is an agent OS for autonomous software engineering that runs in your
-terminal. It accepts natural-language intents, decomposes them into parallel
-workflow DAGs, assigns nodes to agents from a pool, and executes them concurrently
-while rendering live progress in a Claude-Code-style transcript TUI.
+The primary entry point is `agenthicc.__main__:main`.
 
-Everything is event-sourced: every state change is an immutable `Event` applied by
-a pure reducer to an immutable `AppState`. The append-only event log enables full
-crash recovery (`restore_from_log`), deterministic replay, and complete auditability.
-Agents communicate exclusively through tool calls — never by calling each other's
-methods or touching state directly — which makes every interaction observable and
-permission-checked.
+- `agenthicc` launches the Rich workspace and interactive `TUISession`.
+- `agenthicc --headless` reads non-empty stdin lines and emits JSON-lines.
+- `kernel.AppState` is frozen domain state reduced from `Event` objects.
+- `tui.conversation_store.AppState` is a separate reactive presentation model.
+- `workflows/` contains `WorkflowPlugin`, phase specs, generic runners, and the
+  built-in code-plan workflow.
+- `agents/`, `modes/`, `skills/`, `commands/`, and project plugin loaders provide
+  extension points.
+- `tools/` provides class-based tools, filesystem/git/exec integrations, MCP,
+  capability metadata, approvals, path and network guards, and shared HTTP
+  safety helpers.
+- `memory/` provides session/project/global tiers, semantic search, compaction,
+  conversation journaling, and durable idempotent tool replay support.
 
-## Quick start
+## Important symbols
 
-```bash
-pip install agenthicc[tui,api]
+| Symbol | Module | Role |
+|---|---|---|
+| `AppState` | `agenthicc.kernel` | Frozen kernel domain state |
+| `Event` | `agenthicc.kernel` | Serialized domain event |
+| `EventProcessor` | `agenthicc.kernel` | MPSC queue and reducer loop |
+| `root_reducer` | `agenthicc.kernel` | Pure event-to-state reducer |
+| `load_config` | `agenthicc.config` | TOML/env/CLI configuration loader |
+| `PermissionChecker` | `agenthicc.security` | Ordered fail-closed policy evaluator |
+| `MemoryRouter` | `agenthicc.memory` | Three-tier memory dispatcher |
+| `Tool` | `agenthicc.tools` | Class-based async tool contract |
+| `WorkspaceView` | `agenthicc.tools` | Real-path workspace boundary |
+| `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
+| `Workspace` | `agenthicc.tui.workspace` | Rich Live UI root |
+| `UnifiedInputSession` | `agenthicc.tui.input` | Lifetime input/raw-mode loop |
 
-cat > agenthicc.toml << 'TOML'
-[execution]
-max_parallel_tasks = 10
-agent_pool_size = 20
-TOML
-
-agenthicc                        # launch TUI
-# or
-agenthicc --headless             # JSON-lines to stdout
-```
-
-## TUI layout
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  ● agent:planner  12:34:01                               │  ← transcript
-│    Planning Argon2 refactor...                           │    viewport
-│                                                          │    (scrollable)
-│  ● agent:refactor  12:34:03                              │
-│    [tool] read_file auth/hashing.py          ✓  12ms    │
-│    [tool] write_file auth/hashing.py         ✓   8ms    │
-│                                                          │
-│  ● agent:tester  12:34:05                               │
-│    [tool] run_tests tests/test_auth.py       ⣾ running… │
-├──────────────────────────────────────────────────────────┤
-│  session-abc | 3 agents | 12 tool calls | $0.008        │  ← status
-├──────────────────────────────────────────────────────────┤
-│  > _                                                     │  ← input bar (fixed)
-└──────────────────────────────────────────────────────────┘
-```
-
-The input bar is **always** on the last row — it never scrolls off-screen.
-
-## Core concepts
-
-- **AppState** — immutable frozen dataclass, copy-on-write. All mutations via events.
-- **EventProcessor** — MPSC asyncio queue; applies `root_reducer` sequentially; logs events to disk.
-- **TranscriptModel** — pure Python TUI model; renders to a list of strings; no terminal deps.
-
-## Key types by module
-
-| Symbol | Module | Description |
-|--------|--------|-------------|
-| `AppState` | `kernel.state` | Immutable kernel state dataclass |
-| `Event` | `kernel.events` | Immutable event with type + payload |
-| `EventProcessor` | `kernel.processor` | MPSC reducer loop |
-| `root_reducer` | `kernel.reducer` | Pure reducer dispatcher |
-| `MemoryRouter` | `memory.router` | 3-tier memory interface |
-| `TranscriptModel` | `tui.transcript` | Pure TUI model |
-| `render_frame_ansi` | `tui.app` | Full ANSI frame with pinned input bar |
-| `create_app` | `api.server` | FastAPI headless server |
-| `load_config` | `config` | TOML config loader |
-| `PermissionChecker` | `security` | fnmatch rule evaluator |
-
-## Config (agenthicc.toml)
+## Configuration
 
 ```toml
 [execution]
-max_parallel_tasks = 20
-max_concurrent_intents = 10
-agent_pool_size = 30
+provider = "anthropic"
+model = "" # provider default when empty
+max_parallel_tasks = 4
+auto_compact = true
 
 [memory]
 project_memory_path = ".agenthicc/memory"
 
 [security]
-default_action = "deny"
-
-[api]
-host = "127.0.0.1"
-port = 8000
+sandbox_mode = true
+allowed_paths = ["/absolute/path/to/project"]
+network_allow_list = []
 ```
 
-## Common pitfalls
+Provider keys are `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or no key for Ollama.
+See `docs/guides/configuration.md` for precedence and the full settings model.
 
-- `pool.add(record)` is **synchronous** — do not `await` it
-- `workflow_modify(action="add_node")` **raises** `ValueError` on cycle — does not return `{"ok": False}`
-- `application_log` returns `"accepted"` key, not `"logged"`
-- `EventProcessor.drain()` blocks unless the processor `run()` task is already started
-- Use `_build_runner_for_agent(agent, mock, signals=bus)` from `lauren_ai.testing` to resolve tools
-- pyte buffer: row index is 0-based; input bar is at `screen.buffer[ROWS - 1]`
+## Persistence
 
-## LLM Setup — Provider Selection
+Session artifacts are under `~/.agenthicc/sessions/`: kernel JSONL, conversation
+JSONL, and an fsync-backed conversation journal. Project memory/cache/trust
+data lives under `.agenthicc/`; global memory defaults to
+`~/.agenthicc/global.db`.
 
-```toml
-# .agenthicc/agenthicc.toml
-[execution]
-provider = "anthropic"         # anthropic | openai | ollama | litellm
-model    = "claude-sonnet-4-6" # leave empty for provider default
-```
+## Invariants
 
-| Provider | Env var | Default model |
-|----------|---------|--------------|
-| `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-4-8` |
-| `openai` | `OPENAI_API_KEY` | `gpt-4o` |
-| `ollama` | — | `llama3.2` |
-| `litellm` | varies | `anthropic/claude-opus-4-8` |
+- Start `EventProcessor.run()` before `emit()` and await `drain()` before reading.
+- `root_reducer` is pure and kernel `AppState` is frozen.
+- Use `WorkspaceView` for filesystem paths and the shared HTTP client for tools.
+- Child capability scopes can only restrict their parent.
+- Durable tool results must be replay-safe across a transport retry or resume.
 
-Quick start:
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."   # Anthropic
-# OR
-export OPENAI_API_KEY="sk-..."          # OpenAI (+ set provider=openai)
-# OR just run `ollama serve`            # Ollama (no key)
-
-agenthicc
-```
-
-Switch provider at runtime: `/models` to list, `/model openai gpt-4o-mini` to switch.
-
-Override at launch: `agenthicc --set execution.provider=openai --set execution.model=gpt-4o`
-
+The repository does not currently contain `agenthicc.api`, `tui.app`,
+`tui.transcript`, `tui.events`, or the historical lifecycle-hook executor. Do
+not generate code against those paths. The documented improvement plan is
+`prds/prd-138-repository-improvement-roadmap.md`.

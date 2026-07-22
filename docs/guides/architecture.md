@@ -1,146 +1,119 @@
 # Architecture
 
-This document explains why Agenthicc is designed the way it is, the layered
-structure of the codebase, and how the major subsystems fit together.
+## Runtime overview
 
----
-
-## Layer diagram
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        User / Operator                          │
-│            TUI (prompt_toolkit)  │  Headless API (FastAPI)      │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │  Event.create("IntentCreated", ...)
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    EventProcessor (MPSC queue)                  │
-│   emit → queue → run loop → root_reducer → AppState snapshot   │
-│                           → effects   → EffectExecutor         │
-│                           → JSON-lines log (persist=True)       │
-│                           → subscriber fan-out                  │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │  AppState (immutable, frozen)
-                      ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Workflow runners (CodePlanRunner / WorkflowRunner)              │
-│  drive phases → AgentRunnerBase (lauren-ai) per agent turn        │
-│  All side-effects go through processor.emit(...)                 │
-└──────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  AgenthiccToolExecutor                                           │
-│  PermissionChecker → HookRunner(pre) → execute → HookRunner(post)│
-│  asyncio.timeout deadline; retry/fallback on HookRunner(error)   │
-└──────────────────────────┬───────────────────────────────────────┘
-                           │
-               ┌───────────┴────────────┐
-               │                        │
-               ▼                        ▼
-    WorkspaceView (sandbox)    NetworkGuard (domain allow-list)
-               │
-               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  MemoryRouter                                                    │
-│  session:  →  SessionMemoryLayer (LRU + TTL, in-process)        │
-│  project:  →  ProjectMemoryLayer (SQLite + artifacts)           │
-│  global:   →  GlobalMemoryLayer  (SQLite, cross-project)        │
-└──────────────────────────────────────────────────────────────────┘
+```text
+CLI parser
+   │
+   ▼
+session context ───────────────┐
+   │                           │
+   ▼                           ▼
+TUISession                 EventProcessor
+   │                           │
+   ├─ reactive TUI AppState    ├─ Event queue
+   ├─ Workspace                 ├─ root_reducer
+   ├─ UnifiedInputSession       ├─ frozen kernel AppState
+   └─ WorkflowConfig            ├─ effects/subscribers
+                                └─ JSONL persistence
+                                     │
+                                     ▼
+                             workflow/agent turns
+                                     │
+                       capability-gated tools and memory
 ```
 
----
+The headless runner uses the kernel directly and currently handles stdin
+intent submission. The TUI runner adds the larger session graph: configuration,
+registries, durable memory, approvals, workflow selection, and rendering.
 
-## Event sourcing
+## Kernel
 
-Every change to application state flows through this sequence:
+`kernel.AppState` is a frozen dataclass containing intents, workflows, tasks,
+agents, registered tools/hooks, security policy, settings, and session id.
+`Event` is the serialized input to the pure reducer:
 
-1. A producer calls `await processor.emit(event)`.
-2. The event is placed on the `asyncio.Queue`.
-3. The single `run()` task dequeues the event and calls
-   `new_state, effects = root_reducer(state, event)`.
-4. `new_state` replaces `_state`; the event is appended to `_event_log`.
-5. If `persist=True`, the event is written as a JSON line to `event_log_path`.
-6. `new_state` is pushed to all subscriber queues.
-7. Each effect is scheduled as a background `asyncio.ensure_future` task.
-
-**Why event sourcing?**
-
-- **Crash recovery**: `restore_from_log` replays the log line by line to rebuild
-  state. Corrupt trailing lines (from a mid-write crash) are skipped.
-- **Audit trail**: every inter-agent message, task creation, and tool registration
-  is a first-class event in the log. You can replay any point in time.
-- **Testability**: `root_reducer` is a pure function — no IO, no async, no side
-  effects. Unit tests are synchronous and deterministic.
-- **Snapshot compaction**: when `events_since_snapshot` exceeds
-  `SystemSettings.snapshot_every_n_events`, a lightweight snapshot is written to
-  `snapshot_path`. Long-running sessions do not need to replay the full log.
-
----
-
-## Memory tiers
-
-The three memory tiers have different performance and durability characteristics:
-
-| Property | Session | Project | Global |
-|---|---|---|---|
-| Backend | In-process dict | SQLite (WAL) | SQLite (WAL) |
-| Durability | Lost on restart | Survives restarts | Survives restarts |
-| Speed | ~1µs | ~100µs | ~100µs |
-| Scope | Single process run | One project | All projects |
-| Eviction | LRU + TTL | Manual `delete` | Manual `delete` |
-
-`MemoryRouter` routes by key prefix so agents use a single interface without
-knowing which tier they're reading from. The prefix contract is part of the
-agent's domain design — not an infrastructure detail.
-
----
-
-## TUI update pipeline
-
-The TUI update pipeline is deliberately separated from the kernel:
-
-```
-EventProcessor  →  subscriber Queue  →  TUIEventAdapter.consume()
-                                                ↓
-                                        apply(state) → TranscriptModel mutations
-                                                ↓
-                                        app.invalidate() → prompt_toolkit re-render
+```text
+await processor.emit(event)
+        │
+        ▼
+asyncio.Queue → root_reducer(state, event)
+        │
+        ├─ new immutable state
+        ├─ Effect descriptors
+        ├─ subscriber snapshots
+        └─ optional JSONL event + snapshot
 ```
 
-`TranscriptModel` is pure Python with no terminal dependencies. It holds the
-logical state of the transcript. `render()` converts it to a list of plain strings.
-The prompt_toolkit `Application` reads from `TranscriptModel` via
-`FormattedTextControl(render_transcript)` — a pull-based model that re-renders
-on every `invalidate()` call.
+`EventProcessor` is multi-producer/single-consumer. Always schedule
+`processor.run()` before `emit()` and await `drain()` before reading the state.
+`restore_from_log()` replays valid JSONL entries and skips malformed entries
+according to the current recovery policy.
 
-This separation means:
-- `TranscriptModel` is fully unit-testable without a terminal.
-- `render_frame_ansi` can produce an ANSI snapshot for e2e tests using pyte.
-- The TUI can be swapped for a different renderer (e.g. a web UI) without touching
-  the kernel.
+## State boundary
 
----
+The TUI has a second `AppState` in `tui/conversation_store.py`. It is a reactive
+container, not a replacement for the kernel model. It contains:
 
-## Security model
+- conversation turns and scroll events;
+- token/cost/frame signals;
+- input buffer and paste state;
+- active runtime mode;
+- overlay and approval state;
+- workflow progress and transient notifications.
 
-Security is layered:
+`TUISession` and workflow runners emit kernel events for durable domain changes
+and update reactive signals for immediate presentation. This split avoids
+putting terminal-only state in the event log, but it must remain explicit. A
+new feature should state which model is authoritative and how restart/replay
+behaves. Consolidating or formalizing this boundary is PRD-138 P0.3.
 
-1. **`PermissionChecker`** — evaluated before every tool call. Uses `fnmatch`
-   patterns from `SecurityPolicy.permission_rules`. First match wins; default
-   action is `"deny"` (fail-closed).
-2. **`WorkspaceView`** — all file tool operations are restricted to paths under
-   the workspace root. `resolve()` follows symlinks and rejects escapes.
-3. **`NetworkGuard`** — all network tool operations check the URL's `netloc`
-   against the `allow_list`. An empty list blocks all hosts.
-4. **`asyncio.timeout`** in `AgenthiccToolExecutor` — every tool call has a
-   deadline (`Tool.timeout_seconds`). Timed-out calls are recorded in the envelope
-   but do not crash the executor.
-5. **Hook pipeline** — `pre_execute` hooks can reject calls before the tool runs;
-   `on_error` hooks can choose `RecoveryAction.abort` to prevent retries on
-   security-sensitive failures.
+## Workflow and agent path
 
-The security model is fail-closed: when no permission rule matches, the default
-action is `"deny"`. This means adding a new tool requires an explicit `"allow"`
-rule rather than relying on a default-open policy.
+1. A submitted message is routed through `TUISession`.
+2. The active mode and optional `/workflow` override select a workflow.
+3. A `WorkflowPlugin` exposes phase specifications and a runner.
+4. A phase selects an agent role, model override, tool capabilities, and
+   transition policy.
+5. `AgentTurnRunner` supplies memory, mentions, skills, tools, approval, retry,
+   and durable idempotency context to lauren-ai.
+6. Tool and workflow events update the kernel and reactive presentation.
+7. Completion, rejection, error, or interruption determines the next phase or
+   resume plan.
+
+The built-in modes are Auto, Plan, Ask, Review, Safe, and Debug. The built-in
+agent roles include planner, executor, reviewer, explorer, verifier, human,
+and auto.
+
+## Tool and security path
+
+Tools can be class-based `Tool` objects or lauren-ai decorated callables. The
+runtime combines:
+
+- `ToolCapability` metadata and mode filters;
+- `PermissionChecker` and per-agent `AgentCapabilityScope`;
+- `WorkspaceView` path resolution and symlink escape prevention;
+- `NetworkGuard` domain allow-list checks;
+- approval services and overlays;
+- timeout/retry/error handling;
+- shared HTTP timeout configuration for network integrations.
+
+The default posture is fail-closed. A new tool needs capability metadata,
+approval expectations, an error contract, and tests for denied and malformed
+calls.
+
+## Persistence layers
+
+The session can write a kernel event log, conversation event log, durable
+conversation journal, project/global memory databases, a workspace file cache,
+and test cassettes. They have different owners and recovery guarantees; see
+the [storage reference](../reference/storage.md). Do not describe all of them
+as one event log.
+
+## Architectural improvement priorities
+
+The current high-value risks are explicit in
+[PRD-138](https://github.com/agenthicc/agenthicc/blob/main/prds/prd-138-repository-improvement-roadmap.md): document the
+state bridge, decide whether a server API is supported, unify workflow sources
+of truth, define processor failure/backpressure semantics, and add storage
+migrations and observability.

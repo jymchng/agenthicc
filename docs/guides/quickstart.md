@@ -1,230 +1,115 @@
 # Quickstart
 
-Get agenthicc running in under five minutes.
-
----
-
-## Step 0 — Set your LLM API key
-
-Agenthicc needs an LLM provider to run agents. Set the API key before launching:
-
-```bash
-# Anthropic Claude (default — required unless using Ollama)
-export ANTHROPIC_API_KEY="sk-ant-api03-..."
-```
-
-For OpenAI or Ollama, see the [Configuration guide](configuration.md#llm--model-configuration).
-
----
+This guide gets a local checkout to a first TUI or headless run.
 
 ## Prerequisites
 
-| Requirement | Minimum version | Notes |
-|---|---|---|
-| Python | 3.12 | 3.13 also supported |
-| [uv](https://docs.astral.sh/uv/) | 0.4+ | Recommended installer |
+- Python 3.11+; CI exercises 3.12 and 3.13.
+- `uv`.
+- An Anthropic/OpenAI/LiteLLM credential, or a running Ollama server.
 
-Verify your Python version:
-
-```bash
-python --version   # Python 3.12.x or 3.13.x
-```
-
----
-
-## Installation
-
-### With uv (recommended)
+## Install
 
 ```bash
-uv add agenthicc
+git clone https://github.com/agenthicc/agenthicc.git
+cd agenthicc
+uv sync --extra dev
 ```
 
-To include the terminal UI and REST API extras:
+The current `pyproject.toml` declares `cloud` and `dev` extras. There is no
+separate `tui` or `api` extra in this checkout.
+
+## Configure a provider
 
 ```bash
-uv add "agenthicc[tui,api]"
+export ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-### With pip
+Or use an alternate provider:
 
 ```bash
-pip install "agenthicc[tui,api]"
+export OPENAI_API_KEY="sk-..."
+uv run agenthicc --set execution.provider=openai --set execution.model=gpt-4o
+
+# Ollama: no API key
+uv run agenthicc --set execution.provider=ollama --set execution.model=llama3.2
 ```
 
-Verify the installation:
+## Launch the TUI
 
 ```bash
-python -m agenthicc --version
+uv run agenthicc
 ```
 
----
+The session creates a durable id, loads configuration and extensions, starts a
+kernel processor, mounts a Rich workspace, and waits for input. Enter a normal
+sentence to start a turn. Use `/help` for commands.
 
-## Creating a configuration file
+If standard input is not an interactive terminal, the input backend exits
+cleanly. Use `--headless` for a pipeline instead.
 
-agenthicc reads `agenthicc.toml` from the current working directory (or the
-path given by `$AGENTHICC_CONFIG`).  Create a minimal config:
+## Headless mode
 
-```toml
-# agenthicc.toml
-
-[settings]
-max_concurrent_intents = 5
-max_parallel_tasks      = 10
-agent_pool_size         = 15
-snapshot_every_n_events = 50
-event_log_path          = ".agenthicc/events.jsonl"
-snapshot_path           = ".agenthicc/snapshot.json"
-
-[security]
-default_action = "allow"
-
-# Optional: register a named agent type
-[agents.researcher]
-module = "myproject.agents.researcher"
-class  = "ResearchAgent"
-```
-
-The `[settings]` table maps directly to `SystemSettings`.  All keys are
-optional; the defaults shown above are used when omitted.
-
----
-
-## First run
+Headless mode reads one intent per non-empty stdin line:
 
 ```bash
-# TUI mode (requires the tui extra)
-agenthicc
-
-# or equivalently
-python -m agenthicc
+printf '%s\n' 'list the top-level source packages' | uv run agenthicc --headless
 ```
 
-If `prompt_toolkit` is not installed, agenthicc falls back to **headless
-mode** automatically, emitting one JSON line per kernel event to stdout.
-
-To force headless mode explicitly:
-
-```bash
-agenthicc --headless
-```
-
----
-
-## What you will see on first launch
-
-The full-screen TUI has three regions:
-
-```
-┌─────────────────────────────────────────────────────┐
-│  transcript region  (scrolling, grows upward)       │
-│                                                     │
-│  [system] agenthicc ready. Session <id>             │
-│  [system] 0 active agents                           │
-├─────────────────────────────────────────────────────┤
-│  0 agents | $0.000 | 0 tok                          │  ← status line
-├─────────────────────────────────────────────────────┤
-│ >                                                   │  ← input bar
-└─────────────────────────────────────────────────────┘
-```
-
-**Transcript region** — every agent turn, tool result, and log message appears
-here, auto-scrolled to the latest entry.
-
-**Status line** — shows a live count of active agents, cumulative cost in USD,
-and total tokens consumed.
-
-**Input bar** — submit intents and slash commands here.
-
-### Slash commands
-
-| Command | Effect |
-|---|---|
-| `/status` | Opens the agent status overlay |
-| `/history` | Shows the last 10 event log entries |
-
-Press `Escape` to dismiss any overlay.  Press `Ctrl-C` to exit.
-
----
-
-## Submitting your first intent
-
-Type a natural-language instruction and press `Enter`:
-
-```
-> Summarise the README.md in three bullet points
-```
-
-agenthicc will:
-
-1. Parse the intent and assign it a unique `intent_id`.
-2. Emit an `IntentReceived` event to the kernel.
-3. The planner decomposes the intent into a workflow DAG.
-4. Nodes are dispatched to agents in the pool.
-5. Results stream back into the transcript as `ApplicationLog` events.
-
----
-
-## Understanding the output
-
-Each line in the transcript follows this format:
-
-```
-[<agent_name>] <message>
-```
-
-For tool calls you will see:
-
-```
-[orchestrator] calling tool: summarise_file(path="README.md")
-[orchestrator] tool result: {"summary": ["...", "...", "..."]}
-```
-
-Cost and token counts update on the status line after every model call.
-
----
-
-## Running in headless mode
-
-For CI pipelines or scripted usage, headless mode emits newline-delimited JSON:
-
-```bash
-echo '{"intent": "list files in /tmp"}' | agenthicc --headless
-```
-
-Each output line is a JSON object:
+Example output has a ready record followed by intent status:
 
 ```json
-{"ts": 1718000000.0, "event_type": "ApplicationLog", "event_id": "abc123",
- "payload": {"level": "INFO", "message": "...", "data": {}},
- "source_agent_id": "agent_xyz"}
+{"status": "ready", "mode": "headless"}
+{"event_type": "IntentCreated", "intent_id": "...", "status": "pending"}
 ```
 
----
+This runner is intentionally minimal. The interactive TUI session constructs
+the full workflow/agent/tool stack; headless mode is currently best treated as
+a deterministic stdin/kernel smoke interface.
 
-## Replaying the event log
+## Create a project config
 
-agenthicc persists every event to an append-only JSONL file
-(`.agenthicc/events.jsonl` by default).  You can replay it to reconstruct
-state after a crash:
-
-```python
-import asyncio
-from agenthicc.kernel import AppState, restore_from_log
-
-async def main():
-    state = AppState.create()
-    state = await restore_from_log(".agenthicc/events.jsonl", state)
-    print(f"Restored {len(state.intents)} intents, {len(state.agents)} agents")
-
-asyncio.run(main())
+```bash
+uv run agenthicc config init
 ```
 
----
+This writes `.agenthicc/agenthicc.toml`. A small safe starting point is:
+
+```toml
+[execution]
+provider = "anthropic"
+max_parallel_tasks = 4
+auto_compact = true
+
+[memory]
+project_memory_path = ".agenthicc/memory"
+
+[security]
+sandbox_mode = true
+allowed_paths = ["/absolute/path/to/this/project"]
+network_allow_list = []
+```
+
+Use the actual project path. `/workspace` is only a conventional default in
+the dataclass and may not contain your checkout.
+
+## Sessions
+
+```bash
+uv run agenthicc sessions list
+uv run agenthicc sessions show SESSION_ID
+uv run agenthicc --continue
+uv run agenthicc --resume SESSION_ID
+```
+
+`--continue` resolves the latest session for the current directory. `--resume`
+uses the given session id and can recover an interrupted direct turn through the
+durable conversation journal.
 
 ## Next steps
 
-- [Memory guide](memory.md) — session, project, and global memory tiers
-- [Lifecycle hooks](hooks.md) — intercept and recover from any execution stage
-- [Kernel reference](../reference/kernel.md) — full `AppState`, event, and
-  processor API
+- [TUI guide](tui.md)
+- [Configuration](configuration.md)
+- [Workflows](workflows.md)
+- [Extensions](plugins.md)
+- [Storage reference](../reference/storage.md)
