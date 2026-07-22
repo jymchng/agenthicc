@@ -1,4 +1,4 @@
-"""Session management commands — sessions list, sessions show."""
+"""Session management commands — list, show, and export durable sessions."""
 
 from __future__ import annotations
 
@@ -34,3 +34,19 @@ def sessions_show(ctx: CLIContext, session_id: str) -> None:
             print(f"  {ev.get('event_type', '?'):30} {ev.get('timestamp', '')}")
         except Exception:  # noqa: BLE001
             print(f"  {line}")
+
+
+@command("sessions", "export", help="Export one session as a redacted JSON document")
+def sessions_export(ctx: CLIContext, session_id: str, output: str = "") -> None:
+    """Export SESSION_ID and its durable artifacts to OUTPUT or SESSION_ID.json."""
+    from pathlib import Path  # noqa: PLC0415
+
+    from agenthicc.tui.runtime.session_export import export_session  # noqa: PLC0415
+
+    destination = Path(output) if output else Path(f"{session_id}.json")
+    try:
+        exported = export_session(session_id, destination)
+    except (FileNotFoundError, ValueError, IsADirectoryError) as exc:
+        print(str(exc))
+        return
+    print(f"Exported session {session_id} to {exported}")

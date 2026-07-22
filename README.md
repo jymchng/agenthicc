@@ -224,6 +224,17 @@ Session artifacts live below `~/.agenthicc/sessions/`:
   transitions used for crash recovery and tool replay;
 - optional cassette files — recorded transport and approval interactions.
 
+Export a portable, redacted support artifact with:
+
+```bash
+uv run agenthicc sessions export SESSION_ID --output session-export.json
+```
+
+The export includes valid records from the kernel, conversation, journal, and
+cassette stores. Credential-shaped values are redacted and malformed JSONL
+records are reported in the manifest. Review prompts, tool results, paths, and
+model output before sharing an export.
+
 Project memory and the workspace file cache live below `.agenthicc/`; global
 memory defaults to `~/.agenthicc/global.db`. See the [storage reference](./docs/reference/storage.md)
 before deleting session or project state.

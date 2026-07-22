@@ -1231,6 +1231,22 @@ not a slash command.
 **Return**: `prompt_toolkit.Application` instance. Raises `RuntimeError` if
 `prompt_toolkit` is not installed; use `run_headless()` instead.
 
+### export_session
+
+```python
+def export_session(
+    session_id: str,
+    output_path: str | Path,
+    *,
+    sessions_dir: str | Path | None = None,
+) -> Path
+```
+
+Write a versioned, redacted JSON export containing the session's kernel events,
+metadata, conversation events, durable journal, and optional cassette records.
+Invalid JSONL lines are skipped and counted in the manifest; the destination is
+written atomically.
+
 ---
 
 ## Config — `agenthicc.config`

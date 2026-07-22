@@ -51,7 +51,21 @@ Use the CLI to inspect sessions before removing files:
 ```bash
 uv run agenthicc sessions list
 uv run agenthicc sessions show SESSION_ID
+uv run agenthicc sessions export SESSION_ID --output session-export.json
 ```
+
+`sessions export` writes one versioned JSON document containing the kernel
+events, session metadata, conversation events, durable conversation journal,
+and any cassette records for the selected session. Credential-shaped fields
+and common API-key, bearer-token, and provider-token strings are replaced with
+`<redacted>`. Corrupt JSONL lines are omitted and counted in the export
+manifest, so a crash-damaged trailing record does not prevent support export.
+The destination is written atomically and existing destination files are
+replaced.
+
+Exports are portable support artifacts, but inspect them before sharing: user
+prompts, tool results, file paths, and model output can still contain sensitive
+project information that cannot be identified reliably by generic redaction.
 
 Never delete the entire home or workspace directory to clear a session. Remove
 one identified session directory or use a future retention command once the
