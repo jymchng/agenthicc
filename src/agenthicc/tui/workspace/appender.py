@@ -257,8 +257,6 @@ class ScrollBufferAppender:
             highlight=False,
         )
 
-        if preview_lines:
-            self._console.print()
         for index, ln in enumerate(preview_lines, 1):
             self._console.print(
                 f"  [dim]{index:>4}[/dim]   {_e(ln[:120])}",

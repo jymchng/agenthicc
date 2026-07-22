@@ -7,10 +7,15 @@ against the current source before implementing them.
 ## Current repository roadmap
 
 - [PRD-138 — Repository Improvement Roadmap](prd-138-repository-improvement-roadmap.md)
+- [PRD-139 — OpenCode-Inspired Product Expansion and Privacy-First Advertisements](prd-139-opencode-inspired-features-and-privacy-first-ads.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
 observability, extension APIs, and release gates.
+
+PRD-139 is the product-expansion roadmap layered on top of PRD-138. It compares
+the current repository with OpenCode-inspired product surfaces and defines the
+privacy, lifecycle, and rendering contract for advertisements.
 
 ## Existing PRDs
 

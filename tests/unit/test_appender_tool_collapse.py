@@ -139,6 +139,19 @@ class TestSummaryLine:
         assert any("[dim]   1[/dim]" in line for line in lines)
         assert any("+3 more lines" in line for line in lines)
 
+    def test_tool_output_follows_summary_without_blank_line(self):
+        appender, console = _make_appender()
+        event = _tool()
+        event.payload["output_lines"] = ["first line"]
+
+        _flush(appender, [event])
+
+        calls = console.print.call_args_list
+        assert calls[0].args[0].startswith("[green]●[/green]")
+        assert calls[1].args[0].startswith("[dim]└─[/dim]")
+        assert calls[2].args[0].startswith("  [dim]   1[/dim]")
+        assert all(call.args for call in calls)
+
     def test_no_summary_at_limit(self):
         appender, console = _make_appender()
         _flush(appender, [_tool() for _ in range(_LIMIT)])
