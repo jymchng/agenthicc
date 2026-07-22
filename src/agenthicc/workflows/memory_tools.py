@@ -8,6 +8,7 @@ callables that agents can invoke during any turn.
 All tools return plain dicts so their results can be surfaced directly as
 tool payloads without any post-processing by the caller.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

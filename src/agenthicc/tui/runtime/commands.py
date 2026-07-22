@@ -1,4 +1,5 @@
 """Command types and CommandBus (PRD-61 §3)."""
+
 from __future__ import annotations
 
 import uuid
@@ -12,12 +13,14 @@ def _new_id() -> str:
 
 # ── Base command ──────────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class Command:
     command_id: str = field(default_factory=_new_id)
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class SendMessageCommand(Command):
@@ -30,6 +33,7 @@ class InterruptAgentCommand(Command):
 
 
 # ── CommandBus ────────────────────────────────────────────────────────────────
+
 
 class CommandBus:
     """One handler per command type. Commands represent executable intent."""
@@ -47,7 +51,8 @@ class CommandBus:
         return handler(command)
 
     async def dispatch_async(self, command: Command) -> object:
-        import inspect    # noqa: PLC0415
+        import inspect  # noqa: PLC0415
+
         handler = self._handlers.get(type(command))
         if handler is None:
             raise ValueError(f"No handler for {type(command).__name__}")

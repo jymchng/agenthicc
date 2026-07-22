@@ -16,6 +16,7 @@ Ranking tiers (lower = better)
 Within a tier results are sorted alphabetically by their casefolded display
 string, making ranking deterministic (identical input → identical ordering).
 """
+
 from __future__ import annotations
 
 from pathlib import PurePosixPath
@@ -35,12 +36,12 @@ __all__ = [
     "filter_and_rank",
 ]
 
-RANK_EXACT           = 0
+RANK_EXACT = 0
 RANK_FILENAME_PREFIX = 1
-RANK_SEGMENT_PREFIX  = 2
+RANK_SEGMENT_PREFIX = 2
 RANK_FILENAME_SUBSTR = 3
-RANK_PATH_SUBSTR     = 4
-RANK_FUZZY           = 5
+RANK_PATH_SUBSTR = 4
+RANK_FUZZY = 5
 
 
 def rank_match(query: str, display: str) -> int | None:
@@ -63,14 +64,14 @@ def rank_match(query: str, display: str) -> int | None:
         match *query* under any tier.
     """
     if not query:
-        return RANK_FILENAME_PREFIX   # empty query matches everything as prefix
+        return RANK_FILENAME_PREFIX  # empty query matches everything as prefix
 
     q = query.casefold()
 
     # Strip trailing "/" (directory marker) for path parsing
     clean = display.rstrip("/")
-    name  = PurePosixPath(clean).name.casefold()   # filename segment only
-    full  = clean.casefold()                        # full normalised path
+    name = PurePosixPath(clean).name.casefold()  # filename segment only
+    full = clean.casefold()  # full normalised path
 
     # Tier 0 — exact match (filename or full path)
     if name == q or full == q:
@@ -131,6 +132,7 @@ def filter_and_rank(query: str, items: list[MatchItem]) -> list[MatchItem]:
 
 
 # ── internal helpers ─────────────────────────────────────────────────────────
+
 
 def _fuzzy_match(query: str, text: str) -> bool:
     """Return True when every character of *query* appears in *text* in order."""

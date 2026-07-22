@@ -4,6 +4,7 @@ Exercises ModeManager, ModeRegistry, discover_mode_plugins, and the optional
 _cmd_mode built-in command together as a full pipeline.  No real LLM calls are
 made; all tests are self-contained.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -39,7 +40,11 @@ def test_mode_cycle_all_builtin():
         mode = manager.cycle()
         visited.add(mode.name)
 
-    assert visited == {"Auto", "Plan", "Safe",}
+    assert visited == {
+        "Auto",
+        "Plan",
+        "Safe",
+    }
 
     # The 6th cycle wrapped back to Auto; the 7th continues from Auto → Plan.
     seventh = manager.cycle()
@@ -83,8 +88,7 @@ def test_mode_plugin_discovered_and_registered(tmp_path: Path):
 
     plugin_file = modes_dir / "mymode.py"
     plugin_file.write_text(
-        "from agenthicc.modes import Mode\n"
-        "MODE = Mode('Custom', 'CUST', 'Custom mode')\n"
+        "from agenthicc.modes import Mode\nMODE = Mode('Custom', 'CUST', 'Custom mode')\n"
     )
 
     plugin_set = discover_mode_plugins(project_dir=tmp_path)
@@ -109,10 +113,7 @@ def test_mode_plugin_bad_syntax_skipped(tmp_path: Path):
     modes_dir.mkdir(parents=True)
 
     bad_file = modes_dir / "bad.py"
-    bad_file.write_text(
-        "this is not valid python !!!\n"
-        "def broken(\n"
-    )
+    bad_file.write_text("this is not valid python !!!\ndef broken(\n")
 
     plugin_set = discover_mode_plugins(project_dir=tmp_path)
 

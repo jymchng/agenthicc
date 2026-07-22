@@ -1,4 +1,5 @@
 """Unit tests for PRD-124 — concurrent subagents: types, pool, aggregation, tool."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +25,7 @@ pytestmark = pytest.mark.unit
 
 # ── SubagentTypeRegistry ──────────────────────────────────────────────────────
 
+
 class TestSubagentTypeRegistry:
     def test_default_registry_has_eight_types(self) -> None:
         # Use a fresh registry to avoid pollution from plugin tests.
@@ -32,8 +34,16 @@ class TestSubagentTypeRegistry:
 
     def test_all_builtin_types_present(self) -> None:
         fresh = _build_default_registry()
-        expected = {"explorer", "planner", "implementer", "tester",
-                    "reviewer", "documenter", "verifier", "researcher"}
+        expected = {
+            "explorer",
+            "planner",
+            "implementer",
+            "tester",
+            "reviewer",
+            "documenter",
+            "verifier",
+            "researcher",
+        }
         assert expected == set(fresh.names())
 
     def test_get_known_type_returns_spec(self) -> None:
@@ -76,6 +86,7 @@ class TestSubagentTypeRegistry:
 
 
 # ── SubagentTypeSpec ──────────────────────────────────────────────────────────
+
 
 class TestSubagentTypeSpec:
     def test_explorer_no_write_tools(self) -> None:
@@ -121,6 +132,7 @@ class TestSubagentTypeSpec:
 
 # ── SubagentTask ──────────────────────────────────────────────────────────────
 
+
 class TestSubagentTask:
     def test_construction(self) -> None:
         t = SubagentTask("id-1", "explorer", "Find auth files", context="extra")
@@ -134,6 +146,7 @@ class TestSubagentTask:
 
 
 # ── _aggregate ────────────────────────────────────────────────────────────────
+
 
 class TestAggregate:
     def _r(self, n: int, ok: bool, text: str = "output", dur: float = 100.0) -> SubagentResult:
@@ -172,8 +185,9 @@ class TestAggregate:
         assert "auth.py found at line 42" in agg.text
 
     def test_failed_shows_error(self) -> None:
-        r = SubagentResult("t1", "explorer", "explorer #1", ok=False,
-                           text="", error="timeout after 120s")
+        r = SubagentResult(
+            "t1", "explorer", "explorer #1", ok=False, text="", error="timeout after 120s"
+        )
         agg = _aggregate("p", [r])
         assert "timeout after 120s" in agg.text
 
@@ -196,17 +210,19 @@ class TestAggregate:
 
 # ── SubagentPool with mock workers ────────────────────────────────────────────
 
+
 class _MockWorker:
     """Fake SubagentWorker for pool tests."""
 
-    def __init__(self, task_id: str, agent_type: str, text: str,
-                 ok: bool = True, delay: float = 0.0) -> None:
-        self._task_id    = task_id
+    def __init__(
+        self, task_id: str, agent_type: str, text: str, ok: bool = True, delay: float = 0.0
+    ) -> None:
+        self._task_id = task_id
         self._agent_type = agent_type
-        self._text       = text
-        self._ok         = ok
-        self._delay      = delay
-        self.label       = f"{agent_type} #1"
+        self._text = text
+        self._ok = ok
+        self._delay = delay
+        self.label = f"{agent_type} #1"
 
     async def run(self) -> SubagentResult:
         if self._delay:
@@ -226,16 +242,16 @@ class _MockPool(SubagentPool):
 
     def __init__(self, mock_workers: list, **kwargs) -> None:  # type: ignore[override]
         # Minimal init — skip parent __init__ to avoid needing a real runner.
-        self.pool_id         = "mock-pool"
-        self._tasks          = []
-        self._parent_runner  = None  # type: ignore[assignment]
-        self._parent_model   = ""
-        self._all_tools      = []
+        self.pool_id = "mock-pool"
+        self._tasks = []
+        self._parent_runner = None  # type: ignore[assignment]
+        self._parent_model = ""
+        self._all_tools = []
         self._max_concurrent = kwargs.get("max_concurrent", 4)
-        self._app_state      = None
-        self._processor      = None
-        self._registry       = DEFAULT_REGISTRY
-        self._mock_workers   = mock_workers
+        self._app_state = None
+        self._processor = None
+        self._registry = DEFAULT_REGISTRY
+        self._mock_workers = mock_workers
 
     async def run(self) -> AggregatedResult:
         semaphore = asyncio.Semaphore(self._max_concurrent)
@@ -244,8 +260,9 @@ class _MockPool(SubagentPool):
             async with semaphore:
                 return await w.run()
 
-        raw = await asyncio.gather(*[_bounded(w) for w in self._mock_workers],
-                                   return_exceptions=True)
+        raw = await asyncio.gather(
+            *[_bounded(w) for w in self._mock_workers], return_exceptions=True
+        )
         results: list[SubagentResult] = [r for r in raw if isinstance(r, SubagentResult)]
         return _aggregate(self.pool_id, results)
 
@@ -285,8 +302,8 @@ class TestSubagentPoolConcurrency:
     async def test_partial_failure_aggregated(self) -> None:
         workers = [
             _MockWorker("t1", "explorer", "ok result", ok=True),
-            _MockWorker("t2", "tester",   "",          ok=False),
-            _MockWorker("t3", "reviewer", "all good",  ok=True),
+            _MockWorker("t2", "tester", "", ok=False),
+            _MockWorker("t3", "reviewer", "all good", ok=True),
         ]
         pool = _MockPool(workers)
         result = await pool.run()
@@ -296,9 +313,9 @@ class TestSubagentPoolConcurrency:
     async def test_result_order_matches_spawn_order(self) -> None:
         """Results appear in spawn order regardless of completion order."""
         workers = [
-            _MockWorker("t1", "explorer", "first",  delay=0.05),
-            _MockWorker("t2", "tester",   "second", delay=0.0),
-            _MockWorker("t3", "reviewer", "third",  delay=0.02),
+            _MockWorker("t1", "explorer", "first", delay=0.05),
+            _MockWorker("t2", "tester", "second", delay=0.0),
+            _MockWorker("t3", "reviewer", "third", delay=0.02),
         ]
         pool = _MockPool(workers, max_concurrent=3)
         result = await pool.run()
@@ -308,6 +325,7 @@ class TestSubagentPoolConcurrency:
 
 
 # ── _UnknownTypeWorker ────────────────────────────────────────────────────────
+
 
 class TestUnknownTypeWorker:
     async def test_returns_failed_result(self) -> None:
@@ -322,6 +340,7 @@ class TestUnknownTypeWorker:
 
 
 # ── spawn_subagents tool validation ──────────────────────────────────────────
+
 
 class TestSpawnSubagentsTool:
     def _make_tool(self) -> object:

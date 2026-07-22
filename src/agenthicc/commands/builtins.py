@@ -1,4 +1,5 @@
 """Built-in slash commands (PRD-44, PRD-45)."""
+
 from __future__ import annotations
 
 from .command import Command, CommandContext
@@ -13,8 +14,10 @@ __all__ = ["BUILTIN_COMMANDS", "build_builtin_registry", "_make_skill_handler"]
 def _cmd_replay(ctx: CommandContext) -> bool:
     """Replay a previous session's conversation in the scroll buffer."""
     from agenthicc.tui.runtime.session_log import (  # noqa: PLC0415
-        get_session_log_path, find_latest_session_for_cwd,
+        get_session_log_path,
+        find_latest_session_for_cwd,
     )
+
     session_id: str = ctx.args.strip()
     if not session_id:
         # No ID provided — use the most recent session for the current directory,
@@ -57,6 +60,7 @@ def _cmd_expand(ctx: CommandContext) -> bool:
 
 def _help_menu(ctx: CommandContext) -> object:
     from agenthicc.tui.workspace.overlays.help import HelpOverlay  # noqa: PLC0415
+
     on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
     return HelpOverlay(ctx.command_registry, on_close, initial_query=ctx.args)
 
@@ -73,8 +77,8 @@ def _cmd_mcp(ctx: CommandContext) -> bool:
 
 def _cmd_model(ctx: CommandContext) -> bool:
     try:
-        from rich.table import Table   # noqa: PLC0415
-        from rich.text import Text     # noqa: PLC0415
+        from rich.table import Table  # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
         from rich import box as _rbox  # noqa: PLC0415
         from agenthicc.config import (  # noqa: PLC0415
             SUPPORTED_PROVIDERS,
@@ -109,40 +113,58 @@ def _cmd_model(ctx: CommandContext) -> bool:
                 Text(key_set, style=key_style),
             )
         ctx.console.print(table, markup=True)
-        ctx.console.print(Text.assemble(
-            ("Active: ", "dim"), (current_provider, "cyan bold"),
-            (" / ", "dim"), (current_model, "bold"),
-        ))
-        ctx.console.print(Text(
-            "  Set provider: /model <provider> [model]\n"
-            "  Example:  /model anthropic claude-sonnet-4-6\n"
-            "  Note: restart required for the change to take effect.",
-            style="dim",
-        ))
+        ctx.console.print(
+            Text.assemble(
+                ("Active: ", "dim"),
+                (current_provider, "cyan bold"),
+                (" / ", "dim"),
+                (current_model, "bold"),
+            )
+        )
+        ctx.console.print(
+            Text(
+                "  Set provider: /model <provider> [model]\n"
+                "  Example:  /model anthropic claude-sonnet-4-6\n"
+                "  Note: restart required for the change to take effect.",
+                style="dim",
+            )
+        )
         return True
 
     provider = parts[1].lower()
     model_override = parts[2] if len(parts) > 2 else ""
     if provider not in SUPPORTED_PROVIDERS:
-        ctx.console.print(Text(
-            f"Unknown provider: {provider!r}\nSupported: {', '.join(SUPPORTED_PROVIDERS)}",
-            style="red",
-        ))
+        ctx.console.print(
+            Text(
+                f"Unknown provider: {provider!r}\nSupported: {', '.join(SUPPORTED_PROVIDERS)}",
+                style="red",
+            )
+        )
         return True
     env_var = PROVIDER_API_KEY_ENVVAR.get(provider)
     if provider != "ollama" and env_var and not os.environ.get(env_var):
-        ctx.console.print(Text(
-            f"Warning: {env_var} is not set — agent calls will fail.\n"
-            f"  export {env_var}=\"your-api-key\"",
-            style="yellow",
-        ))
+        ctx.console.print(
+            Text(
+                f"Warning: {env_var} is not set — agent calls will fail.\n"
+                f'  export {env_var}="your-api-key"',
+                style="yellow",
+            )
+        )
     effective_model = model_override or PROVIDER_DEFAULT_MODELS.get(provider, "")
-    ctx.console.print(Text.assemble(
-        ("Switched to ", "dim"), (provider, "cyan bold"), (" / ", "dim"), (effective_model, "bold"),
-        ("\n  Add to .agenthicc/agenthicc.toml to persist:\n"
-         f"  [execution]\n  provider = \"{provider}\"\n"
-         f"  model = \"{effective_model}\"", "dim"),
-    ))
+    ctx.console.print(
+        Text.assemble(
+            ("Switched to ", "dim"),
+            (provider, "cyan bold"),
+            (" / ", "dim"),
+            (effective_model, "bold"),
+            (
+                "\n  Add to .agenthicc/agenthicc.toml to persist:\n"
+                f'  [execution]\n  provider = "{provider}"\n'
+                f'  model = "{effective_model}"',
+                "dim",
+            ),
+        )
+    )
     return True
 
 
@@ -150,6 +172,7 @@ def _cmd_skills(ctx: CommandContext) -> bool:
     try:
         from rich.table import Table  # noqa: PLC0415
         from rich import box as _rbox  # noqa: PLC0415
+
         table = Table(title="Available Skills", box=_rbox.SIMPLE)
         table.add_column("Command", style="bold cyan")
         table.add_column("Name")
@@ -158,8 +181,9 @@ def _cmd_skills(ctx: CommandContext) -> bool:
             table.add_row("—", "(no skills found)", "")
         else:
             for slug, skill in sorted(ctx.skills.items()):
-                table.add_row(f"/{slug}", skill.name,
-                              (getattr(skill, "description", "") or "")[:80] or "—")
+                table.add_row(
+                    f"/{slug}", skill.name, (getattr(skill, "description", "") or "")[:80] or "—"
+                )
         ctx.console.print(table)
     except ImportError:
         for slug, skill in sorted(ctx.skills.items()):
@@ -181,6 +205,7 @@ def _cmd_commands(ctx: CommandContext) -> bool:
     try:
         from rich.table import Table  # noqa: PLC0415
         from rich import box as _rbox  # noqa: PLC0415
+
         table = Table(title="Registered Commands", box=_rbox.SIMPLE)
         table.add_column("Command", style="bold")
         table.add_column("Group")
@@ -197,6 +222,7 @@ def _cmd_commands(ctx: CommandContext) -> bool:
 
 def _menu_config(ctx: CommandContext) -> object:
     from agenthicc.tui.workspace.overlays.config_menu import ConfigMenuOverlay  # noqa: PLC0415
+
     on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
     return ConfigMenuOverlay(ctx.config, on_close)
 
@@ -211,6 +237,7 @@ def _cmd_mode(ctx: CommandContext) -> bool:
         try:
             from rich.table import Table  # noqa: PLC0415
             from rich import box as _rbox  # noqa: PLC0415
+
             table = Table(title="Modes", box=_rbox.SIMPLE)
             table.add_column("Mode")
             table.add_column("Label")
@@ -242,6 +269,7 @@ def _make_skill_handler(slug: str, skill: object) -> object:
     def _handler(ctx: CommandContext) -> bool:
         import os  # noqa: PLC0415
         from pathlib import Path  # noqa: PLC0415
+
         args = ctx.args.split() if ctx.args.strip() else []
         body = process_skill_body(
             skill,

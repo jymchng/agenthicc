@@ -1,4 +1,5 @@
 """S3 filesystem backend — wraps boto3 for object-storage access."""
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -34,9 +35,7 @@ class S3FilesystemBackend:
         try:
             import boto3  # noqa: PLC0415
         except ImportError as exc:
-            raise ImportError(
-                "S3 backend requires boto3. Install: pip install boto3"
-            ) from exc
+            raise ImportError("S3 backend requires boto3. Install: pip install boto3") from exc
 
         self._bucket = bucket
         self._prefix = prefix.lstrip("/")
@@ -81,10 +80,10 @@ class S3FilesystemBackend:
         p = path
         s3_prefix = f"s3://{self._bucket}/"
         if p.startswith(s3_prefix):
-            p = p[len(s3_prefix):]
+            p = p[len(s3_prefix) :]
         elif p.startswith("s3://"):
             slash = p.find("/", 5)
-            p = p[slash + 1:] if slash != -1 else ""
+            p = p[slash + 1 :] if slash != -1 else ""
         p = p.lstrip("/")
         if self._prefix:
             return f"{self._prefix}/{p}" if p else self._prefix
@@ -251,9 +250,7 @@ class S3FilesystemBackend:
         self._check_escape(path)
         key = self._key(path)
         resp = self._s3.head_object(Bucket=self._bucket, Key=key)
-        last_modified: datetime.datetime = resp.get(
-            "LastModified", datetime.datetime.utcnow()
-        )
+        last_modified: datetime.datetime = resp.get("LastModified", datetime.datetime.utcnow())
         etag = resp.get("ETag", "").strip('"')
         ts = self._dt_to_timestamp(last_modified)
         return FileStat(
@@ -291,7 +288,7 @@ class S3FilesystemBackend:
                 key = obj["Key"]
                 if key == prefix:
                     continue
-                rel = key[len(prefix):]
+                rel = key[len(prefix) :]
                 if not rel:
                     continue
                 name = rel.rstrip("/").rsplit("/", 1)[-1]
@@ -338,7 +335,7 @@ class S3FilesystemBackend:
         for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
             for obj in page.get("Contents", []):
                 key = obj["Key"]
-                rel = key[len(prefix):]
+                rel = key[len(prefix) :]
                 if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(key, pattern):
                     matches.append(key)
         return matches
@@ -392,7 +389,9 @@ class S3FilesystemBackend:
         content: str = f.get("content", "")
         encoding: str = f.get("encoding", "utf-8")
         try:
-            written = self.write_text(path, content, encoding=encoding, create_parents=create_parents)
+            written = self.write_text(
+                path, content, encoding=encoding, create_parents=create_parents
+            )
             return {"path": path, "ok": True, "error": None, "bytes_written": written}
         except Exception as exc:
             return {"path": path, "ok": False, "error": str(exc), "bytes_written": 0}
@@ -417,9 +416,7 @@ class S3FilesystemBackend:
         create_parents: bool = True,
     ) -> list[dict]:
         with concurrent.futures.ThreadPoolExecutor(max_workers=_WORKERS) as pool:
-            futures = {
-                pool.submit(self._write_one, f, create_parents): f["path"] for f in files
-            }
+            futures = {pool.submit(self._write_one, f, create_parents): f["path"] for f in files}
             results: list[dict] = []
             for fut in concurrent.futures.as_completed(futures):
                 results.append(fut.result())
@@ -465,6 +462,7 @@ class S3FilesystemBackend:
 # ------------------------------------------------------------------
 # Private helper — avoids importing botocore at module load time
 # ------------------------------------------------------------------
+
 
 def _make_path_style_config() -> object:
     from botocore.config import Config  # noqa: PLC0415

@@ -1,4 +1,5 @@
 """Tests for run resumption — durable ledger + RunCoordinator (PRD-129 Phase 3)."""
+
 from __future__ import annotations
 
 import pytest
@@ -39,7 +40,11 @@ class TestFoldResumeState:
         jp = tmp_path / "j.jsonl"
         j = ConversationJournal(jp)
         j.turn_started("turn-1", "do the thing", base_count=3)
-        j.tool_recorded("turn-1", _key("write", {"p": "a"}), {"tool_use_id": "t1", "content": "ok", "is_error": False})
+        j.tool_recorded(
+            "turn-1",
+            _key("write", {"p": "a"}),
+            {"tool_use_id": "t1", "content": "ok", "is_error": False},
+        )
         # crash — no turn_completed
         j.close()
         inc = fold_resume_state(jp)
@@ -47,7 +52,9 @@ class TestFoldResumeState:
         assert inc.turn_id == "turn-1"
         assert inc.user_message == "do the thing"
         assert inc.base_count == 3
-        assert inc.tool_records == [(_key("write", {"p": "a"}), {"tool_use_id": "t1", "content": "ok", "is_error": False})]
+        assert inc.tool_records == [
+            (_key("write", {"p": "a"}), {"tool_use_id": "t1", "content": "ok", "is_error": False})
+        ]
 
     def test_completed_turn_is_not_resumed(self, tmp_path) -> None:
         jp = tmp_path / "j.jsonl"
@@ -171,7 +178,16 @@ class TestRunCoordinatorCycle:
         from lauren_ai._transport import Completion, TokenUsage
 
         mem.add_user("h1")
-        mem.add_assistant(Completion(id="c", model="m", content="a1", tool_calls=[], stop_reason="end_turn", usage=TokenUsage(input_tokens=1, output_tokens=1)))
+        mem.add_assistant(
+            Completion(
+                id="c",
+                model="m",
+                content="a1",
+                tool_calls=[],
+                stop_reason="end_turn",
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+            )
+        )
         base = len(mem._messages)
         mem.add_user("in-flight turn")  # the interrupted turn's user message
         assert len(mem._messages) == base + 1

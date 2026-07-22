@@ -1,4 +1,5 @@
 """Headless runner — emits kernel events as JSON lines to stdout."""
+
 from __future__ import annotations
 
 import asyncio
@@ -33,12 +34,22 @@ async def _run_headless(ctx: CLIContext | None = None) -> None:
             if not text:
                 continue
             intent_id = uuid.uuid4().hex
-            await processor.emit(Event.create("IntentCreated", {"intent_id": intent_id, "raw_text": text}))
+            await processor.emit(
+                Event.create("IntentCreated", {"intent_id": intent_id, "raw_text": text})
+            )
             try:
                 snap = await asyncio.wait_for(sub.get(), timeout=2.0)
                 intent = snap.intents.get(intent_id)
-                print(json.dumps({"event_type": "IntentCreated", "intent_id": intent_id,
-                                  "status": intent.status.value if intent else "pending"}), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "event_type": "IntentCreated",
+                            "intent_id": intent_id,
+                            "status": intent.status.value if intent else "pending",
+                        }
+                    ),
+                    flush=True,
+                )
             except asyncio.TimeoutError:
                 print(json.dumps({"event_type": "Error", "message": "timeout"}), flush=True)
     finally:

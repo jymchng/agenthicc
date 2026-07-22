@@ -1,15 +1,16 @@
 """Slash-command trigger — implements PRD-36, PRD-37, PRD-38, PRD-69."""
+
 from __future__ import annotations
 
 from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase, TriggerResult
 
-_NAME_COL = 24   # characters reserved for the command name column
+_NAME_COL = 24  # characters reserved for the command name column
 
 
 class SlashCommandTrigger(TriggerHandlerBase):
     """Trigger handler for "/" that opens the slash-command dropdown."""
 
-    char  = "/"
+    char = "/"
     label = "Command"
 
     def __init__(self, registry=None) -> None:
@@ -23,16 +24,19 @@ class SlashCommandTrigger(TriggerHandlerBase):
         results = []
         for cmd in cmds:
             # display: short single-line fallback for consumers without get_lines
-            short_desc = (cmd.description[:36] + "…"
-                          if len(cmd.description) > 36 else cmd.description)
+            short_desc = (
+                cmd.description[:36] + "…" if len(cmd.description) > 36 else cmd.description
+            )
             display = f"{cmd.name:<{_NAME_COL}} {short_desc}"
-            results.append(MatchItem(
-                display=display,
-                value=cmd.name,
-                hint=self._format_hint(cmd),
-                label=cmd.name,
-                detail=cmd.description,   # full, untruncated
-            ))
+            results.append(
+                MatchItem(
+                    display=display,
+                    value=cmd.name,
+                    hint=self._format_hint(cmd),
+                    label=cmd.name,
+                    detail=cmd.description,  # full, untruncated
+                )
+            )
         return results
 
     def _format_hint(self, cmd) -> str:
@@ -76,10 +80,10 @@ class SlashCommandTrigger(TriggerHandlerBase):
 
         # Space available for the description: total width minus name column
         # minus the 4-char indicator prefix ("  ▶ " / "    ") the overlay adds.
-        indent_width = 4         # "  ▶ " or "    "
-        name_field   = _NAME_COL # fixed column width for command name
-        desc_col     = indent_width + name_field + 1  # column where description starts
-        desc_width   = max(available_width - desc_col, 16)
+        indent_width = 4  # "  ▶ " or "    "
+        name_field = _NAME_COL  # fixed column width for command name
+        desc_col = indent_width + name_field + 1  # column where description starts
+        desc_width = max(available_width - desc_col, 16)
 
         if len(detail) <= desc_width:
             # Fits on one line.

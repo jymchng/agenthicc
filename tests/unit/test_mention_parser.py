@@ -10,6 +10,7 @@ pytestmark = pytest.mark.unit
 # PRD-32 baseline tests
 # ---------------------------------------------------------------------------
 
+
 def test_parse_file_mention(tmp_path):
     (tmp_path / "README.md").write_text("hello")
     mentions = parse_mentions("Read @README.md please", cwd=tmp_path)
@@ -77,12 +78,13 @@ def test_start_end_positions(tmp_path):
     mentions = parse_mentions("x @f.py y", cwd=tmp_path)
     text = "x @f.py y"
     m = mentions[0]
-    assert text[m.start:m.end] == "@f.py"
+    assert text[m.start : m.end] == "@f.py"
 
 
 # ---------------------------------------------------------------------------
 # Additional tests
 # ---------------------------------------------------------------------------
+
 
 def test_parse_nested_path(tmp_path):
     """@src/app/main.py resolves as FILE if the file exists."""

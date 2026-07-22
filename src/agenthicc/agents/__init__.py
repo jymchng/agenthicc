@@ -1,4 +1,5 @@
 """Agents system — named, reusable @agent(...)-decorated classes (PRD-87)."""
+
 from __future__ import annotations
 
 from agenthicc.agents.plugin import (

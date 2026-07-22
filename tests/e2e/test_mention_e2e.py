@@ -4,6 +4,7 @@ These tests exercise build_context_prefix() directly and verify the resulting
 prefix + text that would be passed to _active_runner.run().  No real LLM calls
 are made; all tests are self-contained with tmp_path fixtures.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -27,9 +28,7 @@ async def test_file_content_injected_into_agent_text(tmp_path: Path) -> None:
     py_file.write_text("def greet():\n    return 'hello'\n")
 
     cfg = InjectionConfig(cwd=tmp_path)
-    prefix, resolved = await build_context_prefix(
-        "explain @module.py", cwd=tmp_path, cfg=cfg
-    )
+    prefix, resolved = await build_context_prefix("explain @module.py", cwd=tmp_path, cfg=cfg)
 
     assert prefix != "", "prefix must not be empty for a resolved file"
     assert "<file" in prefix
@@ -108,9 +107,7 @@ async def test_directory_listing_in_prefix(tmp_path: Path) -> None:
     (src / "utils.py").write_text("def helper(): ...")
 
     cfg = InjectionConfig(cwd=tmp_path)
-    prefix, resolved = await build_context_prefix(
-        "look at @src/", cwd=tmp_path, cfg=cfg
-    )
+    prefix, resolved = await build_context_prefix("look at @src/", cwd=tmp_path, cfg=cfg)
 
     assert "<dir" in prefix
     assert "models.py" in prefix
@@ -134,9 +131,7 @@ async def test_glob_files_in_prefix(tmp_path: Path) -> None:
     (tmp_path / "gamma.py").write_text("GAMMA = 3\n")
 
     cfg = InjectionConfig(cwd=tmp_path)
-    prefix, resolved = await build_context_prefix(
-        "check @*.py", cwd=tmp_path, cfg=cfg
-    )
+    prefix, resolved = await build_context_prefix("check @*.py", cwd=tmp_path, cfg=cfg)
 
     assert "<!--" in prefix, "glob should produce a summary comment header"
     assert "3 file" in prefix
@@ -162,9 +157,7 @@ async def test_binary_file_gets_placeholder(tmp_path: Path) -> None:
     png.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01")
 
     cfg = InjectionConfig(cwd=tmp_path)
-    prefix, resolved = await build_context_prefix(
-        "what is @image.png", cwd=tmp_path, cfg=cfg
-    )
+    prefix, resolved = await build_context_prefix("what is @image.png", cwd=tmp_path, cfg=cfg)
 
     assert "binary" in prefix
     # Raw null bytes must NOT appear in the prefix
@@ -186,13 +179,11 @@ async def test_large_file_truncated(tmp_path: Path) -> None:
     big.write_text("x" * 50_000)
 
     cfg = InjectionConfig(cwd=tmp_path, max_file_chars=100)
-    prefix, resolved = await build_context_prefix(
-        "@huge.txt", cwd=tmp_path, cfg=cfg
-    )
+    prefix, resolved = await build_context_prefix("@huge.txt", cwd=tmp_path, cfg=cfg)
 
     assert "truncated" in prefix
     assert len(prefix) < 50_000 + 200  # must be much shorter than the raw file
-    assert "x" * 100 in prefix         # first 100 chars should be present
+    assert "x" * 100 in prefix  # first 100 chars should be present
 
     assert len(resolved) == 1
     assert resolved[0].ok is True
@@ -206,9 +197,7 @@ async def test_large_file_truncated(tmp_path: Path) -> None:
 async def test_no_mention_prefix_is_empty(tmp_path: Path) -> None:
     """A plain message with no @mentions returns an empty prefix."""
     cfg = InjectionConfig(cwd=tmp_path)
-    prefix, resolved = await build_context_prefix(
-        "just a normal message", cwd=tmp_path, cfg=cfg
-    )
+    prefix, resolved = await build_context_prefix("just a normal message", cwd=tmp_path, cfg=cfg)
 
     assert prefix == ""
     assert resolved == []
@@ -258,9 +247,7 @@ async def test_cache_detects_modified_file(tmp_path: Path) -> None:
     cache = MentionCache()
     cfg = InjectionConfig(cwd=tmp_path)
 
-    await build_context_prefix(
-        "@data.py", cwd=tmp_path, cfg=cfg, cache=cache, current_turn=0
-    )
+    await build_context_prefix("@data.py", cwd=tmp_path, cfg=cfg, cache=cache, current_turn=0)
 
     # Modify the file
     f.write_text("VERSION = 2\n")

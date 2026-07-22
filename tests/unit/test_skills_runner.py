@@ -1,4 +1,5 @@
 """Unit tests for skills runtime: context injection, arg substitution, auto-triggering (PRD-23)."""
+
 from __future__ import annotations
 
 import pytest
@@ -25,7 +26,9 @@ pytestmark = pytest.mark.unit
 
 def _make_skill(slug: str, topics: list[str], disallow: bool = False) -> SkillDef:
     return SkillDef(
-        name=slug, slug=slug, path=Path("."),
+        name=slug,
+        slug=slug,
+        path=Path("."),
         suggested_topics=topics,
         disallow_auto_triggering=disallow,
     )

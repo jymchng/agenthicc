@@ -1,4 +1,5 @@
 """CodePlanState — explicit enum for the code_plan state machine."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -24,13 +25,13 @@ class CodePlanState(Enum):
         FAILED    (terminal — any phase exhausted retries or error)
     """
 
-    PLAN      = auto()
-    EXECUTE   = auto()
-    REVIEW    = auto()
+    PLAN = auto()
+    EXECUTE = auto()
+    REVIEW = auto()
     SUMMARIZE = auto()
-    COMPLETE  = auto()   # terminal — success
-    EXITED    = auto()   # terminal — agent exited without planning
-    FAILED    = auto()   # terminal — exhausted retries or error
+    COMPLETE = auto()  # terminal — success
+    EXITED = auto()  # terminal — agent exited without planning
+    FAILED = auto()  # terminal — exhausted retries or error
 
     @property
     def is_terminal(self) -> bool:
@@ -41,11 +42,11 @@ class CodePlanState(Enum):
 class CodePlanContext:
     """Data carried across phases in one code_plan run."""
 
-    intent:           str
-    run_id:           str
-    plan:             str       = ""   # set after PLAN phase
-    execute_summary:  str       = ""   # set after EXECUTE phase
-    review_summary:   str       = ""   # set after REVIEW phase (approve)
-    rejection_reason: str       = ""   # set when REVIEW rejects
-    fail_reason:      str       = ""   # set on FAILED
-    shared_memory:    ShortTermMemory | None = None  # shared across all phases
+    intent: str
+    run_id: str
+    plan: str = ""  # set after PLAN phase
+    execute_summary: str = ""  # set after EXECUTE phase
+    review_summary: str = ""  # set after REVIEW phase (approve)
+    rejection_reason: str = ""  # set when REVIEW rejects
+    fail_reason: str = ""  # set on FAILED
+    shared_memory: ShortTermMemory | None = None  # shared across all phases

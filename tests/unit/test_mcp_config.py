@@ -1,4 +1,5 @@
 """Unit tests for MCP configuration parsing (PRD-29)."""
+
 from __future__ import annotations
 
 import sys
@@ -59,15 +60,17 @@ def test_parse_mcp_servers_multiple_entries():
 def test_parse_mcp_servers_from_dict_maps_fields_correctly():
     from agenthicc.config import _parse_mcp_servers
 
-    raw = [{
-        "name": "github",
-        "url": "wss://mcp.github.example.com",
-        "transport": "ws",
-        "token": "${GITHUB_TOKEN}",
-        "auto_connect": False,
-        "reconnect_attempts": 5,
-        "reconnect_delay_seconds": 2.0,
-    }]
+    raw = [
+        {
+            "name": "github",
+            "url": "wss://mcp.github.example.com",
+            "transport": "ws",
+            "token": "${GITHUB_TOKEN}",
+            "auto_connect": False,
+            "reconnect_attempts": 5,
+            "reconnect_delay_seconds": 2.0,
+        }
+    ]
     result = _parse_mcp_servers(raw)
     cfg = result[0]
     assert cfg.name == "github"
@@ -83,12 +86,11 @@ def test_parse_mcp_servers_graceful_on_missing_import(monkeypatch):
     # Force reimport of config to pick up the monkeypatched sys.modules
     import agenthicc.config as cfg_module
 
-    original_fn = cfg_module._parse_mcp_servers
-
     # Simulate ImportError path by patching directly
     def _failing_parse(raw_list):
         try:
             from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
+
             return [McpServerConfig.from_dict(d) for d in raw_list]
         except ImportError:
             return list(raw_list)
@@ -116,11 +118,7 @@ def test_dict_to_config_integrates_mcp_servers():
     from agenthicc.tools.mcp import McpServerConfig
 
     data = {
-        "tools": {
-            "mcp_servers": [
-                {"name": "fs", "url": "npx server /tmp", "transport": "stdio"}
-            ]
-        }
+        "tools": {"mcp_servers": [{"name": "fs", "url": "npx server /tmp", "transport": "stdio"}]}
     }
     cfg = _dict_to_config(data)
     assert len(cfg.tools.mcp_servers) == 1

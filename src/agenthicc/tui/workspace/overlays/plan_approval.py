@@ -23,6 +23,7 @@ position.  Padding rows and a fixed indicator row ensure the total Group
 height is identical on every redraw.  The cache is invalidated when the
 terminal width changes.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -38,13 +39,13 @@ if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 
 _BORDER = "─"
-_PLAN_VISIBLE_LINES = 20   # plan lines shown in the viewport at once
+_PLAN_VISIBLE_LINES = 20  # plan lines shown in the viewport at once
 
 # (label, allowed, needs_prompt)
 _OPTIONS: list[tuple[str, bool, bool]] = [
-    ("Approve",                      True,  False),
-    ("Reject — add feedback",        False, True),
-    ("Approve — add instructions",   True,  True),
+    ("Approve", True, False),
+    ("Reject — add feedback", False, True),
+    ("Approve — add instructions", True, True),
 ]
 
 
@@ -65,30 +66,30 @@ class PlanApprovalOverlay(PromptOverlay):
         close_fn: Callable[[], None],
     ) -> None:
         super().__init__()
-        self._req            = req
-        self._service        = service
-        self._close          = close_fn
-        self._state          = _State.SELECTING
-        self._selected       = 0
-        self._pending_option = 0   # option index carried into PROMPTING
-        self._plan_scroll    = 0   # index of first visible rendered line
+        self._req = req
+        self._service = service
+        self._close = close_fn
+        self._state = _State.SELECTING
+        self._selected = 0
+        self._pending_option = 0  # option index carried into PROMPTING
+        self._plan_scroll = 0  # index of first visible rendered line
 
         # Pre-rendered line cache — rebuilt on mount and on terminal width change.
         self._rendered_lines: list[Text] = []
-        self._render_width:   int        = 0
+        self._render_width: int = 0
         # Cached from last render — read by _handle_selecting.
-        self._plan_visible:   int        = _PLAN_VISIBLE_LINES
+        self._plan_visible: int = _PLAN_VISIBLE_LINES
 
     # ── Overlay interface ──────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
         super().on_mount()
-        self._state          = _State.SELECTING
-        self._selected       = 0
-        self._plan_scroll    = 0
-        self._rendered_lines = []   # force rebuild on first render
-        self._render_width   = 0
-        self._plan_visible   = _PLAN_VISIBLE_LINES
+        self._state = _State.SELECTING
+        self._selected = 0
+        self._plan_scroll = 0
+        self._rendered_lines = []  # force rebuild on first render
+        self._render_width = 0
+        self._plan_visible = _PLAN_VISIBLE_LINES
 
     def on_unmount(self) -> None:
         pass
@@ -109,38 +110,41 @@ class PlanApprovalOverlay(PromptOverlay):
         """Render plan_text as Markdown into a flat list[Text], one item per
         terminal line.  Cached by width so terminal resizes invalidate it.
         """
-        from io import StringIO                 # noqa: PLC0415
-        from rich.console import Console       # noqa: PLC0415
-        from rich.markdown import Markdown     # noqa: PLC0415
-        from rich.text import Text             # noqa: PLC0415
+        from io import StringIO  # noqa: PLC0415
+        from rich.console import Console  # noqa: PLC0415
+        from rich.markdown import Markdown  # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
 
         buf = StringIO()
         con = Console(
-            file=buf, width=width, highlight=False,
-            force_terminal=True, color_system="truecolor",
+            file=buf,
+            width=width,
+            highlight=False,
+            force_terminal=True,
+            color_system="truecolor",
         )
         con.print(Markdown(plan_text), end="")
         raw = buf.getvalue()
         self._rendered_lines = [Text.from_ansi(ln) for ln in raw.splitlines()] or [Text("")]
-        self._render_width   = width
+        self._render_width = width
 
     # ── SELECTING ─────────────────────────────────────────────────────────────
 
     def _render_selecting(self) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text      # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
 
-        term             = shutil.get_terminal_size((80, 24))
-        cols             = term.columns
-        rows             = term.lines
-        border_w         = min(cols, 66)
+        term = shutil.get_terminal_size((80, 24))
+        cols = term.columns
+        rows = term.lines
+        border_w = min(cols, 66)
         # Overhead = 19 fixed rows surrounding the plan content:
         #   workspace (blank+status+top-border) = 5
         #   overlay   (header+top-border+indicator+bottom-border+
         #              3-options+bottom-border+hint) = 7 + 2 = 9
         #   workspace (bottom-border+footer+margin) = 5
         # plan_visible = max(1, rows − 19) — floor at 1 so the footer always fits.
-        plan_visible     = min(_PLAN_VISIBLE_LINES, max(1, rows - 19))
+        plan_visible = min(_PLAN_VISIBLE_LINES, max(1, rows - 19))
         self._plan_visible = plan_visible
         lines: list[RenderableType] = []
 
@@ -155,9 +159,9 @@ class PlanApprovalOverlay(PromptOverlay):
             if not self._rendered_lines or self._render_width != content_width:
                 self._build_rendered_lines(plan_text, content_width)
 
-            total  = len(self._rendered_lines)
+            total = len(self._rendered_lines)
             scroll = max(0, min(self._plan_scroll, max(0, total - plan_visible)))
-            self._plan_scroll = scroll   # clamp in case terminal was resized
+            self._plan_scroll = scroll  # clamp in case terminal was resized
 
             visible = self._rendered_lines[scroll : scroll + plan_visible]
             for ln in visible:
@@ -174,36 +178,38 @@ class PlanApprovalOverlay(PromptOverlay):
             # Indicator row — always emitted (blank when not needed) to keep
             # the total line count fixed regardless of scroll position.
             if total > plan_visible:
-                first  = scroll + 1
-                last   = min(scroll + plan_visible, total)
-                above  = scroll > 0
-                below  = last < total
+                first = scroll + 1
+                last = min(scroll + plan_visible, total)
+                above = scroll > 0
+                below = last < total
                 prefix = "↑ · " if above else ""
                 suffix = " · ↓" if below else ""
-                mid    = f"lines {first}–{last} of {total}"
+                mid = f"lines {first}–{last} of {total}"
                 lines.append(Text(f"  {prefix}{mid}{suffix}", style="dim"))
             else:
-                lines.append(Text(""))   # fixed-height placeholder
+                lines.append(Text(""))  # fixed-height placeholder
         else:
             lines.append(Text("  [no plan content]", style="dim"))
             for _ in range(plan_visible - 1):
                 lines.append(Text(""))
-            lines.append(Text(""))   # indicator row placeholder
+            lines.append(Text(""))  # indicator row placeholder
 
         lines.append(Text(_BORDER * border_w, style="dim"))
 
         # ── options ───────────────────────────────────────────────────────────
         for idx, (label, _, _) in enumerate(_OPTIONS):
-            selected  = idx == self._selected
+            selected = idx == self._selected
             indicator = "▶" if selected else " "
-            style     = "reverse" if selected else ""
+            style = "reverse" if selected else ""
             lines.append(Text(f"  {indicator} {label}", style=style))
 
         lines.append(Text(_BORDER * border_w, style="dim"))
-        lines.append(Text(
-            "  ↑↓ options  [ up  ] down  Enter select  Esc deny",
-            style="dim",
-        ))
+        lines.append(
+            Text(
+                "  ↑↓ options  [ up  ] down  Enter select  Esc deny",
+                style="dim",
+            )
+        )
 
         return Group(*lines)
 
@@ -245,18 +251,17 @@ class PlanApprovalOverlay(PromptOverlay):
     # ── PROMPTING ─────────────────────────────────────────────────────────────
 
     def _render_prompting(self) -> RenderableType:
-        from rich.console import Group        # noqa: PLC0415
-        from rich.text import Text            # noqa: PLC0415
+        from rich.console import Group  # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
         from rich.markup import escape as _e  # noqa: PLC0415
 
-        cols  = shutil.get_terminal_size((80, 24)).columns
+        cols = shutil.get_terminal_size((80, 24)).columns
         label = _OPTIONS[self._pending_option][0]
         lines: list[RenderableType] = []
 
-        lines.append(Text.from_markup(
-            f"[bold cyan]  📋 Plan Review[/bold cyan]"
-            f"[dim] › {_e(label)}[/dim]"
-        ))
+        lines.append(
+            Text.from_markup(f"[bold cyan]  📋 Plan Review[/bold cyan][dim] › {_e(label)}[/dim]")
+        )
         lines.append(Text(_BORDER * min(cols, 66), style="dim"))
         lines.append(Text.from_markup(f"  {self._render_prompt_line()}"))
         lines.append(Text(_BORDER * min(cols, 66), style="dim"))

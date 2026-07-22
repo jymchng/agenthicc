@@ -1,4 +1,5 @@
 """CLI argument parser — builds argparse from the decorator registry (PRD-79)."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,24 +10,32 @@ from agenthicc.cli.context import CLIContext, CLIFlags
 
 def _add_global_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--headless", action="store_true",
+        "--headless",
+        action="store_true",
         help="Run without the TUI; emit JSON-lines to stdout.",
     )
     parser.add_argument(
-        "--config", metavar="PATH", default=None,
+        "--config",
+        metavar="PATH",
+        default=None,
         help="Path to agenthicc.toml.",
     )
     parser.add_argument("--version", action="version", version="agenthicc 0.1.0")
     parser.add_argument(
-        "--continue", dest="continue_session", action="store_true",
+        "--continue",
+        dest="continue_session",
+        action="store_true",
         help="Continue the most recent session for this directory.",
     )
     parser.add_argument(
-        "--resume", metavar="ID", default=None,
+        "--resume",
+        metavar="ID",
+        default=None,
         help="Resume the session with the given ID.",
     )
     parser.add_argument(
-        "--record-cassette", metavar="DIR",
+        "--record-cassette",
+        metavar="DIR",
         nargs="?",
         const=str(Path.home() / ".agenthicc" / "cassettes"),
         default=None,
@@ -37,8 +46,11 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--set", metavar="KEY=VALUE",
-        action="append", default=[], dest="set_overrides",
+        "--set",
+        metavar="KEY=VALUE",
+        action="append",
+        default=[],
+        dest="set_overrides",
         help="Override a config key (section.key=value). Can be repeated.",
     )
     parser.add_argument(
@@ -62,6 +74,7 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
     strict = False
     try:
         from agenthicc.config import load_config  # noqa: PLC0415
+
         strict = load_config().plugins.strict_cli_shadow
     except Exception:  # noqa: BLE001
         pass
@@ -75,7 +88,7 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
     _add_global_flags(parser)
     _wire(parser, _as_tree())
 
-    ns  = parser.parse_args()
+    ns = parser.parse_args()
     ctx = _build_ctx(ns)
     return ctx, ns
 
@@ -96,6 +109,7 @@ def _build_ctx(ns: argparse.Namespace) -> CLIContext:
 
 
 # ── backward-compat shim ──────────────────────────────────────────────────────
+
 
 def _parse_args() -> argparse.Namespace:
     """Legacy shim — returns just the Namespace for callers that haven't migrated."""

@@ -1,4 +1,5 @@
 """Unit tests for PRD-124 Phase 4 — resume caching."""
+
 from __future__ import annotations
 
 import pytest
@@ -11,6 +12,7 @@ pytestmark = pytest.mark.unit
 
 
 # ── _tasks_fingerprint ────────────────────────────────────────────────────────
+
 
 class TestTasksFingerprint:
     def _tasks(self, pairs: list[tuple[str, str]]) -> list[SubagentTask]:
@@ -45,16 +47,20 @@ class TestTasksFingerprint:
 
 # ── _find_cached_result ───────────────────────────────────────────────────────
 
+
 class TestFindCachedResult:
     def _store_with_result(self, fingerprint: str, text: str) -> ConversationStore:
         conv = ConversationStore()
         conv.begin_turn("agent", "t1")
-        conv.append_event("subagent_pool_result", {
-            "fingerprint": fingerprint,
-            "text":        text,
-            "total":       2,
-            "succeeded":   2,
-        })
+        conv.append_event(
+            "subagent_pool_result",
+            {
+                "fingerprint": fingerprint,
+                "text": text,
+                "total": 2,
+                "succeeded": 2,
+            },
+        )
         conv.close_turn()
         return conv
 
@@ -90,6 +96,7 @@ class TestFindCachedResult:
 
 # ── end-to-end cache round-trip ───────────────────────────────────────────────
 
+
 class TestResumeCacheRoundTrip:
     async def test_tool_caches_and_retrieves_result(self) -> None:
         """Full round-trip: run pool, cache, retrieve on second call."""
@@ -102,9 +109,7 @@ class TestResumeCacheRoundTrip:
         class FakeRunner:
             _transport = None
 
-        tool_fn = make_spawn_subagents_tool(
-            FakeRunner(), "test-model", [], conv_store=conv
-        )
+        tool_fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
 
         tasks = [{"type": "explorer", "task": "Find auth module"}]
 
@@ -116,16 +121,19 @@ class TestResumeCacheRoundTrip:
         fake_result.failed = 0
         fake_result.text = "=== explorer #1 (✓ 1.0s) ===\nFound auth.py"
 
-        with patch("agenthicc.subagents.pool.SubagentPool.run",
-                   new=AsyncMock(return_value=fake_result)):
+        with patch(
+            "agenthicc.subagents.pool.SubagentPool.run", new=AsyncMock(return_value=fake_result)
+        ):
             result1 = await tool_fn(tasks=tasks)
 
         assert result1["ok"]
         assert result1["results"] == fake_result.text
 
         # Second call with same tasks: must return cached result without running pool.
-        with patch("agenthicc.subagents.pool.SubagentPool.run",
-                   new=AsyncMock(side_effect=AssertionError("pool should not run on resume"))):
+        with patch(
+            "agenthicc.subagents.pool.SubagentPool.run",
+            new=AsyncMock(side_effect=AssertionError("pool should not run on resume")),
+        ):
             result2 = await tool_fn(tasks=tasks)
 
         assert result2["ok"]

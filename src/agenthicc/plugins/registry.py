@@ -1,4 +1,5 @@
 """Tool plugin registry — merges built-in and plugin tools (PRD-25, PRD-125)."""
+
 from __future__ import annotations
 
 import logging
@@ -38,11 +39,11 @@ class ToolGroup:
         Display order in ``describe()``; higher value → rendered first.
     """
 
-    name:        str
-    label:       str
+    name: str
+    label: str
     description: str
-    tools:       list[PluginTool]
-    priority:    int = 0
+    tools: list[PluginTool]
+    priority: int = 0
 
 
 @dataclass
@@ -60,9 +61,9 @@ class ToolRegistry:
     domain) is logged at WARNING level (PRD-125).
     """
 
-    _by_name:     dict[str, PluginTool] = field(default_factory=dict)
-    _tool_groups: dict[str, str]        = field(default_factory=dict)  # name → group.name
-    _groups:      list[ToolGroup]       = field(default_factory=list)
+    _by_name: dict[str, PluginTool] = field(default_factory=dict)
+    _tool_groups: dict[str, str] = field(default_factory=dict)  # name → group.name
+    _groups: list[ToolGroup] = field(default_factory=list)
 
     # ── mutation ──────────────────────────────────────────────────────────
 
@@ -87,7 +88,10 @@ class ToolRegistry:
                     "Tool %r from group %r shadows built-in from group %r "
                     "(source: %s).  This may be intentional but could indicate "
                     "a name collision between a plugin and a core tool.",
-                    name, group, existing_group, source,
+                    name,
+                    group,
+                    existing_group,
+                    source,
                 )
             else:
                 log.debug("Tool %r overridden by %s", name, source)
@@ -147,9 +151,7 @@ class ToolRegistry:
         """
         if pattern.endswith(".*"):
             prefix = pattern[:-2]
-            return frozenset(
-                name for name, grp in self._tool_groups.items() if grp == prefix
-            )
+            return frozenset(name for name, grp in self._tool_groups.items() if grp == prefix)
         if pattern in self._by_name:
             return frozenset({pattern})
         return frozenset()

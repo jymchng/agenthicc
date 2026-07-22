@@ -1,14 +1,26 @@
 """Integration tests for filesystem tools with real I/O (PRD-14)."""
+
 from __future__ import annotations
 import pytest
-from agenthicc.tools.fs import (WriteFileTool, ReadFileTool, PatchFileTool,
-    GrepFilesTool, ListDirectoryTool, MoveFileTool, DeleteFileTool,
-    CopyFileTool, GetFileInfoTool, ReadLinesTool, SearchFilesTool)
+from agenthicc.tools.fs import (
+    WriteFileTool,
+    ReadFileTool,
+    PatchFileTool,
+    GrepFilesTool,
+    ListDirectoryTool,
+    MoveFileTool,
+    DeleteFileTool,
+    CopyFileTool,
+    GetFileInfoTool,
+    ReadLinesTool,
+    SearchFilesTool,
+)
 
 pytestmark = pytest.mark.integration
 
 
-def ctx(tmp_path): return {"workspace_root": str(tmp_path)}
+def ctx(tmp_path):
+    return {"workspace_root": str(tmp_path)}
 
 
 async def test_write_read_roundtrip(tmp_path):
@@ -18,14 +30,18 @@ async def test_write_read_roundtrip(tmp_path):
 
 
 async def test_write_then_grep(tmp_path):
-    await WriteFileTool().execute({"path": "src.py", "content": "def argon2_hash():\n    pass\n"}, ctx(tmp_path))
+    await WriteFileTool().execute(
+        {"path": "src.py", "content": "def argon2_hash():\n    pass\n"}, ctx(tmp_path)
+    )
     r = await GrepFilesTool().execute({"pattern": "argon2_hash"}, ctx(tmp_path))
     assert r["count"] == 1 and "argon2_hash" in r["matches"][0]["line"]
 
 
 async def test_write_patch_read(tmp_path):
     await WriteFileTool().execute({"path": "auth.py", "content": "import bcrypt\n"}, ctx(tmp_path))
-    await PatchFileTool().execute({"path": "auth.py", "old_content": "bcrypt", "new_content": "argon2"}, ctx(tmp_path))
+    await PatchFileTool().execute(
+        {"path": "auth.py", "old_content": "bcrypt", "new_content": "argon2"}, ctx(tmp_path)
+    )
     r = await ReadFileTool().execute({"path": "auth.py"}, ctx(tmp_path))
     assert "argon2" in r["content"] and "bcrypt" not in r["content"]
 
@@ -49,7 +65,9 @@ async def test_search_files_glob(tmp_path):
 
 
 async def test_read_lines_range(tmp_path):
-    await WriteFileTool().execute({"path": "lines.txt", "content": "1\n2\n3\n4\n5\n"}, ctx(tmp_path))
+    await WriteFileTool().execute(
+        {"path": "lines.txt", "content": "1\n2\n3\n4\n5\n"}, ctx(tmp_path)
+    )
     r = await ReadLinesTool().execute({"path": "lines.txt", "start": 2, "end": 4}, ctx(tmp_path))
     assert r["lines"] == ["2", "3", "4"] and r["total_lines"] == 5
 

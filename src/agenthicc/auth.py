@@ -17,13 +17,13 @@ __all__ = [
     "NotLoggedInError",
 ]
 
-AGENTHICC_CLIENT_ID  = "agenthicc-cli"
-AGENTHICC_AUTH_URL   = "https://agenthicc.ai/oauth/authorize"
-AGENTHICC_TOKEN_URL  = "https://agenthicc.ai/oauth/token"
+AGENTHICC_CLIENT_ID = "agenthicc-cli"
+AGENTHICC_AUTH_URL = "https://agenthicc.ai/oauth/authorize"
+AGENTHICC_TOKEN_URL = "https://agenthicc.ai/oauth/token"
 AGENTHICC_REVOKE_URL = "https://agenthicc.ai/oauth/revoke"
-KEYRING_SERVICE      = "agenthicc"
-KEYRING_USERNAME     = "tokens"
-TOKEN_REFRESH_BUFFER = 60   # seconds before expiry to trigger refresh
+KEYRING_SERVICE = "agenthicc"
+KEYRING_USERNAME = "tokens"
+TOKEN_REFRESH_BUFFER = 60  # seconds before expiry to trigger refresh
 
 
 class NotLoggedInError(Exception):
@@ -42,8 +42,8 @@ class AuthNetworkError(Exception):
 class TokenBundle:
     access_token: str
     refresh_token: str
-    expires_at: float       # Unix timestamp
-    plan: str               # "free" | "pro" | "enterprise"
+    expires_at: float  # Unix timestamp
+    plan: str  # "free" | "pro" | "enterprise"
     email: str
     user_id: str
 
@@ -96,6 +96,7 @@ class TokenStore:
     def _read(self) -> str | None:
         try:
             import keyring
+
             return keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
         except Exception:
             return self._fallback_path.read_text() if self._fallback_path.exists() else None
@@ -103,6 +104,7 @@ class TokenStore:
     def _write(self, data: str | None) -> None:
         try:
             import keyring
+
             if data is None:
                 keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
             else:
@@ -130,9 +132,11 @@ class AuthClient:
         from aiohttp import web
 
         code_verifier = secrets.token_urlsafe(64)
-        code_challenge = base64.urlsafe_b64encode(
-            hashlib.sha256(code_verifier.encode()).digest()
-        ).rstrip(b"=").decode()
+        code_challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+            .rstrip(b"=")
+            .decode()
+        )
 
         port = self._find_free_port()
         redirect_uri = f"http://localhost:{port}/callback"
@@ -178,9 +182,7 @@ class AuthClient:
         """Return a valid access token, refreshing if necessary."""
         bundle = self._store.load()
         if bundle is None:
-            raise NotLoggedInError(
-                "Not logged in. Run: agenthicc login"
-            )
+            raise NotLoggedInError("Not logged in. Run: agenthicc login")
         if bundle.is_expired:
             bundle = await self._refresh(bundle)
             self._store.save(bundle)
@@ -197,20 +199,22 @@ class AuthClient:
 
     # -- internal -------------------------------------------------------------
 
-    async def _exchange_code(
-        self, code: str, code_verifier: str, redirect_uri: str
-    ) -> TokenBundle:
+    async def _exchange_code(self, code: str, code_verifier: str, redirect_uri: str) -> TokenBundle:
         from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
         import httpx  # noqa: PLC0415
+
         try:
             async with agenthicc_http_client(timeout=15.0) as client:
-                resp = await client.post(AGENTHICC_TOKEN_URL, data={
-                    "grant_type": "authorization_code",
-                    "client_id": AGENTHICC_CLIENT_ID,
-                    "code": code,
-                    "code_verifier": code_verifier,
-                    "redirect_uri": redirect_uri,
-                })
+                resp = await client.post(
+                    AGENTHICC_TOKEN_URL,
+                    data={
+                        "grant_type": "authorization_code",
+                        "client_id": AGENTHICC_CLIENT_ID,
+                        "code": code,
+                        "code_verifier": code_verifier,
+                        "redirect_uri": redirect_uri,
+                    },
+                )
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.TimeoutException as exc:
@@ -235,13 +239,17 @@ class AuthClient:
     async def _refresh(self, bundle: TokenBundle) -> TokenBundle:
         from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
         import httpx  # noqa: PLC0415
+
         try:
             async with agenthicc_http_client(timeout=15.0) as client:
-                resp = await client.post(AGENTHICC_TOKEN_URL, data={
-                    "grant_type": "refresh_token",
-                    "client_id": AGENTHICC_CLIENT_ID,
-                    "refresh_token": bundle.refresh_token,
-                })
+                resp = await client.post(
+                    AGENTHICC_TOKEN_URL,
+                    data={
+                        "grant_type": "refresh_token",
+                        "client_id": AGENTHICC_CLIENT_ID,
+                        "refresh_token": bundle.refresh_token,
+                    },
+                )
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.TimeoutException as exc:
@@ -265,18 +273,23 @@ class AuthClient:
 
     async def _revoke(self, access_token: str) -> None:
         from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+
         try:
             async with agenthicc_http_client(timeout=10.0) as client:
-                await client.post(AGENTHICC_REVOKE_URL, data={
-                    "token": access_token,
-                    "client_id": AGENTHICC_CLIENT_ID,
-                })
+                await client.post(
+                    AGENTHICC_REVOKE_URL,
+                    data={
+                        "token": access_token,
+                        "client_id": AGENTHICC_CLIENT_ID,
+                    },
+                )
         except Exception:
             pass  # best-effort revoke
 
     @staticmethod
     def _find_free_port() -> int:
         import socket
+
         with socket.socket() as s:
             s.bind(("localhost", 0))
             return s.getsockname()[1]

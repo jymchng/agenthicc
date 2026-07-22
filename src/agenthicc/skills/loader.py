@@ -1,4 +1,5 @@
 """Skill discovery and lazy loading (PRD-22)."""
+
 from __future__ import annotations
 
 import logging
@@ -9,9 +10,11 @@ log = logging.getLogger(__name__)
 
 __all__ = ["SkillDef", "_parse_skill", "discover_skills"]
 
+
 @dataclass
 class SkillDef:
     """Parsed representation of a single skill."""
+
     name: str
     slug: str
     path: Path
@@ -38,6 +41,7 @@ class SkillDef:
                 self._body = raw
         return self._body
 
+
 def _parse_skill(skill_dir: Path) -> SkillDef | None:
     """Parse a skill directory; return None if SKILL.md missing or malformed."""
     skill_md = skill_dir / "SKILL.md"
@@ -45,6 +49,7 @@ def _parse_skill(skill_dir: Path) -> SkillDef | None:
         return None
     try:
         import yaml
+
         raw = skill_md.read_text(encoding="utf-8")
         meta: dict[str, object] = {}
         if raw.startswith("---"):
@@ -68,6 +73,7 @@ def _parse_skill(skill_dir: Path) -> SkillDef | None:
     except Exception as exc:
         log.warning("Failed to parse skill %s: %s", skill_dir, exc)
         return None
+
 
 def discover_skills(
     project_dir: Path | None = None,

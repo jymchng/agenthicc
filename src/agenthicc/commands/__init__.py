@@ -1,4 +1,5 @@
 """Unified Command System (PRD-44, PRD-45)."""
+
 from .command import Command, CommandContext, CommandHandler, MenuFactory
 from .registry import UnifiedCommandRegistry
 from .dispatcher import CommandDispatcher

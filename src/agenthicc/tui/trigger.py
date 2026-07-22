@@ -4,6 +4,7 @@ Defines the data structures and protocol that every trigger handler must
 implement.  A TriggerManager maps single characters to their handlers;
 unified_session.py consults the manager on every keystroke via resolve().
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,9 +31,9 @@ class TriggerResult:
     signals so callers never have to inspect raw bytes to decide what to do.
     """
 
-    buffer: list[str]         # new buffer content after selection
-    submit: bool = False      # if True, dispatch SendMessageCommand immediately
-    cursor: int | None = None # explicit cursor position; None = end of buffer
+    buffer: list[str]  # new buffer content after selection
+    submit: bool = False  # if True, dispatch SendMessageCommand immediately
+    cursor: int | None = None  # explicit cursor position; None = end of buffer
 
 
 @dataclass
@@ -40,12 +41,12 @@ class MatchItem:
     """One row in the dropdown for any trigger type."""
 
     display: str  # computed single-line fallback (backwards compat)
-    value:   str  # text inserted into buffer on selection
-    hint:    str = ""  # optional below-dropdown annotation
+    value: str  # text inserted into buffer on selection
+    hint: str = ""  # optional below-dropdown annotation
 
     # Structured fields (PRD-69) — set by handlers that want the overlay to
     # render a two-column layout with description wrapping.
-    label:  str = ""  # left column  (e.g. "/commands", "@docs/index.md")
+    label: str = ""  # left column  (e.g. "/commands", "@docs/index.md")
     detail: str = ""  # right column — full, untruncated description/path
 
 
@@ -54,7 +55,7 @@ class TriggerContext:
     """Read-only runtime context passed to handlers on every call."""
 
     cwd: Path
-    session_id: str = ""          # scope results to a session if needed
+    session_id: str = ""  # scope results to a session if needed
     command_registry: object = None  # CommandRegistry, for cross-trigger lookups
 
 
@@ -68,8 +69,8 @@ class TriggerHandler(Protocol):
     this Protocol structurally (without explicit inheritance) continue to work.
     """
 
-    char:  str   # single activation character
-    label: str   # human-readable name ("Mention File", "Command", "Shell", "Agent")
+    char: str  # single activation character
+    label: str  # human-readable name ("Mention File", "Command", "Shell", "Agent")
 
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]: ...
     def on_select(self, item: MatchItem | None, fragment: str, buf: list[str]) -> TriggerResult: ...
@@ -91,7 +92,7 @@ class TriggerHandlerBase:
     defaults here — subclasses must implement them.
     """
 
-    char:  str = ""
+    char: str = ""
     label: str = ""
 
     def can_activate(self, buf: list[str]) -> bool:
@@ -121,9 +122,7 @@ class TriggerManager:
     def register(self, handler: TriggerHandler) -> None:
         """Register *handler* for its declared trigger character."""
         if len(handler.char) != 1:
-            raise ValueError(
-                f"Trigger char must be exactly one character, got {handler.char!r}"
-            )
+            raise ValueError(f"Trigger char must be exactly one character, got {handler.char!r}")
         self._handlers[handler.char] = handler
 
     def unregister(self, char: str) -> None:

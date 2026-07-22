@@ -4,6 +4,7 @@
 side effect of populating ``meta.tools`` from ``meta.tool_classes``.  This
 module exposes that same logic without touching testing infrastructure.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -24,7 +25,7 @@ def populate_agent_tools(agent_instance: object, tools: list[object]) -> None:
         The tool class list — typically ``registry.tools`` or
         ``meta.tool_classes`` of the agent class.
     """
-    from lauren_ai._agents import AGENT_META              # noqa: PLC0415
+    from lauren_ai._agents import AGENT_META  # noqa: PLC0415
     from lauren_ai._tools import TOOL_META, _add_to_tool_map  # noqa: PLC0415
 
     meta = getattr(type(agent_instance), AGENT_META, None)

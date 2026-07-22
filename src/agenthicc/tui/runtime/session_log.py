@@ -1,4 +1,5 @@
 """Session persistence: index and event log (PRD-67 §3-4)."""
+
 from __future__ import annotations
 
 import json
@@ -18,6 +19,7 @@ _SESSION_INDEX = _SESSIONS_DIR / "index.json"
 
 
 # ── Index CRUD ────────────────────────────────────────────────────────────────
+
 
 def create_session_id() -> str:
     return str(uuid.uuid4())
@@ -40,17 +42,15 @@ def _save_index(data: dict) -> None:
 def register_session(session_id: str, cwd: str, model: str) -> None:
     index = _load_index()
     index[session_id] = {
-        "cwd":         cwd,
-        "model":       model,
-        "created_at":  time.time(),
+        "cwd": cwd,
+        "model": model,
+        "created_at": time.time(),
         "last_active": time.time(),
     }
     _save_index(index)
     session_dir = _SESSIONS_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "metadata.json").write_text(
-        json.dumps(index[session_id], indent=2)
-    )
+    (session_dir / "metadata.json").write_text(json.dumps(index[session_id], indent=2))
 
 
 def touch_session(session_id: str) -> None:
@@ -63,10 +63,7 @@ def touch_session(session_id: str) -> None:
 def find_latest_session_for_cwd(cwd: str | None = None) -> str | None:
     cwd = cwd or os.getcwd()
     index = _load_index()
-    candidates = [
-        (sid, meta) for sid, meta in index.items()
-        if meta.get("cwd") == cwd
-    ]
+    candidates = [(sid, meta) for sid, meta in index.items() if meta.get("cwd") == cwd]
     if not candidates:
         return None
     latest = max(candidates, key=lambda x: x[1].get("last_active", 0))
@@ -79,6 +76,7 @@ def get_session_log_path(session_id: str) -> Path:
 
 # ── Event log ─────────────────────────────────────────────────────────────────
 
+
 class SessionEventLog:
     """Appends ConversationEvents to a JSONL file."""
 
@@ -90,9 +88,9 @@ class SessionEventLog:
     def append(self, ev: ConversationEvent) -> None:
         try:
             record = {
-                "event_id":  ev.event_id,
-                "kind":      ev.kind,
-                "payload":   ev.payload,
+                "event_id": ev.event_id,
+                "kind": ev.kind,
+                "payload": ev.payload,
                 "timestamp": ev.timestamp,
             }
             self._file.write(json.dumps(record) + "\n")
@@ -115,19 +113,22 @@ class SessionEventLog:
         for line in path.read_text().splitlines():
             try:
                 data = json.loads(line)
-                events.append(ConversationEvent(
-                    event_id=data["event_id"],
-                    kind=data["kind"],
-                    payload=data["payload"],
-                    timestamp=data["timestamp"],
-                    rendered=True,  # already displayed; skip on restore
-                ))
+                events.append(
+                    ConversationEvent(
+                        event_id=data["event_id"],
+                        kind=data["kind"],
+                        payload=data["payload"],
+                        timestamp=data["timestamp"],
+                        rendered=True,  # already displayed; skip on restore
+                    )
+                )
             except Exception:  # noqa: BLE001
                 pass
         return events
 
 
 # ── Session restoration ───────────────────────────────────────────────────────
+
 
 async def restore_session(session_id: str, app_state: AppState) -> None:
     """Restore a previous session's metrics into ConversationStore."""
@@ -143,9 +144,9 @@ async def restore_session(session_id: str, app_state: AppState) -> None:
     total_in, total_out, total_cost = 0, 0, 0.0
     for ev in events:
         if ev.kind == "tokens":
-            total_in   += ev.payload.get("input_tokens",  0)
-            total_out  += ev.payload.get("output_tokens", 0)
-            total_cost += ev.payload.get("cost_usd",      0.0)
+            total_in += ev.payload.get("input_tokens", 0)
+            total_out += ev.payload.get("output_tokens", 0)
+            total_cost += ev.payload.get("cost_usd", 0.0)
     if total_in or total_out:
         conv.tokens_in.set(total_in)
         conv.tokens_out.set(total_out)
@@ -167,6 +168,4 @@ async def restore_session(session_id: str, app_state: AppState) -> None:
     conv.turns.set(turns)
 
     # Show resume notification
-    conv.notification.set(
-        f"Resumed session {session_id[:8]}… ({len(turns)} previous turns)"
-    )
+    conv.notification.set(f"Resumed session {session_id[:8]}… ({len(turns)} previous turns)")

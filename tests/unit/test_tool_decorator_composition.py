@@ -9,6 +9,7 @@ compose correctly with @tool():
   - Three-layer composition (@tool @retry @timeout) works end-to-end
   - __dict__.update semantics: wrapper holds the same ToolMeta object (not a copy)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,18 +21,23 @@ pytestmark = pytest.mark.unit
 
 # ── Decorator helpers (production-quality implementations) ────────────────────
 
+
 def timeout(seconds: float):
     """Wrap an async function with asyncio.wait_for."""
+
     def decorator(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
             return await asyncio.wait_for(fn(*args, **kwargs), timeout=seconds)
+
         return wrapper
+
     return decorator
 
 
 def retry(max_attempts: int = 3, backoff: float = 0.0):
     """Retry an async function up to *max_attempts* times with exponential backoff."""
+
     def decorator(fn):
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
@@ -41,14 +47,17 @@ def retry(max_attempts: int = 3, backoff: float = 0.0):
                 except Exception:
                     if attempt < max_attempts - 1:
                         if backoff:
-                            await asyncio.sleep(backoff * (2 ** attempt))
+                            await asyncio.sleep(backoff * (2**attempt))
                     else:
                         raise
+
         return wrapper
+
     return decorator
 
 
 # ── TOOL_META presence ────────────────────────────────────────────────────────
+
 
 def test_tool_meta_present_when_timeout_above_tool():
     """@timeout above @tool: TOOL_META survives on the outer wrapper."""
@@ -99,6 +108,7 @@ def test_tool_meta_present_through_three_layers():
 
 
 # ── Schema correctness ────────────────────────────────────────────────────────
+
 
 def test_signature_preserved_through_timeout():
     """inspect.signature and type hints survive @timeout wrapping."""
@@ -162,6 +172,7 @@ def test_wrapped_attribute_set():
 
 # ── Timeout behaviour ─────────────────────────────────────────────────────────
 
+
 async def test_timeout_allows_fast_calls():
     """A call that completes within the timeout succeeds normally."""
     from lauren_ai._tools import tool
@@ -181,9 +192,9 @@ async def test_timeout_fires_on_slow_calls():
     from lauren_ai._tools import tool
 
     @tool()
-    @timeout(0.05)   # 50 ms limit
+    @timeout(0.05)  # 50 ms limit
     async def slow_tool() -> str:
-        await asyncio.sleep(0.5)   # 500 ms — well over the limit
+        await asyncio.sleep(0.5)  # 500 ms — well over the limit
         return "should not reach"
 
     with pytest.raises(asyncio.TimeoutError):
@@ -191,6 +202,7 @@ async def test_timeout_fires_on_slow_calls():
 
 
 # ── Retry behaviour ───────────────────────────────────────────────────────────
+
 
 async def test_retry_succeeds_after_failures():
     """Retry eventually succeeds when the tool stops failing."""
@@ -233,6 +245,7 @@ async def test_retry_raises_after_exhausting_attempts():
 
 # ── Three-layer composition ───────────────────────────────────────────────────
 
+
 async def test_three_layer_composition_end_to_end():
     """@tool() @retry(3) @timeout(1.0) works end-to-end."""
     from lauren_ai._tools import tool, TOOL_META
@@ -259,6 +272,7 @@ async def test_three_layer_composition_end_to_end():
 
 
 # ── __dict__.update mechanics ─────────────────────────────────────────────────
+
 
 def test_functools_wraps_copies_tool_meta_by_reference():
     """functools.wraps copies TOOL_META via __dict__.update — same object."""

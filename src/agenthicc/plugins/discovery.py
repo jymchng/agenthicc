@@ -1,4 +1,5 @@
 """Tool plugin discovery and dynamic loading (PRD-24)."""
+
 from __future__ import annotations
 
 import ast
@@ -17,9 +18,12 @@ log = logging.getLogger(__name__)
 PluginTool = Callable[..., object]
 
 __all__ = [
-    "LoadResult", "PluginToolSet",
-    "_load_plugin_file", "_scan_directory",
-    "discover_project_tools", "discover_agent_tools",
+    "LoadResult",
+    "PluginToolSet",
+    "_load_plugin_file",
+    "_scan_directory",
+    "discover_project_tools",
+    "discover_agent_tools",
     "warn_conflicts",
 ]
 
@@ -194,7 +198,7 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
     raw_commands = getattr(module, "COMMANDS", None)
     if raw_commands is not None:
         valid_cmds = []
-        for item in (raw_commands if isinstance(raw_commands, (list, tuple)) else []):
+        for item in raw_commands if isinstance(raw_commands, (list, tuple)) else []:
             # Validate lazily — just collect non-None items; full validation in plugin_loader
             if item is not None:
                 valid_cmds.append(item)
@@ -208,13 +212,15 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
     raw_sa_types = getattr(module, "SUBAGENT_TYPES", None)
     if raw_sa_types is not None:
         from agenthicc.subagents.types import SubagentTypeSpec, DEFAULT_REGISTRY  # noqa: PLC0415
-        for spec in (raw_sa_types if isinstance(raw_sa_types, (list, tuple)) else []):
+
+        for spec in raw_sa_types if isinstance(raw_sa_types, (list, tuple)) else []:
             if isinstance(spec, SubagentTypeSpec):
                 DEFAULT_REGISTRY.register(spec)
                 log.debug("Plugin %s: registered subagent type %r", path, spec.name)
             else:
-                log.warning("Plugin %s: non-SubagentTypeSpec item in SUBAGENT_TYPES skipped: %r",
-                            path, spec)
+                log.warning(
+                    "Plugin %s: non-SubagentTypeSpec item in SUBAGENT_TYPES skipped: %r", path, spec
+                )
 
     return LoadResult(path=path, tools=valid, commands=result_commands)
 
@@ -239,7 +245,9 @@ def _scan_directory(root: Path, auto_install: bool = False) -> list[LoadResult]:
                 "Plugin %s skipped — missing dependencies: %s\n"
                 "  Fix: pip install %s\n"
                 "  Or set [plugins] auto_install = true in agenthicc.toml",
-                py_file, result.missing_deps, deps_str,
+                py_file,
+                result.missing_deps,
+                deps_str,
             )
         elif result.error:
             log.error(
@@ -279,6 +287,7 @@ def discover_project_tools(
 def warn_conflicts(plugin_set: PluginToolSet) -> None:
     """Warn if any plugin tool shadows a built-in tool name."""
     from agenthicc.agent_tools import AGENT_TOOLS as _BUILTIN
+
     builtins = frozenset(getattr(t, "__name__", "") for t in _BUILTIN)
     for tool in plugin_set.all_tools:
         name = getattr(tool, "__name__", "")
@@ -297,12 +306,8 @@ def discover_agent_tools(
       ~/.agenthicc/agents/<agent_name>/tools/
       .agenthicc/agents/<agent_name>/tools/
     """
-    user_root = (
-        (user_dir or Path.home() / ".agenthicc") / "agents" / agent_name / "tools"
-    )
-    project_root = (
-        (project_dir or Path(".agenthicc")) / "agents" / agent_name / "tools"
-    )
+    user_root = (user_dir or Path.home() / ".agenthicc") / "agents" / agent_name / "tools"
+    project_root = (project_dir or Path(".agenthicc")) / "agents" / agent_name / "tools"
 
     results: list[LoadResult] = []
     results.extend(_scan_directory(user_root))

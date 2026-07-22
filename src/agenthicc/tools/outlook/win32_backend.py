@@ -7,6 +7,7 @@ On non-Windows platforms every public function returns a ``{"ok": False, "error"
 "win32 Outlook is only available on Windows"}`` dict so callers can degrade
 gracefully rather than raising.
 """
+
 from __future__ import annotations
 
 import sys
@@ -64,7 +65,7 @@ def list_emails(folder_name: str = "Inbox", n: int = 20, unread_only: bool = Fal
             folder = ns.Folders.Item(1).Folders[folder_name]
 
         messages = folder.Items
-        messages.Sort("[ReceivedTime]", True)   # descending
+        messages.Sort("[ReceivedTime]", True)  # descending
 
         emails = []
         for i in range(1, messages.Count + 1):
@@ -74,14 +75,16 @@ def list_emails(folder_name: str = "Inbox", n: int = 20, unread_only: bool = Fal
                 msg = messages.Item(i)
                 if unread_only and not getattr(msg, "UnRead", False):
                     continue
-                emails.append({
-                    "index": i,
-                    "subject": getattr(msg, "Subject", ""),
-                    "sender": getattr(msg, "SenderEmailAddress", ""),
-                    "date": str(getattr(msg, "ReceivedTime", "")),
-                    "unread": bool(getattr(msg, "UnRead", False)),
-                    "body_preview": str(getattr(msg, "Body", ""))[:200],
-                })
+                emails.append(
+                    {
+                        "index": i,
+                        "subject": getattr(msg, "Subject", ""),
+                        "sender": getattr(msg, "SenderEmailAddress", ""),
+                        "date": str(getattr(msg, "ReceivedTime", "")),
+                        "unread": bool(getattr(msg, "UnRead", False)),
+                        "body_preview": str(getattr(msg, "Body", ""))[:200],
+                    }
+                )
             except Exception:  # noqa: BLE001
                 continue
         return {"emails": emails, "count": len(emails)}
@@ -108,8 +111,7 @@ def read_email(index: int, folder_name: str = "Inbox") -> dict:
 
         msg = folder.Items.Item(index)
         attachments = [
-            {"name": msg.Attachments.Item(j).FileName,
-             "size": msg.Attachments.Item(j).Size}
+            {"name": msg.Attachments.Item(j).FileName, "size": msg.Attachments.Item(j).Size}
             for j in range(1, msg.Attachments.Count + 1)
         ]
         return {
@@ -126,8 +128,9 @@ def read_email(index: int, folder_name: str = "Inbox") -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def send_email(to: list[str], subject: str, body: str,
-               cc: list[str] | None = None, html: bool = False) -> dict:
+def send_email(
+    to: list[str], subject: str, body: str, cc: list[str] | None = None, html: bool = False
+) -> dict:
     """Send an email via Outlook.
 
     Args:
@@ -141,7 +144,7 @@ def send_email(to: list[str], subject: str, body: str,
         return _NOT_WINDOWS
     try:  # pragma: no cover
         app = _outlook_app()
-        mail = app.CreateItem(0)   # 0 = olMailItem
+        mail = app.CreateItem(0)  # 0 = olMailItem
         mail.Subject = subject
         mail.To = "; ".join(to)
         if cc:
@@ -156,8 +159,7 @@ def send_email(to: list[str], subject: str, body: str,
         return {"ok": False, "error": str(exc)}
 
 
-def reply_email(index: int, body: str, reply_all: bool = False,
-                folder_name: str = "Inbox") -> dict:
+def reply_email(index: int, body: str, reply_all: bool = False, folder_name: str = "Inbox") -> dict:
     """Reply to an email.
 
     Args:
@@ -209,12 +211,14 @@ def search_emails(query: str, folder_name: str = "Inbox", n: int = 20) -> dict:
                 subj = str(getattr(msg, "Subject", "")).lower()
                 body = str(getattr(msg, "Body", "")).lower()
                 if q in subj or q in body:
-                    results.append({
-                        "index": i,
-                        "subject": getattr(msg, "Subject", ""),
-                        "sender": getattr(msg, "SenderEmailAddress", ""),
-                        "date": str(getattr(msg, "ReceivedTime", "")),
-                    })
+                    results.append(
+                        {
+                            "index": i,
+                            "subject": getattr(msg, "Subject", ""),
+                            "sender": getattr(msg, "SenderEmailAddress", ""),
+                            "date": str(getattr(msg, "ReceivedTime", "")),
+                        }
+                    )
             except Exception:  # noqa: BLE001
                 continue
         return {"emails": results, "count": len(results)}
@@ -222,8 +226,7 @@ def search_emails(query: str, folder_name: str = "Inbox", n: int = 20) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def move_email(index: int, destination_folder: str,
-               source_folder: str = "Inbox") -> dict:
+def move_email(index: int, destination_folder: str, source_folder: str = "Inbox") -> dict:
     """Move an email to another folder.
 
     Args:
@@ -256,8 +259,7 @@ def list_folders() -> dict:
         ns = _ns()
         store = ns.Folders.Item(1)
         folders = [
-            {"name": store.Folders.Item(i).Name,
-             "item_count": store.Folders.Item(i).Items.Count}
+            {"name": store.Folders.Item(i).Name, "item_count": store.Folders.Item(i).Items.Count}
             for i in range(1, store.Folders.Count + 1)
         ]
         return {"folders": folders, "count": len(folders)}
@@ -279,26 +281,26 @@ def calendar_events(start_date: str, end_date: str) -> dict:
         return _NOT_WINDOWS
     try:  # pragma: no cover
         ns = _ns()
-        cal = ns.GetDefaultFolder(9)   # 9 = olFolderCalendar
+        cal = ns.GetDefaultFolder(9)  # 9 = olFolderCalendar
         items = cal.Items
         items.IncludeRecurrences = True
         items.Sort("[Start]")
-        restriction = (
-            f"[Start] >= '{start_date}' AND [Start] <= '{end_date}'"
-        )
+        restriction = f"[Start] >= '{start_date}' AND [Start] <= '{end_date}'"
         restricted = items.Restrict(restriction)
         events = []
         for i in range(1, restricted.Count + 1):
             try:
                 ev = restricted.Item(i)
-                events.append({
-                    "subject": getattr(ev, "Subject", ""),
-                    "start": str(getattr(ev, "Start", "")),
-                    "end": str(getattr(ev, "End", "")),
-                    "location": getattr(ev, "Location", ""),
-                    "body": getattr(ev, "Body", "")[:300],
-                    "organizer": getattr(ev, "Organizer", ""),
-                })
+                events.append(
+                    {
+                        "subject": getattr(ev, "Subject", ""),
+                        "start": str(getattr(ev, "Start", "")),
+                        "end": str(getattr(ev, "End", "")),
+                        "location": getattr(ev, "Location", ""),
+                        "body": getattr(ev, "Body", "")[:300],
+                        "organizer": getattr(ev, "Organizer", ""),
+                    }
+                )
             except Exception:  # noqa: BLE001
                 continue
         return {"events": events, "count": len(events)}
@@ -306,9 +308,14 @@ def calendar_events(start_date: str, end_date: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def create_event(subject: str, start: str, end: str,
-                 location: str = "", body: str = "",
-                 attendees: list[str] | None = None) -> dict:
+def create_event(
+    subject: str,
+    start: str,
+    end: str,
+    location: str = "",
+    body: str = "",
+    attendees: list[str] | None = None,
+) -> dict:
     """Create a new calendar event.
 
     Args:
@@ -323,7 +330,7 @@ def create_event(subject: str, start: str, end: str,
         return _NOT_WINDOWS
     try:  # pragma: no cover
         app = _outlook_app()
-        appt = app.CreateItem(1)   # 1 = olAppointmentItem
+        appt = app.CreateItem(1)  # 1 = olAppointmentItem
         appt.Subject = subject
         appt.Start = start
         appt.End = end
@@ -331,9 +338,9 @@ def create_event(subject: str, start: str, end: str,
             appt.Location = location
         if body:
             appt.Body = body
-        for email in (attendees or []):
+        for email in attendees or []:
             recipient = appt.Recipients.Add(email)
-            recipient.Type = 1   # olRequired
+            recipient.Type = 1  # olRequired
         appt.Save()
         return {"ok": True, "entry_id": appt.EntryID}
     except Exception as exc:  # pragma: no cover  noqa: BLE001
@@ -356,8 +363,8 @@ def word_read_document(path: str) -> dict:
         word.Visible = False
         doc = word.Documents.Open(path)
         text = doc.Content.Text
-        pages = doc.ComputeStatistics(2)   # 2 = wdStatisticPages
-        words = doc.ComputeStatistics(0)   # 0 = wdStatisticWords
+        pages = doc.ComputeStatistics(2)  # 2 = wdStatisticPages
+        words = doc.ComputeStatistics(0)  # 0 = wdStatisticWords
         doc.Close(False)
         word.Quit()
         return {"text": text, "pages": pages, "word_count": words}
@@ -365,8 +372,7 @@ def word_read_document(path: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def excel_read_range(path: str, sheet: str = "Sheet1",
-                     range_str: str = "A1:Z100") -> dict:
+def excel_read_range(path: str, sheet: str = "Sheet1", range_str: str = "A1:Z100") -> dict:
     """Read a range of cells from an Excel (.xlsx/.xls) file via COM.
 
     Args:
@@ -434,8 +440,14 @@ class Win32OutlookBackend:
         except (ValueError, TypeError):
             return {"ok": False, "error": f"Invalid email index: {email_id!r}"}
 
-    async def send_email(self, to: list[str], subject: str, body: str,
-                         cc: list[str] | None, attachments: list[str] | None) -> dict:
+    async def send_email(
+        self,
+        to: list[str],
+        subject: str,
+        body: str,
+        cc: list[str] | None,
+        attachments: list[str] | None,
+    ) -> dict:
         return send_email(to, subject, body, cc)
 
     async def reply_email(self, email_id: str, body: str, reply_all: bool) -> dict:
@@ -459,6 +471,7 @@ class Win32OutlookBackend:
     async def calendar_events(self, start_date: str, end_date: str) -> list[dict]:
         return calendar_events(start_date, end_date).get("events", [])  # type: ignore[return-value]
 
-    async def create_event(self, subject: str, start: str, end: str,
-                           attendees: list[str] | None, body: str | None) -> dict:
+    async def create_event(
+        self, subject: str, start: str, end: str, attendees: list[str] | None, body: str | None
+    ) -> dict:
         return create_event(subject, start, end, body=body or "", attendees=attendees)

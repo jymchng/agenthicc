@@ -3,6 +3,7 @@
 Returns ``list[type[WorkflowPlugin]]`` directly.  WorkflowDefinition has been
 removed; the registry stores plugin classes wrapped in WorkflowEntry.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -17,12 +18,16 @@ log = logging.getLogger(__name__)
 
 def load_builtin_workflows() -> list[type[WorkflowPlugin]]:
     """Return all builtin WorkflowPlugin subclasses (PRD-112, PRD-116)."""
-    from agenthicc.workflows.code_plan.definition import CodePlan       # noqa: PLC0415
-    return [CodePlan, ]
+    from agenthicc.workflows.code_plan.definition import CodePlan  # noqa: PLC0415
+
+    return [
+        CodePlan,
+    ]
 
 
 def load_python_workflows(
-    path: Path, source: str = "user",
+    path: Path,
+    source: str = "user",
 ) -> list[type[WorkflowPlugin]]:
     """Import *path* and return every WorkflowPlugin subclass found in it."""
     module_name = f"_agenthicc_workflow_{path.stem}"

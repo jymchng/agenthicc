@@ -1,4 +1,5 @@
 """Unit tests for PRD-73 — Workspace blank separator and dynamic status height."""
+
 from __future__ import annotations
 
 import pytest
@@ -32,7 +33,7 @@ def _make_app_state(model_name: str = "anthropic/claude-opus-4-8") -> MagicMock:
     # RuntimeMode attributes used by build_mode_str and FooterComponent.
     mode = state.active_mode.return_value
     mode.badge = "⏵⏵"
-    mode.name  = "Auto"
+    mode.name = "Auto"
     mode.color = "green"
     return state
 
@@ -52,23 +53,28 @@ def _rendered_line_count(renderable) -> int:
 
 # ── height() with model set ───────────────────────────────────────────────────
 
+
 def test_status_height_with_model_is_four():
     from agenthicc.tui.workspace.components import StatusComponent
+
     comp = StatusComponent(_make_app_state("anthropic/claude-opus-4-8"))
     assert comp.height(80) == 4
 
 
 def test_status_height_without_model_is_two():
     from agenthicc.tui.workspace.components import StatusComponent
+
     comp = StatusComponent(_make_app_state(""))
     assert comp.height(80) == 2
 
 
 # ── height() matches render() line count (invariant I-10) ────────────────────
 
+
 def test_status_height_matches_render_with_model():
     """height() == 1 (blank separator) + lines in render()."""
     from agenthicc.tui.workspace.components import StatusComponent
+
     comp = StatusComponent(_make_app_state("anthropic/claude-opus-4-8"))
     render_lines = _rendered_line_count(comp.render())
     # height() includes 1 blank separator not in render() itself
@@ -77,12 +83,14 @@ def test_status_height_matches_render_with_model():
 
 def test_status_height_matches_render_without_model():
     from agenthicc.tui.workspace.components import StatusComponent
+
     comp = StatusComponent(_make_app_state(""))
     render_lines = _rendered_line_count(comp.render())
     assert comp.height(80) == render_lines + 1
 
 
 # ── _build() contains a blank separator as its first element ─────────────────
+
 
 def test_build_first_element_is_blank():
     """Workspace._build() must start with Text('') as the blank separator."""

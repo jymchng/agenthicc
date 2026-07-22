@@ -1,25 +1,45 @@
 """Targeted tests to push coverage to >90% on new modules (PRD-13..19)."""
+
 from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from agenthicc.tools.fs import (AppendFileTool, DeleteFileTool, MoveFileTool,
-    CopyFileTool, ListDirectoryTool, MakeDirectoryTool, FileExistsTool,
-    SearchFilesTool, GrepFilesTool, GetFileInfoTool, ReadLinesTool, PatchFileTool)
+from agenthicc.tools.fs import (
+    AppendFileTool,
+    DeleteFileTool,
+    MoveFileTool,
+    CopyFileTool,
+    ListDirectoryTool,
+    MakeDirectoryTool,
+    FileExistsTool,
+    SearchFilesTool,
+    GrepFilesTool,
+    GetFileInfoTool,
+    ReadLinesTool,
+    PatchFileTool,
+)
 from agenthicc.tools.git import GitBlameTool, GitShowTool, GitStashTool, GitDiffTool
 from agenthicc.tools.exec import RunCommandTool, RunPythonTool, RunTestsTool
-from agenthicc.tools.outlook import GraphApiOutlookBackend, OutlookMoveEmailTool, OutlookListFoldersTool
+from agenthicc.tools.outlook import (
+    GraphApiOutlookBackend,
+    OutlookMoveEmailTool,
+    OutlookListFoldersTool,
+)
 
 pytestmark = pytest.mark.unit
 
 
-def ctx(tmp_path): return {"workspace_root": str(tmp_path)}
+def ctx(tmp_path):
+    return {"workspace_root": str(tmp_path)}
 
 
 # ── fs edge cases ─────────────────────────────────────────────────────────
 
+
 class TestFsEdgeCases:
     async def test_append_traversal_denied(self, tmp_path):
-        r = await AppendFileTool().execute({"path": "../../evil.txt", "content": "x"}, ctx(tmp_path))
+        r = await AppendFileTool().execute(
+            {"path": "../../evil.txt", "content": "x"}, ctx(tmp_path)
+        )
         assert r["ok"] is False
 
     async def test_delete_traversal_denied(self, tmp_path):
@@ -64,7 +84,9 @@ class TestFsEdgeCases:
         assert r["ok"] is False
 
     async def test_patch_file_not_found(self, tmp_path):
-        r = await PatchFileTool().execute({"path": "nope.txt", "old_content": "x", "new_content": "y"}, ctx(tmp_path))
+        r = await PatchFileTool().execute(
+            {"path": "nope.txt", "old_content": "x", "new_content": "y"}, ctx(tmp_path)
+        )
         assert r["ok"] is False
 
     async def test_grep_skips_binary_files(self, tmp_path):
@@ -89,6 +111,7 @@ class TestFsEdgeCases:
 
 # ── git edge cases ────────────────────────────────────────────────────────
 
+
 class TestGitEdgeCases:
     @pytest.fixture
     def mg(self):
@@ -111,7 +134,11 @@ class TestGitEdgeCases:
         assert r["ok"] is True
 
     async def test_blame_parses(self, mg):
-        mg.return_value = (0, "abc1234def5678\nauthor Alice\nauthor-time 1234567890\n\thello world\n", "")
+        mg.return_value = (
+            0,
+            "abc1234def5678\nauthor Alice\nauthor-time 1234567890\n\thello world\n",
+            "",
+        )
         r = await GitBlameTool().execute({"path": "f.py"}, {})
         assert isinstance(r["lines"], list)
 
@@ -128,6 +155,7 @@ class TestGitEdgeCases:
 
 # ── exec edge cases ───────────────────────────────────────────────────────
 
+
 class TestExecEdgeCases:
     @pytest.fixture
     def mp(self):
@@ -135,17 +163,35 @@ class TestExecEdgeCases:
             yield m
 
     async def test_run_command_custom_cwd(self, mp):
-        mp.return_value = {"stdout": "", "stderr": "", "returncode": 0, "duration_ms": 1.0, "timed_out": False}
+        mp.return_value = {
+            "stdout": "",
+            "stderr": "",
+            "returncode": 0,
+            "duration_ms": 1.0,
+            "timed_out": False,
+        }
         await RunCommandTool().execute({"argv": ["ls"], "cwd": "/tmp"}, {})
         assert mp.call_args[1]["cwd"] == "/tmp"
 
     async def test_run_python_cleans_up_temp_file(self, mp):
-        mp.return_value = {"stdout": "", "stderr": "", "returncode": 0, "duration_ms": 1.0, "timed_out": False}
+        mp.return_value = {
+            "stdout": "",
+            "stderr": "",
+            "returncode": 0,
+            "duration_ms": 1.0,
+            "timed_out": False,
+        }
         await RunPythonTool().execute({"code": "pass"}, {})
         # Temp file should be cleaned up (check by not crashing)
 
     async def test_run_tests_framework_unittest(self, mp):
-        mp.return_value = {"stdout": "OK", "stderr": "", "returncode": 0, "duration_ms": 1.0, "timed_out": False}
+        mp.return_value = {
+            "stdout": "OK",
+            "stderr": "",
+            "returncode": 0,
+            "duration_ms": 1.0,
+            "timed_out": False,
+        }
         r = await RunTestsTool().execute({"framework": "unittest", "path": "tests/"}, {})
         assert r["returncode"] == 0
         cmd = mp.call_args[0][0]
@@ -154,13 +200,16 @@ class TestExecEdgeCases:
 
 # ── outlook edge cases ────────────────────────────────────────────────────
 
+
 class TestOutlookEdgeCases:
     async def test_read_email(self):
         b = GraphApiOutlookBackend(token="tok")
         email_data = {
-            "id": "m1", "subject": "Hello",
+            "id": "m1",
+            "subject": "Hello",
             "from": {"emailAddress": {"address": "a@b.com"}},
-            "toRecipients": [], "ccRecipients": [],
+            "toRecipients": [],
+            "ccRecipients": [],
             "receivedDateTime": "2025-01-01T10:00:00Z",
             "body": {"contentType": "text", "content": "Hi there"},
         }
@@ -169,11 +218,15 @@ class TestOutlookEdgeCases:
         assert r["subject"] == "Hello"
 
     async def test_move_email_tool(self):
-        b = MagicMock(); b.move_email = AsyncMock(return_value={"ok": True})
-        r = await OutlookMoveEmailTool(b).execute({"email_id": "m1", "destination_folder": "Archive"}, {})
+        b = MagicMock()
+        b.move_email = AsyncMock(return_value={"ok": True})
+        r = await OutlookMoveEmailTool(b).execute(
+            {"email_id": "m1", "destination_folder": "Archive"}, {}
+        )
         assert r["ok"] is True
 
     async def test_list_folders_tool(self):
-        b = MagicMock(); b.list_folders = AsyncMock(return_value=[{"id": "f1", "name": "Inbox", "unread_count": 3}])
+        b = MagicMock()
+        b.list_folders = AsyncMock(return_value=[{"id": "f1", "name": "Inbox", "unread_count": 3}])
         r = await OutlookListFoldersTool(b).execute({}, {})
         assert r["count"] == 1

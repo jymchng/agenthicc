@@ -1,7 +1,8 @@
 """SubagentTypeSpec and SubagentTypeRegistry — typed subagent catalogue (PRD-124)."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,6 +16,7 @@ __all__ = [
 ]
 
 # ── type specifications ───────────────────────────────────────────────────────
+
 
 class SubagentAggregator:
     """Base class for custom result aggregators (PRD-124 Phase 5).
@@ -61,10 +63,10 @@ class SubagentTypeSpec:
         Wall-clock timeout per worker execution.  Default: 120 seconds.
     """
 
-    name:            str
-    allowed_tools:   frozenset[str]
-    max_turns:       int
-    system_prompt:   str
+    name: str
+    allowed_tools: frozenset[str]
+    max_turns: int
+    system_prompt: str
     max_turn_time_s: float = 120.0
 
 
@@ -141,48 +143,117 @@ _RESEARCHER_PROMPT = (
 
 # ── default type definitions ──────────────────────────────────────────────────
 
-_EXPLORER_TOOLS = frozenset({
-    "read_file", "list_directory", "search_files", "grep_files", "grep_file",
-    "git_log", "git_show", "git_blame", "git_grep", "file_exists", "get_file_info",
-    "read_lines",
-})
+_EXPLORER_TOOLS = frozenset(
+    {
+        "read_file",
+        "list_directory",
+        "search_files",
+        "grep_files",
+        "grep_file",
+        "git_log",
+        "git_show",
+        "git_blame",
+        "git_grep",
+        "file_exists",
+        "get_file_info",
+        "read_lines",
+    }
+)
 
-_PLANNER_TOOLS = frozenset({
-    "read_file", "list_directory", "search_files", "grep_files", "grep_file",
-    "read_lines", "file_exists",
-})
+_PLANNER_TOOLS = frozenset(
+    {
+        "read_file",
+        "list_directory",
+        "search_files",
+        "grep_files",
+        "grep_file",
+        "read_lines",
+        "file_exists",
+    }
+)
 
-_IMPLEMENTER_TOOLS = frozenset({
-    "read_file", "write_file", "patch_file", "append_file",
-    "list_directory", "search_files", "grep_files", "grep_file",
-    "run_python_expr", "read_lines", "file_exists", "get_file_info",
-})
+_IMPLEMENTER_TOOLS = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "patch_file",
+        "append_file",
+        "list_directory",
+        "search_files",
+        "grep_files",
+        "grep_file",
+        "run_python_expr",
+        "read_lines",
+        "file_exists",
+        "get_file_info",
+    }
+)
 
-_TESTER_TOOLS = frozenset({
-    "read_file", "write_file", "patch_file",
-    "run_tests", "run_bash", "run_python_expr",
-    "list_directory", "search_files", "grep_files", "read_lines",
-})
+_TESTER_TOOLS = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "patch_file",
+        "run_tests",
+        "run_bash",
+        "run_python_expr",
+        "list_directory",
+        "search_files",
+        "grep_files",
+        "read_lines",
+    }
+)
 
-_REVIEWER_TOOLS = frozenset({
-    "read_file", "list_directory", "search_files", "grep_files", "grep_file",
-    "git_diff", "git_log", "run_python_expr", "read_lines", "file_exists",
-})
+_REVIEWER_TOOLS = frozenset(
+    {
+        "read_file",
+        "list_directory",
+        "search_files",
+        "grep_files",
+        "grep_file",
+        "git_diff",
+        "git_log",
+        "run_python_expr",
+        "read_lines",
+        "file_exists",
+    }
+)
 
-_DOCUMENTER_TOOLS = frozenset({
-    "read_file", "write_file", "patch_file",
-    "search_files", "list_directory", "read_lines",
-})
+_DOCUMENTER_TOOLS = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "patch_file",
+        "search_files",
+        "list_directory",
+        "read_lines",
+    }
+)
 
-_VERIFIER_TOOLS = frozenset({
-    "read_file", "search_files", "grep_files", "grep_file",
-    "run_tests", "run_python_expr", "git_diff", "git_log",
-    "read_lines", "file_exists",
-})
+_VERIFIER_TOOLS = frozenset(
+    {
+        "read_file",
+        "search_files",
+        "grep_files",
+        "grep_file",
+        "run_tests",
+        "run_python_expr",
+        "git_diff",
+        "git_log",
+        "read_lines",
+        "file_exists",
+    }
+)
 
-_RESEARCHER_TOOLS = frozenset({
-    "read_file", "read_lines", "search_files", "grep_files", "list_directory",
-})
+_RESEARCHER_TOOLS = frozenset(
+    {
+        "read_file",
+        "read_lines",
+        "search_files",
+        "grep_files",
+        "list_directory",
+    }
+)
 
 _BUILTIN_SPECS: list[SubagentTypeSpec] = [
     SubagentTypeSpec(
@@ -242,6 +313,7 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
 
 # ── registry ──────────────────────────────────────────────────────────────────
 
+
 class SubagentTypeRegistry:
     """Maps type name → SubagentTypeSpec and optionally → SubagentAggregator.
 
@@ -270,7 +342,7 @@ class SubagentTypeRegistry:
     """
 
     def __init__(self) -> None:
-        self._types:       dict[str, SubagentTypeSpec]   = {}
+        self._types: dict[str, SubagentTypeSpec] = {}
         self._aggregators: dict[str, SubagentAggregator] = {}
 
     def register(self, spec: SubagentTypeSpec) -> None:

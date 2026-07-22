@@ -131,9 +131,7 @@ class SessionMemoryLayer:
     ) -> None:
         """Insert or overwrite an entry; evicts LRU entries above capacity."""
         expires_at = (time.monotonic() + ttl) if ttl is not None else None
-        entry = SessionEntry(
-            key=key, value=value, namespace=namespace, expires_at=expires_at
-        )
+        entry = SessionEntry(key=key, value=value, namespace=namespace, expires_at=expires_at)
         ns_key = self._ns_key(key, namespace)
         async with self._write_lock:
             if ns_key in self._cache:
@@ -341,9 +339,7 @@ class ProjectMemoryLayer:
 
     async def vacuum(self) -> None:
         async with self._write_lock:
-            await asyncio.to_thread(
-                lambda: self._connect().execute("VACUUM").connection.close()
-            )
+            await asyncio.to_thread(lambda: self._connect().execute("VACUUM").connection.close())
 
 
 class GlobalMemoryLayer(ProjectMemoryLayer):

@@ -69,9 +69,7 @@ class _FallbackStore:
 
     async def search(self, query: str, *, k: int = 5) -> list[tuple[str, float]]:
         qvec = _bag_of_words(query)
-        scored = [
-            (doc_id, _cosine(qvec, vec)) for doc_id, (_, vec) in self._docs.items()
-        ]
+        scored = [(doc_id, _cosine(qvec, vec)) for doc_id, (_, vec) in self._docs.items()]
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:k]
 

@@ -12,6 +12,7 @@ pytestmark = pytest.mark.unit
 # PRD-35 core tests
 # ---------------------------------------------------------------------------
 
+
 def test_record_and_is_unchanged(tmp_path: Path) -> None:
     f = tmp_path / "auth.py"
     f.write_text("x = 1")
@@ -47,6 +48,7 @@ def test_clear_empties_cache(tmp_path: Path) -> None:
 # URL cache tests (G8)
 # ---------------------------------------------------------------------------
 
+
 def test_url_cache_get_returns_none_when_missing() -> None:
     cache = MentionCache()
     assert cache.get_url("https://example.com") is None
@@ -69,6 +71,7 @@ def test_url_cache_cleared_on_clear() -> None:
 # ---------------------------------------------------------------------------
 # Extra coverage tests
 # ---------------------------------------------------------------------------
+
 
 def test_record_overwrites_previous_entry(tmp_path: Path) -> None:
     """Recording the same path twice — the most recent entry wins."""

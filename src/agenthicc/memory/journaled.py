@@ -13,6 +13,7 @@ tool-call healing) but are deliberately *not* journaled — the journal keeps th
 full history, and those operations are deterministically re-derived from it on
 the next read, so recording them would be redundant.
 """
+
 from __future__ import annotations
 
 from lauren_ai._memory import ShortTermMemory

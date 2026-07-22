@@ -5,6 +5,7 @@ HOW the agent behaves (system prompt, model) lives in AgentsRegistry.
 WHICH tools it receives is determined by PhaseSpec.resolved_allowed_caps
 intersected with the session mode's blocked_capabilities ceiling.
 """
+
 from __future__ import annotations
 
 import abc
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 
 
 # ── WorkflowParams — per-workflow tunable parameters (PRD-111) ───────────────
+
 
 @dataclasses.dataclass
 class WorkflowParams:
@@ -51,22 +53,25 @@ class WorkflowParams:
 
 # ── PhaseRole — typed string constants matching builtin agent type names ──────
 
+
 class PhaseRole(str):
     """String constants equal to builtin agent registry keys.
 
     Using PhaseRole.PLANNER is identical to using the string "planner".
     """
-    PLANNER  = "planner"
+
+    PLANNER = "planner"
     EXECUTOR = "executor"
     REVIEWER = "reviewer"
     EXPLORER = "explorer"
     VERIFIER = "verifier"
-    HUMAN    = "human"
-    CUSTOM   = "custom"
-    AUTO     = "auto"
+    HUMAN = "human"
+    CUSTOM = "custom"
+    AUTO = "auto"
 
 
 # ── PhaseSpec ─────────────────────────────────────────────────────────────────
+
 
 @dataclasses.dataclass(frozen=True)
 class PhaseSpec:
@@ -79,6 +84,7 @@ class PhaseSpec:
     allowed_capabilities_override — explicit per-instance override; takes
         priority over allowed_capabilities and role default.
     """
+
     name: str
     """Unique phase identifier within the workflow; used as the transition target in next/on_reject."""
 
@@ -149,49 +155,51 @@ class PhaseSpec:
         if self.allowed_capabilities is not None:
             return self.allowed_capabilities
         from agenthicc.agents.plugin import ROLE_DEFAULT_ALLOWED  # noqa: PLC0415
+
         return ROLE_DEFAULT_ALLOWED.get(self.agent_type)
 
 
 # ── Runtime output types ──────────────────────────────────────────────────────
 
+
 @dataclasses.dataclass
 class PhaseOutput:
-    phase_name:  str
-    role:        str        # agent_type that ran this phase
-    full_text:   str        = ""
-    structured:  dict | None = None
-    approved:    bool | None = None
-    metadata:    dict        = field(default_factory=dict)
-    agent_id:    str         = ""
-    duration_s:  float       = 0.0
+    phase_name: str
+    role: str  # agent_type that ran this phase
+    full_text: str = ""
+    structured: dict | None = None
+    approved: bool | None = None
+    metadata: dict = field(default_factory=dict)
+    agent_id: str = ""
+    duration_s: float = 0.0
 
 
 @dataclasses.dataclass
 class PhaseRunRecord:
-    phase_name:     str
-    role:           str
-    approved:       bool | None
+    phase_name: str
+    role: str
+    approved: bool | None
     output_summary: str
-    iteration:      int
-    duration_s:     float
+    iteration: int
+    duration_s: float
 
 
 @dataclasses.dataclass
 class WorkflowRun:
-    run_id:        str
+    run_id: str
     workflow_name: str
-    intent:        str
+    intent: str
     current_phase: str | None
     phase_history: list[PhaseRunRecord] = field(default_factory=list)
-    status:        str                  = "running"
-    created_at:    float                = field(default_factory=time.time)
-    total_phases:  int                  = 0
-    current_phase_index: int            = 0
+    status: str = "running"
+    created_at: float = field(default_factory=time.time)
+    total_phases: int = 0
+    current_phase_index: int = 0
     """Zero-based position of current_phase within WorkflowDefinition.phases.
     Used by the TUI to display "Phase N/M" where N = current_phase_index + 1.
     Stays fixed at the definition position regardless of how many times the
     phase is retried via on_reject, so plan always shows Phase 1/M."""
-    current_phase_model: str            = ""
+    current_phase_model: str = ""
     """Model override active for the current phase (PRD-118).
     Non-empty when the phase uses a per-phase model that differs from the
     global ``execution.model``; the status bar shows this instead of the
@@ -200,16 +208,15 @@ class WorkflowRun:
 
 @dataclasses.dataclass
 class WorkflowContext:
-    intent:        str
-    run_id:        str
+    intent: str
+    run_id: str
     workflow_name: str
     phase_outputs: dict[str, PhaseOutput] = field(default_factory=dict)
 
     def as_system_block(self) -> str:
         if not self.phase_outputs:
             return f"[WORKFLOW CONTEXT]\nOriginal intent: {self.intent}"
-        lines = ["[WORKFLOW CONTEXT]", f"Original intent: {self.intent}",
-                 "", "Completed phases:"]
+        lines = ["[WORKFLOW CONTEXT]", f"Original intent: {self.intent}", "", "Completed phases:"]
         for name, output in self.phase_outputs.items():
             snippet = output.full_text[:200]
             if len(output.full_text) > 200:
@@ -222,6 +229,7 @@ class WorkflowContext:
 
 
 # ── Output schema parsing ─────────────────────────────────────────────────────
+
 
 def _parse_output_schema(text: str, schema: str | None) -> dict | None:
     if schema is None:
@@ -248,6 +256,7 @@ def _parse_output_schema(text: str, schema: str | None) -> dict | None:
 
 # ── WorkflowPlugin ABC ────────────────────────────────────────────────────────
 
+
 class WorkflowPlugin(abc.ABC):
     """ABC for Python workflow definitions (PRD-116).
 
@@ -260,11 +269,11 @@ class WorkflowPlugin(abc.ABC):
     """
 
     # ── Class-level identity / structure (set as class attributes) ────────────
-    name:                 str             = ""
-    description:          str             = ""
-    mode_bindings:        list[str]       = []
-    phases:               list[PhaseSpec] = []
-    max_total_phase_runs: int             = 0
+    name: str = ""
+    description: str = ""
+    mode_bindings: list[str] = []
+    phases: list[PhaseSpec] = []
+    max_total_phase_runs: int = 0
     """Hard ceiling on total phase runs (0 = no cap)."""
 
     # ── Query helpers ─────────────────────────────────────────────────────────
@@ -289,7 +298,7 @@ class WorkflowPlugin(abc.ABC):
     @classmethod
     def build_runner(
         cls,
-        config:       WorkflowConfig,
+        config: WorkflowConfig,
         mode_manager: ModeManager | None,
     ) -> BaseWorkflowRunner:
         """Return the runner for this workflow.
@@ -298,6 +307,7 @@ class WorkflowPlugin(abc.ABC):
         Override to return a specialised runner (e.g. ``CodePlanRunner``).
         """
         from agenthicc.workflows.default.runner import WorkflowRunner  # noqa: PLC0415
+
         return WorkflowRunner(cls, config, mode_manager)
 
     @classmethod
@@ -313,6 +323,7 @@ class WorkflowPlugin(abc.ABC):
 # ── WorkflowEntry — registry provenance record (PRD-116) ─────────────────────
 # Defined after WorkflowPlugin so it can annotate type[WorkflowPlugin].
 
+
 @dataclasses.dataclass(frozen=True)
 class WorkflowEntry:
     """Registry artifact: plugin class + discovery provenance.
@@ -323,6 +334,5 @@ class WorkflowEntry:
     """
 
     plugin_cls: type[WorkflowPlugin]
-    source:     str        = "builtin"  # "builtin" | "user" | "project"
-    path:       str | None = None       # filesystem path for user / project plugins
-
+    source: str = "builtin"  # "builtin" | "user" | "project"
+    path: str | None = None  # filesystem path for user / project plugins

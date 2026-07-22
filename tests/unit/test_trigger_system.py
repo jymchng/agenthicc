@@ -3,12 +3,18 @@
 Tests cover TriggerRegistry, MatchItem, TriggerContext, and the TriggerHandler
 protocol.  No I/O or TTY interaction is needed — all primitives are pure.
 """
+
 from __future__ import annotations
 
 import pytest
 from pathlib import Path
 
-from agenthicc.tui.trigger import TriggerManager as TriggerRegistry, TriggerContext, TriggerResult, MatchItem
+from agenthicc.tui.trigger import (
+    TriggerManager as TriggerRegistry,
+    TriggerContext,
+    TriggerResult,
+    MatchItem,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -19,7 +25,7 @@ pytestmark = pytest.mark.unit
 class EchoTrigger:
     """Test trigger: '!' — returns fragment as a single match."""
 
-    char  = "!"
+    char = "!"
     label = "Echo"
 
     def get_matches(self, fragment, ctx):
@@ -327,23 +333,25 @@ def test_slash_command_trigger_activates_on_empty_buf_or_after_newline():
     input should also open the command picker.
     """
     from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+
     t = SlashCommandTrigger()
-    assert t.can_activate([]) is True                        # empty buf → command
-    assert t.can_activate(["\n"]) is True                    # after newline → command
-    assert t.can_activate(list("first line\n")) is True      # after newline → command
-    assert t.can_activate(list("@docs")) is False            # mid-buffer → literal
-    assert t.can_activate(list("hello world")) is False      # mid-buffer → literal
+    assert t.can_activate([]) is True  # empty buf → command
+    assert t.can_activate(["\n"]) is True  # after newline → command
+    assert t.can_activate(list("first line\n")) is True  # after newline → command
+    assert t.can_activate(list("@docs")) is False  # mid-buffer → literal
+    assert t.can_activate(list("hello world")) is False  # mid-buffer → literal
 
 
 def test_at_mention_trigger_activates_after_whitespace_or_at_start():
     """AtMentionTrigger activates at position 0 or after whitespace only."""
     from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+
     t = AtMentionTrigger()
-    assert t.can_activate([]) is True               # start of line
-    assert t.can_activate([" "]) is True            # after space
-    assert t.can_activate(list("word ")) is True    # after trailing space
-    assert t.can_activate(list("word")) is False    # mid-word → literal '@'
-    assert t.can_activate(list("foo/")) is False    # path context → literal '@'
+    assert t.can_activate([]) is True  # start of line
+    assert t.can_activate([" "]) is True  # after space
+    assert t.can_activate(list("word ")) is True  # after trailing space
+    assert t.can_activate(list("word")) is False  # mid-word → literal '@'
+    assert t.can_activate(list("foo/")) is False  # path context → literal '@'
 
 
 def test_echo_trigger_default_can_activate():

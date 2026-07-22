@@ -25,11 +25,11 @@ The tests in this file are decorated with a path-existence check so they
 skip cleanly when the fixture directory does not yet exist (e.g. in CI
 before the first cassette is recorded).
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-import os
 
 import pytest
 
@@ -45,9 +45,9 @@ pytestmark = pytest.mark.integration
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
-PLAN_MODE_CASSETTE  = FIXTURES / "plan_mode" / "cassette.jsonl"
+PLAN_MODE_CASSETTE = FIXTURES / "plan_mode" / "cassette.jsonl"
 PLAN_MODE_APPROVALS = FIXTURES / "plan_mode" / "approvals.jsonl"
-PLAN_MODE_META      = FIXTURES / "plan_mode" / "meta.json"
+PLAN_MODE_META = FIXTURES / "plan_mode" / "meta.json"
 
 
 def _intent_from_meta(meta_path: Path, fallback: str = "enhance this repo") -> str:
@@ -60,6 +60,7 @@ def _intent_from_meta(meta_path: Path, fallback: str = "enhance this repo") -> s
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.cassette
 @pytest.mark.skipif(
@@ -85,10 +86,10 @@ async def test_plan_mode_end_to_end_orchestration(tmp_path, monkeypatch) -> None
         approvals_path=PLAN_MODE_APPROVALS if PLAN_MODE_APPROVALS.exists() else None,
         intent=_intent_from_meta(PLAN_MODE_META),
     )
-    
+
     monkeypatch.chdir(tmp_path)  # ensure no local files are read/written during replay
     result: ReplayResult = await run_headless_replay(cassette)
-    
+
     # ── structural assertions ─────────────────────────────────────────────────
     assert result.status == "complete", (
         f"Workflow did not reach 'complete'.  Status: {result.status!r}. "
@@ -149,9 +150,7 @@ async def test_plan_mode_cassette_integrity() -> None:
         for e in cassette.entries
         if e.response_stop_reason not in valid_stop_reasons
     ]
-    assert not bad, (
-        f"{len(bad)} entries have unrecognised stop_reason:\n" + "\n".join(bad)
-    )
+    assert not bad, f"{len(bad)} entries have unrecognised stop_reason:\n" + "\n".join(bad)
 
     # The first response should be a tool use (LLM calls request_plan_approval or similar)
     first = cassette.entries[0]

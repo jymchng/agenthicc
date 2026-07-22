@@ -1,4 +1,5 @@
 """@mention content injection (PRD-33 + PRD-35)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -92,9 +93,7 @@ def _read_file_sync(path: Path, max_chars: int) -> tuple[str, int, bool]:
 
 
 def _format_file_block(path_str: str, content: str, total_chars: int, truncated: bool) -> str:
-    trunc_note = (
-        f"\n[… truncated {total_chars - len(content):,} chars]" if truncated else ""
-    )
+    trunc_note = f"\n[… truncated {total_chars - len(content):,} chars]" if truncated else ""
     return f'<file path="{path_str}" chars="{total_chars:,}">\n{content}{trunc_note}\n</file>'
 
 
@@ -127,6 +126,7 @@ async def _check_robots(url: str, user_agent: str = "agenthicc") -> bool:
         except ImportError:
             return True
         from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+
         async with agenthicc_http_client(timeout=5.0) as client:
             try:
                 resp = await client.get(robots_url)
@@ -200,9 +200,7 @@ async def _format_url_block(
 
 async def _resolve_glob(mention: Mention, cfg: InjectionConfig) -> InjectedContent:
     pattern = str(cfg.cwd / mention.path)
-    all_matches = sorted(
-        p for p in _glob.glob(pattern, recursive=True) if Path(p).is_file()
-    )
+    all_matches = sorted(p for p in _glob.glob(pattern, recursive=True) if Path(p).is_file())
 
     included: list[str] = []
     omitted_budget: list[str] = []

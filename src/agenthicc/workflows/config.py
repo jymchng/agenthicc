@@ -1,4 +1,5 @@
 """WorkflowConfig — all session-scoped singletons for WorkflowRunner (PRD-95)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -29,19 +30,19 @@ class WorkflowConfig:
     ``dataclasses.replace(config, completed_turns=n)`` to get a per-run copy.
     """
 
-    conv_store:      "ConversationStore"
-    app_state:       "AppState"
-    processor:       "EventProcessor"
-    agent_runner:    "AgentRunnerBase"
-    approval_svc:    "ApprovalService | None"
-    cfg:             "AgenthiccConfig"
-    skills:          "dict[str, SkillDef]"
-    plugin_tools:    "PluginToolSet"
-    mcp_registry:    "McpToolRegistry | None"
-    mention_cache:   "MentionCache"
+    conv_store: "ConversationStore"
+    app_state: "AppState"
+    processor: "EventProcessor"
+    agent_runner: "AgentRunnerBase"
+    approval_svc: "ApprovalService | None"
+    cfg: "AgenthiccConfig"
+    skills: "dict[str, SkillDef]"
+    plugin_tools: "PluginToolSet"
+    mcp_registry: "McpToolRegistry | None"
+    mention_cache: "MentionCache"
     agents_registry: "AgentsRegistry"
-    memory_router:   "MemoryRouter | None"    = field(default=None)
-    semantic_index:  "SemanticIndex | None"   = field(default=None)
-    completed_turns: int                      = field(default=0)
-    params:          "WorkflowParams | None"  = field(default=None)
+    memory_router: "MemoryRouter | None" = field(default=None)
+    semantic_index: "SemanticIndex | None" = field(default=None)
+    completed_turns: int = field(default=0)
+    params: "WorkflowParams | None" = field(default=None)
     """Per-workflow tunable parameters (phase model overrides, etc.) — PRD-111."""

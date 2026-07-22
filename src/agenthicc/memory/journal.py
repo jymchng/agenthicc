@@ -24,6 +24,7 @@ ran — everything a :class:`RunCoordinator` needs to resume it.  A corrupt
 trailing line — the signature of a crash mid-write — is skipped, mirroring the
 kernel's ``restore_from_log``.
 """
+
 from __future__ import annotations
 
 import json
@@ -123,7 +124,9 @@ def fold_resume_state(path: Path) -> IncompleteTurn | None:
             kind = entry.get("kind")
             if kind == "turn_started":
                 tid = entry["turn_id"]
-                started.append((tid, entry.get("user_message", ""), int(entry.get("base_count", 0))))
+                started.append(
+                    (tid, entry.get("user_message", ""), int(entry.get("base_count", 0)))
+                )
                 records.setdefault(tid, [])
             elif kind == "turn_completed":
                 completed.add(entry["turn_id"])

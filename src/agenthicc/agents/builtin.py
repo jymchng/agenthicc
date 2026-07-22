@@ -95,7 +95,7 @@ BUILTIN_AGENT_DEFINITIONS: list[AgentDefinition] = [
     AgentDefinition(
         name="executor",
         agent_class=ExecutorAgent,
-        allowed_capabilities=None,   # mode ceiling applies
+        allowed_capabilities=None,  # mode ceiling applies
     ),
     AgentDefinition(
         name="reviewer",
@@ -115,7 +115,7 @@ BUILTIN_AGENT_DEFINITIONS: list[AgentDefinition] = [
     AgentDefinition(
         name="human",
         agent_class=HumanAgent,
-        allowed_capabilities=frozenset(),   # no tools
+        allowed_capabilities=frozenset(),  # no tools
     ),
     AgentDefinition(
         name="auto",

@@ -1,4 +1,5 @@
 """CLIContext and CLIFlags — typed CLI state injected into command handlers (PRD-79)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -23,10 +24,10 @@ class CLIContext:
     Injected into command handlers by annotation type (not by parameter name).
     """
 
-    resume_id:        str | None      = None
-    headless:         bool            = False
-    config_path:      str | None      = None
-    set_overrides:    tuple[str, ...] = ()
-    flags:            CLIFlags        = field(default_factory=CLIFlags)
-    record_cassette:  str | None      = None
-    continue_session: bool            = False
+    resume_id: str | None = None
+    headless: bool = False
+    config_path: str | None = None
+    set_overrides: tuple[str, ...] = ()
+    flags: CLIFlags = field(default_factory=CLIFlags)
+    record_cassette: str | None = None
+    continue_session: bool = False

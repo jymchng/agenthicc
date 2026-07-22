@@ -4,6 +4,7 @@ WorkflowDefinition has been removed.  The registry now stores
 ``WorkflowEntry`` objects (plugin class + provenance); all workflow metadata
 is accessed directly via the plugin class's attributes and classmethods.
 """
+
 from __future__ import annotations
 
 import logging
@@ -80,6 +81,7 @@ def build_workflow_registry(
         user_dir = Path.home() / ".agenthicc"
 
     from agenthicc.workflows.loader import load_builtin_workflows  # noqa: PLC0415
+
     registry = WorkflowRegistry()
 
     for plugin_cls in load_builtin_workflows():
@@ -92,11 +94,14 @@ def build_workflow_registry(
 
 
 def _scan_workflow_dir(
-    directory: Path, source: str, registry: WorkflowRegistry,
+    directory: Path,
+    source: str,
+    registry: WorkflowRegistry,
 ) -> None:
     if not directory.exists():
         return
     from agenthicc.workflows.loader import load_python_workflows  # noqa: PLC0415
+
     for path in sorted(directory.iterdir()):
         if path.name.startswith("_") or path.suffix != ".py":
             continue

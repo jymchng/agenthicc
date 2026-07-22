@@ -9,6 +9,7 @@ Modes:
 Each mode is a declared list of Capability instances (see capabilities.py).
 Adding a new trigger char or a new mode requires no changes here.
 """
+
 from __future__ import annotations
 
 from enum import Enum, auto
@@ -22,8 +23,11 @@ from agenthicc.tui.input.paste import PasteState
 from agenthicc.tui.runtime.mode_manager import ModeManager
 from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
 from agenthicc.tui.input.capabilities import (
-    Capability, _ExitSentinel,
-    IDLE_CAPABILITIES, STREAMING_CAPABILITIES, _EXIT,
+    Capability,
+    _ExitSentinel,
+    IDLE_CAPABILITIES,
+    STREAMING_CAPABILITIES,
+    _EXIT,
 )
 
 if TYPE_CHECKING:
@@ -38,7 +42,7 @@ __all__ = ["UnifiedInputSession", "InputMode", "_EXIT"]
 
 
 class InputMode(Enum):
-    IDLE      = auto()
+    IDLE = auto()
     STREAMING = auto()
 
 
@@ -60,20 +64,20 @@ class UnifiedInputSession:
         cfg: AgenthiccConfig | None = None,
         history: list[str] | None = None,
     ) -> None:
-        self._state:    AppState               = app_state
-        self._bus:      CommandBus             = command_bus
-        self._registry: TriggerManager | None  = trigger_registry
-        self._modes:    ModeManager            = mode_manager or ModeManager()
-        self._overlay:  OverlayHost | None     = overlay_host
-        self._cwd:      Path                   = cwd or Path(".")
-        self._cfg:      AgenthiccConfig | None = cfg
+        self._state: AppState = app_state
+        self._bus: CommandBus = command_bus
+        self._registry: TriggerManager | None = trigger_registry
+        self._modes: ModeManager = mode_manager or ModeManager()
+        self._overlay: OverlayHost | None = overlay_host
+        self._cwd: Path = cwd or Path(".")
+        self._cfg: AgenthiccConfig | None = cfg
 
-        self._mode:         InputMode        = InputMode.IDLE
-        self._capabilities: list[Capability] = IDLE_CAPABILITIES   # switched by set_mode()
-        self._buf:          InputBuffer      = InputBuffer()
-        self._paste:        PasteState       = PasteState()
-        self._hist:         HistoryNavigator = HistoryNavigator(history or [])
-        self._ctrl_c_count: int              = 0
+        self._mode: InputMode = InputMode.IDLE
+        self._capabilities: list[Capability] = IDLE_CAPABILITIES  # switched by set_mode()
+        self._buf: InputBuffer = InputBuffer()
+        self._paste: PasteState = PasteState()
+        self._hist: HistoryNavigator = HistoryNavigator(history or [])
+        self._ctrl_c_count: int = 0
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -82,8 +86,7 @@ class UnifiedInputSession:
         if mode == InputMode.STREAMING:
             self._ctrl_c_count = 0
         self._capabilities = (
-            STREAMING_CAPABILITIES if mode == InputMode.STREAMING
-            else IDLE_CAPABILITIES
+            STREAMING_CAPABILITIES if mode == InputMode.STREAMING else IDLE_CAPABILITIES
         )
 
     # ── main loop ─────────────────────────────────────────────────────────────
@@ -133,7 +136,8 @@ class UnifiedInputSession:
         inp = self._state.input
         if self._paste.condensed:
             inp.update(
-                list(self._buf.buf), self._buf.cursor,
+                list(self._buf.buf),
+                self._buf.cursor,
                 paste_condensed=True,
                 paste_label=self._paste.label,
             )
@@ -151,9 +155,10 @@ class UnifiedInputSession:
             self._paste.condensed = False
             self._push()
             self._state.conversation.notification.set("Press Ctrl+C again to exit.")
-            return None   # keep looping
+            return None  # keep looping
         self._state.conversation.notification.set(None)
         from agenthicc.tui.input.renderer import show_exit_hint  # noqa: PLC0415
+
         show_exit_hint(self._state.conversation.session_id())
         return _EXIT
 
@@ -184,7 +189,7 @@ class UnifiedInputSession:
                 return None
             if ch in self._registry.chars:
                 pre = buf[:i]
-                fragment = "".join(buf[i + 1:])
+                fragment = "".join(buf[i + 1 :])
                 handler = self._registry.get(ch)
                 if handler and handler.can_activate(pre):
                     return (ch, pre, fragment)
@@ -201,6 +206,7 @@ class UnifiedInputSession:
 
         def on_complete(result: TriggerResult | None) -> None:
             from agenthicc.tui.trigger import TriggerResult  # noqa: PLC0415
+
             # Push to InputState BEFORE hiding the overlay.  hide() triggers
             # _redraw() synchronously; if InputState is still empty at that
             # point, ComposerComponent renders a blank bar and flushes it to
@@ -211,12 +217,13 @@ class UnifiedInputSession:
                     self._buf.cursor = result.cursor
                 self._push()
             else:
-                self._push()   # restore pre-trigger content on ESC / cancel
-            self._overlay.hide()   # _redraw fires here; InputState already correct
+                self._push()  # restore pre-trigger content on ESC / cancel
+            self._overlay.hide()  # _redraw fires here; InputState already correct
             if result is not None and isinstance(result, TriggerResult) and result.submit:
                 import asyncio  # noqa: PLC0415
+
                 text = "".join(result.buffer).strip()
-                self._prepare_submission()   # single source of truth for cleanup
+                self._prepare_submission()  # single source of truth for cleanup
                 asyncio.get_event_loop().create_task(
                     self._bus.dispatch_async(SendMessageCommand(text=text))
                 )

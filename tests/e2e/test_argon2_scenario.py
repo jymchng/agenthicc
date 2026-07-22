@@ -34,8 +34,12 @@ pytestmark = pytest.mark.e2e
 
 def _completion(content: str) -> Completion:
     return Completion(
-        id="c", model="mock-model", content=content, tool_calls=[],
-        stop_reason="end_turn", usage=TokenUsage(input_tokens=10, output_tokens=5),
+        id="c",
+        model="mock-model",
+        content=content,
+        tool_calls=[],
+        stop_reason="end_turn",
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
 
 
@@ -53,22 +57,41 @@ async def test_argon2_three_agents_with_debugger_recovery(tmp_path):
     processor = kernel
 
     # ── Seed the workflow DAG ────────────────────────────────────────────
-    await processor.emit(Event.create("IntentCreated", {
-        "intent_id": "i-argon2",
-        "raw_text": "Refactor auth module to Argon2, add tests, update docs.",
-    }))
-    await processor.emit(Event.create("WorkflowCreated", {
-        "workflow_id": "wf-argon2", "intent_id": "i-argon2",
-    }))
+    await processor.emit(
+        Event.create(
+            "IntentCreated",
+            {
+                "intent_id": "i-argon2",
+                "raw_text": "Refactor auth module to Argon2, add tests, update docs.",
+            },
+        )
+    )
+    await processor.emit(
+        Event.create(
+            "WorkflowCreated",
+            {
+                "workflow_id": "wf-argon2",
+                "intent_id": "i-argon2",
+            },
+        )
+    )
     for node_id, label, deps in [
         ("refactor", "Refactor auth module to Argon2", []),
         ("tests", "Write and run Argon2 tests", ["refactor"]),
         ("docs", "Update auth documentation", ["refactor"]),
     ]:
-        await processor.emit(Event.create("WorkflowNodeAdded", {
-            "workflow_id": "wf-argon2", "node_id": node_id,
-            "task_id": f"t-{node_id}", "label": label, "dependencies": deps,
-        }))
+        await processor.emit(
+            Event.create(
+                "WorkflowNodeAdded",
+                {
+                    "workflow_id": "wf-argon2",
+                    "node_id": node_id,
+                    "task_id": f"t-{node_id}",
+                    "label": label,
+                    "dependencies": deps,
+                },
+            )
+        )
     await processor.drain()
 
     # ── Communication tools shared by all agents ────────────────────────
@@ -98,10 +121,16 @@ async def test_argon2_three_agents_with_debugger_recovery(tmp_path):
         Args:
             reason: Why the debugger is needed.
         """
-        await processor.emit(Event.create("AgentSpawnRequest", {
-            "agent_id": "debugger-1", "agent_type": "DebuggerAgent",
-            "config": {"reason": reason},
-        }))
+        await processor.emit(
+            Event.create(
+                "AgentSpawnRequest",
+                {
+                    "agent_id": "debugger-1",
+                    "agent_type": "DebuggerAgent",
+                    "config": {"reason": reason},
+                },
+            )
+        )
         return {"agent_id": "debugger-1"}
 
     @tool()
@@ -154,30 +183,49 @@ async def test_argon2_three_agents_with_debugger_recovery(tmp_path):
 
     # ── Phase 1: refactor agent completes its node ──────────────────────
     refactor = RefactorAgent()
-    refactor_runner = make_runner(refactor, [
-        ("node_status", {"node_id": "refactor", "status": "complete",
-                         "result": "Argon2id with cost=12 implemented"}),
-        "Refactor complete.",
-    ])
+    refactor_runner = make_runner(
+        refactor,
+        [
+            (
+                "node_status",
+                {
+                    "node_id": "refactor",
+                    "status": "complete",
+                    "result": "Argon2id with cost=12 implemented",
+                },
+            ),
+            "Refactor complete.",
+        ],
+    )
     await refactor_runner.run(refactor, "Refactor the auth module to Argon2")
     await processor.drain()
     assert kernel.get_state().workflows["wf-argon2"].nodes["refactor"].status == NodeStatus.complete
 
     # ── Phase 2: tests + docs agents run in parallel ────────────────────
     tester = TestAgent()
-    test_runner = make_runner(tester, [
-        ("node_status", {"node_id": "tests", "status": "failed",
-                         "result": "3 failures in test_argon2.py"}),
-        ("spawn_debugger", {"reason": "test_argon2.py has 3 failures"}),
-        "Tests failed; spawned a debugger.",
-    ])
+    test_runner = make_runner(
+        tester,
+        [
+            (
+                "node_status",
+                {"node_id": "tests", "status": "failed", "result": "3 failures in test_argon2.py"},
+            ),
+            ("spawn_debugger", {"reason": "test_argon2.py has 3 failures"}),
+            "Tests failed; spawned a debugger.",
+        ],
+    )
 
     docs = DocsAgent()
-    docs_runner = make_runner(docs, [
-        ("node_status", {"node_id": "docs", "status": "complete",
-                         "result": "auth.md updated for Argon2"}),
-        "Docs updated.",
-    ])
+    docs_runner = make_runner(
+        docs,
+        [
+            (
+                "node_status",
+                {"node_id": "docs", "status": "complete", "result": "auth.md updated for Argon2"},
+            ),
+            "Docs updated.",
+        ],
+    )
 
     test_response, docs_response = await asyncio.gather(
         test_runner.run(tester, "Run the test suite"),
@@ -194,13 +242,20 @@ async def test_argon2_three_agents_with_debugger_recovery(tmp_path):
     # ── Phase 3: debugger fixes the failure, publishes findings,
     #            and flips the tests node to complete ────────────────────
     debugger = DebuggerAgent()
-    debugger_runner = make_runner(debugger, [
-        ("publish_findings", {"key": "fix-report",
-                              "content": "Missing salt length arg; fixed in auth.py:42"}),
-        ("node_status", {"node_id": "tests", "status": "complete",
-                         "result": "All tests green after fix"}),
-        "Debugged and fixed.",
-    ])
+    debugger_runner = make_runner(
+        debugger,
+        [
+            (
+                "publish_findings",
+                {"key": "fix-report", "content": "Missing salt length arg; fixed in auth.py:42"},
+            ),
+            (
+                "node_status",
+                {"node_id": "tests", "status": "complete", "result": "All tests green after fix"},
+            ),
+            "Debugged and fixed.",
+        ],
+    )
     await debugger_runner.run(debugger, "Investigate the test failures")
     await processor.drain()
 

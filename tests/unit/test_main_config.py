@@ -1,4 +1,5 @@
 """Tests for agenthicc config subcommand (PRD-21)."""
+
 from __future__ import annotations
 import tomllib
 import pytest
@@ -21,6 +22,7 @@ class TestTemplateConfig:
 class TestConfigShowCommand:
     def test_prints_execution_section(self, capsys):
         import argparse
+
         args = argparse.Namespace(set_overrides=[], config_command="show")
         _do_config_show(args)
         out = capsys.readouterr().out
@@ -28,7 +30,10 @@ class TestConfigShowCommand:
 
     def test_cli_override_reflected(self, capsys):
         import argparse
-        args = argparse.Namespace(set_overrides=["execution.max_parallel_tasks=77"], config_command="show")
+
+        args = argparse.Namespace(
+            set_overrides=["execution.max_parallel_tasks=77"], config_command="show"
+        )
         _do_config_show(args)
         out = capsys.readouterr().out
         assert "77" in out
@@ -38,6 +43,7 @@ class TestConfigInitCommand:
     def test_creates_file(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import argparse
+
         args = argparse.Namespace(force=False, config_command="init")
         _do_config_init(args)
         assert (tmp_path / ".agenthicc" / "agenthicc.toml").exists()
@@ -45,6 +51,7 @@ class TestConfigInitCommand:
     def test_content_is_valid_toml(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         import argparse
+
         args = argparse.Namespace(force=False, config_command="init")
         _do_config_init(args)
         content = (tmp_path / ".agenthicc" / "agenthicc.toml").read_text()
@@ -55,6 +62,7 @@ class TestConfigInitCommand:
         (tmp_path / ".agenthicc").mkdir()
         (tmp_path / ".agenthicc" / "agenthicc.toml").write_text("[execution]\n")
         import argparse
+
         args = argparse.Namespace(force=False, config_command="init")
         _do_config_init(args)
         out = capsys.readouterr().out
@@ -66,6 +74,7 @@ class TestConfigInitCommand:
         (tmp_path / ".agenthicc").mkdir()
         (tmp_path / ".agenthicc" / "agenthicc.toml").write_text("[execution]\n")
         import argparse
+
         args = argparse.Namespace(force=True, config_command="init")
         _do_config_init(args)
         content = (tmp_path / ".agenthicc" / "agenthicc.toml").read_text()

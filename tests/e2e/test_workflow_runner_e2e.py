@@ -24,10 +24,14 @@ pytestmark = pytest.mark.e2e
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _completion(content: str, n: int = 1) -> Completion:
     return Completion(
-        id=f"c{n}", model="mock-model", content=content,
-        tool_calls=[], stop_reason="end_turn",
+        id=f"c{n}",
+        model="mock-model",
+        content=content,
+        tool_calls=[],
+        stop_reason="end_turn",
         usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
 
@@ -58,10 +62,13 @@ async def processor(tmp_path):
     await asyncio.gather(t, return_exceptions=True)
 
 
-def _make_wf_runner(wf: type[WorkflowPlugin], app_state, processor, mock_transport, agents_registry=None):
+def _make_wf_runner(
+    wf: type[WorkflowPlugin], app_state, processor, mock_transport, agents_registry=None
+):
     from unittest.mock import MagicMock
     from agenthicc.config import AgenthiccConfig
     from agenthicc.workflows.config import WorkflowConfig
+
     agent_runner = AgentRunnerBase(transport=mock_transport, signals=SignalBus())
     cfg = WorkflowConfig(
         conv_store=app_state.conversation,
@@ -83,6 +90,7 @@ def _make_wf_runner(wf: type[WorkflowPlugin], app_state, processor, mock_transpo
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────
+
 
 async def test_e2e_single_phase_auto_workflow(app_state, processor, tmp_path):
     """WorkflowRunner with 1 auto phase — agent runs and output is captured."""
@@ -112,8 +120,9 @@ async def test_e2e_two_phase_plan_execute(app_state, processor, tmp_path):
     class _TwoPhaseWf(WorkflowPlugin):
         name = "test_wf"
         phases = [
-            PhaseSpec(name="plan",    agent_type=PhaseRole.PLANNER,
-                      output_schema="plan", next="execute"),
+            PhaseSpec(
+                name="plan", agent_type=PhaseRole.PLANNER, output_schema="plan", next="execute"
+            ),
             PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR),
         ]
 
@@ -137,8 +146,12 @@ async def test_e2e_reviewer_approves_first_try(app_state, processor, tmp_path):
         name = "test_wf"
         phases = [
             PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR, next="review"),
-            PhaseSpec(name="review",  agent_type=PhaseRole.REVIEWER,
-                      output_schema="review_result", on_reject="execute"),
+            PhaseSpec(
+                name="review",
+                agent_type=PhaseRole.REVIEWER,
+                output_schema="review_result",
+                on_reject="execute",
+            ),
         ]
 
     runner = _make_wf_runner(_ReviewWf, app_state, processor, mock)
@@ -163,8 +176,12 @@ async def test_e2e_opt_in_cap_stops_rejection_loop(app_state, processor, tmp_pat
         name = "test_wf"
         phases = [
             PhaseSpec(name="execute", agent_type=PhaseRole.EXECUTOR, next="review"),
-            PhaseSpec(name="review",  agent_type=PhaseRole.REVIEWER,
-                      output_schema="review_result", on_reject="execute"),
+            PhaseSpec(
+                name="review",
+                agent_type=PhaseRole.REVIEWER,
+                output_schema="review_result",
+                on_reject="execute",
+            ),
         ]
         max_total_phase_runs = 3
 
@@ -185,6 +202,7 @@ async def test_e2e_agents_registry_resolves_system_prompt(app_state, processor, 
 
     # Verify the system prompt comes from PlannerAgent's @agent(system=...)
     from lauren_ai._agents import AGENT_META
+
     meta = getattr(defn.agent_class, AGENT_META, None)
     assert meta is not None
     assert "planning" in (meta.system or "").lower()
@@ -202,17 +220,19 @@ async def test_e2e_workflow_context_injected(app_state, processor, tmp_path):
         name = "test_wf"
         phases = [
             PhaseSpec(name="explore", agent_type=PhaseRole.EXPLORER, next="plan"),
-            PhaseSpec(name="plan",    agent_type=PhaseRole.PLANNER,  output_schema="plan"),
+            PhaseSpec(name="plan", agent_type=PhaseRole.PLANNER, output_schema="plan"),
         ]
 
     wf_runner = _make_wf_runner(_ContextWf, app_state, processor, mock)
 
     # Intercept _build_phase_prompt to capture what the planner receives
     original_prompt = wf_runner._build_phase_prompt
+
     def _capturing_prompt(spec, intent, context):
         result = original_prompt(spec, intent, context)
         prompts_seen.append(result)
         return result
+
     wf_runner._build_phase_prompt = _capturing_prompt
 
     await wf_runner.run("Refactor auth module")

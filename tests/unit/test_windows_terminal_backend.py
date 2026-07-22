@@ -4,6 +4,7 @@ These run on any platform — the decoder is a pure function and the read loop i
 driven through the monkeypatchable ``_next_input_event`` boundary, so no real
 Windows console or ctypes call is exercised.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -33,6 +34,7 @@ pytestmark = pytest.mark.unit
 
 # ── _decode_key_event — the core fix ──────────────────────────────────────────
 
+
 class TestDecodeKeyEvent:
     def test_shift_tab(self) -> None:
         # The bug this PRD fixes: Shift+Tab must be distinct from Tab.
@@ -61,17 +63,29 @@ class TestDecodeKeyEvent:
     def test_escape_vk(self) -> None:
         assert _decode_key_event(_VK_ESCAPE, "\x1b", 0) == (Key.ESC, "")
 
-    @pytest.mark.parametrize("vk,expected", [
-        (_VK_UP, Key.UP), (_VK_DOWN, Key.DOWN), (_VK_LEFT, Key.LEFT),
-        (_VK_RIGHT, Key.RIGHT), (_VK_HOME, Key.HOME), (_VK_END, Key.END),
-    ])
+    @pytest.mark.parametrize(
+        "vk,expected",
+        [
+            (_VK_UP, Key.UP),
+            (_VK_DOWN, Key.DOWN),
+            (_VK_LEFT, Key.LEFT),
+            (_VK_RIGHT, Key.RIGHT),
+            (_VK_HOME, Key.HOME),
+            (_VK_END, Key.END),
+        ],
+    )
     def test_navigation_keys(self, vk: int, expected: Key) -> None:
         assert _decode_key_event(vk, "", 0) == (expected, "")
 
-    @pytest.mark.parametrize("cp,expected", [
-        (0x03, Key.CTRL_C), (0x04, Key.CTRL_D),
-        (0x15, Key.CTRL_U), (0x16, Key.CTRL_V),
-    ])
+    @pytest.mark.parametrize(
+        "cp,expected",
+        [
+            (0x03, Key.CTRL_C),
+            (0x04, Key.CTRL_D),
+            (0x15, Key.CTRL_U),
+            (0x16, Key.CTRL_V),
+        ],
+    )
     def test_control_chars(self, cp: int, expected: Key) -> None:
         # vk for a letter (e.g. 'C'=0x43) — not a special VK — falls to UnicodeChar.
         assert _decode_key_event(0x43, chr(cp), _LEFT_CTRL_PRESSED) == (expected, "")
@@ -101,6 +115,7 @@ class TestDecodeKeyEvent:
 
 # ── _read_key_console loop (drive via patched _next_input_event) ──────────────
 
+
 class TestReadKeyConsoleLoop:
     def _backend_with_events(self, events: list) -> WindowsBackend:
         backend = WindowsBackend()
@@ -109,41 +124,52 @@ class TestReadKeyConsoleLoop:
         return backend
 
     def test_returns_first_decodable_keydown(self) -> None:
-        backend = self._backend_with_events([
-            (_KEY_EVENT, True, _VK_TAB, "", _SHIFT_PRESSED),
-        ])
+        backend = self._backend_with_events(
+            [
+                (_KEY_EVENT, True, _VK_TAB, "", _SHIFT_PRESSED),
+            ]
+        )
         assert backend._read_key_console() == (Key.SHIFT_TAB, "")
 
     def test_skips_key_up_events(self) -> None:
-        backend = self._backend_with_events([
-            (_KEY_EVENT, False, _VK_TAB, "", _SHIFT_PRESSED),   # key-up → skip
-            (_KEY_EVENT, True,  _VK_TAB, "", _SHIFT_PRESSED),   # key-down → use
-        ])
+        backend = self._backend_with_events(
+            [
+                (_KEY_EVENT, False, _VK_TAB, "", _SHIFT_PRESSED),  # key-up → skip
+                (_KEY_EVENT, True, _VK_TAB, "", _SHIFT_PRESSED),  # key-down → use
+            ]
+        )
         assert backend._read_key_console() == (Key.SHIFT_TAB, "")
 
     def test_skips_non_key_events(self) -> None:
-        backend = self._backend_with_events([
-            (0x0002, True, 0, "", 0),                           # MOUSE_EVENT → skip
-            (_KEY_EVENT, True, _VK_RETURN, "\r", 0),            # key-down → use
-        ])
+        backend = self._backend_with_events(
+            [
+                (0x0002, True, 0, "", 0),  # MOUSE_EVENT → skip
+                (_KEY_EVENT, True, _VK_RETURN, "\r", 0),  # key-down → use
+            ]
+        )
         assert backend._read_key_console() == (Key.ENTER, "")
 
     def test_skips_modifier_only_keydown(self) -> None:
-        backend = self._backend_with_events([
-            (_KEY_EVENT, True, 0x10, "", _SHIFT_PRESSED),       # bare Shift → None → skip
-            (_KEY_EVENT, True, 0x41, "a", 0),                  # 'a' → use
-        ])
+        backend = self._backend_with_events(
+            [
+                (_KEY_EVENT, True, 0x10, "", _SHIFT_PRESSED),  # bare Shift → None → skip
+                (_KEY_EVENT, True, 0x41, "a", 0),  # 'a' → use
+            ]
+        )
         assert backend._read_key_console() == (Key.CHAR, "a")
 
     def test_skips_failed_reads(self) -> None:
-        backend = self._backend_with_events([
-            None,                                               # read failed → skip
-            (_KEY_EVENT, True, _VK_TAB, "", 0),                # plain Tab → use
-        ])
+        backend = self._backend_with_events(
+            [
+                None,  # read failed → skip
+                (_KEY_EVENT, True, _VK_TAB, "", 0),  # plain Tab → use
+            ]
+        )
         assert backend._read_key_console() == (Key.TAB, "")
 
 
 # ── getwch fallback still decodes basic keys ──────────────────────────────────
+
 
 class TestGetwchFallback:
     def test_fallback_used_when_no_console(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,13 +187,17 @@ class TestGetwchFallback:
 
 # ── module import safety (no ctypes.wintypes at import time) ──────────────────
 
+
 class TestImportSafety:
     def test_structures_importable_off_windows(self) -> None:
         # If the module used ctypes.wintypes it would have failed to import on
         # Linux; reaching here means the portable c_* types worked.
         from agenthicc.tui.terminal.windows_backend import (
-            _INPUT_RECORD, _KEY_EVENT_RECORD, _COORD,
+            _INPUT_RECORD,
+            _KEY_EVENT_RECORD,
+            _COORD,
         )
+
         rec = _KEY_EVENT_RECORD()
         assert rec.wVirtualKeyCode == 0
         assert _INPUT_RECORD().EventType == 0

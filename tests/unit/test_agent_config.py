@@ -1,4 +1,5 @@
 """Unit tests for agent-scoped tool plugin configuration (PRD-26)."""
+
 from __future__ import annotations
 
 import pytest
@@ -237,9 +238,7 @@ def test_load_agent_system_prompt_project_wins(tmp_path):
     (user / "agents" / "researcher").mkdir(parents=True)
     (proj / "agents" / "researcher" / "system_prompt.md").write_text("Project sys.")
     (user / "agents" / "researcher" / "system_prompt.md").write_text("User sys.")
-    result = load_agent_system_prompt(
-        "researcher", "Base prompt.", project_dir=proj, user_dir=user
-    )
+    result = load_agent_system_prompt("researcher", "Base prompt.", project_dir=proj, user_dir=user)
     assert result == "Project sys."
 
 
@@ -249,9 +248,7 @@ def test_load_agent_system_prompt_falls_back_to_user(tmp_path):
     (proj / "agents" / "researcher").mkdir(parents=True)
     (user / "agents" / "researcher").mkdir(parents=True)
     (user / "agents" / "researcher" / "system_prompt.md").write_text("User sys.")
-    result = load_agent_system_prompt(
-        "researcher", "Base prompt.", project_dir=proj, user_dir=user
-    )
+    result = load_agent_system_prompt("researcher", "Base prompt.", project_dir=proj, user_dir=user)
     assert result == "User sys."
 
 
@@ -262,9 +259,7 @@ def test_load_agent_system_prompt_ignores_empty_file(tmp_path):
     (user / "agents" / "researcher").mkdir(parents=True)
     (proj / "agents" / "researcher" / "system_prompt.md").write_text("   \n")
     (user / "agents" / "researcher" / "system_prompt.md").write_text("User sys.")
-    result = load_agent_system_prompt(
-        "researcher", "Base prompt.", project_dir=proj, user_dir=user
-    )
+    result = load_agent_system_prompt("researcher", "Base prompt.", project_dir=proj, user_dir=user)
     # project file is whitespace-only; should move on to user
     assert result == "User sys."
 
@@ -273,7 +268,5 @@ def test_load_agent_system_prompt_strips_whitespace(tmp_path):
     proj = tmp_path / "proj"
     (proj / "agents" / "writer").mkdir(parents=True)
     (proj / "agents" / "writer" / "system_prompt.md").write_text("  You write.\n\n")
-    result = load_agent_system_prompt(
-        "writer", "Base prompt.", project_dir=proj, user_dir=tmp_path
-    )
+    result = load_agent_system_prompt("writer", "Base prompt.", project_dir=proj, user_dir=tmp_path)
     assert result == "You write."

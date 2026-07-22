@@ -1,4 +1,5 @@
 """SubagentPool — concurrent worker execution (PRD-124)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -32,22 +33,23 @@ _MAX_RESULT_CHARS = 2_000
 
 # ── TUI state models ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class WorkerState:
     """Live status of one worker — used to drive the footer worker grid."""
 
-    label:      str                                          # "explorer #1"
+    label: str  # "explorer #1"
     agent_type: str
-    status:     str = "pending"                              # pending | running | done | failed
+    status: str = "pending"  # pending | running | done | failed
 
 
 @dataclass
 class SubagentPoolState:
     """Live summary of an active SubagentPool — stored on ConversationStore signal."""
 
-    pool_id:  str
-    total:    int
-    workers:  list[WorkerState] = field(default_factory=list)
+    pool_id: str
+    total: int
+    workers: list[WorkerState] = field(default_factory=list)
 
     @property
     def done(self) -> int:
@@ -56,41 +58,43 @@ class SubagentPoolState:
 
 # ── task / result data models ─────────────────────────────────────────────────
 
+
 @dataclass
 class SubagentTask:
     """One unit of work assigned to a subagent worker."""
 
-    task_id:          str
-    agent_type:       str
+    task_id: str
+    agent_type: str
     task_description: str
-    context:          str = ""
+    context: str = ""
 
 
 @dataclass
 class SubagentResult:
     """Outcome of one subagent worker execution."""
 
-    task_id:     str
-    agent_type:  str
-    label:       str    # "explorer #1", "tester #2", …
-    ok:          bool
-    text:        str    # AgentResponse.content verbatim (plain text)
-    error:       str    = ""
-    duration_ms: float  = 0.0
+    task_id: str
+    agent_type: str
+    label: str  # "explorer #1", "tester #2", …
+    ok: bool
+    text: str  # AgentResponse.content verbatim (plain text)
+    error: str = ""
+    duration_ms: float = 0.0
 
 
 @dataclass
 class AggregatedResult:
     """Concatenated result from all workers in one pool run."""
 
-    pool_id:   str
-    total:     int
+    pool_id: str
+    total: int
     succeeded: int
-    failed:    int
-    text:      str    # labelled concatenation delivered to parent as tool result
+    failed: int
+    text: str  # labelled concatenation delivered to parent as tool result
 
 
 # ── worker ────────────────────────────────────────────────────────────────────
+
 
 def _expand_allowed(
     allowed_tools: frozenset[str],
@@ -120,30 +124,28 @@ class SubagentWorker:
 
     def __init__(
         self,
-        task:          SubagentTask,
-        spec:          SubagentTypeSpec,
-        index:         int,
+        task: SubagentTask,
+        spec: SubagentTypeSpec,
+        index: int,
         parent_runner: AgentRunnerBase,
-        parent_model:  str,
-        all_tools:     list[object],
-        app_state:     AppState | None = None,
-        registry:      ToolRegistry | None = None,
-        retry_config:  object | None = None,
+        parent_model: str,
+        all_tools: list[object],
+        app_state: AppState | None = None,
+        registry: ToolRegistry | None = None,
+        retry_config: object | None = None,
     ) -> None:
-        self._task          = task
-        self._spec          = spec
-        self._index         = index
+        self._task = task
+        self._spec = spec
+        self._index = index
         self._parent_runner = parent_runner
-        self._parent_model  = parent_model
-        self._all_tools     = all_tools
-        self._app_state     = app_state
-        self._registry      = registry
-        self._retry_config  = retry_config
-        self.label          = f"{spec.name} #{index}"
+        self._parent_model = parent_model
+        self._all_tools = all_tools
+        self._app_state = app_state
+        self._registry = registry
+        self._retry_config = retry_config
+        self.label = f"{spec.name} #{index}"
         # Expand glob patterns once at construction time.
-        self._effective_allowed: frozenset[str] = _expand_allowed(
-            spec.allowed_tools, registry
-        )
+        self._effective_allowed: frozenset[str] = _expand_allowed(spec.allowed_tools, registry)
 
     async def run(self) -> SubagentResult:
         """Execute the task; return SubagentResult regardless of success/failure."""
@@ -206,8 +208,7 @@ class SubagentWorker:
         # Filter the full tool list to the expanded allowed set.
         # _effective_allowed already has glob patterns resolved to concrete names.
         filtered = [
-            t for t in self._all_tools
-            if getattr(t, "__name__", "") in self._effective_allowed
+            t for t in self._all_tools if getattr(t, "__name__", "") in self._effective_allowed
         ]
 
         # Build the system prompt: type prompt + optional context.
@@ -226,6 +227,7 @@ class SubagentWorker:
         hooks: list[ToolCapabilityGate] = []
         if self._app_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
+
             hooks.append(ToolCapabilityGate(self._app_state))
 
         runner = _RunnerBase(
@@ -256,6 +258,7 @@ class SubagentWorker:
         # transient error so runner.run() re-adds the user message cleanly.
         if self._retry_config is not None:
             from agenthicc.runners.retry import run_with_transport_retry  # noqa: PLC0415
+
             await run_with_transport_retry(
                 _do_run,
                 config=self._retry_config,
@@ -268,6 +271,7 @@ class SubagentWorker:
 
 # ── pool ──────────────────────────────────────────────────────────────────────
 
+
 class SubagentPool:
     """Runs a set of SubagentTasks concurrently bounded by *max_concurrent*.
 
@@ -277,30 +281,30 @@ class SubagentPool:
 
     def __init__(
         self,
-        tasks:          list[SubagentTask],
-        parent_runner:  AgentRunnerBase,
-        parent_model:   str,
-        all_tools:      list[object],
+        tasks: list[SubagentTask],
+        parent_runner: AgentRunnerBase,
+        parent_model: str,
+        all_tools: list[object],
         max_concurrent: int = 4,
-        app_state:      AppState | None = None,
-        processor:      EventProcessor | None = None,
-        conv_store:     ConversationStore | None = None,
-        registry:       SubagentTypeRegistry = DEFAULT_REGISTRY,
-        tool_registry:  ToolRegistry | None = None,
-        retry_config:   object | None = None,
+        app_state: AppState | None = None,
+        processor: EventProcessor | None = None,
+        conv_store: ConversationStore | None = None,
+        registry: SubagentTypeRegistry = DEFAULT_REGISTRY,
+        tool_registry: ToolRegistry | None = None,
+        retry_config: object | None = None,
     ) -> None:
-        self.pool_id         = uuid.uuid4().hex
-        self._tasks          = tasks
-        self._parent_runner  = parent_runner
-        self._parent_model   = parent_model
-        self._all_tools      = all_tools
+        self.pool_id = uuid.uuid4().hex
+        self._tasks = tasks
+        self._parent_runner = parent_runner
+        self._parent_model = parent_model
+        self._all_tools = all_tools
         self._max_concurrent = max_concurrent
-        self._app_state      = app_state
-        self._processor      = processor
-        self._conv_store     = conv_store
-        self._registry       = registry
-        self._tool_registry  = tool_registry
-        self._retry_config   = retry_config
+        self._app_state = app_state
+        self._processor = processor
+        self._conv_store = conv_store
+        self._registry = registry
+        self._tool_registry = tool_registry
+        self._retry_config = retry_config
 
     async def run(self) -> AggregatedResult:
         """Execute all tasks concurrently; return aggregated plain-text result."""
@@ -313,7 +317,9 @@ class SubagentPool:
             spec = self._registry.get(task.agent_type)
             if spec is None:
                 workers.append(_UnknownTypeWorker(task))  # type: ignore[arg-type]
-                worker_states.append(WorkerState(f"{task.agent_type} #?", task.agent_type, "pending"))
+                worker_states.append(
+                    WorkerState(f"{task.agent_type} #?", task.agent_type, "pending")
+                )
                 continue
             type_indices[task.agent_type] = type_indices.get(task.agent_type, 0) + 1
             idx = type_indices[task.agent_type]
@@ -341,10 +347,13 @@ class SubagentPool:
 
         # Emit pool-started kernel + scroll-buffer events.
         await self._emit_pool_started()
-        self._append_scroll_event("subagent_pool_started", {
-            "total": len(workers),
-            "workers": [{"label": ws.label, "type": ws.agent_type} for ws in worker_states],
-        })
+        self._append_scroll_event(
+            "subagent_pool_started",
+            {
+                "total": len(workers),
+                "workers": [{"label": ws.label, "type": ws.agent_type} for ws in worker_states],
+            },
+        )
 
         # Run workers with a semaphore bounding concurrency.
         semaphore = asyncio.Semaphore(self._max_concurrent)
@@ -361,12 +370,12 @@ class SubagentPool:
                 self._append_scroll_event(
                     "subagent_worker_done" if result.ok else "subagent_worker_done",
                     {
-                        "label":       result.label,
-                        "ok":          result.ok,
-                        "error":       result.error,
+                        "label": result.label,
+                        "ok": result.ok,
+                        "error": result.error,
                         "duration_ms": result.duration_ms,
-                        "done":        pool_state.done,
-                        "total":       pool_state.total,
+                        "done": pool_state.done,
+                        "total": pool_state.total,
                     },
                 )
                 return result
@@ -383,22 +392,27 @@ class SubagentPool:
                 results.append(item)
             else:
                 task = self._tasks[i] if i < len(self._tasks) else SubagentTask("?", "?", "?")
-                results.append(SubagentResult(
-                    task_id=task.task_id,
-                    agent_type=task.agent_type,
-                    label=f"{task.agent_type} #{i + 1}",
-                    ok=False,
-                    text="",
-                    error=str(item),
-                ))
+                results.append(
+                    SubagentResult(
+                        task_id=task.task_id,
+                        agent_type=task.agent_type,
+                        label=f"{task.agent_type} #{i + 1}",
+                        ok=False,
+                        text="",
+                        error=str(item),
+                    )
+                )
 
         aggregated = _aggregate(self.pool_id, results, self._registry)
         await self._emit_pool_completed(aggregated)
-        self._append_scroll_event("subagent_pool_done", {
-            "succeeded": aggregated.succeeded,
-            "total":     aggregated.total,
-            "failed":    aggregated.failed,
-        })
+        self._append_scroll_event(
+            "subagent_pool_done",
+            {
+                "succeeded": aggregated.succeeded,
+                "total": aggregated.total,
+                "failed": aggregated.failed,
+            },
+        )
         # Clear the TUI pool-state so the footer hides.
         self._set_pool_state(None)
         return aggregated
@@ -419,54 +433,85 @@ class SubagentPool:
         if self._processor is None:
             return
         from agenthicc.kernel import Event  # noqa: PLC0415
-        await self._processor.emit(Event.create("SubagentPoolStarted", {
-            "pool_id":       self.pool_id,
-            "tasks":         [{"task_id": t.task_id, "type": t.agent_type,
-                               "description": t.task_description} for t in self._tasks],
-            "max_concurrent": self._max_concurrent,
-        }))
+
+        await self._processor.emit(
+            Event.create(
+                "SubagentPoolStarted",
+                {
+                    "pool_id": self.pool_id,
+                    "tasks": [
+                        {
+                            "task_id": t.task_id,
+                            "type": t.agent_type,
+                            "description": t.task_description,
+                        }
+                        for t in self._tasks
+                    ],
+                    "max_concurrent": self._max_concurrent,
+                },
+            )
+        )
 
     async def _emit_worker_started(self, worker: SubagentWorker) -> None:
         if self._processor is None:
             return
         from agenthicc.kernel import Event  # noqa: PLC0415
-        await self._processor.emit(Event.create("SubagentStarted", {
-            "pool_id": self.pool_id,
-            "task_id": worker._task.task_id,
-            "type":    worker._task.agent_type,
-            "label":   worker.label,
-            "task":    worker._task.task_description,
-        }))
+
+        await self._processor.emit(
+            Event.create(
+                "SubagentStarted",
+                {
+                    "pool_id": self.pool_id,
+                    "task_id": worker._task.task_id,
+                    "type": worker._task.agent_type,
+                    "label": worker.label,
+                    "task": worker._task.task_description,
+                },
+            )
+        )
 
     async def _emit_worker_done(self, result: SubagentResult) -> None:
         if self._processor is None:
             return
         from agenthicc.kernel import Event  # noqa: PLC0415
+
         event_type = "SubagentCompleted" if result.ok else "SubagentFailed"
-        await self._processor.emit(Event.create(event_type, {
-            "pool_id":     self.pool_id,
-            "task_id":     result.task_id,
-            "type":        result.agent_type,
-            "label":       result.label,
-            "text":        result.text[:_MAX_RESULT_CHARS],
-            "error":       result.error,
-            "duration_ms": result.duration_ms,
-        }))
+        await self._processor.emit(
+            Event.create(
+                event_type,
+                {
+                    "pool_id": self.pool_id,
+                    "task_id": result.task_id,
+                    "type": result.agent_type,
+                    "label": result.label,
+                    "text": result.text[:_MAX_RESULT_CHARS],
+                    "error": result.error,
+                    "duration_ms": result.duration_ms,
+                },
+            )
+        )
 
     async def _emit_pool_completed(self, agg: AggregatedResult) -> None:
         if self._processor is None:
             return
         from agenthicc.kernel import Event  # noqa: PLC0415
-        await self._processor.emit(Event.create("SubagentPoolCompleted", {
-            "pool_id":   self.pool_id,
-            "total":     agg.total,
-            "succeeded": agg.succeeded,
-            "failed":    agg.failed,
-            "text":      agg.text,
-        }))
+
+        await self._processor.emit(
+            Event.create(
+                "SubagentPoolCompleted",
+                {
+                    "pool_id": self.pool_id,
+                    "total": agg.total,
+                    "succeeded": agg.succeeded,
+                    "failed": agg.failed,
+                    "text": agg.text,
+                },
+            )
+        )
 
 
 # ── unknown-type sentinel worker ──────────────────────────────────────────────
+
 
 class _UnknownTypeWorker:
     """Placeholder that immediately returns a failed result for unknown types."""
@@ -488,14 +533,15 @@ class _UnknownTypeWorker:
 
 # ── aggregation ───────────────────────────────────────────────────────────────
 
+
 def _aggregate(
-    pool_id:  str,
-    results:  list[SubagentResult],
+    pool_id: str,
+    results: list[SubagentResult],
     registry: SubagentTypeRegistry = DEFAULT_REGISTRY,
 ) -> AggregatedResult:
     """Produce labelled-concatenation text from a list of results."""
     succeeded = sum(1 for r in results if r.ok)
-    failed    = len(results) - succeeded
+    failed = len(results) - succeeded
 
     # Group results by type for custom aggregators.
     by_type: dict[str, list[SubagentResult]] = {}
@@ -517,7 +563,7 @@ def _aggregate(
         dur = f"{r.duration_ms / 1_000:.1f}s"
         status = f"✓ {dur}" if r.ok else f"✗ {r.error or 'failed'}"
         header = f"=== {r.label} ({status}) ==="
-        body   = r.text[:_MAX_RESULT_CHARS] if r.ok else f"[failed: {r.error}]"
+        body = r.text[:_MAX_RESULT_CHARS] if r.ok else f"[failed: {r.error}]"
         sections.append(f"{header}\n{body}")
 
     text = "\n\n".join(sections)
@@ -532,17 +578,18 @@ def _aggregate(
 
 # ── convenience coroutine ─────────────────────────────────────────────────────
 
+
 async def run_pool(
-    tasks:          list[SubagentTask],
-    parent_runner:  AgentRunnerBase,
-    parent_model:   str,
-    all_tools:      list[object],
+    tasks: list[SubagentTask],
+    parent_runner: AgentRunnerBase,
+    parent_model: str,
+    all_tools: list[object],
     max_concurrent: int = 4,
-    app_state:      AppState | None = None,
-    processor:      EventProcessor | None = None,
-    conv_store:     ConversationStore | None = None,
-    registry:       SubagentTypeRegistry = DEFAULT_REGISTRY,
-    tool_registry:  ToolRegistry | None = None,
+    app_state: AppState | None = None,
+    processor: EventProcessor | None = None,
+    conv_store: ConversationStore | None = None,
+    registry: SubagentTypeRegistry = DEFAULT_REGISTRY,
+    tool_registry: ToolRegistry | None = None,
 ) -> AggregatedResult:
     """Create a SubagentPool and run it.  Convenience wrapper."""
     pool = SubagentPool(

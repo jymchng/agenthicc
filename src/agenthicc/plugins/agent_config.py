@@ -1,4 +1,5 @@
 """Agent-scoped tool plugin configuration (PRD-26)."""
+
 from __future__ import annotations
 
 import re
@@ -16,8 +17,7 @@ def validate_agent_name(name: str) -> str:
     name = name.strip().lower()
     if not _SLUG_RE.match(name) or len(name) > _MAX_LEN:
         raise ValueError(
-            f"Invalid agent name {name!r}. "
-            "Use lowercase letters, digits, and hyphens only."
+            f"Invalid agent name {name!r}. Use lowercase letters, digits, and hyphens only."
         )
     return name
 
@@ -26,8 +26,8 @@ def validate_agent_name(name: str) -> str:
 class AgentDef:
     """Configuration for a named agent."""
 
-    name: str                                         # validated slug
-    system_prompt: str = ""                           # custom system prompt (may be empty)
+    name: str  # validated slug
+    system_prompt: str = ""  # custom system prompt (may be empty)
     tool_plugin_paths: list[Path] = field(default_factory=list)  # discovered tool files
 
     @classmethod

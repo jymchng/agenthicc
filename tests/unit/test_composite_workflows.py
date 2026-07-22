@@ -1,7 +1,7 @@
 """Tests for composite workflow architecture (PRD-114)."""
+
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,15 +10,16 @@ from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.code_plan import CodePlanRunner
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.code_plan.definition import CodePlan
-from agenthicc.workflows.plugin import WorkflowPlugin
 
 
 # ── BaseWorkflowRunner contract ───────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_base_runner_run_return_type_is_any() -> None:
     """run() return annotation is object so subclasses may narrow it."""
     import inspect
+
     hints = inspect.get_annotations(BaseWorkflowRunner.run, eval_str=True)
     assert hints.get("return") is object
 
@@ -26,15 +27,18 @@ def test_base_runner_run_return_type_is_any() -> None:
 @pytest.mark.unit
 def test_base_runner_is_abstract() -> None:
     import abc
+
     assert abc.ABC in BaseWorkflowRunner.__mro__
 
 
 # ── CodePlanRunner.run() returns CodePlanContext ──────────────────────────────
 
+
 @pytest.mark.unit
 async def test_code_plan_runner_run_returns_code_plan_context() -> None:
     """run() must return a CodePlanContext, not None."""
     import inspect
+
     hints = inspect.get_annotations(CodePlanRunner.run, eval_str=True)
     assert hints.get("return") is CodePlanContext
 
@@ -81,6 +85,7 @@ async def test_code_plan_runner_run_result_accessible_via_super() -> None:
 
 # ── run_phase() public API ────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_code_plan_runner_has_run_phase_method() -> None:
     assert hasattr(CodePlanRunner, "run_phase")
@@ -100,9 +105,7 @@ def test_run_phase_is_public() -> None:
 async def test_run_phase_calls_run_turn() -> None:
     """run_phase() delegates to _run_turn() internally."""
     mock_cfg = MagicMock()
-    mock_cfg.app_state.active_mode.return_value = MagicMock(
-        blocked_capabilities=frozenset()
-    )
+    mock_cfg.app_state.active_mode.return_value = MagicMock(blocked_capabilities=frozenset())
     mock_cfg.approval_svc = None
     mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
@@ -115,14 +118,19 @@ async def test_run_phase_calls_run_turn() -> None:
     called_with: list = []
 
     async def fake_run_turn(text, *, tools, mode, system_prompt, max_turns, ctx):
-        called_with.append({
-            "text": text, "mode": mode, "system_prompt": system_prompt,
-            "max_turns": max_turns,
-        })
+        called_with.append(
+            {
+                "text": text,
+                "mode": mode,
+                "system_prompt": system_prompt,
+                "max_turns": max_turns,
+            }
+        )
 
     with patch.object(runner, "_run_turn", new=fake_run_turn):
-        with patch("agenthicc.workflows.code_plan.runner.CodePlanRunner._base_tools",
-                   return_value=[]):
+        with patch(
+            "agenthicc.workflows.code_plan.runner.CodePlanRunner._base_tools", return_value=[]
+        ):
             await runner.run_phase(
                 intent="my intent",
                 text="do the thing",
@@ -144,9 +152,7 @@ async def test_run_phase_passes_shared_memory() -> None:
     from unittest.mock import sentinel
 
     mock_cfg = MagicMock()
-    mock_cfg.app_state.active_mode.return_value = MagicMock(
-        blocked_capabilities=frozenset()
-    )
+    mock_cfg.app_state.active_mode.return_value = MagicMock(blocked_capabilities=frozenset())
     mock_cfg.approval_svc = None
     mock_cfg.plugin_tools = []
     mock_cfg.mcp_registry = None
@@ -164,8 +170,9 @@ async def test_run_phase_passes_shared_memory() -> None:
     fake_memory = sentinel.shared_memory
 
     with patch.object(runner, "_run_turn", new=fake_run_turn):
-        with patch("agenthicc.workflows.code_plan.runner.CodePlanRunner._base_tools",
-                   return_value=[]):
+        with patch(
+            "agenthicc.workflows.code_plan.runner.CodePlanRunner._base_tools", return_value=[]
+        ):
             await runner.run_phase(
                 intent="intent",
                 text="text",
@@ -179,10 +186,12 @@ async def test_run_phase_passes_shared_memory() -> None:
 
 # ── WorkflowRunner.run() returns WorkflowContext ──────────────────────────────
 
+
 @pytest.mark.unit
 def test_workflow_runner_run_return_annotation() -> None:
     import inspect
     from agenthicc.workflows.default.runner import WorkflowRunner
+
     # With from __future__ import annotations, the hint is stored as a string.
     hints = inspect.get_annotations(WorkflowRunner.run)
     assert "WorkflowContext" in str(hints.get("return", ""))
@@ -190,9 +199,11 @@ def test_workflow_runner_run_return_annotation() -> None:
 
 # ── Composite workflow pattern ─────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_composite_runner_inherits_code_plan_runner() -> None:
     """A composite runner subclasses CodePlanRunner correctly."""
+
     class _MyRunner(CodePlanRunner):
         async def run(self, intent: str) -> None:
             ctx = await super().run(intent)
@@ -225,15 +236,17 @@ def test_composite_plugin_registered_in_registry() -> None:
     registry = WorkflowRegistry()
     registry.register(_MyPlugin, source="user")
     assert registry.get("my_composite_v2") is not None
-    assert registry.get("code_plan") is None   # only registered one
+    assert registry.get("code_plan") is None  # only registered one
 
 
 # ── /workflow command logic ────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_workflow_override_signal_on_conversation_store() -> None:
     """ConversationStore.workflow_override signal exists and defaults to None."""
     from agenthicc.tui.conversation_store import ConversationStore
+
     store = ConversationStore()
     assert hasattr(store, "workflow_override")
     assert store.workflow_override() is None
@@ -242,6 +255,7 @@ def test_workflow_override_signal_on_conversation_store() -> None:
 @pytest.mark.unit
 def test_workflow_override_signal_settable() -> None:
     from agenthicc.tui.conversation_store import ConversationStore
+
     store = ConversationStore()
     store.workflow_override.set("code_plan_docs")
     assert store.workflow_override() == "code_plan_docs"
@@ -251,15 +265,18 @@ def test_workflow_override_signal_settable() -> None:
 
 # ── create-workflow skill in bootstrap ────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_create_workflow_skill_in_defaults() -> None:
     from agenthicc.skills.bootstrap import _DEFAULTS
+
     assert "create-workflow" in _DEFAULTS
 
 
 @pytest.mark.unit
 def test_create_workflow_skill_has_required_frontmatter() -> None:
     from agenthicc.skills.bootstrap import _DEFAULTS
+
     content = _DEFAULTS["create-workflow"]
     assert "name:" in content
     assert "source: default" in content
@@ -270,7 +287,8 @@ def test_create_workflow_skill_has_required_frontmatter() -> None:
 @pytest.mark.unit
 def test_create_workflow_skill_bootstrap_includes_it(tmp_path) -> None:
     from agenthicc.skills.bootstrap import bootstrap_default_skills
+
     n = bootstrap_default_skills(global_dir=tmp_path)
-    assert n >= 7   # original 6 + create-workflow
+    assert n >= 7  # original 6 + create-workflow
     assert (tmp_path / "skills" / "create-workflow").is_dir()
     assert (tmp_path / "skills" / "create-workflow" / "SKILL.md").exists()

@@ -1,4 +1,5 @@
 """Tests for JournaledShortTermMemory + the Phase 1/2 retry interaction (PRD-129)."""
+
 from __future__ import annotations
 
 import pytest

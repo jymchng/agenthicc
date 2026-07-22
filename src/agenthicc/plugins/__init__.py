@@ -1,4 +1,5 @@
 """Tool plugin system (PRD-24 through PRD-27)."""
+
 from __future__ import annotations
 
 from agenthicc.plugins.agent_config import (

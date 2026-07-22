@@ -43,9 +43,7 @@ class RunCoordinator:
         return journal.resume_state()
 
     @staticmethod
-    def build_resume_plan(
-        journal: ConversationJournal, incomplete: IncompleteTurn
-    ) -> ResumePlan:
+    def build_resume_plan(journal: ConversationJournal, incomplete: IncompleteTurn) -> ResumePlan:
         """Build a :class:`ResumePlan` with a ledger seeded from prior records."""
         ledger = DurableIdempotencyLedger(
             journal,

@@ -1,4 +1,5 @@
 """Configuration management commands — config show, config init."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -40,6 +41,7 @@ def _() -> None: ...
 def config_show(ctx: CLIContext) -> None:
     """Print the merged effective configuration including all TOML layers and --set overrides."""
     from agenthicc.config import load_config  # noqa: PLC0415
+
     cfg = load_config(cli_overrides=list(ctx.set_overrides))
     print("# Effective configuration")
     for section_name in ["execution", "behaviour", "memory", "security", "api", "tools", "plugins"]:

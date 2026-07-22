@@ -1,4 +1,5 @@
 """Unit tests for workflow/registry.py and workflow/loader.py (PRD-87, PRD-116)."""
+
 from __future__ import annotations
 
 import textwrap
@@ -7,13 +8,14 @@ from pathlib import Path
 import pytest
 
 from agenthicc.workflows.loader import load_python_workflows
-from agenthicc.workflows.plugin import PhaseRole, PhaseSpec, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 from agenthicc.workflows.registry import WorkflowRegistry, build_workflow_registry
 
 pytestmark = pytest.mark.unit
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_plugin(
     name: str,
@@ -43,6 +45,7 @@ def _write_py(tmp_path: Path, content: str, filename: str = "test_wf.py") -> Pat
 
 
 # ── TestWorkflowRegistry ──────────────────────────────────────────────────────
+
 
 class TestWorkflowRegistry:
     def test_register_and_get(self):
@@ -94,8 +97,8 @@ class TestWorkflowRegistry:
 
 # ── TestBuildWorkflowRegistry ─────────────────────────────────────────────────
 
-class TestBuildWorkflowRegistry:
 
+class TestBuildWorkflowRegistry:
     def test_code_plan_mode_bindings(self):
         plugin_cls = build_workflow_registry().get("code_plan")
         assert plugin_cls is not None
@@ -134,6 +137,7 @@ class TestBuildWorkflowRegistry:
 
 
 # ── TestPythonLoader ──────────────────────────────────────────────────────────
+
 
 class TestPythonLoader:
     def test_load_python_plugin(self, tmp_path):

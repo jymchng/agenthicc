@@ -1,4 +1,5 @@
 """POSIX terminal backend — delegates to cbreak_reader (PRD-106)."""
+
 from __future__ import annotations
 
 import sys

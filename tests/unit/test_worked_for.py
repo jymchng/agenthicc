@@ -1,4 +1,5 @@
 """Tests for the 'Worked for' turn-completion line (close_turn → scroll buffer)."""
+
 from __future__ import annotations
 
 import pytest
@@ -9,6 +10,7 @@ pytestmark = pytest.mark.unit
 
 
 # ── _fmt_worked ───────────────────────────────────────────────────────────────
+
 
 class TestFmtWorked:
     def test_zero_seconds(self) -> None:
@@ -49,6 +51,7 @@ class TestFmtWorked:
 
 
 # ── close_turn emits elapsed ──────────────────────────────────────────────────
+
 
 class TestCloseTurnElapsed:
     def test_turn_complete_event_carries_elapsed_s(self) -> None:
@@ -98,12 +101,12 @@ class TestCloseTurnElapsed:
 
 # ── renderer threshold ────────────────────────────────────────────────────────
 
+
 class TestTurnCompleteRenderer:
     def _make_event(self, elapsed: float) -> object:
         from agenthicc.tui.conversation_store import ConversationEvent  # noqa: PLC0415
-        return ConversationEvent(
-            event_id="x", kind="turn_complete", payload={"elapsed_s": elapsed}
-        )
+
+        return ConversationEvent(event_id="x", kind="turn_complete", payload={"elapsed_s": elapsed})
 
     def _render(self, elapsed: float) -> str:
         from io import StringIO  # noqa: PLC0415

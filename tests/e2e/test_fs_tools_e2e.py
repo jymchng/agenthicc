@@ -29,6 +29,7 @@ pytestmark = pytest.mark.e2e
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _completion(content: str = "done", n: int = 1) -> Completion:
     return Completion(
         id=f"c{n}",
@@ -53,6 +54,7 @@ def _reset_router():
 # Test 1: agent writes and reads a file
 # ---------------------------------------------------------------------------
 
+
 async def test_agent_can_write_and_read_file(tmp_path):
     """Agent writes 'hello world' to test.txt and reads it back via @tool wrappers."""
     _configure_router(tmp_path)
@@ -67,6 +69,7 @@ async def test_agent_can_write_and_read_file(tmp_path):
             content: Text to write.
         """
         from agenthicc.tools.fs import WriteFileTool  # noqa: PLC0415
+
         return await WriteFileTool().execute(
             {"path": path, "content": content}, {"workspace_root": workspace}
         )
@@ -79,9 +82,8 @@ async def test_agent_can_write_and_read_file(tmp_path):
             path: Absolute file path.
         """
         from agenthicc.tools.fs import ReadFileTool  # noqa: PLC0415
-        return await ReadFileTool().execute(
-            {"path": path}, {"workspace_root": workspace}
-        )
+
+        return await ReadFileTool().execute({"path": path}, {"workspace_root": workspace})
 
     @agent(model="mock")
     @use_tools(write_f, read_f)
@@ -108,6 +110,7 @@ async def test_agent_can_write_and_read_file(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 2: agent batch-writes a list of files
 # ---------------------------------------------------------------------------
+
 
 async def test_agent_batch_write_files(tmp_path):
     """Agent calls batch_write to create multiple files in a single tool call."""
@@ -151,6 +154,7 @@ async def test_agent_batch_write_files(tmp_path):
 # Test 3: agent greps and then patches a file
 # ---------------------------------------------------------------------------
 
+
 async def test_agent_grep_and_patch(tmp_path):
     """Agent uses grep_file to locate a function then apply_diff to patch it."""
     _configure_router(tmp_path)
@@ -182,12 +186,7 @@ async def test_agent_grep_and_patch(tmp_path):
     @use_tools(grep_t, diff_t)
     class PatchAgent: ...
 
-    diff_str = (
-        "@@ -1,2 +1,2 @@\n"
-        " def greet():\n"
-        "-    return 'hello'\n"
-        "+    return 'hello world'\n"
-    )
+    diff_str = "@@ -1,2 +1,2 @@\n def greet():\n-    return 'hello'\n+    return 'hello world'\n"
 
     mock = MockTransport()
     mock.queue_tool_use("grep_t", {"path": str(src), "pattern": "def greet"})
@@ -208,6 +207,7 @@ async def test_agent_grep_and_patch(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 4: agent checksums a file before and after modification
 # ---------------------------------------------------------------------------
+
 
 async def test_agent_checksum_verification(tmp_path):
     """Agent writes a file, checksums it, modifies it, checksums again."""
@@ -234,6 +234,7 @@ async def test_agent_checksum_verification(tmp_path):
             content: New file content.
         """
         from pathlib import Path as P  # noqa: PLC0415
+
         P(path).write_text(content)
         return {"ok": True}
 
@@ -268,6 +269,7 @@ async def test_agent_checksum_verification(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 5: configure_router + _get_backend() returns the right backend
 # ---------------------------------------------------------------------------
+
 
 async def test_backend_router_in_agent_context(tmp_path):
     """configure_router() wires the router so _get_backend() resolves to LinuxFilesystemBackend."""

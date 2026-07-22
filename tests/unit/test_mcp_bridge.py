@@ -1,4 +1,5 @@
 """Unit tests for the MCP bridge and registry (PRD-28)."""
+
 from __future__ import annotations
 
 import pytest
@@ -51,16 +52,18 @@ def test_from_dict_ignores_unknown_keys():
 
 
 def test_from_dict_maps_all_known_fields():
-    cfg = McpServerConfig.from_dict({
-        "name": "srv",
-        "url": "cmd",
-        "transport": "ws",
-        "token": "tok",
-        "auto_connect": False,
-        "reconnect_attempts": 5,
-        "reconnect_delay_seconds": 2.5,
-        "metadata": {"k": "v"},
-    })
+    cfg = McpServerConfig.from_dict(
+        {
+            "name": "srv",
+            "url": "cmd",
+            "transport": "ws",
+            "token": "tok",
+            "auto_connect": False,
+            "reconnect_attempts": 5,
+            "reconnect_delay_seconds": 2.5,
+            "metadata": {"k": "v"},
+        }
+    )
     assert cfg.name == "srv"
     assert cfg.transport == "ws"
     assert cfg.auto_connect is False
@@ -485,7 +488,7 @@ async def test_build_client_ws_transport():
     mock_server_cls.ws.return_value = MagicMock()
 
     with patch("agenthicc.tools.mcp._McpServer", mock_server_cls):
-        client = await bridge._build_client()
+        await bridge._build_client()
 
     mock_server_cls.ws.assert_called_once()
     args, kwargs = mock_server_cls.ws.call_args
@@ -502,7 +505,7 @@ async def test_build_client_websocket_transport_alias():
     mock_server_cls.ws.return_value = MagicMock()
 
     with patch("agenthicc.tools.mcp._McpServer", mock_server_cls):
-        client = await bridge._build_client()
+        await bridge._build_client()
 
     mock_server_cls.ws.assert_called_once()
 
@@ -517,7 +520,7 @@ async def test_build_client_streamable_transport():
     mock_server_cls.streamable_http.return_value = MagicMock()
 
     with patch("agenthicc.tools.mcp._McpServer", mock_server_cls):
-        client = await bridge._build_client()
+        await bridge._build_client()
 
     mock_server_cls.streamable_http.assert_called_once()
 
@@ -532,7 +535,7 @@ async def test_build_client_http_transport_alias():
     mock_server_cls.streamable_http.return_value = MagicMock()
 
     with patch("agenthicc.tools.mcp._McpServer", mock_server_cls):
-        client = await bridge._build_client()
+        await bridge._build_client()
 
     mock_server_cls.streamable_http.assert_called_once()
 
@@ -559,7 +562,7 @@ async def test_build_client_stdio_transport():
     mock_server_cls.stdio.return_value = MagicMock()
 
     with patch("agenthicc.tools.mcp._McpServer", mock_server_cls):
-        client = await bridge._build_client()
+        await bridge._build_client()
 
     mock_server_cls.stdio.assert_called_once()
     args, kwargs = mock_server_cls.stdio.call_args

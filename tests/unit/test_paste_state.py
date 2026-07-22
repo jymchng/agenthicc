@@ -1,4 +1,5 @@
 """Unit tests for agenthicc.tui.input.paste.PasteState (PRD-57 §10.2)."""
+
 from __future__ import annotations
 
 import pytest
@@ -21,7 +22,7 @@ class TestApply:
     def test_long_paste_condensed_by_lines(self) -> None:
         buf = InputBuffer()
         ps = PasteState()
-        text = "a\nb\nc\nd"   # 4 lines → above threshold (3)
+        text = "a\nb\nc\nd"  # 4 lines → above threshold (3)
         ps.apply(buf, text, _COLS)
         assert ps.condensed
         assert "+4 lines" in ps.label
@@ -30,7 +31,7 @@ class TestApply:
     def test_wide_paste_condensed_by_chars(self) -> None:
         buf = InputBuffer()
         ps = PasteState()
-        text = "x" * 100      # single line but > cols - 4
+        text = "x" * 100  # single line but > cols - 4
         ps.apply(buf, text, _COLS)
         assert ps.condensed
         assert "chars" in ps.label
@@ -67,7 +68,7 @@ class TestBackspace:
         buf = InputBuffer()
         ps = PasteState()
         ps.apply(buf, "a\nb\nc\nd", _COLS)
-        original_len = len(buf)
+        len(buf)
         ps.backspace(buf)
-        assert len(buf) == 0   # all inserted chars removed
+        assert len(buf) == 0  # all inserted chars removed
         assert not ps.condensed

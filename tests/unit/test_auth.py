@@ -1,4 +1,5 @@
 """Unit tests for AuthClient and TokenStore (PRD-11)."""
+
 from __future__ import annotations
 
 import time
@@ -52,8 +53,10 @@ class TestTokenStore:
         store._fallback_path = tmp_path / "tokens.json"
         bundle = _bundle()
         # keyring unavailable on both save and load → must use file fallback
-        with patch("keyring.set_password", side_effect=Exception), \
-             patch("keyring.get_password", side_effect=Exception):
+        with (
+            patch("keyring.set_password", side_effect=Exception),
+            patch("keyring.get_password", side_effect=Exception),
+        ):
             store.save(bundle)
         with patch("keyring.get_password", side_effect=Exception):
             loaded = store.load()
@@ -65,11 +68,15 @@ class TestTokenStore:
         store._fallback_path = tmp_path / "tokens.json"
         bundle = _bundle()
         # Force fallback path for both save and clear
-        with patch("keyring.set_password", side_effect=Exception), \
-             patch("keyring.get_password", side_effect=Exception):
+        with (
+            patch("keyring.set_password", side_effect=Exception),
+            patch("keyring.get_password", side_effect=Exception),
+        ):
             store.save(bundle)
-        with patch("keyring.delete_password", side_effect=Exception), \
-             patch("keyring.get_password", side_effect=Exception):
+        with (
+            patch("keyring.delete_password", side_effect=Exception),
+            patch("keyring.get_password", side_effect=Exception),
+        ):
             store.clear()
         with patch("keyring.get_password", side_effect=Exception):
             assert store.load() is None
@@ -95,8 +102,7 @@ class TestAuthClientGetToken:
         store.load.return_value = _bundle(expires_offset=30)  # expires soon
         client = AuthClient(store)
         new_bundle = _bundle(expires_offset=3600)
-        with patch.object(client, "_refresh", new_callable=AsyncMock,
-                          return_value=new_bundle):
+        with patch.object(client, "_refresh", new_callable=AsyncMock, return_value=new_bundle):
             token = await client.get_token()
         assert token == new_bundle.access_token
         store.save.assert_called_once_with(new_bundle)

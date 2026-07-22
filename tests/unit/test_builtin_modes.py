@@ -13,6 +13,7 @@ Covers:
 - Debug post_hook returns content appended with a string containing "DEBUG"
 - Cycle order matches expected list [Auto, Plan, Ask, Review, Safe, Debug]
 """
+
 from __future__ import annotations
 
 import pytest

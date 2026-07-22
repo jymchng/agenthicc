@@ -1,4 +1,5 @@
 """Tests for bounded fs tool output (PRD-133 Layer A)."""
+
 from __future__ import annotations
 
 import subprocess

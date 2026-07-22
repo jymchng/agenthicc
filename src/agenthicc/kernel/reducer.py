@@ -78,11 +78,14 @@ def _agent_spawn_request(state: AppState, event: Event) -> tuple[AppState, list[
         metadata=event.payload.get("metadata", {}),
     )
     return state.with_agent(agent), [
-        Effect(EffectType.spawn_agent, {
-            "agent_id": agent.agent_id,
-            "agent_type": agent.agent_type,
-            "config": event.payload.get("config", {}),
-        }),
+        Effect(
+            EffectType.spawn_agent,
+            {
+                "agent_id": agent.agent_id,
+                "agent_type": agent.agent_type,
+                "config": event.payload.get("config", {}),
+            },
+        ),
         Effect(EffectType.update_tui, {"type": "agent_spawned", "agent_id": agent.agent_id}),
     ]
 
@@ -170,12 +173,17 @@ def _workflow_node_status_changed(state: AppState, event: Event) -> tuple[AppSta
     effects: list[Effect] = []
     if new_node.status in (NodeStatus.complete, NodeStatus.failed):
         effects.append(Effect(EffectType.start_workflow_node, {"workflow_id": wf.workflow_id}))
-    effects.append(Effect(EffectType.update_tui, {
-        "type": "node_updated",
-        "workflow_id": wf.workflow_id,
-        "node_id": new_node.node_id,
-        "status": new_node.status.value,
-    }))
+    effects.append(
+        Effect(
+            EffectType.update_tui,
+            {
+                "type": "node_updated",
+                "workflow_id": wf.workflow_id,
+                "node_id": new_node.node_id,
+                "status": new_node.status.value,
+            },
+        )
+    )
     return state.with_workflow(new_wf), effects
 
 
@@ -198,7 +206,7 @@ def _workflow_run_started(state: AppState, event: Event) -> tuple[AppState, list
 
 def _workflow_phase_completed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     """Records a completed phase as a WorkflowNode inside the Workflow."""
-    run_id     = event.payload["run_id"]
+    run_id = event.payload["run_id"]
     phase_name = event.payload["phase_name"]
     wf = state.workflows.get(run_id)
     if wf is None:
@@ -210,9 +218,9 @@ def _workflow_phase_completed(state: AppState, event: Event) -> tuple[AppState, 
         dependencies=frozenset(),
         status=NodeStatus.complete,
         result={
-            "role":       event.payload.get("role", ""),
-            "full_text":  event.payload.get("full_text", ""),
-            "approved":   event.payload.get("approved"),
+            "role": event.payload.get("role", ""),
+            "full_text": event.payload.get("full_text", ""),
+            "approved": event.payload.get("approved"),
             "structured": event.payload.get("structured", {}),
         },
     )
@@ -257,10 +265,13 @@ def _task_assigned(state: AppState, event: Event) -> tuple[AppState, list[Effect
         assigned_agent_id=event.payload["agent_id"],
     )
     return state.with_task(updated), [
-        Effect(EffectType.assign_task, {
-            "task_id": old.task_id,
-            "agent_id": event.payload["agent_id"],
-        }),
+        Effect(
+            EffectType.assign_task,
+            {
+                "task_id": old.task_id,
+                "agent_id": event.payload["agent_id"],
+            },
+        ),
     ]
 
 
@@ -281,11 +292,14 @@ def _tool_registered(state: AppState, event: Event) -> tuple[AppState, list[Effe
 
 def _hook_registered(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     hook_id = event.payload["hook_id"]
-    return state.with_hook(hook_id, {
-        "entity_type": event.payload.get("entity_type", ""),
-        "stage": event.payload.get("stage", ""),
-        "handler_dotpath": event.payload.get("handler_dotpath", ""),
-    }), []
+    return state.with_hook(
+        hook_id,
+        {
+            "entity_type": event.payload.get("entity_type", ""),
+            "stage": event.payload.get("stage", ""),
+            "handler_dotpath": event.payload.get("handler_dotpath", ""),
+        },
+    ), []
 
 
 # ── Interrupt / cancel ───────────────────────────────────────────────────

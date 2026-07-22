@@ -6,6 +6,7 @@ the Rich rendering pipeline through Signal subscriptions.
 
 Architecture: PRD-58 §6, PRD-59 §3.
 """
+
 from __future__ import annotations
 
 import time
@@ -25,13 +26,14 @@ if TYPE_CHECKING:
 
 # ── Agent state ───────────────────────────────────────────────────────────────
 
+
 class AgentState(Enum):
-    IDLE       = auto()
-    THINKING   = auto()
-    RUNNING    = auto()    # tool executing
-    RECOVERING = auto()    # tool failed; LLM deciding how to respond
-    COMPLETE   = auto()
-    ERROR      = auto()
+    IDLE = auto()
+    THINKING = auto()
+    RUNNING = auto()  # tool executing
+    RECOVERING = auto()  # tool failed; LLM deciding how to respond
+    COMPLETE = auto()
+    ERROR = auto()
 
 
 # ── Conversation events ───────────────────────────────────────────────────────
@@ -59,33 +61,35 @@ EventKind = Literal[
 
 @dataclass
 class ConversationEvent:
-    event_id:  str
-    kind:      str               # EventKind
-    payload:   dict[str, object]
+    event_id: str
+    kind: str  # EventKind
+    payload: dict[str, object]
     timestamp: float = field(default_factory=time.time)
-    rendered:  bool  = False     # True once ScrollBufferAppender has printed it
+    rendered: bool = False  # True once ScrollBufferAppender has printed it
 
 
 @dataclass
 class ConversationTurn:
-    turn_id:    str
+    turn_id: str
     agent_name: str
-    timestamp:  float = field(default_factory=time.time)
-    events:     list[ConversationEvent] = field(default_factory=list)
-    state:      AgentState = AgentState.THINKING
+    timestamp: float = field(default_factory=time.time)
+    events: list[ConversationEvent] = field(default_factory=list)
+    state: AgentState = AgentState.THINKING
 
 
 # ── Notification entry ────────────────────────────────────────────────────────
+
 
 @dataclass
 class _NotificationEntry:
     """One stacked transient notification line with its auto-dismiss timer."""
 
-    text:   str
+    text: str
     handle: _asyncio.TimerHandle | None = field(default=None)
 
 
 # ── Store ─────────────────────────────────────────────────────────────────────
+
 
 class ConversationStore:
     """Reactive store for the full conversation history and agent state.
@@ -96,22 +100,22 @@ class ConversationStore:
 
     def __init__(self) -> None:
         # ── core signals ──────────────────────────────────────────────────────
-        self.turns:            Signal[list[ConversationTurn]] = Signal([])
-        self.agent_state:      Signal[AgentState]             = Signal(AgentState.IDLE)
-        self.active_tool:      Signal[str]                    = Signal("")
-        self.frame:            Signal[int]                    = Signal(0)
+        self.turns: Signal[list[ConversationTurn]] = Signal([])
+        self.agent_state: Signal[AgentState] = Signal(AgentState.IDLE)
+        self.active_tool: Signal[str] = Signal("")
+        self.frame: Signal[int] = Signal(0)
         """Universal animation counter — increments every 50 ms unconditionally (PRD-120).
         All animated elements (flower, thinking, compact spinner) derive their frame index
         from ``frame() % N``.  The workspace subscribes once for all animation redraws."""
-        self.tokens_in:        Signal[int]                    = Signal(0)
-        self.tokens_out:       Signal[int]                    = Signal(0)
-        self.cost_usd:         Signal[float]                  = Signal(0.0)
-        self.session_id:       Signal[str]                    = Signal("")
-        self.model_name:       Signal[str]      = Signal("")
-        self.notification:        Signal[str | None] = Signal(None)
-        self.workflow_override:   Signal[str | None] = Signal(None)
+        self.tokens_in: Signal[int] = Signal(0)
+        self.tokens_out: Signal[int] = Signal(0)
+        self.cost_usd: Signal[float] = Signal(0.0)
+        self.session_id: Signal[str] = Signal("")
+        self.model_name: Signal[str] = Signal("")
+        self.notification: Signal[str | None] = Signal(None)
+        self.workflow_override: Signal[str | None] = Signal(None)
         """Name of the /workflow-selected override (PRD-114).  None = mode default."""
-        self.compaction_active:   Signal[bool]       = Signal(False)
+        self.compaction_active: Signal[bool] = Signal(False)
         """True while a compaction LLM call is in flight (PRD-119)."""
         self.subagent_pool_state: Signal[SubagentPoolState | None] = Signal(None)
         """Live state of the active SubagentPool — None when no pool is running (PRD-124)."""
@@ -126,7 +130,7 @@ class ConversationStore:
         # Counts consecutive tool_complete events in the current group.
         # Resets to 0 when a text event or turn_start arrives.
         # Drives the collapsed "…and N more" summary in the scroll buffer.
-        self.tool_group_count: Signal[int]   = Signal(0)
+        self.tool_group_count: Signal[int] = Signal(0)
         # Number of tool calls currently hidden above the scroll-buffer threshold.
         # Set live by ScrollBufferAppender as each overflow call arrives;
         # reset to 0 when the group closes (text/error event).
@@ -135,8 +139,8 @@ class ConversationStore:
 
         # ── computed values ───────────────────────────────────────────────────
         self.is_running: Computed[bool] = Computed(
-            lambda: self.agent_state() not in (
-                AgentState.IDLE, AgentState.COMPLETE, AgentState.ERROR
+            lambda: (
+                self.agent_state() not in (AgentState.IDLE, AgentState.COMPLETE, AgentState.ERROR)
             ),
             self.agent_state,
         )
@@ -146,7 +150,8 @@ class ConversationStore:
         )
         self.total_tokens: Computed[int] = Computed(
             lambda: self.tokens_in() + self.tokens_out(),
-            self.tokens_in, self.tokens_out,
+            self.tokens_in,
+            self.tokens_out,
         )
 
         # ── animation (driven by tick) ────────────────────────────────────────
@@ -196,9 +201,7 @@ class ConversationStore:
 
         def _dismiss() -> None:
             # Remove only this entry by identity; leave other lines alone.
-            self._notification_lines = [
-                e for e in self._notification_lines if e is not entry
-            ]
+            self._notification_lines = [e for e in self._notification_lines if e is not entry]
             self._sync_notification_signal()
 
         self._notification_lines.append(entry)
@@ -273,7 +276,7 @@ class ConversationStore:
             # print "✾ Worked for …" regardless of success or error path.
             self.append_event("turn_complete", {"elapsed_s": elapsed})
         self._current_turn = None
-        self.agent_state.set(AgentState.IDLE)   # ALWAYS IDLE — invariant
+        self.agent_state.set(AgentState.IDLE)  # ALWAYS IDLE — invariant
         self.active_tool.set("")
         self._start_time = 0.0
 
@@ -339,7 +342,7 @@ class ConversationStore:
         for sub in list(self._event_subscribers):
             try:
                 sub(ev)
-            except Exception:       # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 pass
         return ev
 
@@ -360,14 +363,15 @@ class ConversationStore:
 
 # ── Input state ───────────────────────────────────────────────────────────────
 
+
 class InputState:
     """Reactive state for the composer (input bar)."""
 
     def __init__(self) -> None:
-        self.buf:             Signal[list[str]]    = Signal([])
-        self.cursor:          Signal[int]          = Signal(0)
-        self.paste_condensed: Signal[bool]         = Signal(False)
-        self.paste_label:     Signal[str]          = Signal("")
+        self.buf: Signal[list[str]] = Signal([])
+        self.cursor: Signal[int] = Signal(0)
+        self.paste_condensed: Signal[bool] = Signal(False)
+        self.paste_label: Signal[str] = Signal("")
 
     def update(
         self,
@@ -387,23 +391,25 @@ class InputState:
 
 # ── Root application state ────────────────────────────────────────────────────
 
+
 class AppState:
     """Root state container — single instance for the application lifetime."""
 
     def __init__(self) -> None:
         from agenthicc.tui.runtime.mode_manager import RuntimeMode  # noqa: PLC0415
-        from agenthicc.cli.context import CLIFlags                  # noqa: PLC0415
+        from agenthicc.cli.context import CLIFlags  # noqa: PLC0415
+
         self.conversation = ConversationStore()
-        self.input        = InputState()
+        self.input = InputState()
         self.active_mode: Signal[RuntimeMode] = Signal(
             RuntimeMode(name="Auto", badge="⏵⏵", description="Automatic")
         )
-        self.overlay:           Signal[str]  = Signal("")     # active overlay name
-        self.modal_open:        Signal[bool] = Signal(False)
+        self.overlay: Signal[str] = Signal("")  # active overlay name
+        self.modal_open: Signal[bool] = Signal(False)
         # PRD-78: non-None when an agent tool is paused waiting for approval.
-        self.pending_approval: Signal[ApprovalRequest | None]  = Signal(None)
+        self.pending_approval: Signal[ApprovalRequest | None] = Signal(None)
         # PRD-81: holds WorkflowRun | None; set by WorkflowRunner during execution.
-        self.workflow_run:     Signal[WorkflowRun | None]      = Signal(None)
+        self.workflow_run: Signal[WorkflowRun | None] = Signal(None)
         # PRD-79: ephemeral CLI flags — frozen after startup, read by ApprovalGate etc.
         self.cli_flags: CLIFlags = CLIFlags()
 
@@ -414,13 +420,13 @@ class AppState:
     def update_workflow_phase(
         self,
         *,
-        workflow_name:  str,
-        phase_name:     str,
-        phase_index:    int,
-        total_phases:   int,
-        run_id:         str,
-        intent:         str,
-        model_id:       str = "",
+        workflow_name: str,
+        phase_name: str,
+        phase_index: int,
+        total_phases: int,
+        run_id: str,
+        intent: str,
+        model_id: str = "",
     ) -> None:
         """Atomically update all workflow TUI state from a phase's parameters.
 
@@ -445,22 +451,22 @@ class AppState:
         if current is not None and _dc.is_dataclass(current):
             updated = _dc.replace(
                 current,
-                workflow_name        = workflow_name,
-                current_phase        = phase_name,
-                current_phase_index  = phase_index,
-                total_phases         = total_phases,
-                status               = "running",
-                current_phase_model  = model_id,
+                workflow_name=workflow_name,
+                current_phase=phase_name,
+                current_phase_index=phase_index,
+                total_phases=total_phases,
+                status="running",
+                current_phase_model=model_id,
             )
         else:
             updated = WorkflowRun(
-                run_id               = run_id,
-                workflow_name        = workflow_name,
-                intent               = intent,
-                current_phase        = phase_name,
-                current_phase_index  = phase_index,
-                total_phases         = total_phases,
-                status               = "running",
-                current_phase_model  = model_id,
+                run_id=run_id,
+                workflow_name=workflow_name,
+                intent=intent,
+                current_phase=phase_name,
+                current_phase_index=phase_index,
+                total_phases=total_phases,
+                status="running",
+                current_phase_model=model_id,
             )
         self.workflow_run.set(updated)

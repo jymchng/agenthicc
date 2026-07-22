@@ -4,6 +4,7 @@ Tests cover _load_command_file, discover_command_plugins, CommandPluginSet,
 source_id derivation, dependency checking, private-file skipping, and
 end-to-end dropdown registration.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -131,10 +132,7 @@ def test_load_invalid_commands_list_type(tmp_path):
 
 def test_source_id_derived_from_stem(tmp_path):
     f = tmp_path / "my_cmd.py"
-    f.write_text(
-        "from agenthicc.commands import Command\n"
-        "COMMAND = Command('/x', 'X')\n"
-    )
+    f.write_text("from agenthicc.commands import Command\nCOMMAND = Command('/x', 'X')\n")
     result = _load_command_file(f)
     assert result.ok
     assert result.commands[0].source_id == "command-plugin:my_cmd"
@@ -222,12 +220,10 @@ def test_discover_project_overrides_user(tmp_path):
     proj_cmds.mkdir(parents=True)
 
     (user_cmds / "greet.py").write_text(
-        "from agenthicc.commands import Command\n"
-        "COMMAND = Command('/greet', 'User version')\n"
+        "from agenthicc.commands import Command\nCOMMAND = Command('/greet', 'User version')\n"
     )
     (proj_cmds / "greet.py").write_text(
-        "from agenthicc.commands import Command\n"
-        "COMMAND = Command('/greet', 'Project version')\n"
+        "from agenthicc.commands import Command\nCOMMAND = Command('/greet', 'Project version')\n"
     )
 
     plugin_set = discover_command_plugins(
@@ -250,8 +246,7 @@ def test_discover_user_only(tmp_path):
     user_cmds = tmp_path / "user" / "commands"
     user_cmds.mkdir(parents=True)
     (user_cmds / "global_cmd.py").write_text(
-        "from agenthicc.commands import Command\n"
-        "COMMAND = Command('/global', 'Global')\n"
+        "from agenthicc.commands import Command\nCOMMAND = Command('/global', 'Global')\n"
     )
     plugin_set = discover_command_plugins(
         project_dir=tmp_path / "proj",
@@ -265,8 +260,7 @@ def test_discover_project_only(tmp_path):
     proj_cmds = tmp_path / "proj" / "commands"
     proj_cmds.mkdir(parents=True)
     (proj_cmds / "local_cmd.py").write_text(
-        "from agenthicc.commands import Command\n"
-        "COMMAND = Command('/local', 'Local')\n"
+        "from agenthicc.commands import Command\nCOMMAND = Command('/local', 'Local')\n"
     )
     plugin_set = discover_command_plugins(
         project_dir=tmp_path / "proj",
@@ -285,8 +279,7 @@ def test_private_files_skipped(tmp_path):
     cmds_dir = tmp_path / "commands"
     cmds_dir.mkdir()
     (cmds_dir / "_helper.py").write_text(
-        "from agenthicc.commands import Command\n"
-        "COMMAND = Command('/helper', 'Helper')\n"
+        "from agenthicc.commands import Command\nCOMMAND = Command('/helper', 'Helper')\n"
     )
     plugin_set = discover_command_plugins(project_dir=tmp_path, user_dir=tmp_path / "user")
     assert plugin_set.all_commands == []
@@ -296,8 +289,7 @@ def test_private_files_skipped_with_double_underscore(tmp_path):
     cmds_dir = tmp_path / "commands"
     cmds_dir.mkdir()
     (cmds_dir / "__init__.py").write_text(
-        "from agenthicc.commands import Command\n"
-        "COMMAND = Command('/init', 'Init')\n"
+        "from agenthicc.commands import Command\nCOMMAND = Command('/init', 'Init')\n"
     )
     plugin_set = discover_command_plugins(project_dir=tmp_path, user_dir=tmp_path / "user")
     assert plugin_set.all_commands == []
@@ -312,8 +304,7 @@ def test_plugin_set_all_commands_excludes_failed(tmp_path):
     cmds_dir = tmp_path / "commands"
     cmds_dir.mkdir()
     (cmds_dir / "good.py").write_text(
-        "from agenthicc.commands import Command\n"
-        "COMMAND = Command('/good', 'Good')\n"
+        "from agenthicc.commands import Command\nCOMMAND = Command('/good', 'Good')\n"
     )
     (cmds_dir / "bad.py").write_text("def bad syntax !!!\n")
     plugin_set = discover_command_plugins(project_dir=tmp_path, user_dir=tmp_path / "user")

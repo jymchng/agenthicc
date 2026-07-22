@@ -1,4 +1,5 @@
 """Unit tests: multi-line ComposerComponent rendering (PRD-84)."""
+
 from __future__ import annotations
 
 import pytest
@@ -16,15 +17,15 @@ pytestmark = pytest.mark.unit
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _make_comp(buf: list[str], cursor: int,
-               paste_condensed: bool = False,
-               paste_label: str = "") -> ComposerComponent:
+def _make_comp(
+    buf: list[str], cursor: int, paste_condensed: bool = False, paste_label: str = ""
+) -> ComposerComponent:
     app_state = MagicMock()
     inp = app_state.input
-    inp.buf.return_value       = buf
-    inp.cursor.return_value    = cursor
+    inp.buf.return_value = buf
+    inp.cursor.return_value = cursor
     inp.paste_condensed.return_value = paste_condensed
-    inp.paste_label.return_value     = paste_label
+    inp.paste_label.return_value = paste_label
     return ComposerComponent(app_state)
 
 
@@ -64,7 +65,7 @@ class TestRenderMultiline:
     def test_cursor_appears_on_correct_line(self):
         # cursor after '\n' → on second line
         buf = list("abc") + ["\n"] + list("def")
-        cursor = 4   # first char of second line
+        cursor = 4  # first char of second line
         result = _render_multiline(buf, cursor)
         second_plain = result.renderables[1].plain
         assert CURSOR_CHAR in second_plain
@@ -86,7 +87,7 @@ class TestRenderMultiline:
 
     def test_cursor_at_end_of_first_line(self):
         buf = list("abc") + ["\n"] + list("def")
-        cursor = 3   # end of "abc", before '\n'
+        cursor = 3  # end of "abc", before '\n'
         result = _render_multiline(buf, cursor)
         first_plain = result.renderables[0].plain
         assert CURSOR_CHAR in first_plain
@@ -94,7 +95,7 @@ class TestRenderMultiline:
         assert CURSOR_CHAR not in second_plain
 
     def test_empty_lines_render(self):
-        buf = ["\n", "\n"]   # two empty lines
+        buf = ["\n", "\n"]  # two empty lines
         result = _render_multiline(buf, 0)
         assert len(result.renderables) == 3
 
@@ -136,8 +137,7 @@ class TestComposerRenderPaths:
         assert "third" in combined
 
     def test_condensed_paste_returns_text(self):
-        comp = _make_comp([], 0, paste_condensed=True,
-                          paste_label="Pasted text #1 +10 lines")
+        comp = _make_comp([], 0, paste_condensed=True, paste_label="Pasted text #1 +10 lines")
         result = comp.render()
         assert isinstance(result, Text)
         assert "Pasted text" in result.plain

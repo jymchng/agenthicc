@@ -1,4 +1,5 @@
 """Unit tests for tool namespace (PRD-125)."""
+
 from __future__ import annotations
 
 import logging
@@ -6,8 +7,11 @@ import pytest
 
 from agenthicc.plugins.registry import ToolGroup, ToolRegistry, build_registry
 from agenthicc.agent_tools import (
-    BUILTIN_GROUPS, FS_GROUP, GIT_GROUP, EXEC_GROUP, OUTLOOK_GROUP,
-    FS_AGENT_TOOLS, GIT_AGENT_TOOLS,
+    BUILTIN_GROUPS,
+    FS_GROUP,
+    GIT_GROUP,
+    FS_AGENT_TOOLS,
+    GIT_AGENT_TOOLS,
 )
 from agenthicc.subagents.pool import _expand_allowed
 
@@ -15,6 +19,7 @@ pytestmark = pytest.mark.unit
 
 
 # ── ToolGroup dataclass ───────────────────────────────────────────────────────
+
 
 class TestToolGroup:
     def test_fields(self) -> None:
@@ -30,6 +35,7 @@ class TestToolGroup:
 
 
 # ── BUILTIN_GROUPS ────────────────────────────────────────────────────────────
+
 
 class TestBuiltinGroups:
     def test_four_builtin_groups(self) -> None:
@@ -55,10 +61,12 @@ class TestBuiltinGroups:
 
 # ── ToolRegistry.register_group ──────────────────────────────────────────────
 
+
 class TestRegisterGroup:
     def _async_tool(self, name: str) -> object:
         async def fn() -> dict[str, object]:
             return {}
+
         fn.__name__ = name
         fn.__doc__ = f"Tool {name}."
         return fn
@@ -112,6 +120,7 @@ class TestRegisterGroup:
 
 
 # ── ToolRegistry.glob_expand ─────────────────────────────────────────────────
+
 
 class TestGlobExpand:
     def _make_registry(self) -> ToolRegistry:
@@ -169,6 +178,7 @@ class TestGlobExpand:
 
 
 # ── ToolRegistry.describe() ───────────────────────────────────────────────────
+
 
 class TestDescribe:
     def test_describe_empty_registry(self) -> None:
@@ -228,13 +238,14 @@ class TestDescribe:
         reg = build_registry()
         desc = reg.describe()
         lines = desc.splitlines()
-        h3_lines = [l for l in lines if l.startswith("### ")]
-        bullet_lines = [l for l in lines if l.startswith("- **")]
+        h3_lines = [line for line in lines if line.startswith("### ")]
+        bullet_lines = [line for line in lines if line.startswith("- **")]
         assert len(h3_lines) >= 4
         assert len(bullet_lines) >= 50
 
 
 # ── build_registry uses groups ────────────────────────────────────────────────
+
 
 class TestBuildRegistry:
     def test_build_registry_populates_groups(self) -> None:
@@ -253,6 +264,7 @@ class TestBuildRegistry:
 
 
 # ── _expand_allowed glob helper ───────────────────────────────────────────────
+
 
 class TestExpandAllowed:
     def test_expand_glob_with_registry(self) -> None:

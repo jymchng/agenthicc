@@ -5,10 +5,13 @@ backend on all other platforms.  Set MSGRAPH_TOKEN env var for the Graph API.
 
 NOTE: no ``from __future__ import annotations`` — @tool() inspects real annotations.
 """
+
 import os
 from lauren_ai._tools import tool
 from agenthicc.tools.capabilities import (
-    tool_network_read, tool_network_write, tool_network_search,
+    tool_network_read,
+    tool_network_write,
+    tool_network_search,
 )
 
 __all__ = [
@@ -28,13 +31,16 @@ __all__ = [
 def _backend():
     """Return the appropriate OutlookBackend for the current platform."""
     import sys  # noqa: PLC0415
+
     if sys.platform == "win32":
         try:
             from agenthicc.tools.outlook.win32_backend import Win32OutlookBackend  # noqa: PLC0415
+
             return Win32OutlookBackend()
         except ImportError:
             pass
     from agenthicc.tools.outlook import GraphApiOutlookBackend  # noqa: PLC0415
+
     return GraphApiOutlookBackend(token=os.getenv("MSGRAPH_TOKEN", ""))
 
 
@@ -47,6 +53,7 @@ async def _safe_call(coro):
     and can decide how to proceed.
     """
     from agenthicc.tools.outlook import _OutlookNetworkError  # noqa: PLC0415
+
     try:
         return await coro
     except _OutlookNetworkError as exc:
@@ -118,7 +125,9 @@ async def reply_email(
         body: Reply body text.
         reply_all: If True, reply to all recipients (default False).
     """
-    return await _safe_call(_backend().reply_email(email_id=email_id, body=body, reply_all=reply_all))
+    return await _safe_call(
+        _backend().reply_email(email_id=email_id, body=body, reply_all=reply_all)
+    )
 
 
 @tool_network_search
@@ -188,7 +197,9 @@ async def create_event(
         body: Optional event description / agenda.
     """
     return await _safe_call(
-        _backend().create_event(subject=subject, start=start, end=end, attendees=attendees, body=body)
+        _backend().create_event(
+            subject=subject, start=start, end=end, attendees=attendees, body=body
+        )
     )
 
 

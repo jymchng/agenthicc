@@ -8,6 +8,7 @@ Tests cover:
   - RendererContext field presence
   - MenuWidget protocol isinstance check
 """
+
 from __future__ import annotations
 
 import pytest

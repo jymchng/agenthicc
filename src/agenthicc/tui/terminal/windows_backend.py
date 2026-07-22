@@ -23,6 +23,7 @@ The decode logic (:func:`_decode_key_event`) is a pure function over
 Only :meth:`WindowsBackend._next_input_event` touches the Windows console API.
 A ``getwch()`` fallback is retained for environments without a real console.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -41,37 +42,37 @@ _STD_INPUT_HANDLE = -10
 _KEY_EVENT = 0x0001
 
 # dwControlKeyState bits
-_SHIFT_PRESSED      = 0x0010
-_LEFT_CTRL_PRESSED  = 0x0008
+_SHIFT_PRESSED = 0x0010
+_LEFT_CTRL_PRESSED = 0x0008
 _RIGHT_CTRL_PRESSED = 0x0004
 
 # Console input mode bits (cleared for raw single-key reads)
 _ENABLE_PROCESSED_INPUT = 0x0001
-_ENABLE_LINE_INPUT      = 0x0002
-_ENABLE_ECHO_INPUT      = 0x0004
+_ENABLE_LINE_INPUT = 0x0002
+_ENABLE_ECHO_INPUT = 0x0004
 
 # Virtual key codes
-_VK_BACK   = 0x08
-_VK_TAB    = 0x09
+_VK_BACK = 0x08
+_VK_TAB = 0x09
 _VK_RETURN = 0x0D
 _VK_ESCAPE = 0x1B
-_VK_END    = 0x23
-_VK_HOME   = 0x24
-_VK_LEFT   = 0x25
-_VK_UP     = 0x26
-_VK_RIGHT  = 0x27
-_VK_DOWN   = 0x28
+_VK_END = 0x23
+_VK_HOME = 0x24
+_VK_LEFT = 0x25
+_VK_UP = 0x26
+_VK_RIGHT = 0x27
+_VK_DOWN = 0x28
 _VK_DELETE = 0x2E
 
 _VK_KEYS: dict[int, Key] = {
-    _VK_BACK:   Key.BACKSPACE,
+    _VK_BACK: Key.BACKSPACE,
     _VK_ESCAPE: Key.ESC,
-    _VK_END:    Key.END,
-    _VK_HOME:   Key.HOME,
-    _VK_LEFT:   Key.LEFT,
-    _VK_UP:     Key.UP,
-    _VK_RIGHT:  Key.RIGHT,
-    _VK_DOWN:   Key.DOWN,
+    _VK_END: Key.END,
+    _VK_HOME: Key.HOME,
+    _VK_LEFT: Key.LEFT,
+    _VK_UP: Key.UP,
+    _VK_RIGHT: Key.RIGHT,
+    _VK_DOWN: Key.DOWN,
 }
 
 
@@ -79,18 +80,19 @@ _VK_KEYS: dict[int, Key] = {
 # NOTE: deliberately NOT ctypes.wintypes — that module only imports on Windows,
 # and these structures must be importable on the Linux CI for the decode tests.
 
+
 class _COORD(ctypes.Structure):
     _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
 
 
 class _KEY_EVENT_RECORD(ctypes.Structure):
     _fields_ = [
-        ("bKeyDown",          ctypes.c_int),     # BOOL
-        ("wRepeatCount",      ctypes.c_ushort),  # WORD
-        ("wVirtualKeyCode",   ctypes.c_ushort),  # WORD
-        ("wVirtualScanCode",  ctypes.c_ushort),  # WORD
-        ("UnicodeChar",       ctypes.c_wchar),   # WCHAR (uChar union, W variant)
-        ("dwControlKeyState", ctypes.c_ulong),   # DWORD
+        ("bKeyDown", ctypes.c_int),  # BOOL
+        ("wRepeatCount", ctypes.c_ushort),  # WORD
+        ("wVirtualKeyCode", ctypes.c_ushort),  # WORD
+        ("wVirtualScanCode", ctypes.c_ushort),  # WORD
+        ("UnicodeChar", ctypes.c_wchar),  # WCHAR (uChar union, W variant)
+        ("dwControlKeyState", ctypes.c_ulong),  # DWORD
     ]
 
 
@@ -101,13 +103,14 @@ class _INPUT_RECORD(ctypes.Structure):
         # large enough that ReadConsoleInputW never writes past the buffer.
         _fields_ = [
             ("KeyEvent", _KEY_EVENT_RECORD),
-            ("_pad",     ctypes.c_byte * 20),
+            ("_pad", ctypes.c_byte * 20),
         ]
 
     _fields_ = [("EventType", ctypes.c_ushort), ("Event", _EventUnion)]
 
 
 # ── Pure decoder (no Windows API — fully testable on Linux) ───────────────────
+
 
 def _decode_key_event(
     vk: int,
@@ -126,7 +129,7 @@ def _decode_key_event(
         keys the caller should skip.
     """
     shift = bool(ctrl_state & _SHIFT_PRESSED)
-    ctrl  = bool(ctrl_state & (_LEFT_CTRL_PRESSED | _RIGHT_CTRL_PRESSED))
+    ctrl = bool(ctrl_state & (_LEFT_CTRL_PRESSED | _RIGHT_CTRL_PRESSED))
 
     # ── virtual-key codes (carry the modifier state) ──────────────────────────
     if vk == _VK_TAB:
@@ -140,15 +143,24 @@ def _decode_key_event(
     # ── UnicodeChar (control characters + printable) ──────────────────────────
     if unicode_char:
         cp = ord(unicode_char)
-        if cp == 0x03: return (Key.CTRL_C, "")
-        if cp == 0x04: return (Key.CTRL_D, "")
-        if cp == 0x15: return (Key.CTRL_U, "")
-        if cp == 0x16: return (Key.CTRL_V, "")
-        if cp in (0x08, 0x7F): return (Key.BACKSPACE, "")
-        if cp == 0x0D: return (Key.ENTER, "")
-        if cp == 0x0A: return (Key.CTRL_ENTER, "")
-        if cp == 0x09: return (Key.TAB, "")
-        if unicode_char == "@": return (Key.AT, "")
+        if cp == 0x03:
+            return (Key.CTRL_C, "")
+        if cp == 0x04:
+            return (Key.CTRL_D, "")
+        if cp == 0x15:
+            return (Key.CTRL_U, "")
+        if cp == 0x16:
+            return (Key.CTRL_V, "")
+        if cp in (0x08, 0x7F):
+            return (Key.BACKSPACE, "")
+        if cp == 0x0D:
+            return (Key.ENTER, "")
+        if cp == 0x0A:
+            return (Key.CTRL_ENTER, "")
+        if cp == 0x09:
+            return (Key.TAB, "")
+        if unicode_char == "@":
+            return (Key.AT, "")
         if unicode_char.isprintable():
             return (Key.CHAR, unicode_char)
 
@@ -158,13 +170,21 @@ def _decode_key_event(
 # ── getwch fallback decode tables (no real console available) ─────────────────
 
 _EXT_E0: dict[str, Key] = {
-    "H": Key.UP, "P": Key.DOWN, "K": Key.LEFT, "M": Key.RIGHT,
-    "G": Key.HOME, "O": Key.END,
+    "H": Key.UP,
+    "P": Key.DOWN,
+    "K": Key.LEFT,
+    "M": Key.RIGHT,
+    "G": Key.HOME,
+    "O": Key.END,
 }
 _EXT_00: dict[str, Key] = {
     "\x0f": Key.SHIFT_TAB,
-    "H": Key.UP, "P": Key.DOWN, "K": Key.LEFT, "M": Key.RIGHT,
-    "G": Key.HOME, "O": Key.END,
+    "H": Key.UP,
+    "P": Key.DOWN,
+    "K": Key.LEFT,
+    "M": Key.RIGHT,
+    "G": Key.HOME,
+    "O": Key.END,
 }
 
 
@@ -255,17 +275,27 @@ class WindowsBackend:
     def _read_key_getwch(self) -> tuple[Key, str]:
         """Legacy ``msvcrt.getwch()`` decode for non-console environments."""
         import msvcrt  # noqa: PLC0415
+
         ch = msvcrt.getwch()
 
-        if ch == "\x03":           return (Key.CTRL_C, "")
-        if ch == "\x04":           return (Key.CTRL_D, "")
-        if ch == "\r":             return (Key.ENTER, "")
-        if ch == "\n":             return (Key.CTRL_ENTER, "")
-        if ch == "\t":             return (Key.TAB, "")
-        if ch in ("\x7f", "\x08"): return (Key.BACKSPACE, "")
-        if ch == "\x15":           return (Key.CTRL_U, "")
-        if ch == "\x16":           return (Key.CTRL_V, "")
-        if ch == "@":              return (Key.AT, "")
+        if ch == "\x03":
+            return (Key.CTRL_C, "")
+        if ch == "\x04":
+            return (Key.CTRL_D, "")
+        if ch == "\r":
+            return (Key.ENTER, "")
+        if ch == "\n":
+            return (Key.CTRL_ENTER, "")
+        if ch == "\t":
+            return (Key.TAB, "")
+        if ch in ("\x7f", "\x08"):
+            return (Key.BACKSPACE, "")
+        if ch == "\x15":
+            return (Key.CTRL_U, "")
+        if ch == "\x16":
+            return (Key.CTRL_V, "")
+        if ch == "@":
+            return (Key.AT, "")
         if ch == "\xe0":
             ext = msvcrt.getwch()
             mapped = _EXT_E0.get(ext)
@@ -298,7 +328,7 @@ class WindowsBackend:
         """
         self._set_raw_input_mode()
         sys.stdout.write(
-            "\x1b[?25l"    # hide OS cursor (matches POSIX raw_mode)
+            "\x1b[?25l"  # hide OS cursor (matches POSIX raw_mode)
             "\x1b[?2004h"  # enable bracketed paste (harmless on legacy CMD)
         )
         sys.stdout.flush()
@@ -323,9 +353,7 @@ class WindowsBackend:
         if not k32.GetConsoleMode(handle, ctypes.byref(mode)):
             return
         self._orig_mode = mode.value
-        raw = mode.value & ~(
-            _ENABLE_LINE_INPUT | _ENABLE_ECHO_INPUT | _ENABLE_PROCESSED_INPUT
-        )
+        raw = mode.value & ~(_ENABLE_LINE_INPUT | _ENABLE_ECHO_INPUT | _ENABLE_PROCESSED_INPUT)
         k32.SetConsoleMode(handle, raw)
 
     def _restore_input_mode(self) -> None:

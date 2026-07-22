@@ -2,6 +2,7 @@
 
 NOTE: no from __future__ import annotations — @tool() needs real annotations.
 """
+
 import pytest
 from lauren_ai._agents import agent, use_tools
 from lauren_ai._signals import SignalBus
@@ -16,11 +17,18 @@ pytestmark = pytest.mark.e2e
 
 
 def _c(content="ok", n=1):
-    return Completion(id=f"c{n}", model="mock", content=content, tool_calls=[],
-                      stop_reason="end_turn", usage=TokenUsage(input_tokens=5, output_tokens=5))
+    return Completion(
+        id=f"c{n}",
+        model="mock",
+        content=content,
+        tool_calls=[],
+        stop_reason="end_turn",
+        usage=TokenUsage(input_tokens=5, output_tokens=5),
+    )
 
 
 # ── Filesystem E2E ────────────────────────────────────────────────────────
+
 
 async def test_agent_write_read_file(tmp_path):
     workspace = str(tmp_path)
@@ -28,14 +36,14 @@ async def test_agent_write_read_file(tmp_path):
     @tool()
     async def write_f(path: str, content: str) -> dict:
         """Write a file. Args: path: File path. content: File content."""
-        return await WriteFileTool().execute({"path": path, "content": content},
-                                             {"workspace_root": workspace})
+        return await WriteFileTool().execute(
+            {"path": path, "content": content}, {"workspace_root": workspace}
+        )
 
     @tool()
     async def read_f(path: str) -> dict:
         """Read a file. Args: path: File path."""
-        return await ReadFileTool().execute({"path": path},
-                                            {"workspace_root": workspace})
+        return await ReadFileTool().execute({"path": path}, {"workspace_root": workspace})
 
     @agent(model="mock")
     @use_tools(write_f, read_f)
@@ -57,12 +65,12 @@ async def test_agent_write_read_file(tmp_path):
 
 # ── Exec E2E ──────────────────────────────────────────────────────────────
 
+
 async def test_agent_runs_bash(tmp_path):
     @tool()
     async def bash(command: str) -> dict:
         """Run bash. Args: command: Shell command."""
-        return await RunBashTool().execute({"command": command},
-                                           {"workspace_root": str(tmp_path)})
+        return await RunBashTool().execute({"command": command}, {"workspace_root": str(tmp_path)})
 
     @agent(model="mock")
     @use_tools(bash)

@@ -5,6 +5,7 @@ On first launch installs a curated set of skill directories into
 Deliberately deleted skills are tracked in ~/.agenthicc/default_skills.json
 and not recreated.
 """
+
 from __future__ import annotations
 
 import json
@@ -52,7 +53,6 @@ Severity levels: `CRITICAL`, `WARNING`, `NOTE`.
 
 After findings, give a one-paragraph overall verdict.
 """,
-
     "refactor": """\
 ---
 name: Refactor
@@ -86,7 +86,6 @@ Priorities (highest first):
 
 Keep changes focused.  One refactor, one concern.
 """,
-
     "architect": """\
 ---
 name: Architect
@@ -117,7 +116,6 @@ Help the user design, evaluate, or evolve a system architecture.
 
 Be concrete.  Vague advice ("consider microservices") is worthless without context.
 """,
-
     "docs": """\
 ---
 name: Docs
@@ -150,7 +148,6 @@ Produce the documentation directly — no meta-commentary about what you are
 going to write.  If multiple documents are needed, use clear headings to
 separate them.
 """,
-
     "debug": """\
 ---
 name: Debug
@@ -182,7 +179,6 @@ Help the user diagnose and fix a problem.
 
 Do not jump to solutions before understanding the root cause.
 """,
-
     "commit": """\
 ---
 name: Commit
@@ -222,7 +218,6 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`.
 - Never mention file names in the subject unless the change is trivially
   file-scoped (e.g. `docs(README): fix typo`).
 """,
-
     "create-workflow": """\
 ---
 name: Create Workflow

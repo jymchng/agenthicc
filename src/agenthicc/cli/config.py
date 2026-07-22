@@ -1,4 +1,5 @@
 """``agenthicc config`` subcommand handlers."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -27,6 +28,7 @@ port = 8000
 
 def _do_config_show(args) -> None:
     from agenthicc.config import load_config  # noqa: PLC0415
+
     cli_overrides = getattr(args, "set_overrides", [])
     config = load_config(cli_overrides=cli_overrides)
     print("# Effective configuration")

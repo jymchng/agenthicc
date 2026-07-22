@@ -13,6 +13,7 @@ Usage::
 Decorator order does not matter — @set_metadata and @tool() write to different
 attributes and never interfere.  Conventional style is @set_metadata above @tool().
 """
+
 from enum import Enum
 
 from lauren_ai._tools import TOOL_METADATA as _TOOL_METADATA, set_metadata
@@ -45,24 +46,24 @@ class ToolCapability(str, Enum):
     correctly against RuntimeMode.blocked_capabilities.
     """
 
-    READ      = "read"       # reads files / data — no persistent side effects
-    WRITE     = "write"      # creates, modifies, or deletes files / data
-    EXECUTE   = "execute"    # runs shell commands or arbitrary code
-    GIT_READ  = "git_read"   # reads git history, diffs, status, blame
+    READ = "read"  # reads files / data — no persistent side effects
+    WRITE = "write"  # creates, modifies, or deletes files / data
+    EXECUTE = "execute"  # runs shell commands or arbitrary code
+    GIT_READ = "git_read"  # reads git history, diffs, status, blame
     GIT_WRITE = "git_write"  # modifies git state (add, commit, checkout, stash)
-    NETWORK   = "network"    # makes outbound network calls (email, REST API, etc.)
-    SEARCH    = "search"     # searches content without state changes
+    NETWORK = "network"  # makes outbound network calls (email, REST API, etc.)
+    SEARCH = "search"  # searches content without state changes
 
 
 # ── Single-capability decorators ──────────────────────────────────────────────
 
-tool_read      = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.READ}))
-tool_write     = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.WRITE}))
-tool_execute   = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.EXECUTE}))
-tool_git_read  = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.GIT_READ}))
+tool_read = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.READ}))
+tool_write = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.WRITE}))
+tool_execute = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.EXECUTE}))
+tool_git_read = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.GIT_READ}))
 tool_git_write = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.GIT_WRITE}))
-tool_network   = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.NETWORK}))
-tool_search    = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.SEARCH}))
+tool_network = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.NETWORK}))
+tool_search = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.SEARCH}))
 
 # ── Common multi-capability combinations ─────────────────────────────────────
 

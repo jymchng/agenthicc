@@ -31,18 +31,22 @@ class TestGlobMatching:
 class TestRuleOrdering:
     def test_deny_precedence_by_order(self):
         """First matching rule wins: an earlier deny beats a later catch-all allow."""
-        checker = make_checker([
-            PermissionRule(tool_pattern="write_*", action="deny"),
-            PermissionRule(tool_pattern="*", action="allow"),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(tool_pattern="write_*", action="deny"),
+                PermissionRule(tool_pattern="*", action="allow"),
+            ]
+        )
         assert checker.check("write_file") == "deny"
         assert checker.check("read_file") == "allow"
 
     def test_first_matching_allow_beats_later_deny(self):
-        checker = make_checker([
-            PermissionRule(tool_pattern="read_*", action="allow"),
-            PermissionRule(tool_pattern="*", action="deny"),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(tool_pattern="read_*", action="allow"),
+                PermissionRule(tool_pattern="*", action="deny"),
+            ]
+        )
         assert checker.check("read_file") == "allow"
         assert checker.check("write_file") == "deny"
 
@@ -64,109 +68,129 @@ class TestDefaultAction:
 
 class TestRequireConfirmation:
     def test_require_confirmation_action(self):
-        checker = make_checker([
-            PermissionRule(tool_pattern="fs_delete", action="require_confirmation"),
-            PermissionRule(tool_pattern="fs_*", action="allow"),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(tool_pattern="fs_delete", action="require_confirmation"),
+                PermissionRule(tool_pattern="fs_*", action="allow"),
+            ]
+        )
         assert checker.check("fs_delete") == "require_confirmation"
         assert checker.check("fs_read") == "allow"
 
 
 class TestPathPrefixCondition:
     def test_path_prefix_allows_inside(self):
-        checker = make_checker([
-            PermissionRule(
-                tool_pattern="fs_*",
-                action="allow",
-                conditions={"path_prefix": ["/workspace"]},
-            ),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(
+                    tool_pattern="fs_*",
+                    action="allow",
+                    conditions={"path_prefix": ["/workspace"]},
+                ),
+            ]
+        )
         assert checker.check("fs_read", {"path": "/workspace/src/main.py"}) == "allow"
 
     def test_path_prefix_denies_outside(self):
-        checker = make_checker([
-            PermissionRule(
-                tool_pattern="fs_*",
-                action="allow",
-                conditions={"path_prefix": ["/workspace"]},
-            ),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(
+                    tool_pattern="fs_*",
+                    action="allow",
+                    conditions={"path_prefix": ["/workspace"]},
+                ),
+            ]
+        )
         # rule does not fire -> fail-closed default deny
         assert checker.check("fs_read", {"path": "/etc/passwd"}) == "deny"
 
     def test_path_prefix_any_of_multiple(self):
-        checker = make_checker([
-            PermissionRule(
-                tool_pattern="fs_*",
-                action="allow",
-                conditions={"path_prefix": ["/workspace", "/tmp/agenthicc"]},
-            ),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(
+                    tool_pattern="fs_*",
+                    action="allow",
+                    conditions={"path_prefix": ["/workspace", "/tmp/agenthicc"]},
+                ),
+            ]
+        )
         assert checker.check("fs_read", {"path": "/tmp/agenthicc/cache"}) == "allow"
         assert checker.check("fs_read", {"path": "/tmp/other"}) == "deny"
 
     def test_path_prefix_with_missing_path_condition_does_not_match(self):
-        checker = make_checker([
-            PermissionRule(
-                tool_pattern="fs_*",
-                action="allow",
-                conditions={"path_prefix": ["/workspace"]},
-            ),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(
+                    tool_pattern="fs_*",
+                    action="allow",
+                    conditions={"path_prefix": ["/workspace"]},
+                ),
+            ]
+        )
         assert checker.check("fs_read") == "deny"
         assert checker.check("fs_read", {}) == "deny"
 
 
 class TestNetworkDomainCondition:
     def test_allowed_host(self):
-        checker = make_checker([
-            PermissionRule(
-                tool_pattern="http_*",
-                action="allow",
-                conditions={"network_domain": ["api.anthropic.com"]},
-            ),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(
+                    tool_pattern="http_*",
+                    action="allow",
+                    conditions={"network_domain": ["api.anthropic.com"]},
+                ),
+            ]
+        )
         assert checker.check("http_get", {"host": "api.anthropic.com"}) == "allow"
 
     def test_subdomain_of_allowed_domain(self):
-        checker = make_checker([
-            PermissionRule(
-                tool_pattern="http_*",
-                action="allow",
-                conditions={"network_domain": ["example.com"]},
-            ),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(
+                    tool_pattern="http_*",
+                    action="allow",
+                    conditions={"network_domain": ["example.com"]},
+                ),
+            ]
+        )
         assert checker.check("http_get", {"host": "api.example.com"}) == "allow"
 
     def test_blocked_host_falls_through_to_default_deny(self):
-        checker = make_checker([
-            PermissionRule(
-                tool_pattern="http_*",
-                action="allow",
-                conditions={"network_domain": ["api.anthropic.com"]},
-            ),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(
+                    tool_pattern="http_*",
+                    action="allow",
+                    conditions={"network_domain": ["api.anthropic.com"]},
+                ),
+            ]
+        )
         assert checker.check("http_get", {"host": "evil.attacker.com"}) == "deny"
 
     def test_host_extracted_from_url_condition(self):
-        checker = make_checker([
-            PermissionRule(
-                tool_pattern="http_*",
-                action="allow",
-                conditions={"network_domain": ["pypi.org"]},
-            ),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(
+                    tool_pattern="http_*",
+                    action="allow",
+                    conditions={"network_domain": ["pypi.org"]},
+                ),
+            ]
+        )
         assert checker.check("http_get", {"url": "https://pypi.org/simple/"}) == "allow"
         assert checker.check("http_get", {"url": "https://evil.com/x"}) == "deny"
 
 
 class TestUnknownConditions:
     def test_unknown_condition_key_fails_closed(self):
-        checker = make_checker([
-            PermissionRule(
-                tool_pattern="*",
-                action="allow",
-                conditions={"mystery_condition": True},
-            ),
-        ])
+        checker = make_checker(
+            [
+                PermissionRule(
+                    tool_pattern="*",
+                    action="allow",
+                    conditions={"mystery_condition": True},
+                ),
+            ]
+        )
         assert checker.check("read_file", {"path": "/workspace/a"}) == "deny"

@@ -19,8 +19,8 @@ def _sha256_file(path: Path) -> str:
 @dataclass
 class CacheEntry:
     path: str
-    content_hash: str        # SHA-256 of file bytes at injection time
-    injected_at_turn: int    # transcript turn index
+    content_hash: str  # SHA-256 of file bytes at injection time
+    injected_at_turn: int  # transcript turn index
     chars_used: int
 
 
@@ -29,7 +29,7 @@ class MentionCache:
 
     def __init__(self) -> None:
         self._entries: dict[str, CacheEntry] = {}  # path → entry
-        self._url_cache: dict[str, str] = {}        # url → rendered block (G8)
+        self._url_cache: dict[str, str] = {}  # url → rendered block (G8)
 
     def record(
         self,

@@ -1,4 +1,5 @@
 """tui.input — reactive input session components."""
+
 from __future__ import annotations
 
 from agenthicc.tui.input.buffer import InputBuffer

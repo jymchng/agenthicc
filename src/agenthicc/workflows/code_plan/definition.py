@@ -2,6 +2,7 @@
 
 Co-located with the runner and state machine that back it.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -28,16 +29,17 @@ class CodePlanParams(WorkflowParams):
         execute_model = "claude-haiku-4-5"   # cheaper model for implementation
         plan_model    = ""                   # empty → use execution.model
     """
-    plan_model:    str = field(default="")
+
+    plan_model: str = field(default="")
     execute_model: str = field(default="")
-    review_model:  str = field(default="")
+    review_model: str = field(default="")
     summary_model: str = field(default="")
 
     def get_phase_models(self) -> dict[str, str]:
         return {
-            "plan":      self.plan_model,
-            "execute":   self.execute_model,
-            "review":    self.review_model,
+            "plan": self.plan_model,
+            "execute": self.execute_model,
+            "review": self.review_model,
             "summarize": self.summary_model,
         }
 
@@ -49,10 +51,11 @@ class CodePlan(WorkflowPlugin):
     executor already has full context from the planning phase without any
     re-exploration.
     """
-    name          = "code_plan"
-    description   = "Plan → Execute → Review → Summary  (single agent, shared memory)"
+
+    name = "code_plan"
+    description = "Plan → Execute → Review → Summary  (single agent, shared memory)"
     mode_bindings = ["Plan"]
-    phases        = [
+    phases = [
         PhaseSpec(
             name="plan",
             agent_type="auto",
@@ -118,11 +121,12 @@ class CodePlan(WorkflowPlugin):
     @classmethod
     def build_runner(
         cls,
-        config:       WorkflowConfig,
+        config: WorkflowConfig,
         mode_manager: ModeManager | None,
     ) -> CodePlanRunner:
         """Return a CodePlanRunner — uses its own state machine (PRD-116)."""
         from agenthicc.workflows.code_plan.runner import CodePlanRunner  # noqa: PLC0415
+
         return CodePlanRunner(config, mode_manager)
 
     @classmethod

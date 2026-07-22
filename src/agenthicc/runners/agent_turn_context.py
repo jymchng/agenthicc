@@ -4,6 +4,7 @@ All parameters that were previously passed as ``Any`` to ``_run_agent_turn``
 are gathered here as a frozen dataclass with real types.  ``AgentTurnRunner``
 reads from this context; call sites construct it and pass it to the runner.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,39 +31,39 @@ class AgentTurnContext:
     """
 
     # ── required ──────────────────────────────────────────────────────────────
-    text:      str
-    runner:    "AgentRunnerBase | None"     # transport + signals
-    processor: "EventProcessor"      # kernel event bus
+    text: str
+    runner: "AgentRunnerBase | None"  # transport + signals
+    processor: "EventProcessor"  # kernel event bus
 
     # ── memory ────────────────────────────────────────────────────────────────
-    session_memory:  "ShortTermMemory | None" = None
-    max_agent_turns: int                      = 200
+    session_memory: "ShortTermMemory | None" = None
+    max_agent_turns: int = 200
 
     # ── observability ─────────────────────────────────────────────────────────
     conv_store: "ConversationStore | None" = None
-    app_state:  "AppState | None"          = None
-    exec_cfg:   "ExecutionSettings | None" = None
+    app_state: "AppState | None" = None
+    exec_cfg: "ExecutionSettings | None" = None
 
     # ── content injection ─────────────────────────────────────────────────────
-    skills:               "dict | None"       = None
-    mention_cache:        "MentionCache | None" = None
-    project_plugin_tools: "list | None"       = None
-    mcp_registry:         "McpToolRegistry | None" = None
+    skills: "dict | None" = None
+    mention_cache: "MentionCache | None" = None
+    project_plugin_tools: "list | None" = None
+    mcp_registry: "McpToolRegistry | None" = None
 
     # ── agent identity ────────────────────────────────────────────────────────
-    active_agent:     "str | None" = None   # None → "default"
-    completed_turns:  int          = 0
+    active_agent: "str | None" = None  # None → "default"
+    completed_turns: int = 0
 
     # ── approval / hooks ──────────────────────────────────────────────────────
     approval_svc: "ApprovalService | None" = None
 
     # ── memory (PRD-101) ──────────────────────────────────────────────────────
-    memory_router:        "MemoryRouter | None"  = None
-    semantic_index:       "SemanticIndex | None" = None
+    memory_router: "MemoryRouter | None" = None
+    semantic_index: "SemanticIndex | None" = None
 
     # ── output capture ────────────────────────────────────────────────────────
-    output_collector:     "list[str] | None" = None
-    system_prompt_suffix: str                = ""
+    output_collector: "list[str] | None" = None
+    system_prompt_suffix: str = ""
 
     # ── transport retry (PRD-126) ─────────────────────────────────────────────
     #: Absolute ``time.monotonic()`` deadline for retry scheduling.  When a turn

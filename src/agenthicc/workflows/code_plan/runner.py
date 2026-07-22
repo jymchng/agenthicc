@@ -13,6 +13,7 @@ The state machine mirrors the pattern:
 Each phase method owns its own retry loop and returns the next state.
 All routing is explicit Python — no string lookups, no tristate `approved`.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,9 +39,9 @@ _ToolList = list[object]
 
 # ── default retry caps ────────────────────────────────────────────────────────
 
-_MAX_PLAN_ATTEMPTS:    int = 10
+_MAX_PLAN_ATTEMPTS: int = 10
 _MAX_EXECUTE_ATTEMPTS: int = 10
-_MAX_REVIEW_ATTEMPTS:  int = 10
+_MAX_REVIEW_ATTEMPTS: int = 10
 
 # ── system prompts ────────────────────────────────────────────────────────────
 
@@ -97,7 +98,10 @@ _SUMMARIZE_PROMPT: str = (
 )
 
 _PHASE_INDEX: dict[str, int] = {
-    "plan": 0, "execute": 1, "review": 2, "summarize": 3,
+    "plan": 0,
+    "execute": 1,
+    "review": 2,
+    "summarize": 3,
 }
 
 
@@ -118,46 +122,43 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     #: Workflow name written to app_state.workflow_run.  Subclasses must
     #: override this to match their WorkflowPlugin.name.
-    workflow_name:  str = "code_plan"
+    workflow_name: str = "code_plan"
     #: Total number of phases shown in the "N/M" status-bar counter.
-    total_phases:   int = 4
+    total_phases: int = 4
 
     # Per-phase model overrides (PRD-115).  Empty string = use global execution.model.
     # Override as class attributes in subclasses, or set via TOML:
     #   [workflows.code_plan]
     #   plan_model = "deepseek-v4-pro"
-    plan_model:    str = ""
+    plan_model: str = ""
     execute_model: str = ""
-    review_model:  str = ""
+    review_model: str = ""
     summary_model: str = ""
 
     def __init__(
         self,
-        config:       WorkflowConfig,
+        config: WorkflowConfig,
         mode_manager: ModeManager | None = None,
     ) -> None:
-        self._cfg:          WorkflowConfig     = config
+        self._cfg: WorkflowConfig = config
         self._mode_manager: ModeManager | None = mode_manager
-        self._run_id:       str                = ""
+        self._run_id: str = ""
 
         # Gap (lauren-ai): no public model_id accessor on AgentRunnerBase.
-        _transport_cfg  = getattr(
-            getattr(config.agent_runner, "_transport", None), "_config", None
-        )
+        _transport_cfg = getattr(getattr(config.agent_runner, "_transport", None), "_config", None)
         self._model_id: str = (
-            getattr(_transport_cfg, "model", None)
-            or config.cfg.execution.effective_model()
+            getattr(_transport_cfg, "model", None) or config.cfg.execution.effective_model()
         )
 
     # ── public entry points ───────────────────────────────────────────────────
 
     async def run(self, intent: str) -> CodePlanContext:
-        from lauren_ai._memory import ShortTermMemory       # noqa: PLC0415
-        from agenthicc.kernel import Event                  # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
+        from agenthicc.kernel import Event  # noqa: PLC0415
         from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
 
-        run_id:       str           = uuid.uuid4().hex
-        self._run_id: str           = run_id
+        run_id: str = uuid.uuid4().hex
+        self._run_id: str = run_id
 
         ctx: CodePlanContext = CodePlanContext(
             intent=intent,
@@ -176,12 +177,17 @@ class CodePlanRunner(BaseWorkflowRunner):
         )
         self._cfg.app_state.workflow_run.set(wf_run)
 
-        await self._cfg.processor.emit(Event.create("WorkflowRunStarted", {
-            "run_id":        run_id,
-            "workflow_name": self.workflow_name,
-            "intent":        intent,
-            "phase_names":   ["plan", "execute", "review", "summarize"],
-        }))
+        await self._cfg.processor.emit(
+            Event.create(
+                "WorkflowRunStarted",
+                {
+                    "run_id": run_id,
+                    "workflow_name": self.workflow_name,
+                    "intent": intent,
+                    "phase_names": ["plan", "execute", "review", "summarize"],
+                },
+            )
+        )
 
         state: CodePlanState = CodePlanState.PLAN
 
@@ -195,11 +201,16 @@ class CodePlanRunner(BaseWorkflowRunner):
                 )
                 self._cfg.app_state.workflow_run.set(wf_run)
 
-                await self._cfg.processor.emit(Event.create("WorkflowPhaseStarted", {
-                    "run_id":        run_id,
-                    "phase_name":    phase_name,
-                    "workflow_name": self.workflow_name,
-                }))
+                await self._cfg.processor.emit(
+                    Event.create(
+                        "WorkflowPhaseStarted",
+                        {
+                            "run_id": run_id,
+                            "phase_name": phase_name,
+                            "workflow_name": self.workflow_name,
+                        },
+                    )
+                )
 
                 match state:
                     case CodePlanState.PLAN:
@@ -211,18 +222,21 @@ class CodePlanRunner(BaseWorkflowRunner):
                     case CodePlanState.SUMMARIZE:
                         state = await self._summarize(ctx)
 
-                next_label: str | None = (
-                    state.name.lower() if not state.is_terminal else None
+                next_label: str | None = state.name.lower() if not state.is_terminal else None
+                await self._cfg.processor.emit(
+                    Event.create(
+                        "WorkflowPhaseCompleted",
+                        {
+                            "run_id": run_id,
+                            "phase_name": phase_name,
+                            "role": "auto",
+                            "full_text": "",
+                            "approved": None,
+                            "structured": {},
+                            "edge_label": next_label,
+                        },
+                    )
                 )
-                await self._cfg.processor.emit(Event.create("WorkflowPhaseCompleted", {
-                    "run_id":      run_id,
-                    "phase_name":  phase_name,
-                    "role":        "auto",
-                    "full_text":   "",
-                    "approved":    None,
-                    "structured":  {},
-                    "edge_label":  next_label,
-                }))
                 self._cfg.app_state.workflow_run.set(wf_run)
                 log.info("code_plan: %s → %s", phase_name, state.name)
 
@@ -237,16 +251,21 @@ class CodePlanRunner(BaseWorkflowRunner):
             self._cfg.app_state.workflow_run.set(wf_run)
 
             if state == CodePlanState.FAILED and ctx.fail_reason:
-                self._cfg.conv_store.append_event("error", {
-                    "message": f"code_plan failed: {ctx.fail_reason}"
-                })
+                self._cfg.conv_store.append_event(
+                    "error", {"message": f"code_plan failed: {ctx.fail_reason}"}
+                )
 
-            await self._cfg.processor.emit(Event.create("WorkflowRunCompleted", {
-                "run_id":        run_id,
-                "workflow_name": self.workflow_name,
-                "phases_run":    len(wf_run.phase_history),
-                "status":        final_status,
-            }))
+            await self._cfg.processor.emit(
+                Event.create(
+                    "WorkflowRunCompleted",
+                    {
+                        "run_id": run_id,
+                        "workflow_name": self.workflow_name,
+                        "phases_run": len(wf_run.phase_history),
+                        "status": final_status,
+                    },
+                )
+            )
 
         except (asyncio.CancelledError, KeyboardInterrupt):
             wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
@@ -262,13 +281,11 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def resume(self, context: WorkflowContext) -> None:
         """Resume from a WorkflowContext (legacy --resume path)."""
-        from lauren_ai._memory import ShortTermMemory       # noqa: PLC0415
+        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
         from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
 
         completed: set[str] = (
-            set(context.phase_outputs.keys())
-            if hasattr(context, "phase_outputs")
-            else set()
+            set(context.phase_outputs.keys()) if hasattr(context, "phase_outputs") else set()
         )
 
         ctx: CodePlanContext = CodePlanContext(
@@ -285,14 +302,12 @@ class CodePlanRunner(BaseWorkflowRunner):
                 ctx.plan = plan_output.full_text
 
         resume_map: dict[frozenset[str], CodePlanState] = {
-            frozenset():                              CodePlanState.PLAN,
-            frozenset({"plan"}):                      CodePlanState.EXECUTE,
-            frozenset({"plan", "execute"}):           CodePlanState.REVIEW,
+            frozenset(): CodePlanState.PLAN,
+            frozenset({"plan"}): CodePlanState.EXECUTE,
+            frozenset({"plan", "execute"}): CodePlanState.REVIEW,
             frozenset({"plan", "execute", "review"}): CodePlanState.SUMMARIZE,
         }
-        state: CodePlanState = resume_map.get(
-            frozenset(completed), CodePlanState.PLAN
-        )
+        state: CodePlanState = resume_map.get(frozenset(completed), CodePlanState.PLAN)
 
         if not completed:
             await self.run(context.intent)
@@ -340,15 +355,19 @@ class CodePlanRunner(BaseWorkflowRunner):
         exit_event: asyncio.Event = asyncio.Event()
 
         for attempt in range(1, _MAX_PLAN_ATTEMPTS + 1):
-            plan_event: asyncio.Event     = asyncio.Event()
-            plan_data:  dict[str, str]    = {}
+            plan_event: asyncio.Event = asyncio.Event()
+            plan_data: dict[str, str] = {}
 
             tools: _ToolList = (
                 list(self._base_tools())
-                + list(make_planner_tools(
-                    self._cfg.approval_svc, plan_event, plan_data,
-                    exit_event=exit_event,
-                ))
+                + list(
+                    make_planner_tools(
+                        self._cfg.approval_svc,
+                        plan_event,
+                        plan_data,
+                        exit_event=exit_event,
+                    )
+                )
                 + make_questions_tool(self._cfg.approval_svc)
             )
 
@@ -356,9 +375,12 @@ class CodePlanRunner(BaseWorkflowRunner):
 
             try:
                 await self._run_turn(
-                    text, tools=tools, mode=None,
+                    text,
+                    tools=tools,
+                    mode=None,
                     system_prompt=_PLAN_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
-                    max_turns=20, ctx=ctx,
+                    max_turns=20,
+                    ctx=ctx,
                     model_override=self._phase_model("plan"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
@@ -399,23 +421,24 @@ class CodePlanRunner(BaseWorkflowRunner):
         )
 
         for attempt in range(1, _MAX_EXECUTE_ATTEMPTS + 1):
-            execute_event: asyncio.Event  = asyncio.Event()
-            execute_data:  dict[str, str] = {}
+            execute_event: asyncio.Event = asyncio.Event()
+            execute_data: dict[str, str] = {}
 
-            tools: _ToolList = (
-                list(self._base_tools())
-                + list(make_executor_tools(execute_event, execute_data))
+            tools: _ToolList = list(self._base_tools()) + list(
+                make_executor_tools(execute_event, execute_data)
             )
             text: str = (
-                f"[PLAN]\n{ctx.plan}\n\nTask: {ctx.intent}"
-                if attempt == 1
-                else _EXECUTE_REMINDER
+                f"[PLAN]\n{ctx.plan}\n\nTask: {ctx.intent}" if attempt == 1 else _EXECUTE_REMINDER
             )
 
             try:
                 await self._run_turn(
-                    text, tools=tools, mode="Auto",
-                    system_prompt=system_prompt, max_turns=40, ctx=ctx,
+                    text,
+                    tools=tools,
+                    mode="Auto",
+                    system_prompt=system_prompt,
+                    max_turns=40,
+                    ctx=ctx,
                     model_override=self._phase_model("execute"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
@@ -430,14 +453,13 @@ class CodePlanRunner(BaseWorkflowRunner):
                 ctx.execute_summary = execute_data.get("summary", "")
                 return CodePlanState.REVIEW
 
-        ctx.fail_reason = (
-            f"Execute phase exhausted {_MAX_EXECUTE_ATTEMPTS} attempts."
-        )
+        ctx.fail_reason = f"Execute phase exhausted {_MAX_EXECUTE_ATTEMPTS} attempts."
         return CodePlanState.FAILED
 
     async def _review(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until approve_review() or reject_review() fires; return SUMMARIZE, EXECUTE, or FAILED."""
         from agenthicc.workflows.code_plan.phase_tools import make_reviewer_tools  # noqa: PLC0415
+
         self._set_phase("review", 2, ctx)
 
         # Embed accumulated context in the system prompt so every retry turn
@@ -449,22 +471,33 @@ class CodePlanRunner(BaseWorkflowRunner):
             system_prompt += f"\n\n[EXECUTION SUMMARY]\n{ctx.execute_summary}"
 
         for attempt in range(1, _MAX_REVIEW_ATTEMPTS + 1):
-            review_event: asyncio.Event  = asyncio.Event()
-            review_data:  dict[str, str] = {}
+            review_event: asyncio.Event = asyncio.Event()
+            review_data: dict[str, str] = {}
 
-            tools: _ToolList = (
-                list(self._base_tools())
-                + list(make_reviewer_tools(review_event, review_data))
+            tools: _ToolList = list(self._base_tools()) + list(
+                make_reviewer_tools(review_event, review_data)
             )
             text: str = (
-                f"Execution complete. Review the implementation for: {ctx.intent}"
-                + (f"\n\nExecution summary: {ctx.execute_summary}" if ctx.execute_summary else "")
-            ) if attempt == 1 else _REVIEW_REMINDER
+                (
+                    f"Execution complete. Review the implementation for: {ctx.intent}"
+                    + (
+                        f"\n\nExecution summary: {ctx.execute_summary}"
+                        if ctx.execute_summary
+                        else ""
+                    )
+                )
+                if attempt == 1
+                else _REVIEW_REMINDER
+            )
 
             try:
                 await self._run_turn(
-                    text, tools=tools, mode=None,
-                    system_prompt=system_prompt, max_turns=8, ctx=ctx,
+                    text,
+                    tools=tools,
+                    mode=None,
+                    system_prompt=system_prompt,
+                    max_turns=8,
+                    ctx=ctx,
                     model_override=self._phase_model("review"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
@@ -483,9 +516,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 ctx.rejection_reason = review_data.get("reason", "")
                 return CodePlanState.EXECUTE
 
-        ctx.fail_reason = (
-            f"Review phase exhausted {_MAX_REVIEW_ATTEMPTS} attempts."
-        )
+        ctx.fail_reason = f"Review phase exhausted {_MAX_REVIEW_ATTEMPTS} attempts."
         return CodePlanState.FAILED
 
     async def _summarize(self, ctx: CodePlanContext) -> CodePlanState:
@@ -498,9 +529,12 @@ class CodePlanRunner(BaseWorkflowRunner):
         )
         try:
             await self._run_turn(
-                text, tools=self._base_tools(), mode=None,
+                text,
+                tools=self._base_tools(),
+                mode=None,
                 system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
-                max_turns=4, ctx=ctx,
+                max_turns=4,
+                ctx=ctx,
                 model_override=self._phase_model("summarize"),
             )
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -514,11 +548,11 @@ class CodePlanRunner(BaseWorkflowRunner):
     async def run_phase(
         self,
         *,
-        intent:        str,
-        text:          str,
+        intent: str,
+        text: str,
         system_prompt: str,
-        mode:          str | None = None,
-        max_turns:     int = 10,
+        mode: str | None = None,
+        max_turns: int = 10,
         shared_memory: object | None = None,
     ) -> None:
         """Execute one additional agent phase using this runner's tool set.
@@ -551,9 +585,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         from agenthicc.workflows.code_plan.state import CodePlanContext  # noqa: PLC0415
 
         # Build a minimal CodePlanContext so the turn has a shared_memory.
-        _sm = shared_memory or _STM(
-            max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-        )
+        _sm = shared_memory or _STM(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         _ctx = CodePlanContext(
             intent=intent,
             run_id=self._run_id or "extension",
@@ -588,26 +620,26 @@ class CodePlanRunner(BaseWorkflowRunner):
     def _set_phase(self, phase_name: str, phase_index: int, ctx: CodePlanContext) -> None:
         """Update all workflow TUI state for the current phase in one call."""
         self._cfg.app_state.update_workflow_phase(
-            workflow_name = self.workflow_name,
-            phase_name    = phase_name,
-            phase_index   = phase_index,
-            total_phases  = self.total_phases,
-            run_id        = ctx.run_id,
-            intent        = ctx.intent,
-            model_id      = self._phase_model(phase_name) or self._model_id,
+            workflow_name=self.workflow_name,
+            phase_name=phase_name,
+            phase_index=phase_index,
+            total_phases=self.total_phases,
+            run_id=ctx.run_id,
+            intent=ctx.intent,
+            model_id=self._phase_model(phase_name) or self._model_id,
         )
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
     async def _run_turn(
         self,
-        text:           str,
+        text: str,
         *,
-        tools:          _ToolList,
-        mode:           str | None,
-        system_prompt:  str,
-        max_turns:      int,
-        ctx:            CodePlanContext,
+        tools: _ToolList,
+        mode: str | None,
+        system_prompt: str,
+        max_turns: int,
+        ctx: CodePlanContext,
         model_override: str = "",
     ) -> None:
         """Run one agent turn, optionally switching mode for its duration.
@@ -663,9 +695,9 @@ class CodePlanRunner(BaseWorkflowRunner):
     def _base_tools(self) -> _ToolList:
         """Return capability-filtered project tools for the current mode."""
         from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
-        from agenthicc.workflows.memory_tools import make_memory_tools   # noqa: PLC0415
+        from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
 
-        mode_blocked        = self._cfg.app_state.active_mode().blocked_capabilities
+        mode_blocked = self._cfg.app_state.active_mode().blocked_capabilities
         all_tools: _ToolList = list(self._cfg.plugin_tools)
         if self._cfg.mcp_registry is not None:
             try:
@@ -674,11 +706,8 @@ class CodePlanRunner(BaseWorkflowRunner):
                 pass
 
         filtered: _ToolList = [
-            tool for tool in all_tools
-            if not (get_tool_capabilities(tool) & mode_blocked)
+            tool for tool in all_tools if not (get_tool_capabilities(tool) & mode_blocked)
         ]
         # Memory tools carry no capability restrictions — always available.
-        filtered = filtered + make_memory_tools(
-            self._cfg.memory_router, self._cfg.semantic_index
-        )
+        filtered = filtered + make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index)
         return filtered

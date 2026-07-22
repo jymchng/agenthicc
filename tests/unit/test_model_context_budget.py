@@ -47,7 +47,10 @@ class TestResolutionOrder:
 
     def test_empty_model_uses_provider_default(self) -> None:
         # provider anthropic, empty model → claude-opus-4-8 → 1M registry.
-        assert ExecutionSettings(provider="anthropic", model="").effective_context_window() == 1_000_000
+        assert (
+            ExecutionSettings(provider="anthropic", model="").effective_context_window()
+            == 1_000_000
+        )
 
     def test_case_insensitive_model_key(self) -> None:
         e = _exec("Claude-Opus-4-8", **{"claude-opus-4-8": 5_000_000})
@@ -80,7 +83,9 @@ class TestLoadConfig:
             "deepseek-v4-flash = 250000\n"
             '"gpt-4.1" = 1000000\n'
         )
-        cfg = load_config(project_path=project, user_path=tmp_path / "missing.toml", env_overrides=False)
+        cfg = load_config(
+            project_path=project, user_path=tmp_path / "missing.toml", env_overrides=False
+        )
         assert cfg.execution.context_windows == {
             "default": 1_000_000,
             "deepseek-v4-flash": 250_000,
@@ -91,6 +96,8 @@ class TestLoadConfig:
     def test_no_table_means_registry_only(self, tmp_path) -> None:
         project = tmp_path / "agenthicc.toml"
         project.write_text("[execution]\nmodel = 'gpt-4o'\n")
-        cfg = load_config(project_path=project, user_path=tmp_path / "missing.toml", env_overrides=False)
+        cfg = load_config(
+            project_path=project, user_path=tmp_path / "missing.toml", env_overrides=False
+        )
         assert cfg.execution.context_windows == {}
         assert cfg.execution.effective_context_window() == 128_000

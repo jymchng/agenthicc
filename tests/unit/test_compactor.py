@@ -1,4 +1,5 @@
 """Unit tests for conversation compactor (PRD-119)."""
+
 from __future__ import annotations
 
 import pytest
@@ -9,14 +10,17 @@ from agenthicc.memory.compactor import compact_memory, _format_transcript
 
 # ── auto_compact default ───────────────────────────────────────────────────────
 
+
 class TestAutoCompactConfig:
     def test_default_auto_compact_is_true(self) -> None:
         from agenthicc.config import ExecutionSettings
+
         cfg = ExecutionSettings()
         assert cfg.auto_compact is True
 
 
 # ── compact_memory ─────────────────────────────────────────────────────────────
+
 
 class _MockTransport:
     """Minimal transport stub that returns a fixed summary string."""
@@ -39,14 +43,20 @@ class TestCompactMemory:
     def _make_mem(self) -> ShortTermMemory:
         mem = ShortTermMemory(max_tokens=32_000)
         mem.add_user("Please list all files")
-        mem._messages.append({
-            "role": "assistant",
-            "content": [{"type": "tool_use", "id": "tu1", "name": "list_directory", "input": {}}],
-        })
-        mem._messages.append({
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "x" * 10_000}],
-        })
+        mem._messages.append(
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tu1", "name": "list_directory", "input": {}}
+                ],
+            }
+        )
+        mem._messages.append(
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "x" * 10_000}],
+            }
+        )
         return mem
 
     async def test_replaces_messages_with_two(self) -> None:
@@ -88,6 +98,7 @@ class TestCompactMemory:
 
     async def test_compaction_active_cleared_on_success(self) -> None:
         from agenthicc.tui.conversation_store import ConversationStore
+
         conv = ConversationStore()
         mem = self._make_mem()
         transport = _MockTransport()
@@ -112,6 +123,7 @@ class TestCompactMemory:
 
     async def test_conv_store_events_appended(self) -> None:
         from agenthicc.tui.conversation_store import ConversationStore
+
         conv = ConversationStore()
         mem = self._make_mem()
         transport = _MockTransport("done")
@@ -129,6 +141,7 @@ class TestCompactMemory:
 
 
 # ── _format_transcript ─────────────────────────────────────────────────────────
+
 
 class TestFormatTranscript:
     def test_string_content(self) -> None:
@@ -150,25 +163,40 @@ class TestFormatTranscript:
         assert "USER: Do something" in result
 
     def test_tool_use_block(self) -> None:
-        messages = [{"role": "assistant", "content": [
-            {"type": "tool_use", "name": "git_status", "id": "t1", "input": {}},
-        ]}]
+        messages = [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "name": "git_status", "id": "t1", "input": {}},
+                ],
+            }
+        ]
         result = _format_transcript(messages)
         assert "tool_call:git_status" in result
 
     def test_tool_result_block_truncated(self) -> None:
         big = "x" * 1000
-        messages = [{"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": big},
-        ]}]
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": big},
+                ],
+            }
+        ]
         result = _format_transcript(messages)
         assert "tool_result:" in result
         assert "…" in result  # truncated at 500 chars
 
     def test_tool_result_short_not_truncated(self) -> None:
-        messages = [{"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": "short"},
-        ]}]
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "short"},
+                ],
+            }
+        ]
         result = _format_transcript(messages)
         assert "…" not in result
         assert "short" in result
@@ -179,13 +207,16 @@ class TestFormatTranscript:
 
 # ── config TOML parsing ───────────────────────────────────────────────────────
 
+
 class TestConfigParsing:
     def test_default_values(self) -> None:
         from agenthicc.config import _dict_to_config
+
         cfg = _dict_to_config({})
         assert cfg.execution.auto_compact is True
 
     def test_override_auto_compact(self) -> None:
         from agenthicc.config import _dict_to_config
+
         cfg = _dict_to_config({"execution": {"auto_compact": False}})
         assert cfg.execution.auto_compact is False

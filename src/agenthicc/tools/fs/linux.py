@@ -1,4 +1,5 @@
 """LinuxFilesystemBackend — local POSIX implementation of FilesystemBackend."""
+
 from __future__ import annotations
 
 import os
@@ -272,9 +273,7 @@ class LinuxFilesystemBackend:
                     {"path": path, "ok": True, "error": "", "bytes_written": bytes_written}
                 )
             except Exception as exc:
-                results.append(
-                    {"path": path, "ok": False, "error": str(exc), "bytes_written": 0}
-                )
+                results.append({"path": path, "ok": False, "error": str(exc), "bytes_written": 0})
         return results
 
     def batch_delete(self, paths: list[str]) -> list[dict]:
@@ -291,6 +290,6 @@ class LinuxFilesystemBackend:
 # ---------------------------------------------------------------------------
 # Runtime Protocol conformance check — catches regressions at import time.
 # ---------------------------------------------------------------------------
-assert isinstance(
-    LinuxFilesystemBackend(), FilesystemBackend
-), "LinuxFilesystemBackend does not satisfy the FilesystemBackend Protocol"
+assert isinstance(LinuxFilesystemBackend(), FilesystemBackend), (
+    "LinuxFilesystemBackend does not satisfy the FilesystemBackend Protocol"
+)

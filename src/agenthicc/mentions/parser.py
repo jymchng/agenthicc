@@ -9,22 +9,23 @@ __all__ = ["MentionKind", "Mention", "parse_mentions", "strip_mentions"]
 
 
 class MentionKind(str, Enum):
-    FILE        = "file"
-    DIRECTORY   = "directory"
-    GLOB        = "glob"
-    URL         = "url"
-    UNRESOLVED  = "unresolved"
+    FILE = "file"
+    DIRECTORY = "directory"
+    GLOB = "glob"
+    URL = "url"
+    UNRESOLVED = "unresolved"
 
 
 @dataclass
 class Mention:
     """A single @mention token extracted from user input."""
-    raw: str              # the original token including @, e.g. "@src/auth.py"
-    path: str             # the path/URL part, e.g. "src/auth.py"
+
+    raw: str  # the original token including @, e.g. "@src/auth.py"
+    path: str  # the path/URL part, e.g. "src/auth.py"
     kind: MentionKind
     resolved: Path | None  # absolute Path for file/directory/unresolved; None for url/glob
-    start: int            # character offset of "@" in the original string
-    end: int              # character offset after the last char of the token
+    start: int  # character offset of "@" in the original string
+    end: int  # character offset after the last char of the token
 
 
 # Regex: @ followed by non-whitespace / non-delimiter chars.
@@ -32,7 +33,7 @@ class Mention:
 _MENTION_RE = re.compile(r"@([^\s,;)\]'\"]+)")
 
 _URL_PREFIXES = ("http://", "https://")
-_GLOB_CHARS   = frozenset("*?[")
+_GLOB_CHARS = frozenset("*?[")
 
 
 def parse_mentions(
@@ -59,18 +60,30 @@ def parse_mentions(
 
         # URL
         if any(path_str.startswith(p) for p in _URL_PREFIXES):
-            mentions.append(Mention(
-                raw=raw, path=path_str, kind=MentionKind.URL,
-                resolved=None, start=start, end=end,
-            ))
+            mentions.append(
+                Mention(
+                    raw=raw,
+                    path=path_str,
+                    kind=MentionKind.URL,
+                    resolved=None,
+                    start=start,
+                    end=end,
+                )
+            )
             continue
 
         # Glob
         if any(c in path_str for c in _GLOB_CHARS):
-            mentions.append(Mention(
-                raw=raw, path=path_str, kind=MentionKind.GLOB,
-                resolved=None, start=start, end=end,
-            ))
+            mentions.append(
+                Mention(
+                    raw=raw,
+                    path=path_str,
+                    kind=MentionKind.GLOB,
+                    resolved=None,
+                    start=start,
+                    end=end,
+                )
+            )
             continue
 
         # File system path — resolve relative to cwd
@@ -84,10 +97,16 @@ def parse_mentions(
         else:
             kind = MentionKind.UNRESOLVED
 
-        mentions.append(Mention(
-            raw=raw, path=path_str, kind=kind,
-            resolved=resolved, start=start, end=end,
-        ))
+        mentions.append(
+            Mention(
+                raw=raw,
+                path=path_str,
+                kind=kind,
+                resolved=resolved,
+                start=start,
+                end=end,
+            )
+        )
 
     return mentions
 

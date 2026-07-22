@@ -8,6 +8,7 @@
 All application code must use the backend interface; no feature code may
 import ``msvcrt``, ``termios``, or ``tty`` directly.
 """
+
 from __future__ import annotations
 
 import os
@@ -52,6 +53,8 @@ def get_backend() -> TerminalBackend:
     """
     if os.name == "nt":
         from agenthicc.tui.terminal.windows_backend import WindowsBackend  # noqa: PLC0415
+
         return WindowsBackend()
     from agenthicc.tui.terminal.posix_backend import PosixBackend  # noqa: PLC0415
+
     return PosixBackend()

@@ -1,4 +1,5 @@
 """Unit tests for per-agent capability scoping (PRD-19)."""
+
 from __future__ import annotations
 import pytest
 from agenthicc.security import AgentCapabilityScope, PermissionChecker, ScopeManager
@@ -19,7 +20,9 @@ class TestAgentCapabilityScope:
         assert not s.is_tool_allowed("run_bash")
 
     def test_denied_overrides_allowed(self):
-        s = AgentCapabilityScope(allowed_tools=frozenset(["run_bash"]), denied_tools=frozenset(["run_bash"]))
+        s = AgentCapabilityScope(
+            allowed_tools=frozenset(["run_bash"]), denied_tools=frozenset(["run_bash"])
+        )
         assert not s.is_tool_allowed("run_bash")
 
     def test_wildcard_in_denied(self):
@@ -35,7 +38,7 @@ class TestAgentCapabilityScope:
 
     def test_restrict_child_cannot_expand(self):
         parent = AgentCapabilityScope(allowed_tools=frozenset(["a"]))
-        child = AgentCapabilityScope(allowed_tools=None)   # wants all
+        child = AgentCapabilityScope(allowed_tools=None)  # wants all
         r = parent.restrict(child)
         assert r.allowed_tools == frozenset(["a"])
 
@@ -56,8 +59,12 @@ class TestAgentCapabilityScope:
         assert p.restrict(c).max_spawn_depth == 2
 
     def test_from_dict_to_dict_roundtrip(self):
-        data = {"allowed_tools": ["a", "b"], "denied_tools": ["c"],
-                "max_tool_call_budget": 30, "max_spawn_depth": 2}
+        data = {
+            "allowed_tools": ["a", "b"],
+            "denied_tools": ["c"],
+            "max_tool_call_budget": 30,
+            "max_spawn_depth": 2,
+        }
         s = AgentCapabilityScope.from_dict(data)
         assert s.max_tool_call_budget == 30
         assert "c" in s.denied_tools
@@ -114,7 +121,9 @@ class TestScopeManager:
 
 class TestPermissionCheckerWithScope:
     def _policy(self):
-        return SecurityPolicy(permission_rules=(PermissionRule("run_bash", "allow"),), default_action="deny")
+        return SecurityPolicy(
+            permission_rules=(PermissionRule("run_bash", "allow"),), default_action="deny"
+        )
 
     def test_scope_deny_overrides_global_allow(self):
         mgr = ScopeManager()

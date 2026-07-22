@@ -21,6 +21,7 @@ overlay chrome (header+top-border+nav+2-blanks+question+blank-after-options+
 bottom-border+hint=9) + workspace (bottom-border+footer+margin=5).
 opt_rows = min(max_opts_any_question, max(1, rows − 19)).
 """
+
 from __future__ import annotations
 
 import shutil
@@ -35,8 +36,8 @@ if TYPE_CHECKING:
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlays.prompt import PromptOverlay
 
-_BORDER       = "─"
-_OTHER_LABEL  = "Other — type your answer"
+_BORDER = "─"
+_OTHER_LABEL = "Other — type your answer"
 
 
 def _str_option(opt: object) -> str:
@@ -60,22 +61,22 @@ def _str_option(opt: object) -> str:
 
 @dataclass(frozen=True)
 class Question:
-    id:      str
-    text:    str
+    id: str
+    text: str
     options: list[str]
 
 
 @dataclass
 class _QState:
-    cursor:     int  = 0      # highlighted option index (absolute)
-    answer:     str  = ""     # confirmed answer (option label or typed text)
-    answered:   bool = False
-    opt_scroll: int  = 0      # index of first visible option in the viewport
+    cursor: int = 0  # highlighted option index (absolute)
+    answer: str = ""  # confirmed answer (option label or typed text)
+    answered: bool = False
+    opt_scroll: int = 0  # index of first visible option in the viewport
 
 
 class _Mode(Enum):
     SELECTING = auto()
-    TYPING    = auto()
+    TYPING = auto()
 
 
 class QuestionsOverlay(PromptOverlay):
@@ -85,15 +86,15 @@ class QuestionsOverlay(PromptOverlay):
 
     def __init__(
         self,
-        req:      ApprovalRequest,
-        service:  ApprovalService,
+        req: ApprovalRequest,
+        service: ApprovalService,
         close_fn: Callable[[], None],
     ) -> None:
         super().__init__()
-        self._req     = req
+        self._req = req
         self._service = service
-        self._close   = close_fn
-        self._mode    = _Mode.SELECTING
+        self._close = close_fn
+        self._mode = _Mode.SELECTING
         self._current = 0
 
         raw: list[dict] = (req.tool_input or {}).get("questions", [])
@@ -114,12 +115,12 @@ class QuestionsOverlay(PromptOverlay):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self._mode    = _Mode.SELECTING
+        self._mode = _Mode.SELECTING
         self._current = 0
         for s in self._states:
-            s.cursor     = 0
-            s.answer     = ""
-            s.answered   = False
+            s.cursor = 0
+            s.answer = ""
+            s.answered = False
             s.opt_scroll = 0
 
     def on_unmount(self) -> None:
@@ -173,17 +174,15 @@ class QuestionsOverlay(PromptOverlay):
 
     def _submit(self) -> None:
         import json  # noqa: PLC0415
-        answers = {
-            q.id: s.answer
-            for q, s in zip(self._questions, self._states)
-        }
+
+        answers = {q.id: s.answer for q, s in zip(self._questions, self._states)}
         self._service.respond(allowed=True, message=json.dumps(answers))
         self._close()
 
     def _clamp_opt_scroll(self, q_idx: int) -> None:
         """Ensure opt_scroll keeps the cursor inside the visible options window."""
-        st       = self._states[q_idx]
-        n        = len(self._opts(q_idx))
+        st = self._states[q_idx]
+        n = len(self._opts(q_idx))
         opt_rows = self._opt_rows
         # Cursor below viewport → scroll down.
         if st.cursor >= st.opt_scroll + opt_rows:
@@ -198,77 +197,76 @@ class QuestionsOverlay(PromptOverlay):
 
     def _render_selecting(self) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text      # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
 
-        term     = shutil.get_terminal_size((80, 24))
-        cols     = term.columns
-        rows     = term.lines
+        term = shutil.get_terminal_size((80, 24))
+        cols = term.columns
+        rows = term.lines
         border_w = min(cols, 66)
 
         # Max options (including "Other") across all questions.
         max_opts = max((len(self._opts(i)) for i in range(len(self._questions))), default=2)
         # Overhead = 17 lines (18 minus the 1-row workspace Layout margin).
         # Overhead = 19 fixed rows; floor at 1 so the footer always fits.
-        opt_rows       = min(max_opts, max(1, rows - 19))
-        self._opt_rows = opt_rows   # read by _handle_selecting
+        opt_rows = min(max_opts, max(1, rows - 19))
+        self._opt_rows = opt_rows  # read by _handle_selecting
 
         lines: list[RenderableType] = []
 
-        n_ans   = sum(1 for s in self._states if s.answered)
+        n_ans = sum(1 for s in self._states if s.answered)
         n_total = len(self._questions)
 
         # Header
-        lines.append(Text.from_markup(
-            f"[bold cyan]  ❓ Questions[/bold cyan]"
-            f"[dim]  ({n_ans} of {n_total} answered)[/dim]"
-        ))
+        lines.append(
+            Text.from_markup(
+                f"[bold cyan]  ❓ Questions[/bold cyan][dim]  ({n_ans} of {n_total} answered)[/dim]"
+            )
+        )
         lines.append(Text(_BORDER * border_w, style="dim"))
 
         # Navigation + dot indicators
         q_idx = self._current
-        left  = "◀ " if q_idx > 0           else "  "
+        left = "◀ " if q_idx > 0 else "  "
         right = " ▶" if q_idx < n_total - 1 else "  "
-        nav   = f"{left}Question {q_idx + 1} of {n_total}{right}"
-        dots  = " ".join("●" if s.answered else "○" for s in self._states)
-        gap   = max(1, border_w - 4 - len(nav) - len(dots))
+        nav = f"{left}Question {q_idx + 1} of {n_total}{right}"
+        dots = " ".join("●" if s.answered else "○" for s in self._states)
+        gap = max(1, border_w - 4 - len(nav) - len(dots))
         lines.append(Text(f"  {nav}" + " " * gap + dots, style="dim"))
         lines.append(Text(""))
 
         # Question text
-        q  = self._questions[q_idx]
+        q = self._questions[q_idx]
         st = self._states[q_idx]
         lines.append(Text(f"  {q.text}"))
         lines.append(Text(""))
 
         # Options viewport — always exactly opt_rows lines.
         opts = self._opts(q_idx)
-        n    = len(opts)
+        n = len(opts)
         self._clamp_opt_scroll(q_idx)
-        scroll     = st.opt_scroll
-        end        = min(scroll + opt_rows, n)
-        shown      = end - scroll
+        scroll = st.opt_scroll
+        end = min(scroll + opt_rows, n)
+        shown = end - scroll
 
         for i in range(scroll, end):
-            opt       = opts[i]
+            opt = opts[i]
             is_cursor = i == st.cursor
-            is_other  = self._is_other_idx(q_idx, i)
-            is_answer = (
-                st.answered and (
-                    (is_other and self._is_free_text_answer(q_idx))
-                    or (not is_other and st.answer == opt)
-                )
+            is_other = self._is_other_idx(q_idx, i)
+            is_answer = st.answered and (
+                (is_other and self._is_free_text_answer(q_idx))
+                or (not is_other and st.answer == opt)
             )
             label = self._opt_label(q_idx, i)
 
             if is_cursor:
                 indicator = "▶"
-                style     = "reverse"
+                style = "reverse"
             elif is_answer:
                 indicator = "✓"
-                style     = ""
+                style = ""
             else:
                 indicator = " "
-                style     = "dim"
+                style = "dim"
 
             lines.append(Text(f"  {indicator} {label}", style=style))
 
@@ -294,24 +292,24 @@ class QuestionsOverlay(PromptOverlay):
                 self._close()
             return True
 
-        q_idx    = self._current
-        st       = self._states[q_idx]
-        opts     = self._opts(q_idx)
-        n        = len(opts)
+        q_idx = self._current
+        st = self._states[q_idx]
+        opts = self._opts(q_idx)
+        n = len(opts)
         opt_rows = self._opt_rows
 
         match key:
             case Key.UP:
                 st.cursor = (st.cursor - 1) % n
-                if st.cursor == n - 1:            # wrapped to bottom
+                if st.cursor == n - 1:  # wrapped to bottom
                     st.opt_scroll = max(0, n - opt_rows)
-                elif st.cursor < st.opt_scroll:   # scrolled above viewport
+                elif st.cursor < st.opt_scroll:  # scrolled above viewport
                     st.opt_scroll = st.cursor
             case Key.DOWN:
                 st.cursor = (st.cursor + 1) % n
-                if st.cursor == 0:                          # wrapped to top
+                if st.cursor == 0:  # wrapped to top
                     st.opt_scroll = 0
-                elif st.cursor >= st.opt_scroll + opt_rows: # scrolled below
+                elif st.cursor >= st.opt_scroll + opt_rows:  # scrolled below
                     st.opt_scroll = st.cursor - opt_rows + 1
             case Key.LEFT:
                 self._current = max(0, self._current - 1)
@@ -326,7 +324,7 @@ class QuestionsOverlay(PromptOverlay):
                         self._buf.clear()
                     self._mode = _Mode.TYPING
                 else:
-                    st.answer   = opts[st.cursor]
+                    st.answer = opts[st.cursor]
                     st.answered = True
                     if self._all_answered():
                         self._submit()
@@ -344,17 +342,19 @@ class QuestionsOverlay(PromptOverlay):
 
     def _render_typing(self) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text      # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
 
-        cols     = shutil.get_terminal_size((80, 24)).columns
+        cols = shutil.get_terminal_size((80, 24)).columns
         border_w = min(cols, 66)
-        q        = self._questions[self._current]
+        q = self._questions[self._current]
         lines: list[RenderableType] = []
 
-        lines.append(Text.from_markup(
-            f"[bold cyan]  ❓ Question {self._current + 1} of {len(self._questions)}"
-            f"[/bold cyan][dim] — type your answer[/dim]"
-        ))
+        lines.append(
+            Text.from_markup(
+                f"[bold cyan]  ❓ Question {self._current + 1} of {len(self._questions)}"
+                f"[/bold cyan][dim] — type your answer[/dim]"
+            )
+        )
         lines.append(Text(_BORDER * border_w, style="dim"))
         lines.append(Text(""))
         lines.append(Text(f"  {q.text}"))
@@ -371,8 +371,8 @@ class QuestionsOverlay(PromptOverlay):
             case Key.ENTER:
                 text = self._prompt_text.strip()
                 if text:
-                    st          = self._states[self._current]
-                    st.answer   = text
+                    st = self._states[self._current]
+                    st.answer = text
                     st.answered = True
                     self._buf.clear()
                     self._mode = _Mode.SELECTING
@@ -392,7 +392,8 @@ class QuestionsOverlay(PromptOverlay):
 
     def _render_empty(self) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text      # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
+
         cols = shutil.get_terminal_size((80, 24)).columns
         return Group(
             Text.from_markup("[bold cyan]  ❓ Questions[/bold cyan]"),

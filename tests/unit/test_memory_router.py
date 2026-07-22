@@ -96,7 +96,9 @@ class TestTTLPassthrough:
 class TestArtifacts:
     async def test_publish_and_read_round_trip(self, tmp_path):
         router = make_router(tmp_path)
-        pub = await router.publish_artifact(b"artifact bytes", content_type="application/octet-stream")
+        pub = await router.publish_artifact(
+            b"artifact bytes", content_type="application/octet-stream"
+        )
         assert pub["ok"] is True
         artifact_id = pub["artifact_id"]
         assert artifact_id

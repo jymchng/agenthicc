@@ -1,4 +1,5 @@
 """Tests for PRD-116: WorkflowPlugin as registry artifact, WorkflowDefinition removed."""
+
 from __future__ import annotations
 
 import pytest
@@ -14,6 +15,7 @@ from agenthicc.workflows.loader import load_builtin_workflows
 
 
 # ── WorkflowPlugin class attributes ──────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_plugin_has_max_total_phase_runs_attribute() -> None:
@@ -32,6 +34,7 @@ def test_plugin_subclass_can_override_max_total_phase_runs() -> None:
 
 
 # ── WorkflowPlugin classmethods ───────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_first_phase_returns_none_for_empty_phases() -> None:
@@ -79,6 +82,7 @@ def test_phase_names_returns_ordered_list() -> None:
 
 
 # ── WorkflowPlugin factory methods ───────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_build_params_default_returns_base_params() -> None:
@@ -142,9 +146,11 @@ def test_build_runner_override_returns_custom_runner() -> None:
 
 # ── WorkflowDefinition is gone ────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_workflow_definition_does_not_exist() -> None:
     import agenthicc.workflows.plugin as mod
+
     assert not hasattr(mod, "WorkflowDefinition"), (
         "WorkflowDefinition was deleted in PRD-116 but still exists"
     )
@@ -152,9 +158,7 @@ def test_workflow_definition_does_not_exist() -> None:
 
 @pytest.mark.unit
 def test_workflow_plugin_has_no_to_definition() -> None:
-    assert not hasattr(WorkflowPlugin, "to_definition"), (
-        "to_definition() was deleted in PRD-116"
-    )
+    assert not hasattr(WorkflowPlugin, "to_definition"), "to_definition() was deleted in PRD-116"
 
 
 @pytest.mark.unit
@@ -173,9 +177,11 @@ def test_workflow_plugin_has_no_params_factory_attribute() -> None:
 
 # ── WorkflowEntry ─────────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_workflow_entry_is_importable() -> None:
     from agenthicc.workflows.plugin import WorkflowEntry
+
     assert WorkflowEntry is not None
 
 
@@ -193,6 +199,7 @@ def test_workflow_entry_stores_plugin_class() -> None:
 
 
 # ── WorkflowRegistry ─────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_registry_register_and_get_plugin_class() -> None:
@@ -228,24 +235,30 @@ def test_registry_get_entry_returns_workflow_entry() -> None:
 @pytest.mark.unit
 def test_registry_mode_default_map() -> None:
     class A(WorkflowPlugin):
-        name = "a"; mode_bindings = ["Plan"]
+        name = "a"
+        mode_bindings = ["Plan"]
+
     class B(WorkflowPlugin):
-        name = "b"; mode_bindings = ["Plan", "Auto"]
+        name = "b"
+        mode_bindings = ["Plan", "Auto"]
 
     reg = WorkflowRegistry()
     reg.register(A)
     reg.register(B)
     dm = reg.mode_default_map()
-    assert dm["Plan"] == "a"   # first-registered wins
+    assert dm["Plan"] == "a"  # first-registered wins
     assert dm["Auto"] == "b"
 
 
 @pytest.mark.unit
 def test_registry_mode_available_map() -> None:
     class A(WorkflowPlugin):
-        name = "a"; mode_bindings = ["Plan"]
+        name = "a"
+        mode_bindings = ["Plan"]
+
     class B(WorkflowPlugin):
-        name = "b"; mode_bindings = ["Plan"]
+        name = "b"
+        mode_bindings = ["Plan"]
 
     reg = WorkflowRegistry()
     reg.register(A)
@@ -255,6 +268,7 @@ def test_registry_mode_available_map() -> None:
 
 
 # ── loader ────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_load_builtin_workflows_returns_plugin_classes() -> None:

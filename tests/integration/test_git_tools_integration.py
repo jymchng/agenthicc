@@ -1,9 +1,16 @@
 """Integration tests for git tools with a real git repository (PRD-15)."""
+
 from __future__ import annotations
 import subprocess
 import pytest
-from agenthicc.tools.git import (GitStatusTool, GitLogTool, GitAddTool,
-    GitCommitTool, GitDiffTool, GitBranchTool)
+from agenthicc.tools.git import (
+    GitStatusTool,
+    GitLogTool,
+    GitAddTool,
+    GitCommitTool,
+    GitDiffTool,
+    GitBranchTool,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -14,16 +21,25 @@ def git_repo(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "false"], cwd=repo, check=True, capture_output=True
+    )
     (repo / "README.md").write_text("# Test\n")
     subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Initial commit"], cwd=repo, check=True, capture_output=True
+    )
     return repo
 
 
-def ctx(repo): return {"workspace_root": str(repo)}
+def ctx(repo):
+    return {"workspace_root": str(repo)}
 
 
 async def test_status_clean(git_repo):

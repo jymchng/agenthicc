@@ -8,6 +8,7 @@ Capability convenience sets replace the old tool_access strings:
     READ_CAPS   — read, git_read, search
     WRITE_CAPS  — write, git_write, execute, network
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -33,47 +34,54 @@ BASE_SYSTEM_PROMPT = (
 
 # ── Capability shorthands ──────────────────────────────────────────────────────
 
-READ_CAPS: frozenset[ToolCapability] = frozenset({
-    ToolCapability.READ,
-    ToolCapability.GIT_READ,
-    ToolCapability.SEARCH,
-})
+READ_CAPS: frozenset[ToolCapability] = frozenset(
+    {
+        ToolCapability.READ,
+        ToolCapability.GIT_READ,
+        ToolCapability.SEARCH,
+    }
+)
 
-WRITE_CAPS: frozenset[ToolCapability] = frozenset({
-    ToolCapability.WRITE,
-    ToolCapability.GIT_WRITE,
-    ToolCapability.EXECUTE,
-    ToolCapability.NETWORK,
-})
+WRITE_CAPS: frozenset[ToolCapability] = frozenset(
+    {
+        ToolCapability.WRITE,
+        ToolCapability.GIT_WRITE,
+        ToolCapability.EXECUTE,
+        ToolCapability.NETWORK,
+    }
+)
 
 # ── Role → default allowed capabilities ──────────────────────────────────────
 # Used when PhaseSpec.allowed_capabilities is None.
 # None means "all capabilities the session mode permits" (mode ceiling applies).
 
 ROLE_DEFAULT_ALLOWED: dict[str, frozenset[ToolCapability] | None] = {
-    "planner":  READ_CAPS,
-    "executor": None,         # full access within mode ceiling
+    "planner": READ_CAPS,
+    "executor": None,  # full access within mode ceiling
     "reviewer": READ_CAPS,
     "explorer": READ_CAPS,
     "verifier": READ_CAPS,
-    "human":    frozenset(),  # no tools — waits for user input
-    "custom":   None,
-    "auto":     None,
+    "human": frozenset(),  # no tools — waits for user input
+    "custom": None,
+    "auto": None,
 }
 
 
 # ── AgentDefinition ───────────────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class AgentDefinition:
     """Registry entry: maps a name to a @agent(...)-decorated class."""
-    name:                 str
-    agent_class:          type                           # @agent(model=None,system=…) class
+
+    name: str
+    agent_class: type  # @agent(model=None,system=…) class
     allowed_capabilities: frozenset[ToolCapability] | None = None
-    source:               str                            = "builtin"
+    source: str = "builtin"
 
 
 # ── AgentPlugin ───────────────────────────────────────────────────────────────
+
 
 class AgentPlugin:
     """ABC for user/project agent plugins.
@@ -97,7 +105,8 @@ class AgentPlugin:
     The file must export AGENTS = [MyPlannerAgent] or the class will be
     discovered by name scanning.
     """
-    name:                 str                            = ""
+
+    name: str = ""
     allowed_capabilities: frozenset[ToolCapability] | None = None
-    replaces:             str | None                     = None
-    source:               str                            = "user"
+    replaces: str | None = None
+    source: str = "user"

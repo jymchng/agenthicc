@@ -13,6 +13,7 @@ Flow for a side-effecting tool in Guard mode:
    sets the event.  The suspended coroutine resumes.
 6. ApprovalGate returns proceed() or abort() based on the response.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,20 +33,20 @@ __all__ = [
 
 @dataclass(frozen=True)
 class ApprovalRequest:
-    tool_name:    str
-    tool_use_id:  str
-    tool_input:   dict
+    tool_name: str
+    tool_use_id: str
+    tool_input: dict
     capabilities: frozenset  # ToolCapability values that triggered the approval
-    event:        asyncio.Event = field(compare=False, hash=False)
-    kind:         str = "tool"   # "tool" | "plan_review" — controls which overlay is shown
+    event: asyncio.Event = field(compare=False, hash=False)
+    kind: str = "tool"  # "tool" | "plan_review" — controls which overlay is shown
 
 
 @dataclass(frozen=True)
 class ApprovalResponse:
-    allowed:      bool
-    remember:     bool = False      # allow all remaining calls of this capability this turn
-    remember_all: bool = False      # allow all remaining calls of this capability this session
-    message:      str  = ""         # user-typed feedback / instructions (plan_review only)
+    allowed: bool
+    remember: bool = False  # allow all remaining calls of this capability this turn
+    remember_all: bool = False  # allow all remaining calls of this capability this session
+    message: str = ""  # user-typed feedback / instructions (plan_review only)
 
 
 class ApprovalService:
@@ -59,11 +60,11 @@ class ApprovalService:
     """
 
     def __init__(self, app_state: AppState) -> None:
-        self._app_state        = app_state
-        self._response:        ApprovalResponse | None = None
+        self._app_state = app_state
+        self._response: ApprovalResponse | None = None
         self._remembered_turn: frozenset = frozenset()
-        self._remembered_all:  frozenset = frozenset()
-        self._lock             = asyncio.Lock()
+        self._remembered_all: frozenset = frozenset()
+        self._lock = asyncio.Lock()
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
         """Agent-side: suspend until the user responds."""
@@ -123,18 +124,18 @@ class ApprovalGate:
 
     def __init__(self, app_state: AppState, service: ApprovalService) -> None:
         self._app_state = app_state
-        self._service   = service
+        self._service = service
 
     async def before_tool_call(self, ctx: object) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
-        from agenthicc.tools.capabilities import CAPABILITIES_KEY   # noqa: PLC0415
+        from agenthicc.tools.capabilities import CAPABILITIES_KEY  # noqa: PLC0415
 
         # PRD-79: --dangerously-skip-permissions bypasses all approval prompts.
         if getattr(self._app_state, "cli_flags", None) is not None:
             if self._app_state.cli_flags.dangerously_skip_permissions:
                 return BeforeToolHookDecision.proceed()
 
-        mode     = self._app_state.active_mode()
+        mode = self._app_state.active_mode()
         required = mode.approval_required
         if not required:
             return BeforeToolHookDecision.proceed()
@@ -154,15 +155,19 @@ class ApprovalGate:
         response = await self._service.request_approval(req)
         if response.allowed:
             return BeforeToolHookDecision.proceed()
-        return BeforeToolHookDecision.abort({
-            "ok":    False,
-            "error": f"User denied permission to run '{ctx.tool_name}'.",
-        })
+        return BeforeToolHookDecision.abort(
+            {
+                "ok": False,
+                "error": f"User denied permission to run '{ctx.tool_name}'.",
+            }
+        )
 
     async def after_tool_call(self, result: object, ctx: object) -> object:
         from lauren_ai._tools._hooks import AfterToolHookDecision  # noqa: PLC0415
+
         return AfterToolHookDecision.proceed()
 
     async def on_tool_error(self, exc: Exception, ctx: object) -> object:
         from lauren_ai._tools._hooks import ErrorToolHookDecision  # noqa: PLC0415
+
         return ErrorToolHookDecision.reraise()

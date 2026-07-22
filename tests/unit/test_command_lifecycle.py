@@ -3,6 +3,7 @@
 Tests cover source namespacing, bulk unregistration, plugin COMMANDS export,
 skill handler factory, completions_factory field, and config menu dispatch.
 """
+
 from __future__ import annotations
 
 import pytest

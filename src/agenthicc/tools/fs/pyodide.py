@@ -8,6 +8,7 @@ All paths are resolved against ``self._root`` (default: ``/workspace``).
 Relative paths are joined to the root; absolute paths are used as-is,
 provided they do not escape the root.
 """
+
 from __future__ import annotations
 
 import posixpath
@@ -70,9 +71,7 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
             abs_path = f"{self._root}/{path.lstrip('/')}"
         normed = posixpath.normpath(abs_path)
         if not normed.startswith(self._root):
-            raise PermissionError(
-                f"Path '{path}' resolves outside workspace root '{self._root}'."
-            )
+            raise PermissionError(f"Path '{path}' resolves outside workspace root '{self._root}'.")
         return normed
 
     def _ensure_dir(self, path: str) -> None:
@@ -121,9 +120,7 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
         self._fs.writeFile(abs_path, content, {"encoding": "utf8"})
         return len(content.encode(encoding))
 
-    def write_bytes(
-        self, path: str, data: bytes, create_parents: bool = True
-    ) -> int:
+    def write_bytes(self, path: str, data: bytes, create_parents: bool = True) -> int:
         abs_path = self._resolve(path)
         if create_parents:
             parent = posixpath.dirname(abs_path)
@@ -210,6 +207,7 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
                     continue
                 # Simple glob pattern match against name
                 import fnmatch
+
                 if fnmatch.fnmatch(name, pattern):
                     rel = posixpath.relpath(child, abs_path)
                     entries.append(
@@ -226,11 +224,10 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
         _visit(abs_path)
         return entries
 
-    def glob(
-        self, pattern: str, path: str = ".", recursive: bool = True
-    ) -> list[str]:
+    def glob(self, pattern: str, path: str = ".", recursive: bool = True) -> list[str]:
         entries = self.list_dir(path, pattern="*", recursive=recursive, include_hidden=False)
         import fnmatch
+
         return [e.path for e in entries if fnmatch.fnmatch(e.name, pattern)]
 
     def grep(
@@ -291,9 +288,7 @@ class PyodideFilesystemBackend(FilesystemBackend):  # type: ignore[misc]
     # ── batch ─────────────────────────────────────────────────────────────
     # MEMFS has no async parallelism benefit — simple sequential loops.
 
-    def batch_read(
-        self, paths: list[str], encoding: str = "utf-8"
-    ) -> list[dict[str, object]]:
+    def batch_read(self, paths: list[str], encoding: str = "utf-8") -> list[dict[str, object]]:
         results: list[dict[str, object]] = []
         for path in paths:
             try:

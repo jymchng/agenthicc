@@ -2,6 +2,7 @@
 
 Targeted lines: 30-37, 41-45, 53, 63-69, 72-77, 80, 97, 106, 110-113, 116
 """
+
 from __future__ import annotations
 
 import pytest
@@ -129,6 +130,7 @@ class TestFallbackStore:
         _, vec = store._docs["d1"]
         # Vector should be normalised (sum of squares ≈ 1)
         import math
+
         norm = math.sqrt(sum(v * v for v in vec.values()))
         assert abs(norm - 1.0) < 1e-6
 

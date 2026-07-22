@@ -11,6 +11,7 @@ This module re-exports all individual tools, the combined AGENT_TOOLS list,
 and the BUILTIN_GROUPS list used by ToolRegistry for structured system-prompt
 sections and subagent glob expansion (PRD-125).
 """
+
 from __future__ import annotations
 
 # ── filesystem ────────────────────────────────────────────────────────────────
@@ -77,22 +78,61 @@ from agenthicc.plugins.registry import ToolGroup
 
 __all__ = [
     # fs
-    "append_file", "copy_file", "delete_file", "file_exists", "get_file_info",
-    "grep_files", "list_directory", "make_directory", "move_file", "patch_file",
-    "read_file", "read_lines", "search_files", "write_file",
+    "append_file",
+    "copy_file",
+    "delete_file",
+    "file_exists",
+    "get_file_info",
+    "grep_files",
+    "list_directory",
+    "make_directory",
+    "move_file",
+    "patch_file",
+    "read_file",
+    "read_lines",
+    "search_files",
+    "write_file",
     # git
-    "git_add", "git_blame", "git_branch", "git_checkout", "git_commit",
-    "git_diff", "git_grep", "git_log", "git_show", "git_stash", "git_status",
+    "git_add",
+    "git_blame",
+    "git_branch",
+    "git_checkout",
+    "git_commit",
+    "git_diff",
+    "git_grep",
+    "git_log",
+    "git_show",
+    "git_stash",
+    "git_status",
     # exec
-    "run_bash", "run_command", "run_python", "run_python_expr", "run_tests", "shell",
+    "run_bash",
+    "run_command",
+    "run_python",
+    "run_python_expr",
+    "run_tests",
+    "shell",
     # outlook
-    "calendar_events", "create_event", "list_emails", "list_folders",
-    "move_email", "read_email", "reply_email", "search_emails", "send_email",
+    "calendar_events",
+    "create_event",
+    "list_emails",
+    "list_folders",
+    "move_email",
+    "read_email",
+    "reply_email",
+    "search_emails",
+    "send_email",
     # aggregates
-    "FS_AGENT_TOOLS", "GIT_AGENT_TOOLS", "EXEC_AGENT_TOOLS", "OUTLOOK_AGENT_TOOLS",
+    "FS_AGENT_TOOLS",
+    "GIT_AGENT_TOOLS",
+    "EXEC_AGENT_TOOLS",
+    "OUTLOOK_AGENT_TOOLS",
     "AGENT_TOOLS",
     # namespace groups (PRD-125)
-    "FS_GROUP", "GIT_GROUP", "EXEC_GROUP", "OUTLOOK_GROUP", "BUILTIN_GROUPS",
+    "FS_GROUP",
+    "GIT_GROUP",
+    "EXEC_GROUP",
+    "OUTLOOK_GROUP",
+    "BUILTIN_GROUPS",
 ]
 
 #: All agent tools — filesystem + git + exec + outlook.

@@ -1,4 +1,5 @@
 """Skills runtime: context injection, arg substitution, auto-triggering (PRD-23)."""
+
 from __future__ import annotations
 
 import re

@@ -1,4 +1,5 @@
 """Unit tests for AdRotator and AdCache (PRD-11)."""
+
 from __future__ import annotations
 
 import time

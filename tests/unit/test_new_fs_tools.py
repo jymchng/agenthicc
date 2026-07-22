@@ -20,6 +20,7 @@ pytestmark = pytest.mark.unit
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _configure(tmp_path):
     """Point the module-level router at tmp_path for this test."""
     router = BackendRouter(LinuxFilesystemBackend(tmp_path))
@@ -34,6 +35,7 @@ def _reset_router():
 # ---------------------------------------------------------------------------
 # grep_file
 # ---------------------------------------------------------------------------
+
 
 async def test_grep_file_finds_matches(tmp_path):
     _configure(tmp_path)
@@ -90,17 +92,13 @@ async def test_grep_file_not_found(tmp_path):
 # apply_diff
 # ---------------------------------------------------------------------------
 
+
 async def test_apply_diff_add_line(tmp_path):
     _configure(tmp_path)
     try:
         f = tmp_path / "add.py"
         f.write_text("line1\nline2\n")
-        diff = (
-            "@@ -1,2 +1,3 @@\n"
-            " line1\n"
-            " line2\n"
-            "+line3\n"
-        )
+        diff = "@@ -1,2 +1,3 @@\n line1\n line2\n+line3\n"
         result = await _at.apply_diff(str(f), diff)
         assert result["ok"] is True
         assert result["hunks_applied"] == 1
@@ -114,12 +112,7 @@ async def test_apply_diff_remove_line(tmp_path):
     try:
         f = tmp_path / "remove.py"
         f.write_text("line1\nline2\nline3\n")
-        diff = (
-            "@@ -1,3 +1,2 @@\n"
-            " line1\n"
-            "-line2\n"
-            " line3\n"
-        )
+        diff = "@@ -1,3 +1,2 @@\n line1\n-line2\n line3\n"
         result = await _at.apply_diff(str(f), diff)
         assert result["ok"] is True
         assert "line2" not in f.read_text()
@@ -133,12 +126,7 @@ async def test_apply_diff_bad_context_fails(tmp_path):
         f = tmp_path / "bad_ctx.py"
         f.write_text("alpha\nbeta\n")
         # Context says "gamma" but file has "alpha"
-        diff = (
-            "@@ -1,2 +1,2 @@\n"
-            " gamma\n"
-            "-beta\n"
-            "+delta\n"
-        )
+        diff = "@@ -1,2 +1,2 @@\n gamma\n-beta\n+delta\n"
         result = await _at.apply_diff(str(f), diff)
         assert result["ok"] is False
     finally:
@@ -171,6 +159,7 @@ async def test_apply_diff_partial_allowed(tmp_path):
 # ---------------------------------------------------------------------------
 # checksum_file
 # ---------------------------------------------------------------------------
+
 
 async def test_checksum_sha256(tmp_path):
     _configure(tmp_path)
@@ -206,6 +195,7 @@ async def test_checksum_md5(tmp_path):
 # truncate_file
 # ---------------------------------------------------------------------------
 
+
 async def test_truncate_file(tmp_path):
     _configure(tmp_path)
     try:
@@ -222,6 +212,7 @@ async def test_truncate_file(tmp_path):
 # ---------------------------------------------------------------------------
 # touch_file
 # ---------------------------------------------------------------------------
+
 
 async def test_touch_creates_new_file(tmp_path):
     _configure(tmp_path)
@@ -261,6 +252,7 @@ async def test_touch_no_create_fails(tmp_path):
 # batch_read
 # ---------------------------------------------------------------------------
 
+
 async def test_batch_read_all_ok(tmp_path):
     _configure(tmp_path)
     try:
@@ -293,6 +285,7 @@ async def test_batch_read_partial(tmp_path):
 # batch_write
 # ---------------------------------------------------------------------------
 
+
 async def test_batch_write_all(tmp_path):
     _configure(tmp_path)
     try:
@@ -314,6 +307,7 @@ async def test_batch_write_all(tmp_path):
 # batch_delete
 # ---------------------------------------------------------------------------
 
+
 async def test_batch_delete_all(tmp_path):
     _configure(tmp_path)
     try:
@@ -332,6 +326,7 @@ async def test_batch_delete_all(tmp_path):
 # ---------------------------------------------------------------------------
 # batch_move
 # ---------------------------------------------------------------------------
+
 
 async def test_batch_move(tmp_path):
     _configure(tmp_path)
@@ -355,6 +350,7 @@ async def test_batch_move(tmp_path):
 # ---------------------------------------------------------------------------
 # batch_copy
 # ---------------------------------------------------------------------------
+
 
 async def test_batch_copy(tmp_path):
     _configure(tmp_path)

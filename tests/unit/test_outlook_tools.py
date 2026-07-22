@@ -1,22 +1,52 @@
 """Unit tests for Outlook tools (PRD-17)."""
+
 from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from agenthicc.tools.outlook import (GraphApiOutlookBackend, OutlookListEmailsTool,
-    OutlookSendEmailTool, OutlookCalendarEventsTool, OutlookToolKit)
+from agenthicc.tools.outlook import (
+    GraphApiOutlookBackend,
+    OutlookListEmailsTool,
+    OutlookSendEmailTool,
+    OutlookCalendarEventsTool,
+    OutlookToolKit,
+)
 
 pytestmark = pytest.mark.unit
 
 
-def _backend(token="test"): return GraphApiOutlookBackend(token=token)
+def _backend(token="test"):
+    return GraphApiOutlookBackend(token=token)
 
-EMAIL_RESP = {"value": [{"id": "m1", "subject": "Hello", "from": {"emailAddress": {"address": "a@b.com"}},
-    "receivedDateTime": "2025-01-01T10:00:00Z", "isRead": False, "bodyPreview": "Hi"}]}
 
-FOLDER_RESP = {"value": [{"id": "f1", "displayName": "Inbox", "totalItemCount": 10, "unreadItemCount": 2}]}
+EMAIL_RESP = {
+    "value": [
+        {
+            "id": "m1",
+            "subject": "Hello",
+            "from": {"emailAddress": {"address": "a@b.com"}},
+            "receivedDateTime": "2025-01-01T10:00:00Z",
+            "isRead": False,
+            "bodyPreview": "Hi",
+        }
+    ]
+}
 
-CALENDAR_RESP = {"value": [{"id": "e1", "subject": "Meeting", "start": {"dateTime": "2025-01-01T09:00:00"},
-    "end": {"dateTime": "2025-01-01T10:00:00"}, "location": {"displayName": "Room A"}, "attendees": []}]}
+FOLDER_RESP = {
+    "value": [{"id": "f1", "displayName": "Inbox", "totalItemCount": 10, "unreadItemCount": 2}]
+}
+
+CALENDAR_RESP = {
+    "value": [
+        {
+            "id": "e1",
+            "subject": "Meeting",
+            "start": {"dateTime": "2025-01-01T09:00:00"},
+            "end": {"dateTime": "2025-01-01T10:00:00"},
+            "location": {"displayName": "Room A"},
+            "attendees": [],
+        }
+    ]
+}
 
 
 class TestGraphApiBackend:
@@ -55,7 +85,7 @@ class TestGraphApiBackend:
 
     async def test_create_event(self):
         b = _backend()
-        with patch.object(b, "_post", new_callable=AsyncMock, return_value={"id": "new-event"}) as mp:
+        with patch.object(b, "_post", new_callable=AsyncMock, return_value={"id": "new-event"}):
             r = await b.create_event("Stand-up", "2025-01-01T09:00:00", "2025-01-01T09:30:00")
         assert r["ok"] is True and r["event_id"] == "new-event"
 
@@ -87,13 +117,17 @@ class TestOutlookToolWrappers:
         assert r["count"] == 2
 
     async def test_send_email_tool_forwards_args(self):
-        b = MagicMock(); b.send_email = AsyncMock(return_value={"ok": True})
+        b = MagicMock()
+        b.send_email = AsyncMock(return_value={"ok": True})
         await OutlookSendEmailTool(b).execute({"to": ["a@b.com"], "subject": "S", "body": "B"}, {})
         b.send_email.assert_called_once_with(["a@b.com"], "S", "B", None, None)
 
     async def test_calendar_tool_returns_count(self):
-        b = MagicMock(); b.calendar_events = AsyncMock(return_value=[{"id": "e1"}])
-        r = await OutlookCalendarEventsTool(b).execute({"start_date": "2025-01-01", "end_date": "2025-01-31"}, {})
+        b = MagicMock()
+        b.calendar_events = AsyncMock(return_value=[{"id": "e1"}])
+        r = await OutlookCalendarEventsTool(b).execute(
+            {"start_date": "2025-01-01", "end_date": "2025-01-31"}, {}
+        )
         assert r["count"] == 1
 
 

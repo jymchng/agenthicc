@@ -1,4 +1,5 @@
 """Tests for per-workflow tunable parameters (PRD-111, PRD-116)."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -13,6 +14,7 @@ from agenthicc.workflows.code_plan import CodePlanParams, CodePlan
 
 
 # ── WorkflowParams base ───────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_workflow_params_default_no_overrides() -> None:
@@ -35,6 +37,7 @@ def test_model_for_phase_returns_fallback_for_unknown_phase() -> None:
 @pytest.mark.unit
 def test_model_for_phase_empty_string_falls_back() -> None:
     """An empty string in the map means 'use global model'."""
+
     class MyParams(WorkflowParams):
         def get_phase_models(self):
             return {"execute": ""}
@@ -56,6 +59,7 @@ def test_model_for_phase_non_empty_overrides() -> None:
 
 # ── CodePlanParams ────────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_code_plan_params_defaults_are_empty() -> None:
     p = CodePlanParams()
@@ -74,12 +78,11 @@ def test_code_plan_params_execute_model_overrides() -> None:
 
 @pytest.mark.unit
 def test_code_plan_params_get_phase_models_maps_all_phases() -> None:
-    p = CodePlanParams(plan_model="m1", execute_model="m2",
-                       review_model="m3", summary_model="m4")
+    p = CodePlanParams(plan_model="m1", execute_model="m2", review_model="m3", summary_model="m4")
     pm = p.get_phase_models()
-    assert pm["plan"]      == "m1"
-    assert pm["execute"]   == "m2"
-    assert pm["review"]    == "m3"
+    assert pm["plan"] == "m1"
+    assert pm["execute"] == "m2"
+    assert pm["review"] == "m3"
     assert pm["summarize"] == "m4"
 
 
@@ -90,10 +93,11 @@ def test_code_plan_params_is_workflow_params_subclass() -> None:
 
 # ── WorkflowPlugin.build_params default ──────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_default_build_params_returns_base_workflow_params() -> None:
     class MyWorkflow(WorkflowPlugin):
-        name   = "my"
+        name = "my"
         phases = [PhaseSpec(name="p")]
 
     result = MyWorkflow.build_params({})
@@ -131,6 +135,7 @@ def test_code_plan_build_params_empty_source_uses_defaults() -> None:
 
 # ── plugin_cls.build_params() ─────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_build_params_base_plugin_returns_base() -> None:
     class _TestWf(WorkflowPlugin):
@@ -144,6 +149,7 @@ def test_build_params_base_plugin_returns_base() -> None:
 @pytest.mark.unit
 def test_code_plan_build_params_differs_from_default() -> None:
     from agenthicc.workflows import CodePlan
+
     assert CodePlan.build_params.__func__ is not WorkflowPlugin.build_params.__func__
 
 
@@ -156,6 +162,7 @@ def test_all_builtins_have_build_params() -> None:
 
 
 # ── AgenthiccConfig.workflows ─────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_agenthicc_config_workflows_defaults_to_empty() -> None:
@@ -177,11 +184,13 @@ def test_load_config_parses_workflows_section(tmp_path) -> None:
         encoding="utf-8",
     )
     from agenthicc.config import load_config
+
     cfg = load_config(project_path=toml)
     assert cfg.workflows.get("code_plan", {}).get("execute_model") == "claude-haiku-4-5"
 
 
 # ── model_for_phase integration ───────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_end_to_end_phase_model_resolution() -> None:
@@ -201,13 +210,21 @@ def test_end_to_end_phase_model_resolution() -> None:
 def test_workflow_config_carries_params() -> None:
     """WorkflowConfig.params field exists and accepts WorkflowParams."""
     from agenthicc.workflows.config import WorkflowConfig
+
     mock = MagicMock()
     params = CodePlanParams(execute_model="claude-haiku-4-5")
     cfg = WorkflowConfig(
-        conv_store=mock, app_state=mock, processor=mock,
-        agent_runner=mock, approval_svc=None, cfg=mock,
-        skills={}, plugin_tools=mock, mcp_registry=None,
-        mention_cache=mock, agents_registry=mock,
+        conv_store=mock,
+        app_state=mock,
+        processor=mock,
+        agent_runner=mock,
+        approval_svc=None,
+        cfg=mock,
+        skills={},
+        plugin_tools=mock,
+        mcp_registry=None,
+        mention_cache=mock,
+        agents_registry=mock,
         params=params,
     )
     assert cfg.params is params
@@ -218,12 +235,20 @@ def test_workflow_config_carries_params() -> None:
 def test_workflow_config_replace_updates_params() -> None:
     """dataclasses.replace() can update params independently of completed_turns."""
     from agenthicc.workflows.config import WorkflowConfig
+
     mock = MagicMock()
     base_cfg = WorkflowConfig(
-        conv_store=mock, app_state=mock, processor=mock,
-        agent_runner=mock, approval_svc=None, cfg=mock,
-        skills={}, plugin_tools=mock, mcp_registry=None,
-        mention_cache=mock, agents_registry=mock,
+        conv_store=mock,
+        app_state=mock,
+        processor=mock,
+        agent_runner=mock,
+        approval_svc=None,
+        cfg=mock,
+        skills={},
+        plugin_tools=mock,
+        mcp_registry=None,
+        mention_cache=mock,
+        agents_registry=mock,
     )
     assert base_cfg.params is None
 

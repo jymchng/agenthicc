@@ -4,13 +4,14 @@ Large pastes are "condensed" to a single label line so they don't flood
 the input bar.  Ctrl+V expands back to the full content.  Backspace on a
 condensed paste deletes the entire paste block cleanly.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from agenthicc.tui.input.buffer import InputBuffer
 
-_CONDENSE_LINES = 3   # condense if paste has more logical lines than this
+_CONDENSE_LINES = 3  # condense if paste has more logical lines than this
 
 
 @dataclass
@@ -30,9 +31,7 @@ class PasteState:
         should_condense = n_lines > _CONDENSE_LINES or len(text) > max(cols - 4, 40)
         if should_condense:
             self.count += 1
-            suffix = (
-                f"+{n_lines} lines" if n_lines > 1 else f"{len(text)} chars"
-            )
+            suffix = f"+{n_lines} lines" if n_lines > 1 else f"{len(text)} chars"
             self.label = f"[Pasted text #{self.count} {suffix}]"
             self.condensed = True
 

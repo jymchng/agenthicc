@@ -5,6 +5,7 @@ unittest.mock to inject a fake boto3 module at import time.
 The HAS_MOTO / skip_no_moto scaffolding is kept so tests become live
 moto tests if the package is later added.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -41,7 +42,6 @@ def _fake_body(content: bytes) -> MagicMock:
 
 def _s3_response(content: bytes) -> dict:
     return {"Body": _fake_body(content)}
-
 
 
 def _build_backend(
@@ -332,9 +332,7 @@ class TestS3DeleteObject:
     def test_s3_delete_directory_uses_bulk_delete(self):
         """Deleting a path that expands to multiple keys uses delete_objects."""
         backend, mock_client = _build_backend()
-        pager = _make_paginator(
-            [{"Contents": [{"Key": "dir/a.txt"}, {"Key": "dir/b.txt"}]}]
-        )
+        pager = _make_paginator([{"Contents": [{"Key": "dir/a.txt"}, {"Key": "dir/b.txt"}]}])
         mock_client.get_paginator.return_value = pager
         mock_client.delete_objects.return_value = {
             "Deleted": [{"Key": "dir/a.txt"}, {"Key": "dir/b.txt"}],
@@ -559,9 +557,7 @@ class TestS3KeyStripsPrefix:
 
         backend.read_text("myfile.txt")
 
-        mock_client.get_object.assert_called_once_with(
-            Bucket=_BUCKET, Key="workspace/myfile.txt"
-        )
+        mock_client.get_object.assert_called_once_with(Bucket=_BUCKET, Key="workspace/myfile.txt")
 
 
 class TestS3UriPathAccepted:
@@ -582,9 +578,7 @@ class TestS3UriPathAccepted:
 
         backend.read_text(f"s3://{_BUCKET}/some/nested/key.txt")
 
-        mock_client.get_object.assert_called_once_with(
-            Bucket=_BUCKET, Key="some/nested/key.txt"
-        )
+        mock_client.get_object.assert_called_once_with(Bucket=_BUCKET, Key="some/nested/key.txt")
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 """Unit tests for agenthicc.tui.input.history.HistoryNavigator (PRD-57 §10.2)."""
+
 from __future__ import annotations
 
 import pytest
@@ -41,8 +42,8 @@ class TestDown:
 
     def test_down_returns_next_entry(self) -> None:
         hist = HistoryNavigator(["a", "b"])
-        hist.up([])     # → "b"
-        hist.up([])     # → "a"
+        hist.up([])  # → "b"
+        hist.up([])  # → "a"
         result = hist.down([])
         assert result == list("b")
 
@@ -50,7 +51,7 @@ class TestDown:
         hist = HistoryNavigator(["x"])
         saved = list("saved")
         hist.up(saved)
-        hist.down([])   # back to saved
+        hist.down([])  # back to saved
         # Already at newest; another down returns None
         assert hist.down([]) is None
 
@@ -63,8 +64,8 @@ class TestCommit:
 
     def test_commit_resets_index(self) -> None:
         hist = HistoryNavigator(["old"])
-        hist.up([])          # go back
-        hist.commit("new")   # commit
+        hist.up([])  # go back
+        hist.commit("new")  # commit
         # Now up should return "new" (most recent)
         result = hist.up([])
         assert result == list("new")

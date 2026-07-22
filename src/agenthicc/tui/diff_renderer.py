@@ -18,6 +18,7 @@ Visual output
 268
 269     # next context line
 """
+
 from __future__ import annotations
 
 import difflib
@@ -40,13 +41,14 @@ CREATE_PREVIEW_LINES: int = 10
 
 # ── palette ───────────────────────────────────────────────────────────────────
 
-_BG_DEL       = "on #3a1515"
-_BG_ADD       = "on #153a15"
-_BG_DEL_WORD  = "on #6a2020"
-_BG_ADD_WORD  = "on #206a20"
+_BG_DEL = "on #3a1515"
+_BG_ADD = "on #153a15"
+_BG_DEL_WORD = "on #6a2020"
+_BG_ADD_WORD = "on #206a20"
 
 
 # ── syntax highlighting ───────────────────────────────────────────────────────
+
 
 def _highlight_block(lines: list[str], language: str) -> list[Text]:
     """Syntax-highlight *lines* as a block; return one ``Text`` per line.
@@ -60,8 +62,11 @@ def _highlight_block(lines: list[str], language: str) -> list[Text]:
 
     buf = StringIO()
     con = Console(
-        file=buf, force_terminal=True, color_system="truecolor",
-        width=10_000, highlight=False,
+        file=buf,
+        force_terminal=True,
+        color_system="truecolor",
+        width=10_000,
+        highlight=False,
     )
     with con.capture() as cap:
         con.print(
@@ -77,6 +82,7 @@ def _highlight_block(lines: list[str], language: str) -> list[Text]:
 
 # ── word-level diff ───────────────────────────────────────────────────────────
 
+
 def _word_spans(
     old: str,
     new: str,
@@ -88,7 +94,7 @@ def _word_spans(
     """
     sm = difflib.SequenceMatcher(None, old, new, autojunk=False)
     removed: list[tuple[int, int]] = []
-    added:   list[tuple[int, int]] = []
+    added: list[tuple[int, int]] = []
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag in ("replace", "delete"):
             removed.append((i1, i2))
@@ -98,6 +104,7 @@ def _word_spans(
 
 
 # ── header / summary ──────────────────────────────────────────────────────────
+
 
 def _header(path: str, operation: str) -> Text:
     return Text.assemble(
@@ -133,6 +140,7 @@ def _summary(n_added: int, n_removed: int) -> Text:
 
 # ── table rows ────────────────────────────────────────────────────────────────
 
+
 def _context_row(table: Table, lineno: int, hl: Text) -> None:
     table.add_row(
         Text(str(lineno), style="bright_black"),
@@ -150,10 +158,10 @@ def _gap_row(table: Table) -> None:
 
 
 def _del_row(
-    table:    Table,
-    lineno:   int,
-    raw:      str,
-    hl:       Text,
+    table: Table,
+    lineno: int,
+    raw: str,
+    hl: Text,
     pair_raw: str | None,
 ) -> None:
     code = hl.copy()
@@ -163,17 +171,17 @@ def _del_row(
             code.stylize(_BG_DEL_WORD, s, e)
     table.add_row(
         Text(str(lineno), style=f"red {_BG_DEL}"),
-        Text("-",          style=f"red {_BG_DEL}"),
+        Text("-", style=f"red {_BG_DEL}"),
         code,
         style=_BG_DEL,
     )
 
 
 def _add_row(
-    table:    Table,
-    lineno:   int,
-    raw:      str,
-    hl:       Text,
+    table: Table,
+    lineno: int,
+    raw: str,
+    hl: Text,
     pair_raw: str | None,
 ) -> None:
     code = hl.copy()
@@ -183,13 +191,14 @@ def _add_row(
             code.stylize(_BG_ADD_WORD, s, e)
     table.add_row(
         Text(str(lineno), style=f"green {_BG_ADD}"),
-        Text("+",          style=f"green {_BG_ADD}"),
+        Text("+", style=f"green {_BG_ADD}"),
         code,
         style=_BG_ADD,
     )
 
 
 # ── hunk grouping ────────────────────────────────────────────────────────────
+
 
 def _build_hunks(
     opcodes: list[tuple],
@@ -211,9 +220,9 @@ def _build_hunks(
       If the file ends without another change, it is discarded — no spurious
       trailing-context-only hunk is emitted.
     """
-    hunks:           list[list[tuple]] = []
-    current:         list[tuple]       = []
-    pending_context: tuple | None      = None
+    hunks: list[list[tuple]] = []
+    current: list[tuple] = []
+    pending_context: tuple | None = None
 
     for tag, i1, i2, j1, j2 in opcodes:
         if tag == "equal":
@@ -262,13 +271,14 @@ def _build_hunks(
 
 # ── public API ────────────────────────────────────────────────────────────────
 
+
 def render_file_diff(
-    path:      str,
+    path: str,
     old_lines: list[str],
     new_lines: list[str],
     *,
-    context:   int = 3,
-    language:  str = "python",
+    context: int = 3,
+    language: str = "python",
     operation: str = "Update",
 ) -> "RenderableType":
     """Render a GitHub-style diff between *old_lines* and *new_lines*.
@@ -286,10 +296,10 @@ def render_file_diff(
     operation:
         Verb shown in the header bullet (``"Update"``, ``"Create"``, …).
     """
-    sm      = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    sm = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
     opcodes = sm.get_opcodes()
 
-    n_added   = sum(j2 - j1 for t, _, _, j1, j2 in opcodes if t in ("insert",  "replace"))
+    n_added = sum(j2 - j1 for t, _, _, j1, j2 in opcodes if t in ("insert", "replace"))
     n_removed = sum(i2 - i1 for t, i1, i2, _, _ in opcodes if t in ("delete", "replace"))
 
     # Pre-highlight both versions as blocks so syntax context is correct.
@@ -297,9 +307,9 @@ def render_file_diff(
     new_hl = _highlight_block(new_lines, language)
 
     table = Table.grid(padding=(0, 1))
-    table.add_column(justify="right",  no_wrap=True)   # line number
-    table.add_column(justify="center", no_wrap=True)   # +/-
-    table.add_column(no_wrap=False)                    # code
+    table.add_column(justify="right", no_wrap=True)  # line number
+    table.add_column(justify="center", no_wrap=True)  # +/-
+    table.add_column(no_wrap=False)  # code
 
     if not (n_added or n_removed):
         # Identical files — show everything with no markers.
@@ -317,8 +327,8 @@ def render_file_diff(
                 else:
                     del_lines = old_lines[i1:i2]
                     add_lines = new_lines[j1:j2]
-                    del_hl    = old_hl[i1:i2]
-                    add_hl    = new_hl[j1:j2]
+                    del_hl = old_hl[i1:i2]
+                    add_hl = new_hl[j1:j2]
                     for idx, (raw, hl) in enumerate(zip(del_lines, del_hl)):
                         pair = add_lines[idx] if idx < len(add_lines) else None
                         _del_row(table, i1 + idx + 1, raw, hl, pair)
@@ -335,11 +345,11 @@ def render_file_diff(
 
 
 def render_file_create(
-    path:      str,
+    path: str,
     new_lines: list[str],
     *,
     max_lines: int = CREATE_PREVIEW_LINES,
-    language:  str = "python",
+    language: str = "python",
 ) -> "RenderableType":
     """Render a file-creation event showing at most *max_lines* lines.
 
@@ -352,17 +362,17 @@ def render_file_create(
         2 +     return "world"
         ⋯ +40 more lines
     """
-    n_total  = len(new_lines)
-    preview  = new_lines[:max_lines]
-    hl       = _highlight_block(preview, language)
+    n_total = len(new_lines)
+    preview = new_lines[:max_lines]
+    hl = _highlight_block(preview, language)
 
     table = Table.grid(padding=(0, 1))
-    table.add_column(justify="right",  no_wrap=True)   # line number
-    table.add_column(justify="center", no_wrap=True)   # +
-    table.add_column(no_wrap=False)                    # code
+    table.add_column(justify="right", no_wrap=True)  # line number
+    table.add_column(justify="center", no_wrap=True)  # +
+    table.add_column(no_wrap=False)  # code
 
     for idx, (raw, h) in enumerate(zip(preview, hl)):
-        _add_row(table, idx + 1, raw, h, None)   # pure add — no del pair
+        _add_row(table, idx + 1, raw, h, None)  # pure add — no del pair
 
     parts: list[RenderableType] = [
         _header(path, "Create"),

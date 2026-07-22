@@ -3,6 +3,7 @@
 Tests cover Command dataclass, UnifiedCommandRegistry, CommandDispatcher,
 built-in registry, and SlashCommandTrigger integration.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -161,7 +162,7 @@ def test_registry_groups_order():
     order = ["Built-in", "Skills", "MCP"]
     # Only groups that are present should appear; order must respect the defined ordering
     present = [g for g in order if g in groups]
-    assert groups[:len(present)] == present
+    assert groups[: len(present)] == present
 
 
 def test_registry_matches_partial():

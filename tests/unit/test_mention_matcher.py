@@ -1,4 +1,5 @@
 """Tests for the case-insensitive mention matching engine (PRD-109)."""
+
 from __future__ import annotations
 
 import pytest
@@ -19,6 +20,7 @@ from agenthicc.tui.trigger import MatchItem
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def item(display: str) -> MatchItem:
     return MatchItem(display=display, value=display)
 
@@ -28,6 +30,7 @@ def displays(items: list[MatchItem]) -> list[str]:
 
 
 # ── rank_match ────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_rank_exact_filename() -> None:
@@ -135,6 +138,7 @@ def test_rank_doc_matches_documentation() -> None:
 
 # ── filter_and_rank ───────────────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_filter_basic_prefix() -> None:
     pool = [item("README.md"), item("src/"), item("docs/")]
@@ -236,8 +240,8 @@ def test_filter_exact_ranks_first() -> None:
     # "readme_old.md" fuzzy-matches because all chars of "readme.md" appear in
     # order inside "readme_old.md" — it's included but ranked last.
     result = displays(filter_and_rank("readme.md", pool))
-    assert result[0] in {"readme.md", "README.md"}   # exact matches rank first
-    assert result[1] in {"readme.md", "README.md"}   # both exact matches lead
+    assert result[0] in {"readme.md", "README.md"}  # exact matches rank first
+    assert result[1] in {"readme.md", "README.md"}  # both exact matches lead
 
 
 @pytest.mark.unit
@@ -249,6 +253,7 @@ def test_filter_deterministic() -> None:
 
 
 # ── _fuzzy_match ──────────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_fuzzy_rdm_in_readme() -> None:

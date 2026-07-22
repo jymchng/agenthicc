@@ -56,7 +56,7 @@ def check_trust(
     key = str(path)
     entry = trusted.get("trusted", {}).get(key)
     if entry and entry.get("sha256") == current_hash:
-        return "trust_once"   # already trusted, same hash
+        return "trust_once"  # already trusted, same hash
 
     if auto_trust:
         log.warning("auto_trust enabled — loading %s without prompt", path)

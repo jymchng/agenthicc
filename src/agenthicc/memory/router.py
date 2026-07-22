@@ -22,9 +22,7 @@ __all__ = ["MemoryRouter", "PermissionChecker", "allow_all"]
 PermissionChecker = Callable[[str | None, MemoryTier, str], bool]
 
 
-def allow_all(
-    agent_id: str | None, tier: MemoryTier, operation: str
-) -> bool:  # noqa: ARG001
+def allow_all(agent_id: str | None, tier: MemoryTier, operation: str) -> bool:  # noqa: ARG001
     """Default permission checker: every agent may do everything."""
     return True
 

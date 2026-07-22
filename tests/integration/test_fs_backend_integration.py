@@ -5,7 +5,6 @@ Tests exercise real I/O through the full routing stack.
 NOTE: no ``from __future__ import annotations`` — @tool() inspects real annotations.
 """
 
-
 import pytest
 
 import agenthicc.tools.fs.agent_tools as _at
@@ -19,6 +18,7 @@ pytestmark = pytest.mark.integration
 # Helper
 # ---------------------------------------------------------------------------
 
+
 def _make_router(tmp_path) -> BackendRouter:
     return BackendRouter(LinuxFilesystemBackend(tmp_path))
 
@@ -26,6 +26,7 @@ def _make_router(tmp_path) -> BackendRouter:
 # ---------------------------------------------------------------------------
 # BackendRouter + LinuxFilesystemBackend basic roundtrip
 # ---------------------------------------------------------------------------
+
 
 def test_backend_router_linux_roundtrip(tmp_path):
     """BackendRouter with LinuxFilesystemBackend supports write + read + delete."""
@@ -50,6 +51,7 @@ def test_backend_router_linux_roundtrip(tmp_path):
 # ---------------------------------------------------------------------------
 # configure_router affects agent tools
 # ---------------------------------------------------------------------------
+
 
 async def test_configure_router_affects_tools(tmp_path):
     """configure_router() + agent tool batch_write / batch_read uses the new backend."""
@@ -76,6 +78,7 @@ async def test_configure_router_affects_tools(tmp_path):
 # batch_write then grep_file
 # ---------------------------------------------------------------------------
 
+
 async def test_batch_write_then_grep_file(tmp_path):
     """Writing 3 Python files and then grep_file finds the correct pattern."""
     _at.configure_router(_make_router(tmp_path))
@@ -99,6 +102,7 @@ async def test_batch_write_then_grep_file(tmp_path):
 # apply_diff integration — multi-context-line realistic diff
 # ---------------------------------------------------------------------------
 
+
 async def test_apply_diff_integration(tmp_path):
     """Full realistic diff with multiple context lines applies cleanly."""
     _at.configure_router(_make_router(tmp_path))
@@ -116,13 +120,7 @@ async def test_apply_diff_integration(tmp_path):
         f = tmp_path / "main.py"
         f.write_text(original)
 
-        diff = (
-            "@@ -4,3 +4,3 @@\n"
-            " def main():\n"
-            "-    print('hello')\n"
-            "+    print('hello world')\n"
-            " \n"
-        )
+        diff = "@@ -4,3 +4,3 @@\n def main():\n-    print('hello')\n+    print('hello world')\n \n"
         result = await _at.apply_diff(str(f), diff)
         assert result["ok"] is True
         assert result["hunks_applied"] == 1
@@ -135,6 +133,7 @@ async def test_apply_diff_integration(tmp_path):
 # ---------------------------------------------------------------------------
 # checksum changes after write
 # ---------------------------------------------------------------------------
+
 
 async def test_checksum_verify_after_write(tmp_path):
     """SHA-256 of a file changes after its content is replaced."""
@@ -160,6 +159,7 @@ async def test_checksum_verify_after_write(tmp_path):
 # LinuxFilesystemBackend.grep() multi-file
 # ---------------------------------------------------------------------------
 
+
 def test_linux_backend_grep_multi_file(tmp_path):
     """LinuxFilesystemBackend.grep() searches across 5 files and finds all matches."""
     backend = LinuxFilesystemBackend(tmp_path)
@@ -176,6 +176,7 @@ def test_linux_backend_grep_multi_file(tmp_path):
 # ---------------------------------------------------------------------------
 # batch_move roundtrip — 5 files
 # ---------------------------------------------------------------------------
+
 
 async def test_batch_move_roundtrip(tmp_path):
     """batch_move 5 files: all sources disappear and all destinations appear."""

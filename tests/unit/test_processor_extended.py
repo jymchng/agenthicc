@@ -3,6 +3,7 @@
 Targeted lines:
   processor.py: 79-80, 113-116, 128-129, 138-139, 151-152, 155-158, 182, 189-190
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -352,6 +353,7 @@ class TestRestoreFromLog:
         event = Event.create("NOOP", {"data": "hello"})
         with open(log_path, "w") as f:
             import json
+
             f.write(json.dumps(event.to_dict()) + "\n")
         state = _fresh_state(tmp_path)
         result = await restore_from_log(log_path, state)

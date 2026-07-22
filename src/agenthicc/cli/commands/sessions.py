@@ -1,4 +1,5 @@
 """Session management commands — sessions list, sessions show."""
+
 from __future__ import annotations
 
 from agenthicc.cli.context import CLIContext
@@ -13,6 +14,7 @@ def _() -> None: ...
 def sessions_list(ctx: CLIContext) -> None:
     """List saved sessions, most recent first. Sessions for the current directory are marked with *."""
     from agenthicc.sessions import _do_sessions  # noqa: PLC0415
+
     _do_sessions()
 
 
@@ -21,6 +23,7 @@ def sessions_show(ctx: CLIContext, session_id: str) -> None:
     """Print stored events for SESSION_ID."""
     import json  # noqa: PLC0415
     from agenthicc.sessions import _get_session_log_path  # noqa: PLC0415
+
     log_path = _get_session_log_path(session_id)
     if log_path is None or not log_path.exists():
         print(f"Session not found: {session_id}")

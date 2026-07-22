@@ -1,4 +1,5 @@
 """Unit tests for SkillDef discovery and lazy loading (PRD-22)."""
+
 from __future__ import annotations
 
 import pytest

@@ -1,4 +1,5 @@
 """Unit tests for agenthicc.tui.input.buffer.InputBuffer (PRD-57 §10.2)."""
+
 from __future__ import annotations
 
 import pytest
@@ -16,7 +17,7 @@ class TestInsert:
 
     def test_insert_at_middle(self) -> None:
         buf = InputBuffer(list("hello"))
-        buf.cursor = 2          # between 'e' and 'l'
+        buf.cursor = 2  # between 'e' and 'l'
         buf.insert("X")
         assert "".join(buf.buf) == "heXllo"
         assert buf.cursor == 3
@@ -44,13 +45,13 @@ class TestDeleteBefore:
 
     def test_backspace_at_zero_is_noop(self) -> None:
         buf = InputBuffer()
-        buf.delete_before()     # should not raise
+        buf.delete_before()  # should not raise
         assert buf.buf == []
         assert buf.cursor == 0
 
     def test_backspace_at_middle(self) -> None:
         buf = InputBuffer(list("hello"))
-        buf.cursor = 3          # after 'l'
+        buf.cursor = 3  # after 'l'
         buf.delete_before()
         assert "".join(buf.buf) == "helo"
         assert buf.cursor == 2
@@ -106,7 +107,7 @@ class TestCursorNavigation:
     def test_move_right_clamps(self) -> None:
         buf = InputBuffer(list("x"))
         buf.move_right()
-        buf.move_right()    # already at end
+        buf.move_right()  # already at end
         assert buf.cursor == 1
 
     def test_move_home_single_line(self) -> None:
@@ -122,13 +123,13 @@ class TestCursorNavigation:
 
     def test_move_home_multiline(self) -> None:
         buf = InputBuffer(list("line1\nline2"))
-        buf.cursor = 8          # inside 'line2'
+        buf.cursor = 8  # inside 'line2'
         buf.move_home()
         assert buf.cursor == 6  # start of 'line2'
 
     def test_move_end_multiline(self) -> None:
         buf = InputBuffer(list("line1\nline2"))
-        buf.cursor = 2          # inside 'line1'
+        buf.cursor = 2  # inside 'line1'
         buf.move_end()
         assert buf.cursor == 5  # end of 'line1' (before \n)
 
@@ -138,7 +139,7 @@ class TestCursorNavigation:
 
     def test_move_up_true_on_second_line(self) -> None:
         buf = InputBuffer(list("line1\nline2"))
-        buf.cursor = 9          # on 'line2'
+        buf.cursor = 9  # on 'line2'
         assert buf.move_up() is True
         assert buf.cursor <= 5  # on 'line1'
 
@@ -148,7 +149,7 @@ class TestCursorNavigation:
 
     def test_move_down_true_on_first_line(self) -> None:
         buf = InputBuffer(list("line1\nline2"))
-        buf.cursor = 2          # on 'line1'
+        buf.cursor = 2  # on 'line1'
         assert buf.move_down() is True
         assert buf.cursor >= 6  # on 'line2'
 

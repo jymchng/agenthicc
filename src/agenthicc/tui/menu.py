@@ -1,4 +1,5 @@
 """Menu Widget System — abstract interactive panels below the input bar (PRD-41, PRD-42)."""
+
 from __future__ import annotations
 
 import sys
@@ -29,8 +30,8 @@ class MenuResultKind(str, Enum):
     """Signals what happened after a single keypress inside a MenuWidget."""
 
     CONTINUE = "CONTINUE"  # keep the menu open, no return value
-    DONE = "DONE"          # menu completed normally, value in .data
-    CANCEL = "CANCEL"      # user pressed Esc; no value
+    DONE = "DONE"  # menu completed normally, value in .data
+    CANCEL = "CANCEL"  # user pressed Esc; no value
 
 
 # ---------------------------------------------------------------------------
@@ -196,9 +197,7 @@ class MenuDriver:
         for normal ``_redraw`` in that case.
         """
         if self._widget is not None:
-            self._prev_lines = self._widget.render(
-                prompt_str, buf, self._prev_lines
-            )
+            self._prev_lines = self._widget.render(prompt_str, buf, self._prev_lines)
 
     def handle_key(self, key: object, ch: str) -> MenuResult:
         """Forward *key* / *ch* to the active widget.

@@ -56,9 +56,7 @@ class DurableIdempotencyLedger(IdempotencyLedger):
         for key, payload in seed_records or ():
             self._committed.setdefault(key, deque()).append(_deserialize(payload))
 
-    def record(
-        self, name: str, tool_input: dict[str, object] | None, result: ToolResult
-    ) -> None:
+    def record(self, name: str, tool_input: dict[str, object] | None, result: ToolResult) -> None:
         key = canonical_tool_key(name, tool_input)
         self._pending.append((key, result))
         self._journal.tool_recorded(self._turn_id, key, _serialize(result))

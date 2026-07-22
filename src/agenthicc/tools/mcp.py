@@ -1,4 +1,5 @@
 """MCP tool bridge and registry (PRD-28)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -122,9 +123,7 @@ class AgenthiccMcpTool(Tool):
         context: dict[str, object],
     ) -> object:
         tool_call_id = context.get("tool_call_id", "")
-        return await self._bridge.call_tool(
-            self._schema.name, args, tool_call_id=tool_call_id
-        )
+        return await self._bridge.call_tool(self._schema.name, args, tool_call_id=tool_call_id)
 
 
 # ---------------------------------------------------------------------------
@@ -140,10 +139,7 @@ def _extract_tool_content(result: object) -> object:
     if len(content) == 1:
         block = content[0]
         return getattr(block, "text", None) or getattr(block, "data", None) or str(block)
-    return [
-        getattr(b, "text", None) or getattr(b, "data", None) or str(b)
-        for b in content
-    ]
+    return [getattr(b, "text", None) or getattr(b, "data", None) or str(b) for b in content]
 
 
 def _extract_text_content(result: object) -> str:
@@ -192,8 +188,7 @@ class McpToolBridge:
 
             if not _LAUREN_MCP_AVAILABLE:
                 raise ImportError(
-                    "lauren_mcp is not installed. "
-                    "Install it with: pip install lauren-mcp"
+                    "lauren_mcp is not installed. Install it with: pip install lauren-mcp"
                 )
 
             last_exc: Exception | None = None
@@ -282,13 +277,15 @@ class McpToolBridge:
             result = await self._client.call_tool(tool_name, args)
         except Exception as exc:  # noqa: BLE001
             # Re-raise McpCallError from lauren_mcp transparently when available
-            if _LAUREN_MCP_AVAILABLE and _McpCallError is not None and isinstance(exc, _McpCallError):
+            if (
+                _LAUREN_MCP_AVAILABLE
+                and _McpCallError is not None
+                and isinstance(exc, _McpCallError)
+            ):
                 raise McpToolCallError(
                     f"MCP call {self._cfg.name}/{tool_name} failed: {exc}"
                 ) from exc
-            raise McpToolCallError(
-                f"MCP call {self._cfg.name}/{tool_name} failed: {exc}"
-            ) from exc
+            raise McpToolCallError(f"MCP call {self._cfg.name}/{tool_name} failed: {exc}") from exc
 
         if getattr(result, "isError", False):
             err_text = _extract_text_content(result)
@@ -345,9 +342,7 @@ class McpToolRegistry:
         await bridge.connect()
         return await self._register_tools_from_bridge(bridge)
 
-    async def _register_tools_from_bridge(
-        self, bridge: McpToolBridge
-    ) -> list[AgenthiccMcpTool]:
+    async def _register_tools_from_bridge(self, bridge: McpToolBridge) -> list[AgenthiccMcpTool]:
         schemas = await bridge.list_tools()
         tools: list[AgenthiccMcpTool] = []
         for schema in schemas:

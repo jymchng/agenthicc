@@ -67,8 +67,11 @@ async def _run_turn(runner, conv_store, tmp_path):
     t = asyncio.create_task(proc.run())
     try:
         await _run_agent_turn(
-            "test prompt", runner, proc,
-            conv_store=conv_store, app_state=None,
+            "test prompt",
+            runner,
+            proc,
+            conv_store=conv_store,
+            app_state=None,
         )
     finally:
         t.cancel()
@@ -80,41 +83,41 @@ async def _run_turn(runner, conv_store, tmp_path):
 
 async def test_tokens_updated_before_text_event(tmp_path):
     """chunk.usage fires add_tokens before the text event is published."""
-    tui  = TUIAppState.create()
+    tui = TUIAppState.create()
     conv = tui.conversation
     snapshot: dict = {}
 
     def _on_event(ev):
         if ev.kind == "text":
-            snapshot["in"]  = conv.tokens_in()
+            snapshot["in"] = conv.tokens_in()
             snapshot["out"] = conv.tokens_out()
 
     conv.on_event(_on_event)
 
     usage = TokenUsage(input_tokens=42, output_tokens=17)
-    mock  = MockTransport()
+    mock = MockTransport()
     mock.queue_response(_completion("Hello.", usage))
     runner = _make_runner(mock)
 
     await _run_turn(runner, conv, tmp_path)
 
-    assert snapshot["in"]  == 42
+    assert snapshot["in"] == 42
     assert snapshot["out"] == 17
 
 
 async def test_single_turn_correct_counts(tmp_path):
     """Token counts match the MockTransport usage after one turn."""
-    tui  = TUIAppState.create()
+    tui = TUIAppState.create()
     conv = tui.conversation
 
     usage = TokenUsage(input_tokens=100, output_tokens=50)
-    mock  = MockTransport()
+    mock = MockTransport()
     mock.queue_response(_completion("Done.", usage))
     runner = _make_runner(mock)
 
     await _run_turn(runner, conv, tmp_path)
 
-    assert conv.tokens_in()  == 100
+    assert conv.tokens_in() == 100
     assert conv.tokens_out() == 50
 
 
@@ -122,17 +125,17 @@ async def test_no_modelcallcomplete_handler_registered(tmp_path):
     """_run_agent_turn must NOT register a ModelCallComplete handler on the bus."""
     from lauren_ai._signals import ModelCallComplete  # noqa: PLC0415
 
-    tui  = TUIAppState.create()
+    tui = TUIAppState.create()
     conv = tui.conversation
 
-    mock   = MockTransport()
-    usage  = TokenUsage(input_tokens=10, output_tokens=5)
+    mock = MockTransport()
+    usage = TokenUsage(input_tokens=10, output_tokens=5)
     mock.queue_response(_completion("Hi.", usage))
     runner = _make_runner(mock)
 
     handlers_before = len(runner._signals._handlers.get(ModelCallComplete, []))
     await _run_turn(runner, conv, tmp_path)
-    handlers_after  = len(runner._signals._handlers.get(ModelCallComplete, []))
+    handlers_after = len(runner._signals._handlers.get(ModelCallComplete, []))
 
     assert handlers_after == handlers_before, (
         f"_run_agent_turn added {handlers_after - handlers_before} "
@@ -144,7 +147,7 @@ async def test_no_handler_accumulation_across_turns(tmp_path):
     """Running N turns must not grow the ModelCallComplete handler list."""
     from lauren_ai._signals import ModelCallComplete  # noqa: PLC0415
 
-    tui  = TUIAppState.create()
+    tui = TUIAppState.create()
     conv = tui.conversation
 
     # Reuse the same runner across turns (as tui_session.py does)
@@ -161,7 +164,7 @@ async def test_no_handler_accumulation_across_turns(tmp_path):
 
 async def test_add_tokens_called_once_per_turn(tmp_path):
     """add_tokens called exactly once per turn (from chunk.usage only)."""
-    tui  = TUIAppState.create()
+    tui = TUIAppState.create()
     conv = tui.conversation
     calls: list[tuple] = []
     _orig = conv.add_tokens
@@ -173,7 +176,7 @@ async def test_add_tokens_called_once_per_turn(tmp_path):
     conv.add_tokens = _spy
 
     usage = TokenUsage(input_tokens=30, output_tokens=15)
-    mock  = MockTransport()
+    mock = MockTransport()
     mock.queue_response(_completion("Result.", usage))
     runner = _make_runner(mock)
 
@@ -188,7 +191,7 @@ async def test_add_tokens_called_once_per_turn(tmp_path):
 
 async def test_set_tokens_called_by_reconciliation_handler(tmp_path):
     """The AgentRunComplete handler calls set_tokens with the run total."""
-    tui  = TUIAppState.create()
+    tui = TUIAppState.create()
     conv = tui.conversation
     set_calls: list[tuple] = []
     _orig = conv.set_tokens
@@ -205,7 +208,7 @@ async def test_set_tokens_called_by_reconciliation_handler(tmp_path):
     @bus.on(AgentRunComplete)
     async def _on_arc(sig):
         usage = getattr(sig, "total_usage", None)
-        cost  = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
+        cost = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
         if usage is not None:
             conv.set_tokens(
                 int(getattr(usage, "input_tokens", 0) or 0),
@@ -233,7 +236,7 @@ async def test_set_tokens_called_by_reconciliation_handler(tmp_path):
 
 async def test_reconciliation_is_noop_when_chunk_usage_populated(tmp_path):
     """set_tokens is a no-op when chunk.usage already set the same values."""
-    tui  = TUIAppState.create()
+    tui = TUIAppState.create()
     conv = tui.conversation
 
     redraw_count = [0]
@@ -245,7 +248,7 @@ async def test_reconciliation_is_noop_when_chunk_usage_populated(tmp_path):
     @bus.on(AgentRunComplete)
     async def _on_arc(sig):
         usage = getattr(sig, "total_usage", None)
-        cost  = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
+        cost = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
         if usage is not None:
             conv.set_tokens(
                 int(getattr(usage, "input_tokens", 0) or 0),
@@ -256,8 +259,8 @@ async def test_reconciliation_is_noop_when_chunk_usage_populated(tmp_path):
     @agent(model="mock-model", system="Test.")
     class _A: ...
 
-    mock   = MockTransport()
-    usage  = TokenUsage(input_tokens=55, output_tokens=22)
+    mock = MockTransport()
+    usage = TokenUsage(input_tokens=55, output_tokens=22)
     mock.queue_response(_completion("Answer.", usage))
     instance = _A()
     _build_runner_for_agent(instance, mock, signals=bus)
@@ -268,7 +271,7 @@ async def test_reconciliation_is_noop_when_chunk_usage_populated(tmp_path):
     # The live path (chunk.usage) fires one redraw.
     # The reconciliation path (AgentRunComplete) should fire zero extra
     # redraws because set_tokens(55, 22, ...) == current value → no-op.
-    assert conv.tokens_in()  == 55
+    assert conv.tokens_in() == 55
     assert conv.tokens_out() == 22
     # Exactly 1 redraw from the live add_tokens call; reconciliation is no-op
     assert redraw_count[0] == 1
@@ -279,7 +282,7 @@ async def test_reconciliation_is_noop_when_chunk_usage_populated(tmp_path):
 
 async def test_fallback_when_chunk_usage_is_none(tmp_path):
     """When chunk.usage is None, tokens stay zero (honest zero, not bug)."""
-    tui  = TUIAppState.create()
+    tui = TUIAppState.create()
     conv = tui.conversation
     add_calls: list = []
     _orig = conv.add_tokens
@@ -299,7 +302,7 @@ async def test_fallback_when_chunk_usage_is_none(tmp_path):
     # add_tokens must NOT be called from the chunk loop (usage was None)
     assert len(add_calls) == 0
     # Tokens stay at 0 — correct, provider gave no data
-    assert conv.tokens_in()  == 0
+    assert conv.tokens_in() == 0
     assert conv.tokens_out() == 0
 
 
@@ -308,7 +311,7 @@ async def test_fallback_when_chunk_usage_is_none(tmp_path):
 
 async def test_multi_turn_accumulates_correctly(tmp_path):
     """Counts accumulate across two turns; no double-counting."""
-    tui  = TUIAppState.create()
+    tui = TUIAppState.create()
     conv = tui.conversation
     add_calls: list[tuple] = []
     _orig = conv.add_tokens
@@ -328,5 +331,5 @@ async def test_multi_turn_accumulates_correctly(tmp_path):
     assert len(add_calls) == 2
     assert add_calls[0] == (80, 20)
     assert add_calls[1] == (90, 30)
-    assert conv.tokens_in()  == 170
+    assert conv.tokens_in() == 170
     assert conv.tokens_out() == 50

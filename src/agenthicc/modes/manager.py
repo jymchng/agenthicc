@@ -1,4 +1,5 @@
 """ModeManager — tracks the currently active Mode and applies it to agent calls."""
+
 from __future__ import annotations
 
 from .mode import Mode
@@ -126,8 +127,7 @@ class ModeManager:
         tools = registry_tools
         if mode.tool_filter is not None:
             tools = [
-                t for t in registry_tools
-                if mode.tool_filter(getattr(t, "__name__", str(t)), {})
+                t for t in registry_tools if mode.tool_filter(getattr(t, "__name__", str(t)), {})
             ]
 
         return system, tools

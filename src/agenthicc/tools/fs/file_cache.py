@@ -12,6 +12,7 @@ files (which also stabilises L0's prompt-cache hits).  It is wired through a
 process-level singleton (`configure_file_cache` / `get_file_cache`); when none is
 configured the read path behaves exactly as before.
 """
+
 from __future__ import annotations
 
 import hashlib

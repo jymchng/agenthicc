@@ -1,4 +1,5 @@
 """Unit tests for storage configuration (StorageS3Settings, StorageSettings)."""
+
 from __future__ import annotations
 
 import pytest
@@ -35,7 +36,7 @@ def test_load_config_parses_s3_toml(tmp_path):
 
 def test_load_config_s3_defaults_when_no_section(tmp_path):
     toml_file = tmp_path / "agenthicc.toml"
-    toml_file.write_text('[execution]\nmax_parallel_tasks = 2\n', encoding="utf-8")
+    toml_file.write_text("[execution]\nmax_parallel_tasks = 2\n", encoding="utf-8")
     cfg = load_config(
         project_path=toml_file,
         user_path=tmp_path / "missing.toml",

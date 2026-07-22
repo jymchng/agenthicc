@@ -1,9 +1,17 @@
 """Unit tests for exec tools (PRD-16)."""
+
 from __future__ import annotations
 import pytest
 from unittest.mock import patch
-from agenthicc.tools.exec import (ExecToolKit, RunBashTool, RunCommandTool,
-    RunPythonTool, RunPythonExprTool, RunTestsTool, _truncate)
+from agenthicc.tools.exec import (
+    ExecToolKit,
+    RunBashTool,
+    RunCommandTool,
+    RunPythonTool,
+    RunPythonExprTool,
+    RunTestsTool,
+    _truncate,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -15,15 +23,25 @@ def mock_proc():
 
 
 def _result(stdout="", stderr="", rc=0, timed_out=False):
-    return {"stdout": stdout, "stderr": stderr, "returncode": rc, "duration_ms": 1.0, "timed_out": timed_out}
+    return {
+        "stdout": stdout,
+        "stderr": stderr,
+        "returncode": rc,
+        "duration_ms": 1.0,
+        "timed_out": timed_out,
+    }
 
 
 class TestTruncate:
-    def test_short_unchanged(self): assert _truncate("hi") == "hi"
+    def test_short_unchanged(self):
+        assert _truncate("hi") == "hi"
+
     def test_long_truncated(self):
         r = _truncate("x" * 200_000, max_bytes=1024)
         assert r.endswith("[... truncated]")
-    def test_exact_max_not_truncated(self): assert "[... truncated]" not in _truncate("a" * 100, max_bytes=200)
+
+    def test_exact_max_not_truncated(self):
+        assert "[... truncated]" not in _truncate("a" * 100, max_bytes=200)
 
 
 class TestRunBashTool:
@@ -51,7 +69,7 @@ class TestRunBashTool:
 class TestRunCommandTool:
     async def test_argv_forwarded(self, mock_proc):
         mock_proc.return_value = _result(stdout="out")
-        r = await RunCommandTool().execute({"argv": ["echo", "hi"]}, {})
+        await RunCommandTool().execute({"argv": ["echo", "hi"]}, {})
         assert mock_proc.call_args[0][0] == ["echo", "hi"]
         assert mock_proc.call_args[1]["shell"] is False
 
@@ -59,7 +77,7 @@ class TestRunCommandTool:
 class TestRunPythonTool:
     async def test_creates_temp_file(self, mock_proc):
         mock_proc.return_value = _result(stdout="test\n")
-        r = await RunPythonTool().execute({"code": "print('test')"}, {})
+        await RunPythonTool().execute({"code": "print('test')"}, {})
         # executable is sys.executable, second arg is temp .py file
         call_cmd = mock_proc.call_args[0][0]
         assert call_cmd[1].endswith(".py")

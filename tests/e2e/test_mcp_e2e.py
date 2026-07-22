@@ -1,4 +1,5 @@
 """E2E MCP tests — skipped unless AGENTHICC_MCP_E2E=1 and npx is available."""
+
 import os
 import pytest
 
@@ -10,10 +11,12 @@ pytestmark = [
     ),
 ]
 
+
 @pytest.mark.asyncio
 async def test_filesystem_server_real_connection():
     """Connect to reference MCP filesystem server and list tools."""
     from agenthicc.tools.mcp import McpServerConfig, McpToolRegistry
+
     cfg = McpServerConfig(
         name="fs",
         url="npx -y @modelcontextprotocol/server-filesystem /tmp",

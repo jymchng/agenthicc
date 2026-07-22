@@ -5,9 +5,9 @@ multi-bridge discovery, and clean shutdown.
 
 All tests use in-process mocks — no subprocess, no npx, no real MCP server.
 """
+
 from __future__ import annotations
 
-import fnmatch
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -37,8 +37,7 @@ def fake_bridge_factory():
         bridge._connected = True
 
         schemas = [
-            McpToolSchema(name=n, description=f"Tool {n}", input_schema={})
-            for n in tool_names
+            McpToolSchema(name=n, description=f"Tool {n}", input_schema={}) for n in tool_names
         ]
 
         mock_client = AsyncMock()

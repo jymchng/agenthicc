@@ -1,4 +1,5 @@
 """Tests for unified frame counter (PRD-120)."""
+
 from __future__ import annotations
 
 import pytest
@@ -82,6 +83,7 @@ class TestElapsedSProperty:
 
     def test_elapsed_s_positive_during_turn(self) -> None:
         import time  # noqa: PLC0415
+
         conv = ConversationStore()
         conv.begin_turn("agent", "t1")
         time.sleep(0.05)
@@ -95,6 +97,7 @@ class TestElapsedSProperty:
 
     def test_elapsed_s_is_not_a_signal(self) -> None:
         from agenthicc.reactive import Signal  # noqa: PLC0415
+
         conv = ConversationStore()
         assert not isinstance(conv.elapsed_s, Signal)
 
@@ -108,6 +111,7 @@ class TestFrameDrivesAnimation:
 
     def _make_state(self, frame: int = 7) -> object:
         from unittest.mock import MagicMock  # noqa: PLC0415
+
         state = MagicMock()
         state.conversation.frame.return_value = frame
         state.conversation.elapsed_s = 0.0

@@ -6,6 +6,7 @@ Verifies that:
 - Error messages always include the exception class name
 - No duplicate error events are emitted on a single failure
 """
+
 from __future__ import annotations
 
 import pytest
@@ -15,6 +16,7 @@ from agenthicc.runners.tui_session import _fmt_exc
 
 
 # ── ConversationStore.close_turn() ───────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_close_turn_success_returns_idle() -> None:
@@ -47,8 +49,8 @@ def test_close_turn_is_idempotent() -> None:
     store = ConversationStore()
     store.begin_turn("assistant")
 
-    store.close_turn()           # first call — normal close
-    store.close_turn()           # second call — no-op
+    store.close_turn()  # first call — normal close
+    store.close_turn()  # second call — no-op
     store.close_turn(error="x")  # third call — error on already-closed turn
 
     assert store.agent_state() == AgentState.IDLE
@@ -110,6 +112,7 @@ def test_close_turn_no_turn_emits_nothing() -> None:
 
 # ── Backward-compat wrappers ──────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_fail_turn_returns_idle() -> None:
     """fail_turn() must now end at IDLE (was ERROR — the bug this PRD fixes)."""
@@ -137,7 +140,7 @@ def test_double_fail_does_not_corrupt_state() -> None:
     store = ConversationStore()
     store.begin_turn("assistant")
 
-    store.fail_turn("first error")   # was: agent_state = ERROR
+    store.fail_turn("first error")  # was: agent_state = ERROR
     store.fail_turn("second error")  # was: still ERROR, appended duplicate event
 
     # After the fix both calls go through close_turn(); second is a no-op
@@ -145,6 +148,7 @@ def test_double_fail_does_not_corrupt_state() -> None:
 
 
 # ── is_turn_active property ───────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_is_turn_active_lifecycle() -> None:
@@ -160,6 +164,7 @@ def test_is_turn_active_lifecycle() -> None:
 
 
 # ── _fmt_exc helper ───────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_fmt_exc_includes_class_name() -> None:
@@ -206,6 +211,7 @@ def test_fmt_exc_never_returns_bare_str() -> None:
 
 
 # ── active_tool cleared on close ─────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_active_tool_cleared_by_close_turn() -> None:

@@ -13,6 +13,7 @@ Covers:
 - ModeManager.apply_to_agent() applies tool_filter to the tool list
 - ModeManager.apply_to_agent() with no tool_filter returns all tools unchanged
 """
+
 from __future__ import annotations
 
 import pytest
@@ -51,7 +52,9 @@ def _make_mode(
 
 def _make_tool(name: str):
     """Return a plain function with __name__ set to *name*."""
+
     def fn(): ...
+
     fn.__name__ = name
     return fn
 
@@ -69,11 +72,11 @@ def _make_registry(*names_and_colours) -> ModeRegistry:
 # ---------------------------------------------------------------------------
 
 _COLOUR_ANSI = {
-    "green":   "\x1b[32m",
-    "yellow":  "\x1b[33m",
-    "cyan":    "\x1b[36m",
-    "blue":    "\x1b[34m",
-    "red":     "\x1b[31m",
+    "green": "\x1b[32m",
+    "yellow": "\x1b[33m",
+    "cyan": "\x1b[36m",
+    "blue": "\x1b[34m",
+    "red": "\x1b[31m",
     "magenta": "\x1b[35m",
 }
 
@@ -306,6 +309,7 @@ def test_unregister_source_removes_only_own_source():
 
 def test_manager_default_is_auto():
     from agenthicc.modes.builtin import build_default_registry
+
     reg = build_default_registry()
     mgr = ModeManager(reg)
     assert mgr.active is not None
@@ -359,6 +363,7 @@ def test_manager_cycle_wraps_back():
 
 def test_manager_cycle_six_modes_full_loop():
     from agenthicc.modes.builtin import build_default_registry
+
     reg = build_default_registry()
     mgr = ModeManager(reg, default_name="Auto")
     names = []
@@ -411,12 +416,14 @@ def test_manager_set_preserves_current_on_unknown():
 def test_apply_to_agent_prepends_system_patch():
     patch_text = "## PLAN MODE\nDo not write files."
     reg = ModeRegistry()
-    reg.register(Mode(
-        name="Plan",
-        label="PLAN",
-        description="Plan mode",
-        system_patch=patch_text,
-    ))
+    reg.register(
+        Mode(
+            name="Plan",
+            label="PLAN",
+            description="Plan mode",
+            system_patch=patch_text,
+        )
+    )
     mgr = ModeManager(reg, default_name="Plan")
     base = "You are a helpful assistant."
     new_prompt, _ = mgr.apply_to_agent(base, [])
@@ -453,12 +460,14 @@ def test_apply_to_agent_tool_filter_blocks_write_file():
         return name != "write_file"
 
     reg = ModeRegistry()
-    reg.register(Mode(
-        name="Safe",
-        label="SAFE",
-        description="Safe mode",
-        tool_filter=only_reads,
-    ))
+    reg.register(
+        Mode(
+            name="Safe",
+            label="SAFE",
+            description="Safe mode",
+            tool_filter=only_reads,
+        )
+    )
     mgr = ModeManager(reg, default_name="Safe")
     _, filtered = mgr.apply_to_agent("prompt", [write_file, read_file])
     assert write_file not in filtered
@@ -493,12 +502,14 @@ def test_apply_to_agent_filter_receives_tool_name():
 
     tools = [_make_tool("alpha"), _make_tool("beta")]
     reg = ModeRegistry()
-    reg.register(Mode(
-        name="Capture",
-        label="CAP",
-        description="Capture filter calls",
-        tool_filter=capturing_filter,
-    ))
+    reg.register(
+        Mode(
+            name="Capture",
+            label="CAP",
+            description="Capture filter calls",
+            tool_filter=capturing_filter,
+        )
+    )
     mgr = ModeManager(reg, default_name="Capture")
     mgr.apply_to_agent("prompt", tools)
     assert set(seen_names) == {"alpha", "beta"}
@@ -506,12 +517,14 @@ def test_apply_to_agent_filter_receives_tool_name():
 
 def test_apply_to_agent_empty_tools_list():
     reg = ModeRegistry()
-    reg.register(Mode(
-        name="Plan",
-        label="PLAN",
-        description="Plan",
-        tool_filter=lambda n, k: False,
-    ))
+    reg.register(
+        Mode(
+            name="Plan",
+            label="PLAN",
+            description="Plan",
+            tool_filter=lambda n, k: False,
+        )
+    )
     mgr = ModeManager(reg, default_name="Plan")
     _, filtered = mgr.apply_to_agent("prompt", [])
     assert filtered == []
@@ -523,12 +536,14 @@ def test_apply_to_agent_named_tool_passes_filter():
     blocked = _make_tool("blocked")
 
     reg = ModeRegistry()
-    reg.register(Mode(
-        name="Strict",
-        label="STRICT",
-        description="Strict mode",
-        tool_filter=lambda n, k: n == "allowed",
-    ))
+    reg.register(
+        Mode(
+            name="Strict",
+            label="STRICT",
+            description="Strict mode",
+            tool_filter=lambda n, k: n == "allowed",
+        )
+    )
     mgr = ModeManager(reg, default_name="Strict")
     _, filtered = mgr.apply_to_agent("prompt", [allowed, blocked])
     assert allowed in filtered

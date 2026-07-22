@@ -19,9 +19,11 @@ pytestmark = pytest.mark.unit
 # Autouse fixture: redirect session paths to tmp_path
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def isolated_sessions(tmp_path, monkeypatch):
     import agenthicc.sessions as s
+
     monkeypatch.setattr(s, "_SESSION_INDEX", tmp_path / "sessions.json")
     monkeypatch.setattr(s, "_SESSIONS_DIR", tmp_path / "sessions")
 
@@ -30,16 +32,19 @@ def isolated_sessions(tmp_path, monkeypatch):
 # TestSessionIndex
 # ---------------------------------------------------------------------------
 
+
 class TestSessionIndex:
     def test_load_empty_index(self, tmp_path):
         """_SESSION_INDEX doesn't exist → returns {}"""
         from agenthicc.sessions import _load_session_index
+
         result = _load_session_index()
         assert result == {}
 
     def test_load_corrupt_json_returns_empty(self, tmp_path, monkeypatch):
         """A corrupt JSON file in _SESSION_INDEX returns {} instead of raising."""
         import agenthicc.sessions as s
+
         # Write invalid JSON to the session index file
         s._SESSION_INDEX.parent.mkdir(parents=True, exist_ok=True)
         s._SESSION_INDEX.write_text("{not valid json!!!")
@@ -49,6 +54,7 @@ class TestSessionIndex:
     def test_register_and_load(self, tmp_path):
         """_register_session saves an entry with cwd and log_path."""
         from agenthicc.sessions import _register_session, _load_session_index
+
         session_id = uuid.uuid4().hex
         _register_session(session_id)
 
@@ -67,7 +73,8 @@ class TestSessionIndex:
             _load_session_index,
             _save_session_index,
         )
-        cwd = os.getcwd()
+
+        os.getcwd()
         sid_old = uuid.uuid4().hex
         sid_new = uuid.uuid4().hex
 
@@ -87,9 +94,9 @@ class TestSessionIndex:
         from agenthicc.sessions import _find_latest_session_for_cwd, _save_session_index
 
         # Populate index with a different cwd
-        _save_session_index({
-            "abc": {"cwd": "/some/other/directory", "last_used": time.time(), "log_path": "/x"}
-        })
+        _save_session_index(
+            {"abc": {"cwd": "/some/other/directory", "last_used": time.time(), "log_path": "/x"}}
+        )
         # Mock os.getcwd to something that won't match
         monkeypatch.setattr("agenthicc.sessions.os.getcwd", lambda: "/nonexistent/cwd/xyz")
         result = _find_latest_session_for_cwd()
@@ -103,6 +110,7 @@ class TestSessionIndex:
             _load_session_index,
             _save_session_index,
         )
+
         sid = uuid.uuid4().hex
         _register_session(sid)
 
@@ -119,6 +127,7 @@ class TestSessionIndex:
     def test_touch_unknown_session_is_noop(self):
         """_touch_session on unknown id silently does nothing."""
         from agenthicc.sessions import _touch_session, _load_session_index
+
         _touch_session("does-not-exist")
         # Should not raise and index should remain empty
         assert _load_session_index() == {}
@@ -129,6 +138,7 @@ class TestSessionIndex:
             _register_session,
             _get_session_log_path,
         )
+
         sid = uuid.uuid4().hex
         _register_session(sid)
 
@@ -143,6 +153,7 @@ class TestSessionIndex:
     def test_sessions_saved_as_json(self, tmp_path):
         """File is valid JSON after _register_session."""
         import agenthicc.sessions as s
+
         sid = uuid.uuid4().hex
         s._register_session(sid)
         raw = s._SESSION_INDEX.read_text()
@@ -155,28 +166,33 @@ class TestSessionIndex:
 # TestMainParseArgs
 # ---------------------------------------------------------------------------
 
+
 class TestMainParseArgs:
     def test_headless_flag(self):
         with patch("sys.argv", ["agenthicc", "--headless"]):
             from agenthicc.cli.parser import _parse_args
+
             args = _parse_args()
         assert args.headless is True
 
     def test_continue_flag(self):
         with patch("sys.argv", ["agenthicc", "--continue"]):
             from agenthicc.cli.parser import _parse_args
+
             args = _parse_args()
         assert args.continue_session is True
 
     def test_resume_flag(self):
         with patch("sys.argv", ["agenthicc", "--resume", "abc123"]):
             from agenthicc.cli.parser import _parse_args
+
             args = _parse_args()
         assert args.resume == "abc123"
 
     def test_version(self):
         with patch("sys.argv", ["agenthicc", "--version"]):
             from agenthicc.cli.parser import _parse_args
+
             with pytest.raises(SystemExit) as exc_info:
                 _parse_args()
         assert exc_info.value.code == 0
@@ -184,6 +200,7 @@ class TestMainParseArgs:
     def test_login_command(self):
         with patch("sys.argv", ["agenthicc", "login"]):
             from agenthicc.cli.parser import _parse_args
+
             args = _parse_args()
         assert getattr(args, "_entry", None) is not None
         assert args._entry.path == ("login",)
@@ -191,6 +208,7 @@ class TestMainParseArgs:
     def test_logout_command(self):
         with patch("sys.argv", ["agenthicc", "logout"]):
             from agenthicc.cli.parser import _parse_args
+
             args = _parse_args()
         assert getattr(args, "_entry", None) is not None
         assert args._entry.path == ("logout",)
@@ -198,6 +216,7 @@ class TestMainParseArgs:
     def test_whoami_command(self):
         with patch("sys.argv", ["agenthicc", "whoami"]):
             from agenthicc.cli.parser import _parse_args
+
             args = _parse_args()
         assert getattr(args, "_entry", None) is not None
         assert args._entry.path == ("whoami",)
@@ -205,6 +224,7 @@ class TestMainParseArgs:
     def test_sessions_list_command(self):
         with patch("sys.argv", ["agenthicc", "sessions", "list"]):
             from agenthicc.cli.parser import _parse_args
+
             args = _parse_args()
         assert getattr(args, "_entry", None) is not None
         assert args._entry.path == ("sessions", "list")
@@ -212,6 +232,7 @@ class TestMainParseArgs:
     def test_no_args_default_values(self):
         with patch("sys.argv", ["agenthicc"]):
             from agenthicc.cli.parser import _parse_args
+
             args = _parse_args()
         assert args.headless is False
         assert args.continue_session is False
@@ -222,6 +243,7 @@ class TestMainParseArgs:
 # ---------------------------------------------------------------------------
 # TestMainDispatching
 # ---------------------------------------------------------------------------
+
 
 class TestMainDispatching:
     def test_main_login_dispatches_via_registry(self, monkeypatch):
@@ -312,6 +334,7 @@ class TestMainDispatching:
 # TestDoWhoami
 # ---------------------------------------------------------------------------
 
+
 class TestDoWhoami:
     def test_whoami_when_logged_in(self, capsys, monkeypatch):
         """Mocked AuthClient.current_bundle() returns a bundle; email is printed."""
@@ -357,10 +380,12 @@ class TestDoWhoami:
 # TestDoSessions
 # ---------------------------------------------------------------------------
 
+
 class TestDoSessions:
     def test_no_sessions(self, capsys):
         """Empty index → prints 'No saved sessions.'"""
         from agenthicc.sessions import _do_sessions
+
         _do_sessions()
         captured = capsys.readouterr()
         assert "No saved sessions." in captured.out
@@ -368,6 +393,7 @@ class TestDoSessions:
     def test_shows_sessions(self, capsys):
         """Index with two entries → both session IDs appear in output."""
         from agenthicc.sessions import _register_session, _do_sessions
+
         sid_a = uuid.uuid4().hex
         sid_b = uuid.uuid4().hex
         _register_session(sid_a)
@@ -383,19 +409,22 @@ class TestDoSessions:
     def test_current_cwd_marked_with_asterisk(self, capsys):
         """A session whose cwd matches the current directory is marked with *."""
         from agenthicc.sessions import _do_sessions, _save_session_index
+
         # Register a session for a different cwd
-        _save_session_index({
-            "aabbccddeeff": {
-                "cwd": "/some/other/path",
-                "last_used": time.time(),
-                "log_path": "/x/aabbccddeeff.jsonl",
-            },
-            "112233445566": {
-                "cwd": os.getcwd(),
-                "last_used": time.time() + 1,
-                "log_path": "/x/112233445566.jsonl",
-            },
-        })
+        _save_session_index(
+            {
+                "aabbccddeeff": {
+                    "cwd": "/some/other/path",
+                    "last_used": time.time(),
+                    "log_path": "/x/aabbccddeeff.jsonl",
+                },
+                "112233445566": {
+                    "cwd": os.getcwd(),
+                    "last_used": time.time() + 1,
+                    "log_path": "/x/112233445566.jsonl",
+                },
+            }
+        )
         _do_sessions()
         captured = capsys.readouterr()
         assert " *" in captured.out
@@ -405,11 +434,19 @@ class TestDoSessions:
 # TestRunTui (just the import-error branch)
 # ---------------------------------------------------------------------------
 
+
 class TestRunTui:
     def _make_ctx(self, **kwargs):
         from agenthicc.cli.context import CLIContext, CLIFlags
-        defaults = dict(resume_id=None, headless=False, continue_session=False,
-                        set_overrides=(), flags=CLIFlags(), record_cassette=None)
+
+        defaults = dict(
+            resume_id=None,
+            headless=False,
+            continue_session=False,
+            set_overrides=(),
+            flags=CLIFlags(),
+            record_cassette=None,
+        )
         defaults.update(kwargs)
         return CLIContext(**defaults)
 
@@ -449,7 +486,9 @@ class TestRunTui:
             coro.close()
 
         with patch.dict("sys.modules", {"rich.console": MagicMock()}):
-            with patch("agenthicc.runners.tui_session.asyncio.run", side_effect=consuming_asyncio_run):
+            with patch(
+                "agenthicc.runners.tui_session.asyncio.run", side_effect=consuming_asyncio_run
+            ):
                 ts._run_tui(ctx)
 
         captured = capsys.readouterr()
@@ -468,7 +507,10 @@ class TestRunTui:
         monkeypatch.setattr(ts, "_run_tui_session", capturing_tui_session)
 
         with patch.dict("sys.modules", {"rich.console": MagicMock()}):
-            with patch("agenthicc.runners.tui_session.asyncio.run", side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro)):
+            with patch(
+                "agenthicc.runners.tui_session.asyncio.run",
+                side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro),
+            ):
                 ts._run_tui(ctx)
 
         assert resume_id_used == ["myresumeid"]
@@ -486,7 +528,9 @@ class TestRunTui:
             raise RuntimeError("boom")
 
         with patch.dict("sys.modules", {"rich.console": MagicMock()}):
-            with patch("agenthicc.runners.tui_session.asyncio.run", side_effect=raising_asyncio_run):
+            with patch(
+                "agenthicc.runners.tui_session.asyncio.run", side_effect=raising_asyncio_run
+            ):
                 with pytest.raises(SystemExit) as exc_info:
                     ts._run_tui(ctx)
 
@@ -498,6 +542,7 @@ class TestRunTui:
 # ---------------------------------------------------------------------------
 # TestDoLogin / TestDoLogout
 # ---------------------------------------------------------------------------
+
 
 class TestDoLogin:
     async def test_do_login_prints_email_and_plan(self, capsys):
@@ -532,9 +577,6 @@ class TestDoLogout:
         from agenthicc.cli.commands.auth import logout
         from agenthicc.cli.context import CLIContext
 
-        from agenthicc.cli.commands.auth import logout
-        from agenthicc.cli.context import CLIContext
-
         mock_client = MagicMock()
         mock_client.logout = AsyncMock()
 
@@ -548,6 +590,7 @@ class TestDoLogout:
 # ---------------------------------------------------------------------------
 # TestRunHeadless
 # ---------------------------------------------------------------------------
+
 
 class TestRunHeadless:
     async def test_run_headless_emits_ready_on_eof(self, capsys, tmp_path):
@@ -578,6 +621,7 @@ class TestRunHeadless:
     def test_run_headless_skips_empty_lines_is_handled(self):
         """Headless mode ignores empty/whitespace-only input lines."""
         from agenthicc.runners.headless import _run_headless
+
         assert callable(_run_headless)
 
     async def test_run_headless_processes_input_and_emits_intent(self, capsys):
@@ -600,7 +644,7 @@ class TestRunHeadless:
             loop.run_in_executor = original_exec
 
         out = capsys.readouterr().out
-        output_lines = [l for l in out.strip().split("\n") if l]
+        output_lines = [line for line in out.strip().split("\n") if line]
         assert len(output_lines) >= 2
         # Second line should be the IntentCreated JSON
         data = json.loads(output_lines[1])
@@ -627,7 +671,7 @@ class TestRunHeadless:
 
         out = capsys.readouterr().out
         # Only the ready line should be printed
-        output_lines = [l for l in out.strip().split("\n") if l]
+        output_lines = [line for line in out.strip().split("\n") if line]
         assert len(output_lines) == 1
         data = json.loads(output_lines[0])
         assert data["status"] == "ready"
@@ -655,7 +699,7 @@ class TestRunHeadless:
             loop.run_in_executor = original_exec
 
         out = capsys.readouterr().out
-        output_lines = [l for l in out.strip().split("\n") if l]
+        output_lines = [line for line in out.strip().split("\n") if line]
         assert len(output_lines) >= 2
         timeout_line = json.loads(output_lines[-1])
         assert timeout_line["event_type"] == "Error"

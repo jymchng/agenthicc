@@ -1,8 +1,8 @@
 """Tests for per-phase model override and phase-aware TUI updates (PRD-115)."""
+
 from __future__ import annotations
 
-import dataclasses
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -12,8 +12,8 @@ from agenthicc.workflows.code_plan.state import CodePlanContext
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _make_runner(plan_model="", execute_model="", review_model="", summary_model="",
-                 params=None):
+
+def _make_runner(plan_model="", execute_model="", review_model="", summary_model="", params=None):
     mock_cfg = MagicMock()
     mock_cfg.params = params
     mock_cfg.app_state.workflow_run.return_value = None
@@ -32,14 +32,15 @@ def _make_runner(plan_model="", execute_model="", review_model="", summary_model
 
     runner = CodePlanRunner(mock_cfg, None)
     runner._model_id = "global-model"
-    runner.plan_model    = plan_model
+    runner.plan_model = plan_model
     runner.execute_model = execute_model
-    runner.review_model  = review_model
+    runner.review_model = review_model
     runner.summary_model = summary_model
     return runner
 
 
 # ── _resolve_model() fix ──────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_resolve_model_uses_exec_cfg_model_when_set() -> None:
@@ -52,7 +53,7 @@ def test_resolve_model_uses_exec_cfg_model_when_set() -> None:
 
     ctx = AgentTurnContext(
         text="test",
-        runner=MagicMock(),   # transport would say "transport-model"
+        runner=MagicMock(),  # transport would say "transport-model"
         processor=MagicMock(),
         session_memory=None,
         max_agent_turns=1,
@@ -83,7 +84,7 @@ def test_resolve_model_falls_back_to_transport_when_exec_cfg_empty() -> None:
     from agenthicc.runners.agent_turn_context import AgentTurnContext
 
     exec_cfg = MagicMock()
-    exec_cfg.model = ""   # empty → use transport
+    exec_cfg.model = ""  # empty → use transport
 
     transport_cfg = MagicMock()
     transport_cfg.model = "transport-model"
@@ -93,12 +94,23 @@ def test_resolve_model_falls_back_to_transport_when_exec_cfg_empty() -> None:
     mock_runner._transport = transport
 
     ctx = AgentTurnContext(
-        text="test", runner=mock_runner, processor=MagicMock(),
-        session_memory=None, max_agent_turns=1, conv_store=None,
-        app_state=None, exec_cfg=exec_cfg, skills={},
-        mention_cache=MagicMock(), project_plugin_tools=[],
-        mcp_registry=None, active_agent="auto", completed_turns=0,
-        approval_svc=None, output_collector=None, system_prompt_suffix="",
+        text="test",
+        runner=mock_runner,
+        processor=MagicMock(),
+        session_memory=None,
+        max_agent_turns=1,
+        conv_store=None,
+        app_state=None,
+        exec_cfg=exec_cfg,
+        skills={},
+        mention_cache=MagicMock(),
+        project_plugin_tools=[],
+        mcp_registry=None,
+        active_agent="auto",
+        completed_turns=0,
+        approval_svc=None,
+        output_collector=None,
+        system_prompt_suffix="",
     )
     runner = AgentTurnRunner(ctx)
     runner._resolve_model()
@@ -120,12 +132,23 @@ def test_resolve_model_falls_back_to_transport_when_exec_cfg_is_none() -> None:
     mock_runner._transport = transport
 
     ctx = AgentTurnContext(
-        text="test", runner=mock_runner, processor=MagicMock(),
-        session_memory=None, max_agent_turns=1, conv_store=None,
-        app_state=None, exec_cfg=None, skills={},
-        mention_cache=MagicMock(), project_plugin_tools=[],
-        mcp_registry=None, active_agent="auto", completed_turns=0,
-        approval_svc=None, output_collector=None, system_prompt_suffix="",
+        text="test",
+        runner=mock_runner,
+        processor=MagicMock(),
+        session_memory=None,
+        max_agent_turns=1,
+        conv_store=None,
+        app_state=None,
+        exec_cfg=None,
+        skills={},
+        mention_cache=MagicMock(),
+        project_plugin_tools=[],
+        mcp_registry=None,
+        active_agent="auto",
+        completed_turns=0,
+        approval_svc=None,
+        output_collector=None,
+        system_prompt_suffix="",
     )
     runner = AgentTurnRunner(ctx)
     runner._resolve_model()
@@ -134,6 +157,7 @@ def test_resolve_model_falls_back_to_transport_when_exec_cfg_is_none() -> None:
 
 
 # ── AppState.update_workflow_phase() ──────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_update_workflow_phase_creates_run_when_none() -> None:
@@ -168,8 +192,12 @@ def test_update_workflow_phase_replaces_existing() -> None:
 
     state = AppState()
     initial = WorkflowRun(
-        run_id="r1", workflow_name="code_plan", intent="intent",
-        current_phase="plan", current_phase_index=0, total_phases=4,
+        run_id="r1",
+        workflow_name="code_plan",
+        intent="intent",
+        current_phase="plan",
+        current_phase_index=0,
+        total_phases=4,
     )
     state.workflow_run.set(initial)
 
@@ -185,31 +213,33 @@ def test_update_workflow_phase_replaces_existing() -> None:
     wf = state.workflow_run()
     assert wf.current_phase == "execute"
     assert wf.current_phase_index == 1
-    assert wf.run_id == "r1"   # preserved from existing
+    assert wf.run_id == "r1"  # preserved from existing
 
 
 # ── CodePlanRunner class attributes ──────────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_code_plan_runner_default_phase_models_are_empty() -> None:
-    assert CodePlanRunner.plan_model    == ""
+    assert CodePlanRunner.plan_model == ""
     assert CodePlanRunner.execute_model == ""
-    assert CodePlanRunner.review_model  == ""
+    assert CodePlanRunner.review_model == ""
     assert CodePlanRunner.summary_model == ""
 
 
 @pytest.mark.unit
 def test_subclass_can_override_phase_models() -> None:
     class MyRunner(CodePlanRunner):
-        plan_model    = "flagship"
+        plan_model = "flagship"
         execute_model = "cheap"
 
-    assert MyRunner.plan_model    == "flagship"
+    assert MyRunner.plan_model == "flagship"
     assert MyRunner.execute_model == "cheap"
-    assert MyRunner.review_model  == ""   # inherited default
+    assert MyRunner.review_model == ""  # inherited default
 
 
 # ── _phase_model() ────────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_phase_model_returns_empty_when_no_override() -> None:
@@ -235,14 +265,14 @@ def test_phase_model_prefers_workflow_params_over_class_attr() -> None:
     )
 
     runner = _make_runner(plan_model="class-model", params=mock_params)
-    assert runner._phase_model("plan") == "toml-model"   # TOML wins
-    assert runner._phase_model("execute") == ""           # no TOML → empty
+    assert runner._phase_model("plan") == "toml-model"  # TOML wins
+    assert runner._phase_model("execute") == ""  # no TOML → empty
 
 
 @pytest.mark.unit
 def test_phase_model_falls_back_to_class_attr_when_params_returns_empty() -> None:
     mock_params = MagicMock()
-    mock_params.model_for_phase.return_value = ""   # TOML has no override
+    mock_params.model_for_phase.return_value = ""  # TOML has no override
 
     runner = _make_runner(execute_model="class-fallback", params=mock_params)
     assert runner._phase_model("execute") == "class-fallback"
@@ -250,16 +280,17 @@ def test_phase_model_falls_back_to_class_attr_when_params_returns_empty() -> Non
 
 # ── _run_turn model_override ──────────────────────────────────────────────────
 
+
 @pytest.mark.unit
 async def test_run_turn_passes_replaced_exec_cfg_when_model_override_set() -> None:
     """_run_turn with model_override calls _run_agent_turn with modified exec_cfg."""
-    import asyncio
     from agenthicc.workflows.code_plan.state import CodePlanContext
 
     runner = _make_runner()
 
     # Make exec_cfg a real dataclass so dataclasses.replace works
     from agenthicc.config import ExecutionSettings
+
     real_exec = ExecutionSettings(model="global")
     runner._cfg.cfg.execution = real_exec
 
@@ -272,8 +303,12 @@ async def test_run_turn_passes_replaced_exec_cfg_when_model_override_set() -> No
 
     with patch("agenthicc.runners.agent_turn._run_agent_turn", fake_run_agent_turn):
         await runner._run_turn(
-            "text", tools=[], mode=None,
-            system_prompt="sp", max_turns=1, ctx=ctx,
+            "text",
+            tools=[],
+            mode=None,
+            system_prompt="sp",
+            max_turns=1,
+            ctx=ctx,
             model_override="per-phase-model",
         )
 
@@ -299,22 +334,27 @@ async def test_run_turn_passes_original_exec_cfg_when_no_override() -> None:
 
     with patch("agenthicc.runners.agent_turn._run_agent_turn", fake_run_agent_turn):
         await runner._run_turn(
-            "text", tools=[], mode=None,
-            system_prompt="sp", max_turns=1, ctx=ctx,
+            "text",
+            tools=[],
+            mode=None,
+            system_prompt="sp",
+            max_turns=1,
+            ctx=ctx,
             # no model_override
         )
 
-    assert captured[0] is real_exec   # exact same object, not replaced
+    assert captured[0] is real_exec  # exact same object, not replaced
 
 
 # ── _set_phase() ──────────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_set_phase_calls_update_workflow_phase() -> None:
     runner = _make_runner()
     runner.workflow_name = "code_plan_docs"
-    runner.total_phases  = 5
-    runner._model_id     = "global"
+    runner.total_phases = 5
+    runner._model_id = "global"
 
     ctx = CodePlanContext(intent="do stuff", run_id="run-abc", shared_memory=MagicMock())
     runner._set_phase("update_docs", 4, ctx)
@@ -326,7 +366,7 @@ def test_set_phase_calls_update_workflow_phase() -> None:
         total_phases=5,
         run_id="run-abc",
         intent="do stuff",
-        model_id="global",   # no override → falls back to self._model_id
+        model_id="global",  # no override → falls back to self._model_id
     )
 
 

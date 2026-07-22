@@ -15,10 +15,10 @@ reference them by path::
     mock_transport = cassette.to_mock_transport()
     mock_approval  = cassette.to_mock_approval_service()
 """
+
 from __future__ import annotations
 
 import json
-from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,15 +27,17 @@ _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 
 # ── Wire format dataclasses ──────────────────────────────────────────────────
 
+
 @dataclass(frozen=True)
 class CassetteEntry:
     """One recorded transport.complete() call."""
-    index:                 int
-    model:                 str
-    tool_names_available:  list[str]
-    response_content:      str
-    response_stop_reason:  str
-    response_tool_calls:   list[dict[str, object]]   # [{"name", "tool_use_id", "input"}]
+
+    index: int
+    model: str
+    tool_names_available: list[str]
+    response_content: str
+    response_stop_reason: str
+    response_tool_calls: list[dict[str, object]]  # [{"name", "tool_use_id", "input"}]
 
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> CassetteEntry:
@@ -53,12 +55,13 @@ class CassetteEntry:
 @dataclass(frozen=True)
 class ApprovalEntry:
     """One recorded approval gate response."""
-    index:        int
-    kind:         str    # "tool" | "plan_review"
-    tool_name:    str
-    allowed:      bool
-    message:      str
-    remember:     bool
+
+    index: int
+    kind: str  # "tool" | "plan_review"
+    tool_name: str
+    allowed: bool
+    message: str
+    remember: bool
     remember_all: bool
 
     @classmethod
@@ -76,6 +79,7 @@ class ApprovalEntry:
 
 # ── SessionCassette ───────────────────────────────────────────────────────────
 
+
 @dataclass
 class SessionCassette:
     """Immutable in-memory representation of a recorded session cassette.
@@ -86,9 +90,9 @@ class SessionCassette:
     * :meth:`from_session` — auto-discover from a live session directory
     """
 
-    entries:   list[CassetteEntry]    = field(default_factory=list)
-    approvals: list[ApprovalEntry]    = field(default_factory=list)
-    intent:    str                    = ""
+    entries: list[CassetteEntry] = field(default_factory=list)
+    approvals: list[ApprovalEntry] = field(default_factory=list)
+    intent: str = ""
 
     # ── Factory methods ───────────────────────────────────────────────────────
 
@@ -142,9 +146,9 @@ class SessionCassette:
             ~/.agenthicc/sessions/<session_id>/cassette/meta.json
         """
         cassette_dir = _SESSIONS_DIR / session_id / "cassette"
-        cassette_path  = cassette_dir / "cassette.jsonl"
+        cassette_path = cassette_dir / "cassette.jsonl"
         approvals_path = cassette_dir / "approvals.jsonl"
-        meta_path      = cassette_dir / "meta.json"
+        meta_path = cassette_dir / "meta.json"
 
         if not cassette_path.exists():
             raise FileNotFoundError(
@@ -177,7 +181,9 @@ class SessionCassette:
         streaming agent runner receives proper tool-call deltas.
         """
         from lauren_ai._transport import (  # noqa: PLC0415
-            CompletionChunk, ToolCallDelta, TokenUsage,
+            CompletionChunk,
+            ToolCallDelta,
+            TokenUsage,
         )
         from lauren_ai._transport._mock import MockTransport  # noqa: PLC0415
 
@@ -188,35 +194,46 @@ class SessionCassette:
             if entry.response_tool_calls:
                 for tc in entry.response_tool_calls:
                     name = str(tc.get("name", ""))
-                    tid  = str(tc.get("tool_use_id", f"tu_{entry.index}"))
-                    inp  = tc.get("input", {})
+                    tid = str(tc.get("tool_use_id", f"tu_{entry.index}"))
+                    inp = tc.get("input", {})
 
                     # First chunk: announce tool name
-                    chunks.append(CompletionChunk(
-                        tool_call_delta=ToolCallDelta(
-                            tool_use_id=tid, name=name, input_delta="",
+                    chunks.append(
+                        CompletionChunk(
+                            tool_call_delta=ToolCallDelta(
+                                tool_use_id=tid,
+                                name=name,
+                                input_delta="",
+                            )
                         )
-                    ))
+                    )
                     # Second chunk: full input JSON
-                    chunks.append(CompletionChunk(
-                        tool_call_delta=ToolCallDelta(
-                            tool_use_id=tid, name=None,
-                            input_delta=json.dumps(inp, ensure_ascii=False),
+                    chunks.append(
+                        CompletionChunk(
+                            tool_call_delta=ToolCallDelta(
+                                tool_use_id=tid,
+                                name=None,
+                                input_delta=json.dumps(inp, ensure_ascii=False),
+                            )
                         )
-                    ))
+                    )
                 # Terminal chunk
-                chunks.append(CompletionChunk(
-                    stop_reason="tool_use",
-                    usage=TokenUsage(input_tokens=0, output_tokens=0),
-                ))
+                chunks.append(
+                    CompletionChunk(
+                        stop_reason="tool_use",
+                        usage=TokenUsage(input_tokens=0, output_tokens=0),
+                    )
+                )
             else:
                 # Plain text response
                 if entry.response_content:
                     chunks.append(CompletionChunk(delta=entry.response_content))
-                chunks.append(CompletionChunk(
-                    stop_reason=entry.response_stop_reason,
-                    usage=TokenUsage(input_tokens=0, output_tokens=0),
-                ))
+                chunks.append(
+                    CompletionChunk(
+                        stop_reason=entry.response_stop_reason,
+                        usage=TokenUsage(input_tokens=0, output_tokens=0),
+                    )
+                )
 
             mock.queue_stream(chunks)
         return mock
@@ -224,6 +241,7 @@ class SessionCassette:
     def to_mock_approval_service(self) -> MockApprovalService:
         """Return a :class:`MockApprovalService` pre-loaded with recorded responses."""
         from agenthicc.testing.mock_approval import MockApprovalService  # noqa: PLC0415
+
         return MockApprovalService(list(self.approvals))
 
     # ── Private helpers ───────────────────────────────────────────────────────

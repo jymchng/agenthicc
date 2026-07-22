@@ -16,6 +16,7 @@ Matching behaviour
 * Hidden entries (names starting with ``'.'``) are always skipped.
 * Directory display paths carry a trailing ``"/"`` suffix.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -27,7 +28,7 @@ from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase,
 class AtMentionTrigger(TriggerHandlerBase):
     """File/directory mention trigger for the '@' character."""
 
-    char  = "@"
+    char = "@"
     label = "Mention File"
 
     # ------------------------------------------------------------------

@@ -18,20 +18,21 @@ MCP, no TUI AppState subscriptions), runs the workflow, and returns a
     assert "finalize_plan" in result.tools_called
     assert result.phases == ["plan", "execute", "review", "summarize"]
 """
+
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agenthicc.config import AgenthiccConfig
     from agenthicc.testing.cassette import SessionCassette
-    from agenthicc.testing.mock_approval import MockApprovalService
 
 
 # ── ReplayResult ──────────────────────────────────────────────────────────────
+
 
 @dataclass
 class ReplayResult:
@@ -43,15 +44,17 @@ class ReplayResult:
         assert "finalize_plan" in result.tools_called
         assert result.phases == ["plan", "execute", "review", "summarize"]
     """
-    status:             str               # "complete" | "failed" | "unknown"
-    phases:             list[str]         # phases that emitted PhaseCompleted, in order
-    tools_called:       list[str]         # tool names from conv_store tool_complete events
-    approvals_consumed: int               # number of approval requests dequeued
-    transport_calls:    int               # number of transport.complete() calls made
-    error:              str | None = None  # exception text if the runner raised
+
+    status: str  # "complete" | "failed" | "unknown"
+    phases: list[str]  # phases that emitted PhaseCompleted, in order
+    tools_called: list[str]  # tool names from conv_store tool_complete events
+    approvals_consumed: int  # number of approval requests dequeued
+    transport_calls: int  # number of transport.complete() calls made
+    error: str | None = None  # exception text if the runner raised
 
 
 # ── HeadlessProcessor ─────────────────────────────────────────────────────────
+
 
 class _HeadlessProcessor:
     """No-op EventProcessor that collects emitted kernel events for assertions."""
@@ -60,10 +63,12 @@ class _HeadlessProcessor:
         self._events: list[dict[str, object]] = []
 
     async def emit(self, event: object) -> None:
-        self._events.append({
-            "type": getattr(event, "event_type", ""),
-            "payload": dict(getattr(event, "payload", {}) or {}),
-        })
+        self._events.append(
+            {
+                "type": getattr(event, "event_type", ""),
+                "payload": dict(getattr(event, "payload", {}) or {}),
+            }
+        )
 
     def get_state(self) -> None:
         return None
@@ -73,6 +78,7 @@ class _HeadlessProcessor:
 
 
 # ── run_headless_replay ───────────────────────────────────────────────────────
+
 
 async def run_headless_replay(
     cassette: SessionCassette,
@@ -101,13 +107,13 @@ async def run_headless_replay(
         Structured outcome describing status, phases, tool calls, etc.
     """
     from lauren_ai._agents._runner import AgentRunnerBase  # noqa: PLC0415
-    from lauren_ai._signals import SignalBus                # noqa: PLC0415
+    from lauren_ai._signals import SignalBus  # noqa: PLC0415
 
-    from agenthicc.config import load_config                # noqa: PLC0415
-    from agenthicc.mentions.cache import MentionCache       # noqa: PLC0415
-    from agenthicc.tui.conversation_store import AppState   # noqa: PLC0415
-    from agenthicc.workflows.code_plan import CodePlanRunner # noqa: PLC0415
-    from agenthicc.workflows.config import WorkflowConfig   # noqa: PLC0415
+    from agenthicc.config import load_config  # noqa: PLC0415
+    from agenthicc.mentions.cache import MentionCache  # noqa: PLC0415
+    from agenthicc.tui.conversation_store import AppState  # noqa: PLC0415
+    from agenthicc.workflows.code_plan import CodePlanRunner  # noqa: PLC0415
+    from agenthicc.workflows.config import WorkflowConfig  # noqa: PLC0415
 
     run_intent: str = intent or cassette.intent
     if not run_intent:
@@ -121,14 +127,15 @@ async def run_headless_replay(
 
     # ── Minimal services ──────────────────────────────────────────────────────
     mock_transport = cassette.to_mock_transport()
-    mock_approval  = cassette.to_mock_approval_service()
-    processor      = _HeadlessProcessor()
-    app_state      = AppState.create()
-    agent_runner   = AgentRunnerBase(transport=mock_transport, signals=SignalBus())
+    mock_approval = cassette.to_mock_approval_service()
+    processor = _HeadlessProcessor()
+    app_state = AppState.create()
+    agent_runner = AgentRunnerBase(transport=mock_transport, signals=SignalBus())
 
     # Build AgentsRegistry (lightweight, reads config files only)
     try:
         from agenthicc.agents.registry import build_agents_registry  # noqa: PLC0415
+
         agents_registry = build_agents_registry(
             project_dir=Path(".agenthicc"),
             user_dir=Path.home() / ".agenthicc",
@@ -141,15 +148,15 @@ async def run_headless_replay(
     wf_config = WorkflowConfig(
         conv_store=app_state.conversation,
         app_state=app_state,
-        processor=processor,      # type: ignore[arg-type]  # _HeadlessProcessor satisfies emit()
+        processor=processor,  # type: ignore[arg-type]  # _HeadlessProcessor satisfies emit()
         agent_runner=agent_runner,
-        approval_svc=mock_approval,   # type: ignore[arg-type]
+        approval_svc=mock_approval,  # type: ignore[arg-type]
         cfg=cfg,
         skills={},
         plugin_tools=[],
         mcp_registry=None,
         mention_cache=mention_cache,
-        agents_registry=agents_registry,   # type: ignore[arg-type]
+        agents_registry=agents_registry,  # type: ignore[arg-type]
     )
 
     # ── Collect tool_complete events from conv_store ──────────────────────────
@@ -164,7 +171,7 @@ async def run_headless_replay(
     # ── Run ───────────────────────────────────────────────────────────────────
     runner = CodePlanRunner(wf_config, mode_manager=None)
     status: str = "unknown"
-    error:  str | None = None
+    error: str | None = None
 
     try:
         await runner.run(run_intent)
@@ -175,7 +182,7 @@ async def run_headless_replay(
         raise
     except Exception as exc:
         status = "failed"
-        error  = repr(exc)
+        error = repr(exc)
     finally:
         _unsub()
 

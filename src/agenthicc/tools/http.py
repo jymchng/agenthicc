@@ -27,6 +27,7 @@ Example
                         "recoverable": True}
             raise
 """
+
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -39,15 +40,24 @@ __all__ = [
 ]
 
 # Module-level defaults — set once at session startup via configure().
-_default_timeout: float = 30.0   # read / total timeout
-_connect_timeout: float = 10.0   # always bounded tightly
+_default_timeout: float = 30.0  # read / total timeout
+_connect_timeout: float = 10.0  # always bounded tightly
 
 # Exception class names that count as network errors when httpx is unavailable.
-_NETWORK_CLASS_NAMES: frozenset[str] = frozenset({
-    "ReadTimeout", "ConnectTimeout", "WriteTimeout", "PoolTimeout",
-    "TimeoutException", "ReadError", "ConnectError", "RemoteProtocolError",
-    "ReadTimeoutError", "ConnectTimeoutError",  # botocore
-})
+_NETWORK_CLASS_NAMES: frozenset[str] = frozenset(
+    {
+        "ReadTimeout",
+        "ConnectTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+        "TimeoutException",
+        "ReadError",
+        "ConnectError",
+        "RemoteProtocolError",
+        "ReadTimeoutError",
+        "ConnectTimeoutError",  # botocore
+    }
+)
 
 
 def configure(timeout_s: float) -> None:
@@ -109,6 +119,7 @@ def is_network_error(exc: BaseException) -> bool:
     # httpx hierarchy (lazy import so this module is importable without httpx)
     try:
         import httpx as _httpx  # noqa: PLC0415
+
         if isinstance(exc, (_httpx.TimeoutException, _httpx.HTTPError)):
             return True
     except ImportError:

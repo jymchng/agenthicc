@@ -27,6 +27,7 @@ Usage::
     state.count = 1        # prints "changed!"
     state.count = 1        # silent — value unchanged
 """
+
 from __future__ import annotations
 
 from typing import Callable
@@ -77,10 +78,12 @@ class ReactiveProperty:
     equality; for scalars it uses ``!=``.
     """
 
-    def __init__(self, default: object = None, *, default_factory: Callable[[], object] | None = None) -> None:
+    def __init__(
+        self, default: object = None, *, default_factory: Callable[[], object] | None = None
+    ) -> None:
         self._default = default
         self._factory = default_factory
-        self._attr: str = ""   # filled in by __set_name__
+        self._attr: str = ""  # filled in by __set_name__
 
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr = f"_rp_{name}"
@@ -98,10 +101,6 @@ class ReactiveProperty:
     def __set__(self, obj: object, value: object) -> None:
         prev = self.__get__(obj)
         object.__setattr__(obj, self._attr, value)
-        changed = (
-            (value is not prev)
-            if isinstance(value, (list, dict, set))
-            else (value != prev)
-        )
+        changed = (value is not prev) if isinstance(value, (list, dict, set)) else (value != prev)
         if changed and hasattr(obj, "_notify"):
             obj._notify()

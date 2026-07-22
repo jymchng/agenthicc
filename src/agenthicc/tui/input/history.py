@@ -3,6 +3,7 @@
 Keeps a saved-current snapshot so Down at the end of history restores
 whatever the user was typing before navigating up.
 """
+
 from __future__ import annotations
 
 

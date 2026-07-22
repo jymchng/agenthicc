@@ -1,7 +1,7 @@
 """Tests for permanent-error early exit in workflow phase loops (PRD-117)."""
+
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +12,7 @@ from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 
 
 # ── _http_status_code ─────────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_http_status_code_direct_attribute() -> None:
@@ -51,6 +52,7 @@ def test_http_status_code_ignores_non_int() -> None:
 
 
 # ── _is_permanent_error ───────────────────────────────────────────────────────
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 422, 499])
@@ -94,6 +96,7 @@ def test_is_permanent_detects_via_chained_cause() -> None:
 
 
 # ── _stream() re-raises permanent errors ─────────────────────────────────────
+
 
 @pytest.mark.unit
 async def test_stream_reraises_permanent_error() -> None:
@@ -145,7 +148,9 @@ async def test_stream_reraises_permanent_error() -> None:
     conv_store.append_event.assert_called_once()
     call_args = conv_store.append_event.call_args
     assert call_args[0][0] == "error"
-    assert "400" in str(call_args[0][1]["message"]) or "TransportError" in str(call_args[0][1]["message"])
+    assert "400" in str(call_args[0][1]["message"]) or "TransportError" in str(
+        call_args[0][1]["message"]
+    )
 
     # close_turn() must still be called (finally block ran)
     conv_store.close_turn.assert_called_once()
@@ -163,12 +168,23 @@ async def test_stream_swallows_transient_error() -> None:
 
     conv_store = MagicMock()
     ctx = AgentTurnContext(
-        text="hello", runner=MagicMock(), processor=MagicMock(),
-        session_memory=None, max_agent_turns=1, conv_store=conv_store,
-        app_state=None, exec_cfg=ExecutionSettings(), skills={},
-        mention_cache=MagicMock(), project_plugin_tools=[], mcp_registry=None,
-        active_agent="auto", completed_turns=0, approval_svc=None,
-        output_collector=None, system_prompt_suffix="",
+        text="hello",
+        runner=MagicMock(),
+        processor=MagicMock(),
+        session_memory=None,
+        max_agent_turns=1,
+        conv_store=conv_store,
+        app_state=None,
+        exec_cfg=ExecutionSettings(),
+        skills={},
+        mention_cache=MagicMock(),
+        project_plugin_tools=[],
+        mcp_registry=None,
+        active_agent="auto",
+        completed_turns=0,
+        approval_svc=None,
+        output_collector=None,
+        system_prompt_suffix="",
     )
 
     runner = AgentTurnRunner(ctx)
@@ -187,6 +203,7 @@ async def test_stream_swallows_transient_error() -> None:
 
 
 # ── CodePlanRunner phase methods ──────────────────────────────────────────────
+
 
 def _make_runner() -> CodePlanRunner:
     mock_cfg = MagicMock()
@@ -243,7 +260,7 @@ async def test_plan_exits_immediately_on_permanent_error() -> None:
         result = await runner._plan(ctx)
 
     assert result is CodePlanState.FAILED
-    assert run_turn_call_count == 1   # only ONE attempt, not 10
+    assert run_turn_call_count == 1  # only ONE attempt, not 10
     assert "TransportError" in ctx.fail_reason
     assert "400" in ctx.fail_reason
 
@@ -317,7 +334,6 @@ async def test_plan_continues_after_transient_error() -> None:
     # return normally, third call fires the plan_event (simulated by not
     # firing any event — the loop exhausts attempts naturally).
     call_count = 0
-    max_calls = 3
 
     async def fake_run_turn(*args, **kwargs) -> None:
         nonlocal call_count
@@ -341,4 +357,5 @@ async def test_429_rate_limit_not_treated_as_permanent() -> None:
     exc = Exception("rate limited")
     exc.status_code = 429  # type: ignore[attr-defined]
     from agenthicc.runners.agent_turn import _is_permanent_error
+
     assert _is_permanent_error(exc) is False

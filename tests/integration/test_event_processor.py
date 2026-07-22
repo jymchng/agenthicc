@@ -78,8 +78,7 @@ async def test_restore_from_log_replays_state(tmp_path):
     initial = AppState.create(settings=settings, policy=SecurityPolicy())
 
     events = [
-        Event.create("IntentCreated", {"intent_id": f"r{i}", "raw_text": "test"})
-        for i in range(7)
+        Event.create("IntentCreated", {"intent_id": f"r{i}", "raw_text": "test"}) for i in range(7)
     ]
     with open(log_path, "w") as f:
         for event in events:
@@ -112,7 +111,9 @@ async def test_replay_is_deterministic(tmp_path):
 
     with open(log_path, "w") as f:
         for i in range(20):
-            event = Event.create("IntentCreated", {"intent_id": f"det-{i}", "raw_text": f"task {i}"})
+            event = Event.create(
+                "IntentCreated", {"intent_id": f"det-{i}", "raw_text": f"task {i}"}
+            )
             f.write(json.dumps(event.to_dict()) + "\n")
 
     r1 = await restore_from_log(log_path, initial, root_reducer)
@@ -123,6 +124,8 @@ async def test_replay_is_deterministic(tmp_path):
 
 
 async def test_harness_captures_events(harness):
-    await harness.processor.emit(Event.create("IntentCreated", {"intent_id": "h1", "raw_text": "x"}))
+    await harness.processor.emit(
+        Event.create("IntentCreated", {"intent_id": "h1", "raw_text": "x"})
+    )
     captured = await harness.wait_for_event("IntentCreated")
     assert captured.payload["intent_id"] == "h1"

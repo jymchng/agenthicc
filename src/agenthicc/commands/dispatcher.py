@@ -1,4 +1,5 @@
 """CommandDispatcher — executes commands via the unified registry (PRD-44)."""
+
 from __future__ import annotations
 
 from .command import CommandContext

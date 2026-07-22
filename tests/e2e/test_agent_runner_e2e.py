@@ -71,10 +71,20 @@ def _bridge_signals(bus: SignalBus, processor: EventProcessor) -> None:
         return handler
 
     bus.on(ModelCallStarted)(_make_handler("ModelCallStarted", ["model", "agent_id", "agent_name"]))
-    bus.on(ModelCallComplete)(_make_handler("ModelCallComplete", ["model", "agent_id", "usage", "duration_ms"]))
-    bus.on(ToolCallStarted)(_make_handler("ToolCallStarted", ["tool_name", "tool_use_id", "agent_id"]))
-    bus.on(ToolCallComplete)(_make_handler("ToolCallComplete", ["tool_name", "tool_use_id", "agent_id", "duration_ms", "success"]))
-    bus.on(AgentRunComplete)(_make_handler("AgentRunComplete", ["agent_id", "agent_name", "turns", "stop_reason"]))
+    bus.on(ModelCallComplete)(
+        _make_handler("ModelCallComplete", ["model", "agent_id", "usage", "duration_ms"])
+    )
+    bus.on(ToolCallStarted)(
+        _make_handler("ToolCallStarted", ["tool_name", "tool_use_id", "agent_id"])
+    )
+    bus.on(ToolCallComplete)(
+        _make_handler(
+            "ToolCallComplete", ["tool_name", "tool_use_id", "agent_id", "duration_ms", "success"]
+        )
+    )
+    bus.on(AgentRunComplete)(
+        _make_handler("AgentRunComplete", ["agent_id", "agent_name", "turns", "stop_reason"])
+    )
 
 
 @pytest.fixture
@@ -139,10 +149,12 @@ async def test_tool_only_communication_spawns_agent_in_appstate(kernel):
         from uuid import uuid4
 
         new_id = uuid4().hex
-        await processor.emit(Event.create(
-            "AgentSpawnRequest",
-            {"agent_id": new_id, "agent_type": agent_type, "config": {}},
-        ))
+        await processor.emit(
+            Event.create(
+                "AgentSpawnRequest",
+                {"agent_id": new_id, "agent_type": agent_type, "config": {}},
+            )
+        )
         return {"agent_id": new_id}
 
     @agent(model="mock-model", system="You delegate work by spawning helpers.")
@@ -189,10 +201,18 @@ async def test_multi_turn_workflow_progress_via_tools(kernel):
 
     # Seed a workflow with one node.
     await processor.emit(Event.create("WorkflowCreated", {"workflow_id": "wf1", "intent_id": "i1"}))
-    await processor.emit(Event.create("WorkflowNodeAdded", {
-        "workflow_id": "wf1", "node_id": "n1", "task_id": "t1",
-        "label": "Refactor auth", "dependencies": [],
-    }))
+    await processor.emit(
+        Event.create(
+            "WorkflowNodeAdded",
+            {
+                "workflow_id": "wf1",
+                "node_id": "n1",
+                "task_id": "t1",
+                "label": "Refactor auth",
+                "dependencies": [],
+            },
+        )
+    )
     await processor.drain()
 
     @tool()
@@ -204,10 +224,17 @@ async def test_multi_turn_workflow_progress_via_tools(kernel):
             node_id: The node to complete.
             result: Result summary.
         """
-        await processor.emit(Event.create("WorkflowNodeStatusChanged", {
-            "workflow_id": workflow_id, "node_id": node_id,
-            "status": "complete", "result": result,
-        }))
+        await processor.emit(
+            Event.create(
+                "WorkflowNodeStatusChanged",
+                {
+                    "workflow_id": workflow_id,
+                    "node_id": node_id,
+                    "status": "complete",
+                    "result": result,
+                },
+            )
+        )
         return {"ok": True}
 
     @agent(model="mock-model")
@@ -215,9 +242,14 @@ async def test_multi_turn_workflow_progress_via_tools(kernel):
     class WorkerAgent: ...
 
     mock = MockTransport()
-    mock.queue_tool_use("complete_node", {
-        "workflow_id": "wf1", "node_id": "n1", "result": "Argon2 refactor done",
-    })
+    mock.queue_tool_use(
+        "complete_node",
+        {
+            "workflow_id": "wf1",
+            "node_id": "n1",
+            "result": "Argon2 refactor done",
+        },
+    )
     mock.queue_response(_completion("Node complete.", n=2))
 
     worker = WorkerAgent()

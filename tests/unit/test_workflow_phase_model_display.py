@@ -1,4 +1,5 @@
 """Tests for per-phase model display in the status bar (PRD-118)."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -11,11 +12,14 @@ from agenthicc.tui.conversation_store import AppState
 
 # ── WorkflowRun.current_phase_model field ────────────────────────────────────
 
+
 @pytest.mark.unit
 def test_workflow_run_has_current_phase_model_field() -> None:
     wf = WorkflowRun(
-        run_id="r1", workflow_name="code_plan",
-        intent="do stuff", current_phase="plan",
+        run_id="r1",
+        workflow_name="code_plan",
+        intent="do stuff",
+        current_phase="plan",
     )
     assert hasattr(wf, "current_phase_model")
     assert wf.current_phase_model == ""
@@ -24,8 +28,10 @@ def test_workflow_run_has_current_phase_model_field() -> None:
 @pytest.mark.unit
 def test_workflow_run_current_phase_model_set_explicitly() -> None:
     wf = WorkflowRun(
-        run_id="r1", workflow_name="code_plan",
-        intent="do stuff", current_phase="execute",
+        run_id="r1",
+        workflow_name="code_plan",
+        intent="do stuff",
+        current_phase="execute",
         current_phase_model="deepseek-v4-flash",
     )
     assert wf.current_phase_model == "deepseek-v4-flash"
@@ -39,6 +45,7 @@ def test_workflow_run_is_typed_str() -> None:
 
 
 # ── update_workflow_phase wires model_id ─────────────────────────────────────
+
 
 @pytest.mark.unit
 def test_update_workflow_phase_stores_model_id() -> None:
@@ -79,13 +86,21 @@ def test_update_workflow_phase_replaces_model_on_phase_change() -> None:
     """Second call (new phase) replaces current_phase_model correctly."""
     state = AppState()
     state.update_workflow_phase(
-        workflow_name="code_plan", phase_name="plan",
-        phase_index=0, total_phases=4, run_id="r1", intent="test",
+        workflow_name="code_plan",
+        phase_name="plan",
+        phase_index=0,
+        total_phases=4,
+        run_id="r1",
+        intent="test",
         model_id="deepseek-v4-pro",
     )
     state.update_workflow_phase(
-        workflow_name="code_plan", phase_name="execute",
-        phase_index=1, total_phases=4, run_id="r1", intent="test",
+        workflow_name="code_plan",
+        phase_name="execute",
+        phase_index=1,
+        total_phases=4,
+        run_id="r1",
+        intent="test",
         model_id="deepseek-v4-flash",
     )
     wf = state.workflow_run()
@@ -98,14 +113,22 @@ def test_update_workflow_phase_clears_model_when_empty() -> None:
     """A phase with no override (model_id='') stores empty string."""
     state = AppState()
     state.update_workflow_phase(
-        workflow_name="code_plan", phase_name="execute",
-        phase_index=1, total_phases=4, run_id="r1", intent="test",
+        workflow_name="code_plan",
+        phase_name="execute",
+        phase_index=1,
+        total_phases=4,
+        run_id="r1",
+        intent="test",
         model_id="deepseek-v4-flash",
     )
     state.update_workflow_phase(
-        workflow_name="code_plan", phase_name="review",
-        phase_index=2, total_phases=4, run_id="r1", intent="test",
-        model_id="",   # review uses global model
+        workflow_name="code_plan",
+        phase_name="review",
+        phase_index=2,
+        total_phases=4,
+        run_id="r1",
+        intent="test",
+        model_id="",  # review uses global model
     )
     wf = state.workflow_run()
     assert wf is not None
@@ -113,6 +136,7 @@ def test_update_workflow_phase_clears_model_when_empty() -> None:
 
 
 # ── StatusComponent.render() model selection ─────────────────────────────────
+
 
 @pytest.mark.unit
 def test_status_component_uses_phase_model_when_set() -> None:
@@ -130,9 +154,12 @@ def test_status_component_uses_phase_model_when_set() -> None:
     state.active_mode.return_value = MagicMock(badge="⏵⏵")
 
     wf = WorkflowRun(
-        run_id="r1", workflow_name="code_plan",
-        intent="do stuff", current_phase="execute",
-        status="running", current_phase_model="deepseek-v4-flash",
+        run_id="r1",
+        workflow_name="code_plan",
+        intent="do stuff",
+        current_phase="execute",
+        status="running",
+        current_phase_model="deepseek-v4-flash",
     )
     state.workflow_run.return_value = wf
     state.conversation.agent_state.return_value = MagicMock(name="IDLE")
@@ -144,6 +171,7 @@ def test_status_component_uses_phase_model_when_set() -> None:
     state.conversation.compaction_active.return_value = False
 
     from rich.console import Console
+
     comp = StatusComponent(state)
     console = Console(highlight=False, markup=False, no_color=True, width=120)
     with console.capture() as cap:
@@ -171,9 +199,12 @@ def test_status_component_uses_session_model_when_no_phase_override() -> None:
     state.active_mode.return_value = MagicMock(badge="⏵⏵")
 
     wf = WorkflowRun(
-        run_id="r1", workflow_name="code_plan",
-        intent="do stuff", current_phase="plan",
-        status="running", current_phase_model="",   # no override
+        run_id="r1",
+        workflow_name="code_plan",
+        intent="do stuff",
+        current_phase="plan",
+        status="running",
+        current_phase_model="",  # no override
     )
     state.workflow_run.return_value = wf
     state.conversation.agent_state.return_value = MagicMock(name="IDLE")
@@ -185,6 +216,7 @@ def test_status_component_uses_session_model_when_no_phase_override() -> None:
     state.conversation.compaction_active.return_value = False
 
     from rich.console import Console
+
     comp = StatusComponent(state)
     console = Console(highlight=False, markup=False, no_color=True, width=120)
     with console.capture() as cap:
@@ -208,7 +240,7 @@ def test_status_component_reverts_to_session_model_after_workflow_ends() -> None
     state.conversation.tokens_in.return_value = 100
     state.conversation.tokens_out.return_value = 50
     state.active_mode.return_value = MagicMock(badge="⏵⏵")
-    state.workflow_run.return_value = None   # no active workflow
+    state.workflow_run.return_value = None  # no active workflow
     state.conversation.agent_state.return_value = MagicMock(name="IDLE")
     state.conversation.active_tool.return_value = ""
     state.conversation.elapsed_s = 0.0
@@ -218,6 +250,7 @@ def test_status_component_reverts_to_session_model_after_workflow_ends() -> None
     state.conversation.compaction_active.return_value = False
 
     from rich.console import Console
+
     comp = StatusComponent(state)
     console = Console(highlight=False, markup=False, no_color=True, width=120)
     with console.capture() as cap:
@@ -243,9 +276,12 @@ def test_status_component_uses_session_model_when_workflow_complete() -> None:
     state.active_mode.return_value = MagicMock(badge="⏵⏵")
 
     wf = WorkflowRun(
-        run_id="r1", workflow_name="code_plan",
-        intent="do stuff", current_phase=None,
-        status="complete", current_phase_model="deepseek-v4-flash",
+        run_id="r1",
+        workflow_name="code_plan",
+        intent="do stuff",
+        current_phase=None,
+        status="complete",
+        current_phase_model="deepseek-v4-flash",
     )
     state.workflow_run.return_value = wf
     state.conversation.agent_state.return_value = MagicMock(name="IDLE")
@@ -257,6 +293,7 @@ def test_status_component_uses_session_model_when_workflow_complete() -> None:
     state.conversation.compaction_active.return_value = False
 
     from rich.console import Console
+
     comp = StatusComponent(state)
     console = Console(highlight=False, markup=False, no_color=True, width=120)
     with console.capture() as cap:

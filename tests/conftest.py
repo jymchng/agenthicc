@@ -9,6 +9,15 @@ from typing import Any
 
 import pytest
 
+from agenthicc.kernel import (
+    AppState,
+    Event,
+    EventProcessor,
+    SecurityPolicy,
+    SystemSettings,
+    root_reducer,
+)
+
 
 # ── cassette mark: skipped unless the file is explicitly targeted ─────────────
 
@@ -59,15 +68,6 @@ def pytest_collection_modifyitems(
     for item in items:
         if item.get_closest_marker("cassette"):
             item.add_marker(skip)
-
-from agenthicc.kernel import (
-    AppState,
-    Event,
-    EventProcessor,
-    SecurityPolicy,
-    SystemSettings,
-    root_reducer,
-)
 
 
 @pytest.fixture
@@ -149,23 +149,27 @@ def make_mock_transport(responses: list[Any]):
                 ToolCall(tool_use_id=f"tc-{i}-{j}", name=tc["name"], input=tc["input"])
                 for j, tc in enumerate(response["tool_calls"])
             ]
-            mock.queue_response(Completion(
-                id=f"mock-{i}",
-                model="mock",
-                content=response.get("content", ""),
-                tool_calls=tool_calls,
-                stop_reason="tool_use",
-                usage=TokenUsage(input_tokens=10, output_tokens=10),
-            ))
+            mock.queue_response(
+                Completion(
+                    id=f"mock-{i}",
+                    model="mock",
+                    content=response.get("content", ""),
+                    tool_calls=tool_calls,
+                    stop_reason="tool_use",
+                    usage=TokenUsage(input_tokens=10, output_tokens=10),
+                )
+            )
         else:
-            mock.queue_response(Completion(
-                id=f"mock-{i}",
-                model="mock",
-                content=str(response),
-                tool_calls=[],
-                stop_reason="end_turn",
-                usage=TokenUsage(input_tokens=10, output_tokens=10),
-            ))
+            mock.queue_response(
+                Completion(
+                    id=f"mock-{i}",
+                    model="mock",
+                    content=str(response),
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    usage=TokenUsage(input_tokens=10, output_tokens=10),
+                )
+            )
     return mock
 
 

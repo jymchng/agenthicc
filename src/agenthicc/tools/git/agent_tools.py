@@ -2,6 +2,7 @@
 
 NOTE: no ``from __future__ import annotations`` — @tool() inspects real annotations.
 """
+
 import os
 from lauren_ai._tools import tool
 from agenthicc.tools.capabilities import tool_git_read, tool_git_write
@@ -29,6 +30,7 @@ _CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
 async def git_status() -> dict:
     """Show working tree status: branch, staged, unstaged, and untracked files."""
     from agenthicc.tools.git import GitStatusTool  # noqa: PLC0415
+
     return await GitStatusTool().execute({}, _CTX())
 
 
@@ -43,6 +45,7 @@ async def git_diff(path: str | None = None, staged: bool = False, ref: str | Non
         ref: Commit or branch to diff against (optional).
     """
     from agenthicc.tools.git import GitDiffTool  # noqa: PLC0415
+
     args: dict = {"staged": staged}
     if path:
         args["path"] = path
@@ -61,6 +64,7 @@ async def git_log(n: int = 10, path: str | None = None) -> dict:
         path: Limit log to commits that touch this file (optional).
     """
     from agenthicc.tools.git import GitLogTool  # noqa: PLC0415
+
     args: dict = {"n": n}
     if path:
         args["path"] = path
@@ -76,6 +80,7 @@ async def git_show(ref: str = "HEAD") -> dict:
         ref: Commit hash, branch, or tag to show (default HEAD).
     """
     from agenthicc.tools.git import GitShowTool  # noqa: PLC0415
+
     return await GitShowTool().execute({"ref": ref}, _CTX())
 
 
@@ -88,6 +93,7 @@ async def git_add(paths: list[str]) -> dict:
         paths: List of file paths to stage.
     """
     from agenthicc.tools.git import GitAddTool  # noqa: PLC0415
+
     return await GitAddTool().execute({"paths": paths}, _CTX())
 
 
@@ -101,6 +107,7 @@ async def git_commit(message: str, author: str | None = None) -> dict:
         author: Optional author string in "Name <email>" format.
     """
     from agenthicc.tools.git import GitCommitTool  # noqa: PLC0415
+
     args: dict = {"message": message}
     if author:
         args["author"] = author
@@ -117,6 +124,7 @@ async def git_checkout(branch: str, create: bool = False) -> dict:
         create: If True, create the branch before switching (-b).
     """
     from agenthicc.tools.git import GitCheckoutTool  # noqa: PLC0415
+
     return await GitCheckoutTool().execute({"branch": branch, "create": create}, _CTX())
 
 
@@ -129,6 +137,7 @@ async def git_branch(pattern: str | None = None) -> dict:
         pattern: Optional pattern to filter branch names.
     """
     from agenthicc.tools.git import GitBranchTool  # noqa: PLC0415
+
     args: dict = {}
     if pattern:
         args["pattern"] = pattern
@@ -145,6 +154,7 @@ async def git_stash(action: str = "push", message: str | None = None) -> dict:
         message: Optional stash message (only for action="push").
     """
     from agenthicc.tools.git import GitStashTool  # noqa: PLC0415
+
     args: dict = {"action": action}
     if message:
         args["message"] = message
@@ -162,6 +172,7 @@ async def git_blame(path: str, start_line: int = 1, end_line: int | None = None)
         end_line: Last line to show inclusive (default: end of file).
     """
     from agenthicc.tools.git import GitBlameTool  # noqa: PLC0415
+
     args: dict = {"path": path, "start_line": start_line}
     if end_line is not None:
         args["end_line"] = end_line
@@ -178,12 +189,21 @@ async def git_grep(pattern: str, ref: str = "HEAD") -> dict:
         ref: Git reference (commit/branch/tag) to search in (default HEAD).
     """
     from agenthicc.tools.git import GitGrepTool  # noqa: PLC0415
+
     return await GitGrepTool().execute({"pattern": pattern, "ref": ref}, _CTX())
 
 
 #: All 11 git agent tools — ready to pass to @use_tools().
 GIT_AGENT_TOOLS = [
-    git_status, git_diff, git_log, git_show,
-    git_add, git_commit, git_checkout, git_branch,
-    git_stash, git_blame, git_grep,
+    git_status,
+    git_diff,
+    git_log,
+    git_show,
+    git_add,
+    git_commit,
+    git_checkout,
+    git_branch,
+    git_stash,
+    git_blame,
+    git_grep,
 ]

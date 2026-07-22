@@ -1,4 +1,5 @@
 """Extended unit tests for AdRotator, AdCache, and AdRecord (coverage extension)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,7 +22,9 @@ pytestmark = pytest.mark.unit
 # ── helpers ───────────────────────────────────────────────────────────────
 
 
-def _make_ad(ad_id: str = "ad-1", text: str = "Buy now", cta_url: str = "https://x.com") -> AdRecord:
+def _make_ad(
+    ad_id: str = "ad-1", text: str = "Buy now", cta_url: str = "https://x.com"
+) -> AdRecord:
     return AdRecord(ad_id=ad_id, text=text, cta_url=cta_url)
 
 
@@ -164,9 +167,9 @@ class TestRotatorStop:
 
         with patch("agenthicc.ads.asyncio.sleep", new=_fast_sleep):
             task = asyncio.create_task(rotator.run())
-            await _real_sleep(0)   # let run() start its first iteration
+            await _real_sleep(0)  # let run() start its first iteration
             await rotator.stop()
-            await _real_sleep(0)   # let run() observe _running=False
+            await _real_sleep(0)  # let run() observe _running=False
             try:
                 await asyncio.wait_for(task, timeout=1.0)
             except asyncio.TimeoutError:

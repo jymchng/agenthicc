@@ -1,4 +1,5 @@
 """Unit tests: workflow/plugin.py — PhaseSpec, WorkflowPlugin, WorkflowContext (PRD-87, PRD-116)."""
+
 from __future__ import annotations
 
 import pytest
@@ -6,7 +7,12 @@ import pytest
 from agenthicc.agents.plugin import READ_CAPS
 from agenthicc.tools.capabilities import ToolCapability
 from agenthicc.workflows.plugin import (
-    PhaseRole, PhaseSpec, WorkflowContext, WorkflowPlugin, PhaseOutput, _parse_output_schema,
+    PhaseRole,
+    PhaseSpec,
+    WorkflowContext,
+    WorkflowPlugin,
+    PhaseOutput,
+    _parse_output_schema,
 )
 
 pytestmark = pytest.mark.unit
@@ -51,7 +57,8 @@ class TestPhaseSpec:
 
     def test_resolved_allowed_caps_override_wins_over_field(self):
         spec = PhaseSpec(
-            name="p", agent_type=PhaseRole.PLANNER,
+            name="p",
+            agent_type=PhaseRole.PLANNER,
             allowed_capabilities=frozenset({ToolCapability.READ}),
             allowed_capabilities_override=frozenset({ToolCapability.SEARCH}),
         )
@@ -128,10 +135,15 @@ class TestParseOutputSchema:
         assert _parse_output_schema("no tags", "plan") == {"plan_text": "no tags"}
 
     def test_review_approved(self):
-        assert _parse_output_schema("<review>approved</review>", "review_result")["approved"] is True
+        assert (
+            _parse_output_schema("<review>approved</review>", "review_result")["approved"] is True
+        )
 
     def test_review_rejected(self):
-        assert _parse_output_schema("<review>rejected: x</review>", "review_result")["approved"] is False
+        assert (
+            _parse_output_schema("<review>rejected: x</review>", "review_result")["approved"]
+            is False
+        )
 
     def test_free_text(self):
         assert _parse_output_schema("hi", "free_text") == {"text": "hi"}
@@ -163,14 +175,21 @@ class TestWorkflowPluginSubclass:
         app_state = MagicMock()
         app_state.active_mode.return_value.blocked_capabilities = frozenset()
         cfg = WorkflowConfig(
-            conv_store=MagicMock(), app_state=app_state, processor=MagicMock(),
-            agent_runner=MagicMock(), approval_svc=None, cfg=MagicMock(),
-            skills={}, plugin_tools=[], mcp_registry=None,
-            mention_cache=MagicMock(), agents_registry=MagicMock(),
+            conv_store=MagicMock(),
+            app_state=app_state,
+            processor=MagicMock(),
+            agent_runner=MagicMock(),
+            approval_svc=None,
+            cfg=MagicMock(),
+            skills={},
+            plugin_tools=[],
+            mcp_registry=None,
+            mention_cache=MagicMock(),
+            agents_registry=MagicMock(),
         )
         runner = WorkflowRunner(_Wf, cfg)
         spec = PhaseSpec(name="p", next="q", on_reject="p")
-        out  = PhaseOutput(phase_name="p", role="r", approved=True)
+        out = PhaseOutput(phase_name="p", role="r", approved=True)
         assert runner._determine_transition(spec, out) == "q"
 
     def test_transition_rejected(self):
@@ -185,12 +204,19 @@ class TestWorkflowPluginSubclass:
         app_state = MagicMock()
         app_state.active_mode.return_value.blocked_capabilities = frozenset()
         cfg = WorkflowConfig(
-            conv_store=MagicMock(), app_state=app_state, processor=MagicMock(),
-            agent_runner=MagicMock(), approval_svc=None, cfg=MagicMock(),
-            skills={}, plugin_tools=[], mcp_registry=None,
-            mention_cache=MagicMock(), agents_registry=MagicMock(),
+            conv_store=MagicMock(),
+            app_state=app_state,
+            processor=MagicMock(),
+            agent_runner=MagicMock(),
+            approval_svc=None,
+            cfg=MagicMock(),
+            skills={},
+            plugin_tools=[],
+            mcp_registry=None,
+            mention_cache=MagicMock(),
+            agents_registry=MagicMock(),
         )
         runner = WorkflowRunner(_Wf, cfg)
         spec = PhaseSpec(name="p", next="q", on_reject="retry")
-        out  = PhaseOutput(phase_name="p", role="r", approved=False)
+        out = PhaseOutput(phase_name="p", role="r", approved=False)
         assert runner._determine_transition(spec, out) == "retry"

@@ -1,4 +1,5 @@
 """StatusComponent, ComposerComponent, FooterComponent (PRD-60 §4-6)."""
+
 from __future__ import annotations
 
 import os
@@ -20,12 +21,12 @@ _COMPACT_SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇
 # the mode line consistent between idle and streaming.
 _IDLE_HINTS = "Enter Submit  Ctrl+J Newline  /cmd  @Mention"
 _HINTS: dict[str, str] = {
-    "idle":       _IDLE_HINTS,
-    "thinking":   _IDLE_HINTS,   # same — streaming input accepts all these keys
-    "running":    _IDLE_HINTS,   # same
+    "idle": _IDLE_HINTS,
+    "thinking": _IDLE_HINTS,  # same — streaming input accepts all these keys
+    "running": _IDLE_HINTS,  # same
     "recovering": "ESC Cancel  (LLM responding to tool error)",
-    "error":      "R Retry  Esc Dismiss",
-    "complete":   "Enter New Task  Ctrl+L Clear",
+    "error": "R Retry  Esc Dismiss",
+    "complete": "Enter New Task  Ctrl+L Clear",
 }
 
 
@@ -44,7 +45,8 @@ def _fmt_elapsed(seconds: float) -> str:
 
 
 def _fit(markup: str, cols: int) -> str:
-    from agenthicc.tui.rendering import fit, visible_len   # noqa: PLC0415
+    from agenthicc.tui.rendering import fit, visible_len  # noqa: PLC0415
+
     if visible_len(markup) > cols:
         return fit(markup, cols)
     return markup
@@ -52,18 +54,16 @@ def _fit(markup: str, cols: int) -> str:
 
 def _thinking_markup(frame: int) -> str:
     word = _THINKING
-    n    = len(word)
+    n = len(word)
     cycle = 2 * (n - 1)
-    pos   = (frame % cycle) if cycle > 0 else 0
+    pos = (frame % cycle) if cycle > 0 else 0
     if pos >= n:
         pos = cycle - pos
-    return "".join(
-        f"[bold]{ch}[/bold]" if i == pos else ch
-        for i, ch in enumerate(word)
-    )
+    return "".join(f"[bold]{ch}[/bold]" if i == pos else ch for i, ch in enumerate(word))
 
 
 # ── StatusComponent ───────────────────────────────────────────────────────────
+
 
 class StatusComponent:
     """Renders the two-line status bar from ConversationStore signals.
@@ -76,17 +76,21 @@ class StatusComponent:
         self._state = app_state
 
     def render(self) -> RenderableType:
-        from rich.text import Text           # noqa: PLC0415
-        from rich.console import Group       # noqa: PLC0415
-        from rich.markup import escape as _e # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group  # noqa: PLC0415
+        from rich.markup import escape as _e  # noqa: PLC0415
 
         conv = self._state.conversation
         cols = _get_cols()
 
-        _frame     = conv.frame()
+        _frame = conv.frame()
         # Flower animates only while the agent is active; frozen at index 0 when idle.
-        flower     = _FLOWERS[_frame % len(_FLOWERS)] if conv.is_running() or conv.compaction_active() else _FLOWERS[0]
-        agent_st   = conv.agent_state()
+        flower = (
+            _FLOWERS[_frame % len(_FLOWERS)]
+            if conv.is_running() or conv.compaction_active()
+            else _FLOWERS[0]
+        )
+        agent_st = conv.agent_state()
         state_name = agent_st.name.lower()
 
         if conv.is_running():
@@ -98,8 +102,12 @@ class StatusComponent:
             state_text = agent_st.name.title()
 
         colors = {
-            "idle": "white", "thinking": "yellow", "running": "cyan",
-            "recovering": "red", "error": "red", "complete": "green",
+            "idle": "white",
+            "thinking": "yellow",
+            "running": "cyan",
+            "recovering": "red",
+            "error": "red",
+            "complete": "green",
         }
         color = colors.get(state_name, "dim")
 
@@ -111,9 +119,7 @@ class StatusComponent:
         inp = conv.tokens_in()
         out = conv.tokens_out()
         if inp or out:
-            l1_parts.append(
-                f"[dim] │[/dim] [cyan]↑ {inp:,}[/cyan] [green]↓ {out:,}[/green]"
-            )
+            l1_parts.append(f"[dim] │[/dim] [cyan]↑ {inp:,}[/cyan] [green]↓ {out:,}[/green]")
         _pool = conv.subagent_pool_state()
         if _pool is not None:
             l1_parts.append(
@@ -138,9 +144,9 @@ class StatusComponent:
             line2 = _fit(f"[dim]{_e(model)}[/dim]", cols)
 
         # ── line 3: session ID + turns + cost ────────────────────────────────────
-        sid   = conv.session_id()
+        sid = conv.session_id()
         turns = conv.turn_count()
-        cost  = conv.cost_usd()
+        cost = conv.cost_usd()
 
         l3_parts: list[str] = []
         if sid:
@@ -168,14 +174,15 @@ class StatusComponent:
         → 2 when no model set, 4 when all three lines present.
         """
         has_model = bool(self._state.conversation.model_name())
-        blank  = 1   # Text("") prepended by Workspace._build()
-        line1  = 1   # always: flower + state + runtime
-        line2  = 1 if has_model else 0   # model name
-        line3  = 1 if has_model else 0   # session id + metrics
+        blank = 1  # Text("") prepended by Workspace._build()
+        line1 = 1  # always: flower + state + runtime
+        line2 = 1 if has_model else 0  # model name
+        line3 = 1 if has_model else 0  # session id + metrics
         return blank + line1 + line2 + line3
 
 
 # ── multi-line composer helper ────────────────────────────────────────────────
+
 
 def _render_multiline(buf: list[str], cursor: int) -> RenderableType:
     """Build one Rich Text per logical line; return as a Group.
@@ -183,8 +190,8 @@ def _render_multiline(buf: list[str], cursor: int) -> RenderableType:
     Used by ComposerComponent.render() when the buffer contains '\\n'.
     No _fit call — Rich handles terminal-width soft-wrapping per line.
     """
-    from rich.text import Text            # noqa: PLC0415
-    from rich.console import Group        # noqa: PLC0415
+    from rich.text import Text  # noqa: PLC0415
+    from rich.console import Group  # noqa: PLC0415
     from agenthicc.tui.input.renderer import PROMPT_CHAR, CURSOR_CHAR  # noqa: PLC0415
 
     # Split on '\n' into logical lines.
@@ -200,12 +207,12 @@ def _render_multiline(buf: list[str], cursor: int) -> RenderableType:
 
     # Locate the cursor: which logical line and column offset.
     cursor_line = len(lines) - 1
-    cursor_col  = len(lines[-1])
-    cumulative  = 0
+    cursor_col = len(lines[-1])
+    cumulative = 0
     for i, ln in enumerate(lines):
         if cumulative + len(ln) >= cursor:
             cursor_line = i
-            cursor_col  = cursor - cumulative
+            cursor_col = cursor - cumulative
             break
         cumulative += len(ln) + 1
 
@@ -213,8 +220,7 @@ def _render_multiline(buf: list[str], cursor: int) -> RenderableType:
     result: list[Text] = []
     for i, ln in enumerate(lines):
         t = Text()
-        t.append(f"{PROMPT_CHAR} " if i == 0 else "  ",
-                 style="bold yellow" if i == 0 else "")
+        t.append(f"{PROMPT_CHAR} " if i == 0 else "  ", style="bold yellow" if i == 0 else "")
         if i == cursor_line:
             t.append("".join(ln[:cursor_col]))
             t.append(CURSOR_CHAR, style="bold")
@@ -228,6 +234,7 @@ def _render_multiline(buf: list[str], cursor: int) -> RenderableType:
 
 # ── ComposerComponent ─────────────────────────────────────────────────────────
 
+
 class ComposerComponent:
     """Renders ❯ text▌ from InputState signals."""
 
@@ -235,15 +242,15 @@ class ComposerComponent:
         self._state = app_state
 
     def render(self) -> RenderableType:
-        from rich.text import Text                              # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
         from agenthicc.tui.input.renderer import build_prompt  # noqa: PLC0415
 
-        inp  = self._state.input
+        inp = self._state.input
         cols = _get_cols()
 
         # Condensed paste label — always a single line, _fit is safe.
         if inp.paste_condensed():
-            disp_buf    = list(inp.paste_label())
+            disp_buf = list(inp.paste_label())
             disp_cursor = len(disp_buf)
             return Text.from_markup(_fit(build_prompt(disp_buf, disp_cursor), cols))
 
@@ -261,12 +268,13 @@ class ComposerComponent:
         total = 0
         for i, line in enumerate(lines):
             overhead = 2  # "❯ " or "  "
-            usable   = max(1, cols - overhead)
-            total   += max(1, (len(line) + usable - 1) // usable)
+            usable = max(1, cols - overhead)
+            total += max(1, (len(line) + usable - 1) // usable)
         return total
 
 
 # ── FooterComponent ───────────────────────────────────────────────────────────
+
 
 class FooterComponent:
     """Renders mode string + context hints.  Always 2 rows."""
@@ -275,8 +283,8 @@ class FooterComponent:
         self._state = app_state
 
     def render(self) -> RenderableType:
-        from rich.text import Text     # noqa: PLC0415
-        from rich.console import Group # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
+        from rich.console import Group  # noqa: PLC0415
 
         conv = self._state.conversation
         cols = _get_cols()
@@ -284,10 +292,11 @@ class FooterComponent:
         # Row 1: mode string — derived from AppState.active_mode (PRD-75).
         # When a /workflow override is active, append ⬡ workflow-name indicator.
         from agenthicc.tui.runtime.mode_manager import build_mode_str  # noqa: PLC0415
-        from rich.markup import escape as _e_m                          # noqa: PLC0415
-        mode     = self._state.active_mode()
+        from rich.markup import escape as _e_m  # noqa: PLC0415
+
+        mode = self._state.active_mode()
         _wf_ovr_raw = conv.workflow_override()
-        _wf_ovr  = _wf_ovr_raw if isinstance(_wf_ovr_raw, str) else None
+        _wf_ovr = _wf_ovr_raw if isinstance(_wf_ovr_raw, str) else None
         _wf_suffix = f"  [cyan dim]⬡ {_e_m(_wf_ovr)}[/cyan dim]" if _wf_ovr else ""
         mode_line = _fit(f"  {build_mode_str(mode)}{_wf_suffix}", cols)
 
@@ -300,8 +309,7 @@ class FooterComponent:
             hints_str = _fit(f"[dim]{notif_lines[0]}[/dim]", cols)
             # Extra lines rendered after Group — collected here, appended below.
             _extra_notif_lines = [
-                Text.from_markup(_fit(f"[dim]{ln}[/dim]", cols))
-                for ln in notif_lines[1:]
+                Text.from_markup(_fit(f"[dim]{ln}[/dim]", cols)) for ln in notif_lines[1:]
             ]
         elif self._state.input.paste_condensed():
             _extra_notif_lines = []
@@ -311,34 +319,35 @@ class FooterComponent:
         else:
             _extra_notif_lines = []
             state_name = conv.agent_state().name.lower()
-            raw_hints  = _HINTS.get(state_name, _HINTS["idle"])
-            hints_str  = _build_hints(raw_hints, cols)
+            raw_hints = _HINTS.get(state_name, _HINTS["idle"])
+            hints_str = _build_hints(raw_hints, cols)
 
         # PRD-81: optional workflow progress row
         extra: list[RenderableType] = []
         # Extra notification lines from stacked notify_transient() calls.
         extra.extend(_extra_notif_lines)
         from rich.markup import escape as _e  # noqa: PLC0415
+
         _wf = self._state.workflow_run()
         if _wf is not None and _wf.status == "running":
-            _n     = _wf.current_phase_index + 1
-            _tot   = _wf.total_phases
+            _n = _wf.current_phase_index + 1
+            _tot = _wf.total_phases
             _badge = self._state.active_mode().badge
             _phase = (
                 f"  {_n}/{_tot}  {_e(_wf.current_phase)}"
                 if _wf.current_phase is not None
                 else f"  {_n}/{_tot}"
             )
-            extra.append(Text.from_markup(
-                _fit(f"  [dim]{_e(_badge)} {_e(_wf.workflow_name)}{_phase}[/dim]", cols)
-            ))
+            extra.append(
+                Text.from_markup(
+                    _fit(f"  [dim]{_e(_badge)} {_e(_wf.workflow_name)}{_phase}[/dim]", cols)
+                )
+            )
 
         # PRD-124: optional subagent worker grid row
         _pool = conv.subagent_pool_state()
         if _pool is not None:
-            extra.append(Text.from_markup(
-                _fit(_build_worker_grid(_pool, cols), cols)
-            ))
+            extra.append(Text.from_markup(_fit(_build_worker_grid(_pool, cols), cols)))
 
         return Group(
             Text.from_markup(mode_line),
@@ -352,7 +361,7 @@ class FooterComponent:
         try:
             notif = self._state.conversation.notification()
             if notif and isinstance(notif, str):
-                extra += notif.count("\n")   # each \n adds one more row
+                extra += notif.count("\n")  # each \n adds one more row
         except Exception:  # noqa: BLE001
             pass
         _wf = self._state.workflow_run()
@@ -367,25 +376,26 @@ class FooterComponent:
 
 _WORKER_STATUS_ICONS = {
     "pending": "○",
-    "running": "⠸",   # static char; frame cycling done by status bar spinner
-    "done":    "✓",
-    "failed":  "✗",
+    "running": "⠸",  # static char; frame cycling done by status bar spinner
+    "done": "✓",
+    "failed": "✗",
 }
 _WORKER_STATUS_COLORS = {
     "pending": "dim",
     "running": "cyan",
-    "done":    "green",
-    "failed":  "red",
+    "done": "green",
+    "failed": "red",
 }
 
 
 def _build_worker_grid(pool: object, cols: int) -> str:
     """Render a compact one-line worker grid for the footer."""
     from rich.markup import escape as _e  # noqa: PLC0415
+
     workers = getattr(pool, "workers", [])
     cells: list[str] = []
     for w in workers:
-        icon  = _WORKER_STATUS_ICONS.get(w.status, "?")
+        icon = _WORKER_STATUS_ICONS.get(w.status, "?")
         color = _WORKER_STATUS_COLORS.get(w.status, "dim")
         label = _e(w.label)
         cells.append(f"[{color}]{icon}[/{color}] {label}")
@@ -395,6 +405,7 @@ def _build_worker_grid(pool: object, cols: int) -> str:
 
 def _vlen(markup: str) -> int:
     from agenthicc.tui.rendering import visible_len  # noqa: PLC0415
+
     return visible_len(markup)
 
 

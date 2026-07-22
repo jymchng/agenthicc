@@ -1,4 +1,5 @@
 """Trust management — agenthicc trust cli."""
+
 from __future__ import annotations
 
 import hashlib
@@ -21,7 +22,7 @@ def trust_cli(ctx: CLIContext) -> None:
     After running this command, agenthicc will load the project-local CLI
     plugins on startup.  Re-run if any plugin file changes.
     """
-    cli_dir    = Path(".agenthicc") / "cli"
+    cli_dir = Path(".agenthicc") / "cli"
     trust_file = Path(".agenthicc") / "trusted_cli.json"
 
     if not cli_dir.is_dir():
@@ -33,7 +34,7 @@ def trust_cli(ctx: CLIContext) -> None:
     for py in sorted(cli_dir.glob("*.py")):
         if py.name.startswith("_"):
             continue
-        rel    = str(py.relative_to(cli_dir.parent))
+        rel = str(py.relative_to(cli_dir.parent))
         digest = f"sha256:{hashlib.sha256(py.read_bytes()).hexdigest()}"
         files[rel] = digest
         print(f"  trusted: {rel}  ({digest[:18]}…)")
@@ -44,7 +45,7 @@ def trust_cli(ctx: CLIContext) -> None:
 
     manifest = {
         "signed_at": datetime.now(timezone.utc).isoformat(),
-        "files":     files,
+        "files": files,
     }
     trust_file.parent.mkdir(parents=True, exist_ok=True)
     trust_file.write_text(json.dumps(manifest, indent=2))

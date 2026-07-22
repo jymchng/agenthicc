@@ -101,9 +101,7 @@ class AgentCapabilityScope:
 
         # allowed_comm_tools: same intersection logic
         if self.allowed_comm_tools is not None and other.allowed_comm_tools is not None:
-            allowed_comm: frozenset[str] | None = (
-                self.allowed_comm_tools & other.allowed_comm_tools
-            )
+            allowed_comm: frozenset[str] | None = self.allowed_comm_tools & other.allowed_comm_tools
         elif self.allowed_comm_tools is not None:
             allowed_comm = self.allowed_comm_tools
         elif other.allowed_comm_tools is not None:
@@ -115,9 +113,7 @@ class AgentCapabilityScope:
             allowed_tools=allowed,
             denied_tools=denied,
             allowed_comm_tools=allowed_comm,
-            max_tool_call_budget=min(
-                self.max_tool_call_budget, other.max_tool_call_budget
-            ),
+            max_tool_call_budget=min(self.max_tool_call_budget, other.max_tool_call_budget),
             max_spawn_depth=min(self.max_spawn_depth, other.max_spawn_depth),
         )
 
@@ -137,14 +133,10 @@ class AgentCapabilityScope:
     def to_dict(self) -> dict[str, object]:
         """Serialise to a plain dict suitable for JSON / TOML."""
         return {
-            "allowed_tools": (
-                list(self.allowed_tools) if self.allowed_tools is not None else None
-            ),
+            "allowed_tools": (list(self.allowed_tools) if self.allowed_tools is not None else None),
             "denied_tools": list(self.denied_tools),
             "allowed_comm_tools": (
-                list(self.allowed_comm_tools)
-                if self.allowed_comm_tools is not None
-                else None
+                list(self.allowed_comm_tools) if self.allowed_comm_tools is not None else None
             ),
             "max_tool_call_budget": self.max_tool_call_budget,
             "max_spawn_depth": self.max_spawn_depth,
@@ -181,7 +173,9 @@ class ScopeManager:
 
         if scope is None:
             parent_scope = self._scopes.get(parent_id) if parent_id else None
-            self._scopes[agent_id] = parent_scope if parent_scope is not None else AgentCapabilityScope()
+            self._scopes[agent_id] = (
+                parent_scope if parent_scope is not None else AgentCapabilityScope()
+            )
         elif parent_id and parent_id in self._scopes:
             # Restrict: child cannot exceed parent
             self._scopes[agent_id] = self._scopes[parent_id].restrict(scope)
@@ -270,9 +264,7 @@ class PermissionChecker:
         # 2. Global policy (original PRD-07 logic)
         return self._check_global(tool_name, conditions)
 
-    def _check_global(
-        self, tool_name: str, conditions: dict[str, object] | None
-    ) -> str:
+    def _check_global(self, tool_name: str, conditions: dict[str, object] | None) -> str:
         """Run the ordered global permission-rule table."""
         call_conditions = conditions or {}
         for rule in self._policy.permission_rules:
@@ -285,9 +277,7 @@ class PermissionChecker:
 
     # ── condition evaluation ─────────────────────────────────────────────
 
-    def _conditions_match(
-        self, rule: PermissionRule, call_conditions: dict[str, object]
-    ) -> bool:
+    def _conditions_match(self, rule: PermissionRule, call_conditions: dict[str, object]) -> bool:
         for key, expected in rule.conditions.items():
             if key == "path_prefix":
                 if not self._path_prefix_matches(expected, call_conditions):
@@ -318,9 +308,7 @@ class PermissionChecker:
         if not host:
             return False
         domains = expected if isinstance(expected, (list, tuple)) else [expected]
-        return any(
-            host == domain or host.endswith("." + str(domain)) for domain in domains
-        )
+        return any(host == domain or host.endswith("." + str(domain)) for domain in domains)
 
 
 def build_policy_from_config(config: "AgenthiccConfig") -> SecurityPolicy:
@@ -337,4 +325,3 @@ def build_policy_from_config(config: "AgenthiccConfig") -> SecurityPolicy:
     for pattern in config.tools.allowed:
         rules.append(PermissionRule(tool_pattern=pattern, action=ALLOW))
     return SecurityPolicy(permission_rules=tuple(rules), default_action=DENY)
-

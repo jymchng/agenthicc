@@ -1,4 +1,5 @@
 """AgentsRegistry — discover, store, and instantiate named agent definitions (PRD-87)."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -25,7 +26,9 @@ class AgentsRegistry:
         if existing is not None and existing.source != defn.source:
             log.debug(
                 "Agent %r (%s) shadows existing %s definition",
-                defn.name, defn.source, existing.source,
+                defn.name,
+                defn.source,
+                existing.source,
             )
         self._defs[defn.name] = defn
 
@@ -42,6 +45,7 @@ class AgentsRegistry:
         Returns an empty string for unknown types (base prompt still applies).
         """
         from lauren_ai._agents import AGENT_META  # noqa: PLC0415
+
         defn = self.get(agent_type) or self.get("auto")
         if defn is None:
             return ""
@@ -65,15 +69,16 @@ class AgentsRegistry:
         custom value from cfg.execution.base_system_prompt when set.
         """
         from lauren_ai._agents import agent as agent_decorator, use_tools, AGENT_META  # noqa: PLC0415
-        from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT                         # noqa: PLC0415
+        from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT  # noqa: PLC0415
 
         defn = self.get(agent_type) or self.get("auto")
         if defn is None:
             from agenthicc.agents.builtin import AutoAgent  # noqa: PLC0415
+
             defn = AgentDefinition(name="auto", agent_class=AutoAgent)
 
-        base_meta     = getattr(defn.agent_class, AGENT_META, None)
-        role_prompt   = getattr(base_meta, "system", "") or ""
+        base_meta = getattr(defn.agent_class, AGENT_META, None)
+        role_prompt = getattr(base_meta, "system", "") or ""
         effective_base = base_system_prompt or BASE_SYSTEM_PROMPT
 
         # Combine: base contract first, then role-specific instructions.
@@ -146,11 +151,7 @@ def _load_agent_file(path: Path, source: str, registry: AgentsRegistry) -> None:
 
     # Fall back to scanning for AgentPlugin subclasses
     for _, obj in inspect.getmembers(module, inspect.isclass):
-        if (
-            obj is not AgentPlugin
-            and issubclass(obj, AgentPlugin)
-            and getattr(obj, "name", "")
-        ):
+        if obj is not AgentPlugin and issubclass(obj, AgentPlugin) and getattr(obj, "name", ""):
             _register_plugin_class(obj, source, registry, str(path))
 
 
@@ -161,7 +162,7 @@ def _register_plugin_class(
     path: str,
 ) -> None:
     replaces = getattr(cls, "replaces", None)
-    name     = replaces or cls.name
+    name = replaces or cls.name
 
     defn = AgentDefinition(
         name=name,

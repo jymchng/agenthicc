@@ -1,4 +1,5 @@
 """ConversationReplayer — feeds historical session events through the render pipeline."""
+
 from __future__ import annotations
 
 import asyncio
@@ -59,13 +60,13 @@ class ConversationReplayer:
 
     def __init__(
         self,
-        session_id:   str,
-        conv_store:   ConversationStore,
+        session_id: str,
+        conv_store: ConversationStore,
         mode_manager: ModeManager,
     ) -> None:
-        self._session_id:  str              = session_id
-        self._conv_store:  ConversationStore = conv_store
-        self._mode_manager: ModeManager      = mode_manager
+        self._session_id: str = session_id
+        self._conv_store: ConversationStore = conv_store
+        self._mode_manager: ModeManager = mode_manager
 
     async def run(self) -> None:
         """Replay all events then show a completion notification."""
@@ -76,9 +77,7 @@ class ConversationReplayer:
             )
             return
 
-        self._conv_store.notification.set(
-            f"⏮ Replaying session {self._session_id[:12]}…"
-        )
+        self._conv_store.notification.set(f"⏮ Replaying session {self._session_id[:12]}…")
 
         for kind, payload in pairs:
             self._conv_store.append_event(kind, payload)

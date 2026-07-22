@@ -1,4 +1,5 @@
 """WindowsFilesystemBackend — Windows path-safety layer on top of Linux (PRD-51)."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -54,9 +55,7 @@ class WindowsFilesystemBackend(LinuxFilesystemBackend):
         self._check_reserved(path)
         return super().write_text(path, content, encoding=encoding, create_parents=create_parents)
 
-    def write_bytes(
-        self, path: str, data: bytes, create_parents: bool = True
-    ) -> int:
+    def write_bytes(self, path: str, data: bytes, create_parents: bool = True) -> int:
         self._check_reserved(path)
         return super().write_bytes(path, data, create_parents=create_parents)
 
@@ -87,6 +86,4 @@ class WindowsFilesystemBackend(LinuxFilesystemBackend):
         Raises:
             NotImplementedError: Always.  Use Windows shortcuts instead.
         """
-        raise NotImplementedError(
-            "Symlinks on Windows require elevation. Use shortcuts instead."
-        )
+        raise NotImplementedError("Symlinks on Windows require elevation. Use shortcuts instead.")

@@ -14,6 +14,7 @@ response is returned, appends one line to ``approvals_path``::
       "remember_all": false
     }
 """
+
 from __future__ import annotations
 
 import json

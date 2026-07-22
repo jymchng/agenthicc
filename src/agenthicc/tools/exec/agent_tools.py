@@ -2,6 +2,7 @@
 
 NOTE: no ``from __future__ import annotations`` — @tool() inspects real annotations.
 """
+
 import os
 from lauren_ai._tools import tool
 from agenthicc.tools.capabilities import tool_execute
@@ -29,6 +30,7 @@ async def shell(command: str, timeout: float = 30.0) -> dict:
         timeout: Maximum seconds to wait (default 30).
     """
     from agenthicc.tools.exec import RunBashTool  # noqa: PLC0415
+
     return await RunBashTool().execute({"command": command, "timeout": timeout}, _CTX())
 
 
@@ -42,6 +44,7 @@ async def run_bash(command: str, timeout: float = 30.0) -> dict:
         timeout: Maximum seconds to wait (default 30).
     """
     from agenthicc.tools.exec import RunBashTool  # noqa: PLC0415
+
     return await RunBashTool().execute({"command": command, "timeout": timeout}, _CTX())
 
 
@@ -55,6 +58,7 @@ async def run_command(argv: list[str], timeout: float = 30.0) -> dict:
         timeout: Maximum seconds to wait (default 30).
     """
     from agenthicc.tools.exec import RunCommandTool  # noqa: PLC0415
+
     return await RunCommandTool().execute({"argv": argv, "timeout": timeout}, _CTX())
 
 
@@ -68,6 +72,7 @@ async def run_python(code: str, timeout: float = 30.0) -> dict:
         timeout: Maximum seconds to wait (default 30).
     """
     from agenthicc.tools.exec import RunPythonTool  # noqa: PLC0415
+
     return await RunPythonTool().execute({"code": code, "timeout": timeout}, _CTX())
 
 
@@ -81,13 +86,18 @@ async def run_python_expr(expression: str, timeout: float = 10.0) -> dict:
         timeout: Maximum seconds to wait (default 10).
     """
     from agenthicc.tools.exec import RunPythonExprTool  # noqa: PLC0415
+
     return await RunPythonExprTool().execute({"expression": expression, "timeout": timeout}, _CTX())
 
 
 @tool_execute
 @tool()
-async def run_tests(path: str = "tests/", framework: str = "pytest",
-                    args: list[str] | None = None, timeout: float = 120.0) -> dict:
+async def run_tests(
+    path: str = "tests/",
+    framework: str = "pytest",
+    args: list[str] | None = None,
+    timeout: float = 120.0,
+) -> dict:
     """Run the test suite and return pass/fail counts.
 
     Args:
@@ -97,6 +107,7 @@ async def run_tests(path: str = "tests/", framework: str = "pytest",
         timeout: Maximum seconds to wait (default 120).
     """
     from agenthicc.tools.exec import RunTestsTool  # noqa: PLC0415
+
     return await RunTestsTool().execute(
         {"path": path, "framework": framework, "args": args or [], "timeout": timeout},
         _CTX(),

@@ -1,10 +1,10 @@
 """Unit tests for PRD-124 Phase 5 — plugin ecosystem."""
+
 from __future__ import annotations
 
 import pytest
 
 from agenthicc.subagents.types import (
-    SubagentTypeSpec,
     SubagentAggregator,
     SubagentTypeRegistry,
     DEFAULT_REGISTRY,
@@ -16,6 +16,7 @@ pytestmark = pytest.mark.unit
 
 # ── SubagentAggregator ────────────────────────────────────────────────────────
 
+
 class TestSubagentAggregator:
     def test_is_abstract_base_class(self) -> None:
         with pytest.raises((NotImplementedError, TypeError)):
@@ -25,6 +26,7 @@ class TestSubagentAggregator:
     def test_subclass_can_be_instantiated(self) -> None:
         class MyAgg(SubagentAggregator):
             agent_type = "my_type"
+
             def aggregate(self, results: list) -> str:
                 return "custom output"
 
@@ -35,12 +37,14 @@ class TestSubagentAggregator:
 
 # ── SubagentTypeRegistry aggregator support ───────────────────────────────────
 
+
 class TestRegistryAggregatorSupport:
     def test_register_and_retrieve_aggregator(self) -> None:
         reg = SubagentTypeRegistry()
 
         class Agg(SubagentAggregator):
             agent_type = "custom"
+
             def aggregate(self, results: list) -> str:
                 return "aggregated"
 
@@ -58,11 +62,13 @@ class TestRegistryAggregatorSupport:
 
         class Agg1(SubagentAggregator):
             agent_type = "x"
+
             def aggregate(self, results: list) -> str:
                 return "v1"
 
         class Agg2(SubagentAggregator):
             agent_type = "x"
+
             def aggregate(self, results: list) -> str:
                 return "v2"
 
@@ -73,6 +79,7 @@ class TestRegistryAggregatorSupport:
 
 # ── Custom aggregator used in _aggregate ─────────────────────────────────────
 
+
 class TestCustomAggregatorInAggregate:
     def _result(self, label: str, ok: bool, text: str = "output") -> SubagentResult:
         return SubagentResult("t1", "security_checker", label, ok, text)
@@ -82,6 +89,7 @@ class TestCustomAggregatorInAggregate:
 
         class SecurityAgg(SubagentAggregator):
             agent_type = "security_checker"
+
             def aggregate(self, results: list) -> str:
                 return f"SECURITY: {len(results)} files reviewed"
 
@@ -105,6 +113,7 @@ class TestCustomAggregatorInAggregate:
 
 # ── Plugin discovery: SUBAGENT_TYPES loading ─────────────────────────────────
 
+
 class TestPluginSubagentTypesLoading:
     def test_load_plugin_file_with_subagent_types(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         """A plugin file with SUBAGENT_TYPES registers types into DEFAULT_REGISTRY."""
@@ -123,6 +132,7 @@ class TestPluginSubagentTypesLoading:
             "]\n"
         )
         from agenthicc.plugins.discovery import _load_plugin_file  # noqa: PLC0415
+
         result = _load_plugin_file(plugin)
         assert result.error is None
         # Type should now be in DEFAULT_REGISTRY
@@ -130,17 +140,16 @@ class TestPluginSubagentTypesLoading:
 
     def test_load_plugin_file_non_spec_in_subagent_types_is_skipped(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         plugin = tmp_path / "bad_plugin.py"
-        plugin.write_text(
-            "TOOLS = []\n"
-            "SUBAGENT_TYPES = ['not_a_spec', 42]\n"
-        )
+        plugin.write_text("TOOLS = []\nSUBAGENT_TYPES = ['not_a_spec', 42]\n")
         from agenthicc.plugins.discovery import _load_plugin_file  # noqa: PLC0415
+
         # Should not raise; invalid entries are skipped with a warning
         result = _load_plugin_file(plugin)
         assert result.error is None
 
 
 # ── Example plugin: security_checker ─────────────────────────────────────────
+
 
 class TestExampleSecurityCheckerPlugin:
     def test_security_checker_type_registered_after_load(self) -> None:
@@ -149,8 +158,7 @@ class TestExampleSecurityCheckerPlugin:
         from agenthicc.plugins.discovery import _load_plugin_file  # noqa: PLC0415
 
         plugin_path = Path(
-            "/root/python_projects/python-password-generator"
-            "/.agenthicc/tools/security_checker.py"
+            "/root/python_projects/python-password-generator/.agenthicc/tools/security_checker.py"
         )
         if not plugin_path.exists():
             pytest.skip("Example plugin not found")
@@ -167,8 +175,7 @@ class TestExampleSecurityCheckerPlugin:
         from agenthicc.plugins.discovery import _load_plugin_file  # noqa: PLC0415
 
         plugin_path = Path(
-            "/root/python_projects/python-password-generator"
-            "/.agenthicc/tools/security_checker.py"
+            "/root/python_projects/python-password-generator/.agenthicc/tools/security_checker.py"
         )
         if not plugin_path.exists():
             pytest.skip("Example plugin not found")

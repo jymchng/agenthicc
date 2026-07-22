@@ -12,6 +12,7 @@ Usage::
     mock_approval = cassette.to_mock_approval_service()
     # Pass to run_headless_replay(cassette, approval_svc=mock_approval)
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -33,11 +34,13 @@ class MockApprovalService:
 
     def __init__(self, entries: list[ApprovalEntry]) -> None:
         from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
+
         self._queue: deque[ApprovalEntry] = deque(entries)
         self._consumed: int = 0
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
         from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
+
         if self._queue:
             entry = self._queue.popleft()
             self._consumed += 1

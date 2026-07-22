@@ -16,6 +16,7 @@ Usage::
     # Truncate to fit:
     safe = fit(some_markup, cols)
 """
+
 from __future__ import annotations
 
 
@@ -26,6 +27,7 @@ def visible_len(markup: str) -> int:
     reports 2 columns rather than the raw string length.
     """
     from rich.text import Text  # noqa: PLC0415
+
     return Text.from_markup(markup).cell_len
 
 

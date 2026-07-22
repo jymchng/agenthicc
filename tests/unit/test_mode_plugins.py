@@ -11,6 +11,7 @@ Covers:
 - Plugin appears in cycle after registering to registry
 - Project-dir overrides user-dir: same name, project wins
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -143,8 +144,7 @@ def test_source_id_preserved_when_explicitly_set(tmp_path):
     f = tmp_path / "external.py"
     _write_mode_file(
         f,
-        "MODE = Mode(name='Ext', label='EXT', description='External', "
-        "source_id='my-company:v1')\n",
+        "MODE = Mode(name='Ext', label='EXT', description='External', source_id='my-company:v1')\n",
     )
     result = load_mode_file(f)
     assert result.ok
@@ -199,12 +199,10 @@ def test_syntax_error_modes_is_empty(tmp_path):
 def test_scan_skips_private_files(tmp_path):
     """Files starting with _ are silently skipped."""
     (tmp_path / "_private.py").write_text(
-        _MODE_HEADER
-        + "MODE = Mode(name='Private', label='PRIV', description='Private')\n"
+        _MODE_HEADER + "MODE = Mode(name='Private', label='PRIV', description='Private')\n"
     )
     (tmp_path / "public.py").write_text(
-        _MODE_HEADER
-        + "MODE = Mode(name='Public', label='PUB', description='Public')\n"
+        _MODE_HEADER + "MODE = Mode(name='Public', label='PUB', description='Public')\n"
     )
     results = _scan_mode_directory(tmp_path)
     loaded_names = [m.name for r in results for m in r.modes]
@@ -215,12 +213,10 @@ def test_scan_skips_private_files(tmp_path):
 def test_scan_skips_dunder_files(tmp_path):
     """__init__.py and other dunder files are skipped."""
     (tmp_path / "__init__.py").write_text(
-        _MODE_HEADER
-        + "MODE = Mode(name='Init', label='INIT', description='Init')\n"
+        _MODE_HEADER + "MODE = Mode(name='Init', label='INIT', description='Init')\n"
     )
     (tmp_path / "valid.py").write_text(
-        _MODE_HEADER
-        + "MODE = Mode(name='Valid', label='VALID', description='Valid')\n"
+        _MODE_HEADER + "MODE = Mode(name='Valid', label='VALID', description='Valid')\n"
     )
     results = _scan_mode_directory(tmp_path)
     loaded_names = [m.name for r in results for m in r.modes]
@@ -330,6 +326,7 @@ def test_plugin_appears_in_cycle(tmp_path):
     assert result.ok
 
     from agenthicc.modes.builtin import build_default_registry
+
     reg = build_default_registry()
     for mode in result.modes:
         reg.register(mode)
@@ -350,6 +347,7 @@ def test_plugin_in_cycle_reachable_from_debug(tmp_path):
     assert result.ok
 
     from agenthicc.modes.builtin import build_default_registry
+
     reg = build_default_registry()
     for mode in result.modes:
         reg.register(mode)
@@ -375,14 +373,12 @@ def test_project_overrides_user_same_name(tmp_path):
 
     # User version
     (user_base / "modes" / "shared.py").write_text(
-        _MODE_HEADER
-        + "MODE = Mode(name='Shared', label='USER', description='User shared',"
+        _MODE_HEADER + "MODE = Mode(name='Shared', label='USER', description='User shared',"
         " source_id='user:v1')\n"
     )
     # Project version — should win
     (project_base / "modes" / "shared.py").write_text(
-        _MODE_HEADER
-        + "MODE = Mode(name='Shared', label='PROJ', description='Project shared',"
+        _MODE_HEADER + "MODE = Mode(name='Shared', label='PROJ', description='Project shared',"
         " source_id='proj:v1')\n"
     )
 
@@ -411,12 +407,10 @@ def test_discover_loads_user_first_project_second(tmp_path):
     (project_base / "modes").mkdir(parents=True)
 
     (user_base / "modes" / "ua.py").write_text(
-        _MODE_HEADER
-        + "MODE = Mode(name='UserMode', label='U', description='User mode')\n"
+        _MODE_HEADER + "MODE = Mode(name='UserMode', label='U', description='User mode')\n"
     )
     (project_base / "modes" / "pb.py").write_text(
-        _MODE_HEADER
-        + "MODE = Mode(name='ProjMode', label='P', description='Project mode')\n"
+        _MODE_HEADER + "MODE = Mode(name='ProjMode', label='P', description='Project mode')\n"
     )
 
     results = discover_modes(project_dir=project_base, user_dir=user_base)
@@ -429,8 +423,7 @@ def test_project_only_no_user_dir(tmp_path):
     project_base = tmp_path / "proj"
     (project_base / "modes").mkdir(parents=True)
     (project_base / "modes" / "solo.py").write_text(
-        _MODE_HEADER
-        + "MODE = Mode(name='Solo', label='SOLO', description='Solo mode')\n"
+        _MODE_HEADER + "MODE = Mode(name='Solo', label='SOLO', description='Solo mode')\n"
     )
     results = discover_modes(project_dir=project_base, user_dir=tmp_path / "nonexistent")
     all_modes = [m for r in results for m in r.modes]

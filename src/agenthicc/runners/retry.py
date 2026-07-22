@@ -23,6 +23,7 @@ Bounds and safety:
 errors (anything not classified transient by ``_is_transient_network_error``)
 propagate immediately.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -92,11 +93,7 @@ async def run_with_transport_retry(
         immediately for permanent / cancellation errors.
     """
     start = time.monotonic()
-    can_snapshot = (
-        memory is not None
-        and hasattr(memory, "snapshot")
-        and hasattr(memory, "restore")
-    )
+    can_snapshot = memory is not None and hasattr(memory, "snapshot") and hasattr(memory, "restore")
 
     for attempt in range(config.max_retries + 1):
         snapshot = memory.snapshot() if can_snapshot else None  # type: ignore[union-attr]
@@ -124,14 +121,17 @@ async def run_with_transport_retry(
                     pass
 
             # 3. Compute backoff with optional jitter.
-            delay = config.base_delay_s * (2 ** attempt)
+            delay = config.base_delay_s * (2**attempt)
             if config.jitter and delay > 0:
                 delay *= random.uniform(0.75, 1.25)  # noqa: S311 — not security-sensitive
 
             now = time.monotonic()
 
             # 4. Total-duration ceiling.
-            if config.max_total_duration_s > 0 and (now - start) + delay > config.max_total_duration_s:
+            if (
+                config.max_total_duration_s > 0
+                and (now - start) + delay > config.max_total_duration_s
+            ):
                 raise
 
             # 5. Turn-timeout deadline awareness — don't schedule a retry that

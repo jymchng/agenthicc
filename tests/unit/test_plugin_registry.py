@@ -1,4 +1,5 @@
 """Unit tests for ToolRegistry and build_registry (PRD-25)."""
+
 from __future__ import annotations
 
 import pytest

@@ -1,4 +1,5 @@
 """Filesystem tools: read, write, delete, search, grep, patch, etc. (PRD-14)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,13 +14,13 @@ from agenthicc.tools.sandbox import WorkspaceView
 
 __all__ = ["FsToolKit"]
 
-_MAX_FILE_SIZE = 10 * 1024 * 1024   # 10 MB
+_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 # PRD-133 Layer A: bound tool output so a single result can't overflow the model
 # context window.  These are upstream guards; the pre-send budget guard (Layer C)
 # is the hard backstop.
-_MAX_LIST_ENTRIES = 1000                # max entries from list_directory/search_files
-_MAX_TOOL_OUTPUT_CHARS = 100_000        # ~25k tokens cap for read_file/read_lines
+_MAX_LIST_ENTRIES = 1000  # max entries from list_directory/search_files
+_MAX_TOOL_OUTPUT_CHARS = 100_000  # ~25k tokens cap for read_file/read_lines
 
 
 def _git_keep_filter(root: Path) -> "Callable[[str], bool] | None":
@@ -36,7 +37,10 @@ def _git_keep_filter(root: Path) -> "Callable[[str], bool] | None":
     try:
         proc = subprocess.run(
             ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-            cwd=str(root), capture_output=True, text=True, timeout=10,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -93,7 +97,9 @@ class ReadFileTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         encoding = args.get("encoding", "utf-8")
         try:
             resolved = _view(context).resolve(args["path"])
@@ -106,6 +112,7 @@ class ReadFileTool(Tool):
         # PRD-132 L1: serve from the durable file cache when the file is
         # unchanged (mtime/size/encoding match); otherwise read and record.
         from agenthicc.tools.fs.file_cache import get_file_cache  # noqa: PLC0415
+
         _fc = get_file_cache()
         _abspath = str(resolved)
         if _fc is not None:
@@ -114,14 +121,18 @@ class ReadFileTool(Tool):
                 # PRD-133 Layer A: cap returned content (cache keeps the full bytes).
                 _out, _trunc = _truncate_output(_hit)
                 _res: dict[str, object] = {
-                    "content": _out, "size_bytes": resolved.stat().st_size,
-                    "encoding": encoding, "cached": True,
+                    "content": _out,
+                    "size_bytes": resolved.stat().st_size,
+                    "encoding": encoding,
+                    "cached": True,
                 }
                 if _trunc:
                     _res["truncated"] = True
                 return _res
         try:
-            content = await asyncio.to_thread(resolved.read_text, encoding=encoding, errors="replace")
+            content = await asyncio.to_thread(
+                resolved.read_text, encoding=encoding, errors="replace"
+            )
             if _fc is not None:
                 _fc.store(_abspath, content, encoding=encoding)  # store full content
             # PRD-133 Layer A: cap returned content to bound context tokens.
@@ -148,7 +159,9 @@ class WriteFileTool(Tool):
         "required": ["path", "content"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -159,7 +172,11 @@ class WriteFileTool(Tool):
             if args.get("create_parents", True):
                 await asyncio.to_thread(resolved.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(resolved.write_text, content, encoding=encoding)
-            return {"ok": True, "path": str(resolved), "bytes_written": len(content.encode(encoding))}
+            return {
+                "ok": True,
+                "path": str(resolved),
+                "bytes_written": len(content.encode(encoding)),
+            }
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -173,15 +190,19 @@ class AppendFileTool(Tool):
         "required": ["path", "content"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
+
             def _append():
                 with open(resolved, "a", encoding="utf-8") as f:
                     f.write(args["content"])
+
             await asyncio.to_thread(_append)
             return {"ok": True, "path": str(resolved)}
         except Exception as e:
@@ -197,7 +218,9 @@ class DeleteFileTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -220,7 +243,9 @@ class MoveFileTool(Tool):
         "required": ["source", "destination"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             view = _view(context)
             src = view.resolve(args["source"])
@@ -243,7 +268,9 @@ class CopyFileTool(Tool):
         "required": ["source", "destination"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             view = _view(context)
             src = view.resolve(args["source"])
@@ -270,7 +297,9 @@ class ListDirectoryTool(Tool):
         },
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args.get("path", "."))
         except PermissionError as e:
@@ -299,13 +328,15 @@ class ListDirectoryTool(Tool):
                     break
                 try:
                     s = p.stat()
-                    entries.append({
-                        "name": p.name,
-                        "path": str(rel),
-                        "type": "dir" if p.is_dir() else "file",
-                        "size_bytes": s.st_size,
-                        "modified_at": datetime.datetime.fromtimestamp(s.st_mtime).isoformat(),
-                    })
+                    entries.append(
+                        {
+                            "name": p.name,
+                            "path": str(rel),
+                            "type": "dir" if p.is_dir() else "file",
+                            "size_bytes": s.st_size,
+                            "modified_at": datetime.datetime.fromtimestamp(s.st_mtime).isoformat(),
+                        }
+                    )
                 except OSError:
                     pass
             entries.sort(key=lambda e: e["path"])
@@ -328,7 +359,9 @@ class MakeDirectoryTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -349,7 +382,9 @@ class FileExistsTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError:
@@ -374,7 +409,9 @@ class SearchFilesTool(Tool):
         "required": ["pattern"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args.get("path", "."))
         except PermissionError as e:
@@ -422,7 +459,9 @@ class GrepFilesTool(Tool):
         "required": ["pattern"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args.get("path", "."))
         except PermissionError as e:
@@ -447,11 +486,13 @@ class GrepFilesTool(Tool):
                     continue
                 for i, line in enumerate(text.splitlines(), 1):
                     if compiled.search(line):
-                        matches.append({
-                            "file": str(p.relative_to(resolved)),
-                            "line_number": i,
-                            "line": line.rstrip(),
-                        })
+                        matches.append(
+                            {
+                                "file": str(p.relative_to(resolved)),
+                                "line_number": i,
+                                "line": line.rstrip(),
+                            }
+                        )
                         if len(matches) >= max_results:
                             return matches
             return matches
@@ -469,7 +510,9 @@ class GetFileInfoTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -494,7 +537,9 @@ class ReadLinesTool(Tool):
         "required": ["path"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -502,14 +547,16 @@ class ReadLinesTool(Tool):
         if not resolved.exists():
             return {"ok": False, "error": f"not_found: {args['path']}"}
         try:
-            all_lines = await asyncio.to_thread(resolved.read_text, encoding="utf-8", errors="replace")
+            all_lines = await asyncio.to_thread(
+                resolved.read_text, encoding="utf-8", errors="replace"
+            )
         except Exception as e:
             return {"ok": False, "error": str(e)}
         lines = all_lines.splitlines()
         total = len(lines)
         start = max(1, int(args.get("start", 1)))
         end = min(total, int(args["end"])) if args.get("end") else total
-        selected = lines[start - 1:end]
+        selected = lines[start - 1 : end]
         # PRD-133 Layer A: cap output to bound context tokens.
         out_lines: list[str] = []
         used = 0
@@ -548,7 +595,9 @@ class PatchFileTool(Tool):
         "required": ["path", "old_content", "new_content"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         try:
             resolved = _view(context).resolve(args["path"])
         except PermissionError as e:
@@ -556,12 +605,18 @@ class PatchFileTool(Tool):
         if not resolved.exists():
             return {"ok": False, "error": f"not_found: {args['path']}"}
         try:
-            original = await asyncio.to_thread(resolved.read_text, encoding="utf-8", errors="replace")
+            original = await asyncio.to_thread(
+                resolved.read_text, encoding="utf-8", errors="replace"
+            )
         except Exception as e:
             return {"ok": False, "error": str(e)}
         old = args["old_content"]
         if old not in original:
-            return {"ok": False, "error": f"old_content not found in {args['path']}", "replacements": 0}
+            return {
+                "ok": False,
+                "error": f"old_content not found in {args['path']}",
+                "replacements": 0,
+            }
         patched = original.replace(old, args["new_content"])
         replacements = original.count(old)
         await asyncio.to_thread(resolved.write_text, patched, encoding="utf-8")
@@ -576,13 +631,24 @@ class FsToolKit:
 
     def tools(self, workspace_root: str = ".") -> list[Tool]:
         return [
-            ReadFileTool(), WriteFileTool(), AppendFileTool(), DeleteFileTool(),
-            MoveFileTool(), CopyFileTool(), ListDirectoryTool(), MakeDirectoryTool(),
-            FileExistsTool(), SearchFilesTool(), GrepFilesTool(), GetFileInfoTool(),
-            ReadLinesTool(), PatchFileTool(),
+            ReadFileTool(),
+            WriteFileTool(),
+            AppendFileTool(),
+            DeleteFileTool(),
+            MoveFileTool(),
+            CopyFileTool(),
+            ListDirectoryTool(),
+            MakeDirectoryTool(),
+            FileExistsTool(),
+            SearchFilesTool(),
+            GrepFilesTool(),
+            GetFileInfoTool(),
+            ReadLinesTool(),
+            PatchFileTool(),
         ]
 
     def all_agent_tools(self) -> list:
         """Return all 24 @tool()-decorated agent tools (14 original + 10 new)."""
         from agenthicc.tools.fs.agent_tools import FS_AGENT_TOOLS  # noqa: PLC0415
+
         return FS_AGENT_TOOLS

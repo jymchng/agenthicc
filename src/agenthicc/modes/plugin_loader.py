@@ -25,6 +25,7 @@ Project plugins take precedence over user plugins: if both directories
 contain a mode with the same ``name``, the project version is registered
 last (and therefore wins in :class:`~agenthicc.modes.ModeRegistry`).
 """
+
 from __future__ import annotations
 
 import importlib.metadata
@@ -184,6 +185,7 @@ def load_mode_file(path: Path) -> ModeLoadResult:
     for m in raw_modes:
         if m.source_id == "builtin":
             from dataclasses import replace
+
             m = replace(m, source_id=source_tag)
         modes.append(m)
 
@@ -207,7 +209,8 @@ def _scan_mode_directory(root: Path) -> list[ModeLoadResult]:
         if result.missing_deps:
             log.warning(
                 "Mode plugin %s skipped — missing dependencies: %s",
-                py_file, result.missing_deps,
+                py_file,
+                result.missing_deps,
             )
         elif result.error:
             log.error("Mode plugin %s failed to load: %s", py_file, result.error)

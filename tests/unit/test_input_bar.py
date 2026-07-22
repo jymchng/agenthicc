@@ -1,4 +1,5 @@
 """Unit tests for input_bar completers (no prompt_toolkit)."""
+
 from __future__ import annotations
 
 import pytest

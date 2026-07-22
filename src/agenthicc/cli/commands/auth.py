@@ -1,4 +1,5 @@
 """Authentication commands — login, logout, whoami."""
+
 from __future__ import annotations
 
 import time
@@ -11,6 +12,7 @@ from agenthicc.cli.registry import command
 async def login(ctx: CLIContext) -> None:
     """Authenticate with agenthicc.ai and store credentials."""
     from agenthicc.auth import AuthClient  # noqa: PLC0415
+
     client = AuthClient()
     bundle = await client.login()
     print(f"Logged in as {bundle.email}  [plan: {bundle.plan}]")
@@ -20,6 +22,7 @@ async def login(ctx: CLIContext) -> None:
 async def logout(ctx: CLIContext) -> None:
     """Log out and revoke stored tokens."""
     from agenthicc.auth import AuthClient  # noqa: PLC0415
+
     await AuthClient().logout()
     print("Logged out.")
 
@@ -28,6 +31,7 @@ async def logout(ctx: CLIContext) -> None:
 def whoami(ctx: CLIContext) -> None:
     """Print the currently authenticated user and token expiry."""
     from agenthicc.auth import AuthClient  # noqa: PLC0415
+
     bundle = AuthClient().current_bundle()
     if bundle is None:
         print("Not logged in. Run: agenthicc login")

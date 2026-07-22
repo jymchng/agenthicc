@@ -1,4 +1,5 @@
 """Tests for the durable ConversationJournal (PRD-129 Phase 2)."""
+
 from __future__ import annotations
 
 import json

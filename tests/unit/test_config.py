@@ -37,15 +37,21 @@ class TestLoadConfig:
         """Per-project config wins over user-global config (Git-style layering)."""
         project = tmp_path / "agenthicc.toml"
         user = tmp_path / ".agenthicc.toml"
-        _write(project, """
+        _write(
+            project,
+            """
             [execution]
             max_concurrent_intents = 4
             max_parallel_tasks = 2
-        """)
-        _write(user, """
+        """,
+        )
+        _write(
+            user,
+            """
             [execution]
             max_concurrent_intents = 16
-        """)
+        """,
+        )
         config = load_config(project_path=project, user_path=user)
         # project value wins
         assert config.execution.max_concurrent_intents == 4
@@ -56,15 +62,21 @@ class TestLoadConfig:
         """User-global config supplies defaults when project does not override them."""
         project = tmp_path / "agenthicc.toml"
         user = tmp_path / ".agenthicc.toml"
-        _write(project, """
+        _write(
+            project,
+            """
             [execution]
             max_concurrent_intents = 4
-        """)
-        _write(user, """
+        """,
+        )
+        _write(
+            user,
+            """
             [execution]
             max_concurrent_intents = 16
             max_parallel_tasks = 99
-        """)
+        """,
+        )
         config = load_config(project_path=project, user_path=user)
         # project overrides user-global for this key
         assert config.execution.max_concurrent_intents == 4
@@ -74,7 +86,9 @@ class TestLoadConfig:
     def test_partial_override_preserves_siblings(self, tmp_path):
         project = tmp_path / "agenthicc.toml"
         user = tmp_path / ".agenthicc.toml"
-        _write(project, """
+        _write(
+            project,
+            """
             [execution]
             max_concurrent_intents = 4
             max_parallel_tasks = 2
@@ -82,11 +96,15 @@ class TestLoadConfig:
 
             [api]
             port = 9000
-        """)
-        _write(user, """
+        """,
+        )
+        _write(
+            user,
+            """
             [execution]
             max_concurrent_intents = 16
-        """)
+        """,
+        )
         config = load_config(project_path=project, user_path=user)
         # project value wins
         assert config.execution.max_concurrent_intents == 4
@@ -136,12 +154,13 @@ class TestLoadConfig:
     def test_context_windows_from_toml(self, tmp_path):
         project = tmp_path / "agenthicc.toml"
         project.write_text(
-            "[memory.context_windows]\n"
-            "default = 1000000\n"
-            "deepseek-v4-flash = 250000\n"
+            "[memory.context_windows]\ndefault = 1000000\ndeepseek-v4-flash = 250000\n"
         )
         config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
-        assert config.execution.context_windows == {"default": 1_000_000, "deepseek-v4-flash": 250_000}
+        assert config.execution.context_windows == {
+            "default": 1_000_000,
+            "deepseek-v4-flash": 250_000,
+        }
 
     def test_context_reuse_flags_default_on(self, tmp_path):
         config = load_config(
@@ -162,11 +181,15 @@ class TestLoadConfig:
         from agenthicc.config import ExecutionSettings, build_llm_config
 
         on = build_llm_config(
-            ExecutionSettings(provider="anthropic", model="claude-x", api_key="k", prompt_cache=True)
+            ExecutionSettings(
+                provider="anthropic", model="claude-x", api_key="k", prompt_cache=True
+            )
         )
         assert on.cache_system_prompt and on.cache_tools and on.cache_conversation
         off = build_llm_config(
-            ExecutionSettings(provider="anthropic", model="claude-x", api_key="k", prompt_cache=False)
+            ExecutionSettings(
+                provider="anthropic", model="claude-x", api_key="k", prompt_cache=False
+            )
         )
         assert not off.cache_conversation
 
@@ -174,21 +197,29 @@ class TestLoadConfig:
         """Project list replaces user-global list entirely (lists are not merged)."""
         project = tmp_path / "agenthicc.toml"
         user = tmp_path / ".agenthicc.toml"
-        _write(project, """
+        _write(
+            project,
+            """
             [security]
             allowed_paths = ["/workspace", "/data"]
-        """)
-        _write(user, """
+        """,
+        )
+        _write(
+            user,
+            """
             [security]
             allowed_paths = ["/home/user/project"]
-        """)
+        """,
+        )
         config = load_config(project_path=project, user_path=user)
         # project list wins; user-global list replaced
         assert config.security.allowed_paths == ["/workspace", "/data"]
 
     def test_hooks_and_tools_sections(self, tmp_path):
         project = tmp_path / "agenthicc.toml"
-        _write(project, """
+        _write(
+            project,
+            """
             [hooks]
             "intent.pre_validate" = ["myproj.hooks.audit"]
             tool.post_execute = ["myproj.hooks.log_tool"]
@@ -201,10 +232,9 @@ class TestLoadConfig:
             [[tools.mcp_servers]]
             name = "filesystem"
             url = "npx server-filesystem"
-        """)
-        config = load_config(
-            project_path=project, user_path=tmp_path / "missing.toml"
+        """,
         )
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
         assert config.hooks["intent.pre_validate"] == ["myproj.hooks.audit"]
         assert config.hooks["tool.post_execute"] == ["myproj.hooks.log_tool"]
         assert config.tools.plugins == ["myproj.tools:Plugin"]
@@ -245,11 +275,14 @@ class TestConverters:
 
     def test_to_security_policy_from_loaded_toml(self, tmp_path):
         project = tmp_path / "agenthicc.toml"
-        _write(project, """
+        _write(
+            project,
+            """
             [tools]
             allowed = ["fs_*"]
             denied = ["fs_delete"]
-        """)
+        """,
+        )
         config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
         policy = config.to_security_policy()
         from agenthicc.security import PermissionChecker

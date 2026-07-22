@@ -1,4 +1,5 @@
 """Entry point for ``python -m agenthicc`` and the ``agenthicc`` command."""
+
 from __future__ import annotations
 
 import asyncio

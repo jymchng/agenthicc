@@ -14,6 +14,7 @@ All mutations in normal operation come from the asyncio event-loop thread.
 The lock exists as a safety net for the atexit / signal-handler edge cases
 in cbreak_reader.raw_mode.
 """
+
 from __future__ import annotations
 
 import threading
@@ -37,7 +38,7 @@ class Signal(Generic[T]):
     def get(self) -> T:
         return self._value
 
-    def __call__(self) -> T:          # sugar: signal() instead of signal.get()
+    def __call__(self) -> T:  # sugar: signal() instead of signal.get()
         return self._value
 
     # ── write ─────────────────────────────────────────────────────────────────
@@ -51,7 +52,7 @@ class Signal(Generic[T]):
         for sub in list(self._subscribers):
             try:
                 sub()
-            except Exception:       # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 pass
 
     # ── subscription ──────────────────────────────────────────────────────────
@@ -91,7 +92,7 @@ class Computed(Generic[T]):
                 for sub in list(self._subscribers):
                     try:
                         sub()
-                    except Exception:       # noqa: BLE001
+                    except Exception:  # noqa: BLE001
                         pass
 
         for dep in deps:

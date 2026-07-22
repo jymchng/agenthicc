@@ -3,6 +3,7 @@
 A pure-Python value object with no I/O.  All mutation goes through named
 methods so callers never manipulate buf/cursor directly.
 """
+
 from __future__ import annotations
 
 
@@ -110,9 +111,7 @@ class InputBuffer:
             return False
         prev_len = len(all_lines[curr_line - 1])
         target_col = min(curr_col, prev_len)
-        self._cursor = (
-            sum(len(all_lines[i]) + 1 for i in range(curr_line - 1)) + target_col
-        )
+        self._cursor = sum(len(all_lines[i]) + 1 for i in range(curr_line - 1)) + target_col
         return True
 
     def move_down(self) -> bool:
@@ -131,7 +130,5 @@ class InputBuffer:
             return False
         next_len = len(all_lines[curr_line + 1])
         target_col = min(curr_col, next_len)
-        self._cursor = (
-            sum(len(all_lines[i]) + 1 for i in range(curr_line + 1)) + target_col
-        )
+        self._cursor = sum(len(all_lines[i]) + 1 for i in range(curr_line + 1)) + target_col
         return True

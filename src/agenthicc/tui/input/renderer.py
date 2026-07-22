@@ -3,6 +3,7 @@
 ``build_prompt`` — produce the ANSI prompt string for the workspace composer.
 ``show_exit_hint`` — print the --resume / --continue hint on clean exit.
 """
+
 from __future__ import annotations
 
 import sys
@@ -67,11 +68,7 @@ def build_prompt(
     for i, ln in enumerate(raw_lines):
         if i == cursor_line:
             col = cursor_col
-            line_text = (
-                "".join(ln[:col])
-                + f"\x1b[1m{CURSOR_CHAR}\x1b[0m"
-                + "".join(ln[col:])
-            )
+            line_text = "".join(ln[:col]) + f"\x1b[1m{CURSOR_CHAR}\x1b[0m" + "".join(ln[col:])
         else:
             line_text = "".join(ln)
         prefix = f"\x1b[1;33m{PROMPT_CHAR}\x1b[0m " if i == 0 else _INDENT
@@ -83,6 +80,7 @@ def build_prompt(
 def show_exit_hint(resume_id: str = "", out: object = None) -> None:
     """Print the --resume / --continue hint below the input bar on exit."""
     import shutil  # noqa: PLC0415
+
     out = out or sys.stdout
     cols = shutil.get_terminal_size((80, 24)).columns
     border = "\x1b[2m" + "─" * cols + "\x1b[0m"

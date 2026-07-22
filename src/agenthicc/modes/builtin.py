@@ -5,6 +5,7 @@ The six modes are: Auto, Plan, Ask, Review, Safe, Debug.
 ``build_default_registry()`` returns a :class:`~agenthicc.modes.ModeRegistry`
 pre-populated with all six modes in canonical cycle order.
 """
+
 from __future__ import annotations
 
 from .mode import Mode
@@ -17,39 +18,43 @@ __all__ = ["build_default_registry", "BUILTIN_MODES"]
 # ---------------------------------------------------------------------------
 
 # Tools permitted in Plan and Review modes: read/inspect tools + non-destructive git.
-_PLAN_REVIEW_ALLOWED: frozenset[str] = frozenset({
-    "read_file",
-    "read_lines",
-    "list_directory",
-    "list_files",
-    "search_files",
-    "grep_files",
-    "get_file_info",
-    "file_exists",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "git_show",
-    "git_blame",
-    "git_grep",
-    "git_branch",
-})
+_PLAN_REVIEW_ALLOWED: frozenset[str] = frozenset(
+    {
+        "read_file",
+        "read_lines",
+        "list_directory",
+        "list_files",
+        "search_files",
+        "grep_files",
+        "get_file_info",
+        "file_exists",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_show",
+        "git_blame",
+        "git_grep",
+        "git_branch",
+    }
+)
 
 # Tools permitted in Safe mode: narrower read-only set (no git blame/grep).
-_SAFE_ALLOWED: frozenset[str] = frozenset({
-    "read_file",
-    "read_lines",
-    "list_directory",
-    "list_files",
-    "search_files",
-    "grep_files",
-    "get_file_info",
-    "file_exists",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "git_show",
-})
+_SAFE_ALLOWED: frozenset[str] = frozenset(
+    {
+        "read_file",
+        "read_lines",
+        "list_directory",
+        "list_files",
+        "search_files",
+        "grep_files",
+        "get_file_info",
+        "file_exists",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_show",
+    }
+)
 
 
 def _plan_filter(tool_name: str, kwargs: dict[str, object]) -> bool:
@@ -70,6 +75,7 @@ def _safe_filter(tool_name: str, kwargs: dict[str, object]) -> bool:
 # ---------------------------------------------------------------------------
 # Post-hook for Debug mode
 # ---------------------------------------------------------------------------
+
 
 def _debug_post_hook(response: str, context: object) -> str:
     """Append a DEBUG footer with timing and token metadata to every agent response.
@@ -94,9 +100,7 @@ def _debug_post_hook(response: str, context: object) -> str:
         cost_str = "0.XXXX"
 
     debug_block = (
-        f"\n\n```\n"
-        f"[DEBUG] elapsed={elapsed_str}s  in={in_str} out={out_str}  cost={cost_str}\n"
-        f"```"
+        f"\n\n```\n[DEBUG] elapsed={elapsed_str}s  in={in_str} out={out_str}  cost={cost_str}\n```"
     )
     return response + debug_block
 
@@ -143,6 +147,7 @@ _DEBUG_PATCH = (
 # Factory
 # ---------------------------------------------------------------------------
 
+
 def build_default_registry() -> ModeRegistry:
     """Return a :class:`ModeRegistry` with the 6 built-in modes.
 
@@ -150,35 +155,41 @@ def build_default_registry() -> ModeRegistry:
     """
     registry = ModeRegistry()
 
-    registry.register(Mode(
-        name="Auto",
-        label="⏵⏵",
-        description="Full automatic mode — all tools allowed, no prompt patch.",
-        colour="green",
-        system_patch="",
-        tool_filter=None,
-        source_id="builtin",
-    ))
+    registry.register(
+        Mode(
+            name="Auto",
+            label="⏵⏵",
+            description="Full automatic mode — all tools allowed, no prompt patch.",
+            colour="green",
+            system_patch="",
+            tool_filter=None,
+            source_id="builtin",
+        )
+    )
 
-    registry.register(Mode(
-        name="Plan",
-        label="◈",
-        description="Planning only — write and exec tools blocked; produce action plans.",
-        colour="yellow",
-        system_patch=_PLAN_PATCH,
-        tool_filter=_plan_filter,
-        source_id="builtin",
-    ))
+    registry.register(
+        Mode(
+            name="Plan",
+            label="◈",
+            description="Planning only — write and exec tools blocked; produce action plans.",
+            colour="yellow",
+            system_patch=_PLAN_PATCH,
+            tool_filter=_plan_filter,
+            source_id="builtin",
+        )
+    )
 
-    registry.register(Mode(
-        name="Safe",
-        label="⊘",
-        description="Safe mode — read-only; all writes and exec tools blocked.",
-        colour="red",
-        system_patch=_SAFE_PATCH,
-        tool_filter=_safe_filter,
-        source_id="builtin",
-    ))
+    registry.register(
+        Mode(
+            name="Safe",
+            label="⊘",
+            description="Safe mode — read-only; all writes and exec tools blocked.",
+            colour="red",
+            system_patch=_SAFE_PATCH,
+            tool_filter=_safe_filter,
+            source_id="builtin",
+        )
+    )
 
     return registry
 

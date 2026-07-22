@@ -1,4 +1,5 @@
 """Command dataclass, CommandContext, and related type aliases (PRD-44, PRD-45)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -30,11 +31,11 @@ class CommandContext:
     when the renderer was a partial duck-type.
     """
 
-    text: str                       # full text the user submitted, e.g. "/model gpt-4o"
-    args: str                       # everything after the command name, e.g. "gpt-4o"
-    model: str                      # model label string
-    console: "Console"              # Rich Console
-    config: "AgenthiccConfig"       # live, mutable config
+    text: str  # full text the user submitted, e.g. "/model gpt-4o"
+    args: str  # everything after the command name, e.g. "gpt-4o"
+    model: str  # model label string
+    console: "Console"  # Rich Console
+    config: "AgenthiccConfig"  # live, mutable config
     session_id: str = ""
 
     skills: "dict[str, SkillDef]" = field(default_factory=dict)
@@ -60,11 +61,11 @@ CompletionsFactory = Callable[[str], list[str]]
 class Command:
     """Complete specification for a single slash command."""
 
-    name: str                                      # canonical name, e.g. "/config"
-    description: str                               # shown in dropdown right column
-    group: str = "Built-in"                        # "Built-in" | "Skills" | "Plugins" | "MCP"
+    name: str  # canonical name, e.g. "/config"
+    description: str  # shown in dropdown right column
+    group: str = "Built-in"  # "Built-in" | "Skills" | "Plugins" | "MCP"
     aliases: tuple[str, ...] = field(default_factory=tuple)  # e.g. ("/cfg",)
-    argument_hint: str = ""                        # e.g. "[section.key=value]"
+    argument_hint: str = ""  # e.g. "[section.key=value]"
 
     # Exactly one of handler / menu_factory should be set (both is also fine:
     # the menu factory takes precedence when the command is typed standalone).

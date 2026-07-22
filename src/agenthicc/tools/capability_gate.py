@@ -6,6 +6,7 @@ call regardless of which @tool()-decorated function is invoked.
 Tools without @set_metadata("capabilities", ...) have no declared capabilities
 and pass through the gate unconditionally (open-by-default).
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -37,7 +38,7 @@ class ToolCapabilityGate:
     async def before_tool_call(self, ctx: object) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
 
-        mode    = self._app_state.active_mode()
+        mode = self._app_state.active_mode()
         blocked = mode.blocked_capabilities
         if not blocked:
             return BeforeToolHookDecision.proceed()
@@ -46,20 +47,24 @@ class ToolCapabilityGate:
         denied = tool_caps & blocked
         if denied:
             caps_str = ", ".join(sorted(denied))
-            return BeforeToolHookDecision.abort({
-                "ok":    False,
-                "error": (
-                    f"Tool '{ctx.tool_name}' requires {caps_str} capability, "
-                    f"which is blocked in {mode.name} mode. "
-                    f"Switch to Auto or Debug mode to use this tool."
-                ),
-            })
+            return BeforeToolHookDecision.abort(
+                {
+                    "ok": False,
+                    "error": (
+                        f"Tool '{ctx.tool_name}' requires {caps_str} capability, "
+                        f"which is blocked in {mode.name} mode. "
+                        f"Switch to Auto or Debug mode to use this tool."
+                    ),
+                }
+            )
         return BeforeToolHookDecision.proceed()
 
     async def after_tool_call(self, result: object, ctx: object) -> object:
         from lauren_ai._tools._hooks import AfterToolHookDecision  # noqa: PLC0415
+
         return AfterToolHookDecision.proceed()
 
     async def on_tool_error(self, exc: Exception, ctx: object) -> object:
         from lauren_ai._tools._hooks import ErrorToolHookDecision  # noqa: PLC0415
+
         return ErrorToolHookDecision.reraise()

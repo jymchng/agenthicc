@@ -1,4 +1,5 @@
 """Core Mode dataclass and associated type aliases for the agenthicc modes system."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

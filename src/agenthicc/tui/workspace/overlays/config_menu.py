@@ -1,4 +1,5 @@
 """ConfigMenuOverlay — /config configuration editor (PRD-65 §3)."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -16,25 +17,25 @@ from agenthicc.tui.workspace.overlay import Overlay
 
 class _State(Enum):
     NAVIGATE = auto()
-    EDIT     = auto()
+    EDIT = auto()
 
 
 @dataclass
 class _Field:
     section_name: str
-    field_name:   str
-    label:        str
-    value:        object
-    default:      object
-    field_type:   type
-    editable:     bool
-    changed:      bool = False
+    field_name: str
+    label: str
+    value: object
+    default: object
+    field_type: type
+    editable: bool
+    changed: bool = False
 
 
 @dataclass
 class _Section:
-    name:     str
-    fields:   list["_Field"]
+    name: str
+    fields: list["_Field"]
     expanded: bool = True
 
 
@@ -55,17 +56,19 @@ def _build_sections(cfg: "AgenthiccConfig | None") -> list[_Section]:
         fields: list[_Field] = []
         if dataclasses.is_dataclass(obj):
             for f in dataclasses.fields(obj):
-                val      = getattr(obj, f.name)
+                val = getattr(obj, f.name)
                 editable = isinstance(val, (int, str, bool, float))
-                fields.append(_Field(
-                    section_name=attr,
-                    field_name=f.name,
-                    label=f.name,
-                    value=val,
-                    default=getattr(default, f.name, val),
-                    field_type=type(val),
-                    editable=editable,
-                ))
+                fields.append(
+                    _Field(
+                        section_name=attr,
+                        field_name=f.name,
+                        label=f.name,
+                        value=val,
+                        default=getattr(default, f.name, val),
+                        field_type=type(val),
+                        editable=editable,
+                    )
+                )
         if fields:
             sections.append(_Section(name=attr, fields=fields))
     return sections
@@ -78,14 +81,14 @@ class ConfigMenuOverlay(Overlay):
     _MAX_VISIBLE = 12
 
     def __init__(self, cfg: "AgenthiccConfig | None", on_close: Callable[[], None]) -> None:
-        self._cfg      = cfg
+        self._cfg = cfg
         self._on_close = on_close
         self._sections = _build_sections(cfg)
-        self._cursor   = (0, -1)   # (section_idx, field_idx; -1 = header)
-        self._state    = _State.NAVIGATE
+        self._cursor = (0, -1)  # (section_idx, field_idx; -1 = header)
+        self._state = _State.NAVIGATE
         self._edit_buf = ""
-        self._scroll   = 0
-        self._status   = "↑↓ navigate   Enter edit/expand   s save   Esc close"
+        self._scroll = 0
+        self._status = "↑↓ navigate   Enter edit/expand   s save   Esc close"
 
     def on_mount(self) -> None:
         pass
@@ -95,12 +98,12 @@ class ConfigMenuOverlay(Overlay):
 
     def render(self) -> "RenderableType":
         from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text      # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
 
-        rows    = self._build_rows()
+        rows = self._build_rows()
         visible = rows[self._scroll : self._scroll + self._MAX_VISIBLE]
-        sep     = Text("─" * 60, style="dim")
-        lines   = [sep]
+        sep = Text("─" * 60, style="dim")
+        lines = [sep]
         for row in visible:
             lines.append(Text.from_markup(row))
         lines += [sep, Text.from_markup(f"  [dim]{self._status}[/dim]")]
@@ -129,12 +132,12 @@ class ConfigMenuOverlay(Overlay):
     def _handle_edit(self, key: Key, ch: str) -> None:
         match key:
             case Key.ESC:
-                self._state    = _State.NAVIGATE
+                self._state = _State.NAVIGATE
                 self._edit_buf = ""
-                self._status   = "↑↓ navigate   Enter edit/expand   s save   Esc close"
+                self._status = "↑↓ navigate   Enter edit/expand   s save   Esc close"
             case Key.ENTER:
                 self._commit_edit()
-                self._state    = _State.NAVIGATE
+                self._state = _State.NAVIGATE
                 self._edit_buf = ""
             case Key.BACKSPACE:
                 self._edit_buf = self._edit_buf[:-1]
@@ -149,22 +152,23 @@ class ConfigMenuOverlay(Overlay):
                 "  [dim]Press Esc to close.[/dim]",
             ]
         from rich.markup import escape as _e  # noqa: PLC0415
+
         rows: list[str] = []
         si_cur, fi_cur = self._cursor
         for si, section in enumerate(self._sections):
-            icon    = "▼" if section.expanded else "▶"
+            icon = "▼" if section.expanded else "▶"
             focused = si == si_cur and fi_cur == -1
-            row     = (
+            row = (
                 f"  {'[reverse]' if focused else ''}[bold]{icon} {section.name}[/bold]"
                 f"{'[/reverse]' if focused else ''}"
             )
             rows.append(row)
             if section.expanded:
                 for fi, field in enumerate(section.fields):
-                    foc  = si == si_cur and fi == fi_cur
-                    ind  = "▶" if foc else " "
-                    chg  = "[yellow]●[/yellow] " if field.changed else "  "
-                    val  = str(field.value)[:30]
+                    foc = si == si_cur and fi == fi_cur
+                    ind = "▶" if foc else " "
+                    chg = "[yellow]●[/yellow] " if field.changed else "  "
+                    val = str(field.value)[:30]
                     if foc and self._state == _State.EDIT:
                         val = self._edit_buf + "█"
                     rows.append(
@@ -215,8 +219,8 @@ class ConfigMenuOverlay(Overlay):
         field = self._focused_field()
         if field and field.editable:
             self._edit_buf = str(field.value)
-            self._state    = _State.EDIT
-            self._status   = "Type new value  Enter confirm  Esc cancel"
+            self._state = _State.EDIT
+            self._status = "Type new value  Enter confirm  Esc cancel"
 
     def _collapse(self) -> None:
         si, fi = self._cursor
@@ -232,7 +236,7 @@ class ConfigMenuOverlay(Overlay):
             return
         try:
             new_val = field.field_type(self._edit_buf)
-            object.__setattr__(field, "value",   new_val)
+            object.__setattr__(field, "value", new_val)
             object.__setattr__(field, "changed", True)
             self._status = f"[green]✓[/green] {field.label} updated (press s to save)"
         except (ValueError, TypeError):

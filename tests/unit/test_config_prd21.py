@@ -1,4 +1,5 @@
 """Tests for PRD-21 configuration management: file search, env overrides, CLI overrides."""
+
 from __future__ import annotations
 
 import pytest
@@ -22,6 +23,7 @@ try:
         PROJECT_CONFIG_CANDIDATES,  # type: ignore[attr-defined]
         USER_CONFIG_CANDIDATES,  # type: ignore[attr-defined]
     )
+
     _HELPERS_AVAILABLE = True
 except ImportError:
     _HELPERS_AVAILABLE = False
@@ -38,6 +40,7 @@ _needs_helpers = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # TestFindConfigFile
 # ---------------------------------------------------------------------------
+
 
 @_needs_helpers
 class TestFindConfigFile:
@@ -74,6 +77,7 @@ class TestFindConfigFile:
 # ---------------------------------------------------------------------------
 # TestCoerceEnv
 # ---------------------------------------------------------------------------
+
 
 @_needs_helpers
 class TestCoerceEnv:
@@ -114,6 +118,7 @@ class TestCoerceEnv:
 # ---------------------------------------------------------------------------
 # TestApplyEnvOverrides
 # ---------------------------------------------------------------------------
+
 
 @_needs_helpers
 class TestApplyEnvOverrides:
@@ -160,6 +165,7 @@ class TestApplyEnvOverrides:
 # ---------------------------------------------------------------------------
 # TestApplyCliOverrides
 # ---------------------------------------------------------------------------
+
 
 @_needs_helpers
 class TestApplyCliOverrides:
@@ -213,6 +219,7 @@ class TestApplyCliOverrides:
 # TestLoadConfigFileSearch
 # ---------------------------------------------------------------------------
 
+
 class TestLoadConfigFileSearch:
     """Tests that load_config searches the standard candidate locations."""
 
@@ -222,9 +229,7 @@ class TestLoadConfigFileSearch:
         monkeypatch.chdir(tmp_path)
         subdir = tmp_path / ".agenthicc"
         subdir.mkdir()
-        (subdir / "agenthicc.toml").write_text(
-            "[execution]\nmax_parallel_tasks = 7\n"
-        )
+        (subdir / "agenthicc.toml").write_text("[execution]\nmax_parallel_tasks = 7\n")
         config = load_config(user_path=str(tmp_path / "missing.toml"))
         assert config.execution.max_parallel_tasks == 7
 
@@ -232,40 +237,26 @@ class TestLoadConfigFileSearch:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "agenthicc.toml").write_text(
-            "[execution]\nmax_parallel_tasks = 5\n"
-        )
+        (tmp_path / "agenthicc.toml").write_text("[execution]\nmax_parallel_tasks = 5\n")
         config = load_config(user_path=str(tmp_path / "missing.toml"))
         assert config.execution.max_parallel_tasks == 5
 
-    def test_falls_back_to_dotfile(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_falls_back_to_dotfile(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
-        (tmp_path / ".agenthicc.toml").write_text(
-            "[execution]\nmax_parallel_tasks = 4\n"
-        )
+        (tmp_path / ".agenthicc.toml").write_text("[execution]\nmax_parallel_tasks = 4\n")
         config = load_config(user_path=str(tmp_path / "missing.toml"))
         assert config.execution.max_parallel_tasks == 4
 
-    def test_subdir_wins_over_root(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_subdir_wins_over_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         subdir = tmp_path / ".agenthicc"
         subdir.mkdir()
-        (subdir / "agenthicc.toml").write_text(
-            "[execution]\nmax_parallel_tasks = 9\n"
-        )
-        (tmp_path / "agenthicc.toml").write_text(
-            "[execution]\nmax_parallel_tasks = 3\n"
-        )
+        (subdir / "agenthicc.toml").write_text("[execution]\nmax_parallel_tasks = 9\n")
+        (tmp_path / "agenthicc.toml").write_text("[execution]\nmax_parallel_tasks = 3\n")
         config = load_config(user_path=str(tmp_path / "missing.toml"))
         assert config.execution.max_parallel_tasks == 9
 
-    def test_no_config_uses_defaults(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_config_uses_defaults(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         config = load_config(
             project_path=str(tmp_path / "missing.toml"),
@@ -290,9 +281,7 @@ class TestLoadConfigFileSearch:
         monkeypatch.chdir(tmp_path)
         subdir = tmp_path / ".agenthicc"
         subdir.mkdir()
-        (subdir / ".agenthicc.toml").write_text(
-            "[execution]\nmax_parallel_tasks = 6\n"
-        )
+        (subdir / ".agenthicc.toml").write_text("[execution]\nmax_parallel_tasks = 6\n")
         config = load_config(user_path=str(tmp_path / "missing.toml"))
         assert config.execution.max_parallel_tasks == 6
 
@@ -300,6 +289,7 @@ class TestLoadConfigFileSearch:
 # ---------------------------------------------------------------------------
 # TestLoadConfigEnvOverride
 # ---------------------------------------------------------------------------
+
 
 class TestLoadConfigEnvOverride:
     """Tests env-override integration via load_config."""
@@ -325,9 +315,7 @@ class TestLoadConfigEnvOverride:
             )
         assert config.execution.max_parallel_tasks == 99
 
-    def test_env_disabled(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_disabled(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg_file = tmp_path / "agenthicc.toml"
         cfg_file.write_text("[execution]\nmax_parallel_tasks = 5\n")
         monkeypatch.setenv("AGENTHICC_EXECUTION_MAX_PARALLEL_TASKS", "99")
@@ -342,9 +330,7 @@ class TestLoadConfigEnvOverride:
         # env must NOT have been applied
         assert config.execution.max_parallel_tasks == 5
 
-    def test_env_string_field(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_string_field(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AGENTHICC_API_HOST", "myhost")
         try:
             config = load_config(
@@ -359,9 +345,7 @@ class TestLoadConfigEnvOverride:
             )
         assert config.api.host == "myhost"
 
-    def test_env_int_field(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_int_field(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AGENTHICC_EXECUTION_MAX_PARALLEL_TASKS", "42")
         try:
             config = load_config(
@@ -380,6 +364,7 @@ class TestLoadConfigEnvOverride:
 # ---------------------------------------------------------------------------
 # TestLoadConfigCliOverride
 # ---------------------------------------------------------------------------
+
 
 class TestLoadConfigCliOverride:
     """Tests CLI override integration via load_config."""
@@ -404,9 +389,7 @@ class TestLoadConfigCliOverride:
         )
         assert config.execution.max_parallel_tasks == 77
 
-    def test_cli_beats_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cli_beats_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AGENTHICC_EXECUTION_MAX_PARALLEL_TASKS", "20")
         config = self._load(
             tmp_path,
@@ -438,6 +421,7 @@ class TestLoadConfigCliOverride:
 # TestConfigPrecedenceOrder
 # ---------------------------------------------------------------------------
 
+
 class TestConfigPrecedenceOrder:
     """Precedence (lowest → highest): user-global < project < env vars < CLI.
 
@@ -447,9 +431,7 @@ class TestConfigPrecedenceOrder:
     --set                        = CLI overrides (highest)
     """
 
-    def test_cli_highest_priority(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cli_highest_priority(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = tmp_path / "agenthicc.toml"
         user_cfg = tmp_path / "user.toml"
         cfg.write_text("[execution]\nmax_parallel_tasks = 5\n")
@@ -496,9 +478,7 @@ class TestConfigPrecedenceOrder:
             pytest.skip("New load_config parameters not yet available")
         assert config.execution.max_parallel_tasks == 42  # user-global used as default
 
-    def test_env_beats_user_global(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_beats_user_global(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Environment variables override user-global config."""
         user_cfg = tmp_path / "user.toml"
         user_cfg.write_text("[execution]\nmax_parallel_tasks = 77\n")
@@ -513,9 +493,7 @@ class TestConfigPrecedenceOrder:
             pytest.skip("New load_config parameters not yet available")
         assert config.execution.max_parallel_tasks == 20  # env beats user-global
 
-    def test_env_beats_project(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_env_beats_project(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Environment variables override project config."""
         cfg = tmp_path / "agenthicc.toml"
         cfg.write_text("[execution]\nmax_parallel_tasks = 5\n")
@@ -551,6 +529,7 @@ class TestConfigPrecedenceOrder:
 # ---------------------------------------------------------------------------
 # TestCandidateLists  (only when the symbols exist)
 # ---------------------------------------------------------------------------
+
 
 @_needs_helpers
 class TestCandidateLists:

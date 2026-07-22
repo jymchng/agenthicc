@@ -1,4 +1,5 @@
 """Command execution tools: bash, python, run_command, run_tests (PRD-16)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -61,7 +62,13 @@ async def _run_proc(
             stdout_b, stderr_b = b"", b"[process killed: timeout]\n"
             await asyncio.gather(proc.wait(), return_exceptions=True)
     except FileNotFoundError as exc:
-        return {"stdout": "", "stderr": str(exc), "returncode": -1, "duration_ms": 0.0, "timed_out": False}
+        return {
+            "stdout": "",
+            "stderr": str(exc),
+            "returncode": -1,
+            "duration_ms": 0.0,
+            "timed_out": False,
+        }
 
     duration_ms = (time.perf_counter() - t0) * 1000
     return {
@@ -87,12 +94,16 @@ class RunBashTool(Tool):
         "required": ["command"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         cwd = args.get("cwd") or context.get("workspace_root", ".")
         return await _run_proc(
-            [args["command"]], cwd=cwd,
+            [args["command"]],
+            cwd=cwd,
             timeout=float(args.get("timeout", 30)),
-            env=args.get("env"), shell=True,
+            env=args.get("env"),
+            shell=True,
         )
 
 
@@ -110,12 +121,16 @@ class RunCommandTool(Tool):
         "required": ["argv"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         cwd = args.get("cwd") or context.get("workspace_root", ".")
         return await _run_proc(
-            list(args["argv"]), cwd=cwd,
+            list(args["argv"]),
+            cwd=cwd,
             timeout=float(args.get("timeout", 30)),
-            env=args.get("env"), shell=False,
+            env=args.get("env"),
+            shell=False,
         )
 
 
@@ -131,15 +146,19 @@ class RunPythonTool(Tool):
         "required": ["code"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         cwd = context.get("workspace_root", ".")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(args["code"])
             tmp_path = f.name
         try:
             return await _run_proc(
-                [sys.executable, tmp_path], cwd=cwd,
-                timeout=float(args.get("timeout", 30)), shell=False,
+                [sys.executable, tmp_path],
+                cwd=cwd,
+                timeout=float(args.get("timeout", 30)),
+                shell=False,
             )
         finally:
             try:
@@ -160,12 +179,16 @@ class RunPythonExprTool(Tool):
         "required": ["expression"],
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         cwd = context.get("workspace_root", ".")
         code = f"_r = ({args['expression']}); print(repr(_r))"
         result = await _run_proc(
-            [sys.executable, "-c", code], cwd=cwd,
-            timeout=float(args.get("timeout", 10)), shell=False,
+            [sys.executable, "-c", code],
+            cwd=cwd,
+            timeout=float(args.get("timeout", 10)),
+            shell=False,
         )
         result["result"] = result["stdout"].strip()
         return result
@@ -184,9 +207,12 @@ class RunTestsTool(Tool):
         },
     }
 
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self, args: dict[str, object], context: dict[str, object]
+    ) -> dict[str, object]:
         import re
         import uuid  # noqa: PLC0415
+
         cwd = context.get("workspace_root", ".")
         extra = list(args.get("args") or [])
         path = args.get("path", "tests/")
@@ -194,20 +220,29 @@ class RunTestsTool(Tool):
 
         if args.get("framework", "pytest") == "pytest":
             cmd = [
-                sys.executable, "-m", "pytest", path,
-                "--json-report", f"--json-report-file={report_path}",
-                "-q", *extra,
+                sys.executable,
+                "-m",
+                "pytest",
+                path,
+                "--json-report",
+                f"--json-report-file={report_path}",
+                "-q",
+                *extra,
             ]
         else:
             cmd = [sys.executable, "-m", "unittest", "discover", path, *extra]
 
         result = await _run_proc(
-            cmd, cwd=cwd, timeout=float(args.get("timeout", 120)), shell=False,
+            cmd,
+            cwd=cwd,
+            timeout=float(args.get("timeout", 120)),
+            shell=False,
         )
 
         passed = failed = errors = None
         try:
             import json  # noqa: PLC0415
+
             with open(report_path) as f:
                 report = json.load(f)
             summary = report.get("summary", {})
@@ -229,4 +264,10 @@ class RunTestsTool(Tool):
 
 class ExecToolKit:
     def tools(self) -> list[Tool]:
-        return [RunBashTool(), RunCommandTool(), RunPythonTool(), RunPythonExprTool(), RunTestsTool()]
+        return [
+            RunBashTool(),
+            RunCommandTool(),
+            RunPythonTool(),
+            RunPythonExprTool(),
+            RunTestsTool(),
+        ]

@@ -5,6 +5,7 @@ The workspace owns the terminal for the application lifetime:
 - ScrollBufferAppender writes conversation events to the scroll buffer
 - StatusComponent, ComposerComponent, FooterComponent render into the Live block
 """
+
 from agenthicc.tui.workspace.workspace import Workspace
 from agenthicc.tui.workspace.appender import ScrollBufferAppender
 from agenthicc.tui.workspace.components import (

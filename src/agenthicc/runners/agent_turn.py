@@ -120,9 +120,12 @@ def _is_permanent_error(exc: BaseException) -> bool:
     # AND the hard truncation guard is irreducible — retrying the identical
     # request always fails.  Treat as permanent so the phase surfaces the
     # actionable message and exits instead of looping on the same request.
-    from lauren_ai import AgentContextOverflowError  # noqa: PLC0415
+    try:
+        from lauren_ai import AgentContextOverflowError  # noqa: PLC0415
+    except ImportError:
+        AgentContextOverflowError = None
 
-    if isinstance(exc, AgentContextOverflowError):
+    if AgentContextOverflowError is not None and isinstance(exc, AgentContextOverflowError):
         return True
     status = _http_status_code(exc)
     if status is None:
@@ -601,9 +604,9 @@ class AgentTurnRunner:
             _window = ctx.exec_cfg.effective_context_window()
             _window_tokens = ctx.exec_cfg.effective_usable_budget()
         else:
-            from lauren_ai._config import context_window_for  # noqa: PLC0415
+            from agenthicc.config import _context_window_for  # noqa: PLC0415
 
-            _window = context_window_for(self._model_id)
+            _window = _context_window_for(self._model_id)
             _window_tokens = max(
                 1, _window - _AgentConfig().max_tokens_per_turn - max(4_000, _window // 25)
             )
@@ -643,19 +646,22 @@ class AgentTurnRunner:
         # a transient failure, guaranteeing a clean pre-turn history every time.
         async def _stream_once() -> None:
             local_turn: list[str] = []
+            config_kwargs: dict[str, object] = {
+                "max_turns": ctx.max_agent_turns,
+                "parallel_tool_calls": True,
+                "memory_window_tokens": _window_tokens,
+                "summarize_at": 0.8 if _auto_compact else None,
+                "summary_model": self._model_id,
+            }
+            if "context_window" in getattr(_AgentConfig, "__dataclass_fields__", {}):
+                config_kwargs["context_window"] = _window
+
             stream = await active_runner.run_stream(
                 agent_instance,
                 agent_text,
                 memory=ctx.session_memory,
                 idempotency_ledger=turn_ledger,
-                config_override=_AgentConfig(
-                    max_turns=ctx.max_agent_turns,
-                    parallel_tool_calls=True,
-                    memory_window_tokens=_window_tokens,
-                    summarize_at=0.8 if _auto_compact else None,
-                    summary_model=self._model_id,
-                    context_window=_window,
-                ),
+                config_override=_AgentConfig(**config_kwargs),
             )
             async for chunk in stream:
                 if chunk.delta:
@@ -665,8 +671,9 @@ class AgentTurnRunner:
 
                 # PRD-135: surface auto-compaction (and other out-of-band status)
                 # to the user — it is NOT part of the assistant's content.
-                if chunk.system_notice is not None and ctx.conv_store:
-                    ctx.conv_store.append_event("system", {"text": chunk.system_notice})
+                system_notice = getattr(chunk, "system_notice", None)
+                if system_notice is not None and ctx.conv_store:
+                    ctx.conv_store.append_event("system", {"text": system_notice})
 
                 # Live token update — PRD-83.
                 if chunk.usage is not None and ctx.conv_store:

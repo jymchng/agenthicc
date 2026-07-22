@@ -3,6 +3,7 @@
 No logic lives here.  ``TUISession`` reads from this context;
 ``_build_session_context`` constructs it.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -37,42 +38,42 @@ class SessionContext:
     """
 
     # ── kernel ────────────────────────────────────────────────────────────────
-    processor:          "EventProcessor"
-    app_state:          "AppState"
-    session_log:        "SessionEventLog"
+    processor: "EventProcessor"
+    app_state: "AppState"
+    session_log: "SessionEventLog"
 
     # ── services ──────────────────────────────────────────────────────────────
-    approval_svc:       "ApprovalService"
-    mode_manager:       "ModeManager"
-    command_bus:        "CommandBus"
+    approval_svc: "ApprovalService"
+    mode_manager: "ModeManager"
+    command_bus: "CommandBus"
 
     # ── registries ────────────────────────────────────────────────────────────
-    workflow_registry:  "WorkflowRegistry"
-    agents_registry:    "AgentsRegistry"
-    cmd_registry:       "UnifiedCommandRegistry"
-    trigger_registry:   "TriggerManager"
+    workflow_registry: "WorkflowRegistry"
+    agents_registry: "AgentsRegistry"
+    cmd_registry: "UnifiedCommandRegistry"
+    trigger_registry: "TriggerManager"
 
     # ── resources ─────────────────────────────────────────────────────────────
-    agent_runner:       "AgentRunnerBase"
-    session_memory:     "ShortTermMemory"
-    mention_cache:      "MentionCache"
-    skills:             dict
-    project_plugins:    "PluginToolSet"
-    mcp_registry:       "McpToolRegistry | None"
+    agent_runner: "AgentRunnerBase"
+    session_memory: "ShortTermMemory"
+    mention_cache: "MentionCache"
+    skills: dict
+    project_plugins: "PluginToolSet"
+    mcp_registry: "McpToolRegistry | None"
 
     # ── config ────────────────────────────────────────────────────────────────
-    cfg:                "AgenthiccConfig"
-    session_id:         str
-    model_label:        str
+    cfg: "AgenthiccConfig"
+    session_id: str
+    model_label: str
 
     # ── ui ────────────────────────────────────────────────────────────────────
-    console:            "Console"
+    console: "Console"
 
     # ── memory (PRD-101) ──────────────────────────────────────────────────────
-    memory_router:      "MemoryRouter | None"  = None
-    semantic_index:     "SemanticIndex | None" = None
+    memory_router: "MemoryRouter | None" = None
+    semantic_index: "SemanticIndex | None" = None
 
     # ── run resumption (PRD-129 Phase 3) ──────────────────────────────────────
     #: A plan to re-drive a turn the prior session left incomplete (crash
     #: mid-turn).  ``None`` on a clean start.
-    pending_resume:     "object | None" = None
+    pending_resume: "object | None" = None

@@ -13,6 +13,7 @@ Usage (inside WorkflowRunner._run_phase for planner phases)::
     if plan_event.is_set():
         final_plan = plan_data["plan"]     # written by finalize_plan()
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,9 +26,9 @@ if TYPE_CHECKING:
 
 def make_planner_tools(
     approval_svc: ApprovalService | None,
-    plan_event:   asyncio.Event,
-    plan_data:    dict,
-    exit_event:   asyncio.Event | None = None,
+    plan_event: asyncio.Event,
+    plan_data: dict,
+    exit_event: asyncio.Event | None = None,
 ) -> list:
     """Return [request_plan_approval, finalize_plan] as @tool()-decorated callables.
 
@@ -76,16 +77,18 @@ def make_planner_tools(
             tool_name="Plan Review",
             tool_use_id=uuid.uuid4().hex,
             tool_input={"plan": plan},
-            capabilities=frozenset(),   # no caps → passes ToolCapabilityGate
+            capabilities=frozenset(),  # no caps → passes ToolCapabilityGate
             event=asyncio.Event(),
-            kind="plan_review",         # → PlanApprovalOverlay in tui_session.py
+            kind="plan_review",  # → PlanApprovalOverlay in tui_session.py
         )
         response = await approval_svc.request_approval(req)
         # Always update the gate so each rejection correctly resets it.
         approval_state["granted"] = response.allowed
         feedback = response.message or ""
         if response.allowed:
-            suffix = "The plan is approved. Call finalize_plan() now to hand off to the execution phase."
+            suffix = (
+                "The plan is approved. Call finalize_plan() now to hand off to the execution phase."
+            )
             feedback = f"{feedback}\n\n{suffix}" if feedback else suffix
         return {
             "approved": response.allowed,
@@ -157,7 +160,7 @@ def make_planner_tools(
 
 def make_executor_tools(
     execute_event: asyncio.Event,
-    execute_data:  dict,
+    execute_data: dict,
 ) -> list:
     """Return [mark_execute_complete] as a @tool()-decorated callable.
 
@@ -203,7 +206,7 @@ def make_executor_tools(
 
 def make_reviewer_tools(
     review_event: asyncio.Event,
-    review_data:  dict,
+    review_data: dict,
 ) -> list:
     """Return [approve_review, reject_review] as @tool()-decorated callables.
 
@@ -228,11 +231,11 @@ def make_reviewer_tools(
         Args:
             summary: One or two sentences describing what was verified.
         """
-        review_data["action"]  = "approve"
+        review_data["action"] = "approve"
         review_data["summary"] = summary
         review_event.set()
         return {
-            "ok":     True,
+            "ok": True,
             "message": (
                 "Review approved.  Transitioning to the summary phase.  "
                 "Write one sentence confirming the approval and stop."
@@ -255,7 +258,7 @@ def make_reviewer_tools(
         review_data["reason"] = reason
         review_event.set()
         return {
-            "ok":     True,
+            "ok": True,
             "message": (
                 "Review rejected.  Transitioning back to the execution phase.  "
                 "Write one sentence summarising the issue and stop."
@@ -349,8 +352,8 @@ def make_questions_tool(
             }
 
         import asyncio as _asyncio  # noqa: PLC0415
-        import uuid as _uuid        # noqa: PLC0415
-        import json as _json        # noqa: PLC0415
+        import uuid as _uuid  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
         from agenthicc.tools.approval import ApprovalRequest  # noqa: PLC0415
 
         req = ApprovalRequest(

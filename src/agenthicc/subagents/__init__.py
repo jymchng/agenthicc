@@ -1,4 +1,5 @@
 """Concurrent typed subagents for agenthicc (PRD-124)."""
+
 from __future__ import annotations
 
 from agenthicc.subagents.types import (

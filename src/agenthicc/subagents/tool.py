@@ -4,9 +4,9 @@ NOTE: intentionally no ``from __future__ import annotations`` — @tool()
 inspects type annotations at decoration time using ``get_type_hints()``.
 Postponed evaluation (PEP 563) breaks that inspection.
 """
+
 import hashlib
 import json
-import uuid
 from typing import TYPE_CHECKING
 
 from agenthicc.subagents.pool import SubagentTask
@@ -22,16 +22,16 @@ __all__ = ["make_spawn_subagents_tool"]
 
 
 def make_spawn_subagents_tool(
-    parent_runner:  "AgentRunnerBase",
-    parent_model:   str,
-    all_tools:      list[object],
+    parent_runner: "AgentRunnerBase",
+    parent_model: str,
+    all_tools: list[object],
     max_concurrent: int = 4,
-    app_state:      "AppState | None" = None,
-    processor:      "EventProcessor | None" = None,
-    conv_store:     "ConversationStore | None" = None,
-    registry:       SubagentTypeRegistry | None = None,
-    tool_registry:  object = None,
-    retry_config:   object | None = None,
+    app_state: "AppState | None" = None,
+    processor: "EventProcessor | None" = None,
+    conv_store: "ConversationStore | None" = None,
+    registry: SubagentTypeRegistry | None = None,
+    tool_registry: object = None,
+    retry_config: object | None = None,
 ) -> object:
     """Return a ``spawn_subagents`` @tool()-decorated function.
 
@@ -95,8 +95,8 @@ def make_spawn_subagents_tool(
                     "error": f"tasks[{i}] must be a dict with 'type' and 'task' keys",
                 }
             agent_type = str(raw.get("type") or raw.get("agent_type") or "")
-            task_desc  = str(raw.get("task") or raw.get("task_description") or "")
-            context    = str(raw.get("context") or "")
+            task_desc = str(raw.get("task") or raw.get("task_description") or "")
+            context = str(raw.get("context") or "")
             if not agent_type:
                 return {"ok": False, "error": f"tasks[{i}] missing 'type' field"}
             if not task_desc:
@@ -107,12 +107,14 @@ def make_spawn_subagents_tool(
                     "ok": False,
                     "error": f"Unknown agent type {agent_type!r}. Known types: {known}",
                 }
-            subagent_tasks.append(SubagentTask(
-                task_id=f"task-{i}",
-                agent_type=agent_type,
-                task_description=task_desc,
-                context=context,
-            ))
+            subagent_tasks.append(
+                SubagentTask(
+                    task_id=f"task-{i}",
+                    agent_type=agent_type,
+                    task_description=task_desc,
+                    context=context,
+                )
+            )
 
         if not subagent_tasks:
             return {"ok": False, "error": "tasks list is empty"}
@@ -124,16 +126,19 @@ def make_spawn_subagents_tool(
         cached = _find_cached_result(conv_store, fp)
         if cached is not None:
             if conv_store is not None:
-                conv_store.append_event("system", {
-                    "text": f"◈ Resumed: using cached subagent results ({len(subagent_tasks)} tasks)"
-                })
+                conv_store.append_event(
+                    "system",
+                    {
+                        "text": f"◈ Resumed: using cached subagent results ({len(subagent_tasks)} tasks)"
+                    },
+                )
             return {
-                "ok":        True,
-                "pool_id":   "cached",
-                "total":     len(subagent_tasks),
+                "ok": True,
+                "pool_id": "cached",
+                "total": len(subagent_tasks),
                 "succeeded": len(subagent_tasks),
-                "failed":    0,
-                "results":   cached,
+                "failed": 0,
+                "results": cached,
             }
 
         pool = SubagentPool(
@@ -153,26 +158,30 @@ def make_spawn_subagents_tool(
 
         # Persist result for resume.
         if conv_store is not None:
-            conv_store.append_event("subagent_pool_result", {
-                "fingerprint": fp,
-                "text":        result.text,
-                "total":       result.total,
-                "succeeded":   result.succeeded,
-            })
+            conv_store.append_event(
+                "subagent_pool_result",
+                {
+                    "fingerprint": fp,
+                    "text": result.text,
+                    "total": result.total,
+                    "succeeded": result.succeeded,
+                },
+            )
 
         return {
-            "ok":        True,
-            "pool_id":   result.pool_id,
-            "total":     result.total,
+            "ok": True,
+            "pool_id": result.pool_id,
+            "total": result.total,
             "succeeded": result.succeeded,
-            "failed":    result.failed,
-            "results":   result.text,
+            "failed": result.failed,
+            "results": result.text,
         }
 
     return spawn_subagents
 
 
 # ── resume helpers ────────────────────────────────────────────────────────────
+
 
 def _tasks_fingerprint(tasks: list[SubagentTask]) -> str:
     """Return a short hash of the (type, task_description) pairs, order-insensitive."""

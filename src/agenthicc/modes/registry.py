@@ -1,4 +1,5 @@
 """ModeRegistry — ordered collection of Mode instances with lookup and cycling."""
+
 from __future__ import annotations
 
 from typing import Iterator

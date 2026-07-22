@@ -4,6 +4,7 @@ uncovered lines (PRD-11).
 Targeted lines:
   auth.py: 80-81, 121-168, 183-186, 189, 196-207, 217-226, 236-244, 248-251
 """
+
 from __future__ import annotations
 
 import json
@@ -328,18 +329,18 @@ class TestAuthClientLogin:
             class FakeRunner:
                 async def setup(self):
                     pass
+
                 async def cleanup(self):
                     pass
 
             class FakeSite:
                 def __init__(self, *a, **kw):
                     pass
+
                 async def start(self):
                     pass
 
             fake_future: _asyncio.Future[str] = _asyncio.get_event_loop().create_future()
-
-            original_get_event_loop = _asyncio.get_event_loop
 
             def fake_app_factory():
                 class FakeApp:
@@ -348,7 +349,13 @@ class TestAuthClientLogin:
                         def add_get(path, handler):
                             # Immediately resolve the future with the code
                             loop = _asyncio.get_event_loop()
-                            loop.call_soon(lambda: fake_future.set_result("test_auth_code") if not fake_future.done() else None)
+                            loop.call_soon(
+                                lambda: (
+                                    fake_future.set_result("test_auth_code")
+                                    if not fake_future.done()
+                                    else None
+                                )
+                            )
 
                 fake_app = FakeApp()
                 return fake_app
@@ -363,7 +370,10 @@ class TestAuthClientLogin:
                 Response=lambda **kw: FakeResponse(),
             )
 
-            with patch.dict("sys.modules", {"aiohttp": types.SimpleNamespace(web=fake_web), "aiohttp.web": fake_web}):
+            with patch.dict(
+                "sys.modules",
+                {"aiohttp": types.SimpleNamespace(web=fake_web), "aiohttp.web": fake_web},
+            ):
                 # patch asyncio.wait_for to resolve immediately with the code
                 async def fast_wait_for(coro_or_future, timeout):
                     return "test_auth_code"

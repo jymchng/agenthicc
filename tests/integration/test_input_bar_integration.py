@@ -6,6 +6,7 @@ These tests verify:
 3. The InputBarSession's merged completer correctly routes slash and @-mention
    completions against a real filesystem via the kernel event pipeline.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -75,10 +76,7 @@ async def test_intent_cancelled_reducer():
     assert new_state.intents["i1"].status == IntentStatus.failed
     assert new_state.intents["i1"].error == "cancelled by user"
     assert any(e.effect_type == EffectType.update_tui for e in effects)
-    assert any(
-        e.payload.get("type") == "intent_cancelled"
-        for e in effects
-    )
+    assert any(e.payload.get("type") == "intent_cancelled" for e in effects)
 
 
 async def test_intent_cancelled_only_affects_active():
@@ -164,9 +162,7 @@ async def test_intent_cancelled_rejected_and_failed_unchanged():
 async def test_intent_cancelled_via_event_processor(proc):
     """IntentCancelled emitted into a live EventProcessor is applied correctly."""
     # Seed a running intent.
-    await proc.emit(
-        Event.create("IntentCreated", {"intent_id": "live1", "raw_text": "live run"})
-    )
+    await proc.emit(Event.create("IntentCreated", {"intent_id": "live1", "raw_text": "live run"}))
     await proc.emit(
         Event.create("IntentStatusChanged", {"intent_id": "live1", "status": "running"})
     )

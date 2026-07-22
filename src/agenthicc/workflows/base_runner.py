@@ -1,4 +1,5 @@
 """BaseWorkflowRunner — ABC for all workflow runners."""
+
 from __future__ import annotations
 
 import abc

@@ -1,15 +1,29 @@
 """Unit tests for git tools (PRD-15)."""
+
 from __future__ import annotations
 import pytest
 from unittest.mock import patch, AsyncMock
-from agenthicc.tools.git import (GitToolKit, GitStatusTool, GitLogTool,
-    GitCommitTool, GitAddTool, GitCheckoutTool, GitBranchTool, GitGrepTool)
+from agenthicc.tools.git import (
+    GitToolKit,
+    GitStatusTool,
+    GitLogTool,
+    GitCommitTool,
+    GitAddTool,
+    GitCheckoutTool,
+    GitBranchTool,
+    GitGrepTool,
+)
 
 pytestmark = pytest.mark.unit
 
+
 def _mock(rc=0, out="", err=""):
-    with patch("agenthicc.tools.git._run_git", new_callable=lambda: lambda: AsyncMock(return_value=(rc, out, err))):
+    with patch(
+        "agenthicc.tools.git._run_git",
+        new_callable=lambda: lambda: AsyncMock(return_value=(rc, out, err)),
+    ):
         pass
+
 
 @pytest.fixture
 def mock_git():

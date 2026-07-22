@@ -21,6 +21,7 @@ Each ``complete()`` call appends one JSON line to ``cassette_path``::
       }
     }
 """
+
 from __future__ import annotations
 
 import json
@@ -30,8 +31,11 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from lauren_ai._transport import (
-        Completion, CompletionChunk, ToolCallDelta, ToolSchema,
-        Message, ToolChoice,
+        Completion,
+        CompletionChunk,
+        ToolSchema,
+        Message,
+        ToolChoice,
     )
 
 
@@ -69,17 +73,21 @@ class RecordingTransport:
         thinking: bool = False,
         thinking_budget_tokens: int = 8000,
     ) -> Completion | AsyncIterator[CompletionChunk]:
-        tool_names = [
-            t.name if hasattr(t, "name") else t.get("name", "")
-            for t in (tools or [])
-        ]
+        tool_names = [t.name if hasattr(t, "name") else t.get("name", "") for t in (tools or [])]
         if not stream:
             from lauren_ai._transport import Completion  # noqa: PLC0415
+
             result = await self._inner.complete(
-                messages, model=model, system=system, tools=tools,
-                tool_choice=tool_choice, max_tokens=max_tokens,
-                temperature=temperature, stop_sequences=stop_sequences,
-                stream=False, thinking=thinking,
+                messages,
+                model=model,
+                system=system,
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stop_sequences=stop_sequences,
+                stream=False,
+                thinking=thinking,
                 thinking_budget_tokens=thinking_budget_tokens,
             )
             assert isinstance(result, Completion)
@@ -88,10 +96,16 @@ class RecordingTransport:
 
         # Streaming: intercept chunks to assemble the full response.
         inner_iter: AsyncIterator[CompletionChunk] = await self._inner.complete(
-            messages, model=model, system=system, tools=tools,
-            tool_choice=tool_choice, max_tokens=max_tokens,
-            temperature=temperature, stop_sequences=stop_sequences,
-            stream=True, thinking=thinking,
+            messages,
+            model=model,
+            system=system,
+            tools=tools,
+            tool_choice=tool_choice,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop_sequences=stop_sequences,
+            stream=True,
+            thinking=thinking,
             thinking_budget_tokens=thinking_budget_tokens,
         )
         return self._intercepting_stream(model, tool_names, inner_iter)
@@ -113,7 +127,6 @@ class RecordingTransport:
         tool_names: list[str],
         inner: AsyncIterator[CompletionChunk],
     ) -> AsyncIterator[CompletionChunk]:
-        from lauren_ai._transport import CompletionChunk  # noqa: PLC0415
         collected: list[CompletionChunk] = []
         async for chunk in inner:
             collected.append(chunk)
@@ -180,11 +193,13 @@ class RecordingTransport:
                 parsed_input = json.loads(data.get("input_json", "") or "{}")
             except json.JSONDecodeError:
                 parsed_input = {}
-            tool_calls.append({
-                "name": data["name"],
-                "tool_use_id": tid,
-                "input": parsed_input,
-            })
+            tool_calls.append(
+                {
+                    "name": data["name"],
+                    "tool_use_id": tid,
+                    "input": parsed_input,
+                }
+            )
 
         entry: dict[str, Any] = {
             "index": self._index,

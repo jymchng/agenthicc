@@ -1,4 +1,5 @@
 """Unit tests for PRD-77: _init_trigger walk and Enter submission."""
+
 from __future__ import annotations
 
 import pytest
@@ -10,6 +11,7 @@ pytestmark = pytest.mark.unit
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _make_registry(*chars: str):
     """Build a minimal TriggerManager-like mock for given trigger chars."""
     from agenthicc.tui.trigger import TriggerResult
@@ -19,7 +21,7 @@ def _make_registry(*chars: str):
         h = MagicMock()
         h.char = ch
         h.can_activate.side_effect = lambda buf, _ch=ch: (
-            (not buf or buf[-1].isspace())   # @ activates at start or after space
+            (not buf or buf[-1].isspace())  # @ activates at start or after space
             if _ch == "@"
             else (not buf or buf[-1] == "\n")  # / activates at start or after newline
         )
@@ -27,8 +29,7 @@ def _make_registry(*chars: str):
         h.get_hint.return_value = None
         h.get_lines.side_effect = lambda item, w: [item.display[:w]]
         h.on_select.side_effect = lambda item, frag, buf, _ch=ch: TriggerResult(
-            buffer=buf + [_ch] + list(frag) if item is None
-            else buf + list(_ch + item.value)
+            buffer=buf + [_ch] + list(frag) if item is None else buf + list(_ch + item.value)
         )
         h.on_cancel.side_effect = lambda frag, buf, _ch=ch: buf + [_ch] + list(frag)
         handlers[ch] = h
@@ -63,7 +64,7 @@ def test_init_trigger_finds_at_when_last_char_is_dot():
 
     # Simulate: user typed @docs/ (selected from overlay), then typed "."
     # InsertCapability builds initial = ["@","d","o","c","s","/","."]
-    overlay, _ = _make_overlay(["@","d","o","c","s","/","."], registry)
+    overlay, _ = _make_overlay(["@", "d", "o", "c", "s", "/", "."], registry)
 
     assert overlay._trigger is not None, "trigger must be activated"
     assert overlay._trigger.char == "@", "trigger char must be @"
@@ -76,7 +77,7 @@ def test_init_trigger_finds_slash_at_start():
     """initial_buf ['/', 'c', 'o', 'n', 'f'] → trigger char '/', fragment 'conf'."""
     registry, handlers = _make_registry("@", "/")
 
-    overlay, _ = _make_overlay(["/","c","o","n","f"], registry)
+    overlay, _ = _make_overlay(["/", "c", "o", "n", "f"], registry)
 
     assert overlay._trigger is not None
     assert overlay._trigger.char == "/"
@@ -102,7 +103,7 @@ def test_init_trigger_slash_not_activated_mid_word():
     registry, handlers = _make_registry("@", "/")
     # "@docs/" — slash after non-empty non-newline buf → SlashCommand can't activate
     # but "@" at position 0 with empty pre → AtMention activates
-    overlay, _ = _make_overlay(["@","d","o","c","s","/"], registry)
+    overlay, _ = _make_overlay(["@", "d", "o", "c", "s", "/"], registry)
 
     assert overlay._trigger is not None
     assert overlay._trigger.char == "@"
@@ -113,7 +114,7 @@ def test_init_trigger_no_trigger_in_buf():
     """Buffer with no trigger chars → trigger stays None."""
     registry, handlers = _make_registry("@", "/")
 
-    overlay, _ = _make_overlay(["h","e","l","l","o"], registry)
+    overlay, _ = _make_overlay(["h", "e", "l", "l", "o"], registry)
 
     assert overlay._trigger is None
 
@@ -127,12 +128,12 @@ def test_init_trigger_stops_at_space():
     # Actually: walk goes right-to-left; hits "s","c","o","d" (no chars), then "@"
     # which is in registry. pre = ["h","e","l","l","o"," "] → can_activate → True
     # So this SHOULD work (space is in pre, last char of pre is space)
-    overlay, _ = _make_overlay(["h","e","l","l","o"," ","@","d","o","c","s"], registry)
+    overlay, _ = _make_overlay(["h", "e", "l", "l", "o", " ", "@", "d", "o", "c", "s"], registry)
 
     assert overlay._trigger is not None
     assert overlay._trigger.char == "@"
     assert overlay._trigger.fragment == "docs"
-    assert overlay._buf.buf == ["h","e","l","l","o"," "]
+    assert overlay._buf.buf == ["h", "e", "l", "l", "o", " "]
 
 
 # ── Enter vs Tab separation (Bug 2) ───────────────────────────────────────────
@@ -146,7 +147,7 @@ def test_enter_with_no_matches_sets_submit_true():
     registry, handlers = _make_registry("@")
     handlers["@"].get_matches.return_value = []  # no matches
 
-    overlay, completed = _make_overlay(["@","d","o","c","s","/","."], registry)
+    overlay, completed = _make_overlay(["@", "d", "o", "c", "s", "/", "."], registry)
 
     assert overlay._trigger is not None
     assert overlay._matches == []
@@ -171,7 +172,7 @@ def test_enter_with_match_does_not_submit():
         buffer=buf + list("@" + item.value)
     )
 
-    overlay, completed = _make_overlay(["@","d","o","c","s","/"], registry)
+    overlay, completed = _make_overlay(["@", "d", "o", "c", "s", "/"], registry)
 
     assert len(overlay._matches) == 1
 
@@ -191,7 +192,7 @@ def test_tab_with_no_matches_does_not_submit():
     registry, handlers = _make_registry("@")
     handlers["@"].get_matches.return_value = []
 
-    overlay, completed = _make_overlay(["@","d","o","c","s","/","."], registry)
+    overlay, completed = _make_overlay(["@", "d", "o", "c", "s", "/", "."], registry)
 
     overlay.handle_key(Key.TAB, "")
 
@@ -213,7 +214,7 @@ def test_tab_with_match_does_not_submit():
         buffer=buf + list("@" + item.value)
     )
 
-    overlay, completed = _make_overlay(["@","d","o","c","s","/"], registry)
+    overlay, completed = _make_overlay(["@", "d", "o", "c", "s", "/"], registry)
 
     overlay.handle_key(Key.TAB, "")
 
@@ -235,7 +236,7 @@ def test_bug1_select_then_type_dot_then_enter():
 
     # Simulate: session buf = ["@","d","o","c","s","/"] after overlay selection.
     # InsertCapability reopens with initial = [..., "."]
-    overlay, completed = _make_overlay(["@","d","o","c","s","/","."], registry)
+    overlay, completed = _make_overlay(["@", "d", "o", "c", "s", "/", "."], registry)
 
     assert overlay._trigger is not None, "trigger must activate on @"
     assert overlay._trigger.fragment == "docs/.", "fragment must include all chars"

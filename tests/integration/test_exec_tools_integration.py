@@ -1,13 +1,21 @@
 """Integration tests for exec tools with real subprocess execution (PRD-16)."""
+
 from __future__ import annotations
 import sys
 import pytest
-from agenthicc.tools.exec import RunBashTool, RunCommandTool, RunPythonTool, RunPythonExprTool, RunTestsTool
+from agenthicc.tools.exec import (
+    RunBashTool,
+    RunCommandTool,
+    RunPythonTool,
+    RunPythonExprTool,
+    RunTestsTool,
+)
 
 pytestmark = pytest.mark.integration
 
 
-def ctx(tmp_path): return {"workspace_root": str(tmp_path)}
+def ctx(tmp_path):
+    return {"workspace_root": str(tmp_path)}
 
 
 async def test_run_bash_echo(tmp_path):
@@ -42,7 +50,7 @@ async def test_run_python_expr_arithmetic(tmp_path):
 async def test_run_bash_timeout(tmp_path):
     r = await RunBashTool().execute(
         {"command": f"{sys.executable} -c 'import time; time.sleep(60)'", "timeout": 0.5},
-        ctx(tmp_path)
+        ctx(tmp_path),
     )
     assert r["timed_out"] is True
 

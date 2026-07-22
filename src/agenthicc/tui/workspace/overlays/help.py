@@ -1,4 +1,5 @@
 """HelpOverlay — interactive /help overlay (PRD-70)."""
+
 from __future__ import annotations
 
 from enum import Enum, auto
@@ -12,7 +13,7 @@ from agenthicc.tui.workspace.overlay import Overlay
 
 
 class _View(Enum):
-    LIST   = auto()
+    LIST = auto()
     DETAIL = auto()
 
 
@@ -28,10 +29,10 @@ class HelpOverlay(Overlay):
         on_close: Callable[[], None],
         initial_query: str = "",
     ) -> None:
-        self._registry  = registry
-        self._on_close  = on_close
-        self._view      = _View.LIST
-        self._detail_cmd: object = None   # Command currently shown in DETAIL_VIEW
+        self._registry = registry
+        self._on_close = on_close
+        self._view = _View.LIST
+        self._detail_cmd: object = None  # Command currently shown in DETAIL_VIEW
 
         # Build flat row list: str = group header, Command = selectable row.
         self._rows: list[object] = []
@@ -39,14 +40,14 @@ class HelpOverlay(Overlay):
             for group in registry.groups():
                 cmds = registry.commands_for_group(group)
                 if cmds:
-                    self._rows.append(group)          # header (str)
-                    self._rows.extend(cmds)           # commands
+                    self._rows.append(group)  # header (str)
+                    self._rows.extend(cmds)  # commands
 
         # Indices into _rows that point at selectable Command objects.
         self._cmd_indices: list[int] = [
             i for i, r in enumerate(self._rows) if not isinstance(r, str)
         ]
-        self._cursor_pos: int = 0   # index into _cmd_indices
+        self._cursor_pos: int = 0  # index into _cmd_indices
         self._scroll: int = 0
 
         # Route initial_query.
@@ -94,8 +95,7 @@ class HelpOverlay(Overlay):
                     self._cursor_pos = max(0, self._cursor_pos - 1)
                     self._clamp_scroll()
                 case Key.DOWN:
-                    self._cursor_pos = min(len(self._cmd_indices) - 1,
-                                          self._cursor_pos + 1)
+                    self._cursor_pos = min(len(self._cmd_indices) - 1, self._cursor_pos + 1)
                     self._clamp_scroll()
                 case Key.ENTER:
                     if self._cmd_indices:
@@ -108,7 +108,7 @@ class HelpOverlay(Overlay):
 
     def _render_list(self) -> "RenderableType":
         from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text      # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
 
         if not self._rows:
             return Group(
@@ -118,9 +118,7 @@ class HelpOverlay(Overlay):
             )
 
         # Determine which rows are visible based on scroll offset.
-        selected_row = (
-            self._cmd_indices[self._cursor_pos] if self._cmd_indices else -1
-        )
+        selected_row = self._cmd_indices[self._cursor_pos] if self._cmd_indices else -1
         visible = self._rows[self._scroll : self._scroll + self._MAX_VISIBLE]
         sep = Text("─" * 60, style="dim")
         lines: list[RenderableType] = [sep]
@@ -134,27 +132,26 @@ class HelpOverlay(Overlay):
                 # Command row.
                 selected = row_idx == selected_row
                 indicator = "▶" if selected else " "
-                name_col  = f"{row.name:<24}"
-                desc_col  = (row.description[:36] + "…"
-                             if len(row.description) > 36 else row.description)
+                name_col = f"{row.name:<24}"
+                desc_col = (
+                    row.description[:36] + "…" if len(row.description) > 36 else row.description
+                )
                 markup = (
                     f"  [bold cyan]{indicator} {name_col}[/bold cyan] {desc_col}"
-                    if selected else
-                    f"  [dim]{indicator}[/dim] [cyan]{name_col}[/cyan] {desc_col}"
+                    if selected
+                    else f"  [dim]{indicator}[/dim] [cyan]{name_col}[/cyan] {desc_col}"
                 )
                 lines.append(Text.from_markup(markup))
 
         lines += [
             sep,
-            Text.from_markup(
-                "  [dim]↑↓ navigate   Enter detail   Esc close[/dim]"
-            ),
+            Text.from_markup("  [dim]↑↓ navigate   Enter detail   Esc close[/dim]"),
         ]
         return Group(*lines)
 
     def _render_detail(self) -> "RenderableType":
         from rich.console import Group  # noqa: PLC0415
-        from rich.text import Text      # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
 
         cmd = self._detail_cmd
         if cmd is None:
@@ -194,5 +191,4 @@ class HelpOverlay(Overlay):
         elif selected_row >= self._scroll + self._MAX_VISIBLE:
             self._scroll = selected_row - self._MAX_VISIBLE + 1
         # Never scroll past the end of rows.
-        self._scroll = max(0, min(self._scroll,
-                                  max(0, len(self._rows) - self._MAX_VISIBLE)))
+        self._scroll = max(0, min(self._scroll, max(0, len(self._rows) - self._MAX_VISIBLE)))

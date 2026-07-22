@@ -1,4 +1,5 @@
 """TUI session — starts the reactive runtime (PRD-58 to PRD-67, PRD-93)."""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.workflows.plugin import WorkflowContext, WorkflowPlugin
 
+
 def _make_session_tools(
     approval_svc: ApprovalService | None,
     memory_router: MemoryRouter | None = None,
@@ -28,24 +30,25 @@ def _make_session_tools(
 ) -> list:
     """Tools injected into every interactive agent turn (Auto mode + plan phase)."""
     from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
-    from agenthicc.workflows.memory_tools import make_memory_tools   # noqa: PLC0415
-    return (
-        make_questions_tool(approval_svc)
-        + make_memory_tools(memory_router, semantic_index)
-    )
+    from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
+
+    return make_questions_tool(approval_svc) + make_memory_tools(memory_router, semantic_index)
 
 
-def _build_agent_runner(llm_cfg: LLMConfig | None, *, cassette_dir: Path | None = None) -> AgentRunnerBase | None:
+def _build_agent_runner(
+    llm_cfg: LLMConfig | None, *, cassette_dir: Path | None = None
+) -> AgentRunnerBase | None:
     """Build a lauren-ai AgentRunnerBase wired to a SignalBus."""
     if llm_cfg is None:
         return None
     from lauren_ai._agents._runner import AgentRunnerBase  # noqa: PLC0415
-    from lauren_ai._module import _build_transport          # noqa: PLC0415
-    from lauren_ai._signals import SignalBus                # noqa: PLC0415
+    from lauren_ai._module import _build_transport  # noqa: PLC0415
+    from lauren_ai._signals import SignalBus  # noqa: PLC0415
 
     transport = _build_transport(llm_cfg)
     if cassette_dir is not None:
         from agenthicc.testing.recording_transport import RecordingTransport  # noqa: PLC0415
+
         cassette_dir.mkdir(parents=True, exist_ok=True)
         transport = RecordingTransport(transport, cassette_dir / "cassette.jsonl")
     return AgentRunnerBase(transport=transport, signals=SignalBus())
@@ -58,7 +61,7 @@ def _fmt_exc(exc: BaseException) -> str:
     included so users can identify the failure type (e.g. ``ReadTimeout``).
     """
     name = type(exc).__name__
-    msg  = str(exc).strip()
+    msg = str(exc).strip()
     return f"{name}: {msg}" if msg else name
 
 
@@ -70,6 +73,7 @@ def _reset_terminal_on_exit() -> None:
         pass
     try:
         import termios as _tm
+
         settings = _tm.tcgetattr(0)
         settings[3] |= _tm.ECHO | _tm.ICANON | _tm.ISIG
         _tm.tcsetattr(0, _tm.TCSAFLUSH, settings)
@@ -77,12 +81,15 @@ def _reset_terminal_on_exit() -> None:
         pass
 
 
-from agenthicc.tui.runtime.session_log import (   # noqa: E402
-    create_session_id, register_session, touch_session,
-    find_latest_session_for_cwd, SessionEventLog,
+from agenthicc.tui.runtime.session_log import (  # noqa: E402
+    create_session_id,
+    register_session,
+    touch_session,
+    find_latest_session_for_cwd,
+    SessionEventLog,
 )
-from agenthicc.runners.agent_turn import _run_agent_turn         # noqa: E402
-from agenthicc.runners.session_context import SessionContext      # noqa: E402
+from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: E402
+from agenthicc.runners.session_context import SessionContext  # noqa: E402
 
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
@@ -93,6 +100,7 @@ _find_latest_session_for_cwd = find_latest_session_for_cwd
 
 # ── session construction ──────────────────────────────────────────────────────
 
+
 async def _build_session_context(
     resume_id: str | None,
     cli_overrides: list[str] | None,
@@ -100,17 +108,20 @@ async def _build_session_context(
     config_path: str | None = None,
 ) -> SessionContext:
     """Construct all session-scoped singletons and return a SessionContext."""
-    from rich.console import Console                              # noqa: PLC0415
-    from agenthicc.kernel import (                               # noqa: PLC0415
-        AppState as KAppState, EventProcessor,
-        SecurityPolicy, SystemSettings,
+    from rich.console import Console  # noqa: PLC0415
+    from agenthicc.kernel import (  # noqa: PLC0415
+        AppState as KAppState,
+        EventProcessor,
+        SecurityPolicy,
+        SystemSettings,
     )
-    from agenthicc.kernel.reducer import root_reducer            # noqa: PLC0415
-    from agenthicc.kernel.processor import restore_from_log     # noqa: PLC0415
+    from agenthicc.kernel.reducer import root_reducer  # noqa: PLC0415
+    from agenthicc.kernel.processor import restore_from_log  # noqa: PLC0415
     from agenthicc.config import load_config, build_llm_config  # noqa: PLC0415
-    from agenthicc.tui.conversation_store import AppState       # noqa: PLC0415
-    from agenthicc.tui.runtime import (                         # noqa: PLC0415
-        CommandBus, ModeManager,
+    from agenthicc.tui.conversation_store import AppState  # noqa: PLC0415
+    from agenthicc.tui.runtime import (  # noqa: PLC0415
+        CommandBus,
+        ModeManager,
     )
 
     # ── session ID ────────────────────────────────────────────────────────────
@@ -126,9 +137,8 @@ async def _build_session_context(
 
     # ── kernel ────────────────────────────────────────────────────────────────
     log_path = str(_SESSIONS_DIR / f"{session_id}.jsonl")
-    k_state  = KAppState.create(
-        settings=SystemSettings(event_log_path=log_path,
-                                snapshot_path=".agenthicc/snapshot.json"),
+    k_state = KAppState.create(
+        settings=SystemSettings(event_log_path=log_path, snapshot_path=".agenthicc/snapshot.json"),
         policy=SecurityPolicy(),
     )
     if resume_id:
@@ -150,6 +160,7 @@ async def _build_session_context(
 
     # PRD-108: configure shared HTTP client timeout from config before any tool runs.
     from agenthicc.tools.http import configure as _configure_http  # noqa: PLC0415
+
     _configure_http(cfg.tools.http_timeout_s)
 
     console = Console(highlight=False, markup=True, force_terminal=True)
@@ -176,17 +187,18 @@ async def _build_session_context(
     # ── runtime services ──────────────────────────────────────────────────────
     command_bus = CommandBus()
 
-    from agenthicc.tools.approval import ApprovalService         # noqa: PLC0415
+    from agenthicc.tools.approval import ApprovalService  # noqa: PLC0415
+
     approval_svc: ApprovalService = ApprovalService(app_state)
     if cassette_dir is not None:
         from agenthicc.testing.recording_approval import RecordingApprovalService  # noqa: PLC0415
-        approval_svc = RecordingApprovalService(
-            approval_svc, cassette_dir / "approvals.jsonl"
-        )
+
+        approval_svc = RecordingApprovalService(approval_svc, cassette_dir / "approvals.jsonl")
 
     # ── workflow + agents registries ──────────────────────────────────────────
     from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
-    from agenthicc.agents.registry import build_agents_registry      # noqa: PLC0415
+    from agenthicc.agents.registry import build_agents_registry  # noqa: PLC0415
+
     workflow_registry = build_workflow_registry(
         project_dir=Path(".agenthicc"),
         user_dir=Path.home() / ".agenthicc",
@@ -206,7 +218,7 @@ async def _build_session_context(
 
     # ── skills / plugins ─────────────────────────────────────────────────────
     from agenthicc.skills.bootstrap import bootstrap_default_skills  # noqa: PLC0415
-    from agenthicc.skills.loader import discover_skills as _ds       # noqa: PLC0415
+    from agenthicc.skills.loader import discover_skills as _ds  # noqa: PLC0415
 
     _skill_global_dir = (
         Path(cfg.skills.default_skill_directory).expanduser()
@@ -223,14 +235,17 @@ async def _build_session_context(
             markup=True,
         )
 
-    skills = _ds(project_dir=Path(".agenthicc"),
-                 user_dir=_skill_global_dir)
+    skills = _ds(project_dir=Path(".agenthicc"), user_dir=_skill_global_dir)
 
-    from agenthicc.plugins.discovery import (                        # noqa: PLC0415
-        discover_project_tools, warn_conflicts, _scan_directory,
+    from agenthicc.plugins.discovery import (  # noqa: PLC0415
+        discover_project_tools,
+        warn_conflicts,
+        _scan_directory,
     )
+
     project_plugins = discover_project_tools(
-        project_dir=Path(".agenthicc"), user_dir=Path.home() / ".agenthicc",
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
     )
     warn_conflicts(project_plugins)
     if project_plugins.all_tools:
@@ -239,17 +254,17 @@ async def _build_session_context(
         )
 
     # ── command plugins ───────────────────────────────────────────────────────
-    _cmd_plugin_results = (
-        _scan_directory(Path.home() / ".agenthicc" / "commands")
-        + _scan_directory(Path(".agenthicc") / "commands")
-    )
+    _cmd_plugin_results = _scan_directory(
+        Path.home() / ".agenthicc" / "commands"
+    ) + _scan_directory(Path(".agenthicc") / "commands")
     project_commands = [cmd for r in _cmd_plugin_results for cmd in r.commands]
 
     # ── MCP ───────────────────────────────────────────────────────────────────
     mcp_registry = None
     if cfg.tools.mcp_servers:
         try:
-            from agenthicc.tools.mcp import McpToolRegistry     # noqa: PLC0415
+            from agenthicc.tools.mcp import McpToolRegistry  # noqa: PLC0415
+
             mcp_registry = McpToolRegistry(event_processor=processor)
             for srv_cfg in cfg.tools.mcp_servers:
                 mcp_registry.register_server(srv_cfg)
@@ -257,7 +272,8 @@ async def _build_session_context(
         except Exception:  # noqa: BLE001
             pass
 
-    from agenthicc.mentions.cache import MentionCache            # noqa: PLC0415
+    from agenthicc.mentions.cache import MentionCache  # noqa: PLC0415
+
     mention_cache = MentionCache()
 
     # PRD-129 Phase 2: durable conversation journal.  session_memory is a
@@ -267,6 +283,7 @@ async def _build_session_context(
     # memory-snapshot durability (which only checkpointed at turn boundaries).
     from agenthicc.memory.journal import ConversationJournal, journal_path_for  # noqa: PLC0415
     from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
+
     _conversation_journal = ConversationJournal(journal_path_for(session_id))
     session_memory = JournaledShortTermMemory(
         _conversation_journal, max_tokens=cfg.execution.effective_usable_budget()
@@ -276,20 +293,25 @@ async def _build_session_context(
     # read_file resolves unchanged files from a per-project store instead of disk.
     if cfg.execution.file_cache:
         from agenthicc.tools.fs.file_cache import (  # noqa: PLC0415
-            WorkspaceFileCache, configure_file_cache,
+            WorkspaceFileCache,
+            configure_file_cache,
         )
+
         configure_file_cache(WorkspaceFileCache(Path(".agenthicc") / "cache" / "file-cache.db"))
 
     # ── three-tier memory (PRD-101) ───────────────────────────────────────────
-    from agenthicc.memory.layers import (                        # noqa: PLC0415
-        ProjectMemoryLayer, GlobalMemoryLayer, SessionMemoryLayer,
+    from agenthicc.memory.layers import (  # noqa: PLC0415
+        ProjectMemoryLayer,
+        GlobalMemoryLayer,
+        SessionMemoryLayer,
     )
-    from agenthicc.memory.router import MemoryRouter             # noqa: PLC0415
-    from agenthicc.memory.vector import SemanticIndex            # noqa: PLC0415
+    from agenthicc.memory.router import MemoryRouter  # noqa: PLC0415
+    from agenthicc.memory.vector import SemanticIndex  # noqa: PLC0415
+
     _project_memory = ProjectMemoryLayer(Path(".agenthicc") / "memory" / "project.db")
-    _global_memory  = GlobalMemoryLayer()
-    _session_layer  = SessionMemoryLayer()
-    _memory_router  = MemoryRouter(
+    _global_memory = GlobalMemoryLayer()
+    _session_layer = SessionMemoryLayer()
+    _memory_router = MemoryRouter(
         session_layer=_session_layer,
         project_layer=_project_memory,
         global_layer=_global_memory,
@@ -297,11 +319,11 @@ async def _build_session_context(
     _semantic_index = SemanticIndex()
 
     # ── command registry + trigger registry ──────────────────────────────────
-    from agenthicc.tui.trigger import TriggerManager                      # noqa: PLC0415
-    from agenthicc.tui.triggers.at_mention import AtMentionTrigger        # noqa: PLC0415
+    from agenthicc.tui.trigger import TriggerManager  # noqa: PLC0415
+    from agenthicc.tui.triggers.at_mention import AtMentionTrigger  # noqa: PLC0415
     from agenthicc.tui.triggers.slash_command import SlashCommandTrigger  # noqa: PLC0415
-    from agenthicc.commands import build_builtin_registry                  # noqa: PLC0415
-    from agenthicc.commands.command import Command as _Cmd                 # noqa: PLC0415
+    from agenthicc.commands import build_builtin_registry  # noqa: PLC0415
+    from agenthicc.commands.command import Command as _Cmd  # noqa: PLC0415
 
     cmd_registry = build_builtin_registry()
     for _spec in project_commands:
@@ -309,14 +331,16 @@ async def _build_session_context(
             if isinstance(_spec, _Cmd):
                 cmd_registry.register(_spec)
             else:
-                cmd_registry.register(_Cmd(
-                    name=_spec.name,
-                    description=_spec.description,
-                    aliases=tuple(getattr(_spec, "aliases", ())),
-                    argument_hint=getattr(_spec, "argument_hint", ""),
-                    group=getattr(_spec, "group", "Project"),
-                    source_id="plugin",
-                ))
+                cmd_registry.register(
+                    _Cmd(
+                        name=_spec.name,
+                        description=_spec.description,
+                        aliases=tuple(getattr(_spec, "aliases", ())),
+                        argument_hint=getattr(_spec, "argument_hint", ""),
+                        group=getattr(_spec, "group", "Project"),
+                        source_id="plugin",
+                    )
+                )
         except Exception:  # noqa: BLE001
             pass
     if project_commands:
@@ -325,16 +349,19 @@ async def _build_session_context(
         )
 
     from agenthicc.commands.builtins import _make_skill_handler  # noqa: PLC0415
+
     for _slug, _skill in skills.items():
         try:
-            cmd_registry.register(_Cmd(
-                name=f"/{_slug}",
-                description=_skill.description or _skill.name,
-                argument_hint="[args…]",
-                group="Skills",
-                handler=_make_skill_handler(_slug, _skill),
-                source_id=f"skill:{_slug}",
-            ))
+            cmd_registry.register(
+                _Cmd(
+                    name=f"/{_slug}",
+                    description=_skill.description or _skill.name,
+                    argument_hint="[args…]",
+                    group="Skills",
+                    handler=_make_skill_handler(_slug, _skill),
+                    source_id=f"skill:{_slug}",
+                )
+            )
         except Exception:  # noqa: BLE001
             pass
 
@@ -364,7 +391,7 @@ async def _build_session_context(
         @_runner_signals.on(_ARC)
         async def _on_agent_run_complete(sig: AgentRunComplete) -> None:
             usage = getattr(sig, "total_usage", None)
-            cost  = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
+            cost = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
             if usage is not None:
                 inp = int(getattr(usage, "input_tokens", 0) or 0)
                 out = int(getattr(usage, "output_tokens", 0) or 0)
@@ -389,8 +416,10 @@ async def _build_session_context(
     pending_resume = None
     if resume_id:
         from rich.rule import Rule  # noqa: PLC0415
+
         console.print(Rule(f"[dim]resumed session {session_id[:12]}[/dim]"))
         from agenthicc.runners.run_coordinator import RunCoordinator  # noqa: PLC0415
+
         _incomplete = RunCoordinator.detect_incomplete_turn(_conversation_journal)
         if _incomplete is not None:
             pending_resume = RunCoordinator.build_resume_plan(_conversation_journal, _incomplete)
@@ -424,6 +453,7 @@ async def _build_session_context(
 
 # ── TUISession ────────────────────────────────────────────────────────────────
 
+
 class TUISession:
     """All TUI session behaviour — methods correspond to the former nested closures."""
 
@@ -433,20 +463,21 @@ class TUISession:
         workspace: "Workspace",
         input_session: "UnifiedInputSession",
     ) -> None:
-        self._ctx           = ctx
-        self._workspace     = workspace
+        self._ctx = ctx
+        self._workspace = workspace
         self._input_session = input_session
 
         # Mutable session state
-        self._pending_skill_body:  list[str]           = []
-        self._msg_queue:           list[str]           = []
-        self._agent_task:          asyncio.Task | None = None
-        self._turn_count:          int                 = 0
-        self._pending_replay_id:   str | None          = None
-        self._workflow_override:   str | None          = None  # PRD-114: /workflow command
+        self._pending_skill_body: list[str] = []
+        self._msg_queue: list[str] = []
+        self._agent_task: asyncio.Task | None = None
+        self._turn_count: int = 0
+        self._pending_replay_id: str | None = None
+        self._workflow_override: str | None = None  # PRD-114: /workflow command
 
-        from agenthicc.commands import CommandDispatcher          # noqa: PLC0415
-        from agenthicc.workflows.config import WorkflowConfig      # noqa: PLC0415
+        from agenthicc.commands import CommandDispatcher  # noqa: PLC0415
+        from agenthicc.workflows.config import WorkflowConfig  # noqa: PLC0415
+
         self._cmd_dispatcher = CommandDispatcher(ctx.cmd_registry)
         # Built once per session; completed_turns is updated per run via replace().
         self._wf_config_base = WorkflowConfig(
@@ -475,30 +506,33 @@ class TUISession:
         self._pending_replay_id = session_id
 
     def _wire_approval_overlay(self) -> None:
-        workspace    = self._workspace
+        workspace = self._workspace
         approval_svc = self._ctx.approval_svc
-        app_state    = self._ctx.app_state
+        app_state = self._ctx.app_state
 
         def _on_approval_change() -> None:
             req = app_state.pending_approval()
-            from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay           # noqa: PLC0415
+            from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay  # noqa: PLC0415
             from agenthicc.tui.workspace.overlays.plan_approval import PlanApprovalOverlay  # noqa: PLC0415
-            from agenthicc.tui.workspace.overlays.questions import QuestionsOverlay         # noqa: PLC0415
+            from agenthicc.tui.workspace.overlays.questions import QuestionsOverlay  # noqa: PLC0415
 
             # Registry maps ApprovalRequest.kind → overlay class.
             # Add new overlay kinds by extending this dict — no if/elif needed.
             _overlay_registry = {
                 "plan_review": PlanApprovalOverlay,
-                "questions":   QuestionsOverlay,
+                "questions": QuestionsOverlay,
             }
             _overlay_default = ApprovalOverlay
 
             if req is not None:
-                kind    = getattr(req, "kind", "tool")
+                kind = getattr(req, "kind", "tool")
                 factory = _overlay_registry.get(kind, _overlay_default)
                 workspace.overlays.show(factory(req, approval_svc, workspace.overlays.hide))
             else:
-                if isinstance(workspace.overlays.widget, tuple(_overlay_registry.values()) + (_overlay_default,)):
+                if isinstance(
+                    workspace.overlays.widget,
+                    tuple(_overlay_registry.values()) + (_overlay_default,),
+                ):
                     workspace.overlays.hide()
 
         app_state.pending_approval.subscribe(_on_approval_change)
@@ -508,6 +542,7 @@ class TUISession:
     def dispatch_slash(self, text: str) -> bool:
         """Dispatch a slash command. Returns True if handled."""
         from agenthicc.commands import CommandContext  # noqa: PLC0415
+
         ctx = self._ctx
         context = CommandContext(
             text=text,
@@ -549,9 +584,9 @@ class TUISession:
         """Handle /compact — compact the current session memory (PRD-119)."""
         from agenthicc.memory.compactor import compact_memory  # noqa: PLC0415
 
-        ctx  = self._ctx
+        ctx = self._ctx
         conv = ctx.app_state.conversation
-        mem  = ctx.session_memory
+        mem = ctx.session_memory
 
         if mem is None or not mem._messages:
             conv.notify_transient("⎋ Nothing to compact")
@@ -591,9 +626,7 @@ class TUISession:
             if self._pending_replay_id:
                 replay_id = self._pending_replay_id
                 self._pending_replay_id = None
-                self._agent_task = asyncio.create_task(
-                    self._run_replay(replay_id), name="replay"
-                )
+                self._agent_task = asyncio.create_task(self._run_replay(replay_id), name="replay")
             return True
         cmd_name = msg.split()[0]
         if self._ctx.cmd_registry.get(cmd_name) is not None:
@@ -613,9 +646,7 @@ class TUISession:
                 continue
             self._ctx.app_state.conversation.notification.set(None)
             self._ctx.app_state.conversation.append_event("user_message", {"text": msg})
-            self._agent_task = asyncio.create_task(
-                self.agent_task_body(msg), name="agent-turn"
-            )
+            self._agent_task = asyncio.create_task(self.agent_task_body(msg), name="agent-turn")
             return
         self._ctx.app_state.conversation.notification.set(None)
 
@@ -629,6 +660,7 @@ class TUISession:
         ran, so completed side effects are replayed rather than repeated.
         """
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
+
         ctx = self._ctx
 
         self._input_session.set_mode(InputMode.STREAMING)
@@ -638,25 +670,22 @@ class TUISession:
             text = self._pending_skill_body.pop() + "\n\n" + text
 
         # PRD-114: /workflow override takes priority over mode default.
-        _active_wf_name = (
-            self._workflow_override
-            or ctx.app_state.active_mode().default_workflow
-        )
+        _active_wf_name = self._workflow_override or ctx.app_state.active_mode().default_workflow
         _plugin_cls = ctx.workflow_registry.get(_active_wf_name) if _active_wf_name else None
 
         _timeout = ctx.cfg.execution.turn_timeout_s
         # PRD-126 gap 11: a turn-timeout deadline so retries are not scheduled
         # when there is no meaningful budget left before asyncio.wait_for fires.
         import time as _time  # noqa: PLC0415
+
         _deadline = (_time.monotonic() + _timeout) if (_timeout and _timeout > 0) else None
 
         async def _run_inner() -> None:
             if _plugin_cls is not None:
                 import dataclasses as _dc  # noqa: PLC0415
+
                 # PRD-116: build per-workflow params from merged TOML/CLI/env config.
-                _wf_params = _plugin_cls.build_params(
-                    ctx.cfg.workflows.get(_plugin_cls.name, {})
-                )
+                _wf_params = _plugin_cls.build_params(ctx.cfg.workflows.get(_plugin_cls.name, {}))
                 _wf_config = _dc.replace(
                     self._wf_config_base,
                     completed_turns=self._turn_count,
@@ -681,7 +710,9 @@ class TUISession:
                 # _run_agent_turn boundary inside AgentTurnRunner itself, so no
                 # retry wrapper is needed here.
                 await _run_agent_turn(
-                    text, ctx.agent_runner, ctx.processor,
+                    text,
+                    ctx.agent_runner,
+                    ctx.processor,
                     session_memory=ctx.session_memory,
                     max_agent_turns=ctx.cfg.execution.max_agent_turns,
                     conv_store=ctx.app_state.conversation,
@@ -729,6 +760,7 @@ class TUISession:
     async def agent_task_body(self, text: str, resume: object | None = None) -> None:
         """Wrap run_turn with error handling; advance queue on completion."""
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
+
         conv = self._ctx.app_state.conversation
         try:
             await self.run_turn(text, resume=resume)
@@ -739,9 +771,7 @@ class TUISession:
         except Exception as exc:
             # Only emit an error event if the turn is still open; if _stream()
             # already closed it (via its own finally), this is a no-op.
-            conv.close_turn(
-                error=_fmt_exc(exc) if conv.is_turn_active else None
-            )
+            conv.close_turn(error=_fmt_exc(exc) if conv.is_turn_active else None)
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             self._agent_task = None
@@ -779,8 +809,9 @@ class TUISession:
 
     async def _run_replay(self, session_id: str) -> None:
         """Replay a historical session's conversation through the render pipeline."""
-        from agenthicc.tui.input.unified_session import InputMode     # noqa: PLC0415
+        from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
         from agenthicc.tui.runtime.replay import ConversationReplayer  # noqa: PLC0415
+
         ctx = self._ctx
 
         # Enter Replay mode — blocks all tool capabilities during replay.
@@ -814,6 +845,7 @@ class TUISession:
         workflow run with their new intent.
         """
         from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
+
         k_state = self._ctx.processor.get_state()
         for wf in k_state.workflows.values():
             if wf.status in (NodeStatus.complete, NodeStatus.failed):
@@ -828,6 +860,7 @@ class TUISession:
 
     def _has_incomplete_workflow(self) -> bool:
         from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
+
         k_state = self._ctx.processor.get_state()
         return any(
             bool(wf.name) and wf.status not in (NodeStatus.complete, NodeStatus.failed)
@@ -859,16 +892,20 @@ class TUISession:
             name="resume-turn",
         )
 
-    async def _resume_workflow_task(self, wf_defn: type[WorkflowPlugin], context: WorkflowContext) -> None:
+    async def _resume_workflow_task(
+        self, wf_defn: type[WorkflowPlugin], context: WorkflowContext
+    ) -> None:
         """Resume a WorkflowRunner with error handling matching agent_task_body."""
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
+
         ctx = self._ctx
         self._input_session.set_mode(InputMode.STREAMING)
         ctx.approval_svc.reset_turn_memory()
         try:
             import dataclasses as _dc  # noqa: PLC0415
+
             _wf_params = wf_defn.build_params(ctx.cfg.workflows.get(wf_defn.name, {}))
-            _wf_config  = _dc.replace(self._wf_config_base, params=_wf_params)
+            _wf_config = _dc.replace(self._wf_config_base, params=_wf_params)
             runner = wf_defn.build_runner(_wf_config, ctx.mode_manager)
             await runner.resume(context)
             # PRD-89: exit workflow-bound mode after completion
@@ -887,9 +924,7 @@ class TUISession:
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:
             conv = ctx.app_state.conversation
-            conv.close_turn(
-                error=_fmt_exc(exc) if conv.is_turn_active else None
-            )
+            conv.close_turn(error=_fmt_exc(exc) if conv.is_turn_active else None)
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             self._agent_task = None
@@ -900,11 +935,13 @@ class TUISession:
     async def run(self) -> None:
         """Start tasks, run input session, tear down."""
         from agenthicc.tui.runtime import (  # noqa: PLC0415
-            SendMessageCommand, InterruptAgentCommand,
+            SendMessageCommand,
+            InterruptAgentCommand,
         )
+
         ctx = self._ctx
 
-        ctx.command_bus.register(SendMessageCommand,    self.handle_send)
+        ctx.command_bus.register(SendMessageCommand, self.handle_send)
         ctx.command_bus.register(InterruptAgentCommand, self.handle_interrupt)
         self._wire_approval_overlay()
 
@@ -919,7 +956,8 @@ class TUISession:
         ad_task: asyncio.Task | None = None
         try:
             from agenthicc.auth import AuthClient  # noqa: PLC0415
-            from agenthicc.ads import AdRotator   # noqa: PLC0415
+            from agenthicc.ads import AdRotator  # noqa: PLC0415
+
             auth = AuthClient()
             bndl = auth.current_bundle()
             if bndl is not None and not bndl.is_pro:
@@ -943,14 +981,16 @@ class TUISession:
             if ad_task:
                 ad_task.cancel()
             await asyncio.gather(
-                tick_task, proc_task,
-                *(([ad_task] if ad_task else [])),
+                tick_task,
+                proc_task,
+                *([ad_task] if ad_task else []),
                 return_exceptions=True,
             )
             self._workspace.stop()
 
 
 # ── thin factory (≤60 lines) ──────────────────────────────────────────────────
+
 
 async def _run_tui_session(
     resume_id: str | None = None,
@@ -960,18 +1000,20 @@ async def _run_tui_session(
     config_path: str | None = None,
 ) -> None:
     """Reactive TUI session — single entry point, no legacy branches."""
-    from agenthicc.tui.workspace import Workspace                        # noqa: PLC0415
+    from agenthicc.tui.workspace import Workspace  # noqa: PLC0415
     from agenthicc.tui.input.unified_session import UnifiedInputSession  # noqa: PLC0415
 
     cassette_base: Path | None = Path(record_cassette) if record_cassette else None
 
-    ctx = await _build_session_context(resume_id, cli_overrides, cassette_base,
-                                        config_path=config_path)
+    ctx = await _build_session_context(
+        resume_id, cli_overrides, cassette_base, config_path=config_path
+    )
     # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
     if cli_flags is not None:
         ctx.app_state.cli_flags = cli_flags
     workspace = Workspace(
-        ctx.app_state, ctx.console,
+        ctx.app_state,
+        ctx.console,
         max_live_tool_calls=ctx.cfg.tools.max_live_tool_calls,
     )
     input_session = UnifiedInputSession(
@@ -986,6 +1028,7 @@ async def _run_tui_session(
     session = TUISession(ctx, workspace, input_session)
     try:
         from agenthicc.tui.welcome import print_welcome  # noqa: PLC0415
+
         print_welcome(
             ctx.console,
             model=ctx.model_label,
@@ -1000,8 +1043,10 @@ async def _run_tui_session(
             _close()
         # PRD-132 L1: close + clear the workspace file cache.
         from agenthicc.tools.fs.file_cache import (  # noqa: PLC0415
-            configure_file_cache, get_file_cache,
+            configure_file_cache,
+            get_file_cache,
         )
+
         _fc = get_file_cache()
         if _fc is not None:
             _fc.close()
@@ -1016,20 +1061,20 @@ def _write_cassette_meta(cassette_dir: Path, session_id: str) -> None:
     """Write meta.json alongside the cassette files."""
     import json as _json
     from datetime import datetime, timezone
+
     meta = {
         "session_id": session_id,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
-        "intent": "",   # filled in manually or from history
+        "intent": "",  # filled in manually or from history
     }
     try:
-        (cassette_dir / "meta.json").write_text(
-            _json.dumps(meta, indent=2), encoding="utf-8"
-        )
+        (cassette_dir / "meta.json").write_text(_json.dumps(meta, indent=2), encoding="utf-8")
     except Exception:  # noqa: BLE001
         pass
 
 
 # ── sync entry point (unchanged) ─────────────────────────────────────────────
+
 
 def _run_tui(ctx: CLIContext) -> None:
     try:
@@ -1040,8 +1085,9 @@ def _run_tui(ctx: CLIContext) -> None:
 
     # Crash-safe terminal restore (PRD-107, Layer 5).
     # Cover all exit paths: normal exit (finally below), atexit, SIGTERM, SIGHUP.
-    import atexit    # noqa: PLC0415
+    import atexit  # noqa: PLC0415
     import signal as _signal  # noqa: PLC0415
+
     atexit.register(_reset_terminal_on_exit)
 
     def _sig_exit(signum: int, frame: object) -> None:
@@ -1050,9 +1096,9 @@ def _run_tui(ctx: CLIContext) -> None:
 
     try:
         _signal.signal(_signal.SIGTERM, _sig_exit)
-        _signal.signal(_signal.SIGHUP,  _sig_exit)
+        _signal.signal(_signal.SIGHUP, _sig_exit)
     except (AttributeError, OSError):
-        pass   # Windows / non-TTY environments
+        pass  # Windows / non-TTY environments
 
     resume_id: str | None = ctx.resume_id
     if resume_id is None and ctx.continue_session:
@@ -1061,13 +1107,15 @@ def _run_tui(ctx: CLIContext) -> None:
             print("No previous session found for this directory. Starting fresh.")
 
     try:
-        asyncio.run(_run_tui_session(
-            resume_id=resume_id,
-            cli_overrides=list(ctx.set_overrides),
-            record_cassette=ctx.record_cassette,
-            cli_flags=ctx.flags,
-            config_path=ctx.config_path,
-        ))
+        asyncio.run(
+            _run_tui_session(
+                resume_id=resume_id,
+                cli_overrides=list(ctx.set_overrides),
+                record_cassette=ctx.record_cassette,
+                cli_flags=ctx.flags,
+                config_path=ctx.config_path,
+            )
+        )
     except Exception as exc:
         print(f"TUI error: {exc}", file=sys.stderr)
         sys.exit(1)

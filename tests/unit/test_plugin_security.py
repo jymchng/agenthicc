@@ -15,16 +15,15 @@ pytestmark = pytest.mark.unit
 # Trust tests
 # ---------------------------------------------------------------------------
 
+
 def test_known_hash_skips_prompt(tmp_path):
     f = tmp_path / "t.py"
     f.write_text("x = 1\n")
     tf = tmp_path / "trusted.json"
     h = _sha256(f)
-    tf.write_text(
-        f'{{"version":1,"trusted":{{"{f}":{{"sha256":"{h}"}}}}}}'
-    )
+    tf.write_text(f'{{"version":1,"trusted":{{"{f}":{{"sha256":"{h}"}}}}}}')
     decision = check_trust(f, trust_file=tf, interactive=True)
-    assert decision == "trust_once"   # hash matches → no prompt
+    assert decision == "trust_once"  # hash matches → no prompt
 
 
 def test_auto_trust_skips_prompt(tmp_path):
@@ -47,6 +46,7 @@ def test_headless_mode_skips_untrusted(tmp_path):
 # Audit tests
 # ---------------------------------------------------------------------------
 
+
 def test_record_call_writes_jsonl(tmp_path):
     audit = tmp_path / "audit.jsonl"
     record_call(
@@ -68,15 +68,16 @@ def test_record_call_writes_jsonl(tmp_path):
 # Deps tests
 # ---------------------------------------------------------------------------
 
+
 def test_prompt_install_headless_skips(tmp_path):
     """Headless mode must never block or install."""
     result = prompt_install(
         tmp_path / "t.py",
         ["httpx>=0.27"],
-        auto_install=True,   # even with auto_install=True ...
-        interactive=False,   # ... headless wins
+        auto_install=True,  # even with auto_install=True ...
+        interactive=False,  # ... headless wins
     )
-    assert result is False   # skip
+    assert result is False  # skip
 
 
 def test_prompt_install_auto_install_calls_pip(tmp_path):
@@ -92,8 +93,10 @@ def test_prompt_install_auto_install_calls_pip(tmp_path):
 
 
 def test_prompt_install_interactive_install_choice(tmp_path):
-    with patch("builtins.input", return_value="I"), \
-         patch("agenthicc.plugins.deps._run_install") as mock_install:
+    with (
+        patch("builtins.input", return_value="I"),
+        patch("agenthicc.plugins.deps._run_install") as mock_install,
+    ):
         result = prompt_install(
             tmp_path / "t.py",
             ["requests"],

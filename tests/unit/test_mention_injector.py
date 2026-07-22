@@ -1,4 +1,5 @@
 """Tests for @mention content injection (PRD-33 + PRD-35)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -298,9 +299,7 @@ async def test_build_context_prefix_multiple_files(tmp_path: Path) -> None:
     """Two file mentions are both injected into the prefix."""
     (tmp_path / "a.py").write_text("def a(): pass")
     (tmp_path / "b.py").write_text("def b(): pass")
-    prefix, resolved = await build_context_prefix(
-        "Compare @a.py and @b.py", cwd=tmp_path
-    )
+    prefix, resolved = await build_context_prefix("Compare @a.py and @b.py", cwd=tmp_path)
     assert "def a" in prefix
     assert "def b" in prefix
     assert len(resolved) == 2

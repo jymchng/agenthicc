@@ -1,4 +1,5 @@
 """Unit tests for PRD-24: Tool Plugin Discovery."""
+
 from __future__ import annotations
 
 
@@ -57,8 +58,7 @@ def test_scan_directory_skips_private(tmp_path):
     (tmp_path / "__init__.py").write_text("")
     (tmp_path / "_helper.py").write_text("TOOLS = []\n")
     (tmp_path / "tools.py").write_text(
-        "from lauren_ai._tools import tool\n"
-        "@tool()\nasync def t() -> None: pass\nTOOLS = [t]\n"
+        "from lauren_ai._tools import tool\n@tool()\nasync def t() -> None: pass\nTOOLS = [t]\n"
     )
     results = _scan_directory(tmp_path)
     loaded_names = [r.path.name for r in results if r.tools]
@@ -127,12 +127,7 @@ def test_requirements_from_sidecar_reads_file(tmp_path):
     """_requirements_from_sidecar parses req lines, skips comments and blanks."""
     py_file = tmp_path / "myplugin.py"
     req_file = tmp_path / "myplugin.requirements.txt"
-    req_file.write_text(
-        "# this is a comment\n"
-        "\n"
-        "httpx>=0.27\n"
-        "requests\n"
-    )
+    req_file.write_text("# this is a comment\n\nhttpx>=0.27\nrequests\n")
     result = _requirements_from_sidecar(py_file)
     assert result == ["httpx>=0.27", "requests"]
 
@@ -149,10 +144,7 @@ def test_infer_missing_from_ast_skips_stdlib_and_installed(tmp_path):
     f = tmp_path / "check_imports.py"
     # "os" and "sys" are stdlib; "pytest" is installed; the made-up name is not
     f.write_text(
-        "import os\n"
-        "import sys\n"
-        "import pytest\n"
-        "import this_totally_made_up_pkg_xyz_agenthicc\n"
+        "import os\nimport sys\nimport pytest\nimport this_totally_made_up_pkg_xyz_agenthicc\n"
     )
     missing = _infer_missing_from_ast(f)
     assert "os" not in missing
@@ -163,6 +155,7 @@ def test_infer_missing_from_ast_skips_stdlib_and_installed(tmp_path):
 
 def test_plugin_tool_set_aggregates_tools(tmp_path):
     """PluginToolSet.all_tools flattens tools across all LoadResults."""
+
     def tool_a(): ...
     def tool_b(): ...
     def tool_c(): ...

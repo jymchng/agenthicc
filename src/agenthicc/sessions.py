@@ -1,4 +1,5 @@
 """Session index persistence — CRUD helpers for .agenthicc/sessions.json."""
+
 from __future__ import annotations
 
 import json
@@ -6,7 +7,7 @@ import os
 import time
 from pathlib import Path
 
-_SESSIONS_DIR  = Path(".agenthicc/sessions")
+_SESSIONS_DIR = Path(".agenthicc/sessions")
 _SESSION_INDEX = Path(".agenthicc/sessions.json")
 
 
@@ -46,9 +47,7 @@ def _find_latest_session_for_cwd() -> str | None:
     index = _load_session_index()
     cwd = os.getcwd()
     candidates = [
-        (data.get("last_used", 0), sid)
-        for sid, data in index.items()
-        if data.get("cwd") == cwd
+        (data.get("last_used", 0), sid) for sid, data in index.items() if data.get("cwd") == cwd
     ]
     return max(candidates)[1] if candidates else None
 

@@ -21,6 +21,7 @@ Usage
 CLIContext is injected by annotation type, not by parameter name — any name works.
 Positional args, --flags, and --options are inferred from the function signature.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,19 +41,20 @@ from typing import Callable
 
 # ── entry dataclass ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class _Entry:
-    path:     tuple[str, ...]
-    help:     str
-    handler:  Callable
+    path: tuple[str, ...]
+    help: str
+    handler: Callable
     is_async: bool
-    source:   str = "builtin"   # "builtin" | "user" | "project"
+    source: str = "builtin"  # "builtin" | "user" | "project"
 
 
 # ── flat registries ────────────────────────────────────────────────────────────
 
 _REGISTRY: dict[tuple[str, ...], _Entry] = {}
-_GROUPS:   dict[tuple[str, ...], str]    = {}
+_GROUPS: dict[tuple[str, ...], str] = {}
 
 # ContextVar lets @command() read the source tag at decoration time even
 # when commands are loaded dynamically from user/project directories.
@@ -60,6 +62,7 @@ _LOADING_SOURCE: ContextVar[str] = ContextVar("_LOADING_SOURCE", default="builti
 
 
 # ── public decorators ─────────────────────────────────────────────────────────
+
 
 def command(*path: str, help: str = "") -> Callable[[Callable], Callable]:
     """Register a leaf command handler at *path*.
@@ -70,38 +73,46 @@ def command(*path: str, help: str = "") -> Callable[[Callable], Callable]:
       opt:   str  = "value"               → --opt VALUE
       ann:   CLIContext                   → injected at call time; never argparse arg
     """
+
     def decorator(fn: Callable) -> Callable:
         doc = help or (inspect.getdoc(fn) or "").splitlines()[0]
         _REGISTRY[path] = _Entry(
-            path=path, help=doc,
-            handler=fn, is_async=asyncio.iscoroutinefunction(fn),
+            path=path,
+            help=doc,
+            handler=fn,
+            is_async=asyncio.iscoroutinefunction(fn),
             source=_LOADING_SOURCE.get(),
         )
         return fn
+
     return decorator
 
 
 def group(*path: str, help: str = "") -> Callable:
     """Declare a command group (branch node with no handler of its own)."""
     _GROUPS[path] = help
+
     def decorator(fn: Callable | None = None) -> Callable | None:
         return fn
+
     return decorator
 
 
 # ── argparse wiring ────────────────────────────────────────────────────────────
 
+
 def _add_params(parser: argparse.ArgumentParser, fn: Callable) -> None:
     """Add argparse arguments inferred from the function signature."""
     from agenthicc.cli.context import CLIContext  # noqa: PLC0415
+
     hints = typing.get_type_hints(fn)
-    sig   = inspect.signature(fn)
+    sig = inspect.signature(fn)
     for name, param in sig.parameters.items():
-        ann     = hints.get(name, inspect.Parameter.empty)
+        ann = hints.get(name, inspect.Parameter.empty)
         default = param.default
-        empty   = inspect.Parameter.empty
+        empty = inspect.Parameter.empty
         if ann is CLIContext:
-            continue                                             # injected — skip
+            continue  # injected — skip
         if ann is bool:
             parser.add_argument(
                 f"--{name.replace('_', '-')}",
@@ -109,7 +120,7 @@ def _add_params(parser: argparse.ArgumentParser, fn: Callable) -> None:
                 default=default if default is not empty else False,
             )
         elif default is empty:
-            parser.add_argument(name, metavar=name.upper())     # positional
+            parser.add_argument(name, metavar=name.upper())  # positional
         else:
             parser.add_argument(
                 f"--{name.replace('_', '-')}",
@@ -125,14 +136,18 @@ def _as_tree() -> dict:
     def _ensure(node: dict, parts: tuple[str, ...]) -> dict:
         cur = node
         for part in parts:
-            cur = cur.setdefault(part, {"help": "", "entry": None, "children": {}, "source": "builtin"})
+            cur = cur.setdefault(
+                part, {"help": "", "entry": None, "children": {}, "source": "builtin"}
+            )
             cur = cur["children"]
         return cur
 
     for path, help_text in _GROUPS.items():
         node = tree
         for i, part in enumerate(path):
-            slot = node.setdefault(part, {"help": "", "entry": None, "children": {}, "source": "builtin"})
+            slot = node.setdefault(
+                part, {"help": "", "entry": None, "children": {}, "source": "builtin"}
+            )
             if i == len(path) - 1:
                 slot["help"] = help_text
             node = slot["children"]
@@ -140,9 +155,13 @@ def _as_tree() -> dict:
     for path, entry in _REGISTRY.items():
         node = tree
         for part in path[:-1]:
-            slot = node.setdefault(part, {"help": "", "entry": None, "children": {}, "source": entry.source})
+            slot = node.setdefault(
+                part, {"help": "", "entry": None, "children": {}, "source": entry.source}
+            )
             node = slot["children"]
-        slot = node.setdefault(path[-1], {"help": entry.help, "entry": None, "children": {}, "source": entry.source})
+        slot = node.setdefault(
+            path[-1], {"help": entry.help, "entry": None, "children": {}, "source": entry.source}
+        )
         slot["entry"] = entry
         slot["source"] = entry.source
         if not slot["help"]:
@@ -168,7 +187,8 @@ def _wire(parser: argparse.ArgumentParser, tree: dict) -> None:
 def _call(entry: _Entry, ctx: object, ns: argparse.Namespace) -> None:
     """Invoke an entry's handler, injecting CLIContext by annotation type."""
     from agenthicc.cli.context import CLIContext  # noqa: PLC0415
-    hints  = typing.get_type_hints(entry.handler)
+
+    hints = typing.get_type_hints(entry.handler)
     kwargs: dict[str, object] = {}
     for name, _ in inspect.signature(entry.handler).parameters.items():
         ann = hints.get(name, inspect.Parameter.empty)
@@ -185,6 +205,7 @@ def _call(entry: _Entry, ctx: object, ns: argparse.Namespace) -> None:
 
 
 # ── discovery ──────────────────────────────────────────────────────────────────
+
 
 def _discover_package(package_name: str) -> None:
     """Import every module in *package_name* to trigger @command registrations."""
@@ -230,8 +251,8 @@ def _discover_directory(directory: Path, source: str) -> None:
 
 def _load_toml_commands(toml_file: Path, source: str) -> None:
     """Synthesise handlers from a TOML shorthand file."""
-    import tomllib   # noqa: PLC0415
-    import shlex     # noqa: PLC0415
+    import tomllib  # noqa: PLC0415
+    import shlex  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
 
     try:
@@ -247,24 +268,23 @@ def _load_toml_commands(toml_file: Path, source: str) -> None:
             path_list = spec.get("path", [])
             if not path_list:
                 continue
-            path      = tuple(path_list)
-            help_str  = spec.get("help", "")
-            run_tmpl  = spec.get("run", "")
+            path = tuple(path_list)
+            help_str = spec.get("help", "")
+            run_tmpl = spec.get("run", "")
             arg_specs = spec.get("args", [])
 
             def _make_handler(tmpl: str, args: list[dict], h: str) -> Callable:
                 async def handler(**kwargs: object) -> None:
                     cmd_str = tmpl.format(**kwargs)
                     subprocess.run(shlex.split(cmd_str), check=True)
-                handler.__name__        = "_".join(path_list)
-                handler.__doc__         = h
+
+                handler.__name__ = "_".join(path_list)
+                handler.__doc__ = h
                 handler.__annotations__ = {
-                    a["name"]: bool if a.get("type") == "bool" else str
-                    for a in args
+                    a["name"]: bool if a.get("type") == "bool" else str for a in args
                 }
                 handler.__kwdefaults__ = {  # type: ignore[attr-defined]
-                    a["name"]: a["default"]
-                    for a in args if "default" in a
+                    a["name"]: a["default"] for a in args if "default" in a
                 }
                 return handler
 
@@ -281,7 +301,7 @@ def _load_toml_commands(toml_file: Path, source: str) -> None:
 
 def _check_shadows(strict: bool = False) -> None:
     """Warn (or error) when a project command shadows a user-global command."""
-    user_paths    = {p for p, e in _REGISTRY.items() if e.source == "user"}
+    user_paths = {p for p, e in _REGISTRY.items() if e.source == "user"}
     project_paths = {p for p, e in _REGISTRY.items() if e.source == "project"}
     conflicts = user_paths & project_paths
     for p in sorted(conflicts):
@@ -297,8 +317,8 @@ def _check_shadows(strict: bool = False) -> None:
 
 def _discover(
     project_dir: Path | None = None,
-    user_dir:    Path | None = None,
-    strict_cli_shadow: bool  = False,
+    user_dir: Path | None = None,
+    strict_cli_shadow: bool = False,
 ) -> None:
     """Discover commands from all three layers in precedence order."""
     # 1. Built-in (lowest priority)
@@ -325,6 +345,7 @@ def _maybe_load_trusted(project_cli: Path) -> None:
     # PluginSettings.auto_trust bypasses the check for CI/CD environments.
     try:
         from agenthicc.config import load_config  # noqa: PLC0415
+
         cfg = load_config()
         if cfg.plugins.auto_trust:
             _discover_directory(project_cli, source="project")
@@ -341,7 +362,7 @@ def _maybe_load_trusted(project_cli: Path) -> None:
         return
 
     import hashlib  # noqa: PLC0415
-    import json     # noqa: PLC0415
+    import json  # noqa: PLC0415
 
     try:
         manifest = json.loads(trust_file.read_text())

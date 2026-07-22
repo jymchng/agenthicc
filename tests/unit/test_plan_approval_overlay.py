@@ -1,4 +1,5 @@
 """Unit tests: PlanApprovalOverlay, PromptOverlay base, ApprovalRequest/Response changes."""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,6 +16,7 @@ pytestmark = pytest.mark.unit
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _make_req(plan: str = "Step 1\nStep 2\nStep 3") -> ApprovalRequest:
     return ApprovalRequest(
         tool_name="Review: plan",
@@ -27,8 +29,8 @@ def _make_req(plan: str = "Step 1\nStep 2\nStep 3") -> ApprovalRequest:
 
 
 def _make_overlay(plan: str = "Step 1\nStep 2") -> tuple[PlanApprovalOverlay, MagicMock, MagicMock]:
-    req      = _make_req(plan)
-    service  = MagicMock()
+    req = _make_req(plan)
+    service = MagicMock()
     close_fn = MagicMock()
     ov = PlanApprovalOverlay(req, service, close_fn)
     ov.on_mount()
@@ -37,11 +39,14 @@ def _make_overlay(plan: str = "Step 1\nStep 2") -> tuple[PlanApprovalOverlay, Ma
 
 # ── ApprovalRequest / ApprovalResponse data-model ────────────────────────────
 
+
 class TestDataModel:
     def test_request_default_kind_is_tool(self):
         req = ApprovalRequest(
-            tool_name="write_file", tool_use_id="x",
-            tool_input={}, capabilities=frozenset(),
+            tool_name="write_file",
+            tool_use_id="x",
+            tool_input={},
+            capabilities=frozenset(),
             event=asyncio.Event(),
         )
         assert req.kind == "tool"
@@ -77,11 +82,17 @@ class TestDataModel:
 
 # ── PromptOverlay base ────────────────────────────────────────────────────────
 
+
 class _ConcretePrompt(PromptOverlay):
     """Minimal concrete subclass for testing the base."""
+
     name = "test_prompt"
-    def render(self): return None
-    def handle_key(self, key, ch): return True
+
+    def render(self):
+        return None
+
+    def handle_key(self, key, ch):
+        return True
 
 
 class TestPromptOverlay:
@@ -122,16 +133,18 @@ class TestPromptOverlay:
         ov.on_mount()
         for ch in "hello":
             ov._handle_prompt_key(Key.CHAR, ch)
-        ov.on_mount()   # remount should clear
+        ov.on_mount()  # remount should clear
         assert ov._prompt_text == ""
 
 
 # ── PlanApprovalOverlay — SELECTING state ────────────────────────────────────
 
+
 class TestPlanApprovalSelecting:
     def test_initial_state_is_selecting(self):
         ov, _, _ = _make_overlay()
         from agenthicc.tui.workspace.overlays.plan_approval import _State
+
         assert ov._state == _State.SELECTING
 
     def test_down_cycles_options(self):
@@ -164,6 +177,7 @@ class TestPlanApprovalSelecting:
 
     def test_enter_option1_enters_prompting(self):
         from agenthicc.tui.workspace.overlays.plan_approval import _State
+
         ov, service, close_fn = _make_overlay()
         ov._selected = 1
         ov.handle_key(Key.ENTER, "")
@@ -173,6 +187,7 @@ class TestPlanApprovalSelecting:
 
     def test_enter_option2_enters_prompting(self):
         from agenthicc.tui.workspace.overlays.plan_approval import _State
+
         ov, service, close_fn = _make_overlay()
         ov._selected = 2
         ov.handle_key(Key.ENTER, "")
@@ -186,12 +201,14 @@ class TestPlanApprovalSelecting:
 
     def test_render_selecting_returns_group(self):
         from rich.console import Group
+
         ov, _, _ = _make_overlay("Step 1\nStep 2")
         result = ov.render()
         assert isinstance(result, Group)
 
     def test_plan_content_in_render(self):
         from rich.console import Console
+
         ov, _, _ = _make_overlay("My important plan step")
         result = ov.render()
         console = Console(width=80, highlight=False)
@@ -206,16 +223,13 @@ class TestPlanApprovalSelecting:
         long_plan = "\n\n".join(f"Step {i}" for i in range(25))
         ov, _, _ = _make_overlay(long_plan)
         result = ov.render()
-        combined = " ".join(
-            r.plain if hasattr(r, "plain") else str(r)
-            for r in result.renderables
-        )
+        combined = " ".join(r.plain if hasattr(r, "plain") else str(r) for r in result.renderables)
         assert "lines" in combined and "of " in combined
 
     def test_scroll_down_with_bracket(self):
         long_plan = "\n\n".join(f"Step {i}" for i in range(25))
         ov, _, _ = _make_overlay(long_plan)
-        ov.render()   # populates _rendered_lines and sets _plan_visible
+        ov.render()  # populates _rendered_lines and sets _plan_visible
         if len(ov._rendered_lines) > ov._plan_visible:
             assert ov._plan_scroll == 0
             ov.handle_key(Key.CHAR, "]")
@@ -233,13 +247,13 @@ class TestPlanApprovalSelecting:
         ov, _, _ = _make_overlay(long_plan)
         ov._plan_scroll = 0
         ov.handle_key(Key.CHAR, "[")
-        assert ov._plan_scroll == 0   # cannot go below 0
+        assert ov._plan_scroll == 0  # cannot go below 0
 
     def test_scroll_clamped_at_bottom(self):
         long_plan = "\n\n".join(f"Step {i}" for i in range(25))
         ov, _, _ = _make_overlay(long_plan)
-        ov.render()   # populate _rendered_lines and set _plan_visible
-        total      = len(ov._rendered_lines)
+        ov.render()  # populate _rendered_lines and set _plan_visible
+        total = len(ov._rendered_lines)
         max_scroll = max(0, total - ov._plan_visible)
         ov._plan_scroll = max_scroll
         ov.handle_key(Key.CHAR, "]")
@@ -250,11 +264,8 @@ class TestPlanApprovalSelecting:
         short_plan = "Line 1\nLine 2\nLine 3"
         ov, _, _ = _make_overlay(short_plan)
         result = ov.render()
-        combined = " ".join(
-            r.plain if hasattr(r, "plain") else str(r)
-            for r in result.renderables
-        )
-        assert "of 3" not in combined   # no indicator for short plans
+        combined = " ".join(r.plain if hasattr(r, "plain") else str(r) for r in result.renderables)
+        assert "of 3" not in combined  # no indicator for short plans
 
     def test_on_mount_resets_scroll(self):
         long_plan = "\n".join(f"Step {i}" for i in range(20))
@@ -265,6 +276,7 @@ class TestPlanApprovalSelecting:
 
 
 # ── PlanApprovalOverlay — PROMPTING state ────────────────────────────────────
+
 
 class TestPlanApprovalPrompting:
     def _enter_prompting(self, option: int) -> tuple[PlanApprovalOverlay, MagicMock, MagicMock]:
@@ -290,6 +302,7 @@ class TestPlanApprovalPrompting:
 
     def test_esc_in_prompting_returns_to_selecting(self):
         from agenthicc.tui.workspace.overlays.plan_approval import _State
+
         ov, service, close_fn = self._enter_prompting(1)
         ov.handle_key(Key.ESC, "")
         assert ov._state == _State.SELECTING
@@ -305,6 +318,7 @@ class TestPlanApprovalPrompting:
 
     def test_render_prompting_returns_group(self):
         from rich.console import Group
+
         ov, _, _ = self._enter_prompting(1)
         result = ov.render()
         assert isinstance(result, Group)
@@ -312,10 +326,7 @@ class TestPlanApprovalPrompting:
     def test_render_prompting_shows_option_label(self):
         ov, _, _ = self._enter_prompting(1)
         result = ov.render()
-        combined = " ".join(
-            r.plain if hasattr(r, "plain") else str(r)
-            for r in result.renderables
-        )
+        combined = " ".join(r.plain if hasattr(r, "plain") else str(r) for r in result.renderables)
         assert "Reject" in combined
 
     def test_submit_empty_prompt_allowed(self):

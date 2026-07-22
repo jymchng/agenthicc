@@ -24,6 +24,7 @@ Recording is wired into the TUI session via ``--record-cassette <dir>``::
 
     uv run agenthicc --record-cassette ~/.agenthicc/sessions/<id>/cassette/
 """
+
 from __future__ import annotations
 
 from agenthicc.testing.cassette import SessionCassette, CassetteEntry, ApprovalEntry

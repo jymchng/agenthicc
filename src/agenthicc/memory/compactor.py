@@ -6,10 +6,10 @@ compaction ladder fires proactively each turn (``_maybe_compact`` →
 truncation.  This module provides only the user-invoked ``/compact`` command,
 which compresses the **whole** session into a dense summary on demand.
 
-It shares lauren-ai's overflow-proof **map-reduce** summariser
-(``_summarize_text``) so compacting a history larger than the model window never
-itself overflows — the transcript is chunked, each chunk summarised, and the
-partials reduced.
+It uses lauren-ai's canonical ``Message`` and transport interfaces.  Long
+transcripts are split into bounded chunks and reduced through the same
+``transport.complete`` contract, so compaction does not depend on a private
+lauren-ai helper that may move between releases.
 
 Public API
 ----------
@@ -54,8 +54,6 @@ async def compact_memory(
     Sets ``conv_store.compaction_active`` for the duration and unconditionally
     clears it (even on error).  Returns the new ``token_estimate``.
     """
-    from lauren_ai._agents._runner import _summarize_text  # noqa: PLC0415
-
     if conv_store is not None:
         conv_store.compaction_active.set(True)
         conv_store.append_event("system", {"text": "⎋ Compacting conversation…"})
@@ -69,9 +67,16 @@ async def compact_memory(
         transcript = _format_transcript(memory._messages)
         max_input_chars = 0
         if max_input_tokens > 0:
-            usable = max_input_tokens - _SUMMARY_OUTPUT_RESERVE_TOKENS - _SUMMARY_PROMPT_RESERVE_TOKENS
+            usable = (
+                max_input_tokens - _SUMMARY_OUTPUT_RESERVE_TOKENS - _SUMMARY_PROMPT_RESERVE_TOKENS
+            )
             max_input_chars = max(2_000, int(usable * _SUMMARY_INPUT_CHARS_PER_TOKEN))
-        summary = await _summarize_text(transport, transcript, model=model, max_input_chars=max_input_chars)
+        summary = await _summarize_text(
+            transport,
+            transcript,
+            model=model,
+            max_input_chars=max_input_chars,
+        )
 
         if summary:
             memory._messages = [
@@ -96,7 +101,9 @@ async def compact_memory(
     except Exception as exc:  # noqa: BLE001
         log.warning("compactor: compaction failed: %s", exc)
         if conv_store is not None:
-            conv_store.append_event("system", {"text": f"⎋ Compaction failed: {type(exc).__name__}"})
+            conv_store.append_event(
+                "system", {"text": f"⎋ Compaction failed: {type(exc).__name__}"}
+            )
         return memory.token_estimate
 
     finally:
@@ -106,12 +113,15 @@ async def compact_memory(
 
 # ── internal helpers ──────────────────────────────────────────────────────────
 
+
 def _format_transcript(messages: list[object]) -> str:
     """Render a message list as a plain-text transcript for the summariser."""
     lines: list[str] = []
     for msg in messages:
         role: str = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
-        content: object = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        content: object = (
+            msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        )
 
         if role == "system":
             continue  # system prompt is re-injected each turn; skip it
@@ -129,8 +139,9 @@ def _format_transcript(messages: list[object]) -> str:
                     parts.append(block.get("text", ""))
                 elif btype == "tool_use":
                     import json  # noqa: PLC0415
+
                     parts.append(
-                        f"[tool_call:{block.get('name','')}({json.dumps(block.get('input',{}))[:200]})]"
+                        f"[tool_call:{block.get('name', '')}({json.dumps(block.get('input', {}))[:200]})]"
                     )
                 elif btype == "tool_result":
                     raw = block.get("content", "")
@@ -146,3 +157,54 @@ def _format_transcript(messages: list[object]) -> str:
             lines.append(f"{role.upper()}: {text.strip()}")
 
     return "\n\n".join(lines)
+
+
+async def _summarize_text(
+    transport: object,
+    transcript: str,
+    *,
+    model: str,
+    max_input_chars: int = 0,
+) -> str:
+    """Summarise text using lauren-ai's stable transport contract.
+
+    A zero limit performs one completion, preserving the manual compact
+    command's normal behaviour.  A positive limit performs map/reduce calls
+    with bounded prompts so a large history never becomes one oversized
+    request.
+    """
+    from lauren_ai._transport import Message  # noqa: PLC0415
+
+    prompt_prefix = (
+        "Summarise the following conversation portion concisely and factually. "
+        "Preserve decisions, constraints, paths, and unfinished work.\n\n"
+    )
+    chunks = [transcript]
+    if max_input_chars > 0 and len(transcript) > max_input_chars:
+        chunks = [
+            transcript[index : index + max_input_chars]
+            for index in range(0, len(transcript), max_input_chars)
+        ]
+
+    async def summarize_chunk(chunk: str) -> str:
+        result = await transport.complete(  # type: ignore[attr-defined]
+            [Message.user(prompt_prefix + chunk)],
+            model=model,
+            system="You are a conversation summariser. Be concise and factual.",
+            max_tokens=512,
+            temperature=0.0,
+            stream=False,
+        )
+        return str(getattr(result, "content", "") or "")
+
+    partials = [await summarize_chunk(chunk) for chunk in chunks]
+    while len(partials) > 1:
+        reduced = "\n\n".join(partials)
+        if max_input_chars <= 0 or len(reduced) <= max_input_chars:
+            return await summarize_chunk(reduced)
+        chunks = [
+            reduced[index : index + max_input_chars]
+            for index in range(0, len(reduced), max_input_chars)
+        ]
+        partials = [await summarize_chunk(chunk) for chunk in chunks]
+    return partials[0] if partials else ""

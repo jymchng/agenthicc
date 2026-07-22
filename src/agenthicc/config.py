@@ -88,6 +88,50 @@ SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "litellm")
 # the session memory trims to + compaction defends) agrees with the hard guard.
 _MAX_OUTPUT_TOKENS: int = 4_096
 _CONTEXT_RESERVE_MIN: int = 4_000
+_DEFAULT_CONTEXT_WINDOW: int = 200_000
+
+# lauren-ai 1.3.1 exposes provider configuration but not a context-window
+# registry.  Keep the compatibility table at this integration boundary so a
+# newer lauren-ai can provide the registry without changing agenthicc callers.
+_CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-opus-4-8": 1_000_000,
+    "claude-opus-4-6": 1_000_000,
+    "claude-opus-4-5": 200_000,
+    "claude-opus-4": 200_000,
+    "claude-sonnet-4-6": 200_000,
+    "claude-sonnet-4-5": 200_000,
+    "claude-sonnet-4": 200_000,
+    "claude-haiku-4-5": 200_000,
+    "claude-haiku-4": 200_000,
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "gpt-4.1": 1_000_000,
+    "gpt-4.1-mini": 1_000_000,
+}
+
+
+def _context_window_for(model: str, *, default: int = _DEFAULT_CONTEXT_WINDOW) -> int:
+    """Resolve a model context window through lauren-ai when available.
+
+    Older lauren-ai releases do not expose the registry that newer releases
+    provide, so the local compatibility table is used only as a fallback.
+    Prefix matching handles dated model ids and provider-qualified ids.
+    """
+    try:
+        from lauren_ai._config import context_window_for  # noqa: PLC0415
+    except ImportError:
+        context_window_for = None
+    if context_window_for is not None:
+        return context_window_for(model, default=default)
+
+    normalized = model.lower()
+    for prefix, window in sorted(
+        _CONTEXT_WINDOWS.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        if normalized.startswith(prefix):
+            return window
+    return default
+
 
 # Default models per provider
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
@@ -100,8 +144,8 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
 # Environment variables read per provider (when api_key not explicit)
 PROVIDER_API_KEY_ENVVAR: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
-    "openai":    "OPENAI_API_KEY",
-    "litellm":   "ANTHROPIC_API_KEY",   # litellm can delegate to any backend
+    "openai": "OPENAI_API_KEY",
+    "litellm": "ANTHROPIC_API_KEY",  # litellm can delegate to any backend
 }
 
 # Provider-specific shorthand env vars (read in addition to AGENTHICC_* vars).
@@ -109,15 +153,15 @@ PROVIDER_API_KEY_ENVVAR: dict[str, str] = {
 # Setting OPENAI_BASE_URL enables any OpenAI-compatible endpoint (poolside, Together, etc.)
 PROVIDER_ENV_SHORTCUTS: dict[str, tuple[str, str]] = {
     # OpenAI and OpenAI-compatible endpoints
-    "OPENAI_MODEL":    ("execution", "model"),
+    "OPENAI_MODEL": ("execution", "model"),
     "OPENAI_BASE_URL": ("execution", "base_url"),
     # Anthropic
     "ANTHROPIC_MODEL": ("execution", "model"),
     # Ollama
-    "OLLAMA_MODEL":    ("execution", "model"),
-    "OLLAMA_HOST":     ("execution", "base_url"),    # e.g. http://remote:11434
+    "OLLAMA_MODEL": ("execution", "model"),
+    "OLLAMA_HOST": ("execution", "base_url"),  # e.g. http://remote:11434
     # LiteLLM
-    "LITELLM_MODEL":   ("execution", "model"),
+    "LITELLM_MODEL": ("execution", "model"),
 }
 
 
@@ -126,8 +170,8 @@ class ExecutionSettings:
     max_concurrent_intents: int = 8
     max_parallel_tasks: int = 4
     agent_pool_size: int = 16
-    max_agent_turns: int = 200      # max agentic-loop iterations per intent
-    turn_timeout_s: float = 0.0    # per-turn watchdog; 0 = no limit
+    max_agent_turns: int = 200  # max agentic-loop iterations per intent
+    turn_timeout_s: float = 0.0  # per-turn watchdog; 0 = no limit
     # Conversation compaction.  auto_compact gates the proactive LLM compaction
     # ladder in lauren-ai's runner (PRD-135): when True, summarisation fires each
     # turn at ``summarize_at`` of the live window, before the hard pre-send guard
@@ -157,19 +201,20 @@ class ExecutionSettings:
     #     multiplier with the turn-level retry.
     transport_max_retries: int = 3
     transport_retry_base_delay_s: float = 1.0
-    transport_retry_max_total_s: float = 0.0   # wall-clock ceiling; 0 = no cap
+    transport_retry_max_total_s: float = 0.0  # wall-clock ceiling; 0 = no cap
     llm_sdk_max_retries: int = 2
     # LLM provider selection
     provider: str = "anthropic"
-    model: str = ""            # empty → use PROVIDER_DEFAULT_MODELS[provider]
-    api_key: str = ""          # empty → read from PROVIDER_API_KEY_ENVVAR
-    base_url: str = ""         # Ollama / self-hosted endpoint override
+    model: str = ""  # empty → use PROVIDER_DEFAULT_MODELS[provider]
+    api_key: str = ""  # empty → read from PROVIDER_API_KEY_ENVVAR
+    base_url: str = ""  # Ollama / self-hosted endpoint override
 
     def effective_model(self) -> str:
         return self.model or PROVIDER_DEFAULT_MODELS.get(self.provider, self.model)
 
     def effective_api_key(self) -> str | None:
         import os  # noqa: PLC0415
+
         if self.api_key:
             return self.api_key
         env_var = PROVIDER_API_KEY_ENVVAR.get(self.provider)
@@ -190,17 +235,15 @@ class ExecutionSettings:
         :return: Context-window size in tokens.
         :rtype: int
         """
-        from lauren_ai._config import context_window_for  # noqa: PLC0415
-
         model = self.effective_model().lower()
         if model in self.context_windows:
             return self.context_windows[model]
-        known = context_window_for(model, default=0)  # 0 → registry doesn't know it
+        known = _context_window_for(model, default=0)  # 0 → registry doesn't know it
         if known:
             return known
         if "default" in self.context_windows:
             return self.context_windows["default"]
-        return context_window_for(model)  # hardcoded library default
+        return _context_window_for(model)  # hardcoded library default
 
     def effective_usable_budget(self) -> int:
         """The live-window token budget derived from the model's context window.
@@ -262,6 +305,7 @@ class ApiSettings:
 @dataclass
 class PluginSettings:
     """[plugins] section — tool plugin security and dependency settings."""
+
     auto_trust: bool = False
     auto_install: bool = False
     install_target: str = "venv"
@@ -281,6 +325,7 @@ class BehaviourSettings:
     they belong in CLIFlags (cli/context.py) so they can never be silently
     persisted across invocations.
     """
+
     verbose: bool = False
     confirm_exits: bool = True
 
@@ -288,6 +333,7 @@ class BehaviourSettings:
 @dataclass
 class AgentSettings:
     """Per-agent TOML metadata (supplementary to filesystem discovery)."""
+
     description: str = ""
     model: str = ""
     max_turns: int = 200
@@ -296,20 +342,24 @@ class AgentSettings:
 @dataclass
 class AgentsSettings:
     """[agents] section — keyed by agent slug."""
+
     agents: dict[str, AgentSettings] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, dict[str, object]]) -> "AgentsSettings":
         fields = {f for f in AgentSettings.__dataclass_fields__}
-        return cls(agents={
-            name: AgentSettings(**{k: v for k, v in cfg.items() if k in fields})
-            for name, cfg in d.items()
-        })
+        return cls(
+            agents={
+                name: AgentSettings(**{k: v for k, v in cfg.items() if k in fields})
+                for name, cfg in d.items()
+            }
+        )
 
 
 @dataclass
 class SkillsSettings:
     """[skills] section — default skill bootstrap configuration."""
+
     install_default_skills: bool = True
     default_skill_directory: str = ""  # empty = ~/.agenthicc/skills
 
@@ -317,6 +367,7 @@ class SkillsSettings:
 @dataclass
 class StorageS3Settings:
     """S3/S3-compatible storage credentials and configuration."""
+
     bucket: str = ""
     region: str = "us-east-1"
     prefix: str = ""
@@ -335,23 +386,24 @@ class StorageS3Settings:
 @dataclass
 class StorageSettings:
     """Top-level storage configuration (S3 and future backends)."""
+
     s3: StorageS3Settings = field(default_factory=StorageS3Settings)
     default_backend: str = "linux"
 
 
 @dataclass
 class AgenthiccConfig:
-    execution: ExecutionSettings  = field(default_factory=ExecutionSettings)
-    behaviour: BehaviourSettings  = field(default_factory=BehaviourSettings)
-    hooks:     dict[str, list[str]] = field(default_factory=dict)
-    tools:     ToolSettings       = field(default_factory=ToolSettings)
-    memory:    MemorySettings     = field(default_factory=MemorySettings)
-    security:  SecuritySettings   = field(default_factory=SecuritySettings)
-    api:       ApiSettings        = field(default_factory=ApiSettings)
-    plugins:   PluginSettings     = field(default_factory=PluginSettings)
-    skills:    SkillsSettings     = field(default_factory=SkillsSettings)
-    agents:    AgentsSettings      = field(default_factory=AgentsSettings)
-    storage:   StorageSettings    = field(default_factory=StorageSettings)
+    execution: ExecutionSettings = field(default_factory=ExecutionSettings)
+    behaviour: BehaviourSettings = field(default_factory=BehaviourSettings)
+    hooks: dict[str, list[str]] = field(default_factory=dict)
+    tools: ToolSettings = field(default_factory=ToolSettings)
+    memory: MemorySettings = field(default_factory=MemorySettings)
+    security: SecuritySettings = field(default_factory=SecuritySettings)
+    api: ApiSettings = field(default_factory=ApiSettings)
+    plugins: PluginSettings = field(default_factory=PluginSettings)
+    skills: SkillsSettings = field(default_factory=SkillsSettings)
+    agents: AgentsSettings = field(default_factory=AgentsSettings)
+    storage: StorageSettings = field(default_factory=StorageSettings)
     workflows: dict[str, dict[str, object]] = field(default_factory=dict)
     """Per-workflow tunable parameter overrides loaded from ``[workflows.<name>]``
     TOML sections (PRD-111).  E.g. ``cfg.workflows["code_plan"]["execute_model"]``."""
@@ -375,6 +427,7 @@ def _parse_mcp_servers(raw_list: list[dict[str, object]]) -> list[McpServerConfi
     """Convert raw TOML dicts to McpServerConfig objects (graceful if mcp.py unavailable)."""
     try:
         from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
+
         return [McpServerConfig.from_dict(d) for d in raw_list]
     except ImportError:
         return list(raw_list)  # type: ignore[return-value]  # fall back to raw dicts
@@ -468,7 +521,7 @@ def _apply_env_overrides(config: dict[str, object]) -> dict[str, object]:
     for key, value in os.environ.items():
         if not key.startswith("AGENTHICC_"):
             continue
-        remainder = key[len("AGENTHICC_"):].lower()
+        remainder = key[len("AGENTHICC_") :].lower()
         parts = remainder.split("_", 1)
         if len(parts) != 2:
             continue
@@ -492,7 +545,7 @@ def _apply_env_overrides(config: dict[str, object]) -> dict[str, object]:
         config.setdefault(section, {})[field_name] = value
         # Infer provider from which shorthand var was set (e.g. OPENAI_MODEL → openai)
         if inferred_provider is None:
-            prefix = env_var.split("_")[0].lower()   # "OPENAI_MODEL" → "openai"
+            prefix = env_var.split("_")[0].lower()  # "OPENAI_MODEL" → "openai"
             if prefix in SUPPORTED_PROVIDERS:
                 inferred_provider = prefix
 
@@ -501,7 +554,7 @@ def _apply_env_overrides(config: dict[str, object]) -> dict[str, object]:
         for provider, api_key_var in PROVIDER_API_KEY_ENVVAR.items():
             if os.environ.get(api_key_var):
                 inferred_provider = provider
-                break   # first match wins (ANTHROPIC_API_KEY checked first)
+                break  # first match wins (ANTHROPIC_API_KEY checked first)
 
     # Apply inferred provider only when no explicit provider was set
     if inferred_provider and not explicit_provider:
@@ -582,6 +635,7 @@ def _resolve_extends(
         parents = [str(e) for e in extends_raw]
     else:
         import warnings  # noqa: PLC0415
+
         warnings.warn(
             f"Invalid 'extends' value in {path}: expected str or list, "
             f"ignoring (got {type(extends_raw).__name__})",
@@ -612,6 +666,7 @@ def _load_toml_with_extends(path: Path) -> dict[str, object]:
     invalid TOML syntax.  Propagates ``ConfigExtendsCycleError``.
     """
     import warnings  # noqa: PLC0415
+
     try:
         return _resolve_extends(path)
     except (FileNotFoundError, PermissionError):
@@ -771,6 +826,7 @@ def load_config(
     # Priority: explicit config_path arg > AGENTHICC_CONFIG env var > auto-discovery.
     if config_path is None:
         import os as _os  # noqa: PLC0415
+
         _env_cfg = _os.environ.get("AGENTHICC_CONFIG", "").strip()
         if _env_cfg:
             config_path = _env_cfg
@@ -830,12 +886,21 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
         # PRD-132 L0: enable incremental prompt caching (system + tools +
         # conversation prefix).  Read only by the Anthropic transport — a clean
         # no-op for OpenAI/Ollama/litellm.
-        return dataclasses.replace(
-            cfg,
-            cache_system_prompt=execution.prompt_cache,
-            cache_tools=execution.prompt_cache,
-            cache_conversation=execution.prompt_cache,
-        )
+        fields = getattr(cfg, "__dataclass_fields__", {})
+        changes: dict[str, object] = {}
+        if "cache_system_prompt" in fields:
+            changes["cache_system_prompt"] = execution.prompt_cache
+        if "cache_tools" in fields:
+            changes["cache_tools"] = execution.prompt_cache
+        if "cache_conversation" in fields:
+            changes["cache_conversation"] = execution.prompt_cache
+        result = dataclasses.replace(cfg, **changes)
+        # lauren-ai 1.3.1 has no conversation-cache field yet.  Preserve the
+        # agenthicc setting on the immutable config for callers that inspect
+        # the complete cache policy; transports ignore the unsupported flag.
+        if "cache_conversation" not in fields:
+            object.__setattr__(result, "cache_conversation", execution.prompt_cache)
+        return result
 
     provider = execution.provider.lower()
     model = execution.effective_model()
@@ -853,7 +918,11 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
     max_retries: int = execution.llm_sdk_max_retries
 
     if provider == "anthropic":
-        kwargs: dict[str, str | int | None] = {"model": model, "api_key": api_key, "max_retries": max_retries}
+        kwargs: dict[str, str | int | None] = {
+            "model": model,
+            "api_key": api_key,
+            "max_retries": max_retries,
+        }
         if base_url:
             kwargs["base_url"] = base_url
         return _cache(LLMConfig.for_anthropic(**kwargs))
@@ -873,7 +942,12 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
         return _cache(LLMConfig.for_ollama(**kwargs))
 
     if provider == "litellm":
-        kwargs = {"provider": "litellm", "model": model, "api_key": api_key, "max_retries": max_retries}
+        kwargs = {
+            "provider": "litellm",
+            "model": model,
+            "api_key": api_key,
+            "max_retries": max_retries,
+        }
         if base_url:
             kwargs["base_url"] = base_url
         return _cache(LLMConfig(**kwargs))
@@ -881,5 +955,5 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
     supported = ", ".join(f"'{p}'" for p in SUPPORTED_PROVIDERS)
     raise ValueError(
         f"Unknown LLM provider: {provider!r}. Supported: {supported}. "
-        f"Set in config: [execution] provider = \"openai\""
+        f'Set in config: [execution] provider = "openai"'
     )

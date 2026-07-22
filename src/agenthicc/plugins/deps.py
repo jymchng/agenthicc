@@ -27,7 +27,8 @@ def prompt_install(
     if not interactive:
         log.warning(
             "Plugin %s skipped — missing: %s  (headless mode, skipping install)",
-            path, missing,
+            path,
+            missing,
         )
         return False
 
@@ -37,15 +38,12 @@ def prompt_install(
         return True
 
     # Interactive prompt
-    print(
-        f"\n⚠  Plugin {path} requires missing packages:\n"
-        f"     {', '.join(missing)}\n"
-    )
+    print(f"\n⚠  Plugin {path} requires missing packages:\n     {', '.join(missing)}\n")
     while True:
         choice = input("   [I]nstall now  [S]kip  [Q]uit  > ").strip().upper()
         if choice == "I":
             _run_install(missing, target=install_target)
-            return True   # caller retries _load_plugin_file
+            return True  # caller retries _load_plugin_file
         if choice == "S":
             return False
         if choice == "Q":

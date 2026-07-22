@@ -13,6 +13,7 @@ ModeLoadResult         — result of loading a single mode plugin file
 ModePluginSet          — aggregated results from a full plugin discovery scan
 discover_mode_plugins  — discover and load mode plugins from filesystem directories
 """
+
 from __future__ import annotations
 
 from .mode import Mode, ModeHook, ToolFilter

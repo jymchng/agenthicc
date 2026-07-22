@@ -1,4 +1,5 @@
 """OverlayHost and Overlay base class (PRD-62 §3)."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -35,9 +36,9 @@ class OverlayHost:
     """Manages the single active overlay. Part of the Live region."""
 
     def __init__(self, app_state: AppState) -> None:
-        self._state:   AppState           = app_state
-        self._overlay: Overlay | None     = None
-        self._redraw:  Callable[[], None] | None = None
+        self._state: AppState = app_state
+        self._overlay: Overlay | None = None
+        self._redraw: Callable[[], None] | None = None
 
     def set_redraw_callback(self, fn: Callable[[], None]) -> None:
         self._redraw = fn

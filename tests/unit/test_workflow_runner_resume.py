@@ -1,4 +1,5 @@
 """Unit tests for WorkflowRunner.resume() and _find_resume_phase() (PRD-94, PRD-116)."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
@@ -18,6 +19,7 @@ pytestmark = pytest.mark.unit
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _make_plugin(phases: list[PhaseSpec]) -> type[WorkflowPlugin]:
     _phases = list(phases)
@@ -55,31 +57,40 @@ def _make_runner(plugin_cls: type[WorkflowPlugin]) -> WorkflowRunner:
 
 # ── _find_resume_phase tests ──────────────────────────────────────────────────
 
+
 class TestFindResumePhase:
     def test_empty_context_returns_first_phase(self):
-        plugin_cls = _make_plugin([
-            PhaseSpec(name="plan", next="execute"),
-            PhaseSpec(name="execute"),
-        ])
+        plugin_cls = _make_plugin(
+            [
+                PhaseSpec(name="plan", next="execute"),
+                PhaseSpec(name="execute"),
+            ]
+        )
         runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         assert runner._find_resume_phase(ctx) == "plan"
 
     def test_first_phase_done_returns_second(self):
-        plugin_cls = _make_plugin([
-            PhaseSpec(name="plan", next="execute"),
-            PhaseSpec(name="execute"),
-        ])
+        plugin_cls = _make_plugin(
+            [
+                PhaseSpec(name="plan", next="execute"),
+                PhaseSpec(name="execute"),
+            ]
+        )
         runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
-        ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="done", approved=True))
+        ctx.add_output(
+            PhaseOutput(phase_name="plan", role="planner", full_text="done", approved=True)
+        )
         assert runner._find_resume_phase(ctx) == "execute"
 
     def test_all_phases_done_returns_none(self):
-        plugin_cls = _make_plugin([
-            PhaseSpec(name="plan", next="execute"),
-            PhaseSpec(name="execute"),
-        ])
+        plugin_cls = _make_plugin(
+            [
+                PhaseSpec(name="plan", next="execute"),
+                PhaseSpec(name="execute"),
+            ]
+        )
         runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="p", approved=True))
@@ -88,10 +99,12 @@ class TestFindResumePhase:
 
     def test_on_reject_path_skipped_if_phase_approved(self):
         """When plan was approved, on_reject branch is ignored."""
-        plugin_cls = _make_plugin([
-            PhaseSpec(name="plan", next="execute", on_reject="plan"),
-            PhaseSpec(name="execute"),
-        ])
+        plugin_cls = _make_plugin(
+            [
+                PhaseSpec(name="plan", next="execute", on_reject="plan"),
+                PhaseSpec(name="execute"),
+            ]
+        )
         runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="p", approved=True))
@@ -105,10 +118,12 @@ class TestFindResumePhase:
 
     def test_cycle_guard(self):
         """If phase graph has a cycle of already-completed phases, returns None."""
-        plugin_cls = _make_plugin([
-            PhaseSpec(name="a", next="b"),
-            PhaseSpec(name="b", next="a"),
-        ])
+        plugin_cls = _make_plugin(
+            [
+                PhaseSpec(name="a", next="b"),
+                PhaseSpec(name="b", next="a"),
+            ]
+        )
         runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="r", workflow_name="wf")
         ctx.add_output(PhaseOutput(phase_name="a", role="r", full_text=""))
@@ -119,14 +134,19 @@ class TestFindResumePhase:
 
 # ── resume() tests ────────────────────────────────────────────────────────────
 
+
 class TestWorkflowRunnerResume:
     async def test_resume_all_done_marks_complete(self):
-        plugin_cls = _make_plugin([
-            PhaseSpec(name="plan", next=None),
-        ])
+        plugin_cls = _make_plugin(
+            [
+                PhaseSpec(name="plan", next=None),
+            ]
+        )
         runner = _make_runner(plugin_cls)
         ctx = WorkflowContext(intent="x", run_id="run1", workflow_name="test_wf")
-        ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="done", approved=True))
+        ctx.add_output(
+            PhaseOutput(phase_name="plan", role="planner", full_text="done", approved=True)
+        )
 
         await runner.resume(ctx)
 
@@ -135,14 +155,18 @@ class TestWorkflowRunnerResume:
         assert runner._run_id == "run1"
 
     async def test_resume_missing_phase_runs_it(self):
-        plugin_cls = _make_plugin([
-            PhaseSpec(name="plan", next="execute"),
-            PhaseSpec(name="execute", next=None),
-        ])
+        plugin_cls = _make_plugin(
+            [
+                PhaseSpec(name="plan", next="execute"),
+                PhaseSpec(name="execute", next=None),
+            ]
+        )
         runner = _make_runner(plugin_cls)
         # Pre-populate plan phase only
         ctx = WorkflowContext(intent="x", run_id="run1", workflow_name="test_wf")
-        ctx.add_output(PhaseOutput(phase_name="plan", role="planner", full_text="plan done", approved=True))
+        ctx.add_output(
+            PhaseOutput(phase_name="plan", role="planner", full_text="plan done", approved=True)
+        )
 
         # Patch _run_phase_loop to just record which start_phase it got
         called_with: list[str | None] = []
@@ -176,6 +200,7 @@ class TestWorkflowRunnerResume:
 
 # ── integration: restore_from_log + Workflow state ───────────────────────────
 
+
 class TestRestoreFromLog:
     async def test_restore_produces_workflow_entry(self, tmp_path):
         """Replaying WorkflowRunStarted + phases + Completed via restore_from_log
@@ -188,24 +213,33 @@ class TestRestoreFromLog:
 
         log_path = str(tmp_path / "events.jsonl")
         events = [
-            Event.create("WorkflowRunStarted", {
-                "run_id": "r1",
-                "workflow_name": "code_plan",
-                "intent": "add auth",
-                "phase_names": ["plan", "execute"],
-            }),
-            Event.create("WorkflowPhaseCompleted", {
-                "run_id": "r1",
-                "phase_name": "plan",
-                "role": "planner",
-                "full_text": "Here is the plan.",
-                "approved": True,
-                "structured": {"plan_text": "step 1"},
-            }),
-            Event.create("WorkflowRunCompleted", {
-                "run_id": "r1",
-                "status": "complete",
-            }),
+            Event.create(
+                "WorkflowRunStarted",
+                {
+                    "run_id": "r1",
+                    "workflow_name": "code_plan",
+                    "intent": "add auth",
+                    "phase_names": ["plan", "execute"],
+                },
+            ),
+            Event.create(
+                "WorkflowPhaseCompleted",
+                {
+                    "run_id": "r1",
+                    "phase_name": "plan",
+                    "role": "planner",
+                    "full_text": "Here is the plan.",
+                    "approved": True,
+                    "structured": {"plan_text": "step 1"},
+                },
+            ),
+            Event.create(
+                "WorkflowRunCompleted",
+                {
+                    "run_id": "r1",
+                    "status": "complete",
+                },
+            ),
         ]
         with open(log_path, "w") as f:
             for e in events:

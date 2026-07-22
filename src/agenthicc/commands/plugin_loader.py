@@ -8,6 +8,7 @@ Each file must export ``COMMAND: Command`` and/or ``COMMANDS: list[Command]``.
 It may also export ``DEPENDENCIES: list[str]`` (PEP-508 requirements checked
 before import, same pattern as PRD-24 tool plugins).
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -134,9 +135,7 @@ def _load_command_file(path: Path) -> CommandLoadResult:
 
     if single is not None:
         if not isinstance(single, Command):
-            return CommandLoadResult(
-                path=path, error="COMMAND must be a Command instance"
-            )
+            return CommandLoadResult(path=path, error="COMMAND must be a Command instance")
         commands.append(single)
 
     if multi is not None:
@@ -180,8 +179,7 @@ def _scan_commands_dir(root: Path) -> list[CommandLoadResult]:
         result = _load_command_file(py_file)
         if result.missing_deps:
             log.warning(
-                "Command plugin %s skipped — missing: %s\n"
-                "  Fix: pip install %s",
+                "Command plugin %s skipped — missing: %s\n  Fix: pip install %s",
                 py_file,
                 result.missing_deps,
                 " ".join(result.missing_deps),

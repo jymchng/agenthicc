@@ -1,4 +1,5 @@
 """UnifiedCommandRegistry — single source of truth for all slash commands (PRD-44, PRD-45)."""
+
 from __future__ import annotations
 
 from typing import Iterator
@@ -19,8 +20,8 @@ class UnifiedCommandRegistry:
     """
 
     def __init__(self) -> None:
-        self._commands: dict[str, Command] = {}   # canonical name -> Command
-        self._aliases: dict[str, str] = {}         # alias -> canonical name
+        self._commands: dict[str, Command] = {}  # canonical name -> Command
+        self._aliases: dict[str, str] = {}  # alias -> canonical name
 
     # ── write ────────────────────────────────────────────────────────────────
 

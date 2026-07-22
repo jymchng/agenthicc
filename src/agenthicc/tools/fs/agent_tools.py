@@ -2,13 +2,16 @@
 
 NOTE: no ``from __future__ import annotations`` — @tool() inspects real annotations.
 """
+
 import os
 import re
 import hashlib
 from typing import TYPE_CHECKING
 from lauren_ai._tools import tool
 from agenthicc.tools.capabilities import (
-    tool_read, tool_write, tool_read_search,
+    tool_read,
+    tool_write,
+    tool_read_search,
 )
 
 if TYPE_CHECKING:
@@ -52,6 +55,7 @@ def _get_backend(path: str = ".") -> "FilesystemBackend":
     if _router is not None:
         return _router.resolve(path)
     from agenthicc.tools.fs.linux import LinuxFilesystemBackend  # noqa: PLC0415
+
     return LinuxFilesystemBackend(os.getcwd())
 
 
@@ -71,6 +75,7 @@ async def read_file(path: str, encoding: str = "utf-8") -> dict:
         encoding: Text encoding (default utf-8).
     """
     from agenthicc.tools.fs import ReadFileTool  # noqa: PLC0415
+
     return await ReadFileTool().execute({"path": path, "encoding": encoding}, _CTX())
 
 
@@ -85,6 +90,7 @@ async def write_file(path: str, content: str, create_parents: bool = True) -> di
         create_parents: Create missing parent directories (default True).
     """
     from agenthicc.tools.fs import WriteFileTool  # noqa: PLC0415
+
     return await WriteFileTool().execute(
         {"path": path, "content": content, "create_parents": create_parents}, _CTX()
     )
@@ -100,6 +106,7 @@ async def append_file(path: str, content: str) -> dict:
         content: Text to append.
     """
     from agenthicc.tools.fs import AppendFileTool  # noqa: PLC0415
+
     return await AppendFileTool().execute({"path": path, "content": content}, _CTX())
 
 
@@ -112,6 +119,7 @@ async def delete_file(path: str) -> dict:
         path: File path to delete.
     """
     from agenthicc.tools.fs import DeleteFileTool  # noqa: PLC0415
+
     return await DeleteFileTool().execute({"path": path}, _CTX())
 
 
@@ -125,6 +133,7 @@ async def move_file(source: str, destination: str) -> dict:
         destination: Destination file path.
     """
     from agenthicc.tools.fs import MoveFileTool  # noqa: PLC0415
+
     return await MoveFileTool().execute({"source": source, "destination": destination}, _CTX())
 
 
@@ -138,6 +147,7 @@ async def copy_file(source: str, destination: str) -> dict:
         destination: Destination file path.
     """
     from agenthicc.tools.fs import CopyFileTool  # noqa: PLC0415
+
     return await CopyFileTool().execute({"source": source, "destination": destination}, _CTX())
 
 
@@ -152,6 +162,7 @@ async def list_directory(path: str = ".", pattern: str = "*", recursive: bool = 
         recursive: If True, traverse subdirectories recursively.
     """
     from agenthicc.tools.fs import ListDirectoryTool  # noqa: PLC0415
+
     return await ListDirectoryTool().execute(
         {"path": path, "pattern": pattern, "recursive": recursive}, _CTX()
     )
@@ -166,6 +177,7 @@ async def make_directory(path: str) -> dict:
         path: Directory path to create.
     """
     from agenthicc.tools.fs import MakeDirectoryTool  # noqa: PLC0415
+
     return await MakeDirectoryTool().execute({"path": path}, _CTX())
 
 
@@ -178,6 +190,7 @@ async def file_exists(path: str) -> dict:
         path: Path to check.
     """
     from agenthicc.tools.fs import FileExistsTool  # noqa: PLC0415
+
     return await FileExistsTool().execute({"path": path}, _CTX())
 
 
@@ -192,6 +205,7 @@ async def search_files(pattern: str, path: str = ".", recursive: bool = True) ->
         recursive: Search subdirectories recursively (default True).
     """
     from agenthicc.tools.fs import SearchFilesTool  # noqa: PLC0415
+
     return await SearchFilesTool().execute(
         {"pattern": pattern, "path": path, "recursive": recursive}, _CTX()
     )
@@ -208,6 +222,7 @@ async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> di
         max_results: Maximum number of matches to return (default 50).
     """
     from agenthicc.tools.fs import GrepFilesTool  # noqa: PLC0415
+
     return await GrepFilesTool().execute(
         {"pattern": pattern, "path": path, "recursive": True, "max_results": max_results},
         _CTX(),
@@ -223,6 +238,7 @@ async def get_file_info(path: str) -> dict:
         path: File or directory path.
     """
     from agenthicc.tools.fs import GetFileInfoTool  # noqa: PLC0415
+
     return await GetFileInfoTool().execute({"path": path}, _CTX())
 
 
@@ -237,6 +253,7 @@ async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict:
         end: Last line to read inclusive (default: end of file).
     """
     from agenthicc.tools.fs import ReadLinesTool  # noqa: PLC0415
+
     args: dict = {"path": path, "start": start}
     if end is not None:
         args["end"] = end
@@ -254,6 +271,7 @@ async def patch_file(path: str, old_content: str, new_content: str) -> dict:
         new_content: Replacement string.
     """
     from agenthicc.tools.fs import PatchFileTool  # noqa: PLC0415
+
     return await PatchFileTool().execute(
         {"path": path, "old_content": old_content, "new_content": new_content}, _CTX()
     )
@@ -300,7 +318,7 @@ async def grep_file(
                 before_start = max(0, i - context_lines)
                 after_end = min(len(lines), i + context_lines + 1)
                 entry["context_before"] = lines[before_start:i]
-                entry["context_after"] = lines[i + 1:after_end]
+                entry["context_after"] = lines[i + 1 : after_end]
             matches.append(entry)
     return {"ok": True, "path": path, "matches": matches, "total_matches": len(matches)}
 
@@ -360,7 +378,7 @@ async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict:
 
         apply_at = old_start + offset
         # Verify context matches
-        file_slice = result_lines[apply_at:apply_at + len(old_lines)]
+        file_slice = result_lines[apply_at : apply_at + len(old_lines)]
         if file_slice != old_lines:
             hunks_failed += 1
             if not allow_partial:
@@ -371,13 +389,18 @@ async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict:
                     "error": f"hunk {hunk_num} context mismatch",
                 }
             continue
-        result_lines[apply_at:apply_at + len(old_lines)] = new_lines
+        result_lines[apply_at : apply_at + len(old_lines)] = new_lines
         offset += len(new_lines) - len(old_lines)
         hunks_applied += 1
 
     new_content = "".join(result_lines)
     b.write_text(path, new_content)
-    return {"ok": True, "hunks_applied": hunks_applied, "hunks_failed": hunks_failed, "result": new_content}
+    return {
+        "ok": True,
+        "hunks_applied": hunks_applied,
+        "hunks_failed": hunks_failed,
+        "result": new_content,
+    }
 
 
 @tool_read
@@ -541,7 +564,12 @@ async def batch_move(moves: list[dict]) -> dict:
             results.append({"source": src, "destination": dst, "ok": False, "error": str(exc)})
             all_ok = False
     succeeded = sum(1 for r in results if r["ok"])
-    return {"ok": all_ok, "results": results, "succeeded": succeeded, "failed": len(moves) - succeeded}
+    return {
+        "ok": all_ok,
+        "results": results,
+        "succeeded": succeeded,
+        "failed": len(moves) - succeeded,
+    }
 
 
 @tool_write
@@ -565,15 +593,38 @@ async def batch_copy(copies: list[dict]) -> dict:
             results.append({"source": src, "destination": dst, "ok": False, "error": str(exc)})
             all_ok = False
     succeeded = sum(1 for r in results if r["ok"])
-    return {"ok": all_ok, "results": results, "succeeded": succeeded, "failed": len(copies) - succeeded}
+    return {
+        "ok": all_ok,
+        "results": results,
+        "succeeded": succeeded,
+        "failed": len(copies) - succeeded,
+    }
 
 
 #: All 24 fs agent tools — ready to pass to @use_tools().
 FS_AGENT_TOOLS = [
-    read_file, write_file, append_file, delete_file,
-    move_file, copy_file, list_directory, make_directory,
-    file_exists, search_files, grep_files, get_file_info,
-    read_lines, patch_file,
-    grep_file, apply_diff, checksum_file, truncate_file, touch_file,
-    batch_read, batch_write, batch_delete, batch_move, batch_copy,
+    read_file,
+    write_file,
+    append_file,
+    delete_file,
+    move_file,
+    copy_file,
+    list_directory,
+    make_directory,
+    file_exists,
+    search_files,
+    grep_files,
+    get_file_info,
+    read_lines,
+    patch_file,
+    grep_file,
+    apply_diff,
+    checksum_file,
+    truncate_file,
+    touch_file,
+    batch_read,
+    batch_write,
+    batch_delete,
+    batch_move,
+    batch_copy,
 ]
