@@ -493,18 +493,49 @@ Kernel tuning parameters. Reflected from `AgenthiccConfig.execution` via
 ### Tool
 
 ```python
-@dataclass
 class Tool:
     name: str
     description: str
-    parameters_schema: dict[str, Any]
-    fn: Callable[..., Awaitable[Any]]
-    timeout_seconds: float = 30.0
-    max_retries: int = 0
-    fallback: Callable[..., Awaitable[Any]] | None = None
+    parameters: dict[str, object]
+
+    async def execute(
+        self,
+        args: dict[str, object],
+        context: dict[str, object],
+    ) -> dict[str, object]: ...
 ```
 
-Typed tool descriptor consumed by `AgenthiccToolExecutor`.
+Legacy class-based tool contract. Existing filesystem, Git, exec, Outlook, and
+MCP tools use this signature and are adapted to lauren-ai's executor.
+
+### ToolBase
+
+```python
+class ToolBase(ABC):
+    async def execute(
+        self,
+        context: ToolCallContext,
+        args: dict[str, object],
+    ) -> ToolResult: ...
+```
+
+Typed Agenthicc contract for new class-based tools. Callable tools decorated
+with `lauren_ai.tool()` are accepted directly as well.
+
+### ToolResult
+
+```python
+@dataclass
+class ToolResult:
+    ok: bool
+    value: object = None
+    error: str | None = None
+    duration_ms: float = 0.0
+    error_kind: str | None = None
+```
+
+Compatibility envelope for typed Agenthicc tools. Runtime dispatch and the
+provider-facing result remain lauren-ai's `ToolResult`.
 
 ---
 
@@ -513,56 +544,55 @@ Typed tool descriptor consumed by `AgenthiccToolExecutor`.
 ```python
 @dataclass
 class ToolResultEnvelope:
-    tool_use_id: str
-    name: str
-    result: Any
-    error: str | None
-    duration_ms: float
-    retries: int = 0
+    tool_call_id: str
+    tool_name: str
+    ok: bool
+    value: object = None
+    error: str | None = None
+    duration_ms: float = 0.0
+    error_kind: str | None = None
 ```
 
-Returned by `AgenthiccToolExecutor.execute`. `error` is non-None on failure.
+Agenthicc adapter envelope returned by `ToolExecutor.execute`. `error_kind` is
+one of `unknown`, `denied`, `approval_required`, `timeout`, `network`,
+`provider`, or `execution` on failure.
+
+### ToolCallContext and ToolContext
+
+These names re-export lauren-ai's canonical `ToolCallContext` and
+`ToolContext`; Agenthicc does not define a competing context type.
 
 ---
 
 ### LifecycleHook
 
 ```python
-class LifecycleHook(ABC):
-    async def pre_execute(self, tool: Tool, inputs: dict) -> dict
-    async def post_execute(self, tool: Tool, inputs: dict, result: Any) -> Any
-    async def on_error(self, tool: Tool, inputs: dict, error: Exception) -> RecoveryAction
+class LifecycleHook(lauren_ai.ToolHook):
+    async def before_tool_call(
+        self,
+        ctx: ToolCallContext,
+    ) -> BeforeToolHookDecision: ...
+    async def after_tool_call(
+        self,
+        result: object,
+        ctx: ToolCallContext,
+    ) -> AfterToolHookDecision: ...
+    async def on_tool_error(
+        self,
+        exc: Exception,
+        ctx: ToolCallContext,
+    ) -> ErrorToolHookDecision: ...
 ```
 
-Abstract base for lifecycle hooks. Subclass and implement the stages you care about.
-`pre_execute` returns a (possibly modified) inputs dict. `on_error` returns a
-`RecoveryAction` controlling retry/fallback/abort/ignore behaviour.
+Compatibility name for lauren-ai's hook base and decision protocol. Hook
+ordering, approval gates, input modification, replacement, and suppression are
+executed by lauren-ai's `ToolExecutor`.
 
 ---
 
-### RecoveryAction
-
-```python
-class RecoveryAction(str, Enum):
-    retry = "retry"
-    fallback = "fallback"
-    abort = "abort"
-    ignore = "ignore"
-```
-
-Return value from `LifecycleHook.on_error`.
-
----
-
-### Rejection
-
-```python
-class Rejection(Exception):
-    def __init__(self, reason: str) -> None: ...
-```
-
-Raised by hooks or validators to reject a tool call or intent. Carries the
-human-readable `reason` string.
+Lauren's `BeforeToolHookDecision`, `AfterToolHookDecision`, and
+`ErrorToolHookDecision` are the canonical hook outcomes. Agenthicc does not
+define a competing recovery or rejection protocol for tool execution.
 
 ---
 
@@ -570,12 +600,12 @@ human-readable `reason` string.
 
 ```python
 class HookRegistry:
-    def register(self, entity_type: str, stage: str, handler_dotpath: str) -> None
-    def get(self, entity_type: str, stage: str) -> list[str]
+    def register(self, entity_type: str, stage: str, hook: ToolHook | str) -> None
+    def get(self, entity_type: str, stage: str) -> list[ToolHook]
 ```
 
-Maps `(entity_type, stage)` pairs to lists of handler dotpaths. `entity_type` is
-typically a tool name or `"*"` (wildcard).
+Configuration helper for lauren-ai hooks. `stage` is `before`, `after`, or
+`error`; entries may be hook instances or `module:attribute` dotpaths.
 
 ---
 
@@ -583,16 +613,28 @@ typically a tool name or `"*"` (wildcard).
 
 ```python
 class HookRunner:
-    def __init__(self, registry: HookRegistry) -> None: ...
-
-    async def run_pre(self, tool: Tool, inputs: dict) -> dict
-    async def run_post(self, tool: Tool, inputs: dict, result: Any) -> Any
-    async def run_error(self, tool: Tool, inputs: dict, error: Exception) -> RecoveryAction
+    async def run_before(
+        self,
+        entity_type: str,
+        tool_call: object,
+        ctx: ToolCallContext,
+    ) -> BeforeToolHookDecision | None: ...
+    async def run_after(
+        self,
+        entity_type: str,
+        result: object,
+        ctx: ToolCallContext,
+    ) -> object: ...
+    async def run_error(
+        self,
+        entity_type: str,
+        exc: Exception,
+        ctx: ToolCallContext,
+    ) -> ErrorToolHookDecision | None: ...
 ```
 
-Loads hook classes by dotpath and runs all registered hooks for a stage in parallel
-via `asyncio.gather`. Pre-stage hooks run sequentially (each modifies inputs for
-the next); post and error hooks run in parallel.
+Compatibility inspection helper that invokes the same lauren decision types;
+production execution goes through lauren-ai's executor.
 
 ---
 
@@ -600,12 +642,11 @@ the next); post and error hooks run in parallel.
 
 ```python
 class LaurenToolHookAdapter(LifecycleHook):
-    def __init__(self, lauren_hook: Any) -> None: ...
+    def __init__(self, lauren_hook: ToolHook) -> None: ...
 ```
 
-Wraps a lauren-ai `@tool()` hook object into the `LifecycleHook` interface,
-forwarding calls to the underlying lauren hook's `before_call` / `after_call`
-/ `on_error` methods.
+Adapts an existing lauren-ai `ToolHook` while preserving lauren's decision
+objects.
 
 ---
 
@@ -615,13 +656,43 @@ forwarding calls to the underlying lauren hook's `before_call` / `after_call`
 class AgenthiccToolExecutor:
     def __init__(
         self,
-        permission_checker: PermissionChecker,
-        hook_runner: HookRunner,
+        tools: Iterable[object] | None = None,
+        *,
+        sandbox: ToolSandbox | None = None,
+        global_hooks: list[ToolHook] | None = None,
+        approval_handler: ApprovalHandler | None = None,
+        event_sink: object | None = None,
+        default_timeout_s: float = 30.0,
     ) -> None: ...
 ```
 
-Orchestrates permission check → pre-hooks → execute → post-hooks → retry/fallback
-on error. All stages are timed; duration is recorded in `ToolResultEnvelope`.
+Adapter around lauren-ai's canonical executor. It registers legacy `Tool`
+objects, typed `ToolBase` objects, and lauren `@tool()` callables, while adding
+capability/source/destructive catalog metadata, sandbox handles, timing, and
+stable error categories. `event_sink`, when supplied, receives lauren-ai
+`ToolCallStarted` and `ToolCallComplete` signals. `ToolExecutor` is an alias
+for this class.
+
+### ToolMetadata and catalog
+
+```python
+@dataclass(frozen=True)
+class ToolMetadata:
+    name: str
+    description: str
+    parameters: dict[str, object]
+    capabilities: frozenset[str] = frozenset()
+    source: str = "unknown"
+    destructive: bool = False
+    requires_approval: bool = False
+    timeout_s: float = 30.0
+    max_retries: int = 0
+```
+
+`AgenthiccToolExecutor.catalog()` returns JSON-like records for every
+registered tool. `max_retries` is metadata only: side-effecting calls are not
+silently repeated by this adapter; retry/replay remains owned by lauren-ai's
+runner and idempotency layer.
 
 ---
 
@@ -630,19 +701,26 @@ on error. All stages are timed; duration is recorded in `ToolResultEnvelope`.
 ```python
 async def execute(
     self,
-    tool: Tool,
-    inputs: dict[str, Any],
-    tool_use_id: str,
-    agent_id: str | None = None,
+    tool_name: str,
+    args: dict[str, object],
+    tool_use_id: str = "",
+    context: ToolCallContext | None = None,
 ) -> ToolResultEnvelope
 ```
 
-Execute a single tool call with the full permission/hook/timeout pipeline.
+Execute a registered tool through lauren-ai. Approval-required calls return an
+`approval_required` envelope when no handler is configured; with a handler,
+lauren's `ToolPendingApprovalSignal` is passed to the handler and approved
+calls resume via lauren's `execute_approved()` path.
 
-**Return**: `ToolResultEnvelope` — check `.error` for failure.
+**Return**: `ToolResultEnvelope` — inspect `.ok`, `.value`, `.error`, and
+`.error_kind`.
 
-**Common error**: `Rejection` from permission checker or hooks; `asyncio.TimeoutError`
-wrapped in the envelope rather than re-raised.
+### ToolErrorKind and ApprovalDecision
+
+`ToolErrorKind` is a string enum with `unknown`, `denied`,
+`approval_required`, `timeout`, `network`, `provider`, and `execution` values.
+`ApprovalDecision` has `approved` and `denied` values.
 
 ---
 
@@ -651,13 +729,39 @@ wrapped in the envelope rather than re-raised.
 ```python
 async def execute_parallel(
     self,
-    calls: list[tuple[Tool, dict, str]],
-    agent_id: str | None = None,
+    calls: Sequence[tuple[str, dict[str, object], str]],
+    context: ToolCallContext | None = None,
 ) -> list[ToolResultEnvelope]
 ```
 
-Execute multiple `(tool, inputs, tool_use_id)` triples concurrently via
-`asyncio.gather`. Returns results in the same order as `calls`.
+Execute multiple registered calls concurrently via `asyncio.gather`, preserving
+input order.
+
+### normalize_result
+
+```python
+def normalize_result(raw: object) -> ToolResult: ...
+```
+
+Normalize Agenthicc envelopes, lauren results, JSON error payloads, and plain
+values for adapter-level inspection.
+
+### ToolSandbox and ResourceLimits
+
+```python
+@dataclass(frozen=True)
+class ResourceLimits:
+    cpu_seconds: int | None = None
+    memory_mb: int | None = None
+
+class ToolSandbox:
+    async def run(self, operation: Awaitable[T], timeout_s: float = 0.0) -> T: ...
+    def resolve(self, path: str | Path) -> Path: ...
+    def check_url(self, url: str) -> None: ...
+```
+
+Shared timeout, path, network, and best-effort POSIX resource boundary passed
+to legacy and typed adapters. An empty network allow-list denies all hosts.
 
 ---
 

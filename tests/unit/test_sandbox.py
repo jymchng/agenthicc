@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 
+import asyncio
+from unittest.mock import patch
+
 import pytest
 
-from agenthicc.tools.sandbox import NetworkGuard, WorkspaceView
+from agenthicc.tools.sandbox import NetworkGuard, ResourceLimits, ToolSandbox, WorkspaceView
 
 pytestmark = pytest.mark.unit
 
@@ -74,6 +77,13 @@ class TestWorkspaceViewReadWriteText:
         with pytest.raises(PermissionError):
             view.read_text("../../etc/passwd")
 
+    def test_exists_and_list_dir(self, tmp_path):
+        (tmp_path / "a.txt").write_text("a")
+        view = WorkspaceView(tmp_path)
+        assert view.exists("a.txt") is True
+        assert view.exists("missing.txt") is False
+        assert view.list_dir() == ["a.txt"]
+
 
 # ---------------------------------------------------------------------------
 # NetworkGuard
@@ -108,3 +118,54 @@ class TestNetworkGuard:
         guard = NetworkGuard(["example.com"])
         with pytest.raises(PermissionError):
             guard.check("https://notexample.com/page")
+
+
+class TestToolSandbox:
+    @pytest.mark.asyncio
+    async def test_run_returns_result_with_timeout_disabled(self):
+        sandbox = ToolSandbox()
+        assert await sandbox.run(asyncio.sleep(0, result="done")) == "done"
+
+    @pytest.mark.asyncio
+    async def test_run_enforces_timeout(self):
+        sandbox = ToolSandbox()
+        with pytest.raises(asyncio.TimeoutError):
+            await sandbox.run(asyncio.sleep(0.1), timeout_s=0.001)
+
+    def test_allowed_paths_and_network_are_exposed(self, tmp_path):
+        sandbox = ToolSandbox(
+            allowed_paths=[tmp_path],
+            network_allow_list=["example.com"],
+            limits=ResourceLimits(cpu_seconds=2, memory_mb=64),
+        )
+        assert sandbox.workspace is not None
+        assert sandbox.resolve("file.txt") == tmp_path / "file.txt"
+        assert sandbox.limits.cpu_seconds == 2
+        sandbox.check_url("https://api.example.com/data")
+        with pytest.raises(PermissionError):
+            sandbox.resolve("../outside.txt")
+        with pytest.raises(PermissionError):
+            sandbox.check_url("https://evil.com")
+
+    def test_unrestricted_sandbox_resolves_absolute_path(self, tmp_path):
+        sandbox = ToolSandbox()
+        assert sandbox.resolve(tmp_path / "file.txt") == tmp_path / "file.txt"
+
+    def test_resource_limits_are_applied_and_restored(self):
+        import resource
+
+        with patch.object(resource, "getrlimit", return_value=(-1, -1)):
+            with patch.object(resource, "setrlimit") as setrlimit:
+                with ToolSandbox(
+                    limits=ResourceLimits(cpu_seconds=2, memory_mb=64)
+                ).resource_limits():
+                    pass
+        assert setrlimit.call_count == 4
+
+    def test_resource_limit_setup_failures_are_best_effort(self):
+        import resource
+
+        with patch.object(resource, "getrlimit", return_value=(-1, -1)):
+            with patch.object(resource, "setrlimit", side_effect=OSError("unsupported")):
+                with ToolSandbox(limits=ResourceLimits(cpu_seconds=1)).resource_limits():
+                    pass

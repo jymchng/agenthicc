@@ -82,8 +82,8 @@ cancel, and terminal resize behaviour.
 The canonical command definitions are in `commands/builtins.py`. Stateful
 commands such as `/workflow` and `/compact` are intentionally intercepted by
 `TUISession` because they need session fields. The legacy completion constants
-in `tui/input/completions.py` are a known duplicate and must stay synchronized
-until the registry consolidation in PRD-138 P1.5.
+and `CommandRegistry` in `tui/input/completions.py` are compatibility adapters
+over the canonical registry; new commands must not be added there.
 
 ## Testing UI changes
 

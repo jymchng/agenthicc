@@ -3,6 +3,7 @@
 Exercises build_builtin_registry, CommandDispatcher, SlashCommandTrigger, and
 discover_command_plugins together to validate end-to-end behaviour.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -105,8 +106,6 @@ def test_plugin_command_registered_and_dispatched(tmp_path):
     cmds_dir = tmp_path / ".agenthicc" / "commands"
     cmds_dir.mkdir(parents=True)
 
-    handler_calls = []
-
     # Write the plugin file
     plugin_file = cmds_dir / "test_cmd.py"
     plugin_file.write_text(
@@ -208,8 +207,7 @@ def test_discovery_command_has_correct_source_id(tmp_path):
     cmds_dir.mkdir(parents=True)
 
     (cmds_dir / "test_cmd.py").write_text(
-        "from agenthicc.commands import Command\n"
-        "COMMAND = Command('/test-src', 'Test source id')\n"
+        "from agenthicc.commands import Command\nCOMMAND = Command('/test-src', 'Test source id')\n"
     )
 
     plugin_set = discover_command_plugins(
@@ -235,18 +233,33 @@ def test_builtin_commands_all_retrievable():
         assert reg.get(cmd.name) is cmd, f"Could not retrieve built-in {cmd.name}"
 
 
+def test_legacy_completion_registry_dispatches_canonical_builtin():
+    """The legacy registry adapter retains canonical handlers for dispatch callers."""
+    from agenthicc.commands import CommandDispatcher
+    from agenthicc.tui.input.completions import build_default_registry
+
+    reg = build_default_registry()
+    ctx = MagicMock()
+    ctx.args = ""
+    ctx.session_id = ""
+
+    assert CommandDispatcher(reg).dispatch("/status", ctx) is True
+
+
 def test_dispatch_with_args_uses_menu_factory(monkeypatch):
     """menu_factory always wins (PRD-70): args are passed to the factory via ctx.args."""
     menu_args = []
     handler_called = []
 
     reg = build_builtin_registry()
-    reg.register(Command(
-        "/dual",
-        "Dual",
-        handler=lambda ctx: handler_called.append(ctx.args) or True,
-        menu_factory=lambda ctx: menu_args.append(ctx.args) or object(),
-    ))
+    reg.register(
+        Command(
+            "/dual",
+            "Dual",
+            handler=lambda ctx: handler_called.append(ctx.args) or True,
+            menu_factory=lambda ctx: menu_args.append(ctx.args) or object(),
+        )
+    )
 
     disp = CommandDispatcher(reg)
     ctx = MagicMock()

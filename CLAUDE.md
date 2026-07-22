@@ -127,8 +127,8 @@ the current mismatch is tracked as PRD-138 P0.5.
 2. Provide a handler, or explicitly intercept it in `TUISession` when it needs
    session-local state (as `/workflow` and `/compact` currently do).
 3. Keep completion, dispatch, aliases, argument hints, and help output in one
-   registry. The duplicate legacy list in `tui/input/completions.py` is tracked
-   for consolidation.
+   registry. The legacy names in `tui/input/completions.py` are compatibility
+   adapters over that canonical registry.
 4. Test both picker visibility and execution.
 
 ### Extending the TUI or terminal

@@ -4,6 +4,7 @@ Covers SlashCommandTrigger (get_matches, on_select, on_cancel, get_hint) and
 CommandRegistry (register, dedup, groups, unregister, matches, len) including
 the build_default_registry factory.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -11,7 +12,16 @@ from pathlib import Path
 
 from agenthicc.tui.trigger import TriggerContext, MatchItem
 from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
-from agenthicc.tui.input.completions import CommandRegistry, CommandSpec, build_default_registry, BUILTIN_COMMANDS
+from agenthicc.tui.input.completions import (
+    CommandRegistry,
+    CommandSpec,
+    build_default_registry,
+    BUILTIN_COMMANDS,
+)
+from agenthicc.commands import (
+    BUILTIN_COMMANDS as CANONICAL_BUILTIN_COMMANDS,
+    build_builtin_registry,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -105,6 +115,7 @@ def test_get_matches_sorted_alphabetically():
 
 def test_on_select_inserts_command():
     from agenthicc.tui.trigger import TriggerResult
+
     t = SlashCommandTrigger(_reg(CommandSpec("/model", "Switch")))
     item = MatchItem(display="/model  Switch", value="/model")
     result = t.on_select(item, "mod", [])
@@ -115,6 +126,7 @@ def test_on_select_inserts_command():
 
 def test_on_select_inserts_into_existing_buf():
     from agenthicc.tui.trigger import TriggerResult
+
     t = SlashCommandTrigger(_reg(CommandSpec("/model", "Switch")))
     item = MatchItem(display="/model  Switch", value="/model")
     result = t.on_select(item, "mod", list("run "))
@@ -124,6 +136,7 @@ def test_on_select_inserts_into_existing_buf():
 
 def test_on_select_none_restores_literal():
     from agenthicc.tui.trigger import TriggerResult
+
     t = SlashCommandTrigger(CommandRegistry())
     result = t.on_select(None, "dep", [])
     assert isinstance(result, TriggerResult)
@@ -132,6 +145,7 @@ def test_on_select_none_restores_literal():
 
 def test_on_select_none_empty_fragment():
     from agenthicc.tui.trigger import TriggerResult
+
     t = SlashCommandTrigger(CommandRegistry())
     result = t.on_select(None, "", [])
     assert isinstance(result, TriggerResult)
@@ -140,6 +154,7 @@ def test_on_select_none_empty_fragment():
 
 def test_on_select_none_preserves_existing_buf():
     from agenthicc.tui.trigger import TriggerResult
+
     t = SlashCommandTrigger(CommandRegistry())
     result = t.on_select(None, "foo", list("hello "))
     assert isinstance(result, TriggerResult)
@@ -338,11 +353,13 @@ def test_command_registry_commands_for_group():
 
 def test_command_registry_register_many():
     reg = CommandRegistry()
-    reg.register_many([
-        CommandSpec("/a", "A"),
-        CommandSpec("/b", "B"),
-        CommandSpec("/c", "C"),
-    ])
+    reg.register_many(
+        [
+            CommandSpec("/a", "A"),
+            CommandSpec("/b", "B"),
+            CommandSpec("/c", "C"),
+        ]
+    )
     assert len(reg) == 3
 
 
@@ -377,6 +394,28 @@ def test_build_default_registry_groups_include_builtin():
     reg = build_default_registry()
     groups = reg.groups()
     assert "Built-in" in groups
+
+
+def test_legacy_completion_registry_uses_canonical_command_objects():
+    """The compatibility registry must not maintain a separate built-in list."""
+    reg = build_default_registry()
+    assert BUILTIN_COMMANDS is CANONICAL_BUILTIN_COMMANDS
+    assert [cmd.name for cmd in reg.all_commands()] == sorted(
+        cmd.name for cmd in CANONICAL_BUILTIN_COMMANDS
+    )
+    for cmd in CANONICAL_BUILTIN_COMMANDS:
+        assert reg.get(cmd.name) is cmd
+
+
+def test_picker_exposes_every_canonical_builtin_command():
+    """Every canonical built-in, including session-intercepted commands, is visible."""
+    trigger = SlashCommandTrigger(build_builtin_registry())
+    matches = trigger.get_matches("", CTX)
+    assert {match.value for match in matches} == {
+        command.name for command in CANONICAL_BUILTIN_COMMANDS
+    }
+    assert "/workflow" in {match.value for match in matches}
+    assert "/compact" in {match.value for match in matches}
 
 
 # ── SlashCommandTrigger char ──────────────────────────────────────────────────

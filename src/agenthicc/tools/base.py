@@ -1,29 +1,99 @@
-"""Tool ABC and result envelope for the Agenthicc tool execution layer (PRD-04)."""
+"""Common tool contracts for the Agenthicc execution layer."""
 
 from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
+from dataclasses import replace
+from typing import TYPE_CHECKING, ClassVar
 
-__all__ = ["Tool", "ToolResultEnvelope"]
+if TYPE_CHECKING:
+    from agenthicc.tools.context import ToolCallContext
+
+__all__ = ["Tool", "ToolBase", "ToolResult", "ToolResultEnvelope"]
 
 
-class Tool(abc.ABC):
-    """Abstract base class every Agenthicc tool must implement.
+@dataclass(slots=True)
+class ToolResult:
+    """Normalized result returned by every Agenthicc tool call.
 
-    Subclasses declare:
-
-    * ``name`` — stable identifier used in tool_use messages and registry keys.
-    * ``description`` — human-readable description forwarded to the LLM.
-    * ``parameters`` — JSON Schema dict describing the accepted arguments.
+    ``value`` is populated for successful calls.  Failed calls retain a stable
+    ``error_kind`` so callers can distinguish policy, timeout, network, and
+    provider failures without parsing human-readable error text.
     """
 
-    name: str = ""
-    description: str = ""
-    parameters: dict[str, object] = {}
+    ok: bool
+    value: object = None
+    error: str | None = None
+    duration_ms: float = 0.0
+    error_kind: str | None = None
+
+    @classmethod
+    def success(cls, value: object = None) -> "ToolResult":
+        """Build a successful result."""
+        return cls(ok=True, value=value)
+
+    @classmethod
+    def failure(
+        cls,
+        error: str,
+        *,
+        error_kind: str | None = None,
+    ) -> "ToolResult":
+        """Build a failed result with an optional machine-readable kind."""
+        return cls(ok=False, error=error, error_kind=error_kind)
+
+    def with_duration(self, duration_ms: float) -> "ToolResult":
+        """Return a copy carrying the measured execution duration."""
+        return replace(self, duration_ms=duration_ms)
+
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-compatible result envelope."""
+        return {
+            "ok": self.ok,
+            "value": self.value,
+            "error": self.error,
+            "duration_ms": self.duration_ms,
+            "error_kind": self.error_kind,
+        }
+
+
+class ToolBase(abc.ABC):
+    """Typed base class for tools executed by :class:`ToolExecutor`."""
+
+    name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    parameters: ClassVar[dict[str, object]] = {}
+    capabilities: ClassVar[frozenset[str]] = frozenset()
+    destructive: ClassVar[bool] = False
+    requires_approval: ClassVar[bool] = False
 
     @abc.abstractmethod
-    async def execute(self, args: dict[str, object], context: dict[str, object]) -> dict[str, object]:
+    async def execute(
+        self,
+        context: "ToolCallContext",
+        args: dict[str, object],
+    ) -> ToolResult:
+        """Execute with the normalized context and validated arguments."""
+        ...
+
+
+class Tool(ToolBase):
+    """Legacy tool contract retained for existing built-in subclasses.
+
+    Existing Agenthicc tools accept ``(args, context)`` and return a plain
+    dictionary.  ``ToolExecutor`` adapts that shape to :class:`ToolResult`.
+    New tools should inherit :class:`ToolBase` and use the typed signature.
+
+    Subclasses declare the same stable metadata as :class:`ToolBase`.
+    """
+
+    @abc.abstractmethod
+    async def execute(
+        self,
+        args: dict[str, object],
+        context: dict[str, object],
+    ) -> dict[str, object]:
         """Execute the tool.
 
         :param args: Argument dict (matching :attr:`parameters`).
@@ -44,6 +114,7 @@ class ToolResultEnvelope:
     value: object = None
     error: str | None = None
     duration_ms: float = 0.0
+    error_kind: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -53,4 +124,5 @@ class ToolResultEnvelope:
             "value": self.value,
             "error": self.error,
             "duration_ms": self.duration_ms,
+            "error_kind": self.error_kind,
         }

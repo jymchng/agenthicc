@@ -1,13 +1,21 @@
 """Completion data types for the TUI input system (PRD-57 §6.8).
 
-Canonical location for command registry and @-mention file completions.
+The command types in this module are retained for backwards compatibility.
+The canonical command definitions and registry live in
+``agenthicc.commands``; this module adapts the old names to that implementation
+so completion and dispatch cannot drift apart.
 ``agenthicc.tui.input_bar`` is a backward-compatibility re-export of this module.
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from agenthicc.commands.builtins import BUILTIN_COMMANDS as _CANONICAL_BUILTIN_COMMANDS
+from agenthicc.commands.command import Command
+from agenthicc.commands.registry import UnifiedCommandRegistry
 
 __all__ = [
     "AtMentionCompleter",
@@ -24,30 +32,24 @@ __all__ = [
 
 @dataclass(frozen=True)
 class CommandSpec:
-    """Specification for a slash command shown in the completion menu."""
+    """Legacy metadata-only specification for a custom completion entry.
 
-    name: str           # e.g. "/status"
-    description: str    # e.g. "Show running agents and their tasks"
+    New commands should use :class:`agenthicc.commands.Command`.  The class is
+    kept so callers that only contributed completion metadata continue to work.
+    Built-in commands are not defined with this class.
+    """
+
+    name: str  # e.g. "/status"
+    description: str  # e.g. "Show running agents and their tasks"
     aliases: tuple[str, ...] = ()
-    argument_hint: str = ""      # e.g. "[provider] [model]"  (PRD-37)
-    group: str = "Built-in"      # "Built-in" | "Skills" | "Plugins" | "MCP"  (PRD-38)
+    argument_hint: str = ""  # e.g. "[provider] [model]"  (PRD-37)
+    group: str = "Built-in"  # "Built-in" | "Skills" | "Plugins" | "MCP"  (PRD-38)
 
 
-BUILTIN_COMMANDS: list[CommandSpec] = [
-    CommandSpec("/status",   "Show running agents and their tasks"),
-    CommandSpec("/model",    "Show or switch LLM provider/model",
-                argument_hint="[provider] [model]"),
-    CommandSpec("/models",   "List all available LLM providers"),
-    CommandSpec("/skills",   "List available skills"),
-    CommandSpec("/expand",   "Expand tool output or @mention",
-                argument_hint="[tool-id-or-@path]"),
-    CommandSpec("/history",  "Browse the event log"),
-    CommandSpec("/help",     "List available commands"),
-    CommandSpec("/cancel",   "Cancel the currently running intent"),
-    CommandSpec("/clear",    "Clear the transcript display"),
-    CommandSpec("/mcp",      "Show MCP server status",
-                argument_hint="[connect <url> [transport]]", group="MCP"),
-]
+# Keep the legacy export as an alias, rather than maintaining a second list of
+# built-in definitions.  The objects retain their handlers and menu factories,
+# which also makes this compatibility registry suitable for dispatch callers.
+BUILTIN_COMMANDS: list[Command] = _CANONICAL_BUILTIN_COMMANDS
 
 _SLASH_RE = re.compile(r"(?:^|\s)(\/\S*)$")
 
@@ -58,15 +60,18 @@ class SlashCommandCompleter:
     Returns :class:`CommandSpec` matches for a partial ``/``-prefixed token.
     """
 
-    def __init__(self, commands: list[CommandSpec] | None = None) -> None:
-        self._commands: list[CommandSpec] = list(commands or BUILTIN_COMMANDS)
+    def __init__(
+        self,
+        commands: list[Command | CommandSpec] | None = None,
+    ) -> None:
+        self._commands: list[Command | CommandSpec] = list(commands or BUILTIN_COMMANDS)
 
-    def add(self, spec: CommandSpec) -> None:
+    def add(self, spec: Command | CommandSpec) -> None:
         self._commands.append(spec)
 
-    def matches(self, partial: str) -> list[CommandSpec]:
+    def matches(self, partial: str) -> list[Command | CommandSpec]:
         """Return all commands whose name or alias starts with *partial*."""
-        result: list[CommandSpec] = []
+        result: list[Command | CommandSpec] = []
         for cmd in self._commands:
             for candidate in (cmd.name,) + cmd.aliases:
                 if candidate.startswith(partial):
@@ -74,7 +79,7 @@ class SlashCommandCompleter:
                     break
         return result
 
-    def get_match_for_line(self, line: str) -> list[CommandSpec]:
+    def get_match_for_line(self, line: str) -> list[Command | CommandSpec]:
         """Extract the trailing /token from *line* and return matches."""
         m = _SLASH_RE.search(line)
         if m is None:
@@ -82,61 +87,37 @@ class SlashCommandCompleter:
         return self.matches(m.group(1))
 
 
-class CommandRegistry:
-    """Centralised registry of slash commands (PRD-38)."""
+class CommandRegistry(UnifiedCommandRegistry):
+    """Backward-compatible adapter for the unified slash-command registry.
 
-    def __init__(self) -> None:
-        self._commands: dict[str, CommandSpec] = {}
-        self._aliases: dict[str, str] = {}
+    ``CommandSpec`` inputs are promoted to metadata-only ``Command`` objects;
+    canonical ``Command`` instances are stored unchanged.
+    """
 
-    def register(self, spec: CommandSpec) -> None:
-        self._commands[spec.name] = spec
-        for alias in spec.aliases:
-            self._aliases[alias] = spec.name
+    def register(self, spec: Command | CommandSpec) -> None:
+        command = spec if isinstance(spec, Command) else _command_from_spec(spec)
+        super().register(command)
 
-    def register_many(self, specs: list[CommandSpec]) -> None:
+    def register_many(self, specs: list[Command | CommandSpec]) -> None:
         for spec in specs:
             self.register(spec)
 
-    def unregister(self, name: str) -> None:
-        canonical = self._aliases.pop(name, name)
-        spec = self._commands.pop(canonical, None)
-        if spec:
-            for alias in spec.aliases:
-                self._aliases.pop(alias, None)
 
-    def get(self, name: str) -> CommandSpec | None:
-        canonical = self._aliases.get(name, name)
-        return self._commands.get(canonical)
-
-    def all_commands(self) -> list[CommandSpec]:
-        return sorted(self._commands.values(), key=lambda c: c.name)
-
-    def commands_for_group(self, group: str) -> list[CommandSpec]:
-        return sorted((c for c in self._commands.values() if c.group == group), key=lambda c: c.name)
-
-    def groups(self) -> list[str]:
-        order = ["Built-in", "Skills", "Plugins", "MCP"]
-        seen = {c.group for c in self._commands.values()}
-        return [g for g in order if g in seen] + sorted(seen - set(order))
-
-    def matches(self, partial: str) -> list[CommandSpec]:
-        result = []
-        for cmd in self._commands.values():
-            for candidate in (cmd.name,) + cmd.aliases:
-                if candidate.startswith(partial):
-                    result.append(cmd)
-                    break
-        return sorted(result, key=lambda c: c.name)
-
-    def __len__(self) -> int:
-        return len(self._commands)
+def _command_from_spec(spec: CommandSpec) -> Command:
+    """Promote a legacy completion spec to a unified command."""
+    return Command(
+        name=spec.name,
+        description=spec.description,
+        group=spec.group,
+        aliases=spec.aliases,
+        argument_hint=spec.argument_hint,
+    )
 
 
 def build_default_registry() -> CommandRegistry:
-    """Create a CommandRegistry pre-loaded with BUILTIN_COMMANDS."""
+    """Create the legacy registry adapter pre-loaded with canonical commands."""
     reg = CommandRegistry()
-    reg.register_many(BUILTIN_COMMANDS)
+    reg.register_many(list(_CANONICAL_BUILTIN_COMMANDS))
     return reg
 
 
@@ -207,8 +188,7 @@ class AtMentionCompleter:
                     continue
                 suffix = "/" if entry.is_dir() else ""
                 display = (
-                    f"{dir_part}/{entry.name}{suffix}" if dir_part
-                    else f"{entry.name}{suffix}"
+                    f"{dir_part}/{entry.name}{suffix}" if dir_part else f"{entry.name}{suffix}"
                 )
                 results.append((display, _entry_meta(entry)))
         except PermissionError:

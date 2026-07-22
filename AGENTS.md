@@ -103,8 +103,8 @@ Nox command is a clean-checkout gate until that work is complete.
 2. Give it a handler, or intercept it in `TUISession` when it needs session
    fields.
 3. Test trigger-picker discovery and submitted execution separately.
-4. Keep the duplicate completion list in `tui/input/completions.py` synchronized
-   until the command-registry consolidation is completed.
+4. Do not add a second built-in list: the legacy exports in
+   `tui/input/completions.py` adapt the canonical command registry.
 
 ### Extending the TUI
 

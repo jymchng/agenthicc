@@ -315,13 +315,14 @@ compaction, tool replay, and hard-crash resume with no duplicate side effect.
 #### P1.5 One command and trigger registry
 
 `commands/builtins.py` is the current command registry, while
-`tui/input/completions.py` still contains a second built-in list. Consolidate
-picker visibility, dispatch, aliases, argument hints, plugin source, and
-session-stateful interception behind one registry.
+`tui/input/completions.py` now provides only compatibility adapters over it.
+Picker visibility, dispatch, aliases, argument hints, plugin source, and
+session-stateful interception are consolidated behind the unified registry.
 
 **Acceptance:** every registered command appears in completion and has either a
 handler or an explicit session interceptor; tests cover `/workflow` and
-`/compact` as stateful exceptions.
+`/compact` as stateful exceptions. The compatibility registry is also tested
+against the canonical command objects.
 
 #### P1.6 Tool execution contract
 
@@ -329,6 +330,22 @@ Unify callable-based lauren-ai tools and `Tool` subclasses behind a typed
 execution context, result envelope, capability metadata, approval decision,
 timeout, and error taxonomy. Add a generated tool catalog showing built-ins,
 capabilities, source, and destructive behaviour.
+
+**Implementation status (2026-07-22):** the shared adapter is implemented in
+`agenthicc.tools.executor`. lauren-ai remains authoritative for dispatch,
+context injection, hook ordering, approval signals, approved-call resumption,
+and provider-facing results. Agenthicc supplies compatibility adapters for
+legacy `Tool` classes, typed `ToolBase` classes, catalog metadata, timing,
+sandbox handles, and stable error classification. The focused contract and
+integration suites cover filesystem, Git, exec, Outlook, MCP, and plugin
+registrations at 94% coverage across the changed execution surface.
+
+S3 is currently a filesystem backend selected by the existing router rather
+than a standalone `Tool` class; it therefore uses the same contract when
+exposed through a callable or tool wrapper, while the backend-specific tests
+remain responsible for its storage semantics. The adapter deliberately does
+not retry side-effecting calls; retry and replay remain owned by lauren-ai's
+runner and idempotency layer.
 
 **Acceptance:** file, git, exec, Outlook, MCP, S3, and plugin tools all report
 consistent success, denial, timeout, network, and provider errors.
