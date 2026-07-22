@@ -113,6 +113,11 @@ The workspace treats terminal resizing as one settled repaint, clearing
 Rich's previous geometry before redrawing so an active Plan Review is not
 duplicated in the scrollback.
 
+Tool completions use the same operation-style header as file updates: reads,
+searches, commands, and other tools show a `● Operation(...)` header, a result
+summary, and a bounded numbered output preview. File changes retain their
+unified diff preview.
+
 Useful built-in slash commands include:
 
 | Command | Purpose |

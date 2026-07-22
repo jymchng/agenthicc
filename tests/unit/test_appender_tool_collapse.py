@@ -59,7 +59,7 @@ def _str_calls(console: MagicMock) -> list[str]:
 
 
 def _tool_lines(lines: list[str]) -> list[str]:
-    return [s for s in lines if "⎿" in s and "more tool" not in s]
+    return [s for s in lines if "[green]●[/green]" in s or "[red]✗[/red]" in s]
 
 
 # ── group counting ────────────────────────────────────────────────────────────
@@ -96,6 +96,35 @@ class TestGroupCount:
 
 
 class TestSummaryLine:
+    @pytest.mark.parametrize(
+        ("name", "operation"),
+        [
+            ("read_file", "Read"),
+            ("grep_files", "Search"),
+            ("shell", "Run"),
+            ("git_diff", "Diff"),
+        ],
+    )
+    def test_all_tool_families_use_operation_header(self, name, operation):
+        appender, console = _make_appender()
+
+        _flush(appender, [_tool(name=name)])
+
+        header = _str_calls(console)[0]
+        assert f"[bold]{operation}[/bold]" in header
+
+    def test_tool_uses_operation_header_and_summary(self):
+        appender, console = _make_appender()
+        event = _tool(name="read_file")
+        event.payload["args_str"] = "[dim]('README.md')[/dim]"
+
+        _flush(appender, [event])
+
+        lines = _str_calls(console)
+        assert "[bold]Read[/bold]" in lines[0]
+        assert "[dim]└─[/dim]" in lines[1]
+        assert "[green]Completed[/green]" in lines[1]
+
     def test_tool_output_preview_is_rendered(self):
         appender, console = _make_appender()
         event = _tool()
@@ -107,6 +136,7 @@ class TestSummaryLine:
         lines = _str_calls(console)
         assert any("first line" in line for line in lines)
         assert any("second line" in line for line in lines)
+        assert any("[dim]   1[/dim]" in line for line in lines)
         assert any("+3 more lines" in line for line in lines)
 
     def test_no_summary_at_limit(self):

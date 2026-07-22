@@ -44,9 +44,40 @@ if TYPE_CHECKING:
 
 
 _TOOL_OP: dict[str, str] = {
+    "modify_file": "Update",
     "write_file": "Update",
     "patch_file": "Update",
     "append_file": "Append",
+    "delete_file": "Delete",
+    "move_file": "Move",
+    "copy_file": "Copy",
+    "make_directory": "Create",
+    "touch_file": "Create",
+    "truncate_file": "Update",
+    "apply_diff": "Update",
+}
+
+_TOOL_DISPLAY_OP: dict[str, str] = {
+    "read_file": "Read",
+    "read_lines": "Read",
+    "batch_read": "Read",
+    "list_directory": "List",
+    "search_files": "Search",
+    "grep_file": "Search",
+    "grep_files": "Search",
+    "file_exists": "Check",
+    "get_file_info": "Inspect",
+    "checksum_file": "Checksum",
+    "shell": "Run",
+    "run_bash": "Run",
+    "run_command": "Run",
+    "run_python": "Run",
+    "run_python_expr": "Run",
+    "run_tests": "Test",
+    "git_status": "Status",
+    "git_diff": "Diff",
+    "git_log": "Log",
+    "git_show": "Show",
 }
 
 _LANG_MAP: dict[str, str] = {
@@ -97,6 +128,19 @@ def _fmt_args(args: dict) -> str:
     if len(items) == 1:
         return f"[dim]({_e(repr(items[0][1])[:60])})[/dim]"
     return "[dim](" + ", ".join(f"{_e(k)}={_e(repr(v)[:25])}" for k, v in items[:3]) + ")[/dim]"
+
+
+def _tool_display_operation(name: str) -> str:
+    """Return the user-facing operation verb for a tool completion."""
+    operation = _TOOL_OP.get(name, _TOOL_DISPLAY_OP.get(name))
+    if operation is not None:
+        return operation
+    return name.replace("_", " ").title() if name else "Tool"
+
+
+def _line_count_label(count: int) -> str:
+    word = "line" if count == 1 else "lines"
+    return f"{count} {word}"
 
 
 class ScrollBufferAppender:
@@ -182,28 +226,48 @@ class ScrollBufferAppender:
                 highlight=False,
             )
 
-    def _render_tool_complete(self, payload: dict) -> None:
+    def _render_tool_complete(self, payload: dict[str, object]) -> None:
         from rich.markup import escape as _e
 
-        name = _e(payload.get("name", ""))
-        args_str = payload.get("args_str", "")
-        icon = "[green]✓[/green]" if payload.get("success", True) else "[red]✗[/red]"
-        dur = payload.get("dur_str", "")
+        name = str(payload.get("name", ""))
+        args_str = str(payload.get("args_str", ""))
+        success = bool(payload.get("success", True))
+        operation = _tool_display_operation(name)
+        output_lines_raw = payload.get("output_lines", [])
+        output_lines = (
+            [str(line) for line in output_lines_raw] if isinstance(output_lines_raw, list) else []
+        )
+        preview_lines = output_lines[:4]
+        output_more_raw = payload.get("output_more", 0)
+        output_more = int(output_more_raw) if isinstance(output_more_raw, int) else 0
+        output_more = max(output_more, len(output_lines) - len(preview_lines))
+        output_count = len(preview_lines) + output_more
+        dur = str(payload.get("dur_str", ""))
+
         self._console.print(
-            f"  [dim]⎿[/dim] [bold]{name}[/bold]{args_str}  {icon}{dur}",
+            f"[green]●[/green] [bold]{_e(operation)}[/bold]{args_str}",
             markup=True,
             highlight=False,
         )
-        for ln in payload.get("output_lines", [])[:4]:
+        status = "[green]Completed[/green]" if success else "[red]Failed[/red]"
+        count = f"  [dim]{_line_count_label(output_count)}[/dim]" if output_count else ""
+        self._console.print(
+            f"[dim]└─[/dim] {status}{dur}{count}",
+            markup=True,
+            highlight=False,
+        )
+
+        if preview_lines:
+            self._console.print()
+        for index, ln in enumerate(preview_lines, 1):
             self._console.print(
-                f"    [dim]{_e(str(ln)[:120])}[/dim]",
+                f"  [dim]{index:>4}[/dim]   {_e(ln[:120])}",
                 markup=True,
                 highlight=False,
             )
-        extra = int(payload.get("output_more", max(0, len(payload.get("output_lines", [])) - 4)))
-        if extra > 0:
+        if output_more > 0:
             self._console.print(
-                f"    [dim](+{extra} more lines)[/dim]",
+                f"  [dim]⋯ +{output_more} more lines[/dim]",
                 markup=True,
                 highlight=False,
             )

@@ -43,6 +43,11 @@ settles. The workspace clears Rich's pre-resize live geometry first, so an
 active Plan Review remains a single overlay instead of leaking duplicate
 frames into scrollback.
 
+Tool results use the same operation-style block: `● Read(...)`, `● Run(...)`,
+`● Search(...)`, and similar headers are followed by a status summary and a
+bounded numbered output preview. File edits use the richer `● Update(...)`
+block with its unified diff.
+
 ## Modes
 
 The built-in mode cycle is Auto → Plan → Ask → Review → Safe → Debug. Modes
