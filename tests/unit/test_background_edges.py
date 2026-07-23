@@ -737,3 +737,29 @@ async def test_installed_foreground_wrappers_route_aliases(monkeypatch: pytest.M
     fake = SimpleNamespace(dispatch_slash=lambda text: False)
     assert TUISession.dispatch_slash(fake, "/bg") is True
     await TUISession.handle_send(fake, SimpleNamespace(text="/background"))
+
+
+@pytest.mark.asyncio
+async def test_installed_foreground_wrapper_remembers_plain_request() -> None:
+    from agenthicc.background import integration
+    from agenthicc.runners.tui_session import TUISession
+    from agenthicc.tui.conversation_store import ConversationStore
+
+    integration.install_tui_handoff()
+
+    async def agent_task_body(_text: str) -> None:
+        return
+
+    conversation = ConversationStore()
+    fake = SimpleNamespace(
+        dispatch_slash=lambda text: False,
+        route=lambda text: False,
+        _agent_task=None,
+        _ctx=SimpleNamespace(app_state=SimpleNamespace(conversation=conversation)),
+        agent_task_body=agent_task_body,
+    )
+    await TUISession.handle_send(fake, SimpleNamespace(text="hi"))
+    await fake._agent_task
+
+    assert fake._background_intent == "hi"
+    assert _last_user_text(fake) == "hi"

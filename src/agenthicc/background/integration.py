@@ -25,6 +25,10 @@ _INSTALLED = False
 
 
 def _last_user_text(session: object) -> str:
+    remembered = getattr(session, "_background_intent", "")
+    if isinstance(remembered, str) and remembered.strip():
+        return remembered.strip()
+
     conversation = getattr(getattr(session, "_ctx"), "app_state").conversation
     turns = conversation.turns()
     for turn in reversed(turns):
@@ -126,6 +130,11 @@ def install_tui_handoff() -> None:
         if text.startswith("/") and text.split(maxsplit=1)[0] in {"/bg", "/background"}:
             self.dispatch_slash(text)
             return
+        if text:
+            # TUISession emits user_message before opening the agent turn, so
+            # the event is intentionally not owned by a ConversationTurn.
+            # Remember the accepted input on the session for /background.
+            setattr(self, "_background_intent", text)
         return await original_handle_send(self, cmd)
 
     original_dispatch_key = UnifiedInputSession._dispatch
