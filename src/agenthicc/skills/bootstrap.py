@@ -355,7 +355,10 @@ from agenthicc.workflows.code_plan.definition import CodePlan
 from agenthicc.workflows.plugin import WorkflowPlugin
 
 class MyExtendedRunner(CodePlanRunner):
-    async def run(self, intent: str) -> None:
+    workflow_name = "my_extended_workflow"
+    total_phases = 5
+
+    async def run(self, intent: str):
         ctx = await super().run(intent)  # runs Plan→Execute→Review→Summary
         # ctx.plan, ctx.execute_summary, ctx.review_summary, ctx.shared_memory
         await self.run_phase(
@@ -372,7 +375,7 @@ class MyExtendedWorkflow(CodePlan):
     mode_bindings = ["Plan"]
 
     @classmethod
-    def runner_factory(cls, defn, config, mode_manager):
+    def build_runner(cls, config, mode_manager):
         return MyExtendedRunner(config, mode_manager)
 ```
 
