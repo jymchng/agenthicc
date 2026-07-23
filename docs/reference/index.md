@@ -6,6 +6,7 @@
 | Kernel | `src/agenthicc/kernel/` | [Kernel](kernel.md) |
 | Storage | `memory/`, `tui/runtime/`, `runners/` | [Storage](storage.md) |
 | Configuration | `src/agenthicc/config.py` | [Configuration guide](../guides/configuration.md) |
+| Project bootstrap | `src/agenthicc/project_bootstrap.py` | [Project bootstrap guide](../guides/project-bootstrap.md) |
 | Workflows | `src/agenthicc/workflows/` | [Workflows guide](../guides/workflows.md) |
 | TUI | `src/agenthicc/tui/` | [TUI guide](../guides/tui.md) |
 | Tools/security | `src/agenthicc/tools/`, `security.py` | [Security guide](../guides/security.md) |

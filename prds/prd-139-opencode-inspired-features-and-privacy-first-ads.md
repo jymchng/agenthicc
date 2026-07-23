@@ -1,6 +1,6 @@
 ---
 title: "PRD-139: OpenCode-Inspired Product Expansion and Privacy-First Advertisements"
-status: Proposed
+status: In progress
 version: 0.1.0
 created: 2026-07-22
 related_prds:
@@ -24,6 +24,12 @@ tags:
 ---
 
 # PRD-139 — OpenCode-Inspired Product Expansion and Privacy-First Advertisements
+
+Implementation status: P0 project bootstrap (`agenthicc init` and `/init`) is
+implemented in `src/agenthicc/project_bootstrap.py`, with CLI/TUI integration,
+unit coverage in `tests/unit/test_project_bootstrap.py`, and end-to-end command
+coverage in `tests/integration/test_project_bootstrap.py`. The remaining
+features in this PRD remain proposed.
 
 ## 1. Executive summary
 

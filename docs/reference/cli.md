@@ -21,6 +21,7 @@ based and implemented in `cli/registry.py`.
 
 | Command | Purpose |
 |---|---|
+| `init [--write] [--force]` | Preview or explicitly write project guidance to `AGENTS.md` |
 | `config show` | Print effective configuration |
 | `config init [--force]` | Create `.agenthicc/agenthicc.toml` |
 | `sessions list` | List saved sessions for the current directory |
@@ -39,7 +40,7 @@ Run any command with `--help` for generated argument details.
 ## TUI slash commands
 
 TUI commands are a separate registry from CLI subcommands. Current built-ins
-include `/help`, `/commands`, `/status`, `/history`, `/mode`, `/workflow`,
+include `/help`, `/commands`, `/status`, `/history`, `/mode`, `/workflow`, `/init`,
 `/model`, `/models`, `/skills`, `/mcp`, `/config`, `/compact`, `/replay`,
 `/cancel`, `/clear`, and `/expand`.
 
@@ -52,3 +53,7 @@ capability checks.
 `/workflow` and `/compact` are intercepted by `TUISession` because they need
 session-local state. Both must remain visible in picker completion as well as
 executable when submitted.
+
+`/init` is a local project bootstrap command. It previews by default and uses
+`/init write` or `/init write --force` for explicit writes; it does not invoke
+the model or inspect arbitrary source files.

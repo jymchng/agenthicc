@@ -1702,3 +1702,79 @@ claude-opus-4-8    = 10_000_000
 # Auto-compaction fires at  summarize_at × usable(window).
 # summarize_at is the working-set/cost dial; the window stays the hard ceiling.
 ```
+
+## Project bootstrap — `agenthicc.project_bootstrap`
+
+### Bootstrap constants and errors
+
+```python
+AGENTS_FILENAME: str = "AGENTS.md"
+MANAGED_START: str
+MANAGED_END: str
+
+class BootstrapError(RuntimeError): ...
+class BootstrapWriteError(BootstrapError): ...
+```
+
+The marker constants delimit the section managed by the bootstrapper.
+`BootstrapError` reports unsafe inspection or planning, while
+`BootstrapWriteError` reports an unsafe or stale write attempt.
+
+### ProjectSnapshot
+
+```python
+@dataclass(frozen=True)
+class ProjectSnapshot:
+    root: Path
+    project_name: str
+    stacks: tuple[str, ...]
+    top_level_entries: tuple[str, ...]
+    manifests: tuple[str, ...]
+    test_paths: tuple[str, ...]
+    instruction_files: tuple[str, ...]
+    architecture_hints: tuple[str, ...]
+    verification_commands: tuple[str, ...]
+```
+
+Bounded, non-sensitive project metadata used by the PRD-139 bootstrap service.
+
+### ProjectBootstrapPlan
+
+```python
+@dataclass(frozen=True)
+class ProjectBootstrapPlan:
+    root: Path
+    target: Path
+    snapshot: ProjectSnapshot
+    current_content: str | None
+    proposed_content: str
+```
+
+Reviewable `AGENTS.md` proposal. `preview()` returns a status message or
+unified diff; `changed` reports whether a write is needed.
+
+### inspect_project
+
+```python
+def inspect_project(root: str | Path = ".") -> ProjectSnapshot
+```
+
+Inspect bounded manifests and top-level names through `WorkspaceView` without
+network calls, shell execution, or arbitrary source-file reads.
+
+### build_bootstrap_plan
+
+```python
+def build_bootstrap_plan(root: str | Path = ".") -> ProjectBootstrapPlan
+```
+
+Build a local-only, reviewable managed-section update for the root `AGENTS.md`.
+
+### write_bootstrap_plan
+
+```python
+def write_bootstrap_plan(plan: ProjectBootstrapPlan, *, force: bool = False) -> Path
+```
+
+Atomically write a plan. Existing files require `force=True`; symlinks and
+plans made stale by an intervening edit are rejected.

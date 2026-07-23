@@ -78,6 +78,17 @@ Create a project config if desired:
 uv run agenthicc config init
 ```
 
+Bootstrap project-specific agent guidance with a reviewable local proposal:
+
+```bash
+uv run agenthicc init
+uv run agenthicc init --write
+```
+
+The first command previews an `AGENTS.md` diff. Existing guidance is preserved
+and requires `--write --force` for an explicit update. See the
+[project bootstrap guide](./docs/guides/project-bootstrap.md).
+
 Then launch the terminal workspace and enter a natural-language request:
 
 ```text
@@ -134,6 +145,7 @@ Useful built-in slash commands include:
 | `/workflow <name> \| reset` | Select the workflow for later turns |
 | `/model [provider] [model]` | Inspect or switch the model selection |
 | `/config` | Open the configuration overlay |
+| `/init` | Preview or explicitly write project `AGENTS.md` guidance |
 | `/compact` | Compact conversation memory |
 | `/replay [session-id]` | Replay a saved conversation |
 | `/cancel`, `/clear`, `/expand` | Control the current session or output |
@@ -277,6 +289,7 @@ PRD-138 before using the default all-session invocation on a clean checkout.
 - [Quickstart](./docs/guides/quickstart.md)
 - [Architecture](./docs/guides/architecture.md)
 - [Configuration](./docs/guides/configuration.md)
+- [Project bootstrap](./docs/guides/project-bootstrap.md)
 - [TUI](./docs/guides/tui.md)
 - [Workflows](./docs/guides/workflows.md)
 - [Extensions and plugins](./docs/guides/plugins.md)

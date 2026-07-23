@@ -22,6 +22,8 @@ The primary entry point is `agenthicc.__main__:main`.
   safety helpers.
 - `memory/` provides session/project/global tiers, semantic search, compaction,
   conversation journaling, and durable idempotent tool replay support.
+- `agenthicc init` and `/init` locally inspect bounded project metadata and
+  preview or explicitly write a managed `AGENTS.md` guidance section.
 
 ## Important symbols
 
@@ -48,6 +50,8 @@ The primary entry point is `agenthicc.__main__:main`.
 | `UnifiedInputSession` | `agenthicc.tui.input` | Lifetime input/raw-mode loop |
 | `export_session` | `agenthicc.tui.runtime.session_export` | Redacted portable session export |
 | `inspect_session` | `agenthicc.tui.runtime.session_export` | Redacted durable session health and usage summary |
+| `ProjectSnapshot` / `ProjectBootstrapPlan` | `agenthicc.project_bootstrap` | Bounded project inspection and reviewable `AGENTS.md` proposal |
+| `build_bootstrap_plan` / `inspect_project` / `write_bootstrap_plan` | `agenthicc.project_bootstrap` | Safe project-guidance bootstrap lifecycle |
 
 ## Configuration
 

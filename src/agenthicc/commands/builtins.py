@@ -70,6 +70,57 @@ def _cmd_history(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_init(ctx: CommandContext) -> bool:
+    """Preview or explicitly write project guidance in ``AGENTS.md``."""
+    from pathlib import Path  # noqa: PLC0415
+
+    from agenthicc.project_bootstrap import (  # noqa: PLC0415
+        BootstrapError,
+        BootstrapWriteError,
+        build_bootstrap_plan,
+        write_bootstrap_plan,
+    )
+
+    tokens = set((ctx.args or "").split())
+    write_requested = "write" in tokens or "--write" in tokens
+    force = "force" in tokens or "--force" in tokens
+    try:
+        plan = build_bootstrap_plan(Path.cwd())
+    except BootstrapError as exc:
+        ctx.console.print(f"error: {exc}", markup=False)
+        return True
+
+    preview = plan.preview()
+    if preview:
+        ctx.console.print(
+            preview,
+            markup=False,
+            end="" if preview.endswith("\n") else "\n",
+        )
+    if not plan.changed:
+        return True
+    if not write_requested:
+        ctx.console.print(
+            "Preview only. Review the diff, then run /init write to create AGENTS.md.",
+            markup=False,
+        )
+        return True
+    if plan.exists and not force:
+        ctx.console.print(
+            "Refusing to overwrite existing AGENTS.md. Review the diff, then run "
+            "/init write --force.",
+            markup=False,
+        )
+        return True
+    try:
+        target = write_bootstrap_plan(plan, force=force)
+    except BootstrapWriteError as exc:
+        ctx.console.print(f"error: {exc}", markup=False)
+        return True
+    ctx.console.print(f"Updated {target}", markup=False)
+    return True
+
+
 def _cmd_mcp(ctx: CommandContext) -> bool:
     ctx.console.print("[dim]/mcp: no MCP servers configured or not available.[/dim]")
     return True
@@ -334,6 +385,13 @@ BUILTIN_COMMANDS: list[Command] = [
         name="/history",
         description="Browse the event log",
         handler=_cmd_history,
+    ),
+    Command(
+        name="/init",
+        description="Inspect the project and preview AGENTS.md guidance",
+        argument_hint="[write] [--force]",
+        group="Built-in",
+        handler=_cmd_init,
     ),
     Command(
         name="/mcp",
