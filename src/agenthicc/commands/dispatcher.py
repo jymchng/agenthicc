@@ -27,6 +27,13 @@ class CommandDispatcher:
         if cmd is None:
             return False
 
+        # Skills have a distinct user-facing namespace. Keep this boundary
+        # in the shared dispatcher as well as TUISession.route() so a stale
+        # slash-named skill record cannot revive the removed /skill syntax via
+        # a direct dispatcher call.
+        if cmd.is_skill != name.startswith("$"):
+            return False
+
         ctx_with_args = CommandContext(
             text=text,
             args=args,

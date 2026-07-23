@@ -30,9 +30,9 @@ def test_reload_replaces_only_skill_commands(tmp_path, monkeypatch):
     registry = UnifiedCommandRegistry()
     registry.register(
         Command(
-            "/old",
+            "$old",
             "Old",
-            aliases=("/legacy",),
+            aliases=("$legacy",),
             group="Skills",
             source_id="skill:old",
         )
@@ -58,14 +58,14 @@ def test_reload_replaces_only_skill_commands(tmp_path, monkeypatch):
 
     assert returned is discovery
     assert context.skills == {"new": new}
-    assert registry.get("/old") is None
-    assert registry.get("/legacy") is None
+    assert registry.get("$old") is None
+    assert registry.get("$legacy") is None
     assert registry.get("/keep") is not None
-    assert registry.get("/new") is not None
-    assert registry.get("/fresh") is registry.get("/new")
+    assert registry.get("$new") is not None
+    assert registry.get("$fresh") is registry.get("$new")
 
 
-def test_reload_does_not_replace_builtin_on_skill_name_collision(tmp_path, monkeypatch):
+def test_reload_keeps_command_and_skill_namespaces_independent(tmp_path, monkeypatch):
     from agenthicc.skills import loader
 
     skill = SkillDef(name="Commands", slug="commands", path=tmp_path / "commands")
@@ -81,7 +81,8 @@ def test_reload_does_not_replace_builtin_on_skill_name_collision(tmp_path, monke
     returned = session._reload_skills()
 
     assert registry.get("/commands") is builtin
-    assert any(item.code == "command-conflict" for item in returned.diagnostics)
+    assert registry.get("$commands") is not None
+    assert not any(item.code == "command-conflict" for item in returned.diagnostics)
 
 
 def test_reload_failure_leaves_existing_session_unchanged(tmp_path, monkeypatch):
@@ -90,7 +91,7 @@ def test_reload_failure_leaves_existing_session_unchanged(tmp_path, monkeypatch)
     old = SkillDef(name="Old", slug="old", path=tmp_path / "old")
     registry = UnifiedCommandRegistry()
     old_command = Command(
-        "/old",
+        "$old",
         "Old",
         group="Skills",
         source_id="skill:old",
@@ -109,4 +110,4 @@ def test_reload_failure_leaves_existing_session_unchanged(tmp_path, monkeypatch)
         session._reload_skills()
 
     assert context.skills == {"old": old}
-    assert registry.get("/old") is old_command
+    assert registry.get("$old") is old_command

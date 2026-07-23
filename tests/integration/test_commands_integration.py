@@ -78,22 +78,30 @@ def test_dispatch_unknown_returns_false():
 
 
 # ---------------------------------------------------------------------------
-# 4. test_skill_appears_in_dropdown_after_registration
+# 4. test_skill_appears_in_dollar_dropdown_after_registration
 # ---------------------------------------------------------------------------
 
 
-def test_skill_appears_in_dropdown_after_registration():
-    """A skill command registered in the unified registry appears in the dropdown."""
-    from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+def test_skill_appears_in_dollar_dropdown_after_registration():
+    """A skill command registered in the unified registry appears in its picker."""
+    from agenthicc.tui.triggers.slash_command import SkillTrigger, SlashCommandTrigger
     from agenthicc.tui.trigger import TriggerContext
 
     reg = build_builtin_registry()
-    reg.register(Command("/deep-research", "Deep research skill", group="Skills"))
+    reg.register(
+        Command(
+            "$deep-research",
+            "Deep research skill",
+            group="Skills",
+            source_id="skill:deep-research",
+        )
+    )
 
-    trigger = SlashCommandTrigger(reg)
+    trigger = SkillTrigger(reg)
     ctx = TriggerContext(cwd=Path("."))
     matches = trigger.get_matches("deep", ctx)
-    assert any("/deep-research" in m.value for m in matches)
+    assert any("$deep-research" in m.value for m in matches)
+    assert SlashCommandTrigger(reg).get_matches("deep", ctx) == []
 
 
 # ---------------------------------------------------------------------------
@@ -172,19 +180,19 @@ def test_project_command_overrides_user_global(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 7. test_slash_trigger_returns_all_groups
+# 7. test_slash_and_skill_triggers_split_namespaces
 # ---------------------------------------------------------------------------
 
 
-def test_slash_trigger_returns_all_groups():
-    """SlashCommandTrigger.get_matches('') returns commands from all groups."""
+def test_slash_and_skill_triggers_split_namespaces():
+    """Slash exposes commands while SkillTrigger exposes only skills."""
     from agenthicc.commands import UnifiedCommandRegistry
-    from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+    from agenthicc.tui.triggers.slash_command import SkillTrigger, SlashCommandTrigger
     from agenthicc.tui.trigger import TriggerContext
 
     reg = UnifiedCommandRegistry()
     reg.register(Command("/builtin-cmd", "Built-in", group="Built-in"))
-    reg.register(Command("/skill-cmd", "Skill", group="Skills"))
+    reg.register(Command("$skill-cmd", "Skill", group="Skills", source_id="skill:skill-cmd"))
     reg.register(Command("/custom-cmd", "Custom", group="Custom"))
 
     trigger = SlashCommandTrigger(reg)
@@ -192,8 +200,11 @@ def test_slash_trigger_returns_all_groups():
     matches = trigger.get_matches("", ctx)
     values = [m.value for m in matches]
     assert "/builtin-cmd" in values
-    assert "/skill-cmd" in values
     assert "/custom-cmd" in values
+    assert "$skill-cmd" not in values
+
+    skills = SkillTrigger(reg).get_matches("", ctx)
+    assert [match.value for match in skills] == ["$skill-cmd"]
 
 
 # ---------------------------------------------------------------------------

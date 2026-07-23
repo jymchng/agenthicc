@@ -108,7 +108,7 @@ class SkillDef:
 
     @property
     def canonical_name(self) -> str:
-        """Return the canonical slash-command name without a leading slash."""
+        """Return the canonical explicit trigger name without its prefix."""
 
         return self.slug
 

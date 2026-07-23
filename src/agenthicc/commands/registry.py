@@ -1,4 +1,4 @@
-"""UnifiedCommandRegistry — single source of truth for all slash commands (PRD-44, PRD-45)."""
+"""UnifiedCommandRegistry — source of truth for commands and skill triggers."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ __all__ = ["UnifiedCommandRegistry"]
 
 
 class UnifiedCommandRegistry:
-    """Single source of truth for all slash commands.
+    """Single source of truth for command and explicit skill records.
 
     Replaces:
     - ``BUILTIN_COMMANDS`` list  (input_bar.py)

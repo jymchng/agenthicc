@@ -58,6 +58,14 @@ def test_command_default_source_id():
     assert cmd.source_id == "builtin"
 
 
+def test_command_identifies_skill_namespace_by_group_or_source():
+    from agenthicc.commands import Command
+
+    assert Command("$review", "Review", group="Skills").is_skill is True
+    assert Command("$review", "Review", source_id="skill:review").is_skill is True
+    assert Command("/review", "Review", group="Plugins").is_skill is False
+
+
 # ---------------------------------------------------------------------------
 # UnifiedCommandRegistry — registration and lookup
 # ---------------------------------------------------------------------------
@@ -265,18 +273,20 @@ def test_config_appears_in_slash_matches():
     assert any("/config" in m.value for m in matches)
 
 
-def test_skill_auto_registers_in_dropdown():
+def test_skill_auto_registers_in_dollar_dropdown():
     from agenthicc.commands import UnifiedCommandRegistry, Command
-    from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+    from agenthicc.tui.triggers.slash_command import SkillTrigger
     from agenthicc.tui.trigger import TriggerContext
     from pathlib import Path
 
     reg = UnifiedCommandRegistry()
-    reg.register(Command("/git-summary", "Summarise git", group="Skills"))
-    trigger = SlashCommandTrigger(reg)
+    reg.register(
+        Command("$git-summary", "Summarise git", group="Skills", source_id="skill:git-summary")
+    )
+    trigger = SkillTrigger(reg)
     ctx = TriggerContext(cwd=Path("."))
     matches = trigger.get_matches("git", ctx)
-    assert any("/git-summary" in m.value for m in matches)
+    assert any("$git-summary" in m.value for m in matches)
 
 
 # ---------------------------------------------------------------------------

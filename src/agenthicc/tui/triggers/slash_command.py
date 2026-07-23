@@ -1,4 +1,4 @@
-"""Slash-command trigger — implements PRD-36, PRD-37, PRD-38, PRD-69."""
+"""Command and skill triggers — implements PRD-36, PRD-37, PRD-38, PRD-69."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ class SlashCommandTrigger(TriggerHandlerBase):
 
     char = "/"
     label = "Command"
+    skill_only = False
+    include_aliases = False
 
     def __init__(self, registry: UnifiedCommandRegistry | None = None) -> None:
         self._registry = registry  # UnifiedCommandRegistry | None
@@ -21,30 +23,39 @@ class SlashCommandTrigger(TriggerHandlerBase):
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
         if self._registry is None:
             return []
-        partial = "/" + fragment
-        cmds = self._registry.matches(partial)
+        partial = self.char + fragment
+        cmds = [
+            cmd
+            for cmd in self._registry.matches(partial)
+            if _is_skill_command(cmd) is self.skill_only
+        ]
         results = []
         for cmd in cmds:
-            # display: short single-line fallback for consumers without get_lines
-            short_desc = (
-                cmd.description[:36] + "…" if len(cmd.description) > 36 else cmd.description
-            )
-            display = f"{cmd.name:<{_NAME_COL}} {short_desc}"
-            results.append(
-                MatchItem(
-                    display=display,
-                    value=cmd.name,
-                    hint=self._format_hint(cmd),
-                    label=cmd.name,
-                    detail=cmd.description,  # full, untruncated
+            names = (cmd.name, *cmd.aliases) if self.include_aliases else (cmd.name,)
+            for name in names:
+                if not name.startswith(partial):
+                    continue
+                # display: short single-line fallback for consumers without get_lines
+                short_desc = (
+                    cmd.description[:36] + "…" if len(cmd.description) > 36 else cmd.description
                 )
-            )
+                display = f"{name:<{_NAME_COL}} {short_desc}"
+                results.append(
+                    MatchItem(
+                        display=display,
+                        value=name,
+                        hint=self._format_hint(cmd, name),
+                        label=name,
+                        detail=cmd.description,  # full, untruncated
+                    )
+                )
         return results
 
-    def _format_hint(self, cmd: Command) -> str:
+    def _format_hint(self, cmd: Command, name: str | None = None) -> str:
+        display_name = name or cmd.name
         if cmd.argument_hint:
-            return f"  ↑ {cmd.name} {cmd.argument_hint}  —  {cmd.description}"
-        return f"  ↑ {cmd.name}  —  {cmd.description}"
+            return f"  ↑ {display_name} {cmd.argument_hint}  —  {cmd.description}"
+        return f"  ↑ {display_name}  —  {cmd.description}"
 
     def on_select(
         self,
@@ -53,11 +64,11 @@ class SlashCommandTrigger(TriggerHandlerBase):
         buf: list[str],
     ) -> TriggerResult:
         if item is None:
-            return TriggerResult(buffer=buf + ["/"] + list(fragment))
+            return TriggerResult(buffer=buf + [self.char] + list(fragment))
         return TriggerResult(buffer=buf + list(item.value))
 
     def on_cancel(self, fragment: str, buf: list[str]) -> list[str]:
-        return buf + ["/"] + list(fragment)
+        return buf + [self.char] + list(fragment)
 
     def can_activate(self, buf: list[str]) -> bool:
         return not buf or buf[-1] == "\n"
@@ -110,3 +121,17 @@ class SlashCommandTrigger(TriggerHandlerBase):
         for chunk in chunks[1:]:
             lines.append(f"{continuation_prefix}{chunk}")
         return lines
+
+
+def _is_skill_command(cmd: Command) -> bool:
+    """Return whether a command record belongs to the skill namespace."""
+    return cmd.is_skill
+
+
+class SkillTrigger(SlashCommandTrigger):
+    """Trigger handler for "$" that opens the skill-only dropdown."""
+
+    char = "$"
+    label = "Skill"
+    skill_only = True
+    include_aliases = True

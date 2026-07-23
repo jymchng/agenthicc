@@ -24,6 +24,7 @@ __all__ = [
     "CommandRegistry",
     "CommandSpec",
     "SlashCommandCompleter",
+    "SkillCompleter",
     "_entry_meta",
     "build_default_registry",
 ]
@@ -74,6 +75,8 @@ class SlashCommandCompleter:
         """Return all commands whose name or alias starts with *partial*."""
         result: list[Command | CommandSpec] = []
         for cmd in self._commands:
+            if _is_skill_entry(cmd):
+                continue
             for candidate in (cmd.name,) + cmd.aliases:
                 if candidate.startswith(partial):
                     result.append(cmd)
@@ -86,6 +89,39 @@ class SlashCommandCompleter:
         if m is None:
             return []
         return self.matches(m.group(1))
+
+
+_DOLLAR_RE = re.compile(r"(?:^|\n)(\$\S*)$")
+
+
+class SkillCompleter(SlashCommandCompleter):
+    """Matches dollar-prefixed skills from the canonical command registry."""
+
+    def matches(self, partial: str) -> list[Command | CommandSpec]:
+        result: list[Command | CommandSpec] = []
+        for cmd in self._commands:
+            if not _is_skill_entry(cmd):
+                continue
+            for candidate in (cmd.name,) + cmd.aliases:
+                if candidate.startswith(partial):
+                    result.append(cmd)
+                    break
+        return result
+
+    def get_match_for_line(self, line: str) -> list[Command | CommandSpec]:
+        match = _DOLLAR_RE.search(line)
+        if match is None:
+            return []
+        return self.matches(match.group(1))
+
+
+def _is_skill_entry(cmd: Command | CommandSpec) -> bool:
+    """Return whether a completion entry belongs to the skill namespace."""
+    return (
+        getattr(cmd, "is_skill", False)
+        or cmd.group == "Skills"
+        or getattr(cmd, "source_id", "").startswith("skill:")
+    )
 
 
 class CommandRegistry(UnifiedCommandRegistry):

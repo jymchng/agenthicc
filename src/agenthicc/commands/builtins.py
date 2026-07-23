@@ -284,7 +284,7 @@ def _cmd_skills(ctx: CommandContext) -> bool:
             table.add_row("—", "(no skills found)", "")
         else:
             for slug, skill in sorted(visible_skills.items()):
-                command_names = ", ".join(f"/{name}" for name in skill.command_names)
+                command_names = ", ".join(f"${name}" for name in skill.command_names)
                 table.add_row(
                     command_names,
                     skill.name,
@@ -293,7 +293,7 @@ def _cmd_skills(ctx: CommandContext) -> bool:
         ctx.console.print(table)
     except ImportError:
         for slug, skill in sorted(visible_skills.items()):
-            command_names = ", ".join(f"/{name}" for name in skill.command_names)
+            command_names = ", ".join(f"${name}" for name in skill.command_names)
             ctx.console.print(f"  {command_names}  {skill.name}")
     return True
 
@@ -421,7 +421,7 @@ def _make_skill_handler(slug: str, skill: "SkillDef") -> CommandHandler:
 
         if not _skill_allowed_for_context(ctx, skill):
             ctx.console.print(
-                f"Skill /{slug} is not permitted for agent {ctx.active_agent!r}.",
+                f"Skill ${slug} is not permitted for agent {ctx.active_agent!r}.",
                 markup=False,
             )
             return True
@@ -433,10 +433,10 @@ def _make_skill_handler(slug: str, skill: "SkillDef") -> CommandHandler:
             cwd=Path(os.getcwd()),
             session_id=ctx.session_id,
         )
-        framed = f"[Skill /{slug} — execute the following instructions:]\n\n{body}"
+        framed = f"[Skill ${slug} — execute the following instructions:]\n\n{body}"
         if ctx.set_pending_skill is not None:
             ctx.set_pending_skill(framed)
-        ctx.console.print(f"  [dim]Invoking skill [bold]/{slug}[/bold][/dim]")
+        ctx.console.print(f"  [dim]Invoking skill [bold]${slug}[/bold][/dim]")
         return True
 
     return _handler

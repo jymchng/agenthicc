@@ -31,7 +31,7 @@ class CommandContext:
     when the renderer was a partial duck-type.
     """
 
-    text: str  # full text the user submitted, e.g. "/model gpt-4o"
+    text: str  # full text submitted, e.g. "/model gpt-4o" or "$review src/"
     args: str  # everything after the command name, e.g. "gpt-4o"
     model: str  # model label string
     console: "Console"  # Rich Console
@@ -62,12 +62,12 @@ CompletionsFactory = Callable[[str], list[str]]
 
 @dataclass
 class Command:
-    """Complete specification for a single slash command."""
+    """Complete specification for a command or explicit skill trigger."""
 
-    name: str  # canonical name, e.g. "/config"
+    name: str  # canonical name, e.g. "/config" or "$review-code"
     description: str  # shown in dropdown right column
     group: str = "Built-in"  # "Built-in" | "Skills" | "Plugins" | "MCP"
-    aliases: tuple[str, ...] = field(default_factory=tuple)  # e.g. ("/cfg",)
+    aliases: tuple[str, ...] = field(default_factory=tuple)  # e.g. ("/cfg",) or ("$review",)
     argument_hint: str = ""  # e.g. "[section.key=value]"
 
     # Exactly one of handler / menu_factory should be set (both is also fine:
@@ -84,6 +84,11 @@ class Command:
     @property
     def opens_menu(self) -> bool:
         return self.menu_factory is not None
+
+    @property
+    def is_skill(self) -> bool:
+        """Whether this record belongs to the explicit skill namespace."""
+        return self.group == "Skills" or self.source_id.startswith("skill:")
 
     def display_row(self) -> tuple[str, str, str]:
         """Return (name, argument_hint, description) for the /help table."""

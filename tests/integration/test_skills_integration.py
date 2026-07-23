@@ -43,16 +43,16 @@ def test_discovered_skill_alias_and_agent_policy_reach_command_dispatch(tmp_path
     console = MagicMock()
     registry.register(
         Command(
-            "/review-skill",
+            "$review-skill",
             skill.description,
-            aliases=("/inspect",),
+            aliases=("$inspect",),
             group="Skills",
             handler=_make_skill_handler(skill.slug, skill),
         )
     )
 
     context = CommandContext(
-        text="/inspect src/app.py",
+        text="$inspect src/app.py",
         args="",
         model="",
         console=console,
@@ -62,7 +62,8 @@ def test_discovered_skill_alias_and_agent_policy_reach_command_dispatch(tmp_path
         set_pending_skill=pending,
     )
 
-    assert CommandDispatcher(registry).dispatch("/inspect src/app.py", context)
+    assert CommandDispatcher(registry).dispatch("$inspect src/app.py", context)
+    assert not CommandDispatcher(registry).dispatch("/inspect src/app.py", context)
     assert pending.call_count == 1
     assert "Review src/app.py" in pending.call_args.args[0]
     assert not any(diagnostic.severity == "error" for diagnostic in discovery.diagnostics)
@@ -83,7 +84,7 @@ def test_live_reload_discovers_new_skill_and_alias(tmp_path, monkeypatch):
     registry = UnifiedCommandRegistry()
     registry.register(
         Command(
-            "/initial",
+            "$initial",
             "Initial",
             group="Skills",
             source_id="skill:initial",
@@ -100,5 +101,5 @@ def test_live_reload_discovers_new_skill_and_alias(tmp_path, monkeypatch):
     session._reload_skills()
 
     assert "new-skill" in context.skills
-    assert registry.get("/new-skill") is not None
-    assert registry.get("/fresh") is registry.get("/new-skill")
+    assert registry.get("$new-skill") is not None
+    assert registry.get("$fresh") is registry.get("$new-skill")

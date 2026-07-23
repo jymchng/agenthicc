@@ -118,7 +118,7 @@ def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.Monk
 
     skill = SkillDef("Coverage", "coverage", Path("."), description="test", aliases=("cov",))
     ctx.skills["old"] = skill
-    ctx.cmd_registry.register(Command("/old", "old", source_id="skill:old"))
+    ctx.cmd_registry.register(Command("$old", "old", source_id="skill:old", group="Skills"))
     discovery = SkillDiscoveryResult({"coverage": skill})
     monkeypatch.setattr(
         tui_session, "discover_skills_with_diagnostics", lambda **_: discovery, raising=False
@@ -130,7 +130,39 @@ def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.Monk
     result = session._reload_skills()
     assert "coverage" in result.skills
     assert ctx.cmd_registry.get("/old") is None
-    assert ctx.cmd_registry.get("/coverage") is not None
+    assert ctx.cmd_registry.get("$coverage") is not None
+    assert ctx.cmd_registry.get("/coverage") is None
+
+
+def test_tui_routes_dollar_skills_and_rejects_legacy_slash() -> None:
+    session, ctx, _workspace, _input = _make_session()
+    handled: list[str] = []
+    ctx.cmd_registry.register(
+        Command(
+            "$review",
+            "Review",
+            group="Skills",
+            source_id="skill:review",
+            handler=lambda command_ctx: handled.append(command_ctx.args) or True,
+        )
+    )
+
+    assert session.route("$review src/app.py") is True
+    assert handled == ["src/app.py"]
+    # The removed spelling must not dispatch, even when a stale slash-named
+    # record is manually present in the registry.
+    ctx.cmd_registry.register(
+        Command(
+            "/review",
+            "Legacy review",
+            group="Skills",
+            source_id="skill:review-legacy",
+            handler=lambda _ctx: handled.append("legacy") or True,
+        )
+    )
+    assert session.route("/review src/app.py") is False
+    assert handled == ["src/app.py"]
+    assert session.route("$unknown") is False
 
 
 @pytest.mark.asyncio

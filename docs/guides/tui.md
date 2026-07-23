@@ -69,6 +69,7 @@ the user can queue input or interrupt an active turn.
 Current triggers include:
 
 - `/` — command picker backed by the unified command registry;
+- `$` — skill-only picker backed by discovered skill records;
 - `@` — project file/mention picker;
 - trigger selection may update the input buffer or submit immediately.
 
@@ -94,6 +95,11 @@ commands such as `/workflow` and `/compact` are intentionally intercepted by
 `TUISession` because they need session fields. The legacy completion constants
 and `CommandRegistry` in `tui/input/completions.py` are compatibility adapters
 over the canonical registry; new commands must not be added there.
+
+Skills use the `$skill-name` or `$alias` trigger and are deliberately excluded
+from the `/` picker. `/skills` and `/skills reload` remain slash commands for
+inspecting and refreshing skills. The removed `/skill-name` spelling is not
+dispatched, even if a stale skill record is manually present in a registry.
 
 ## Testing UI changes
 

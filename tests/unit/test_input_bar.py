@@ -9,6 +9,7 @@ from agenthicc.tui.input.completions import (
     BUILTIN_COMMANDS,
     CommandSpec,
     SlashCommandCompleter,
+    SkillCompleter,
     _entry_meta,
 )
 
@@ -49,6 +50,33 @@ class TestSlashCommandCompleter:
         comp = SlashCommandCompleter(BUILTIN_COMMANDS)
         results = comp.matches("/s")
         assert all(c.description for c in results)
+
+    def test_skill_entries_are_not_slash_completions(self):
+        comp = SlashCommandCompleter(
+            [
+                CommandSpec("/status", "Status"),
+                CommandSpec("$review-code", "Review", group="Skills"),
+            ]
+        )
+        assert [item.name for item in comp.matches("/")] == ["/status"]
+
+
+class TestSkillCompleter:
+    def test_completes_canonical_skill(self):
+        comp = SkillCompleter(
+            [
+                CommandSpec("/status", "Status"),
+                CommandSpec("$review-code", "Review", group="Skills"),
+            ]
+        )
+        assert [item.name for item in comp.matches("$rev")] == ["$review-code"]
+
+    def test_completes_skill_alias_and_line_boundary(self):
+        comp = SkillCompleter(
+            [CommandSpec("$review-code", "Review", aliases=("$review",), group="Skills")]
+        )
+        assert comp.get_match_for_line("$review")
+        assert comp.get_match_for_line("explain $review") == []
 
 
 class TestAtMentionCompleter:

@@ -47,14 +47,14 @@ resume rules.
 ## Skills
 
 Skills are directories with `SKILL.md` metadata and body text. They can add
-tools, prompt instructions, and slash-command behaviour. The loader supports
+tools, prompt instructions, and explicit trigger behaviour. The loader supports
 project and user scopes; the project copy wins. Discovery is deterministic and
 returns diagnostics for malformed metadata, missing files, scope overrides,
 and alias conflicts.
 
 Use a lower-case kebab-case directory name (up to 64 characters), for example
 `.agenthicc/skills/review-code/SKILL.md`. The frontmatter `name` is the display
-name; the directory name is the canonical slash command. The supported
+name; the directory name is the canonical skill trigger name. The supported
 frontmatter includes:
 
 ```yaml
@@ -70,9 +70,9 @@ deniedAgents: [executor]
 
 Legacy snake_case keys such as `suggested_topics`, `allowed_agents`, and
 `max_turn_depth` remain readable and produce compatibility diagnostics. A
-legacy directory name is normalized to its canonical command name and remains
-available as an alias. Invoke either the canonical command or an alias, for
-example `/review-code` or `/review`.
+legacy directory name is normalized to its canonical skill name and remains
+available as an alias. Invoke either the canonical skill or an alias, for
+example `$review-code` or `$review`.
 
 Per-agent configuration can further restrict skills. An omitted allowlist means
 all skills allowed by the skill itself; deny rules always win:
@@ -84,13 +84,14 @@ denied_skills = ["deploy"]
 ```
 
 The same policy may be written as `[agents.planner.skills]` with `allow` and
-`deny` lists. `/skills`, `/skills reload`, slash invocation, and automatic topic
-matching all apply both frontmatter and per-agent restrictions. `/skills reload`
-rescans the project and user skill directories in the current TUI session,
-refreshes skill-owned slash commands and aliases, and preserves all built-in
-and project command registrations. It reports added/removed skills and any
-non-informational discovery diagnostics; a failed scan leaves the current
-session unchanged.
+`deny` lists. `/skills`, `/skills reload`, `$skill-name` invocation, and
+automatic topic matching all apply both frontmatter and per-agent restrictions.
+`/skills reload` rescans the project and user skill directories in the current
+TUI session, refreshes skill-owned dollar triggers and aliases, and preserves
+all built-in and project command registrations. It reports added/removed
+skills and any non-informational discovery diagnostics; a failed scan leaves
+the current session unchanged. The former `/skill-name` spelling is not
+accepted.
 
 ## Commands
 

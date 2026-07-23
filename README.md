@@ -242,6 +242,10 @@ never print secrets in support logs.
 | Commands | `.agenthicc/commands/`, `~/.agenthicc/commands/` | `COMMAND`/`COMMANDS` exports; manual code review |
 | MCP | `[[tools.mcp_servers]]` | configured server bridge; structured results preserved |
 
+Explicit skills use the `$skill-name` or `$alias` trigger; `/` remains reserved
+for commands. Use `/skills` to inspect discovered skills. The former
+`/skill-name` spelling is not executed.
+
 Read the [extension guide](./docs/guides/plugins.md) and the
 [custom-command guide](./docs/guides/commands.md) before enabling project code
 or dependency installation. Project-local Python is executable code and must

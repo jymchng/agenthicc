@@ -122,8 +122,9 @@ alias conflicts are not diagnosed, and aliases can affect name resolution.
 Project-wide commands are loaded when the session is constructed.
 `/commands reload` rescans both command directories and updates the existing
 registry in place. Added, updated, and removed command names are reported.
-`/skills reload` refreshes skill-owned commands only, not Python command
-plugins.
+`/skills reload` refreshes skill-owned dollar triggers only, not Python command
+plugins. Explicit skills use `$skill-name`; slash-prefixed skill names are not
+accepted.
 
 ## Picker and submission journey
 
@@ -131,6 +132,10 @@ The slash trigger activates when `/` is typed at the beginning of the input or
 after a newline. The picker asks the registry for commands whose canonical
 name or alias starts with the current fragment. It displays the command's
 description and argument hint. Selecting an alias inserts the canonical name.
+
+Typing `$` at the same line boundary opens the skill-only picker. It matches
+discovered skill names and aliases and inserts the canonical `$skill-name`.
+Skills never appear in the slash picker.
 
 When the user submits text beginning with `/`, `TUISession.route()` handles it
 locally. `/workflow` and `/compact` are special built-ins intercepted before

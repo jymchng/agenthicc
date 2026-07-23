@@ -273,7 +273,7 @@ def test_default_skill_bootstrap_remains_loader_compatible(tmp_path):
     assert not any(diagnostic.severity == "error" for diagnostic in result.diagnostics)
 
 
-def test_skill_slash_alias_dispatches_but_permission_denial_is_enforced(tmp_path):
+def test_skill_dollar_alias_dispatches_but_permission_denial_is_enforced(tmp_path):
     from agenthicc.commands.builtins import _make_skill_handler
     from agenthicc.config import AgenthiccConfig
     from agenthicc.skills.loader import SkillDef
@@ -291,16 +291,16 @@ def test_skill_slash_alias_dispatches_but_permission_denial_is_enforced(tmp_path
     pending = MagicMock()
     console = MagicMock()
     command = Command(
-        "/review",
+        "$review",
         "Review",
-        aliases=("/inspect",),
+        aliases=("$inspect",),
         handler=_make_skill_handler("review", skill),
         group="Skills",
     )
     registry = UnifiedCommandRegistry()
     registry.register(command)
     base = dict(
-        text="/inspect file.py",
+        text="$inspect file.py",
         args="",
         model="",
         console=console,
@@ -310,12 +310,13 @@ def test_skill_slash_alias_dispatches_but_permission_denial_is_enforced(tmp_path
     )
 
     denied = CommandContext(**base, active_agent="executor")
-    assert CommandDispatcher(registry).dispatch("/inspect file.py", denied)
+    assert not CommandDispatcher(registry).dispatch("/inspect file.py", denied)
+    assert CommandDispatcher(registry).dispatch("$inspect file.py", denied)
     pending.assert_not_called()
     assert "not permitted" in str(console.print.call_args)
 
     allowed = CommandContext(**base, active_agent="planner")
-    assert CommandDispatcher(registry).dispatch("/inspect file.py", allowed)
+    assert CommandDispatcher(registry).dispatch("$inspect file.py", allowed)
     pending.assert_called_once()
     assert "Review file.py" in pending.call_args.args[0]
 

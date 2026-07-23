@@ -97,7 +97,7 @@ def test_reload_replaces_plugins_preserves_builtin_skill_and_external_commands(
     registry.register(Command("/removed", "Remove me", source_id="plugin:removed"))
     registry.register(Command("/mcp-status", "MCP status", group="MCP", source_id="mcp:demo"))
     skill = SkillDef(name="Review", slug="review", path=tmp_path / "review")
-    registry.register(Command("/review", "Review", group="Skills", source_id="skill:review"))
+    registry.register(Command("$review", "Review", group="Skills", source_id="skill:review"))
     session, context = _reload_session(
         registry,
         skills={"review": skill},
@@ -132,7 +132,7 @@ def test_reload_replaces_plugins_preserves_builtin_skill_and_external_commands(
     assert context.cmd_registry.get("/removed") is None
     assert context.cmd_registry.get("/help") is not None
     assert context.cmd_registry.get("/mcp-status") is not None
-    assert context.cmd_registry.get("/review") is not None
+    assert context.cmd_registry.get("$review") is not None
     assert context.command_plugin_names == {"/old"}
 
 

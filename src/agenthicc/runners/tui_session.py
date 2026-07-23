@@ -71,17 +71,17 @@ def _fmt_exc(exc: BaseException) -> str:
 
 
 def _build_skill_command(slug: str, skill: "SkillDef") -> "Command":
-    """Build the slash command owned by one discovered skill."""
+    """Build the dollar-prefixed command owned by one discovered skill."""
     from agenthicc.commands.builtins import _make_skill_handler  # noqa: PLC0415
     from agenthicc.commands.command import Command  # noqa: PLC0415
 
     return Command(
-        name=f"/{slug}",
+        name=f"${slug}",
         description=skill.description or skill.name,
         argument_hint="[args…]",
         group="Skills",
         handler=_make_skill_handler(slug, skill),
-        aliases=tuple(f"/{alias}" for alias in skill.aliases),
+        aliases=tuple(f"${alias}" for alias in skill.aliases),
         source_id=f"skill:{slug}",
     )
 
@@ -383,7 +383,10 @@ async def _build_session_context(
     # ── command registry + trigger registry ──────────────────────────────────
     from agenthicc.tui.trigger import TriggerManager  # noqa: PLC0415
     from agenthicc.tui.triggers.at_mention import AtMentionTrigger  # noqa: PLC0415
-    from agenthicc.tui.triggers.slash_command import SlashCommandTrigger  # noqa: PLC0415
+    from agenthicc.tui.triggers.slash_command import (  # noqa: PLC0415
+        SkillTrigger,
+        SlashCommandTrigger,
+    )
     from agenthicc.commands import build_builtin_registry  # noqa: PLC0415
     from agenthicc.commands.command import Command as _Cmd  # noqa: PLC0415
 
@@ -415,6 +418,7 @@ async def _build_session_context(
     trigger_registry = TriggerManager()
     trigger_registry.register(AtMentionTrigger())
     trigger_registry.register(SlashCommandTrigger(cmd_registry))
+    trigger_registry.register(SkillTrigger(cmd_registry))
 
     # ── agent runner ──────────────────────────────────────────────────────────
     agent_runner = _build_agent_runner(
@@ -596,7 +600,7 @@ class TUISession:
     # ── public routing ────────────────────────────────────────────────────────
 
     def dispatch_slash(self, text: str) -> bool:
-        """Dispatch a slash command. Returns True if handled."""
+        """Dispatch a registered command or skill trigger."""
         from agenthicc.commands import CommandContext  # noqa: PLC0415
 
         ctx = self._ctx
@@ -621,7 +625,7 @@ class TUISession:
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
     def _reload_skills(self) -> "SkillDiscoveryResult":
-        """Rescan skill directories and refresh skill-owned slash commands."""
+        """Rescan skill directories and refresh skill-owned dollar commands."""
         from agenthicc.skills.loader import discover_skills_with_diagnostics  # noqa: PLC0415
 
         cfg = self._ctx.cfg
@@ -812,8 +816,8 @@ class TUISession:
         conv.notify_transient("⎋ Compacted")
 
     def route(self, msg: str) -> bool:
-        """Return True if msg is a slash command and was dispatched."""
-        if not msg.startswith("/"):
+        """Return True if command routing consumes *msg* locally."""
+        if not msg.startswith(("/", "$")):
             return False
         # PRD-114: /workflow is handled locally — not via the command registry.
         # PRD-119: /compact likewise — needs access to session memory.
@@ -823,6 +827,16 @@ class TUISession:
         if parts[0] == "/compact":
             asyncio.create_task(self._handle_compact_command(), name="compact")
             return True
+        command = self._ctx.cmd_registry.get(parts[0])
+        if command is None and parts[0].startswith("$"):
+            # Unknown dollar-prefixed text is ordinary user input, not a
+            # failed command.  This also keeps literal `$...` prompts usable.
+            return False
+        if command is not None and command.is_skill != parts[0].startswith("$"):
+            # Skills have their own `$` namespace. This guard also keeps
+            # stale or manually injected slash-named skill records from
+            # reintroducing the removed legacy syntax.
+            return False
         if self.dispatch_slash(msg):
             # Check if a replay was requested by the command handler.
             if self._pending_replay_id:

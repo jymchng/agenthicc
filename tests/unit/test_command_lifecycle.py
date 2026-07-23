@@ -21,7 +21,7 @@ def test_source_id_on_command():
     """Command dataclass has a source_id field."""
     from agenthicc.commands import Command
 
-    cmd = Command("/x", "X", source_id="skill:foo")
+    cmd = Command("$x", "X", source_id="skill:foo", group="Skills")
     assert cmd.source_id == "skill:foo"
 
 
@@ -29,8 +29,8 @@ def test_source_namespacing():
     from agenthicc.commands import UnifiedCommandRegistry, Command
 
     reg = UnifiedCommandRegistry()
-    reg.register(Command("/a", "a", source_id="skill:foo"))
-    reg.register(Command("/b", "b", source_id="skill:foo"))
+    reg.register(Command("$a", "a", source_id="skill:foo", group="Skills"))
+    reg.register(Command("$b", "b", source_id="skill:foo", group="Skills"))
     reg.register(Command("/c", "c", source_id="builtin"))
     foo_cmds = reg.commands_for_source("skill:foo")
     assert len(foo_cmds) == 2
