@@ -255,6 +255,32 @@ async def test_list_tools_returns_schemas():
 
 
 @pytest.mark.asyncio
+async def test_list_tools_accepts_mapping_shaped_schema():
+    bridge = McpToolBridge(McpServerConfig(name="s", url="u"))
+    bridge._connected = True
+    bridge._client = AsyncMock()
+    bridge._client.list_tools = AsyncMock(
+        return_value=[
+            {
+                "name": "mapping_tool",
+                "description": "Mapping tool",
+                "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}},
+            }
+        ]
+    )
+
+    schemas = await bridge.list_tools()
+
+    assert schemas == [
+        McpToolSchema(
+            name="mapping_tool",
+            description="Mapping tool",
+            input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_disconnect_clears_state():
     bridge = McpToolBridge(McpServerConfig(name="s", url="u"))
     bridge._connected = True
@@ -444,6 +470,25 @@ def test_extract_single_text_block():
     result = MagicMock()
     result.content = [block]
     assert _extract_tool_content(result) == "hello"
+
+
+def test_extract_structured_content_from_json_result():
+    result = {
+        "content": [{"type": "text", "text": '["README.md"]'}],
+        "structuredContent": {"result": ["README.md"]},
+        "isError": False,
+    }
+    assert _extract_tool_content(result) == ["README.md"]
+
+
+def test_extract_json_mapping_text_blocks():
+    result = {"content": [{"type": "text", "text": "hello"}]}
+    assert _extract_tool_content(result) == "hello"
+
+
+def test_extract_json_encoded_text_payload():
+    result = {"content": [{"type": "text", "text": '{"created": true}'}]}
+    assert _extract_tool_content(result) == {"created": True}
 
 
 def test_extract_multiple_blocks():

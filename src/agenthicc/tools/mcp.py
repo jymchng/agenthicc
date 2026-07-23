@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
 import shlex
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -133,19 +135,47 @@ class AgenthiccMcpTool(Tool):
 
 def _extract_tool_content(result: object) -> object:
     """Extract the usable payload from an MCP ``CallToolResult``."""
-    content = getattr(result, "content", None)
+    structured = _result_field(result, "structuredContent", None)
+    if isinstance(structured, Mapping) and "result" in structured:
+        return structured["result"]
+
+    content = _result_field(result, "content", None)
     if not content:
         return None
+    if not isinstance(content, Sequence) or isinstance(content, (str, bytes)):
+        return content
     if len(content) == 1:
         block = content[0]
-        return getattr(block, "text", None) or getattr(block, "data", None) or str(block)
-    return [getattr(b, "text", None) or getattr(b, "data", None) or str(b) for b in content]
+        text = _result_field(block, "text", None)
+        if isinstance(text, str):
+            return _decode_json_text(text)
+        return _result_field(block, "data", None) or str(block)
+    return [
+        _result_field(b, "text", None) or _result_field(b, "data", None) or str(b) for b in content
+    ]
+
+
+def _decode_json_text(text: str) -> object:
+    """Decode JSON-encoded MCP text while leaving ordinary text untouched."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def _result_field(result: object, field_name: str, default: object = None) -> object:
+    """Read a field from either an MCP model object or JSON-like mapping."""
+    if isinstance(result, Mapping):
+        return result.get(field_name, default)
+    return getattr(result, field_name, default)
 
 
 def _extract_text_content(result: object) -> str:
     """Extract a plain-text summary from an MCP result (used for error messages)."""
-    content = getattr(result, "content", [])
-    return " ".join(getattr(b, "text", str(b)) for b in content) if content else str(result)
+    content = _result_field(result, "content", [])
+    if not isinstance(content, Sequence) or isinstance(content, (str, bytes)):
+        return str(content) if content else str(result)
+    return " ".join(str(_result_field(b, "text", b)) for b in content) if content else str(result)
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +287,13 @@ class McpToolBridge:
         raw_tools = await self._client.list_tools()
         return [
             McpToolSchema(
-                name=t.name,
-                description=t.description or "",
-                input_schema=dict(t.inputSchema) if getattr(t, "inputSchema", None) else {},
+                name=str(_result_field(t, "name", "")),
+                description=str(_result_field(t, "description", "") or ""),
+                input_schema=(
+                    dict(input_schema)
+                    if isinstance(input_schema := _result_field(t, "inputSchema", None), Mapping)
+                    else {}
+                ),
             )
             for t in raw_tools
         ]
@@ -287,7 +321,7 @@ class McpToolBridge:
                 ) from exc
             raise McpToolCallError(f"MCP call {self._cfg.name}/{tool_name} failed: {exc}") from exc
 
-        if getattr(result, "isError", False):
+        if _result_field(result, "isError", False):
             err_text = _extract_text_content(result)
             raise McpToolCallError(
                 f"MCP server {self._cfg.name!r} returned error for {tool_name!r}: {err_text}"

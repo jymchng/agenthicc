@@ -114,6 +114,8 @@ Configure MCP servers with `[[tools.mcp_servers]]`. The bridge supports stdio,
 WebSocket, and streamable HTTP forms, reconnects according to config, discovers
 schemas, and exposes namespaced tools. Treat remote MCP servers as external
 code execution and protect tokens with environment expansion and trust policy.
+Structured MCP results are preserved as native JSON values; JSON-encoded text
+results are decoded when possible, while ordinary text results remain strings.
 
 ## Discovery debugging
 

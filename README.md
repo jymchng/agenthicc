@@ -240,7 +240,7 @@ never print secrets in support logs.
 | Workflows | `.agenthicc/workflows/`, `~/.agenthicc/workflows/` | `WorkflowPlugin` subclasses |
 | Skills | `.agenthicc/skills/`, `~/.agenthicc/skills/` | `SKILL.md` directories |
 | Commands | `.agenthicc/commands/`, `~/.agenthicc/commands/` | `COMMAND`/`COMMANDS` exports; manual code review |
-| MCP | `[[tools.mcp_servers]]` | configured server bridge |
+| MCP | `[[tools.mcp_servers]]` | configured server bridge; structured results preserved |
 
 Read the [extension guide](./docs/guides/plugins.md) and the
 [custom-command guide](./docs/guides/commands.md) before enabling project code
