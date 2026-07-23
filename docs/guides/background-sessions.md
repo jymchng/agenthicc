@@ -32,6 +32,7 @@ Useful keys:
 | `↑`/`k`, `↓`/`j` | Move selection |
 | `Enter` | Attach/follow the selected session |
 | `r` | Refresh |
+| `PageUp`/`[` and `PageDown`/`]` | Scroll the selected transcript |
 | `c` | Cancel the selected worker |
 | `a` | Archive a terminal session |
 | `p` | Pin or unpin a session |

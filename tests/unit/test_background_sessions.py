@@ -270,7 +270,7 @@ def test_manager_filters_pause_and_renders_bounded_redacted_activity(tmp_path: P
 
     from agenthicc.tui.workspace.background_manager import BackgroundManager
 
-    session = _session(tmp_path)
+    session = _session(tmp_path).evolve(phase_history=("plan", "execute"))
     (Path(session.artifact_dir) / "conversation.jsonl").write_text(
         '{"kind":"assistant_message","payload":{"text":"Bearer sk-ant-1234567890123456"}}\n',
         encoding="utf-8",
@@ -283,10 +283,15 @@ def test_manager_filters_pause_and_renders_bounded_redacted_activity(tmp_path: P
     assert manager.selected_session is not None
     manager.handle_key("CHAR", " ")
     assert manager.paused is True
+    manager.handle_key("CHAR", "[")
+    assert manager.activity_offset == 6
+    manager.handle_key("CHAR", "]")
+    assert manager.activity_offset == 0
     console.print(manager.render())
     output = console.export_text()
     assert "Bearer" not in output and "sk-ant-" not in output
     assert "assistant_message" in output
+    assert "plan → execute" in output
 
 
 def test_foreground_background_aliases_are_registered_for_trigger_picker() -> None:

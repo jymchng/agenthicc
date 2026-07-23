@@ -68,6 +68,7 @@ class BackgroundManager:
         self.last_refresh = 0.0
         self._sessions: list[BackgroundSession] = []
         self._seen_activity: dict[str, float] = {}
+        self.activity_offset = 0
 
     @property
     def sessions(self) -> list[BackgroundSession]:
@@ -212,7 +213,8 @@ class BackgroundManager:
                 text = None
             detail = redactor.value(text, "text") if isinstance(text, str) else ""
             summaries.append(f"{kind}: {str(detail)[:120]}" if detail else kind)
-        return summaries
+        end = max(0, len(summaries) - self.activity_offset)
+        return summaries[max(0, end - 12) : end]
 
     def _status_style(self, status: SessionStatus) -> str:
         return {
@@ -238,6 +240,7 @@ class BackgroundManager:
                 "↑/k previous   ↓/j next   Enter attach/follow   r refresh\n"
                 "c cancel   a archive   Ctrl+X delete   u restore   t trash\n"
                 "/ filter   v mark   C/A bulk cancel/archive   i input\n"
+                "PageUp/[ and PageDown/] scroll transcript\n"
                 "p pin   Space pause refresh   q quit   ? close help",
                 title="Background Sessions — Keyboard Help",
                 border_style="cyan",
@@ -294,6 +297,11 @@ class BackgroundManager:
             )
             if selected.error:
                 detail_lines.append(f"[red]Error[/red] {selected.error[:180]}")
+            if selected.phase_history:
+                detail_lines.append(
+                    "[bold]Phase history[/bold] "
+                    + " → ".join(selected.phase_history[-16:])
+                )
             if (
                 selected.session_id in self._seen_activity
                 and selected.last_active > self._seen_activity[selected.session_id]
@@ -303,6 +311,8 @@ class BackgroundManager:
             if activity_lines:
                 detail_lines.append("[bold]Recent activity[/bold]")
                 detail_lines.extend(activity_lines)
+                if self.activity_offset:
+                    detail_lines.append("[dim]Transcript offset: {}[/dim]".format(self.activity_offset))
         if self.pending_delete:
             pending_titles = [
                 item.title
@@ -390,6 +400,12 @@ class BackgroundManager:
             selected = self.selected_session
             self.mark_selected_seen()
             return ManagerResult("attach", selected.session_id) if selected is not None else None
+        if value in {"PAGE_UP", "PAGEUP"} or ch == "[":
+            self.activity_offset += 6
+            return None
+        if value in {"PAGE_DOWN", "PAGEDOWN"} or ch == "]":
+            self.activity_offset = max(0, self.activity_offset - 6)
+            return None
         if value == "ESC" or ch.lower() == "q":
             return ManagerResult("exit")
         if ch == "?":

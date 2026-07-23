@@ -310,23 +310,34 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         processor_task = asyncio.create_task(session.processor.run(), name="background-processor")
         await asyncio.sleep(0)
 
-        async def _execute() -> tuple[SessionStatus, str | None, str]:
+        async def _execute() -> tuple[SessionStatus, str | None, str, tuple[str, ...]]:
             if request.workflow_name:
                 result = await execute_workflow(session, request.workflow_name, request.intent)
                 status = (
                     SessionStatus.COMPLETED if result.status == "complete" else SessionStatus.FAILED
                 )
-                return status, result.error, f"Workflow {result.status}"
+                raw_phases = getattr(result, "phases", ())
+                phases = (
+                    tuple(phase for phase in raw_phases if isinstance(phase, str) and phase)
+                    if isinstance(raw_phases, (tuple, list))
+                    else ()
+                )
+                return status, result.error, f"Workflow {result.status}", phases
             await _run_direct_turn(session, request)
             await session.processor.drain()
-            return SessionStatus.COMPLETED, None, "Turn complete"
+            return SessionStatus.COMPLETED, None, "Turn complete", ()
 
         if request.wall_timeout_s > 0:
-            status, error, activity = await asyncio.wait_for(_execute(), request.wall_timeout_s)
+            status, error, activity, phase_history = await asyncio.wait_for(
+                _execute(), request.wall_timeout_s
+            )
         else:
-            status, error, activity = await _execute()
+            status, error, activity, phase_history = await _execute()
         current = store.get(request.session_id, include_deleted=True)
         if current.status == SessionStatus.RUNNING:
+            # Keep repeated phase names: a retry/recovery attempt is part of
+            # the durable history, not a duplicate to be silently collapsed.
+            combined_phases = (current.phase_history + phase_history)[-64:]
             store.transition(
                 request.session_id,
                 status,
@@ -336,6 +347,9 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 latest_activity=activity,
                 worker_pid=None,
                 lease_token="",
+                current_phase=phase_history[-1] if phase_history else current.current_phase,
+                phase_history=combined_phases,
+                exit_reason=activity,
             )
         heartbeat_stop.set()
         heartbeat_task.cancel()
