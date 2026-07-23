@@ -240,8 +240,8 @@ class LinuxFilesystemBackend:
         self,
         paths: list[str],
         encoding: str = "utf-8",
-    ) -> list[dict]:
-        results: list[dict] = []
+    ) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
         for path in paths:
             try:
                 content = self.read_text(path, encoding=encoding)
@@ -252,19 +252,43 @@ class LinuxFilesystemBackend:
 
     def batch_write(
         self,
-        files: list[dict],
+        files: list[dict[str, object]],
         create_parents: bool = True,
-    ) -> list[dict]:
+    ) -> list[dict[str, object]]:
         """Write multiple files.
 
         Each entry in *files* must contain ``"path"`` and ``"content"`` keys.
         An optional ``"encoding"`` key is respected (default ``"utf-8"``).
         """
-        results: list[dict] = []
+        results: list[dict[str, object]] = []
         for entry in files:
-            path = entry.get("path", "")
-            content = entry.get("content", "")
-            encoding = entry.get("encoding", "utf-8")
+            path_value = entry.get("path", "")
+            content_value = entry.get("content", "")
+            encoding_value = entry.get("encoding", "utf-8")
+            if not isinstance(path_value, str):
+                path_text = str(path_value)
+                results.append(
+                    {
+                        "path": path_text,
+                        "ok": False,
+                        "error": "path must be a string",
+                        "bytes_written": 0,
+                    }
+                )
+                continue
+            if not isinstance(content_value, str) or not isinstance(encoding_value, str):
+                results.append(
+                    {
+                        "path": path_value,
+                        "ok": False,
+                        "error": "path, content, and encoding must be strings",
+                        "bytes_written": 0,
+                    }
+                )
+                continue
+            path = path_value
+            content = content_value
+            encoding = encoding_value
             try:
                 bytes_written = self.write_text(
                     path, content, encoding=encoding, create_parents=create_parents
@@ -276,8 +300,8 @@ class LinuxFilesystemBackend:
                 results.append({"path": path, "ok": False, "error": str(exc), "bytes_written": 0})
         return results
 
-    def batch_delete(self, paths: list[str]) -> list[dict]:
-        results: list[dict] = []
+    def batch_delete(self, paths: list[str]) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
         for path in paths:
             try:
                 self.delete(path)

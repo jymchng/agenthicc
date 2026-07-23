@@ -36,7 +36,19 @@ import warnings
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypeAlias, TypedDict
+
+Handler: TypeAlias = Callable[..., object]
+
+
+class _TreeNode(TypedDict):
+    help: str
+    entry: _Entry | None
+    children: dict[str, _TreeNode]
+    source: str
+
+
+Tree: TypeAlias = dict[str, _TreeNode]
 
 
 # ── entry dataclass ────────────────────────────────────────────────────────────
@@ -46,7 +58,7 @@ from typing import Callable
 class _Entry:
     path: tuple[str, ...]
     help: str
-    handler: Callable
+    handler: Handler
     is_async: bool
     source: str = "builtin"  # "builtin" | "user" | "project"
 
@@ -64,7 +76,7 @@ _LOADING_SOURCE: ContextVar[str] = ContextVar("_LOADING_SOURCE", default="builti
 # ── public decorators ─────────────────────────────────────────────────────────
 
 
-def command(*path: str, help: str = "") -> Callable[[Callable], Callable]:
+def command(*path: str, help: str = "") -> Callable[[Handler], Handler]:
     """Register a leaf command handler at *path*.
 
     Signature inference rules (applied at argparse-build time):
@@ -74,7 +86,7 @@ def command(*path: str, help: str = "") -> Callable[[Callable], Callable]:
       ann:   CLIContext                   → injected at call time; never argparse arg
     """
 
-    def decorator(fn: Callable) -> Callable:
+    def decorator(fn: Handler) -> Handler:
         doc = help or (inspect.getdoc(fn) or "").splitlines()[0]
         _REGISTRY[path] = _Entry(
             path=path,
@@ -88,11 +100,11 @@ def command(*path: str, help: str = "") -> Callable[[Callable], Callable]:
     return decorator
 
 
-def group(*path: str, help: str = "") -> Callable:
+def group(*path: str, help: str = "") -> Callable[[Handler | None], Handler | None]:
     """Declare a command group (branch node with no handler of its own)."""
     _GROUPS[path] = help
 
-    def decorator(fn: Callable | None = None) -> Callable | None:
+    def decorator(fn: Handler | None = None) -> Handler | None:
         return fn
 
     return decorator
@@ -101,7 +113,7 @@ def group(*path: str, help: str = "") -> Callable:
 # ── argparse wiring ────────────────────────────────────────────────────────────
 
 
-def _add_params(parser: argparse.ArgumentParser, fn: Callable) -> None:
+def _add_params(parser: argparse.ArgumentParser, fn: Handler) -> None:
     """Add argparse arguments inferred from the function signature."""
     from agenthicc.cli.context import CLIContext  # noqa: PLC0415
 
@@ -129,18 +141,9 @@ def _add_params(parser: argparse.ArgumentParser, fn: Callable) -> None:
             )
 
 
-def _as_tree() -> dict:
+def _as_tree() -> Tree:
     """Build a nested dict from the flat _REGISTRY and _GROUPS."""
-    tree: dict = {}
-
-    def _ensure(node: dict, parts: tuple[str, ...]) -> dict:
-        cur = node
-        for part in parts:
-            cur = cur.setdefault(
-                part, {"help": "", "entry": None, "children": {}, "source": "builtin"}
-            )
-            cur = cur["children"]
-        return cur
+    tree: Tree = {}
 
     for path, help_text in _GROUPS.items():
         node = tree
@@ -170,7 +173,7 @@ def _as_tree() -> dict:
     return tree
 
 
-def _wire(parser: argparse.ArgumentParser, tree: dict) -> None:
+def _wire(parser: argparse.ArgumentParser, tree: Tree) -> None:
     """Recursively wire the tree into argparse subparsers (unlimited depth)."""
     if not tree:
         return
@@ -198,10 +201,13 @@ def _call(entry: _Entry, ctx: object, ns: argparse.Namespace) -> None:
             attr = name.replace("-", "_")
             if hasattr(ns, attr):
                 kwargs[name] = getattr(ns, attr)
-    if entry.is_async:
-        asyncio.run(entry.handler(**kwargs))
-    else:
-        entry.handler(**kwargs)
+    result = entry.handler(**kwargs)
+    if inspect.isawaitable(result):
+
+        async def _wait() -> object:
+            return await result
+
+        asyncio.run(_wait())
 
 
 # ── discovery ──────────────────────────────────────────────────────────────────
@@ -234,7 +240,7 @@ def _discover_directory(directory: Path, source: str) -> None:
             mod = importlib.util.module_from_spec(spec)
             sys.modules[mod_name] = mod
             try:
-                spec.loader.exec_module(mod)  # type: ignore[union-attr]
+                spec.loader.exec_module(mod)
             except Exception as exc:  # noqa: BLE001
                 warnings.warn(
                     f"[agenthicc] Failed to load CLI plugin {py}: {exc}",
@@ -273,19 +279,24 @@ def _load_toml_commands(toml_file: Path, source: str) -> None:
             run_tmpl = spec.get("run", "")
             arg_specs = spec.get("args", [])
 
-            def _make_handler(tmpl: str, args: list[dict], h: str) -> Callable:
+            def _make_handler(tmpl: str, args: list[dict[str, object]], h: str) -> Handler:
                 async def handler(**kwargs: object) -> None:
                     cmd_str = tmpl.format(**kwargs)
                     subprocess.run(shlex.split(cmd_str), check=True)
 
                 handler.__name__ = "_".join(path_list)
                 handler.__doc__ = h
-                handler.__annotations__ = {
-                    a["name"]: bool if a.get("type") == "bool" else str for a in args
-                }
-                handler.__kwdefaults__ = {  # type: ignore[attr-defined]
-                    a["name"]: a["default"] for a in args if "default" in a
-                }
+                annotations: dict[str, object] = {}
+                defaults: dict[str, object] = {}
+                for arg in args:
+                    name = arg.get("name")
+                    if not isinstance(name, str):
+                        continue
+                    annotations[name] = bool if arg.get("type") == "bool" else str
+                    if "default" in arg:
+                        defaults[name] = arg["default"]
+                handler.__annotations__ = annotations
+                handler.__kwdefaults__ = defaults
                 return handler
 
             _REGISTRY[path] = _Entry(

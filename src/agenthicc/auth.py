@@ -67,7 +67,37 @@ class TokenBundle:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> TokenBundle:
-        return cls(**{k: data[k] for k in cls.__dataclass_fields__})
+        values = {
+            "access_token": data.get("access_token"),
+            "refresh_token": data.get("refresh_token"),
+            "expires_at": data.get("expires_at"),
+            "plan": data.get("plan"),
+            "email": data.get("email"),
+            "user_id": data.get("user_id"),
+        }
+        string_fields = ("access_token", "refresh_token", "plan", "email", "user_id")
+        if not all(isinstance(values[key], str) for key in string_fields):
+            raise KeyError("invalid token fields")
+        if not isinstance(values["expires_at"], (int, float)):
+            raise KeyError("invalid token expiry")
+        access_token = values["access_token"]
+        refresh_token = values["refresh_token"]
+        plan = values["plan"]
+        email = values["email"]
+        user_id = values["user_id"]
+        assert isinstance(access_token, str)
+        assert isinstance(refresh_token, str)
+        assert isinstance(plan, str)
+        assert isinstance(email, str)
+        assert isinstance(user_id, str)
+        return cls(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=float(values["expires_at"]),
+            plan=plan,
+            email=email,
+            user_id=user_id,
+        )
 
 
 class TokenStore:
@@ -83,7 +113,10 @@ class TokenStore:
         if raw is None:
             return None
         try:
-            return TokenBundle.from_dict(json.loads(raw))
+            loaded = json.loads(raw)
+            if not isinstance(loaded, dict):
+                return None
+            return TokenBundle.from_dict(loaded)
         except (KeyError, json.JSONDecodeError):
             return None
 
@@ -230,10 +263,10 @@ class AuthClient:
         return TokenBundle(
             access_token=data["access_token"],
             refresh_token=data["refresh_token"],
-            expires_at=time.time() + data.get("expires_in", 3600),
-            plan=data.get("plan", "free"),
-            email=data.get("email", ""),
-            user_id=data.get("user_id", ""),
+            expires_at=time.time() + float(data.get("expires_in", 3600)),
+            plan=str(data.get("plan", "free")),
+            email=str(data.get("email", "")),
+            user_id=str(data.get("user_id", "")),
         )
 
     async def _refresh(self, bundle: TokenBundle) -> TokenBundle:
@@ -265,8 +298,8 @@ class AuthClient:
         return TokenBundle(
             access_token=data["access_token"],
             refresh_token=data.get("refresh_token", bundle.refresh_token),
-            expires_at=time.time() + data.get("expires_in", 3600),
-            plan=data.get("plan", bundle.plan),
+            expires_at=time.time() + float(data.get("expires_in", 3600)),
+            plan=str(data.get("plan", bundle.plan)),
             email=bundle.email,
             user_id=bundle.user_id,
         )
@@ -292,4 +325,4 @@ class AuthClient:
 
         with socket.socket() as s:
             s.bind(("localhost", 0))
-            return s.getsockname()[1]
+            return int(s.getsockname()[1])

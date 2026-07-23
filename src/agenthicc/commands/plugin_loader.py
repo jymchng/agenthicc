@@ -115,7 +115,7 @@ def _load_command_file(path: Path) -> CommandLoadResult:
         probe_spec = importlib.util.spec_from_file_location(f"{module_name}_probe", path)
         if probe_spec and probe_spec.loader:
             probe = importlib.util.module_from_spec(probe_spec)
-            probe_spec.loader.exec_module(probe)  # type: ignore[union-attr]
+            probe_spec.loader.exec_module(probe)
             declared_deps = list(getattr(probe, "DEPENDENCIES", []))
     except Exception:
         pass  # syntax errors surface properly in Step 3 below
@@ -135,7 +135,7 @@ def _load_command_file(path: Path) -> CommandLoadResult:
             return CommandLoadResult(path=path, error="could not create module spec")
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        spec.loader.exec_module(module)
     except Exception as exc:
         return CommandLoadResult(path=path, error=f"{type(exc).__name__}: {exc}")
 

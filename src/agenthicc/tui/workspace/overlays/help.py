@@ -10,6 +10,8 @@ if TYPE_CHECKING:
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlay import Overlay
+from agenthicc.commands.command import Command
+from agenthicc.commands.registry import UnifiedCommandRegistry
 
 
 class _View(Enum):
@@ -25,17 +27,17 @@ class HelpOverlay(Overlay):
 
     def __init__(
         self,
-        registry: object,
+        registry: UnifiedCommandRegistry,
         on_close: Callable[[], None],
         initial_query: str = "",
     ) -> None:
-        self._registry = registry
+        self._registry: UnifiedCommandRegistry = registry
         self._on_close = on_close
         self._view = _View.LIST
-        self._detail_cmd: object = None  # Command currently shown in DETAIL_VIEW
+        self._detail_cmd: Command | None = None  # Command currently shown in DETAIL_VIEW
 
         # Build flat row list: str = group header, Command = selectable row.
-        self._rows: list[object] = []
+        self._rows: list[str | Command] = []
         if registry is not None:
             for group in registry.groups():
                 cmds = registry.commands_for_group(group)
@@ -64,7 +66,8 @@ class HelpOverlay(Overlay):
                 if matches:
                     target = matches[0].name
                     for pos, idx in enumerate(self._cmd_indices):
-                        if self._rows[idx].name == target:
+                        row = self._rows[idx]
+                        if isinstance(row, Command) and row.name == target:
                             self._cursor_pos = pos
                             break
         self._clamp_scroll()
@@ -100,7 +103,8 @@ class HelpOverlay(Overlay):
                 case Key.ENTER:
                     if self._cmd_indices:
                         cmd = self._rows[self._cmd_indices[self._cursor_pos]]
-                        self._detail_cmd = cmd
+                        if isinstance(cmd, Command):
+                            self._detail_cmd = cmd
                         self._view = _View.DETAIL
         return True
 

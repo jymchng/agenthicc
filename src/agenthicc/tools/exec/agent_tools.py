@@ -22,7 +22,7 @@ _CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
 
 @tool_execute
 @tool()
-async def shell(command: str, timeout: float = 30.0) -> dict:
+async def shell(command: str, timeout: float = 30.0) -> dict[str, object]:
     """Execute a shell command and return stdout/stderr.
 
     Args:
@@ -36,7 +36,7 @@ async def shell(command: str, timeout: float = 30.0) -> dict:
 
 @tool_execute
 @tool()
-async def run_bash(command: str, timeout: float = 30.0) -> dict:
+async def run_bash(command: str, timeout: float = 30.0) -> dict[str, object]:
     """Execute a bash shell command and return stdout/stderr.
 
     Args:
@@ -50,7 +50,7 @@ async def run_bash(command: str, timeout: float = 30.0) -> dict:
 
 @tool_execute
 @tool()
-async def run_command(argv: list[str], timeout: float = 30.0) -> dict:
+async def run_command(argv: list[str], timeout: float = 30.0) -> dict[str, object]:
     """Execute an executable directly (no shell) and return stdout/stderr.
 
     Args:
@@ -64,7 +64,7 @@ async def run_command(argv: list[str], timeout: float = 30.0) -> dict:
 
 @tool_execute
 @tool()
-async def run_python(code: str, timeout: float = 30.0) -> dict:
+async def run_python(code: str, timeout: float = 30.0) -> dict[str, object]:
     """Execute a Python code snippet in a subprocess.
 
     Args:
@@ -78,7 +78,7 @@ async def run_python(code: str, timeout: float = 30.0) -> dict:
 
 @tool_execute
 @tool()
-async def run_python_expr(expression: str, timeout: float = 10.0) -> dict:
+async def run_python_expr(expression: str, timeout: float = 10.0) -> dict[str, object]:
     """Evaluate a Python expression and return its repr.
 
     Args:
@@ -97,7 +97,7 @@ async def run_tests(
     framework: str = "pytest",
     args: list[str] | None = None,
     timeout: float = 120.0,
-) -> dict:
+) -> dict[str, object]:
     """Run the test suite and return pass/fail counts.
 
     Args:

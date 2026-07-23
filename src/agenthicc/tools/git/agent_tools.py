@@ -27,7 +27,7 @@ _CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
 
 @tool_git_read
 @tool()
-async def git_status() -> dict:
+async def git_status() -> dict[str, object]:
     """Show working tree status: branch, staged, unstaged, and untracked files."""
     from agenthicc.tools.git import GitStatusTool  # noqa: PLC0415
 
@@ -36,7 +36,9 @@ async def git_status() -> dict:
 
 @tool_git_read
 @tool()
-async def git_diff(path: str | None = None, staged: bool = False, ref: str | None = None) -> dict:
+async def git_diff(
+    path: str | None = None, staged: bool = False, ref: str | None = None
+) -> dict[str, object]:
     """Show changes between the working tree, index, and commits.
 
     Args:
@@ -46,7 +48,7 @@ async def git_diff(path: str | None = None, staged: bool = False, ref: str | Non
     """
     from agenthicc.tools.git import GitDiffTool  # noqa: PLC0415
 
-    args: dict = {"staged": staged}
+    args: dict[str, object] = {"staged": staged}
     if path:
         args["path"] = path
     if ref:
@@ -56,7 +58,7 @@ async def git_diff(path: str | None = None, staged: bool = False, ref: str | Non
 
 @tool_git_read
 @tool()
-async def git_log(n: int = 10, path: str | None = None) -> dict:
+async def git_log(n: int = 10, path: str | None = None) -> dict[str, object]:
     """Show recent commit history.
 
     Args:
@@ -65,7 +67,7 @@ async def git_log(n: int = 10, path: str | None = None) -> dict:
     """
     from agenthicc.tools.git import GitLogTool  # noqa: PLC0415
 
-    args: dict = {"n": n}
+    args: dict[str, object] = {"n": n}
     if path:
         args["path"] = path
     return await GitLogTool().execute(args, _CTX())
@@ -73,7 +75,7 @@ async def git_log(n: int = 10, path: str | None = None) -> dict:
 
 @tool_git_read
 @tool()
-async def git_show(ref: str = "HEAD") -> dict:
+async def git_show(ref: str = "HEAD") -> dict[str, object]:
     """Show a commit's metadata and diff.
 
     Args:
@@ -86,7 +88,7 @@ async def git_show(ref: str = "HEAD") -> dict:
 
 @tool_git_write
 @tool()
-async def git_add(paths: list[str]) -> dict:
+async def git_add(paths: list[str]) -> dict[str, object]:
     """Stage files for the next commit.
 
     Args:
@@ -99,7 +101,7 @@ async def git_add(paths: list[str]) -> dict:
 
 @tool_git_write
 @tool()
-async def git_commit(message: str, author: str | None = None) -> dict:
+async def git_commit(message: str, author: str | None = None) -> dict[str, object]:
     """Create a commit from currently staged changes.
 
     Args:
@@ -108,7 +110,7 @@ async def git_commit(message: str, author: str | None = None) -> dict:
     """
     from agenthicc.tools.git import GitCommitTool  # noqa: PLC0415
 
-    args: dict = {"message": message}
+    args: dict[str, object] = {"message": message}
     if author:
         args["author"] = author
     return await GitCommitTool().execute(args, _CTX())
@@ -116,7 +118,7 @@ async def git_commit(message: str, author: str | None = None) -> dict:
 
 @tool_git_write
 @tool()
-async def git_checkout(branch: str, create: bool = False) -> dict:
+async def git_checkout(branch: str, create: bool = False) -> dict[str, object]:
     """Switch to a branch, optionally creating it.
 
     Args:
@@ -130,7 +132,7 @@ async def git_checkout(branch: str, create: bool = False) -> dict:
 
 @tool_git_read
 @tool()
-async def git_branch(pattern: str | None = None) -> dict:
+async def git_branch(pattern: str | None = None) -> dict[str, object]:
     """List branches in the repository.
 
     Args:
@@ -138,7 +140,7 @@ async def git_branch(pattern: str | None = None) -> dict:
     """
     from agenthicc.tools.git import GitBranchTool  # noqa: PLC0415
 
-    args: dict = {}
+    args: dict[str, object] = {}
     if pattern:
         args["pattern"] = pattern
     return await GitBranchTool().execute(args, _CTX())
@@ -146,7 +148,7 @@ async def git_branch(pattern: str | None = None) -> dict:
 
 @tool_git_write
 @tool()
-async def git_stash(action: str = "push", message: str | None = None) -> dict:
+async def git_stash(action: str = "push", message: str | None = None) -> dict[str, object]:
     """Save or restore the current working state.
 
     Args:
@@ -155,7 +157,7 @@ async def git_stash(action: str = "push", message: str | None = None) -> dict:
     """
     from agenthicc.tools.git import GitStashTool  # noqa: PLC0415
 
-    args: dict = {"action": action}
+    args: dict[str, object] = {"action": action}
     if message:
         args["message"] = message
     return await GitStashTool().execute(args, _CTX())
@@ -163,7 +165,9 @@ async def git_stash(action: str = "push", message: str | None = None) -> dict:
 
 @tool_git_read
 @tool()
-async def git_blame(path: str, start_line: int = 1, end_line: int | None = None) -> dict:
+async def git_blame(
+    path: str, start_line: int = 1, end_line: int | None = None
+) -> dict[str, object]:
     """Show line-by-line authorship of a file.
 
     Args:
@@ -173,7 +177,7 @@ async def git_blame(path: str, start_line: int = 1, end_line: int | None = None)
     """
     from agenthicc.tools.git import GitBlameTool  # noqa: PLC0415
 
-    args: dict = {"path": path, "start_line": start_line}
+    args: dict[str, object] = {"path": path, "start_line": start_line}
     if end_line is not None:
         args["end_line"] = end_line
     return await GitBlameTool().execute(args, _CTX())
@@ -181,7 +185,7 @@ async def git_blame(path: str, start_line: int = 1, end_line: int | None = None)
 
 @tool_git_read
 @tool()
-async def git_grep(pattern: str, ref: str = "HEAD") -> dict:
+async def git_grep(pattern: str, ref: str = "HEAD") -> dict[str, object]:
     """Search for a pattern in files tracked by git.
 
     Args:

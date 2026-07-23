@@ -12,10 +12,17 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Protocol
+
+from agenthicc.reactive import Signal
 
 log = logging.getLogger(__name__)
 
 _NEW_LINE_HINT = ""
+
+
+class _ModeState(Protocol):
+    active_mode: Signal["RuntimeMode"]
 
 
 @dataclass(frozen=True)
@@ -74,13 +81,13 @@ def build_default_registry(
     # Plan mode blocks write/execute/network tools so the plan phase agent
     # cannot bypass the approval gate.  The execute phase switches to Auto
     # mode (via PhaseSpec.mode_override) to restore full tool access.
-    _BLOCKED: dict[str, frozenset] = {
+    _BLOCKED: dict[str, frozenset[ToolCapability]] = {
         "Plan": _RESTRICTED,
         "Ask": _RESTRICTED,
         "Safe": _RESTRICTED,
     }
 
-    _APPROVAL: dict[str, frozenset] = {
+    _APPROVAL: dict[str, frozenset[ToolCapability]] = {
         "Guard": _RESTRICTED,
     }
 
@@ -186,7 +193,7 @@ class ModeManager:
     def __init__(
         self,
         registry: ModeRegistry | None = None,
-        app_state: object = None,
+        app_state: _ModeState | None = None,
         default_map: dict[str, str] | None = None,
         available_map: dict[str, list[str]] | None = None,
     ) -> None:

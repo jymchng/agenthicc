@@ -97,14 +97,18 @@ class QuestionsOverlay(PromptOverlay):
         self._mode = _Mode.SELECTING
         self._current = 0
 
-        raw: list[dict] = (req.tool_input or {}).get("questions", [])
+        raw_value = (req.tool_input or {}).get("questions", [])
+        raw = raw_value if isinstance(raw_value, list) else []
         self._questions: list[Question] = [
             Question(
-                id=q["id"],
-                text=q["text"],
-                options=[_str_option(o) for o in q["options"]],
+                id=str(q.get("id", "")),
+                text=str(q.get("text", "")),
+                options=[_str_option(o) for o in q.get("options", [])]
+                if isinstance(q.get("options", []), list)
+                else [],
             )
             for q in raw
+            if isinstance(q, dict)
         ]
         self._states: list[_QState] = [_QState() for _ in self._questions]
 

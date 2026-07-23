@@ -9,6 +9,7 @@ from .registry import UnifiedCommandRegistry
 
 if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
+    from agenthicc.tui.workspace.overlay import Overlay
 
 __all__ = ["BUILTIN_COMMANDS", "build_builtin_registry", "_make_skill_handler"]
 
@@ -63,11 +64,12 @@ def _cmd_expand(ctx: CommandContext) -> bool:
     return True
 
 
-def _help_menu(ctx: CommandContext) -> object:
+def _help_menu(ctx: CommandContext) -> "Overlay":
     from agenthicc.tui.workspace.overlays.help import HelpOverlay  # noqa: PLC0415
 
     on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
-    return HelpOverlay(ctx.command_registry, on_close, initial_query=ctx.args)
+    registry = ctx.command_registry or UnifiedCommandRegistry()
+    return HelpOverlay(registry, on_close, initial_query=ctx.args)
 
 
 def _cmd_history(ctx: CommandContext) -> bool:
@@ -158,14 +160,18 @@ def _cmd_model(ctx: CommandContext) -> bool:
         table.add_column("API Key Env")
         table.add_column("Status")
         for provider in SUPPORTED_PROVIDERS:
-            env_var = PROVIDER_API_KEY_ENVVAR.get(provider, "—")
-            key_set = "✓ set" if (provider == "ollama" or os.environ.get(env_var)) else "✗ not set"
+            display_env_var = PROVIDER_API_KEY_ENVVAR.get(provider, "—")
+            key_set = (
+                "✓ set"
+                if (provider == "ollama" or os.environ.get(display_env_var))
+                else "✗ not set"
+            )
             key_style = "green" if "✓" in key_set else "dim red"
             active = "◀ active" if provider == current_provider else ""
             table.add_row(
                 f"[bold]{provider}[/bold]" if active else provider,
                 PROVIDER_DEFAULT_MODELS.get(provider, "—"),
-                env_var,
+                display_env_var,
                 Text(key_set, style=key_style),
             )
         ctx.console.print(table, markup=True)
@@ -197,7 +203,7 @@ def _cmd_model(ctx: CommandContext) -> bool:
             )
         )
         return True
-    env_var = PROVIDER_API_KEY_ENVVAR.get(provider)
+    env_var: str | None = PROVIDER_API_KEY_ENVVAR.get(provider)
     if provider != "ollama" and env_var and not os.environ.get(env_var):
         ctx.console.print(
             Text(
@@ -339,7 +345,7 @@ def _cmd_commands(ctx: CommandContext) -> bool:
     return True
 
 
-def _menu_config(ctx: CommandContext) -> object:
+def _menu_config(ctx: CommandContext) -> "Overlay":
     from agenthicc.tui.workspace.overlays.config_menu import ConfigMenuOverlay  # noqa: PLC0415
 
     on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
@@ -361,16 +367,25 @@ def _cmd_mode(ctx: CommandContext) -> bool:
             table.add_column("Mode")
             table.add_column("Label")
             table.add_column("Description")
-            modes = mode_manager._registry.all_modes()
-            for m in modes:
-                marker = " < active" if m.name == mode_manager.active_name else ""
-                table.add_row(m.name, m.label, m.description + marker)
+            try:
+                modes = mode_manager._registry.all()
+                for m in modes:
+                    marker = " < active" if m.name == mode_manager.active_name else ""
+                    table.add_row(m.name, m.badge, m.description + marker)
+            except AttributeError:
+                legacy_modes = mode_manager._registry.all_modes()  # type: ignore[attr-defined]
+                for m in legacy_modes:
+                    marker = " < active" if m.name == mode_manager.active_name else ""
+                    table.add_row(m.name, m.label, m.description + marker)
             ctx.console.print(table)
         except Exception:  # noqa: BLE001
             ctx.console.print(f"  Active mode: {mode_manager.active_name}")
         ctx.console.print("  [dim]Use Shift+Tab to cycle, or /mode <name>[/dim]")
     else:
-        new_mode = mode_manager.set(args)
+        try:
+            new_mode = mode_manager.set_by_name(args)
+        except AttributeError:
+            new_mode = mode_manager.set(args)  # type: ignore[attr-defined]
         if new_mode:
             ctx.console.print(f"  {new_mode.badge} [dim]Switched to {new_mode.name} mode.[/dim]")
         else:

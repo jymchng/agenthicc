@@ -37,7 +37,7 @@ def _detect_default_backend(root: str = ".") -> FilesystemBackend:
     # Pyodide / Emscripten (browser / WASM)
     if hasattr(sys, "_emscripten_info") or "pyodide" in sys.modules:
         try:
-            from agenthicc.tools.fs.pyodide import PyodideFilesystemBackend  # type: ignore[import]
+            from agenthicc.tools.fs.pyodide import PyodideFilesystemBackend
 
             return PyodideFilesystemBackend(root)
         except ImportError:
@@ -46,7 +46,7 @@ def _detect_default_backend(root: str = ".") -> FilesystemBackend:
     # Windows
     if os.name == "nt":
         try:
-            from agenthicc.tools.fs.windows import WindowsFilesystemBackend  # type: ignore[import]
+            from agenthicc.tools.fs.windows import WindowsFilesystemBackend
 
             return WindowsFilesystemBackend(root)
         except ImportError:

@@ -26,10 +26,15 @@ port = 8000
 """
 
 
-def _do_config_show(args) -> None:
+def _do_config_show(args: object) -> None:
     from agenthicc.config import load_config  # noqa: PLC0415
 
-    cli_overrides = getattr(args, "set_overrides", [])
+    raw_overrides = getattr(args, "set_overrides", ())
+    cli_overrides = (
+        [item for item in raw_overrides if isinstance(item, str)]
+        if isinstance(raw_overrides, (list, tuple))
+        else []
+    )
     config = load_config(cli_overrides=cli_overrides)
     print("# Effective configuration")
     for section_name in ["execution", "memory", "security", "api", "tools"]:
@@ -41,10 +46,11 @@ def _do_config_show(args) -> None:
             print(f"{k} = {v!r}")
 
 
-def _do_config_init(args) -> None:
+def _do_config_init(args: object) -> None:
     target = Path(".agenthicc") / "agenthicc.toml"
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and not getattr(args, "force", False):
+    force = getattr(args, "force", False)
+    if target.exists() and not (isinstance(force, bool) and force):
         print(f"{target} already exists. Use --force to overwrite.")
         return
     target.write_text(TEMPLATE_CONFIG)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from agenthicc.commands.command import Command
+from agenthicc.commands.registry import UnifiedCommandRegistry
 from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase, TriggerResult
 
 _NAME_COL = 24  # characters reserved for the command name column
@@ -13,7 +15,7 @@ class SlashCommandTrigger(TriggerHandlerBase):
     char = "/"
     label = "Command"
 
-    def __init__(self, registry=None) -> None:
+    def __init__(self, registry: UnifiedCommandRegistry | None = None) -> None:
         self._registry = registry  # UnifiedCommandRegistry | None
 
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
@@ -39,7 +41,7 @@ class SlashCommandTrigger(TriggerHandlerBase):
             )
         return results
 
-    def _format_hint(self, cmd) -> str:
+    def _format_hint(self, cmd: Command) -> str:
         if cmd.argument_hint:
             return f"  ↑ {cmd.name} {cmd.argument_hint}  —  {cmd.description}"
         return f"  ↑ {cmd.name}  —  {cmd.description}"

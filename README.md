@@ -271,9 +271,10 @@ before deleting session or project state.
 uv sync --extra dev
 
 # Fast checks
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+uv run ruff check src/ tests/ scripts/
+uv run ruff format --check src/ tests/ scripts/
 uv run mypy src/agenthicc
+uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.json
 uv run pytest tests/unit -q
 
 # Broader suites
@@ -301,6 +302,7 @@ PRD-138 before using the default all-session invocation on a clean checkout.
 - [Memory and storage](./docs/guides/memory.md)
 - [Security](./docs/guides/security.md)
 - [Testing](./docs/guides/testing.md)
+- [Type safety](./docs/guides/type-safety.md)
 - [CLI reference](./docs/reference/cli.md)
 - [Kernel reference](./docs/reference/kernel.md)
 - [Storage reference](./docs/reference/storage.md)

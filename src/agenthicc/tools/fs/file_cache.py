@@ -67,7 +67,7 @@ class WorkspaceFileCache:
             return None
         mtime_ns, size, enc, content = row
         if mtime_ns == st.st_mtime_ns and size == st.st_size and enc == encoding:
-            return content
+            return content if isinstance(content, str) else None
         return None
 
     def store(self, abspath: str, content: str, encoding: str = "utf-8") -> None:

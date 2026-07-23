@@ -182,7 +182,7 @@ async def restore_from_log(
                     continue
                 try:
                     event = Event.from_dict(json.loads(line))
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                     logger.warning("skipping corrupt event log line")
                     continue
                 state, _ = reducer(state, event)

@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from agenthicc.config import AgenthiccConfig
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
-    from agenthicc.tui.menu import MenuWidget
+    from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.runtime.mode_manager import ModeManager
 
 __all__ = [
@@ -43,7 +43,7 @@ class CommandContext:
     command_registry: "UnifiedCommandRegistry | None" = None
     mode_manager: "ModeManager | None" = None
     set_pending_skill: "Callable[[str], None] | None" = None
-    set_pending_menu: "Callable[[object], None] | None" = None
+    set_pending_menu: "Callable[[Overlay], None] | None" = None
     close_overlay: "Callable[[], None] | None" = None
     set_pending_replay: "Callable[[str], None] | None" = None
     reload_skills: "Callable[[], SkillDiscoveryResult] | None" = None
@@ -54,7 +54,7 @@ class CommandContext:
 CommandHandler = Callable[[CommandContext], bool]
 
 # A menu factory takes a CommandContext and returns a MenuWidget.
-MenuFactory = Callable[[CommandContext], "MenuWidget"]
+MenuFactory = Callable[[CommandContext], "Overlay"]
 
 # A completions factory takes the args fragment and returns matching completions.
 CompletionsFactory = Callable[[str], list[str]]

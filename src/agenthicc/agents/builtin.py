@@ -20,7 +20,7 @@ from agenthicc.agents.plugin import AgentDefinition, READ_CAPS
         "Wrap your final plan in <plan>...</plan> tags."
     ),
 )
-class PlannerAgent: ...
+class PlannerAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic role class
 
 
 @agent(
@@ -30,7 +30,7 @@ class PlannerAgent: ...
         "Use tools to implement each step. Report progress after each step."
     ),
 )
-class ExecutorAgent: ...
+class ExecutorAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic role class
 
 
 @agent(
@@ -41,7 +41,7 @@ class ExecutorAgent: ...
         "<review>rejected: reason</review>."
     ),
 )
-class ReviewerAgent: ...
+class ReviewerAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic role class
 
 
 @agent(
@@ -51,7 +51,7 @@ class ReviewerAgent: ...
         "gather context. Do NOT make any changes. Report your findings clearly."
     ),
 )
-class ExplorerAgent: ...
+class ExplorerAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic role class
 
 
 @agent(
@@ -62,14 +62,14 @@ class ExplorerAgent: ...
         "<review>rejected: reason</review>."
     ),
 )
-class VerifierAgent: ...
+class VerifierAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic role class
 
 
 @agent(
     model=None,
     system="",  # HUMAN phase pauses for user input; no LLM invocation
 )
-class HumanAgent: ...
+class HumanAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic role class
 
 
 @agent(
@@ -81,7 +81,7 @@ class HumanAgent: ...
         "Never invent file contents — always read them first."
     ),
 )
-class AutoAgent: ...
+class AutoAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic role class
 
 
 # ── Registry entries ──────────────────────────────────────────────────────────

@@ -218,7 +218,9 @@ class UnifiedInputSession:
                 self._push()
             else:
                 self._push()  # restore pre-trigger content on ESC / cancel
-            self._overlay.hide()  # _redraw fires here; InputState already correct
+            overlay_host = self._overlay
+            if overlay_host is not None:
+                overlay_host.hide()  # _redraw fires here; InputState already correct
             if result is not None and isinstance(result, TriggerResult) and result.submit:
                 import asyncio  # noqa: PLC0415
 

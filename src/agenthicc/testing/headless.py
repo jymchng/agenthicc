@@ -24,11 +24,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from agenthicc.config import AgenthiccConfig
     from agenthicc.testing.cassette import SessionCassette
+    from agenthicc.kernel.processor import EventProcessor
 
 
 # ── ReplayResult ──────────────────────────────────────────────────────────────
@@ -114,6 +115,7 @@ async def run_headless_replay(
     from agenthicc.tui.conversation_store import AppState  # noqa: PLC0415
     from agenthicc.workflows.code_plan import CodePlanRunner  # noqa: PLC0415
     from agenthicc.workflows.config import WorkflowConfig  # noqa: PLC0415
+    from agenthicc.plugins.discovery import PluginToolSet  # noqa: PLC0415
 
     run_intent: str = intent or cassette.intent
     if not run_intent:
@@ -141,19 +143,19 @@ async def run_headless_replay(
             user_dir=Path.home() / ".agenthicc",
         )
     except Exception:  # noqa: BLE001
-        agents_registry = None  # type: ignore[assignment]
+        agents_registry = None
 
     mention_cache = MentionCache()
 
     wf_config = WorkflowConfig(
         conv_store=app_state.conversation,
         app_state=app_state,
-        processor=processor,  # type: ignore[arg-type]  # _HeadlessProcessor satisfies emit()
+        processor=cast("EventProcessor", processor),
         agent_runner=agent_runner,
         approval_svc=mock_approval,  # type: ignore[arg-type]
         cfg=cfg,
         skills={},
-        plugin_tools=[],
+        plugin_tools=PluginToolSet(),
         mcp_registry=None,
         mention_cache=mention_cache,
         agents_registry=agents_registry,  # type: ignore[arg-type]
@@ -164,7 +166,9 @@ async def run_headless_replay(
 
     def _record_event(ev: object) -> None:
         if getattr(ev, "kind", "") == "tool_complete":
-            tools_called.append(ev.payload.get("name", ""))
+            payload = getattr(ev, "payload", {})
+            if isinstance(payload, dict) and isinstance(payload.get("name"), str):
+                tools_called.append(payload["name"])
 
     _unsub = app_state.conversation.on_event(_record_event)
 
@@ -188,9 +192,9 @@ async def run_headless_replay(
 
     # ── Collect phases from kernel events ────────────────────────────────────
     phases = [
-        str(e["payload"].get("phase_name", ""))
+        str(payload.get("phase_name", ""))
         for e in processor.events_of_type("WorkflowPhaseCompleted")
-        if e["payload"].get("phase_name")
+        if isinstance((payload := e["payload"]), dict) and payload.get("phase_name")
     ]
 
     return ReplayResult(

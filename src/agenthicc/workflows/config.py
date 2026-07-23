@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.tools.base import ToolLike
     from agenthicc.skills.loader import SkillDef
     from agenthicc.tui.conversation_store import ConversationStore, AppState
     from agenthicc.tools.approval import ApprovalService
@@ -37,7 +38,7 @@ class WorkflowConfig:
     approval_svc: "ApprovalService | None"
     cfg: "AgenthiccConfig"
     skills: "dict[str, SkillDef]"
-    plugin_tools: "PluginToolSet"
+    plugin_tools: "PluginToolSet | list[ToolLike]"
     mcp_registry: "McpToolRegistry | None"
     mention_cache: "MentionCache"
     agents_registry: "AgentsRegistry"
@@ -46,3 +47,9 @@ class WorkflowConfig:
     completed_turns: int = field(default=0)
     params: "WorkflowParams | None" = field(default=None)
     """Per-workflow tunable parameters (phase model overrides, etc.) — PRD-111."""
+
+    def all_plugin_tools(self) -> list["ToolLike"]:
+        """Return project tools while accepting legacy list-based configs."""
+        if isinstance(self.plugin_tools, list):
+            return list(self.plugin_tools)
+        return list(self.plugin_tools.all_tools)

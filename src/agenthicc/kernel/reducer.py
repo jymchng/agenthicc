@@ -5,7 +5,16 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Callable
 
-from .events import Effect, EffectType, Event
+from .events import (
+    Effect,
+    EffectType,
+    Event,
+    _payload_bool,
+    _payload_mapping,
+    _payload_optional_str,
+    _payload_str,
+    _payload_string_list,
+)
 from .state import (
     AgentInstance,
     AgentStatus,
@@ -36,12 +45,12 @@ def root_reducer(state: AppState, event: Event) -> tuple[AppState, list[Effect]]
 
 def _intent_created(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     intent = Intent(
-        intent_id=event.payload["intent_id"],
-        raw_text=event.payload["raw_text"],
+        intent_id=_payload_str(event.payload, "intent_id"),
+        raw_text=_payload_str(event.payload, "raw_text"),
         status=IntentStatus.pending,
         workflow_id=None,
         created_at=event.timestamp,
-        metadata=event.payload.get("metadata", {}),
+        metadata=_payload_mapping(event.payload, "metadata"),
     )
     return state.with_intent(intent), [
         Effect(EffectType.emit_signal, {"signal": "IntentCreated", "intent_id": intent.intent_id}),
@@ -50,14 +59,14 @@ def _intent_created(state: AppState, event: Event) -> tuple[AppState, list[Effec
 
 
 def _intent_status_changed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
-    old = state.intents.get(event.payload["intent_id"])
+    old = state.intents.get(_payload_str(event.payload, "intent_id"))
     if old is None:
         return state, []
     updated = replace(
         old,
-        status=IntentStatus(event.payload["status"]),
-        workflow_id=event.payload.get("workflow_id", old.workflow_id),
-        error=event.payload.get("error", old.error),
+        status=IntentStatus(_payload_str(event.payload, "status")),
+        workflow_id=_payload_optional_str(event.payload, "workflow_id", default=old.workflow_id),
+        error=_payload_optional_str(event.payload, "error", default=old.error),
     )
     return state.with_intent(updated), [
         Effect(EffectType.update_tui, {"type": "intent_updated", "intent_id": old.intent_id}),
@@ -69,13 +78,13 @@ def _intent_status_changed(state: AppState, event: Event) -> tuple[AppState, lis
 
 def _agent_spawn_request(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     agent = AgentInstance(
-        agent_id=event.payload["agent_id"],
-        agent_type=event.payload["agent_type"],
+        agent_id=_payload_str(event.payload, "agent_id"),
+        agent_type=_payload_str(event.payload, "agent_type"),
         status=AgentStatus.idle,
         current_task_id=None,
-        parent_agent_id=event.payload.get("parent_agent_id"),
+        parent_agent_id=_payload_optional_str(event.payload, "parent_agent_id"),
         created_at=event.timestamp,
-        metadata=event.payload.get("metadata", {}),
+        metadata=_payload_mapping(event.payload, "metadata"),
     )
     return state.with_agent(agent), [
         Effect(
@@ -83,7 +92,7 @@ def _agent_spawn_request(state: AppState, event: Event) -> tuple[AppState, list[
             {
                 "agent_id": agent.agent_id,
                 "agent_type": agent.agent_type,
-                "config": event.payload.get("config", {}),
+                "config": _payload_mapping(event.payload, "config"),
             },
         ),
         Effect(EffectType.update_tui, {"type": "agent_spawned", "agent_id": agent.agent_id}),
@@ -91,13 +100,15 @@ def _agent_spawn_request(state: AppState, event: Event) -> tuple[AppState, list[
 
 
 def _agent_status_changed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
-    old = state.agents.get(event.payload["agent_id"])
+    old = state.agents.get(_payload_str(event.payload, "agent_id"))
     if old is None:
         return state, []
     updated = replace(
         old,
-        status=AgentStatus(event.payload["status"]),
-        current_task_id=event.payload.get("current_task_id", old.current_task_id),
+        status=AgentStatus(_payload_str(event.payload, "status")),
+        current_task_id=_payload_optional_str(
+            event.payload, "current_task_id", default=old.current_task_id
+        ),
     )
     return state.with_agent(updated), []
 
@@ -107,8 +118,8 @@ def _agent_status_changed(state: AppState, event: Event) -> tuple[AppState, list
 
 def _workflow_created(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     wf = Workflow(
-        workflow_id=event.payload["workflow_id"],
-        intent_id=event.payload["intent_id"],
+        workflow_id=_payload_str(event.payload, "workflow_id"),
+        intent_id=_payload_str(event.payload, "intent_id"),
         nodes={},
         status=NodeStatus.pending,
         created_at=event.timestamp,
@@ -117,14 +128,14 @@ def _workflow_created(state: AppState, event: Event) -> tuple[AppState, list[Eff
 
 
 def _workflow_node_added(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
-    wf = state.workflows.get(event.payload["workflow_id"])
+    wf = state.workflows.get(_payload_str(event.payload, "workflow_id"))
     if wf is None:
         return state, []
     node = WorkflowNode(
-        node_id=event.payload["node_id"],
-        task_id=event.payload["task_id"],
-        label=event.payload.get("label", ""),
-        dependencies=frozenset(event.payload.get("dependencies", [])),
+        node_id=_payload_str(event.payload, "node_id"),
+        task_id=_payload_str(event.payload, "task_id"),
+        label=_payload_str(event.payload, "label", default=""),
+        dependencies=frozenset(_payload_string_list(event.payload, "dependencies")),
         status=NodeStatus.pending,
     )
     new_wf = replace(wf, nodes={**wf.nodes, node.node_id: node})
@@ -134,10 +145,10 @@ def _workflow_node_added(state: AppState, event: Event) -> tuple[AppState, list[
 
 
 def _workflow_node_removed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
-    wf = state.workflows.get(event.payload["workflow_id"])
+    wf = state.workflows.get(_payload_str(event.payload, "workflow_id"))
     if wf is None:
         return state, []
-    node_id = event.payload["node_id"]
+    node_id = _payload_str(event.payload, "node_id")
     if node_id not in wf.nodes:
         return state, []
     new_nodes = {k: v for k, v in wf.nodes.items() if k != node_id}
@@ -145,18 +156,18 @@ def _workflow_node_removed(state: AppState, event: Event) -> tuple[AppState, lis
 
 
 def _workflow_node_status_changed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
-    wf = state.workflows.get(event.payload["workflow_id"])
+    wf = state.workflows.get(_payload_str(event.payload, "workflow_id"))
     if wf is None:
         return state, []
-    old_node = wf.nodes.get(event.payload["node_id"])
+    old_node = wf.nodes.get(_payload_str(event.payload, "node_id"))
     if old_node is None:
         return state, []
     new_node = replace(
         old_node,
-        status=NodeStatus(event.payload["status"]),
-        agent_id=event.payload.get("agent_id", old_node.agent_id),
+        status=NodeStatus(_payload_str(event.payload, "status")),
+        agent_id=_payload_optional_str(event.payload, "agent_id", default=old_node.agent_id),
         result=event.payload.get("result", old_node.result),
-        error=event.payload.get("error", old_node.error),
+        error=_payload_optional_str(event.payload, "error", default=old_node.error),
     )
     new_wf = replace(wf, nodes={**wf.nodes, new_node.node_id: new_node})
 
@@ -193,21 +204,21 @@ def _workflow_node_status_changed(state: AppState, event: Event) -> tuple[AppSta
 def _workflow_run_started(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     """Creates a Workflow entry when a WorkflowRunner.run() begins."""
     wf = Workflow(
-        workflow_id=event.payload["run_id"],
+        workflow_id=_payload_str(event.payload, "run_id"),
         intent_id="",
         nodes={},
         status=NodeStatus.pending,
         created_at=event.timestamp,
-        name=event.payload.get("workflow_name", ""),
-        intent_text=event.payload.get("intent", ""),
+        name=_payload_str(event.payload, "workflow_name", default=""),
+        intent_text=_payload_str(event.payload, "intent", default=""),
     )
     return state.with_workflow(wf), []
 
 
 def _workflow_phase_completed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     """Records a completed phase as a WorkflowNode inside the Workflow."""
-    run_id = event.payload["run_id"]
-    phase_name = event.payload["phase_name"]
+    run_id = _payload_str(event.payload, "run_id")
+    phase_name = _payload_str(event.payload, "phase_name")
     wf = state.workflows.get(run_id)
     if wf is None:
         return state, []
@@ -218,10 +229,10 @@ def _workflow_phase_completed(state: AppState, event: Event) -> tuple[AppState, 
         dependencies=frozenset(),
         status=NodeStatus.complete,
         result={
-            "role": event.payload.get("role", ""),
-            "full_text": event.payload.get("full_text", ""),
+            "role": _payload_str(event.payload, "role", default=""),
+            "full_text": _payload_str(event.payload, "full_text", default=""),
             "approved": event.payload.get("approved"),
-            "structured": event.payload.get("structured", {}),
+            "structured": _payload_mapping(event.payload, "structured"),
         },
     )
     new_wf = replace(wf, nodes={**wf.nodes, node.node_id: node})
@@ -230,11 +241,11 @@ def _workflow_phase_completed(state: AppState, event: Event) -> tuple[AppState, 
 
 def _workflow_run_completed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     """Marks a Workflow as complete or failed when the runner finishes."""
-    run_id = event.payload["run_id"]
+    run_id = _payload_str(event.payload, "run_id")
     wf = state.workflows.get(run_id)
     if wf is None:
         return state, []
-    status_str = event.payload.get("status", "complete")
+    status_str = _payload_str(event.payload, "status", default="complete")
     new_status = NodeStatus.complete if status_str == "complete" else NodeStatus.failed
     return state.with_workflow(replace(wf, status=new_status)), []
 
@@ -244,10 +255,10 @@ def _workflow_run_completed(state: AppState, event: Event) -> tuple[AppState, li
 
 def _task_created(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     task = Task(
-        task_id=event.payload["task_id"],
-        workflow_id=event.payload["workflow_id"],
-        node_id=event.payload["node_id"],
-        description=event.payload["description"],
+        task_id=_payload_str(event.payload, "task_id"),
+        workflow_id=_payload_str(event.payload, "workflow_id"),
+        node_id=_payload_str(event.payload, "node_id"),
+        description=_payload_str(event.payload, "description"),
         status=NodeStatus.pending,
         assigned_agent_id=None,
         created_at=event.timestamp,
@@ -256,20 +267,20 @@ def _task_created(state: AppState, event: Event) -> tuple[AppState, list[Effect]
 
 
 def _task_assigned(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
-    old = state.tasks.get(event.payload["task_id"])
+    old = state.tasks.get(_payload_str(event.payload, "task_id"))
     if old is None:
         return state, []
     updated = replace(
         old,
         status=NodeStatus.running,
-        assigned_agent_id=event.payload["agent_id"],
+        assigned_agent_id=_payload_str(event.payload, "agent_id"),
     )
     return state.with_task(updated), [
         Effect(
             EffectType.assign_task,
             {
                 "task_id": old.task_id,
-                "agent_id": event.payload["agent_id"],
+                "agent_id": _payload_str(event.payload, "agent_id"),
             },
         ),
     ]
@@ -280,24 +291,24 @@ def _task_assigned(state: AppState, event: Event) -> tuple[AppState, list[Effect
 
 def _tool_registered(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
     reg = ToolRegistration(
-        tool_id=event.payload["tool_id"],
-        name=event.payload["name"],
-        description=event.payload.get("description", ""),
-        parameters_schema=event.payload.get("parameters_schema", {}),
-        is_builtin=event.payload.get("is_builtin", False),
-        source_agent_id=event.payload.get("source_agent_id"),
+        tool_id=_payload_str(event.payload, "tool_id"),
+        name=_payload_str(event.payload, "name"),
+        description=_payload_str(event.payload, "description", default=""),
+        parameters_schema=_payload_mapping(event.payload, "parameters_schema"),
+        is_builtin=_payload_bool(event.payload, "is_builtin"),
+        source_agent_id=_payload_optional_str(event.payload, "source_agent_id"),
     )
     return state.with_tool(reg), []
 
 
 def _hook_registered(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
-    hook_id = event.payload["hook_id"]
+    hook_id = _payload_str(event.payload, "hook_id")
     return state.with_hook(
         hook_id,
         {
-            "entity_type": event.payload.get("entity_type", ""),
-            "stage": event.payload.get("stage", ""),
-            "handler_dotpath": event.payload.get("handler_dotpath", ""),
+            "entity_type": _payload_str(event.payload, "entity_type", default=""),
+            "stage": _payload_str(event.payload, "stage", default=""),
+            "handler_dotpath": _payload_str(event.payload, "handler_dotpath", default=""),
         },
     ), []
 

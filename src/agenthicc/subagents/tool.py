@@ -7,6 +7,7 @@ Postponed evaluation (PEP 563) breaks that inspection.
 
 import hashlib
 import json
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from agenthicc.subagents.pool import SubagentTask
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.tui.conversation_store import ConversationStore
     from agenthicc.tui.conversation_store import AppState
+    from agenthicc.plugins.registry import ToolRegistry
+    from agenthicc.runners.retry import RetryConfig
 
 __all__ = ["make_spawn_subagents_tool"]
 
@@ -30,9 +33,9 @@ def make_spawn_subagents_tool(
     processor: "EventProcessor | None" = None,
     conv_store: "ConversationStore | None" = None,
     registry: SubagentTypeRegistry | None = None,
-    tool_registry: object = None,
-    retry_config: object | None = None,
-) -> object:
+    tool_registry: "ToolRegistry | None" = None,
+    retry_config: "RetryConfig | None" = None,
+) -> Callable[..., object]:
     """Return a ``spawn_subagents`` @tool()-decorated function.
 
     Closes over *parent_runner* and *parent_model* so the tool can build
@@ -70,7 +73,9 @@ def make_spawn_subagents_tool(
     _registry = registry if registry is not None else DEFAULT_REGISTRY
 
     @_tool()
-    async def spawn_subagents(tasks: list[dict], max_concurrent: int = max_concurrent) -> dict:
+    async def spawn_subagents(
+        tasks: list[dict[str, object]], max_concurrent: int = max_concurrent
+    ) -> dict[str, object]:
         """Spawn multiple specialized subagents concurrently and return their aggregated results.
 
         Each subagent runs in isolation with its own memory and a filtered tool set.

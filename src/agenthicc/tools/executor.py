@@ -15,14 +15,15 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from lauren_ai import ToolCall, ToolContext, ToolResult as LaurenToolResult
+from lauren_ai import ToolContext, ToolResult as LaurenToolResult
 from lauren_ai._tools import TOOL_META, ToolMeta, ToolSchema
 from lauren_ai._tools._executor import (
     ToolExecutor as LaurenToolExecutor,
     ToolExecutionError,
     ToolPendingApprovalSignal,
+    ToolCall,
 )
 
 from agenthicc.tools.base import Tool, ToolBase, ToolResult, ToolResultEnvelope
@@ -269,15 +270,15 @@ class AgenthiccToolExecutor:
             call_context.extras["network"] = self._sandbox.network
 
         await self._emit_started(tool_name, tool_use_id, call_context)
-        result: ToolResultEnvelope | None = None
+        execution_result: ToolResultEnvelope | None = None
         lauren_executor = self._lauren_executor()
         call = ToolCall(tool_use_id=tool_use_id, name=tool_name, input=dict(args))
         try:
             raw = await lauren_executor.execute(call, call_context)
-            result = self._success_result(tool_name, tool_use_id, started, raw)
+            execution_result = self._success_result(tool_name, tool_use_id, started, raw)
         except ToolPendingApprovalSignal as exc:
             if self._approval_handler is None:
-                result = self._failed_result(
+                execution_result = self._failed_result(
                     tool_name,
                     tool_use_id,
                     started,
@@ -289,7 +290,7 @@ class AgenthiccToolExecutor:
                 decision = self._approval_handler(entry.metadata, call_context)
                 resolved = await decision if inspect.isawaitable(decision) else decision
                 if resolved is False or resolved == ApprovalDecision.denied:
-                    result = self._failed_result(
+                    execution_result = self._failed_result(
                         tool_name,
                         tool_use_id,
                         started,
@@ -307,9 +308,9 @@ class AgenthiccToolExecutor:
                         call_context,
                         approved_input=dict(exc.tool_input),
                     )
-                    result = self._success_result(tool_name, tool_use_id, started, raw)
+                    execution_result = self._success_result(tool_name, tool_use_id, started, raw)
         except asyncio.TimeoutError:
-            result = self._failed_result(
+            execution_result = self._failed_result(
                 tool_name,
                 tool_use_id,
                 started,
@@ -319,13 +320,15 @@ class AgenthiccToolExecutor:
         except Exception as exc:  # noqa: BLE001
             original = exc.original if isinstance(exc, ToolExecutionError) else exc
             kind = _classify_error(original)
-            result = self._failed_result(tool_name, tool_use_id, started, str(original), kind)
+            execution_result = self._failed_result(
+                tool_name, tool_use_id, started, str(original), kind
+            )
         finally:
-            if result is not None:
-                await self._emit_complete(result)
-        if result is None:
+            if execution_result is not None:
+                await self._emit_complete(execution_result)
+        if execution_result is None:
             raise RuntimeError("lauren-ai executor returned without a result")
-        return result
+        return execution_result
 
     async def execute_parallel(
         self,
@@ -422,14 +425,29 @@ class AgenthiccToolExecutor:
             raise TypeError(f"Unsupported tool registration: {tool!r}")
         return _RegisteredTool(implementation, metadata, lauren_meta), metadata
 
-    def _legacy_adapter(self, tool: ToolBase, timeout_s: float) -> Callable[..., Awaitable[object]]:
+    def _legacy_adapter(
+        self, tool: Tool | ToolBase, timeout_s: float
+    ) -> Callable[..., Awaitable[object]]:
         async def _adapter(ctx: ToolContext, **kwargs: object) -> object:
+            result: object
             if isinstance(tool, Tool):
                 result = tool.execute(dict(kwargs), _legacy_context(ctx))
             else:
-                result = tool.execute(ctx, dict(kwargs))
+                typed_context = ToolCallContext(
+                    agent_context=ctx.agent_context,
+                    tool_use_id=ctx.tool_use_id,
+                    turn=ctx.turn,
+                    metadata=dict(ctx.metadata),
+                    state=dict(ctx.state),
+                    tool_state=dict(ctx.tool_state),
+                    dependencies=dict(ctx.dependencies),
+                    extras=dict(ctx.extras),
+                    tool_name=ctx.tool_name,
+                    tool_input=dict(kwargs),
+                )
+                result = tool.execute(typed_context, dict(kwargs))
             if inspect.isawaitable(result):
-                result = await self._run_with_limits(result, timeout_s)
+                result = await self._run_with_limits(cast(Awaitable[object], result), timeout_s)
             return _unwrap_agenthicc_result(result)
 
         return _adapter
@@ -442,17 +460,20 @@ class AgenthiccToolExecutor:
         context_param_name: str | None = None,
     ) -> Callable[..., Awaitable[object]]:
         async def _adapter(ctx: ToolContext, **kwargs: object) -> object:
+            result: object
             call_kwargs = dict(kwargs)
             fn = getattr(tool, "run", tool)
             context_name = context_param_name or _context_parameter(fn)
             if context_name is not None:
                 call_kwargs[context_name] = ctx
             if inspect.iscoroutinefunction(fn):
-                result = fn(**call_kwargs)
+                async_fn = cast(Callable[..., Awaitable[object]], fn)
+                result = async_fn(**call_kwargs)
                 result = await self._run_with_limits(result, timeout_s)
             else:
+                sync_fn = cast(Callable[..., object], fn)
                 result = await self._run_with_limits(
-                    asyncio.to_thread(fn, **call_kwargs),
+                    asyncio.to_thread(sync_fn, **call_kwargs),
                     timeout_s,
                 )
             return _unwrap_agenthicc_result(result)
@@ -618,6 +639,8 @@ def _legacy_context(ctx: ToolContext) -> dict[str, object]:
 
 def _context_parameter(tool: object) -> str | None:
     """Find the context parameter in an undecorated callable."""
+    if not callable(tool):
+        return None
     try:
         parameters = inspect.signature(tool).parameters
     except (TypeError, ValueError):

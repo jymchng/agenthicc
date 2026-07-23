@@ -5,12 +5,23 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from dataclasses import replace
-from typing import TYPE_CHECKING, ClassVar
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, ClassVar, TypeAlias
 
 if TYPE_CHECKING:
     from agenthicc.tools.context import ToolCallContext
 
-__all__ = ["Tool", "ToolBase", "ToolResult", "ToolResultEnvelope"]
+__all__ = [
+    "Tool",
+    "ToolBase",
+    "ToolLike",
+    "ToolResult",
+    "ToolResultEnvelope",
+    "arg_bool",
+    "arg_float",
+    "arg_int",
+    "arg_str",
+]
 
 
 @dataclass(slots=True)
@@ -72,13 +83,13 @@ class ToolBase(abc.ABC):
     async def execute(
         self,
         context: "ToolCallContext",
-        args: dict[str, object],
+        args: Mapping[str, object],
     ) -> ToolResult:
         """Execute with the normalized context and validated arguments."""
         ...
 
 
-class Tool(ToolBase):
+class Tool(abc.ABC):
     """Legacy tool contract retained for existing built-in subclasses.
 
     Existing Agenthicc tools accept ``(args, context)`` and return a plain
@@ -88,11 +99,18 @@ class Tool(ToolBase):
     Subclasses declare the same stable metadata as :class:`ToolBase`.
     """
 
+    name: ClassVar[str] = ""
+    description: ClassVar[str] = ""
+    parameters: ClassVar[dict[str, object]] = {}
+    capabilities: ClassVar[frozenset[str]] = frozenset()
+    destructive: ClassVar[bool] = False
+    requires_approval: ClassVar[bool] = False
+
     @abc.abstractmethod
     async def execute(
         self,
-        args: dict[str, object],
-        context: dict[str, object],
+        args: Mapping[str, object],
+        context: Mapping[str, object],
     ) -> dict[str, object]:
         """Execute the tool.
 
@@ -102,6 +120,41 @@ class Tool(ToolBase):
         :return: Any JSON-serialisable value.
         """
         ...
+
+
+ToolLike: TypeAlias = Callable[..., object] | Tool
+
+
+def arg_str(args: Mapping[str, object], key: str, default: str | None = None) -> str:
+    """Extract a string argument, rejecting malformed tool input."""
+    value = args.get(key, default)
+    if isinstance(value, str):
+        return value
+    raise ValueError(f"tool argument {key!r} must be a string")
+
+
+def arg_bool(args: Mapping[str, object], key: str, default: bool = False) -> bool:
+    """Extract a boolean argument, rejecting malformed tool input."""
+    value = args.get(key, default)
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"tool argument {key!r} must be a boolean")
+
+
+def arg_int(args: Mapping[str, object], key: str, default: int = 0) -> int:
+    """Extract an integer argument, rejecting booleans and malformed values."""
+    value = args.get(key, default)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    raise ValueError(f"tool argument {key!r} must be an integer")
+
+
+def arg_float(args: Mapping[str, object], key: str, default: float = 0.0) -> float:
+    """Extract a numeric argument as a float."""
+    value = args.get(key, default)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    raise ValueError(f"tool argument {key!r} must be a number")
 
 
 @dataclass(slots=True)

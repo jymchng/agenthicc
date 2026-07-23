@@ -35,6 +35,16 @@ DENY = "deny"
 REQUIRE_CONFIRMATION = "require_confirmation"
 
 
+def _string_frozenset(value: object) -> frozenset[str]:
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return frozenset(item for item in value if isinstance(item, str))
+    return frozenset()
+
+
+def _int_value(value: object, default: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
 # ---------------------------------------------------------------------------
 # PRD-19 — per-agent capability scoping
 # ---------------------------------------------------------------------------
@@ -123,11 +133,11 @@ class AgentCapabilityScope:
         raw_allowed = data.get("allowed_tools")
         raw_comm = data.get("allowed_comm_tools")
         return cls(
-            allowed_tools=frozenset(raw_allowed) if raw_allowed is not None else None,
-            denied_tools=frozenset(data.get("denied_tools", [])),
-            allowed_comm_tools=frozenset(raw_comm) if raw_comm is not None else None,
-            max_tool_call_budget=int(data.get("max_tool_call_budget", 100)),
-            max_spawn_depth=int(data.get("max_spawn_depth", 3)),
+            allowed_tools=_string_frozenset(raw_allowed) if raw_allowed is not None else None,
+            denied_tools=_string_frozenset(data.get("denied_tools", [])),
+            allowed_comm_tools=_string_frozenset(raw_comm) if raw_comm is not None else None,
+            max_tool_call_budget=_int_value(data.get("max_tool_call_budget"), 100),
+            max_spawn_depth=_int_value(data.get("max_spawn_depth"), 3),
         )
 
     def to_dict(self) -> dict[str, object]:

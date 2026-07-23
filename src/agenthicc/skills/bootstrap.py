@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import cast
 
 __all__ = ["bootstrap_default_skills"]
 
@@ -456,7 +457,12 @@ def _load_markers(global_dir: Path) -> dict[str, str]:
     if not marker_path.exists():
         return {}
     try:
-        return json.loads(marker_path.read_text(encoding="utf-8"))
+        loaded = json.loads(marker_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict) and all(
+            isinstance(key, str) and isinstance(value, str) for key, value in loaded.items()
+        ):
+            return cast(dict[str, str], loaded)
+        return {}
     except Exception:  # noqa: BLE001
         return {}
 

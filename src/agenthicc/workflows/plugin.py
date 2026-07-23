@@ -13,7 +13,10 @@ import dataclasses
 import re
 import time
 from dataclasses import field
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+from agenthicc.tools.capabilities import ToolCapability
 
 if TYPE_CHECKING:
     from agenthicc.workflows.base_runner import BaseWorkflowRunner
@@ -97,11 +100,11 @@ class PhaseSpec:
     mode_override: str | None = None
     """RuntimeMode name to activate for the duration of this phase (e.g. 'Auto' to allow writes)."""
 
-    allowed_capabilities: object = None
+    allowed_capabilities: frozenset[ToolCapability] | None = None
     """frozenset[ToolCapability] | None — tool capability allowlist for this phase.
     None means fall back to ROLE_DEFAULT_ALLOWED[agent_type], then the session mode ceiling."""
 
-    allowed_capabilities_override: object = None
+    allowed_capabilities_override: frozenset[ToolCapability] | None = None
     """Explicit per-instance capability override; takes priority over allowed_capabilities and role default."""
 
     max_turns: int = 20
@@ -148,7 +151,7 @@ class PhaseSpec:
     """Names of sibling phases to run concurrently with this one via asyncio.gather."""
 
     @property
-    def resolved_allowed_caps(self) -> object:  # frozenset | None
+    def resolved_allowed_caps(self) -> frozenset[ToolCapability] | None:
         """Effective allowed capabilities: override → field → role default."""
         if self.allowed_capabilities_override is not None:
             return self.allowed_capabilities_override
@@ -167,9 +170,9 @@ class PhaseOutput:
     phase_name: str
     role: str  # agent_type that ran this phase
     full_text: str = ""
-    structured: dict | None = None
+    structured: dict[str, object] | None = None
     approved: bool | None = None
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
     agent_id: str = ""
     duration_s: float = 0.0
 
@@ -231,7 +234,7 @@ class WorkflowContext:
 # ── Output schema parsing ─────────────────────────────────────────────────────
 
 
-def _parse_output_schema(text: str, schema: str | None) -> dict | None:
+def _parse_output_schema(text: str, schema: str | None) -> dict[str, object] | None:
     if schema is None:
         return None
     if schema == "plan":
@@ -311,7 +314,7 @@ class WorkflowPlugin(abc.ABC):
         return WorkflowRunner(cls, config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: dict[str, Any]) -> WorkflowParams:
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
         """Return typed params built from *source* (merged TOML/CLI/env dict).
 
         Default: returns base ``WorkflowParams()`` with no phase model overrides.

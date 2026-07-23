@@ -33,7 +33,11 @@ def _deserialize(payload: object) -> ToolResult:
     if isinstance(payload, dict):
         return ToolResult(
             tool_use_id=str(payload.get("tool_use_id", "")),
-            content=payload.get("content", ""),  # type: ignore[arg-type]
+            content=(
+                payload.get("content", "")
+                if isinstance(payload.get("content", ""), str)
+                else str(payload.get("content", ""))
+            ),
             is_error=bool(payload.get("is_error", False)),
         )
     return ToolResult(tool_use_id="", content=str(payload), is_error=False)

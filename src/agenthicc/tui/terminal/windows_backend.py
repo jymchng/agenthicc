@@ -27,6 +27,7 @@ A ``getwch()`` fallback is retained for environments without a real console.
 from __future__ import annotations
 
 import ctypes
+from typing import cast
 import sys
 from contextlib import contextmanager
 from typing import Generator
@@ -230,7 +231,7 @@ class WindowsBackend:
         # console-input path available.
         if not k32.GetConsoleMode(handle, ctypes.byref(mode)):
             return None
-        return handle
+        return int(handle)
 
     def _next_input_event(self) -> tuple[int, bool, int, str, int] | None:
         """Read one console input record.
@@ -276,7 +277,7 @@ class WindowsBackend:
         """Legacy ``msvcrt.getwch()`` decode for non-console environments."""
         import msvcrt  # noqa: PLC0415
 
-        ch = msvcrt.getwch()
+        ch = cast(str, msvcrt.getwch())  # type: ignore[attr-defined]
 
         if ch == "\x03":
             return (Key.CTRL_C, "")
@@ -297,11 +298,11 @@ class WindowsBackend:
         if ch == "@":
             return (Key.AT, "")
         if ch == "\xe0":
-            ext = msvcrt.getwch()
+            ext = cast(str, msvcrt.getwch())  # type: ignore[attr-defined]
             mapped = _EXT_E0.get(ext)
             return (mapped, "") if mapped is not None else (Key.ESC, "")
         if ch == "\x00":
-            ext = msvcrt.getwch()
+            ext = cast(str, msvcrt.getwch())  # type: ignore[attr-defined]
             mapped = _EXT_00.get(ext)
             return (mapped, "") if mapped is not None else (Key.ESC, "")
         if ch == "\x1b":

@@ -112,10 +112,7 @@ class WebSearchSkill(SkillBundle):
         raw_engine = config.get("engine", "brave")
         engine = raw_engine if isinstance(raw_engine, str) else "brave"
         raw_max_results = config.get("max_results", 5)
-        try:
-            max_results = int(raw_max_results)
-        except (TypeError, ValueError):
-            max_results = 5
+        max_results = raw_max_results if isinstance(raw_max_results, int) else 5
         return [
             SearchWebTool(
                 api_key=str(api_key),

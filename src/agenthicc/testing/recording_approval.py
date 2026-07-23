@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agenthicc.tools.approval import ApprovalRequest, ApprovalService
+    from agenthicc.tools.approval import ApprovalRequest, ApprovalResponse, ApprovalService
 
 
 class RecordingApprovalService:

@@ -75,6 +75,8 @@ from agenthicc.tools.outlook.agent_tools import (
 )
 
 from agenthicc.plugins.registry import ToolGroup
+from agenthicc.plugins.registry import PluginTool
+from typing import cast
 
 __all__ = [
     # fs
@@ -149,7 +151,7 @@ FS_GROUP = ToolGroup(
     name="fs",
     label="File System",
     description="Read, write, search, and patch files within the workspace.",
-    tools=list(FS_AGENT_TOOLS),
+    tools=cast(list[PluginTool], list(FS_AGENT_TOOLS)),
     priority=4,
 )
 
@@ -157,7 +159,7 @@ GIT_GROUP = ToolGroup(
     name="git",
     label="Git",
     description="Query history, stage changes, and commit to the repository.",
-    tools=list(GIT_AGENT_TOOLS),
+    tools=cast(list[PluginTool], list(GIT_AGENT_TOOLS)),
     priority=3,
 )
 
@@ -165,7 +167,7 @@ EXEC_GROUP = ToolGroup(
     name="exec",
     label="Shell / Exec",
     description="Run shell commands, Python snippets, and the test suite.",
-    tools=list(EXEC_AGENT_TOOLS),
+    tools=cast(list[PluginTool], list(EXEC_AGENT_TOOLS)),
     priority=2,
 )
 
@@ -173,7 +175,7 @@ OUTLOOK_GROUP = ToolGroup(
     name="outlook",
     label="Outlook / Calendar",
     description="Read and send email, manage calendar events via Graph API.",
-    tools=list(OUTLOOK_AGENT_TOOLS),
+    tools=cast(list[PluginTool], list(OUTLOOK_AGENT_TOOLS)),
     priority=1,
 )
 

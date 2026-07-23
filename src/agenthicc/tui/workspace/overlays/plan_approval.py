@@ -152,7 +152,8 @@ class PlanApprovalOverlay(PromptOverlay):
         lines.append(Text(_BORDER * border_w, style="dim"))
 
         # ── scrollable plan viewport ──────────────────────────────────────────
-        plan_text: str = self._req.tool_input.get("plan", "") if self._req.tool_input else ""
+        raw_plan = self._req.tool_input.get("plan", "") if self._req.tool_input else ""
+        plan_text = raw_plan if isinstance(raw_plan, str) else str(raw_plan)
         if plan_text:
             # Rebuild the pre-rendered cache if cols changed or not yet built.
             content_width = cols - 4

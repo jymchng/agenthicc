@@ -18,9 +18,13 @@ in cbreak_reader.raw_mode.
 from __future__ import annotations
 
 import threading
-from typing import Callable, Generic, TypeVar
+from typing import Callable, Generic, Protocol, TypeVar
 
 T = TypeVar("T")
+
+
+class _Subscribable(Protocol):
+    def subscribe(self, fn: Callable[[], None]) -> Callable[[], None]: ...
 
 
 class Signal(Generic[T]):
@@ -80,7 +84,7 @@ class Computed(Generic[T]):
 
     __slots__ = ("_fn", "_value", "_subscribers")
 
-    def __init__(self, fn: Callable[[], T], *deps: Signal) -> None:
+    def __init__(self, fn: Callable[[], T], *deps: _Subscribable) -> None:
         self._fn = fn
         self._value: T = fn()
         self._subscribers: list[Callable[[], None]] = []

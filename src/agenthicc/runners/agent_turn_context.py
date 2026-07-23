@@ -8,9 +8,10 @@ reads from this context; call sites construct it and pass it to the runner.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
+    from lauren_ai import IdempotencyLedger
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.config import ExecutionSettings
@@ -19,9 +20,32 @@ if TYPE_CHECKING:
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.skills.loader import SkillPermissionSet, SkillDef
+
+
+class AgentTurnOptions(TypedDict):
+    """Keyword arguments shared by workflow phase turn invocations."""
+
+    runner: "AgentRunnerBase"
+    processor: "EventProcessor"
+    session_memory: "ShortTermMemory | None"
+    max_agent_turns: int
+    conv_store: "ConversationStore | None"
+    app_state: "AppState | None"
+    exec_cfg: "ExecutionSettings | None"
+    skills: "dict[str, SkillDef] | None"
+    skill_permissions: "SkillPermissionSet | None"
+    mention_cache: "MentionCache | None"
+    project_plugin_tools: "list[ToolLike] | None"
+    mcp_registry: "McpToolRegistry | None"
+    active_agent: str
+    completed_turns: int
+    approval_svc: "ApprovalService | None"
+    output_collector: "list[str] | None"
+    system_prompt_suffix: str
 
 
 @dataclass(frozen=True)
@@ -33,7 +57,7 @@ class AgentTurnContext:
 
     # ── required ──────────────────────────────────────────────────────────────
     text: str
-    runner: "AgentRunnerBase | None"  # transport + signals
+    runner: "AgentRunnerBase"  # transport + signals
     processor: "EventProcessor"  # kernel event bus
 
     # ── memory ────────────────────────────────────────────────────────────────
@@ -49,7 +73,7 @@ class AgentTurnContext:
     skills: "dict[str, SkillDef] | None" = None
     skill_permissions: "SkillPermissionSet | None" = None
     mention_cache: "MentionCache | None" = None
-    project_plugin_tools: "list | None" = None
+    project_plugin_tools: "list[ToolLike] | None" = None
     mcp_registry: "McpToolRegistry | None" = None
 
     # ── agent identity ────────────────────────────────────────────────────────
@@ -79,4 +103,4 @@ class AgentTurnContext:
     resume_turn_id: "str | None" = None
     #: A pre-seeded ``DurableIdempotencyLedger`` for the resumed turn, loaded with
     #: the tools the crashed attempt already ran.  ``None`` = build a fresh one.
-    resume_ledger: "object | None" = None
+    resume_ledger: "IdempotencyLedger | None" = None

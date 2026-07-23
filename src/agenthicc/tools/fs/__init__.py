@@ -7,9 +7,9 @@ import datetime
 import re
 import shutil
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from agenthicc.tools.base import Tool
+from agenthicc.tools.base import Tool, arg_bool, arg_int, arg_str
 from agenthicc.tools.sandbox import WorkspaceView
 
 __all__ = ["FsToolKit"]
@@ -70,11 +70,11 @@ def _truncate_output(text: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> tuple[st
     return text[:head] + marker + (text[-tail:] if tail else ""), True
 
 
-def _view(context: dict) -> WorkspaceView:
-    return WorkspaceView(context.get("workspace_root", "."))
+def _view(context: Mapping[str, object]) -> WorkspaceView:
+    return WorkspaceView(arg_str(context, "workspace_root", "."))
 
 
-def _safe_stat(path: Path) -> dict:
+def _safe_stat(path: Path) -> dict[str, object]:
     s = path.stat()
     return {
         "size_bytes": s.st_size,
@@ -98,15 +98,16 @@ class ReadFileTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        encoding = args.get("encoding", "utf-8")
+        path = arg_str(args, "path")
+        encoding = arg_str(args, "encoding", "utf-8")
         try:
-            resolved = _view(context).resolve(args["path"])
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():
-            return {"ok": False, "error": f"not_found: {args['path']}"}
+            return {"ok": False, "error": f"not_found: {path}"}
         if resolved.stat().st_size > _MAX_FILE_SIZE:
             return {"ok": False, "error": f"file_too_large: {resolved.stat().st_size} bytes"}
         # PRD-132 L1: serve from the durable file cache when the file is
@@ -160,16 +161,18 @@ class WriteFileTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path")
+        content = arg_str(args, "content")
+        encoding = arg_str(args, "encoding", "utf-8")
+        create_parents = arg_bool(args, "create_parents", True)
         try:
-            resolved = _view(context).resolve(args["path"])
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
-        content = args["content"]
-        encoding = args.get("encoding", "utf-8")
         try:
-            if args.get("create_parents", True):
+            if create_parents:
                 await asyncio.to_thread(resolved.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(resolved.write_text, content, encoding=encoding)
             return {
@@ -191,17 +194,19 @@ class AppendFileTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path")
+        content = arg_str(args, "content")
         try:
-            resolved = _view(context).resolve(args["path"])
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
 
-            def _append():
+            def _append() -> None:
                 with open(resolved, "a", encoding="utf-8") as f:
-                    f.write(args["content"])
+                    f.write(content)
 
             await asyncio.to_thread(_append)
             return {"ok": True, "path": str(resolved)}
@@ -219,14 +224,15 @@ class DeleteFileTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path")
         try:
-            resolved = _view(context).resolve(args["path"])
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():
-            return {"ok": False, "error": f"not_found: {args['path']}"}
+            return {"ok": False, "error": f"not_found: {path}"}
         try:
             await asyncio.to_thread(resolved.unlink)
             return {"ok": True, "path": str(resolved)}
@@ -244,12 +250,14 @@ class MoveFileTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        source = arg_str(args, "source")
+        destination = arg_str(args, "destination")
         try:
             view = _view(context)
-            src = view.resolve(args["source"])
-            dst = view.resolve(args["destination"])
+            src = view.resolve(source)
+            dst = view.resolve(destination)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
@@ -269,12 +277,14 @@ class CopyFileTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        source = arg_str(args, "source")
+        destination = arg_str(args, "destination")
         try:
             view = _view(context)
-            src = view.resolve(args["source"])
-            dst = view.resolve(args["destination"])
+            src = view.resolve(source)
+            dst = view.resolve(destination)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
@@ -298,20 +308,21 @@ class ListDirectoryTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path", ".")
+        pattern = arg_str(args, "pattern", "*")
+        recursive = arg_bool(args, "recursive", False)
+        include_hidden = arg_bool(args, "include_hidden", False)
         try:
-            resolved = _view(context).resolve(args.get("path", "."))
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.is_dir():
-            return {"ok": False, "error": f"not_a_directory: {args.get('path', '.')}"}
-        pattern = args.get("pattern", "*")
-        recursive = args.get("recursive", False)
-        include_hidden = args.get("include_hidden", False)
+            return {"ok": False, "error": f"not_a_directory: {path}"}
 
-        def _list():
-            entries = []
+        def _list() -> tuple[list[dict[str, object]], bool]:
+            entries: list[dict[str, object]] = []
             truncated = False
             # Recursive listings respect .gitignore via git ls-files; a flat
             # (non-recursive) listing shows the directory's literal contents.
@@ -339,7 +350,7 @@ class ListDirectoryTool(Tool):
                     )
                 except OSError:
                     pass
-            entries.sort(key=lambda e: e["path"])
+            entries.sort(key=lambda e: str(e["path"]))
             return entries, truncated
 
         entries, truncated = await asyncio.to_thread(_list)
@@ -360,10 +371,11 @@ class MakeDirectoryTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path")
         try:
-            resolved = _view(context).resolve(args["path"])
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
@@ -383,17 +395,18 @@ class FileExistsTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path")
         try:
-            resolved = _view(context).resolve(args["path"])
+            resolved = _view(context).resolve(path)
         except PermissionError:
-            return {"exists": False, "path": args["path"], "type": None}
+            return {"exists": False, "path": path, "type": None}
         exists = resolved.exists()
         file_type = None
         if exists:
             file_type = "dir" if resolved.is_dir() else "file"
-        return {"exists": exists, "path": args["path"], "type": file_type}
+        return {"exists": exists, "path": path, "type": file_type}
 
 
 class SearchFilesTool(Tool):
@@ -410,17 +423,18 @@ class SearchFilesTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path", ".")
+        pattern = arg_str(args, "pattern")
+        recursive = arg_bool(args, "recursive", True)
         try:
-            resolved = _view(context).resolve(args.get("path", "."))
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
-        pattern = args["pattern"]
-        recursive = args.get("recursive", True)
 
-        def _search():
-            matches = []
+        def _search() -> tuple[list[str], bool]:
+            matches: list[str] = []
             truncated = False
             keep = _git_keep_filter(resolved)  # respect .gitignore; None → full walk
             glob_fn = resolved.rglob if recursive else resolved.glob
@@ -460,19 +474,20 @@ class GrepFilesTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path", ".")
+        pattern = arg_str(args, "pattern")
+        max_results = arg_int(args, "max_results", 100)
+        recursive = arg_bool(args, "recursive", True)
         try:
-            resolved = _view(context).resolve(args.get("path", "."))
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
-        pattern = args["pattern"]
-        max_results = int(args.get("max_results", 100))
-        recursive = args.get("recursive", True)
 
-        def _grep():
+        def _grep() -> list[dict[str, object]]:
             compiled = re.compile(pattern)
-            matches = []
+            matches: list[dict[str, object]] = []
             keep = _git_keep_filter(resolved)  # respect .gitignore; None → full walk
             glob_fn = resolved.rglob if recursive else resolved.glob
             for p in sorted(glob_fn("*")):
@@ -511,14 +526,15 @@ class GetFileInfoTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path")
         try:
-            resolved = _view(context).resolve(args["path"])
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():
-            return {"ok": False, "error": f"not_found: {args['path']}"}
+            return {"ok": False, "error": f"not_found: {path}"}
         info = await asyncio.to_thread(_safe_stat, resolved)
         info["path"] = str(resolved)
         return info
@@ -538,14 +554,18 @@ class ReadLinesTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path")
+        start = max(1, arg_int(args, "start", 1))
+        end_value = args.get("end")
+        end = arg_int(args, "end") if end_value is not None else None
         try:
-            resolved = _view(context).resolve(args["path"])
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():
-            return {"ok": False, "error": f"not_found: {args['path']}"}
+            return {"ok": False, "error": f"not_found: {path}"}
         try:
             all_lines = await asyncio.to_thread(
                 resolved.read_text, encoding="utf-8", errors="replace"
@@ -554,8 +574,7 @@ class ReadLinesTool(Tool):
             return {"ok": False, "error": str(e)}
         lines = all_lines.splitlines()
         total = len(lines)
-        start = max(1, int(args.get("start", 1)))
-        end = min(total, int(args["end"])) if args.get("end") else total
+        end = min(total, end) if end is not None else total
         selected = lines[start - 1 : end]
         # PRD-133 Layer A: cap output to bound context tokens.
         out_lines: list[str] = []
@@ -596,28 +615,30 @@ class PatchFileTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
+        path = arg_str(args, "path")
+        old = arg_str(args, "old_content")
+        new = arg_str(args, "new_content")
         try:
-            resolved = _view(context).resolve(args["path"])
+            resolved = _view(context).resolve(path)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():
-            return {"ok": False, "error": f"not_found: {args['path']}"}
+            return {"ok": False, "error": f"not_found: {path}"}
         try:
             original = await asyncio.to_thread(
                 resolved.read_text, encoding="utf-8", errors="replace"
             )
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        old = args["old_content"]
         if old not in original:
             return {
                 "ok": False,
-                "error": f"old_content not found in {args['path']}",
+                "error": f"old_content not found in {path}",
                 "replacements": 0,
             }
-        patched = original.replace(old, args["new_content"])
+        patched = original.replace(old, new)
         replacements = original.count(old)
         await asyncio.to_thread(resolved.write_text, patched, encoding="utf-8")
         return {"ok": True, "replacements": replacements}
@@ -647,7 +668,7 @@ class FsToolKit:
             PatchFileTool(),
         ]
 
-    def all_agent_tools(self) -> list:
+    def all_agent_tools(self) -> list[Callable[..., object]]:
         """Return all 24 @tool()-decorated agent tools (14 original + 10 new)."""
         from agenthicc.tools.fs.agent_tools import FS_AGENT_TOOLS  # noqa: PLC0415
 

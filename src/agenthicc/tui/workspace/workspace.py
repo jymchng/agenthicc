@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
 
 
-def _border(cols: int):
+def _border(cols: int) -> RenderableType:
     from rich.text import Text  # noqa: PLC0415
 
     return Text("─" * cols, style="yellow dim")

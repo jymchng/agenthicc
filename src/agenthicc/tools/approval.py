@@ -20,6 +20,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from agenthicc.tools.context import ToolCallContext
+
 if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
 
@@ -35,8 +37,8 @@ __all__ = [
 class ApprovalRequest:
     tool_name: str
     tool_use_id: str
-    tool_input: dict
-    capabilities: frozenset  # ToolCapability values that triggered the approval
+    tool_input: dict[str, object]
+    capabilities: frozenset[str]  # capability values that triggered the approval
     event: asyncio.Event = field(compare=False, hash=False)
     kind: str = "tool"  # "tool" | "plan_review" — controls which overlay is shown
 
@@ -62,8 +64,8 @@ class ApprovalService:
     def __init__(self, app_state: AppState) -> None:
         self._app_state = app_state
         self._response: ApprovalResponse | None = None
-        self._remembered_turn: frozenset = frozenset()
-        self._remembered_all: frozenset = frozenset()
+        self._remembered_turn: frozenset[str] = frozenset()
+        self._remembered_all: frozenset[str] = frozenset()
         self._lock = asyncio.Lock()
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
@@ -126,7 +128,7 @@ class ApprovalGate:
         self._app_state = app_state
         self._service = service
 
-    async def before_tool_call(self, ctx: object) -> object:
+    async def before_tool_call(self, ctx: ToolCallContext) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
         from agenthicc.tools.capabilities import CAPABILITIES_KEY  # noqa: PLC0415
 
@@ -140,7 +142,12 @@ class ApprovalGate:
         if not required:
             return BeforeToolHookDecision.proceed()
 
-        tool_caps: frozenset = ctx.get_metadata(CAPABILITIES_KEY) or frozenset()
+        raw_caps = ctx.get_metadata(CAPABILITIES_KEY)
+        tool_caps: frozenset[str] = (
+            frozenset(item for item in raw_caps if isinstance(item, str))
+            if isinstance(raw_caps, (set, frozenset))
+            else frozenset()
+        )
         needs_approval = tool_caps & required
         if not needs_approval:
             return BeforeToolHookDecision.proceed()
@@ -148,7 +155,7 @@ class ApprovalGate:
         req = ApprovalRequest(
             tool_name=ctx.tool_name,
             tool_use_id=getattr(ctx, "tool_use_id", "") or "",
-            tool_input=dict(getattr(ctx, "tool_input", None) or {}),
+            tool_input=dict(ctx.tool_input or {}),
             capabilities=frozenset(needs_approval),
             event=asyncio.Event(),
         )
@@ -162,12 +169,12 @@ class ApprovalGate:
             }
         )
 
-    async def after_tool_call(self, result: object, ctx: object) -> object:
+    async def after_tool_call(self, result: object, ctx: ToolCallContext) -> object:
         from lauren_ai._tools._hooks import AfterToolHookDecision  # noqa: PLC0415
 
         return AfterToolHookDecision.proceed()
 
-    async def on_tool_error(self, exc: Exception, ctx: object) -> object:
+    async def on_tool_error(self, exc: Exception, ctx: ToolCallContext) -> object:
         from lauren_ai._tools._hooks import ErrorToolHookDecision  # noqa: PLC0415
 
         return ErrorToolHookDecision.reraise()

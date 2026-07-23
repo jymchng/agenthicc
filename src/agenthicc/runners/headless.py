@@ -105,7 +105,7 @@ async def execute_workflow(
         approval_svc=session.approval_svc,
         cfg=session.cfg,
         skills=session.skills,
-        plugin_tools=session.project_plugins.all_tools,
+        plugin_tools=session.project_plugins,
         mcp_registry=session.mcp_registry,
         mention_cache=session.mention_cache,
         agents_registry=session.agents_registry,
@@ -275,10 +275,6 @@ async def _run_headless(ctx: CLIContext | None = None) -> None:
     from agenthicc.kernel import AppState, Event, EventProcessor, SecurityPolicy, SystemSettings
 
     state = AppState.create(settings=SystemSettings(), policy=SecurityPolicy())
-
-    # PRD-79: apply CLIFlags from the CLI context.
-    if ctx is not None:
-        state.cli_flags = ctx.flags
 
     processor = EventProcessor(initial_state=state, persist=False)
     sub = processor.subscribe()

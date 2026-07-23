@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -10,8 +11,17 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
 
 from agenthicc.tui.cbreak_reader import Key
+from agenthicc.tui.trigger import MatchItem, TriggerHandler, TriggerManager, TriggerResult
 from agenthicc.tui.workspace.overlay import Overlay
 from agenthicc.tui.input.buffer import InputBuffer
+
+
+@dataclass
+class _ActiveTrigger:
+    handler: TriggerHandler
+    char: str
+    fragment: str
+    pre_buf: list[str]
 
 
 class TriggerPickerOverlay(Overlay):
@@ -31,9 +41,9 @@ class TriggerPickerOverlay(Overlay):
     def __init__(
         self,
         initial_buf: list[str],
-        registry: object,
+        registry: TriggerManager,
         cwd: "Path",
-        on_complete: Callable[[object], None],
+        on_complete: Callable[[TriggerResult | None], None],
     ) -> None:
         from agenthicc.tui.trigger import TriggerContext  # noqa: PLC0415
 
@@ -42,8 +52,8 @@ class TriggerPickerOverlay(Overlay):
         self._cwd = cwd
         self._complete = on_complete
         self._ctx = TriggerContext(cwd=cwd)
-        self._trigger: object = None
-        self._matches: list = []
+        self._trigger: _ActiveTrigger | None = None
+        self._matches: list[MatchItem] = []
         self._selected: int = 0  # index into self._matches
         self._scroll: int = 0  # index of first visible item
         self._hint: str | None = None
@@ -73,9 +83,7 @@ class TriggerPickerOverlay(Overlay):
                 pre = buf[:i]
                 fragment = "".join(buf[i + 1 :])
                 if handler and handler.can_activate(pre):
-                    from types import SimpleNamespace  # noqa: PLC0415
-
-                    self._trigger = SimpleNamespace(
+                    self._trigger = _ActiveTrigger(
                         handler=handler,
                         char=ch,
                         fragment=fragment,
@@ -151,8 +159,6 @@ class TriggerPickerOverlay(Overlay):
             case Key.ESC:
                 if self._trigger:
                     buf = self._trigger.handler.on_cancel(self._trigger.fragment, self._buf.buf)
-                    from agenthicc.tui.trigger import TriggerResult  # noqa: PLC0415
-
                     self._complete(TriggerResult(buffer=buf))
                 else:
                     self._complete(None)
@@ -167,8 +173,6 @@ class TriggerPickerOverlay(Overlay):
                         item, self._trigger.fragment, self._buf.buf
                     )
                     if item is None:
-                        from agenthicc.tui.trigger import TriggerResult  # noqa: PLC0415
-
                         result = TriggerResult(
                             buffer=result.buffer, submit=True, cursor=result.cursor
                         )
@@ -216,8 +220,6 @@ class TriggerPickerOverlay(Overlay):
                         result = self._trigger.handler.on_select(
                             item, self._trigger.fragment, self._buf.buf
                         )
-                        from agenthicc.tui.trigger import TriggerResult  # noqa: PLC0415
-
                         spaced = TriggerResult(
                             buffer=result.buffer + [" "],
                             submit=result.submit,

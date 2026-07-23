@@ -6,8 +6,10 @@ import importlib.util
 import inspect
 import logging
 from pathlib import Path
+from typing import cast
 
 from agenthicc.agents.plugin import AgentDefinition, AgentPlugin
+from agenthicc.tools.base import ToolLike
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ class AgentsRegistry:
     def make_instance(
         self,
         agent_type: str,
-        filtered_tools: list,
+        filtered_tools: list[ToolLike],
         model_id: str,
         base_system_prompt: str = "",
     ) -> tuple[object, object]:
@@ -89,7 +91,7 @@ class AgentsRegistry:
 
         @agent_decorator(model=model_id, system=system)
         @use_tools(*filtered_tools)
-        class _TurnAgent: ...
+        class _TurnAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic class
 
         return _TurnAgent, _TurnAgent()
 
@@ -139,24 +141,26 @@ def _load_agent_file(path: Path, source: str, registry: AgentsRegistry) -> None:
     if spec is None or spec.loader is None:
         return
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    spec.loader.exec_module(module)
 
     # Check for explicit AGENTS list
     agents_list = getattr(module, "AGENTS", None)
     if agents_list:
-        for cls in agents_list:
-            if isinstance(cls, type) and issubclass(cls, AgentPlugin) and cls.name:
-                _register_plugin_class(cls, source, registry, str(path))
+        for candidate in cast(list[object], agents_list):
+            if isinstance(candidate, type) and issubclass(candidate, AgentPlugin):
+                cls = candidate
+                if cls.name:
+                    _register_plugin_class(cls, source, registry, str(path))
         return
 
     # Fall back to scanning for AgentPlugin subclasses
     for _, obj in inspect.getmembers(module, inspect.isclass):
-        if obj is not AgentPlugin and issubclass(obj, AgentPlugin) and getattr(obj, "name", ""):
+        if obj is not AgentPlugin and issubclass(obj, AgentPlugin) and obj.name:
             _register_plugin_class(obj, source, registry, str(path))
 
 
 def _register_plugin_class(
-    cls: type,
+    cls: type[AgentPlugin],
     source: str,
     registry: AgentsRegistry,
     path: str,

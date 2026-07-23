@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -24,13 +25,14 @@ if TYPE_CHECKING:
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.workflows.plugin import WorkflowContext, WorkflowPlugin
+    from agenthicc.tools.base import ToolLike
 
 
 def _make_session_tools(
     approval_svc: ApprovalService | None,
     memory_router: MemoryRouter | None = None,
     semantic_index: SemanticIndex | None = None,
-) -> list:
+) -> list[ToolLike]:
     """Tools injected into every interactive agent turn (Auto mode + plan phase)."""
     from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
     from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
@@ -234,7 +236,10 @@ async def _build_session_context(
     if cassette_dir is not None:
         from agenthicc.testing.recording_approval import RecordingApprovalService  # noqa: PLC0415
 
-        approval_svc = RecordingApprovalService(approval_svc, cassette_dir / "approvals.jsonl")
+        approval_svc = cast(
+            "ApprovalService",
+            RecordingApprovalService(approval_svc, cassette_dir / "approvals.jsonl"),
+        )
 
     # ── workflow + agents registries ──────────────────────────────────────────
     from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
@@ -424,13 +429,21 @@ async def _build_session_context(
     if _runner_signals is not None:
         from lauren_ai._signals import AgentRunComplete as _ARC  # noqa: PLC0415
 
+        signal_decorator = cast(
+            Callable[
+                [type[object]],
+                Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]],
+            ],
+            _runner_signals.on,
+        )
+
         # Baseline tokens accumulated before the current run began.
         # Updated at run-start (AgentRunStarted) when that signal is available;
         # for now we update it optimistically at the end of each completed run
         # so the next run's baseline is correct.
         _baseline: list[tuple[int, int, float]] = [(0, 0, 0.0)]
 
-        @_runner_signals.on(_ARC)
+        @signal_decorator(_ARC)
         async def _on_agent_run_complete(sig: AgentRunComplete) -> None:
             usage = getattr(sig, "total_usage", None)
             cost = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
@@ -477,7 +490,7 @@ async def _build_session_context(
         agents_registry=agents_registry,
         cmd_registry=cmd_registry,
         trigger_registry=trigger_registry,
-        agent_runner=agent_runner,
+        agent_runner=cast("AgentRunnerBase", agent_runner),
         session_memory=session_memory,
         mention_cache=mention_cache,
         skills=skills,
@@ -513,7 +526,7 @@ class TUISession:
         # Mutable session state
         self._pending_skill_body: list[str] = []
         self._msg_queue: list[str] = []
-        self._agent_task: asyncio.Task | None = None
+        self._agent_task: asyncio.Task[object] | None = None
         self._turn_count: int = 0
         self._pending_replay_id: str | None = None
         self._workflow_override: str | None = None  # PRD-114: /workflow command
@@ -531,7 +544,7 @@ class TUISession:
             approval_svc=ctx.approval_svc,
             cfg=ctx.cfg,
             skills=ctx.skills,
-            plugin_tools=ctx.project_plugins.all_tools,
+            plugin_tools=ctx.project_plugins,
             mcp_registry=ctx.mcp_registry,
             mention_cache=ctx.mention_cache,
             agents_registry=ctx.agents_registry,
@@ -911,7 +924,7 @@ class TUISession:
                     skill_permissions=ctx.cfg.agents.skill_permissions_for("default"),
                     mention_cache=ctx.mention_cache,
                     project_plugin_tools=(
-                        ctx.project_plugins.all_tools
+                        cast("list[ToolLike]", ctx.project_plugins.all_tools)
                         + _make_session_tools(
                             ctx.approval_svc,
                             memory_router=ctx.memory_router,
@@ -1143,7 +1156,7 @@ class TUISession:
         # PRD-129 Phase 3: auto-resume a direct turn the prior session left
         # interrupted (no-op on a clean start or when a workflow was in progress).
         self._maybe_resume_interrupted_turn()
-        ad_task: asyncio.Task | None = None
+        ad_task: asyncio.Task[object] | None = None
         try:
             from agenthicc.auth import AuthClient  # noqa: PLC0415
             from agenthicc.ads import AdRotator  # noqa: PLC0415

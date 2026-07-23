@@ -50,9 +50,11 @@ Rich renderables.
 ## Checks
 
 ```bash
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+uv run ruff check src/ tests/ scripts/
+uv run ruff format --check src/ tests/ scripts/
 uv run mypy src/agenthicc
+uv run mypy tests/unit/test_kernel_event_typing.py tests/unit/test_type_audit.py
+uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.json
 uv run pytest tests/unit -q
 uv run pytest tests/integration -q
 uv run pytest tests/e2e -q

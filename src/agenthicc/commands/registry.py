@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Iterator
 
 from .command import Command
@@ -31,7 +32,7 @@ class UnifiedCommandRegistry:
         for alias in cmd.aliases:
             self._aliases[alias] = cmd.name
 
-    def register_many(self, cmds: list[Command]) -> None:
+    def register_many(self, cmds: Sequence[Command]) -> None:
         for cmd in cmds:
             self.register(cmd)
 

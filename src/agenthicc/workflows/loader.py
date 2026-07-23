@@ -37,7 +37,7 @@ def load_python_workflows(
             log.warning("Could not create module spec for %s", path)
             return []
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        spec.loader.exec_module(module)
 
         results: list[type[WorkflowPlugin]] = []
         for _attr_name, obj in inspect.getmembers(module, inspect.isclass):

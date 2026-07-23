@@ -191,7 +191,7 @@ class FilesystemBackend(Protocol):
         self,
         paths: list[str],
         encoding: str = "utf-8",
-    ) -> list[dict]:
+    ) -> list[dict[str, object]]:
         """Read multiple files.
 
         Each result dict has keys: ``path``, ``content``, ``ok``, ``error``.
@@ -200,16 +200,16 @@ class FilesystemBackend(Protocol):
 
     def batch_write(
         self,
-        files: list[dict],
+        files: list[dict[str, object]],
         create_parents: bool = True,
-    ) -> list[dict]:
+    ) -> list[dict[str, object]]:
         """Write multiple files.
 
         Each result dict has keys: ``path``, ``ok``, ``error``, ``bytes_written``.
         """
         ...
 
-    def batch_delete(self, paths: list[str]) -> list[dict]:
+    def batch_delete(self, paths: list[str]) -> list[dict[str, object]]:
         """Delete multiple paths.
 
         Each result dict has keys: ``path``, ``ok``, ``error``.

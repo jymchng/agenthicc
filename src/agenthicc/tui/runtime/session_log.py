@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
@@ -18,6 +18,18 @@ _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 _SESSION_INDEX = _SESSIONS_DIR / "index.json"
 
 
+def _int_value(value: object) -> int:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def _float_value(value: object) -> float:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
+def _str_value(value: object, default: str) -> str:
+    return value if isinstance(value, str) else default
+
+
 # ── Index CRUD ────────────────────────────────────────────────────────────────
 
 
@@ -25,16 +37,18 @@ def create_session_id() -> str:
     return str(uuid.uuid4())
 
 
-def _load_index() -> dict:
+def _load_index() -> dict[str, dict[str, object]]:
     if _SESSION_INDEX.exists():
         try:
-            return json.loads(_SESSION_INDEX.read_text())
+            loaded = json.loads(_SESSION_INDEX.read_text())
+            if isinstance(loaded, dict):
+                return cast(dict[str, dict[str, object]], loaded)
         except Exception:  # noqa: BLE001
             return {}
     return {}
 
 
-def _save_index(data: dict) -> None:
+def _save_index(data: dict[str, dict[str, object]]) -> None:
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     _SESSION_INDEX.write_text(json.dumps(data, indent=2))
 
@@ -66,7 +80,7 @@ def find_latest_session_for_cwd(cwd: str | None = None) -> str | None:
     candidates = [(sid, meta) for sid, meta in index.items() if meta.get("cwd") == cwd]
     if not candidates:
         return None
-    latest = max(candidates, key=lambda x: x[1].get("last_active", 0))
+    latest = max(candidates, key=lambda x: _float_value(x[1].get("last_active")))
     return latest[0]
 
 
@@ -144,9 +158,9 @@ async def restore_session(session_id: str, app_state: AppState) -> None:
     total_in, total_out, total_cost = 0, 0, 0.0
     for ev in events:
         if ev.kind == "tokens":
-            total_in += ev.payload.get("input_tokens", 0)
-            total_out += ev.payload.get("output_tokens", 0)
-            total_cost += ev.payload.get("cost_usd", 0.0)
+            total_in += _int_value(ev.payload.get("input_tokens"))
+            total_out += _int_value(ev.payload.get("output_tokens"))
+            total_cost += _float_value(ev.payload.get("cost_usd"))
     if total_in or total_out:
         conv.tokens_in.set(total_in)
         conv.tokens_out.set(total_out)
@@ -158,8 +172,8 @@ async def restore_session(session_id: str, app_state: AppState) -> None:
     for ev in events:
         if ev.kind == "turn_start":
             current = ConversationTurn(
-                turn_id=ev.payload.get("turn_id", ev.event_id),
-                agent_name=ev.payload.get("agent_name", "assistant"),
+                turn_id=_str_value(ev.payload.get("turn_id"), ev.event_id),
+                agent_name=_str_value(ev.payload.get("agent_name"), "assistant"),
                 timestamp=ev.timestamp,
             )
             turns.append(current)

@@ -3,11 +3,83 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from uuid import uuid4
 
 __all__ = ["Effect", "EffectType", "Event"]
+
+
+def _payload_str(
+    payload: Mapping[str, object],
+    key: str,
+    *,
+    default: str | None = None,
+) -> str:
+    value = payload.get(key, default)
+    if isinstance(value, str):
+        return value
+    raise ValueError(f"event payload field {key!r} must be a string")
+
+
+def _payload_optional_str(
+    payload: Mapping[str, object],
+    key: str,
+    *,
+    default: str | None = None,
+) -> str | None:
+    value = payload.get(key, default)
+    if value is None or isinstance(value, str):
+        return value
+    raise ValueError(f"event payload field {key!r} must be a string or null")
+
+
+def _payload_float(payload: Mapping[str, object], key: str) -> float:
+    value = payload.get(key)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    raise ValueError(f"event payload field {key!r} must be a number")
+
+
+def _payload_bool(
+    payload: Mapping[str, object],
+    key: str,
+    *,
+    default: bool = False,
+) -> bool:
+    value = payload.get(key, default)
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"event payload field {key!r} must be a boolean")
+
+
+def _payload_mapping(
+    payload: Mapping[str, object],
+    key: str,
+    *,
+    default: dict[str, object] | None = None,
+) -> dict[str, object]:
+    value = payload.get(key, default)
+    if value is None:
+        return {} if default is None else dict(default)
+    if isinstance(value, Mapping) and all(isinstance(item_key, str) for item_key in value):
+        return {item_key: item_value for item_key, item_value in value.items()}
+    raise ValueError(f"event payload field {key!r} must be an object")
+
+
+def _payload_string_list(
+    payload: Mapping[str, object],
+    key: str,
+    *,
+    default: tuple[str, ...] = (),
+) -> list[str]:
+    value = payload.get(key, default)
+    if isinstance(value, (list, tuple, set, frozenset)) and all(
+        isinstance(item, str) for item in value
+    ):
+        return list(value)
+    raise ValueError(f"event payload field {key!r} must be a list of strings")
 
 
 @dataclass(frozen=True)
@@ -47,14 +119,14 @@ class Event:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, object]) -> Event:
+    def from_dict(cls, data: Mapping[str, object]) -> Event:
         return cls(
-            event_id=data["event_id"],
-            event_type=data["event_type"],
-            timestamp=data["timestamp"],
-            payload=data["payload"],
-            source_agent_id=data.get("source_agent_id"),
-            tool_call_id=data.get("tool_call_id"),
+            event_id=_payload_str(data, "event_id"),
+            event_type=_payload_str(data, "event_type"),
+            timestamp=_payload_float(data, "timestamp"),
+            payload=_payload_mapping(data, "payload"),
+            source_agent_id=_payload_optional_str(data, "source_agent_id"),
+            tool_call_id=_payload_optional_str(data, "tool_call_id"),
         )
 
 

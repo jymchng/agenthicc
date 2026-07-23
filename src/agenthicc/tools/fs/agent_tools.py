@@ -6,8 +6,10 @@ NOTE: no ``from __future__ import annotations`` — @tool() inspects real annota
 import os
 import re
 import hashlib
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 from lauren_ai._tools import tool
+from agenthicc.tools.base import arg_str
 from agenthicc.tools.capabilities import (
     tool_read,
     tool_write,
@@ -67,7 +69,7 @@ def configure_router(router: "BackendRouter") -> None:
 
 @tool_read
 @tool()
-async def read_file(path: str, encoding: str = "utf-8") -> dict:
+async def read_file(path: str, encoding: str = "utf-8") -> dict[str, object]:
     """Read the full contents of a file.
 
     Args:
@@ -81,7 +83,7 @@ async def read_file(path: str, encoding: str = "utf-8") -> dict:
 
 @tool_write
 @tool()
-async def write_file(path: str, content: str, create_parents: bool = True) -> dict:
+async def write_file(path: str, content: str, create_parents: bool = True) -> dict[str, object]:
     """Write content to a file (creates parent directories if needed).
 
     Args:
@@ -98,7 +100,7 @@ async def write_file(path: str, content: str, create_parents: bool = True) -> di
 
 @tool_write
 @tool()
-async def append_file(path: str, content: str) -> dict:
+async def append_file(path: str, content: str) -> dict[str, object]:
     """Append text to the end of an existing file.
 
     Args:
@@ -112,7 +114,7 @@ async def append_file(path: str, content: str) -> dict:
 
 @tool_write
 @tool()
-async def delete_file(path: str) -> dict:
+async def delete_file(path: str) -> dict[str, object]:
     """Delete a file from the workspace.
 
     Args:
@@ -125,7 +127,7 @@ async def delete_file(path: str) -> dict:
 
 @tool_write
 @tool()
-async def move_file(source: str, destination: str) -> dict:
+async def move_file(source: str, destination: str) -> dict[str, object]:
     """Move or rename a file within the workspace.
 
     Args:
@@ -139,7 +141,7 @@ async def move_file(source: str, destination: str) -> dict:
 
 @tool_write
 @tool()
-async def copy_file(source: str, destination: str) -> dict:
+async def copy_file(source: str, destination: str) -> dict[str, object]:
     """Copy a file to a new location within the workspace.
 
     Args:
@@ -153,7 +155,9 @@ async def copy_file(source: str, destination: str) -> dict:
 
 @tool_read_search
 @tool()
-async def list_directory(path: str = ".", pattern: str = "*", recursive: bool = False) -> dict:
+async def list_directory(
+    path: str = ".", pattern: str = "*", recursive: bool = False
+) -> dict[str, object]:
     """List files and directories at a path.
 
     Args:
@@ -170,7 +174,7 @@ async def list_directory(path: str = ".", pattern: str = "*", recursive: bool = 
 
 @tool_write
 @tool()
-async def make_directory(path: str) -> dict:
+async def make_directory(path: str) -> dict[str, object]:
     """Create a directory (and all missing parent directories).
 
     Args:
@@ -183,7 +187,7 @@ async def make_directory(path: str) -> dict:
 
 @tool_read
 @tool()
-async def file_exists(path: str) -> dict:
+async def file_exists(path: str) -> dict[str, object]:
     """Check whether a file or directory exists.
 
     Args:
@@ -196,7 +200,7 @@ async def file_exists(path: str) -> dict:
 
 @tool_read_search
 @tool()
-async def search_files(pattern: str, path: str = ".", recursive: bool = True) -> dict:
+async def search_files(pattern: str, path: str = ".", recursive: bool = True) -> dict[str, object]:
     """Find files matching a glob pattern.
 
     Args:
@@ -213,7 +217,7 @@ async def search_files(pattern: str, path: str = ".", recursive: bool = True) ->
 
 @tool_read_search
 @tool()
-async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> dict:
+async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> dict[str, object]:
     """Search file contents for a regex pattern and return matching lines.
 
     Args:
@@ -231,7 +235,7 @@ async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> di
 
 @tool_read
 @tool()
-async def get_file_info(path: str) -> dict:
+async def get_file_info(path: str) -> dict[str, object]:
     """Return metadata for a file or directory (size, dates, permissions).
 
     Args:
@@ -244,7 +248,7 @@ async def get_file_info(path: str) -> dict:
 
 @tool_read
 @tool()
-async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict:
+async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict[str, object]:
     """Read a specific range of lines from a file (1-indexed).
 
     Args:
@@ -254,7 +258,7 @@ async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict:
     """
     from agenthicc.tools.fs import ReadLinesTool  # noqa: PLC0415
 
-    args: dict = {"path": path, "start": start}
+    args: dict[str, object] = {"path": path, "start": start}
     if end is not None:
         args["end"] = end
     return await ReadLinesTool().execute(args, _CTX())
@@ -262,7 +266,7 @@ async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict:
 
 @tool_write
 @tool()
-async def patch_file(path: str, old_content: str, new_content: str) -> dict:
+async def patch_file(path: str, old_content: str, new_content: str) -> dict[str, object]:
     """Replace all occurrences of old_content with new_content in a file.
 
     Args:
@@ -284,7 +288,7 @@ async def grep_file(
     pattern: str,
     case_sensitive: bool = True,
     context_lines: int = 0,
-) -> dict:
+) -> dict[str, object]:
     """Search a single file for a regex pattern, returning per-line match details.
 
     Args:
@@ -308,7 +312,7 @@ async def grep_file(
     for i, line in enumerate(lines):
         m = compiled.search(line)
         if m:
-            entry: dict = {
+            entry: dict[str, object] = {
                 "line_number": i + 1,
                 "line": line,
                 "match_start": m.start(),
@@ -325,7 +329,7 @@ async def grep_file(
 
 @tool_write
 @tool()
-async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict:
+async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict[str, object]:
     """Apply a unified diff to a file.
 
     Args:
@@ -405,7 +409,7 @@ async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict:
 
 @tool_read
 @tool()
-async def checksum_file(path: str, algorithm: str = "sha256") -> dict:
+async def checksum_file(path: str, algorithm: str = "sha256") -> dict[str, object]:
     """Compute a cryptographic checksum of a file.
 
     Args:
@@ -429,7 +433,7 @@ async def checksum_file(path: str, algorithm: str = "sha256") -> dict:
 
 @tool_write
 @tool()
-async def truncate_file(path: str, size: int = 0) -> dict:
+async def truncate_file(path: str, size: int = 0) -> dict[str, object]:
     """Truncate a file to a given byte size.
 
     Args:
@@ -449,7 +453,7 @@ async def truncate_file(path: str, size: int = 0) -> dict:
 
 @tool_write
 @tool()
-async def touch_file(path: str, create: bool = True) -> dict:
+async def touch_file(path: str, create: bool = True) -> dict[str, object]:
     """Create a file if it does not exist, or update its modification time if it does.
 
     Args:
@@ -473,7 +477,7 @@ async def touch_file(path: str, create: bool = True) -> dict:
 
 @tool_read
 @tool()
-async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict:
+async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict[str, object]:
     """Read multiple files in a single call.
 
     Args:
@@ -494,7 +498,9 @@ async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict:
 
 @tool_write
 @tool()
-async def batch_write(files: list[dict], create_parents: bool = True) -> dict:
+async def batch_write(
+    files: list[dict[str, object]], create_parents: bool = True
+) -> dict[str, object]:
     """Write multiple files in a single call.
 
     Args:
@@ -525,7 +531,7 @@ async def batch_write(files: list[dict], create_parents: bool = True) -> dict:
 
 @tool_write
 @tool()
-async def batch_delete(paths: list[str]) -> dict:
+async def batch_delete(paths: list[str]) -> dict[str, object]:
     """Delete multiple files in a single call.
 
     Args:
@@ -545,7 +551,7 @@ async def batch_delete(paths: list[str]) -> dict:
 
 @tool_write
 @tool()
-async def batch_move(moves: list[dict]) -> dict:
+async def batch_move(moves: list[dict[str, object]]) -> dict[str, object]:
     """Move multiple files in a single call.
 
     Args:
@@ -555,8 +561,8 @@ async def batch_move(moves: list[dict]) -> dict:
     results = []
     all_ok = True
     for item in moves:
-        src = item.get("source", "")
-        dst = item.get("destination", "")
+        src = arg_str(item, "source", "")
+        dst = arg_str(item, "destination", "")
         try:
             b.move(src, dst)
             results.append({"source": src, "destination": dst, "ok": True})
@@ -574,7 +580,7 @@ async def batch_move(moves: list[dict]) -> dict:
 
 @tool_write
 @tool()
-async def batch_copy(copies: list[dict]) -> dict:
+async def batch_copy(copies: list[dict[str, object]]) -> dict[str, object]:
     """Copy multiple files in a single call.
 
     Args:
@@ -584,8 +590,8 @@ async def batch_copy(copies: list[dict]) -> dict:
     results = []
     all_ok = True
     for item in copies:
-        src = item.get("source", "")
-        dst = item.get("destination", "")
+        src = arg_str(item, "source", "")
+        dst = arg_str(item, "destination", "")
         try:
             b.copy(src, dst)
             results.append({"source": src, "destination": dst, "ok": True})
@@ -602,7 +608,7 @@ async def batch_copy(copies: list[dict]) -> dict:
 
 
 #: All 24 fs agent tools — ready to pass to @use_tools().
-FS_AGENT_TOOLS = [
+FS_AGENT_TOOLS: list[Callable[..., object]] = [
     read_file,
     write_file,
     append_file,

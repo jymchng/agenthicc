@@ -21,7 +21,7 @@ _BORDER_CHAR = "─"
 
 # (hotkey, label_template, respond kwargs)
 # {caps} in label_template is replaced with the capability string at render time.
-_OPTIONS: list[tuple[str, str, dict]] = [
+_OPTIONS: list[tuple[str, str, dict[str, bool]]] = [
     ("y", "Allow once", dict(allowed=True)),
     ("a", "Allow all {caps} this turn", dict(allowed=True, remember=True)),
     ("A", "Allow all {caps} this session", dict(allowed=True, remember_all=True)),
@@ -29,7 +29,7 @@ _OPTIONS: list[tuple[str, str, dict]] = [
 ]
 
 
-def _cap_str(capabilities: frozenset) -> str:
+def _cap_str(capabilities: frozenset[str]) -> str:
     """Format capability set as a short human-readable string."""
     parts = []
     for c in sorted(capabilities):
@@ -161,6 +161,10 @@ class ApprovalOverlay(Overlay):
         _, _, kwargs = _OPTIONS[idx]
         self._respond(kwargs)
 
-    def _respond(self, kwargs: dict) -> None:
-        self._service.respond(**kwargs)
+    def _respond(self, kwargs: dict[str, bool]) -> None:
+        self._service.respond(
+            allowed=kwargs.get("allowed", False),
+            remember=kwargs.get("remember", False),
+            remember_all=kwargs.get("remember_all", False),
+        )
         self._close()

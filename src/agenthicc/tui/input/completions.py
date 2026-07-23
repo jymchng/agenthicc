@@ -10,6 +10,7 @@ so completion and dispatch cannot drift apart.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,7 +99,7 @@ class CommandRegistry(UnifiedCommandRegistry):
         command = spec if isinstance(spec, Command) else _command_from_spec(spec)
         super().register(command)
 
-    def register_many(self, specs: list[Command | CommandSpec]) -> None:
+    def register_many(self, specs: Sequence[Command | CommandSpec]) -> None:
         for spec in specs:
             self.register(spec)
 
@@ -159,7 +160,7 @@ class AtMentionCompleter:
         Suitable for the inline dropdown in :func:`~mention_input.read_line_with_mention`.
         """
         if fragment.startswith("http"):
-            results = []
+            results: list[tuple[str, str]] = []
             for url in self._recent_urls:
                 if url.startswith(fragment):
                     results.append((url, "url"))
@@ -176,7 +177,7 @@ class AtMentionCompleter:
         if not search_dir.is_dir():
             return []
 
-        results: list[tuple[str, str]] = []
+        path_results: list[tuple[str, str]] = []
         try:
             for entry in sorted(
                 search_dir.iterdir(),
@@ -190,7 +191,7 @@ class AtMentionCompleter:
                 display = (
                     f"{dir_part}/{entry.name}{suffix}" if dir_part else f"{entry.name}{suffix}"
                 )
-                results.append((display, _entry_meta(entry)))
+                path_results.append((display, _entry_meta(entry)))
         except PermissionError:
             pass
-        return results
+        return path_results

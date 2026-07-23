@@ -161,7 +161,7 @@ class ConversationStore:
         self._current_turn: ConversationTurn | None = None
         self._event_subscribers: list[Callable[[ConversationEvent], None]] = []
         # Subscribe to detect external notification.set(None) and cancel stacked timers.
-        self.notification.subscribe(lambda _: self._on_notification_externally_cleared())
+        self.notification.subscribe(self._on_notification_externally_cleared)
 
     # ── tick ──────────────────────────────────────────────────────────────────
 

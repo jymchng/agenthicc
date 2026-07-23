@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+
+from agenthicc.tools.base import ToolLike
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +64,7 @@ class ToolRegistry:
     domain) is logged at WARNING level (PRD-125).
     """
 
-    _by_name: dict[str, PluginTool] = field(default_factory=dict)
+    _by_name: dict[str, ToolLike] = field(default_factory=dict)
     _tool_groups: dict[str, str] = field(default_factory=dict)  # name → group.name
     _groups: list[ToolGroup] = field(default_factory=list)
 
@@ -69,7 +72,7 @@ class ToolRegistry:
 
     def register(
         self,
-        tool: PluginTool,
+        tool: ToolLike,
         *,
         source: str = "unknown",
         group: str = "",
@@ -101,7 +104,7 @@ class ToolRegistry:
 
     def register_many(
         self,
-        tools: list[PluginTool],
+        tools: Sequence[ToolLike],
         *,
         source: str = "unknown",
         group: str = "",
@@ -124,7 +127,7 @@ class ToolRegistry:
     # ── read ──────────────────────────────────────────────────────────────
 
     @property
-    def tools(self) -> list[PluginTool]:
+    def tools(self) -> list[ToolLike]:
         """Ordered list (insertion order preserved, last-writer-wins per name)."""
         return list(self._by_name.values())
 
@@ -204,7 +207,7 @@ class ToolRegistry:
 
 def build_registry(
     agent_name: str | None = None,
-    project_plugin_tools: list[PluginTool] | None = None,
+    project_plugin_tools: Sequence[ToolLike] | None = None,
     project_dir: Path | None = None,
     user_dir: Path | None = None,
 ) -> ToolRegistry:

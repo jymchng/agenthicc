@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 log = logging.getLogger(__name__)
 
@@ -20,16 +20,17 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _load_trusted(trust_file: Path) -> dict:
+def _load_trusted(trust_file: Path) -> dict[str, object]:
     if not trust_file.exists():
         return {}
     try:
-        return json.loads(trust_file.read_text())
+        loaded = json.loads(trust_file.read_text())
+        return cast(dict[str, object], loaded) if isinstance(loaded, dict) else {}
     except Exception:
         return {}
 
 
-def _save_trusted(trust_file: Path, data: dict) -> None:
+def _save_trusted(trust_file: Path, data: dict[str, object]) -> None:
     trust_file.parent.mkdir(parents=True, exist_ok=True)
     trust_file.write_text(json.dumps(data, indent=2))
 
@@ -54,8 +55,11 @@ def check_trust(
     trusted = _load_trusted(tf)
 
     key = str(path)
-    entry = trusted.get("trusted", {}).get(key)
-    if entry and entry.get("sha256") == current_hash:
+    raw_entries = trusted.get("trusted", {})
+    entries = raw_entries if isinstance(raw_entries, dict) else {}
+    raw_entry = entries.get(key)
+    entry = raw_entry if isinstance(raw_entry, dict) else {}
+    if entry.get("sha256") == current_hash:
         return "trust_once"  # already trusted, same hash
 
     if auto_trust:
@@ -90,17 +94,20 @@ def check_trust(
 
 def _record_trust(
     tf: Path,
-    data: dict,
+    data: dict[str, object],
     key: str,
     sha256: str,
     *,
     decision: str,
 ) -> None:
     data.setdefault("version", 1)
-    data.setdefault("trusted", {})[key] = {
+    raw_entries = data.get("trusted")
+    entries: dict[str, object] = raw_entries if isinstance(raw_entries, dict) else {}
+    entries[key] = {
         "sha256": sha256,
         "trusted_at": datetime.now(timezone.utc).isoformat(),
         "absolute_path": key,
         "decision": decision,
     }
+    data["trusted"] = entries
     _save_trusted(tf, data)

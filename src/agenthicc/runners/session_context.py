@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.plugins.discovery import PluginToolSet
     from agenthicc.tools.mcp import McpToolRegistry
+    from agenthicc.skills.loader import SkillDef
 
 
 @dataclass
@@ -57,7 +58,7 @@ class SessionContext:
     agent_runner: "AgentRunnerBase"
     session_memory: "ShortTermMemory"
     mention_cache: "MentionCache"
-    skills: dict
+    skills: "dict[str, SkillDef]"
     project_plugins: "PluginToolSet"
     mcp_registry: "McpToolRegistry | None"
 

@@ -6,6 +6,7 @@ Co-located with the runner and state machine that back it.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
 from dataclasses import field
 from typing import TYPE_CHECKING
 
@@ -130,7 +131,21 @@ class CodePlan(WorkflowPlugin):
         return CodePlanRunner(config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: dict[str, object]) -> WorkflowParams:
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
         """Build ``CodePlanParams`` from *source* (PRD-111, PRD-116)."""
-        known = {f.name for f in dataclasses.fields(CodePlanParams)}
-        return CodePlanParams(**{k: v for k, v in source.items() if k in known})
+        values = {
+            field_name: value
+            for field_name in (
+                "plan_model",
+                "execute_model",
+                "review_model",
+                "summary_model",
+            )
+            if isinstance(value := source.get(field_name), str)
+        }
+        return CodePlanParams(
+            plan_model=values.get("plan_model", ""),
+            execute_model=values.get("execute_model", ""),
+            review_model=values.get("review_model", ""),
+            summary_model=values.get("summary_model", ""),
+        )

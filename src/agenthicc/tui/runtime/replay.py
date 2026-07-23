@@ -19,7 +19,7 @@ from agenthicc.tui.runtime.session_log import get_session_log_path
 log = logging.getLogger(__name__)
 
 
-def load_for_replay(session_id: str) -> list[tuple[str, dict]]:
+def load_for_replay(session_id: str) -> list[tuple[str, dict[str, object]]]:
     """Load (kind, payload) pairs from a session log with rendered=False.
 
     Unlike ``SessionEventLog.load()`` which sets ``rendered=True`` to avoid
@@ -32,14 +32,19 @@ def load_for_replay(session_id: str) -> list[tuple[str, dict]]:
     path: Path = get_session_log_path(session_id)
     if not path.exists():
         return []
-    pairs: list[tuple[str, dict]] = []
+    pairs: list[tuple[str, dict[str, object]]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
             data = json.loads(line)
-            pairs.append((data["kind"], data["payload"]))
+            if (
+                isinstance(data, dict)
+                and isinstance(data.get("kind"), str)
+                and isinstance(data.get("payload"), dict)
+            ):
+                pairs.append((data["kind"], data["payload"]))
         except Exception:  # noqa: BLE001
             pass
     return pairs

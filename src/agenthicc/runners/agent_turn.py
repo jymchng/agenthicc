@@ -14,8 +14,9 @@ import asyncio
 import json
 import os
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.tools.hooks import (
@@ -24,6 +25,14 @@ from agenthicc.tools.hooks import (
     LifecycleHook,
     ToolCallContext,
 )
+
+
+def _read_text_if_exists(path: str) -> str:
+    """Read a file for the edit-preview adapter, returning empty when absent."""
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
 
 
 # ── Permanent-error detection (PRD-117) ───────────────────────────────────────
@@ -121,7 +130,13 @@ def _is_permanent_error(exc: BaseException) -> bool:
     # request always fails.  Treat as permanent so the phase surfaces the
     # actionable message and exits instead of looping on the same request.
     try:
-        from lauren_ai import AgentContextOverflowError  # noqa: PLC0415
+        from lauren_ai import _exceptions  # noqa: PLC0415
+
+        AgentContextOverflowError = getattr(
+            _exceptions,
+            "AgentContextOverflowError",
+            None,
+        )
     except ImportError:
         AgentContextOverflowError = None
 
@@ -139,15 +154,16 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
+    from lauren_ai import IdempotencyLedger
     from lauren_ai._signals import ToolCallStarted, ToolCallComplete
     from agenthicc.config import ExecutionSettings
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.mentions.cache import MentionCache
-    from agenthicc.plugins.registry import PluginTool
     from agenthicc.skills.loader import SkillDef, SkillPermissionSet
     from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
 
@@ -340,7 +356,15 @@ class AgentTurnRunner:
             ToolCallComplete as _TCC,
         )
 
-        @signals.on(_TCS)
+        signal_decorator = cast(
+            Callable[
+                [type[object]],
+                Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]],
+            ],
+            signals.on,
+        )
+
+        @signal_decorator(_TCS)
         async def _on_tool_started(sig: ToolCallStarted) -> None:
             if not self._turn_active:
                 return
@@ -355,7 +379,7 @@ class AgentTurnRunner:
             if name in self._FILE_EDIT_TOOLS and args.get("path"):
                 await self._snapshot_file(tid, args["path"])
 
-        @signals.on(_TCC)
+        @signal_decorator(_TCC)
         async def _on_tool_complete(sig: ToolCallComplete) -> None:
             if not self._turn_active:
                 return
@@ -364,9 +388,7 @@ class AgentTurnRunner:
     async def _snapshot_file(self, tid: str, rel_path: str) -> None:
         full = os.path.join(os.getcwd(), rel_path) if not os.path.isabs(rel_path) else rel_path
         try:
-            original = await asyncio.to_thread(
-                lambda p=full: open(p).read() if os.path.exists(p) else ""
-            )
+            original = await asyncio.to_thread(_read_text_if_exists, full)
             self._file_snapshots[tid] = (rel_path, original)
         except Exception:  # noqa: BLE001
             pass
@@ -384,9 +406,7 @@ class AgentTurnRunner:
             rel_path, original = self._file_snapshots.pop(tid)
             full = os.path.join(os.getcwd(), rel_path) if not os.path.isabs(rel_path) else rel_path
             try:
-                new_content = await asyncio.to_thread(
-                    lambda p=full: open(p).read() if os.path.exists(p) else ""
-                )
+                new_content = await asyncio.to_thread(_read_text_if_exists, full)
                 old_lines = original.splitlines()
                 new_lines = new_content.splitlines()
                 changed = old_lines != new_lines
@@ -503,9 +523,10 @@ class AgentTurnRunner:
 
         # Tool registry
         mcp_tools = ctx.mcp_registry.all_tools() if ctx.mcp_registry is not None else []
+        project_tools: list[ToolLike] = [*(ctx.project_plugin_tools or []), *mcp_tools]
         registry = build_registry(
             agent_name=ctx.active_agent or "default",
-            project_plugin_tools=(ctx.project_plugin_tools or []) + mcp_tools,
+            project_plugin_tools=project_tools,
         )
 
         # System prompt
@@ -520,7 +541,8 @@ class AgentTurnRunner:
 
         @agent_decorator(model=self._model_id, system=system)
         @use_tools(*registry.tools)
-        class _AgenthiccAgent: ...
+        class _AgenthiccAgent:  # type: ignore[type-var]  # lauren-ai decorator cannot infer dynamic class
+            pass
 
         agent_instance = _AgenthiccAgent()
         # Populate meta.tools from the registered tool classes.
@@ -652,22 +674,20 @@ class AgentTurnRunner:
         # a transient failure, guaranteeing a clean pre-turn history every time.
         async def _stream_once() -> None:
             local_turn: list[str] = []
-            config_kwargs: dict[str, object] = {
-                "max_turns": ctx.max_agent_turns,
-                "parallel_tool_calls": True,
-                "memory_window_tokens": _window_tokens,
-                "summarize_at": 0.8 if _auto_compact else None,
-                "summary_model": self._model_id,
-            }
-            if "context_window" in getattr(_AgentConfig, "__dataclass_fields__", {}):
-                config_kwargs["context_window"] = _window
+            config_kwargs = _AgentConfig(
+                max_turns=ctx.max_agent_turns,
+                parallel_tool_calls=True,
+                memory_window_tokens=_window_tokens,
+                summarize_at=0.8 if _auto_compact else None,
+                summary_model=self._model_id,
+            )
 
             stream = await active_runner.run_stream(
                 agent_instance,
                 agent_text,
                 memory=ctx.session_memory,
                 idempotency_ledger=turn_ledger,
-                config_override=_AgentConfig(**config_kwargs),
+                config_override=config_kwargs,
             )
             async for chunk in stream:
                 if chunk.delta:
@@ -845,7 +865,7 @@ async def _run_agent_turn(
     exec_cfg: ExecutionSettings | None = None,
     skills: dict[str, SkillDef] | None = None,
     mention_cache: MentionCache | None = None,
-    project_plugin_tools: list[PluginTool] | None = None,
+    project_plugin_tools: list[ToolLike] | None = None,
     mcp_registry: McpToolRegistry | None = None,
     active_agent: str | None = None,
     completed_turns: int = 0,
@@ -857,7 +877,7 @@ async def _run_agent_turn(
     skill_permissions: SkillPermissionSet | None = None,
     retry_deadline_monotonic: float | None = None,
     resume_turn_id: str | None = None,
-    resume_ledger: object | None = None,
+    resume_ledger: IdempotencyLedger | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 

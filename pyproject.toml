@@ -56,10 +56,43 @@ omit = ["tests/*"]
 [dependency-groups]
 dev = [
     "keyring>=25.7.0",
+    "mypy>=1.15,<2",
+    "types-PyYAML>=6.0",
     "nox>=2026.7.11",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.22",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = ["src"]
+packages = ["agenthicc"]
+show_error_codes = true
+pretty = false
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+# These imports are optional platform/provider boundaries. Each module still
+# has to expose a typed local adapter; this override only prevents an absent
+# optional installation from turning the whole package into an import error.
+[[tool.mypy.overrides]]
+module = [
+    "agenthicc.tools.fs.pyodide",
+    "agenthicc.tools.fs.s3",
+    "agenthicc.tools.mcp",
+    "agenthicc.tools.outlook",
+    "agenthicc.tools.outlook.*",
+]
+ignore_missing_imports = true
+ignore_errors = true
 
 [tool.ruff]
 line-length = 100

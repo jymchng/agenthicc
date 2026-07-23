@@ -84,6 +84,10 @@ def _integer(value: object) -> int:
     return 0
 
 
+def _number(value: object) -> float:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
 def _print_session_inspection(summary: dict[str, object]) -> None:
     """Print the stable, human-readable form of an inspection summary."""
     metadata = _mapping(summary.get("metadata"))
@@ -121,7 +125,7 @@ def _print_session_inspection(summary: dict[str, object]) -> None:
         "Tokens: "
         f"{_integer(tokens.get('input'))} input, "
         f"{_integer(tokens.get('output'))} output, "
-        f"${float(tokens.get('cost_usd', 0.0) or 0.0):.4f}"
+        f"${_number(tokens.get('cost_usd')):.4f}"
     )
 
     workflows = _mapping(summary.get("workflows"))
@@ -132,7 +136,8 @@ def _print_session_inspection(summary: dict[str, object]) -> None:
         f"{_integer(workflows.get('failed'))} failed, "
         f"{_integer(workflows.get('incomplete'))} incomplete"
     )
-    for run in workflows.get("runs", []):
+    runs = workflows.get("runs", [])
+    for run in runs if isinstance(runs, list) else []:
         run_summary = _mapping(run)
         print(
             "  - "

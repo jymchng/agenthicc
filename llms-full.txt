@@ -107,7 +107,7 @@ Returns a new `AppState` with `hook_spec` inserted into `hooks` under `hook_id`.
 class Event:
     event_id: str
     event_type: str
-    payload: dict[str, Any]
+    payload: dict[str, object]
     timestamp: float
     source_agent_id: str | None = None
 ```
@@ -121,6 +121,10 @@ Immutable event record. Every change to `AppState` starts here.
 
 **Common error**: `KeyError` from `from_dict` when `event_type` is absent; corrupt
 log lines raise `json.JSONDecodeError` and are skipped by `restore_from_log`.
+
+`Event.from_dict()` validates required string and numeric fields, optional IDs,
+and the payload object before the event reaches a reducer. Reducer payload
+access uses named narrowing helpers rather than unchecked object indexing.
 
 ---
 
@@ -557,6 +561,28 @@ class ToolBase(ABC):
 Typed Agenthicc contract for new class-based tools. Callable tools decorated
 with `lauren_ai.tool()` are accepted directly as well.
 
+### ToolLike
+
+```python
+ToolLike = Callable[..., object] | Tool
+```
+
+Compatibility type accepted by the tool registry and executor for legacy class
+tools and lauren-ai-style callable tools.
+
+### arg_str, arg_bool, arg_int, and arg_float
+
+```python
+def arg_str(args: Mapping[str, object], key: str, default: str | None = None) -> str: ...
+def arg_bool(args: Mapping[str, object], key: str, default: bool = False) -> bool: ...
+def arg_int(args: Mapping[str, object], key: str, default: int = 0) -> int: ...
+def arg_float(args: Mapping[str, object], key: str, default: float = 0.0) -> float: ...
+```
+
+Runtime narrowing helpers for untrusted tool arguments. They reject malformed
+values with `ValueError` and explicitly reject booleans where numeric input is
+expected.
+
 ### ToolResult
 
 ```python
@@ -591,6 +617,36 @@ class ToolResultEnvelope:
 Agenthicc adapter envelope returned by `ToolExecutor.execute`. `error_kind` is
 one of `unknown`, `denied`, `approval_required`, `timeout`, `network`,
 `provider`, or `execution` on failure.
+
+---
+
+## Shared boundary types — `agenthicc.types`
+
+### JsonScalar
+
+```python
+JsonScalar = None | bool | int | float | str
+```
+
+Scalar values accepted by the recursive JSON vocabulary.
+
+### JsonValue
+
+```python
+JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+```
+
+Recursive JSON-serializable value alias for open plugin, tool, configuration,
+and persistence boundaries.
+
+### JsonObject
+
+```python
+JsonObject = dict[str, JsonValue]
+```
+
+JSON object alias. Open data is narrowed into an owned dataclass, protocol, or
+validated record before core runtime code consumes it.
 
 ### ToolCallContext and ToolContext
 

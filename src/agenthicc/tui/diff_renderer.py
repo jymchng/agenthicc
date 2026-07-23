@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import difflib
 from io import StringIO
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
 from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
+
+Opcode = tuple[str, int, int, int, int]
 
 __all__ = ["render_file_diff", "render_file_create"]
 
@@ -201,9 +204,9 @@ def _add_row(
 
 
 def _build_hunks(
-    opcodes: list[tuple],
+    opcodes: Sequence[Opcode],
     context: int,
-) -> list[list[tuple]]:
+) -> list[list[Opcode]]:
     """Group opcodes into hunks separated by equal gaps larger than 2*context.
 
     Each hunk is a flat list of opcodes with equal blocks pre-trimmed to at
@@ -220,9 +223,9 @@ def _build_hunks(
       If the file ends without another change, it is discarded — no spurious
       trailing-context-only hunk is emitted.
     """
-    hunks: list[list[tuple]] = []
-    current: list[tuple] = []
-    pending_context: tuple | None = None
+    hunks: list[list[Opcode]] = []
+    current: list[Opcode] = []
+    pending_context: Opcode | None = None
 
     for tag, i1, i2, j1, j2 in opcodes:
         if tag == "equal":

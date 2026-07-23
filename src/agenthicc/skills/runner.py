@@ -26,7 +26,7 @@ _INJECT_RE = re.compile(r"!`([^`]+)`")
 def inject_context(body: str, cwd: Path) -> str:
     """Replace !`shell command` placeholders with their stdout output."""
 
-    def _run(match: re.Match) -> str:
+    def _run(match: re.Match[str]) -> str:
         cmd = match.group(1)
         try:
             result = subprocess.run(
@@ -55,7 +55,7 @@ def substitute_args(
     body = body.replace("{effort}", effort)
     body = body.replace("{args}", " ".join(args))
 
-    def _replace_index(match: re.Match) -> str:
+    def _replace_index(match: re.Match[str]) -> str:
         idx = int(match.group(1))
         return args[idx] if idx < len(args) else ""
 

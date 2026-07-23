@@ -36,7 +36,7 @@ class LoadResult:
     tools: list[PluginTool] = field(default_factory=list)
     error: str | None = None
     missing_deps: list[str] = field(default_factory=list)
-    commands: list = field(default_factory=list)  # list[Command] from COMMANDS export
+    commands: list[object] = field(default_factory=list)  # Command objects from COMMANDS export
 
     @property
     def ok(self) -> bool:
@@ -55,7 +55,7 @@ class PluginToolSet:
         return [t for r in self.results for t in r.tools]
 
     @property
-    def all_commands(self) -> list:
+    def all_commands(self) -> list[object]:
         """Flat list of all Command objects from plugin files that exported COMMANDS."""
         return [cmd for r in self.results for cmd in r.commands]
 
@@ -143,7 +143,7 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
         probe_spec = importlib.util.spec_from_file_location("_dep_probe", path)
         if probe_spec and probe_spec.loader:
             probe_mod = importlib.util.module_from_spec(probe_spec)
-            probe_spec.loader.exec_module(probe_mod)  # type: ignore[union-attr]
+            probe_spec.loader.exec_module(probe_mod)
             declared_deps = list(getattr(probe_mod, "DEPENDENCIES", []))
     except Exception:
         pass  # will be caught properly in Step 3
@@ -172,7 +172,7 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
             return LoadResult(path=path, error="could not create module spec")
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        spec.loader.exec_module(module)
     except ImportError as exc:
         inferred = _infer_missing_from_ast(path)
         if inferred:
@@ -183,7 +183,7 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
 
     tools = getattr(module, "TOOLS", None)
     if tools is None:
-        valid = []
+        valid: list[PluginTool] = []
     elif not isinstance(tools, (list, tuple)):
         return LoadResult(path=path, error="TOOLS must be a list of callables")
     else:
@@ -197,7 +197,7 @@ def _load_plugin_file(path: Path, auto_install: bool = False) -> LoadResult:
     # Also extract optional COMMANDS list (PRD-45)
     raw_commands = getattr(module, "COMMANDS", None)
     if raw_commands is not None:
-        valid_cmds = []
+        valid_cmds: list[object] = []
         for item in raw_commands if isinstance(raw_commands, (list, tuple)) else []:
             # Validate lazily — just collect non-None items; full validation in plugin_loader
             if item is not None:

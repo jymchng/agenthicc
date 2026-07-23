@@ -7,11 +7,36 @@ import os
 import sys
 import tempfile
 import time
-from agenthicc.tools.base import Tool
+from collections.abc import Mapping
+
+from agenthicc.tools.base import Tool, arg_float, arg_str
 
 __all__ = ["ExecToolKit"]
 
 _MAX_OUTPUT_BYTES = 64 * 1024
+
+
+def _arg_env(args: Mapping[str, object]) -> dict[str, str] | None:
+    value = args.get("env")
+    if value is None:
+        return None
+    if isinstance(value, Mapping) and all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        return {key: item for key, item in value.items()}
+    raise ValueError("tool argument 'env' must be an object of string values")
+
+
+def _arg_argv(args: Mapping[str, object]) -> list[str]:
+    value = args.get("argv")
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    raise ValueError("tool argument 'argv' must be a list of strings")
+
+
+def _result_text(result: Mapping[str, object], key: str) -> str:
+    value = result.get(key, "")
+    return value if isinstance(value, str) else ""
 
 
 def _truncate(text: str, max_bytes: int = _MAX_OUTPUT_BYTES) -> str:
@@ -95,14 +120,15 @@ class RunBashTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        cwd = args.get("cwd") or context.get("workspace_root", ".")
+        command = arg_str(args, "command")
+        cwd = arg_str(args, "cwd", arg_str(context, "workspace_root", "."))
         return await _run_proc(
-            [args["command"]],
+            [command],
             cwd=cwd,
-            timeout=float(args.get("timeout", 30)),
-            env=args.get("env"),
+            timeout=arg_float(args, "timeout", 30.0),
+            env=_arg_env(args),
             shell=True,
         )
 
@@ -122,14 +148,14 @@ class RunCommandTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        cwd = args.get("cwd") or context.get("workspace_root", ".")
+        cwd = arg_str(args, "cwd", arg_str(context, "workspace_root", "."))
         return await _run_proc(
-            list(args["argv"]),
+            _arg_argv(args),
             cwd=cwd,
-            timeout=float(args.get("timeout", 30)),
-            env=args.get("env"),
+            timeout=arg_float(args, "timeout", 30.0),
+            env=_arg_env(args),
             shell=False,
         )
 
@@ -147,17 +173,18 @@ class RunPythonTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        cwd = context.get("workspace_root", ".")
+        cwd = arg_str(context, "workspace_root", ".")
+        code = arg_str(args, "code")
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-            f.write(args["code"])
+            f.write(code)
             tmp_path = f.name
         try:
             return await _run_proc(
                 [sys.executable, tmp_path],
                 cwd=cwd,
-                timeout=float(args.get("timeout", 30)),
+                timeout=arg_float(args, "timeout", 30.0),
                 shell=False,
             )
         finally:
@@ -180,17 +207,18 @@ class RunPythonExprTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        cwd = context.get("workspace_root", ".")
-        code = f"_r = ({args['expression']}); print(repr(_r))"
+        cwd = arg_str(context, "workspace_root", ".")
+        expression = arg_str(args, "expression")
+        code = f"_r = ({expression}); print(repr(_r))"
         result = await _run_proc(
             [sys.executable, "-c", code],
             cwd=cwd,
-            timeout=float(args.get("timeout", 10)),
+            timeout=arg_float(args, "timeout", 10.0),
             shell=False,
         )
-        result["result"] = result["stdout"].strip()
+        result["result"] = _result_text(result, "stdout").strip()
         return result
 
 
@@ -208,17 +236,20 @@ class RunTestsTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
         import re
         import uuid  # noqa: PLC0415
 
-        cwd = context.get("workspace_root", ".")
-        extra = list(args.get("args") or [])
-        path = args.get("path", "tests/")
+        cwd = arg_str(context, "workspace_root", ".")
+        raw_extra = args.get("args") or []
+        if not isinstance(raw_extra, list) or not all(isinstance(item, str) for item in raw_extra):
+            raise ValueError("tool argument 'args' must be a list of strings")
+        extra = list(raw_extra)
+        path = arg_str(args, "path", "tests/")
         report_path = f"/tmp/pytest_report_{uuid.uuid4().hex}.json"
 
-        if args.get("framework", "pytest") == "pytest":
+        if arg_str(args, "framework", "pytest") == "pytest":
             cmd = [
                 sys.executable,
                 "-m",
@@ -235,7 +266,7 @@ class RunTestsTool(Tool):
         result = await _run_proc(
             cmd,
             cwd=cwd,
-            timeout=float(args.get("timeout", 120)),
+            timeout=arg_float(args, "timeout", 120.0),
             shell=False,
         )
 
@@ -251,10 +282,11 @@ class RunTestsTool(Tool):
             errors = summary.get("error", 0)
             os.unlink(report_path)
         except Exception:
-            m = re.search(r"(\d+) passed", result["stdout"])
+            stdout = _result_text(result, "stdout")
+            m = re.search(r"(\d+) passed", stdout)
             if m:
                 passed = int(m.group(1))
-            m = re.search(r"(\d+) failed", result["stdout"])
+            m = re.search(r"(\d+) failed", stdout)
             if m:
                 failed = int(m.group(1))
 

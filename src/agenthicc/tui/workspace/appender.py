@@ -16,6 +16,7 @@ Architecture: PRD-60 §7, PRD-66 §3.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.conversation_store import ConversationEvent
@@ -119,7 +120,7 @@ def _hhmmss(ts: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(ts))
 
 
-def _fmt_args(args: dict) -> str:
+def _fmt_args(args: Mapping[str, object]) -> str:
     if not args:
         return ""
     from rich.markup import escape as _e
@@ -128,6 +129,30 @@ def _fmt_args(args: dict) -> str:
     if len(items) == 1:
         return f"[dim]({_e(repr(items[0][1])[:60])})[/dim]"
     return "[dim](" + ", ".join(f"{_e(k)}={_e(repr(v)[:25])}" for k, v in items[:3]) + ")[/dim]"
+
+
+def _text(payload: Mapping[str, object], key: str, default: str = "") -> str:
+    value = payload.get(key, default)
+    return value if isinstance(value, str) else str(value)
+
+
+def _number(payload: Mapping[str, object], key: str, default: float = 0.0) -> float:
+    value = payload.get(key, default)
+    return (
+        float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
+    )
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _mapping_list(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
 
 
 def _tool_display_operation(name: str) -> str:
@@ -312,7 +337,7 @@ def _render_turn_start(self: ScrollBufferAppender, ev: ConversationEvent) -> Non
 def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
 
-    text = ev.payload.get("text", "")
+    text = _text(ev.payload, "text")
     self._console.print(
         f"[bold yellow]❯[/bold yellow] {_e(text)}",
         markup=True,
@@ -335,7 +360,7 @@ def _render_tool_complete_ev(self: ScrollBufferAppender, ev: ConversationEvent) 
 @register_renderer("text")
 def _render_text(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     self._flush_group_summary()
-    text = ev.payload.get("text", "")
+    text = _text(ev.payload, "text")
     if text.strip():
         from rich.markdown import Markdown  # noqa: PLC0415
 
@@ -346,7 +371,7 @@ def _render_text(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
 def _render_thinking_step(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
 
-    step = ev.payload.get("step", "")
+    step = _text(ev.payload, "step")
     done = ev.payload.get("done", False)
     icon = "[green]✓[/green]" if done else "[yellow]→[/yellow]"
     self._console.print(
@@ -360,23 +385,25 @@ def _render_thinking_step(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 def _render_file_modified(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from agenthicc.tui.diff_renderer import render_file_diff, render_file_create  # noqa: PLC0415
 
-    path = ev.payload.get("path", "")
+    path = _text(ev.payload, "path")
     old_lines = ev.payload.get("old_lines")
     new_lines = ev.payload.get("new_lines")
-    tool = ev.payload.get("tool", "write_file")
+    tool = _text(ev.payload, "tool", "write_file")
+    old_line_list = _string_list(old_lines)
+    new_line_list = _string_list(new_lines)
     lang = _lang_for_path(path)
 
     if old_lines is not None and new_lines is not None:
-        if old_lines == []:
+        if old_line_list == []:
             # File creation — show compact preview capped at 10 lines.
             self._console.print(
-                render_file_create(path, new_lines, language=lang),
+                render_file_create(path, new_line_list, language=lang),
                 highlight=False,
             )
         else:
             op = _TOOL_OP.get(tool, "Update")
             self._console.print(
-                render_file_diff(path, old_lines, new_lines, operation=op, language=lang),
+                render_file_diff(path, old_line_list, new_line_list, operation=op, language=lang),
                 highlight=False,
             )
     else:
@@ -395,8 +422,8 @@ def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     self._flush_group_summary()
     from rich.markup import escape as _e  # noqa: PLC0415
 
-    msg = ev.payload.get("message", "")
-    detail = ev.payload.get("detail", "")
+    msg = _text(ev.payload, "message")
+    detail = _text(ev.payload, "detail")
     self._console.print(
         f"\n[red bold]ERROR[/red bold] {_e(msg)}",
         markup=True,
@@ -422,7 +449,7 @@ def _fmt_worked(seconds: float) -> str:
 
 @register_renderer("turn_complete")
 def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    elapsed = float(ev.payload.get("elapsed_s", 0.0))
+    elapsed = _number(ev.payload, "elapsed_s")
     if elapsed >= 1.0:
         self._console.print(
             f"[dim]✾ Worked for {_fmt_worked(elapsed)}[/dim]",
@@ -436,9 +463,9 @@ def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> 
 def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
 
-    for chip in ev.payload.get("chips", []):
-        raw = chip.get("raw", "")
-        kind = chip.get("kind", "file")
+    for chip in _mapping_list(ev.payload.get("chips", [])):
+        raw = _text(chip, "raw")
+        kind = _text(chip, "kind", "file")
         ok = chip.get("ok", True)
         path = _e(raw.lstrip("@"))
 
@@ -483,7 +510,7 @@ def _render_subagent_pool_started(self: ScrollBufferAppender, ev: ConversationEv
     from rich.markup import escape as _e  # noqa: PLC0415
 
     total = ev.payload.get("total", 0)
-    workers = ev.payload.get("workers", [])
+    workers = _mapping_list(ev.payload.get("workers", []))
     self._console.print(
         f"  [bold]▶ Spawning {total} subagent{'s' if total != 1 else ''}[/bold]",
         markup=True,
@@ -507,7 +534,7 @@ def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEve
     label = _e(str(ev.payload.get("label", "")))
     done = ev.payload.get("done", 0)
     total = ev.payload.get("total", 0)
-    ms = float(ev.payload.get("duration_ms", 0.0))
+    ms = _number(ev.payload, "duration_ms")
     dur = f"  [dim]{ms / 1_000:.1f}s[/dim]"
     if ok:
         self._console.print(

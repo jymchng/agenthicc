@@ -120,11 +120,15 @@ def _context_window_for(model: str, *, default: int = _DEFAULT_CONTEXT_WINDOW) -
     Prefix matching handles dated model ids and provider-qualified ids.
     """
     try:
-        from lauren_ai._config import context_window_for  # noqa: PLC0415
+        from lauren_ai import _config as lauren_config  # noqa: PLC0415
+
+        context_window_for = getattr(lauren_config, "context_window_for", None)
     except ImportError:
         context_window_for = None
-    if context_window_for is not None:
-        return context_window_for(model, default=default)
+    if callable(context_window_for):
+        resolved = context_window_for(model, default=default)
+        if isinstance(resolved, int):
+            return resolved
 
     normalized = model.lower()
     for prefix, window in sorted(
@@ -488,7 +492,7 @@ def _parse_mcp_servers(raw_list: list[dict[str, object]]) -> list[McpServerConfi
 
         return [McpServerConfig.from_dict(d) for d in raw_list]
     except ImportError:
-        return list(raw_list)  # type: ignore[return-value]  # fall back to raw dicts
+        return []
 
 
 # ── merging ──────────────────────────────────────────────────────────────
@@ -502,11 +506,74 @@ def deep_merge(base: dict[str, object], override: dict[str, object]) -> dict[str
     """
     result = dict(base)
     for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = deep_merge(result[key], value)
+        base_value = result.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            result[key] = deep_merge(
+                _section(base_value),
+                _section(value),
+            )
         else:
             result[key] = value
     return result
+
+
+def _section(value: object) -> dict[str, object]:
+    """Return a string-keyed copy of an untrusted TOML section."""
+    if not isinstance(value, Mapping):
+        return {}
+    return {str(key): item for key, item in value.items()}
+
+
+def _as_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _as_float(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _as_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
+def _as_str(value: object, default: str) -> str:
+    return value if isinstance(value, str) else default
+
+
+def _as_string_list(value: object, default: tuple[str, ...] = ()) -> list[str]:
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        return [value]
+    return list(default)
 
 
 def _flatten_hooks(data: dict[str, object], prefix: str = "") -> dict[str, list[str]]:
@@ -584,23 +651,28 @@ def _apply_env_overrides(config: dict[str, object]) -> dict[str, object]:
         if len(parts) != 2:
             continue
         section, field_name = parts
-        config.setdefault(section, {})[field_name] = _coerce_env(value)
+        section_config = _section(config.get(section))
+        section_config[field_name] = _coerce_env(value)
+        config[section] = section_config
         agenthicc_set.add((section, field_name))
 
     # 2. Provider-specific shorthand env vars (OPENAI_MODEL, OPENAI_BASE_URL, etc.)
     #    These override per-project config — env vars win over config files.
     #    They yield only to an explicit AGENTHICC_* var (already applied above).
-    explicit_provider = config.get("execution", {}).get("provider")
+    explicit_value = _section(config.get("execution")).get("provider")
+    explicit_provider = explicit_value if isinstance(explicit_value, str) else None
     inferred_provider: str | None = None
 
     for env_var, (section, field_name) in PROVIDER_ENV_SHORTCUTS.items():
-        value = os.environ.get(env_var)
-        if not value:
+        env_value = os.environ.get(env_var)
+        if not env_value:
             continue
         # Skip only if an AGENTHICC_* var already set this exact field.
         if (section, field_name) in agenthicc_set:
             continue
-        config.setdefault(section, {})[field_name] = value
+        section_config = _section(config.get(section))
+        section_config[field_name] = env_value
+        config[section] = section_config
         # Infer provider from which shorthand var was set (e.g. OPENAI_MODEL → openai)
         if inferred_provider is None:
             prefix = env_var.split("_")[0].lower()  # "OPENAI_MODEL" → "openai"
@@ -616,7 +688,9 @@ def _apply_env_overrides(config: dict[str, object]) -> dict[str, object]:
 
     # Apply inferred provider only when no explicit provider was set
     if inferred_provider and not explicit_provider:
-        config.setdefault("execution", {}).setdefault("provider", inferred_provider)
+        execution = _section(config.get("execution"))
+        execution.setdefault("provider", inferred_provider)
+        config["execution"] = execution
 
     return config
 
@@ -631,7 +705,9 @@ def _apply_cli_overrides(config: dict[str, object], overrides: list[str]) -> dic
         if len(parts) != 2:
             continue
         section, field_name = parts
-        config.setdefault(section, {})[field_name] = _coerce_env(value_str)
+        section_config = _section(config.get(section))
+        section_config[field_name] = _coerce_env(value_str)
+        config[section] = section_config
     return config
 
 
@@ -738,108 +814,118 @@ def _load_toml_with_extends(path: Path) -> dict[str, object]:
 
 def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     """Build an AgenthiccConfig from a merged dict."""
-    ex = data.get("execution", {})
-    me = data.get("memory", {})
+    ex = _section(data.get("execution"))
+    me = _section(data.get("memory"))
     # PRD-136: per-model context windows live under [memory.context_windows] but
     # are resolved by ExecutionSettings (the model is an execution concern).  Keys
     # are lower-cased model ids (plus the reserved "default"); values are windows.
     _context_windows = {
-        str(k).lower(): int(v) for k, v in dict(me.get("context_windows", {})).items()
+        str(k).lower(): _as_int(v, 0) for k, v in _section(me.get("context_windows")).items()
     }
     execution = ExecutionSettings(
-        max_concurrent_intents=ex.get("max_concurrent_intents", 8),
-        max_parallel_tasks=ex.get("max_parallel_tasks", 4),
-        agent_pool_size=ex.get("agent_pool_size", 16),
-        max_agent_turns=int(ex.get("max_agent_turns", 200)),
-        auto_compact=bool(ex.get("auto_compact", True)),
+        max_concurrent_intents=_as_int(ex.get("max_concurrent_intents"), 8),
+        max_parallel_tasks=_as_int(ex.get("max_parallel_tasks"), 4),
+        agent_pool_size=_as_int(ex.get("agent_pool_size"), 16),
+        max_agent_turns=_as_int(ex.get("max_agent_turns"), 200),
+        auto_compact=_as_bool(ex.get("auto_compact"), True),
         context_windows=_context_windows,
-        prompt_cache=bool(ex.get("prompt_cache", True)),
-        file_cache=bool(ex.get("file_cache", True)),
-        transport_max_retries=int(ex.get("transport_max_retries", 3)),
-        transport_retry_base_delay_s=float(ex.get("transport_retry_base_delay_s", 1.0)),
-        transport_retry_max_total_s=float(ex.get("transport_retry_max_total_s", 0.0)),
-        llm_sdk_max_retries=int(ex.get("llm_sdk_max_retries", 2)),
-        provider=str(ex.get("provider", "anthropic")),
-        model=str(ex.get("model", "")),
-        api_key=str(ex.get("api_key", "")),
-        base_url=str(ex.get("base_url", "")),
+        prompt_cache=_as_bool(ex.get("prompt_cache"), True),
+        file_cache=_as_bool(ex.get("file_cache"), True),
+        transport_max_retries=_as_int(ex.get("transport_max_retries"), 3),
+        transport_retry_base_delay_s=_as_float(ex.get("transport_retry_base_delay_s"), 1.0),
+        transport_retry_max_total_s=_as_float(ex.get("transport_retry_max_total_s"), 0.0),
+        llm_sdk_max_retries=_as_int(ex.get("llm_sdk_max_retries"), 2),
+        provider=_as_str(ex.get("provider"), "anthropic"),
+        model=_as_str(ex.get("model"), ""),
+        api_key=_as_str(ex.get("api_key"), ""),
+        base_url=_as_str(ex.get("base_url"), ""),
     )
 
-    hooks = _flatten_hooks(data.get("hooks", {}))
+    hooks = _flatten_hooks(_section(data.get("hooks")))
 
-    to = data.get("tools", {})
-    tools_raw = to
+    to = _section(data.get("tools"))
+    tools_raw = to.get("mcp_servers")
+    raw_mcp = (
+        [item for item in tools_raw if isinstance(item, dict)]
+        if isinstance(tools_raw, list)
+        else []
+    )
     tools = ToolSettings(
-        mcp_servers=_parse_mcp_servers(tools_raw.get("mcp_servers", [])),
-        plugins=list(to.get("plugins", [])),
-        allowed=list(to.get("allowed", to.get("allowed_tools", []))),
-        denied=list(to.get("denied", to.get("denied_tools", []))),
-        max_live_tool_calls=int(to.get("max_live_tool_calls", 5)),
+        mcp_servers=_parse_mcp_servers(raw_mcp),
+        plugins=_as_string_list(to.get("plugins")),
+        allowed=_as_string_list(to.get("allowed", to.get("allowed_tools"))),
+        denied=_as_string_list(to.get("denied", to.get("denied_tools"))),
+        max_live_tool_calls=_as_int(to.get("max_live_tool_calls"), 5),
     )
 
     memory = MemorySettings(
-        project_memory_path=str(me.get("project_memory_path", ".agenthicc/memory")),
-        vector_db=me.get("vector_db", "sqlite-vec"),
-        session_ttl_seconds=me.get("session_ttl_seconds", 86400),
+        project_memory_path=_as_str(me.get("project_memory_path"), ".agenthicc/memory"),
+        vector_db=_as_str(me.get("vector_db"), "sqlite-vec"),
+        session_ttl_seconds=_as_int(me.get("session_ttl_seconds"), 86400),
     )
 
-    se = data.get("security", {})
+    se = _section(data.get("security"))
     security = SecuritySettings(
-        sandbox_mode=se.get("sandbox_mode", True),
-        allowed_paths=[str(p) for p in se.get("allowed_paths", ["/workspace"])],
-        network_allow_list=list(se.get("network_allow_list", [])),
-        max_tool_cpu_seconds=se.get("max_tool_cpu_seconds", 30),
-        max_tool_memory_mb=se.get("max_tool_memory_mb", 512),
+        sandbox_mode=_as_bool(se.get("sandbox_mode"), True),
+        allowed_paths=_as_string_list(se.get("allowed_paths"), ("/workspace",)),
+        network_allow_list=_as_string_list(se.get("network_allow_list")),
+        max_tool_cpu_seconds=_as_int(se.get("max_tool_cpu_seconds"), 30),
+        max_tool_memory_mb=_as_int(se.get("max_tool_memory_mb"), 512),
     )
 
-    ap = data.get("api", {})
+    ap = _section(data.get("api"))
     api = ApiSettings(
-        host=ap.get("host", "127.0.0.1"),
-        port=ap.get("port", 8000),
-        api_key_env=ap.get("api_key_env", "AGENTHICC_API_KEY"),
+        host=_as_str(ap.get("host"), "127.0.0.1"),
+        port=_as_int(ap.get("port"), 8000),
+        api_key_env=_as_str(ap.get("api_key_env"), "AGENTHICC_API_KEY"),
     )
 
     # Parse [storage] and [storage.s3] sections
-    raw_storage = dict(data.get("storage", {}))
-    raw_s3 = dict(raw_storage.pop("s3", {}))
-    raw_mounts = raw_s3.pop("mounts", {})
+    raw_storage = _section(data.get("storage"))
+    raw_s3 = _section(raw_storage.pop("s3", {}))
+    raw_mounts = _section(raw_s3.pop("mounts", {}))
     s3_settings = StorageS3Settings(
-        bucket=raw_s3.get("bucket", ""),
-        region=raw_s3.get("region", "us-east-1"),
-        prefix=raw_s3.get("prefix", ""),
-        access_key_id=raw_s3.get("access_key_id", ""),
-        secret_access_key=raw_s3.get("secret_access_key", ""),
-        endpoint_url=raw_s3.get("endpoint_url", ""),
-        profile=raw_s3.get("profile", ""),
-        path_style=raw_s3.get("path_style", False),
-        mounts=raw_mounts,
+        bucket=_as_str(raw_s3.get("bucket"), ""),
+        region=_as_str(raw_s3.get("region"), "us-east-1"),
+        prefix=_as_str(raw_s3.get("prefix"), ""),
+        access_key_id=_as_str(raw_s3.get("access_key_id"), ""),
+        secret_access_key=_as_str(raw_s3.get("secret_access_key"), ""),
+        endpoint_url=_as_str(raw_s3.get("endpoint_url"), ""),
+        profile=_as_str(raw_s3.get("profile"), ""),
+        path_style=_as_bool(raw_s3.get("path_style"), False),
+        mounts={
+            str(name): {
+                str(field_name): _as_str(field_value, "")
+                for field_name, field_value in _section(mount).items()
+            }
+            for name, mount in raw_mounts.items()
+            if isinstance(mount, Mapping)
+        },
     )
     storage_settings = StorageSettings(
         s3=s3_settings,
-        default_backend=raw_storage.get("default_backend", "linux"),
+        default_backend=_as_str(raw_storage.get("default_backend"), "linux"),
     )
 
-    beh = data.get("behaviour", {})
+    beh = _section(data.get("behaviour"))
     behaviour = BehaviourSettings(
-        verbose=bool(beh.get("verbose", False)),
-        confirm_exits=bool(beh.get("confirm_exits", True)),
+        verbose=_as_bool(beh.get("verbose"), False),
+        confirm_exits=_as_bool(beh.get("confirm_exits"), True),
     )
 
-    raw_skills = data.get("skills", {})
-    skill_data = raw_skills if isinstance(raw_skills, Mapping) else {}
+    skill_data = _section(data.get("skills"))
     skills = SkillsSettings(
         install_default_skills=bool(skill_data.get("install_default_skills", True)),
         default_skill_directory=str(skill_data.get("default_skill_directory", "")),
     )
 
-    raw_agents = data.get("agents", {})
-    agents = AgentsSettings.from_dict(raw_agents if isinstance(raw_agents, Mapping) else {})
+    agents = AgentsSettings.from_dict(_section(data.get("agents")))
 
     # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)
     workflows: dict[str, dict[str, object]] = {
-        name: dict(params)
-        for name, params in data.get("workflows", {}).items()
-        if isinstance(params, dict)
+        str(name): _section(params)
+        for name, params in _section(data.get("workflows")).items()
+        if isinstance(params, Mapping)
     }
 
     return AgenthiccConfig(
@@ -904,25 +990,25 @@ def load_config(
     # 2. User-global config (~/.agenthicc/agenthicc.toml) — shared defaults.
     # extends chains in the user-global file are also resolved.
     if user_path is not None:
-        user_file: Path | None = Path(user_path)
+        user_file = Path(user_path)
         if user_file.is_file():
             merged = deep_merge(merged, _resolve_extends(user_file))
     else:
-        user_file = _find_config_file(USER_CONFIG_CANDIDATES)
-        if user_file is not None:
-            merged = deep_merge(merged, _load_toml_with_extends(user_file))
+        found_user_file = _find_config_file(USER_CONFIG_CANDIDATES)
+        if found_user_file is not None:
+            merged = deep_merge(merged, _load_toml_with_extends(found_user_file))
 
     # 3. Per-project config — overrides user-global.
     # config_path (from --config or AGENTHICC_CONFIG) takes priority over project_path.
     effective_project = config_path or project_path
     if effective_project is not None:
-        project_file: Path | None = Path(effective_project)
+        project_file = Path(effective_project)
         if project_file.is_file():
             merged = deep_merge(merged, _resolve_extends(project_file))
     else:
-        project_file = _find_config_file(PROJECT_CONFIG_CANDIDATES)
-        if project_file is not None:
-            merged = deep_merge(merged, _load_toml_with_extends(project_file))
+        found_project_file = _find_config_file(PROJECT_CONFIG_CANDIDATES)
+        if found_project_file is not None:
+            merged = deep_merge(merged, _load_toml_with_extends(found_project_file))
 
     # 4. Environment variable overrides (AGENTHICC_*) — override both config files
     if env_overrides:
@@ -957,14 +1043,11 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
         # conversation prefix).  Read only by the Anthropic transport — a clean
         # no-op for OpenAI/Ollama/litellm.
         fields = getattr(cfg, "__dataclass_fields__", {})
-        changes: dict[str, object] = {}
-        if "cache_system_prompt" in fields:
-            changes["cache_system_prompt"] = execution.prompt_cache
-        if "cache_tools" in fields:
-            changes["cache_tools"] = execution.prompt_cache
-        if "cache_conversation" in fields:
-            changes["cache_conversation"] = execution.prompt_cache
-        result = dataclasses.replace(cfg, **changes)
+        result = dataclasses.replace(
+            cfg,
+            cache_system_prompt=execution.prompt_cache,
+            cache_tools=execution.prompt_cache,
+        )
         # lauren-ai 1.3.1 has no conversation-cache field yet.  Preserve the
         # agenthicc setting on the immutable config for callers that inspect
         # the complete cache policy; transports ignore the unsupported flag.
@@ -988,39 +1071,64 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
     max_retries: int = execution.llm_sdk_max_retries
 
     if provider == "anthropic":
-        kwargs: dict[str, str | int | None] = {
-            "model": model,
-            "api_key": api_key,
-            "max_retries": max_retries,
-        }
         if base_url:
-            kwargs["base_url"] = base_url
-        return _cache(LLMConfig.for_anthropic(**kwargs))
+            return _cache(
+                LLMConfig.for_anthropic(
+                    model=model,
+                    api_key=api_key,
+                    max_retries=max_retries,
+                    base_url=base_url,
+                )
+            )
+        return _cache(
+            LLMConfig.for_anthropic(
+                model=model,
+                api_key=api_key,
+                max_retries=max_retries,
+            )
+        )
 
     if provider == "openai":
         # LLMConfig.for_openai passes base_url to OpenAI client, enabling any
         # OpenAI-compatible endpoint (poolside, Together, Groq, local vLLM, etc.)
-        kwargs = {"model": model, "api_key": api_key, "max_retries": max_retries}
         if base_url:
-            kwargs["base_url"] = base_url
-        return _cache(LLMConfig.for_openai(**kwargs))
+            return _cache(
+                LLMConfig.for_openai(
+                    model=model,
+                    api_key=api_key,
+                    max_retries=max_retries,
+                    base_url=base_url,
+                )
+            )
+        return _cache(
+            LLMConfig.for_openai(
+                model=model,
+                api_key=api_key,
+                max_retries=max_retries,
+            )
+        )
 
     if provider == "ollama":
-        kwargs: dict[str, str | int | None] = {"model": model, "max_retries": max_retries}
         if base_url:
-            kwargs["base_url"] = base_url
-        return _cache(LLMConfig.for_ollama(**kwargs))
+            return _cache(
+                LLMConfig.for_ollama(
+                    model=model,
+                    max_retries=max_retries,
+                    base_url=base_url,
+                )
+            )
+        return _cache(LLMConfig.for_ollama(model=model, max_retries=max_retries))
 
     if provider == "litellm":
-        kwargs = {
-            "provider": "litellm",
-            "model": model,
-            "api_key": api_key,
-            "max_retries": max_retries,
-        }
-        if base_url:
-            kwargs["base_url"] = base_url
-        return _cache(LLMConfig(**kwargs))
+        return _cache(
+            LLMConfig(
+                provider="litellm",
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                max_retries=max_retries,
+            )
+        )
 
     supported = ", ".join(f"'{p}'" for p in SUPPORTED_PROVIDERS)
     raise ValueError(

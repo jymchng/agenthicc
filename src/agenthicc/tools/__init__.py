@@ -1,6 +1,16 @@
 """Agenthicc tool layer — sandbox, base types, and MCP bridge."""
 
-from .base import Tool, ToolBase, ToolResult, ToolResultEnvelope
+from .base import (
+    Tool,
+    ToolBase,
+    ToolLike,
+    ToolResult,
+    ToolResultEnvelope,
+    arg_bool,
+    arg_float,
+    arg_int,
+    arg_str,
+)
 from .context import ToolCallContext
 from .executor import (
     AgenthiccToolExecutor,
@@ -25,8 +35,13 @@ __all__ = [
     "ResourceLimits",
     "Tool",
     "ToolBase",
+    "ToolLike",
     "ToolResult",
     "ToolResultEnvelope",
+    "arg_bool",
+    "arg_float",
+    "arg_int",
+    "arg_str",
     "WorkspaceView",
     "AgenthiccToolExecutor",
     "ApprovalDecision",

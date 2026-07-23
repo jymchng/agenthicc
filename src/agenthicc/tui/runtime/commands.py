@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable
+from collections.abc import Awaitable, Callable
+from typing import TypeVar, cast
 
 
 def _new_id() -> str:
@@ -32,6 +33,9 @@ class InterruptAgentCommand(Command):
     pass
 
 
+C = TypeVar("C", bound=Command)
+
+
 # ── CommandBus ────────────────────────────────────────────────────────────────
 
 
@@ -39,10 +43,16 @@ class CommandBus:
     """One handler per command type. Commands represent executable intent."""
 
     def __init__(self) -> None:
-        self._handlers: dict[type, Callable] = {}
+        self._handlers: dict[type[Command], Callable[[Command], object | Awaitable[object]]] = {}
 
-    def register(self, command_type: type, handler: Callable) -> None:
-        self._handlers[command_type] = handler
+    def register(
+        self,
+        command_type: type[C],
+        handler: Callable[[C], object | Awaitable[object]],
+    ) -> None:
+        self._handlers[command_type] = cast(
+            Callable[[Command], object | Awaitable[object]], handler
+        )
 
     def dispatch(self, command: Command) -> object:
         handler = self._handlers.get(type(command))
@@ -56,6 +66,7 @@ class CommandBus:
         handler = self._handlers.get(type(command))
         if handler is None:
             raise ValueError(f"No handler for {type(command).__name__}")
-        if inspect.iscoroutinefunction(handler):
-            return await handler(command)
-        return handler(command)
+        result = handler(command)
+        if inspect.isawaitable(result):
+            return await result
+        return result

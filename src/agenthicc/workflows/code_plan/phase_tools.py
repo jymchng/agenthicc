@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,9 +28,9 @@ if TYPE_CHECKING:
 def make_planner_tools(
     approval_svc: ApprovalService | None,
     plan_event: asyncio.Event,
-    plan_data: dict,
+    plan_data: dict[str, object],
     exit_event: asyncio.Event | None = None,
-) -> list:
+) -> list[Callable[..., object]]:
     """Return [request_plan_approval, finalize_plan] as @tool()-decorated callables.
 
     All three objects close over shared state so the workflow runner can
@@ -49,10 +50,10 @@ def make_planner_tools(
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
 
     # Shared approval gate — updated by request_plan_approval, read by finalize_plan.
-    approval_state: dict = {"granted": False}
+    approval_state: dict[str, bool] = {"granted": False}
 
     @_tool()
-    async def request_plan_approval(plan: str) -> dict:
+    async def request_plan_approval(plan: str) -> dict[str, object]:
         """Request human review of the proposed plan via the Plan Approval overlay.
 
         Show the plan to the user and wait for their decision.
@@ -96,7 +97,7 @@ def make_planner_tools(
         }
 
     @_tool()
-    async def finalize_plan(plan: str) -> dict:
+    async def finalize_plan(plan: str) -> dict[str, object]:
         """Finalize the approved plan and signal transition to execution.
 
         Call this ONLY after request_plan_approval has returned approved=True.
@@ -130,13 +131,13 @@ def make_planner_tools(
             ),
         }
 
-    tools = [request_plan_approval, finalize_plan]
+    tools: list[Callable[..., object]] = [request_plan_approval, finalize_plan]
 
     if exit_event is not None:
         _exit_event = exit_event
 
         @_tool()
-        async def exit_code_plan() -> dict:
+        async def exit_code_plan() -> dict[str, object]:
             """Exit the code_plan workflow immediately without producing a plan.
 
             Call this when the user's request does not require planning,
@@ -160,8 +161,8 @@ def make_planner_tools(
 
 def make_executor_tools(
     execute_event: asyncio.Event,
-    execute_data: dict,
-) -> list:
+    execute_data: dict[str, object],
+) -> list[Callable[..., object]]:
     """Return [mark_execute_complete] as a @tool()-decorated callable.
 
     Closes over shared asyncio state so WorkflowRunner._run_phase can detect
@@ -177,7 +178,7 @@ def make_executor_tools(
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
 
     @_tool()
-    async def mark_execute_complete(summary: str) -> dict:
+    async def mark_execute_complete(summary: str) -> dict[str, object]:
         """Signal that all implementation tasks are finished.
 
         Call this ONLY when every file has been written, every function
@@ -206,8 +207,8 @@ def make_executor_tools(
 
 def make_reviewer_tools(
     review_event: asyncio.Event,
-    review_data: dict,
-) -> list:
+    review_data: dict[str, object],
+) -> list[Callable[..., object]]:
     """Return [approve_review, reject_review] as @tool()-decorated callables.
 
     Replaces XML-tag output parsing for the review phase.  The agent calls
@@ -220,7 +221,7 @@ def make_reviewer_tools(
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
 
     @_tool()
-    async def approve_review(summary: str) -> dict:
+    async def approve_review(summary: str) -> dict[str, object]:
         """Signal that the implementation passes review and is ready to summarize.
 
         Call this when all tests pass and the code is correct.  The workflow
@@ -243,7 +244,7 @@ def make_reviewer_tools(
         }
 
     @_tool()
-    async def reject_review(reason: str) -> dict:
+    async def reject_review(reason: str) -> dict[str, object]:
         """Signal that the implementation has issues that must be fixed.
 
         Call this when tests fail or the code is incorrect.  The workflow
@@ -291,7 +292,7 @@ def _validate_questions(questions: object) -> list[str]:
 
 def make_questions_tool(
     approval_svc: ApprovalService | None,
-) -> list:
+) -> list[Callable[..., object]]:
     """Return [ask_user] as a @tool()-decorated callable.
 
     ask_user() presents a QuestionsOverlay to the user and blocks until all
@@ -302,7 +303,7 @@ def make_questions_tool(
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
 
     @_tool()
-    async def ask_user(questions: list) -> dict:
+    async def ask_user(questions: list[dict[str, object]]) -> dict[str, object]:
         """Present the user with a set of questions and collect their answers.
 
         Each question must be a dict with:
@@ -368,7 +369,10 @@ def make_questions_tool(
         if not response.allowed:
             return {"cancelled": True}
         try:
-            return _json.loads(response.message)
+            decoded = _json.loads(response.message)
+            if isinstance(decoded, dict) and all(isinstance(key, str) for key in decoded):
+                return {key: value for key, value in decoded.items()}
+            return {"error": "answers must be a JSON object"}
         except Exception:  # noqa: BLE001
             return {"error": "failed to parse answers"}
 

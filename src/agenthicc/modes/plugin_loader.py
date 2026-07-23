@@ -141,7 +141,7 @@ def load_mode_file(path: Path) -> ModeLoadResult:
         probe_spec = importlib.util.spec_from_file_location("_mode_dep_probe", path)
         if probe_spec and probe_spec.loader:
             probe_mod = importlib.util.module_from_spec(probe_spec)
-            probe_spec.loader.exec_module(probe_mod)  # type: ignore[union-attr]
+            probe_spec.loader.exec_module(probe_mod)
             declared_deps = list(getattr(probe_mod, "DEPENDENCIES", []))
     except SyntaxError as exc:
         return ModeLoadResult(path=path, error=f"SyntaxError: {exc}")
@@ -160,7 +160,7 @@ def load_mode_file(path: Path) -> ModeLoadResult:
             return ModeLoadResult(path=path, error="could not create module spec")
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        spec.loader.exec_module(module)
     except SyntaxError as exc:
         return ModeLoadResult(path=path, error=f"SyntaxError: {exc}")
     except Exception as exc:

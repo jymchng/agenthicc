@@ -85,12 +85,19 @@ tool_network_search = set_metadata(
 )
 
 
-def get_tool_capabilities(tool: object) -> frozenset:
+def get_tool_capabilities(tool: object) -> frozenset[ToolCapability]:
     """Return the ToolCapability frozenset stored on a @tool()-decorated function.
 
     Reads from __lauren_ai_tool_metadata__[CAPABILITIES_KEY], written by
     set_metadata(CAPABILITIES_KEY, ...).  Returns an empty frozenset for
     unannotated tools (open-by-default semantics).
     """
-    meta_dict: dict = getattr(tool, _TOOL_METADATA, None) or {}
-    return meta_dict.get(CAPABILITIES_KEY) or frozenset()
+    meta_dict: object = getattr(tool, _TOOL_METADATA, None) or {}
+    if not isinstance(meta_dict, dict):
+        return frozenset()
+    capabilities = meta_dict.get(CAPABILITIES_KEY)
+    if isinstance(capabilities, (set, frozenset)) and all(
+        isinstance(capability, ToolCapability) for capability in capabilities
+    ):
+        return frozenset(capabilities)
+    return frozenset()

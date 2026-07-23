@@ -276,7 +276,7 @@ async def resolve_mention(
         # Pass in-session URL cache from MentionCache if available
         session_url_cache: dict[str, str] | None = None
         if cache is not None:
-            session_url_cache = cache._url_cache  # type: ignore[attr-defined]
+            session_url_cache = cache._url_cache
         block = await _format_url_block(
             mention.path,
             cfg.url_timeout_seconds,
@@ -318,9 +318,17 @@ async def resolve_mention(
         block = f'<file path="{mention.path}" binary="true" bytes="{size:,}"/>'
         return InjectedContent(mention=mention, block=block, chars_used=len(block))
 
+    resolved = mention.resolved
+    if resolved is None:
+        return InjectedContent(
+            mention=mention,
+            block=f"[⚠ could not resolve {mention.raw}]",
+            error="not_found",
+        )
+
     try:
         content, total, truncated = await asyncio.to_thread(
-            _read_file_sync, mention.resolved, cfg.max_file_chars
+            _read_file_sync, resolved, cfg.max_file_chars
         )
     except OSError as exc:
         block = f"[⚠ could not read {mention.raw}: {exc}]"

@@ -80,7 +80,7 @@ class WindowsFilesystemBackend(LinuxFilesystemBackend):
 
     # ── symlink ──────────────────────────────────────────────────────────
 
-    def symlink(self, target: str, link_path: str) -> None:  # type: ignore[override]
+    def symlink(self, target: str, link_path: str) -> None:
         """Not supported — Windows symlinks require elevation.
 
         Raises:

@@ -11,7 +11,9 @@ tool payloads without any post-processing by the caller.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from agenthicc.tools.base import ToolLike
 
 if TYPE_CHECKING:
     from agenthicc.memory.router import MemoryRouter
@@ -21,7 +23,7 @@ if TYPE_CHECKING:
 def make_memory_tools(
     memory_router: MemoryRouter | None,
     semantic_index: SemanticIndex | None,
-) -> list:
+) -> list[ToolLike]:
     """Return agent-callable memory tools.
 
     When *memory_router* or *semantic_index* is ``None`` the corresponding
@@ -37,7 +39,7 @@ def make_memory_tools(
         scope: str = "project",
         namespace: str = "default",
         ttl_seconds: float = 0.0,
-    ) -> dict:
+    ) -> dict[str, object]:
         """Persist a value in memory across agent turns or sessions.
 
         scope must be one of: "session" (lost on exit), "project" (persists
@@ -65,7 +67,7 @@ def make_memory_tools(
         key: str,
         scope: str = "project",
         namespace: str = "default",
-    ) -> dict:
+    ) -> dict[str, object]:
         """Read a previously stored value from memory.
 
         Returns {"found": true, "value": ...} when the key exists, or
@@ -84,7 +86,7 @@ def make_memory_tools(
     async def semantic_search(
         query: str,
         top_k: int = 5,
-    ) -> dict:
+    ) -> dict[str, object]:
         """Search past agent outputs for context similar to *query*.
 
         Every completed agent turn is automatically indexed.  Use this to
@@ -106,7 +108,7 @@ def make_memory_tools(
     async def publish_artifact(
         content: str,
         content_type: str = "text/plain",
-    ) -> dict:
+    ) -> dict[str, object]:
         """Store a content-addressed artifact in project memory.
 
         The operation is idempotent: publishing identical content twice
@@ -123,4 +125,4 @@ def make_memory_tools(
             return {"ok": False, "artifact_id": None, "error": "memory_not_available"}
         return await memory_router.publish_artifact(content, content_type=content_type)
 
-    return [memory_write, memory_read, semantic_search, publish_artifact]
+    return cast(list[ToolLike], [memory_write, memory_read, semantic_search, publish_artifact])

@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import math
 import re
+from typing import Protocol, cast
 
 __all__ = ["SemanticIndex"]
 
+_LaurenStore: type[object] | None
 try:  # pragma: no cover - exercised implicitly depending on environment
     from lauren_ai._memory._vector import InMemoryVectorStore as _LaurenStore
 except ImportError:  # pragma: no cover
@@ -77,6 +79,25 @@ class _FallbackStore:
         return len(self._docs)
 
 
+class _VectorStore(Protocol):
+    async def upsert(
+        self,
+        content: str,
+        *,
+        id: str,
+        embedding: list[float] | None = None,
+    ) -> str: ...
+
+    async def search(self, query: str, *, k: int = 5) -> object: ...
+
+    def __len__(self) -> int: ...
+
+
+class _SearchResult(Protocol):
+    id: str
+    score: float
+
+
 class SemanticIndex:
     """Similarity index over short text documents.
 
@@ -91,7 +112,9 @@ class SemanticIndex:
     """
 
     def __init__(self) -> None:
-        self._store = _LaurenStore() if _LaurenStore is not None else _FallbackStore()
+        self._store: _VectorStore = (
+            cast(_VectorStore, _LaurenStore()) if _LaurenStore is not None else _FallbackStore()
+        )
 
     async def add(
         self,
@@ -106,8 +129,9 @@ class SemanticIndex:
         """Return up to ``top_k`` ``(doc_id, score)`` pairs, best first."""
         results = await self._store.search(query, k=top_k)
         if isinstance(self._store, _FallbackStore):
-            return results  # already (doc_id, score) pairs
-        return [(r.id, float(r.score)) for r in results]
+            return cast(list[tuple[str, float]], results)  # already pairs
+        typed_results = cast(list[_SearchResult], results)
+        return [(r.id, float(r.score)) for r in typed_results]
 
     def __len__(self) -> int:
         return len(self._store)

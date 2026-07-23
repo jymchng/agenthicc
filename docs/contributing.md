@@ -24,7 +24,7 @@ test(tui): cover non-TTY shutdown
 ## Review checklist
 
 - [ ] The change is in the correct ownership boundary.
-- [ ] New signatures use concrete parameterized types.
+- [ ] New signatures use concrete parameterized types and preserve the type-safety ratchet.
 - [ ] Security, approval, timeout, retry, and cancellation paths are covered.
 - [ ] Kernel reducers remain pure and kernel state remains frozen.
 - [ ] Durable formats have recovery or migration coverage.
@@ -35,9 +35,10 @@ test(tui): cover non-TTY shutdown
 ## Verification
 
 ```bash
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+uv run ruff check src/ tests/ scripts/
+uv run ruff format --check src/ tests/ scripts/
 uv run mypy src/agenthicc
+uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.json
 uv run pytest tests/ -q
 uv run nox -s llms_check
 ```

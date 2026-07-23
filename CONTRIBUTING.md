@@ -19,9 +19,10 @@ required for every install.
 ## Development checks
 
 ```bash
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+uv run ruff check src/ tests/ scripts/
+uv run ruff format --check src/ tests/ scripts/
 uv run mypy src/agenthicc
+uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.json
 uv run pytest tests/unit -q
 uv run pytest tests/integration -q
 uv run pytest tests/e2e -q

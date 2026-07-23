@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.tools.capability_gate import ToolCapabilityGate
     from agenthicc.tui.conversation_store import AppState, ConversationStore
+    from agenthicc.runners.retry import RetryConfig
 
 __all__ = [
     "WorkerState",
@@ -132,7 +133,7 @@ class SubagentWorker:
         all_tools: list[object],
         app_state: AppState | None = None,
         registry: ToolRegistry | None = None,
-        retry_config: object | None = None,
+        retry_config: "RetryConfig | None" = None,
     ) -> None:
         self._task = task
         self._spec = spec
@@ -142,7 +143,7 @@ class SubagentWorker:
         self._all_tools = all_tools
         self._app_state = app_state
         self._registry = registry
-        self._retry_config = retry_config
+        self._retry_config: RetryConfig | None = retry_config
         self.label = f"{spec.name} #{index}"
         # Expand glob patterns once at construction time.
         self._effective_allowed: frozenset[str] = _expand_allowed(spec.allowed_tools, registry)
@@ -219,7 +220,7 @@ class SubagentWorker:
         # Construct the @agent class and runner.
         @agent_decorator(model=self._parent_model, system=system)
         @use_tools(*filtered)
-        class _SubAgent: ...  # noqa: N801
+        class _SubAgent: ...  # type: ignore[type-var]  # lauren-ai dynamic subagent class
 
         agent_instance = _SubAgent()
         populate_agent_tools(agent_instance, filtered)
@@ -291,7 +292,7 @@ class SubagentPool:
         conv_store: ConversationStore | None = None,
         registry: SubagentTypeRegistry = DEFAULT_REGISTRY,
         tool_registry: ToolRegistry | None = None,
-        retry_config: object | None = None,
+        retry_config: "RetryConfig | None" = None,
     ) -> None:
         self.pool_id = uuid.uuid4().hex
         self._tasks = tasks
@@ -304,7 +305,7 @@ class SubagentPool:
         self._conv_store = conv_store
         self._registry = registry
         self._tool_registry = tool_registry
-        self._retry_config = retry_config
+        self._retry_config: RetryConfig | None = retry_config
 
     async def run(self) -> AggregatedResult:
         """Execute all tasks concurrently; return aggregated plain-text result."""

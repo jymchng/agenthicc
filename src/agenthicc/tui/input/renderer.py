@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sys
+from typing import TextIO
 
 PROMPT_CHAR = "❯"
 CURSOR_CHAR = "▌"
@@ -77,7 +78,7 @@ def build_prompt(
     return "\n\r".join(rendered)
 
 
-def show_exit_hint(resume_id: str = "", out: object = None) -> None:
+def show_exit_hint(resume_id: str = "", out: TextIO | None = None) -> None:
     """Print the --resume / --continue hint below the input bar on exit."""
     import shutil  # noqa: PLC0415
 

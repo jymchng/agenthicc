@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from lauren_ai._transport import (
@@ -37,6 +37,14 @@ if TYPE_CHECKING:
         Message,
         ToolChoice,
     )
+
+
+class _Transport(Protocol):
+    async def complete(self, *args: object, **kwargs: object) -> object: ...
+
+    async def embed(self, *args: object, **kwargs: object) -> object: ...
+
+    async def count_tokens(self, *args: object, **kwargs: object) -> object: ...
 
 
 class RecordingTransport:
@@ -73,11 +81,12 @@ class RecordingTransport:
         thinking: bool = False,
         thinking_budget_tokens: int = 8000,
     ) -> Completion | AsyncIterator[CompletionChunk]:
-        tool_names = [t.name if hasattr(t, "name") else t.get("name", "") for t in (tools or [])]
+        tool_names = [str(t.name) for t in (tools or [])]
+        inner = cast(_Transport, self._inner)
         if not stream:
             from lauren_ai._transport import Completion  # noqa: PLC0415
 
-            result = await self._inner.complete(
+            result = await inner.complete(
                 messages,
                 model=model,
                 system=system,
@@ -90,31 +99,36 @@ class RecordingTransport:
                 thinking=thinking,
                 thinking_budget_tokens=thinking_budget_tokens,
             )
-            assert isinstance(result, Completion)
-            self._record_completion(model, tool_names, result)
-            return result
+            completion = cast(Completion, result)
+            self._record_completion(model, tool_names, completion)
+            return completion
 
         # Streaming: intercept chunks to assemble the full response.
-        inner_iter: AsyncIterator[CompletionChunk] = await self._inner.complete(
-            messages,
-            model=model,
-            system=system,
-            tools=tools,
-            tool_choice=tool_choice,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stop_sequences=stop_sequences,
-            stream=True,
-            thinking=thinking,
-            thinking_budget_tokens=thinking_budget_tokens,
+        inner_iter = cast(
+            AsyncIterator[CompletionChunk],
+            await inner.complete(
+                messages,
+                model=model,
+                system=system,
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stop_sequences=stop_sequences,
+                stream=True,
+                thinking=thinking,
+                thinking_budget_tokens=thinking_budget_tokens,
+            ),
         )
         return self._intercepting_stream(model, tool_names, inner_iter)
 
-    async def embed(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._inner.embed(*args, **kwargs)
+    async def embed(self, *args: object, **kwargs: object) -> object:
+        inner = cast(_Transport, self._inner)
+        return await inner.embed(*args, **kwargs)
 
-    async def count_tokens(self, *args: Any, **kwargs: Any) -> Any:
-        return await self._inner.count_tokens(*args, **kwargs)
+    async def count_tokens(self, *args: object, **kwargs: object) -> object:
+        inner = cast(_Transport, self._inner)
+        return await inner.count_tokens(*args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)

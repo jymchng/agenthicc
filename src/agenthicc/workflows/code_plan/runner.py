@@ -24,10 +24,12 @@ from typing import TYPE_CHECKING
 
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
+from agenthicc.tools.base import ToolLike
 
 if TYPE_CHECKING:
+    from lauren_ai._memory import ShortTermMemory
     from agenthicc.workflows.config import WorkflowConfig
-    from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun
+    from agenthicc.workflows.plugin import WorkflowRun
     from agenthicc.tui.runtime.mode_manager import ModeManager
 
 log = logging.getLogger(__name__)
@@ -35,7 +37,7 @@ log = logging.getLogger(__name__)
 # ── type alias for tool objects (no formal base class in lauren-ai yet) ────────
 # Gap (lauren-ai): tools are @_tool()-decorated callables with no public ABC.
 # list[object] is the most precise non-Any annotation available.
-_ToolList = list[object]
+_ToolList = list[ToolLike]
 
 # ── default retry caps ────────────────────────────────────────────────────────
 
@@ -158,7 +160,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
 
         run_id: str = uuid.uuid4().hex
-        self._run_id: str = run_id
+        self._run_id = run_id
 
         ctx: CodePlanContext = CodePlanContext(
             intent=intent,
@@ -279,10 +281,13 @@ class CodePlanRunner(BaseWorkflowRunner):
 
         return ctx  # PRD-114: subclasses receive typed context via super().run()
 
-    async def resume(self, context: WorkflowContext) -> None:
+    async def resume(self, context: object) -> None:
         """Resume from a WorkflowContext (legacy --resume path)."""
         from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
-        from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
+        from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun  # noqa: PLC0415
+
+        if not isinstance(context, WorkflowContext):
+            raise TypeError("workflow resume requires a WorkflowContext")
 
         completed: set[str] = (
             set(context.phase_outputs.keys()) if hasattr(context, "phase_outputs") else set()
@@ -356,20 +361,18 @@ class CodePlanRunner(BaseWorkflowRunner):
 
         for attempt in range(1, _MAX_PLAN_ATTEMPTS + 1):
             plan_event: asyncio.Event = asyncio.Event()
-            plan_data: dict[str, str] = {}
+            plan_data: dict[str, object] = {}
 
-            tools: _ToolList = (
-                list(self._base_tools())
-                + list(
-                    make_planner_tools(
-                        self._cfg.approval_svc,
-                        plan_event,
-                        plan_data,
-                        exit_event=exit_event,
-                    )
+            tools: _ToolList = list(self._base_tools())
+            tools.extend(
+                make_planner_tools(
+                    self._cfg.approval_svc,
+                    plan_event,
+                    plan_data,
+                    exit_event=exit_event,
                 )
-                + make_questions_tool(self._cfg.approval_svc)
             )
+            tools.extend(make_questions_tool(self._cfg.approval_svc))
 
             text: str = ctx.intent if attempt == 1 else _PLAN_REMINDER
 
@@ -398,7 +401,9 @@ class CodePlanRunner(BaseWorkflowRunner):
                 return CodePlanState.EXITED
 
             if plan_event.is_set() and "plan" in plan_data:
-                ctx.plan = plan_data["plan"]
+                plan = plan_data["plan"]
+                if isinstance(plan, str):
+                    ctx.plan = plan
                 return CodePlanState.EXECUTE
 
         ctx.fail_reason = (
@@ -422,7 +427,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
         for attempt in range(1, _MAX_EXECUTE_ATTEMPTS + 1):
             execute_event: asyncio.Event = asyncio.Event()
-            execute_data: dict[str, str] = {}
+            execute_data: dict[str, object] = {}
 
             tools: _ToolList = list(self._base_tools()) + list(
                 make_executor_tools(execute_event, execute_data)
@@ -450,7 +455,8 @@ class CodePlanRunner(BaseWorkflowRunner):
                 return CodePlanState.FAILED
 
             if execute_event.is_set():
-                ctx.execute_summary = execute_data.get("summary", "")
+                summary = execute_data.get("summary", "")
+                ctx.execute_summary = summary if isinstance(summary, str) else ""
                 return CodePlanState.REVIEW
 
         ctx.fail_reason = f"Execute phase exhausted {_MAX_EXECUTE_ATTEMPTS} attempts."
@@ -472,7 +478,7 @@ class CodePlanRunner(BaseWorkflowRunner):
 
         for attempt in range(1, _MAX_REVIEW_ATTEMPTS + 1):
             review_event: asyncio.Event = asyncio.Event()
-            review_data: dict[str, str] = {}
+            review_data: dict[str, object] = {}
 
             tools: _ToolList = list(self._base_tools()) + list(
                 make_reviewer_tools(review_event, review_data)
@@ -509,11 +515,14 @@ class CodePlanRunner(BaseWorkflowRunner):
                 return CodePlanState.FAILED
 
             if review_event.is_set():
-                action: str = review_data.get("action", "reject")
+                action_value = review_data.get("action", "reject")
+                action: str = action_value if isinstance(action_value, str) else "reject"
                 if action == "approve":
-                    ctx.review_summary = review_data.get("summary", "")
+                    summary = review_data.get("summary", "")
+                    ctx.review_summary = summary if isinstance(summary, str) else ""
                     return CodePlanState.SUMMARIZE
-                ctx.rejection_reason = review_data.get("reason", "")
+                reason = review_data.get("reason", "")
+                ctx.rejection_reason = reason if isinstance(reason, str) else ""
                 return CodePlanState.EXECUTE
 
         ctx.fail_reason = f"Review phase exhausted {_MAX_REVIEW_ATTEMPTS} attempts."
@@ -553,7 +562,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         system_prompt: str,
         mode: str | None = None,
         max_turns: int = 10,
-        shared_memory: object | None = None,
+        shared_memory: "ShortTermMemory | None" = None,
     ) -> None:
         """Execute one additional agent phase using this runner's tool set.
 
@@ -699,7 +708,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
 
         mode_blocked = self._cfg.app_state.active_mode().blocked_capabilities
-        all_tools: _ToolList = list(self._cfg.plugin_tools)
+        all_tools: _ToolList = list(self._cfg.all_plugin_tools())
         if self._cfg.mcp_registry is not None:
             try:
                 all_tools = all_tools + list(self._cfg.mcp_registry.all_tools())

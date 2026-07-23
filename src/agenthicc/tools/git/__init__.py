@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import re
-from agenthicc.tools.base import Tool
+from collections.abc import Mapping
+from typing import ClassVar
+
+from agenthicc.tools.base import Tool, arg_bool, arg_int, arg_str
 
 __all__ = ["GitToolKit"]
 
@@ -29,18 +32,22 @@ async def _run_git(
     )
     out = stdout.decode(errors="replace")[:_MAX_OUTPUT_BYTES]
     err = stderr.decode(errors="replace")[:4096]
-    return proc.returncode, out, err
+    return proc.returncode if proc.returncode is not None else -1, out, err
 
 
 class GitStatusTool(Tool):
     name = "git_status"
     description = "Show working tree status: branch, staged/unstaged/untracked files."
-    parameters: dict = {"type": "object", "properties": {}, "required": []}
+    parameters: ClassVar[dict[str, object]] = {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
+        root = arg_str(context, "workspace_root", ".")
         rc, out, err = await _run_git(root, ["status", "--porcelain=v1", "-b"])
         if rc != 0:
             return {"ok": False, "error": err}
@@ -84,17 +91,19 @@ class GitDiffTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
+        root = arg_str(context, "workspace_root", ".")
+        path = arg_str(args, "path", "")
+        ref = arg_str(args, "ref", "")
         cmd = ["diff"]
-        if args.get("staged"):
+        if arg_bool(args, "staged", False):
             cmd.append("--cached")
-        if args.get("ref"):
-            cmd.append(args["ref"])
+        if ref:
+            cmd.append(ref)
         cmd += ["--stat", "--patch"]
-        if args.get("path"):
-            cmd += ["--", args["path"]]
+        if path:
+            cmd += ["--", path]
         rc, out, err = await _run_git(root, cmd)
         if rc not in (0, 1):  # git diff returns 1 when there are diffs
             return {"ok": False, "error": err}
@@ -122,14 +131,15 @@ class GitLogTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
-        n = int(args.get("n", 10))
+        root = arg_str(context, "workspace_root", ".")
+        n = arg_int(args, "n", 10)
+        path = arg_str(args, "path", "")
         fmt = "%H\x1f%h\x1f%an\x1f%ai\x1f%s"
         cmd = ["log", f"-{n}", f"--format={fmt}"]
-        if args.get("path"):
-            cmd += ["--", args["path"]]
+        if path:
+            cmd += ["--", path]
         rc, out, err = await _run_git(root, cmd)
         if rc != 0:
             return {"ok": False, "error": err}
@@ -159,10 +169,13 @@ class GitAddTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
-        paths = args.get("paths", [])
+        root = arg_str(context, "workspace_root", ".")
+        raw_paths = args.get("paths", [])
+        if not isinstance(raw_paths, list) or not all(isinstance(path, str) for path in raw_paths):
+            raise ValueError("tool argument 'paths' must be a list of strings")
+        paths = list(raw_paths)
         rc, out, err = await _run_git(root, ["add", "--", *paths])
         return {"ok": rc == 0, "staged": paths, "error": err if rc != 0 else None}
 
@@ -180,18 +193,20 @@ class GitCommitTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
-        cmd = ["commit", "-m", args["message"]]
-        if args.get("author"):
-            cmd += ["--author", args["author"]]
+        root = arg_str(context, "workspace_root", ".")
+        message = arg_str(args, "message")
+        author = arg_str(args, "author", "")
+        cmd = ["commit", "-m", message]
+        if author:
+            cmd += ["--author", author]
         rc, out, err = await _run_git(root, cmd)
         if rc != 0:
             return {"ok": False, "error": err}
         m = re.search(r"\[[\w/]+ ([0-9a-f]+)\]", out)
         commit_hash = m.group(1) if m else ""
-        return {"ok": True, "hash": commit_hash, "message": args["message"]}
+        return {"ok": True, "hash": commit_hash, "message": message}
 
 
 class GitCheckoutTool(Tool):
@@ -207,15 +222,16 @@ class GitCheckoutTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
+        root = arg_str(context, "workspace_root", ".")
+        branch = arg_str(args, "branch")
         cmd = ["checkout"]
-        if args.get("create"):
+        if arg_bool(args, "create", False):
             cmd.append("-b")
-        cmd.append(args["branch"])
+        cmd.append(branch)
         rc, out, err = await _run_git(root, cmd)
-        return {"ok": rc == 0, "branch": args["branch"], "error": err if rc != 0 else None}
+        return {"ok": rc == 0, "branch": branch, "error": err if rc != 0 else None}
 
 
 class GitBranchTool(Tool):
@@ -227,12 +243,13 @@ class GitBranchTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
+        root = arg_str(context, "workspace_root", ".")
+        pattern = arg_str(args, "pattern", "")
         cmd = ["branch", "-a", "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)"]
-        if args.get("pattern"):
-            cmd.append(args["pattern"])
+        if pattern:
+            cmd.append(pattern)
         rc, out, err = await _run_git(root, cmd)
         if rc != 0:
             return {"ok": False, "error": err}
@@ -264,22 +281,24 @@ class GitBlameTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
+        root = arg_str(context, "workspace_root", ".")
+        path = arg_str(args, "path")
         cmd = ["blame", "--line-porcelain"]
-        start = int(args.get("start_line", 1))
-        end = args.get("end_line")
-        if end:
-            cmd += [f"-L{start},{int(end)}"]
+        start = arg_int(args, "start_line", 1)
+        end_value = args.get("end_line")
+        end = arg_int(args, "end_line") if end_value is not None else None
+        if end is not None:
+            cmd += [f"-L{start},{end}"]
         elif start > 1:
             cmd += [f"-L{start}"]
-        cmd += ["--", args["path"]]
+        cmd += ["--", path]
         rc, out, err = await _run_git(root, cmd)
         if rc != 0:
             return {"ok": False, "error": err}
         lines = []
-        current: dict = {}
+        current: dict[str, object] = {}
         line_number = start
         for raw in out.splitlines():
             if raw.startswith("\t"):
@@ -312,10 +331,12 @@ class GitGrepTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
-        cmd = ["grep", "-n", "--line-number", args["pattern"], args.get("ref", "HEAD")]
+        root = arg_str(context, "workspace_root", ".")
+        pattern = arg_str(args, "pattern")
+        ref = arg_str(args, "ref", "HEAD")
+        cmd = ["grep", "-n", "--line-number", pattern, ref]
         rc, out, err = await _run_git(root, cmd)
         if rc not in (0, 1):
             return {"ok": False, "error": err}
@@ -351,10 +372,10 @@ class GitShowTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
-        ref = args.get("ref", "HEAD")
+        root = arg_str(context, "workspace_root", ".")
+        ref = arg_str(args, "ref", "HEAD")
         fmt = "%H\x1f%an\x1f%ai\x1f%B"
         rc, out, err = await _run_git(root, ["show", f"--format={fmt}", ref])
         if rc != 0:
@@ -390,13 +411,14 @@ class GitStashTool(Tool):
     }
 
     async def execute(
-        self, args: dict[str, object], context: dict[str, object]
+        self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        root = context.get("workspace_root", ".")
-        action = args.get("action", "push")
+        root = arg_str(context, "workspace_root", ".")
+        action = arg_str(args, "action", "push")
+        message = arg_str(args, "message", "")
         cmd = ["stash", action]
-        if action == "push" and args.get("message"):
-            cmd += ["-m", args["message"]]
+        if action == "push" and message:
+            cmd += ["-m", message]
         rc, out, err = await _run_git(root, cmd)
         m = re.search(r"stash@\{(\d+)\}", out)
         return {

@@ -47,7 +47,7 @@ def _writable_python_files() -> list[str]:
     """Return Python files the current checkout user can format in place."""
     return sorted(
         str(path)
-        for root in (pathlib.Path("src"), pathlib.Path("tests"))
+        for root in (pathlib.Path("src"), pathlib.Path("tests"), pathlib.Path("scripts"))
         for path in root.rglob("*.py")
         if os.access(path, os.W_OK)
     )
@@ -121,7 +121,7 @@ def coverage(session: nox.Session) -> None:
 def lint(session: nox.Session) -> None:
     """Run ruff linter and format checker (no auto-fix)."""
     _install_dev(session)
-    session.run("ruff", "check", "src/", "tests/", *session.posargs, external=True)
+    session.run("ruff", "check", "src/", "tests/", "scripts/", *session.posargs, external=True)
     session.run(
         "ruff",
         "format",
@@ -141,9 +141,35 @@ def format_(session: nox.Session) -> None:
 
 @nox.session(python=PRIMARY_PYTHON, name="typecheck")
 def typecheck(session: nox.Session) -> None:
-    """Run mypy type-checker over src/agenthicc (if mypy is available)."""
+    """Run the declared mypy type-checker over src/agenthicc."""
     _install_dev(session)
     session.run("mypy", "src/agenthicc", *session.posargs, external=True)
+
+
+@nox.session(python=PRIMARY_PYTHON, name="typecheck_contracts")
+def typecheck_contracts(session: nox.Session) -> None:
+    """Type-check the focused boundary and ratchet tests."""
+    _install_dev(session)
+    session.run(
+        "mypy",
+        "tests/unit/test_kernel_event_typing.py",
+        "tests/unit/test_type_audit.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(python=PRIMARY_PYTHON, name="type_audit")
+def type_audit(session: nox.Session) -> None:
+    """Check source typing hygiene against the checked-in ratchet baseline."""
+    _install_dev(session)
+    session.run(
+        "python",
+        "scripts/type_audit.py",
+        "--check",
+        "docs/reference/type-safety-baseline.json",
+        *session.posargs,
+    )
 
 
 # ---------------------------------------------------------------------------

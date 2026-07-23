@@ -8,9 +8,10 @@ module exposes that same logic without touching testing infrastructure.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 
 
-def populate_agent_tools(agent_instance: object, tools: list[object]) -> None:
+def populate_agent_tools(agent_instance: object, tools: Sequence[object]) -> None:
     """Populate ``meta.tools`` on *agent_instance* from *tools*.
 
     *tools* is the list of tool classes previously passed to ``@use_tools()``.
@@ -32,7 +33,7 @@ def populate_agent_tools(agent_instance: object, tools: list[object]) -> None:
     if meta is None:
         return
 
-    tool_map: dict = {}
+    tool_map: dict[str, object] = {}
     for tool_ref in tools:
         if tool_ref is None:
             continue

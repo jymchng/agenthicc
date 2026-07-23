@@ -21,8 +21,22 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Mapping
+
+if TYPE_CHECKING:
+    from lauren_ai._transport._mock import MockTransport
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
+
+
+def _integer(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return 0
 
 
 # ── Wire format dataclasses ──────────────────────────────────────────────────
@@ -41,14 +55,19 @@ class CassetteEntry:
 
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> CassetteEntry:
-        resp = d.get("response", {})
+        raw_resp = d.get("response", {})
+        resp: Mapping[str, object] = raw_resp if isinstance(raw_resp, Mapping) else {}
+        raw_names = d.get("tool_names_available", [])
+        names = [str(name) for name in raw_names] if isinstance(raw_names, list) else []
+        raw_calls = resp.get("tool_calls", [])
+        calls = raw_calls if isinstance(raw_calls, list) else []
         return cls(
-            index=int(d.get("index", 0)),
+            index=_integer(d.get("index")),
             model=str(d.get("model", "")),
-            tool_names_available=list(d.get("tool_names_available", [])),
+            tool_names_available=names,
             response_content=str(resp.get("content", "")),
             response_stop_reason=str(resp.get("stop_reason", "end_turn")),
-            response_tool_calls=list(resp.get("tool_calls", [])),
+            response_tool_calls=[call for call in calls if isinstance(call, dict)],
         )
 
 
@@ -67,7 +86,7 @@ class ApprovalEntry:
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> ApprovalEntry:
         return cls(
-            index=int(d.get("index", 0)),
+            index=_integer(d.get("index")),
             kind=str(d.get("kind", "tool")),
             tool_name=str(d.get("tool_name", "")),
             allowed=bool(d.get("allowed", True)),
@@ -173,7 +192,7 @@ class SessionCassette:
 
     # ── Transport / approval conversion ───────────────────────────────────────
 
-    def to_mock_transport(self) -> object:
+    def to_mock_transport(self) -> "MockTransport":
         """Return a configured MockTransport with all responses queued.
 
         Each cassette entry is converted to a sequence of

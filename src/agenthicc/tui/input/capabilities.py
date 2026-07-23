@@ -164,10 +164,13 @@ class TriggerCapability:
         ch: str,
         session: UnifiedInputSession,
     ) -> CapabilityResult:
-        tch = session._registry.resolve(key, ch) if session._registry else None
+        registry = session._registry
+        if registry is None:
+            return _PASS
+        tch = registry.resolve(key, ch)
         if tch is None:
             return _PASS
-        handler = session._registry.get(tch)
+        handler = registry.get(tch)
         can = handler.can_activate(session._buf.buf[: session._buf.cursor]) if handler else False
         if can:
             await session._open_trigger_overlay(tch)
