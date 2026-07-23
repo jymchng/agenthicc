@@ -34,6 +34,31 @@ _MENTION_RE = re.compile(r"@([^\s,;)\]'\"]+)")
 
 _URL_PREFIXES = ("http://", "https://")
 _GLOB_CHARS = frozenset("*?[")
+_TRAILING_SENTENCE_PUNCTUATION = frozenset("?!.,:")
+
+
+def _strip_existing_path_punctuation(path_str: str, base: Path) -> str:
+    """Remove sentence punctuation when the resulting path exists.
+
+    A question such as ``"what is @README.md?"`` should mention
+    ``README.md`` rather than turn the terminal ``?`` into a glob wildcard.
+    Only existing paths are normalised here so legitimate glob patterns and
+    filenames containing punctuation keep their original meaning.
+    """
+    resolved_original = (base / path_str).resolve()
+    if resolved_original.is_file() or resolved_original.is_dir():
+        return path_str
+
+    candidate = path_str
+    while candidate and candidate[-1] in _TRAILING_SENTENCE_PUNCTUATION:
+        trimmed = candidate[:-1]
+        if not trimmed:
+            break
+        resolved = (base / trimmed).resolve()
+        if resolved.is_file() or resolved.is_dir():
+            return trimmed
+        candidate = trimmed
+    return path_str
 
 
 def parse_mentions(
@@ -55,8 +80,16 @@ def parse_mentions(
 
     for m in _MENTION_RE.finditer(text):
         path_str = m.group(1)
-        start, end = m.start(), m.end()
-        raw = m.group(0)
+        start = m.start()
+
+        # A terminal question mark is usually prose punctuation, but is also
+        # a valid glob wildcard.  Prefer punctuation when the path without it
+        # resolves to a real file or directory.
+        if not any(path_str.startswith(p) for p in _URL_PREFIXES):
+            path_str = _strip_existing_path_punctuation(path_str, base)
+
+        end = start + 1 + len(path_str)
+        raw = text[start:end]
 
         # URL
         if any(path_str.startswith(p) for p in _URL_PREFIXES):

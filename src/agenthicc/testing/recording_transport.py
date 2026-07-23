@@ -47,6 +47,23 @@ class _Transport(Protocol):
     async def count_tokens(self, *args: object, **kwargs: object) -> object: ...
 
 
+def _tool_schema_name(schema: object) -> str:
+    """Return a tool name from either lauren-ai schema representation.
+
+    Current lauren-ai exposes ``ToolSchema`` as a ``TypedDict``.  Older
+    integrations used an attribute-based object, so retain that fallback for
+    compatibility with custom transports.
+    """
+    if isinstance(schema, dict):
+        name = schema.get("name", "")
+        return name if isinstance(name, str) else str(name)
+    try:
+        name = object.__getattribute__(schema, "name")
+    except AttributeError:
+        name = ""
+    return name if isinstance(name, str) else str(name)
+
+
 class RecordingTransport:
     """Transparent proxy that records each complete() call to a JSONL file.
 
@@ -81,7 +98,7 @@ class RecordingTransport:
         thinking: bool = False,
         thinking_budget_tokens: int = 8000,
     ) -> Completion | AsyncIterator[CompletionChunk]:
-        tool_names = [str(t.name) for t in (tools or [])]
+        tool_names = [_tool_schema_name(t) for t in (tools or [])]
         inner = cast(_Transport, self._inner)
         if not stream:
             from lauren_ai._transport import Completion  # noqa: PLC0415
@@ -104,6 +121,8 @@ class RecordingTransport:
             return completion
 
         # Streaming: intercept chunks to assemble the full response.
+        from lauren_ai._transport import CompletionChunk  # noqa: PLC0415
+
         inner_iter = cast(
             AsyncIterator[CompletionChunk],
             await inner.complete(

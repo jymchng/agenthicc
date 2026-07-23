@@ -61,6 +61,19 @@ def test_mention_stops_at_comma(tmp_path):
     assert mentions[0].path == "file.py"
 
 
+def test_question_mark_after_existing_file_is_sentence_punctuation(tmp_path):
+    """A question ending in a file mention does not create a glob wildcard."""
+    (tmp_path / "README.md").write_text("hello")
+
+    text = "what is @README.md?"
+    mentions = parse_mentions(text, cwd=tmp_path)
+
+    assert len(mentions) == 1
+    assert mentions[0].path == "README.md"
+    assert mentions[0].kind == MentionKind.FILE
+    assert text[mentions[0].start : mentions[0].end] == "@README.md"
+
+
 def test_mention_stops_at_whitespace(tmp_path):
     mentions = parse_mentions("@foo bar", cwd=tmp_path)
     assert mentions[0].path == "foo"

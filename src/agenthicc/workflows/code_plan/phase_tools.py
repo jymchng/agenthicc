@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalService
 
 
+_QuestionInput = dict[str, str | list[str]]
+
+
 def make_planner_tools(
     approval_svc: ApprovalService | None,
     plan_event: asyncio.Event,
@@ -303,7 +306,7 @@ def make_questions_tool(
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
 
     @_tool()
-    async def ask_user(questions: list[dict[str, object]]) -> dict[str, object]:
+    async def ask_user(questions: list[_QuestionInput]) -> dict[str, object]:
         """Present the user with a set of questions and collect their answers.
 
         Each question must be a dict with:

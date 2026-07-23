@@ -7,7 +7,7 @@ import os
 import re
 import hashlib
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 from lauren_ai._tools import tool
 from agenthicc.tools.base import arg_str
 from agenthicc.tools.capabilities import (
@@ -51,6 +51,20 @@ __all__ = [
 _CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
 
 _router: "BackendRouter | None" = None
+
+
+class _BatchWriteFile(TypedDict):
+    """One file entry accepted by :func:`batch_write`."""
+
+    path: str
+    content: str
+
+
+class _BatchMoveFile(TypedDict):
+    """One source/destination entry accepted by batch move/copy tools."""
+
+    source: str
+    destination: str
 
 
 def _get_backend(path: str = ".") -> "FilesystemBackend":
@@ -499,7 +513,7 @@ async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict[str, obj
 @tool_write
 @tool()
 async def batch_write(
-    files: list[dict[str, object]], create_parents: bool = True
+    files: list[_BatchWriteFile], create_parents: bool = True
 ) -> dict[str, object]:
     """Write multiple files in a single call.
 
@@ -518,7 +532,8 @@ async def batch_write(
                 "failed": len(files),
             }
     b = _get_backend()
-    results = b.batch_write(files, create_parents)
+    backend_files: list[dict[str, object]] = [dict(item) for item in files]
+    results = b.batch_write(backend_files, create_parents)
     total_ok = sum(1 for r in results if r["ok"])
     return {
         "ok": total_ok == len(files),
@@ -551,7 +566,7 @@ async def batch_delete(paths: list[str]) -> dict[str, object]:
 
 @tool_write
 @tool()
-async def batch_move(moves: list[dict[str, object]]) -> dict[str, object]:
+async def batch_move(moves: list[_BatchMoveFile]) -> dict[str, object]:
     """Move multiple files in a single call.
 
     Args:
@@ -580,7 +595,7 @@ async def batch_move(moves: list[dict[str, object]]) -> dict[str, object]:
 
 @tool_write
 @tool()
-async def batch_copy(copies: list[dict[str, object]]) -> dict[str, object]:
+async def batch_copy(copies: list[_BatchMoveFile]) -> dict[str, object]:
     """Copy multiple files in a single call.
 
     Args:

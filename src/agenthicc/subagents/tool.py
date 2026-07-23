@@ -8,7 +8,7 @@ Postponed evaluation (PEP 563) breaks that inspection.
 import hashlib
 import json
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from agenthicc.subagents.pool import SubagentTask
 from agenthicc.subagents.types import SubagentTypeRegistry
@@ -22,6 +22,16 @@ if TYPE_CHECKING:
     from agenthicc.runners.retry import RetryConfig
 
 __all__ = ["make_spawn_subagents_tool"]
+
+
+class _SpawnTaskInput(TypedDict):
+    """Structured task input accepted by ``spawn_subagents``."""
+
+    type: str
+    task: str
+    context: str
+    agent_type: str
+    task_description: str
 
 
 def make_spawn_subagents_tool(
@@ -74,7 +84,7 @@ def make_spawn_subagents_tool(
 
     @_tool()
     async def spawn_subagents(
-        tasks: list[dict[str, object]], max_concurrent: int = max_concurrent
+        tasks: list[_SpawnTaskInput], max_concurrent: int = max_concurrent
     ) -> dict[str, object]:
         """Spawn multiple specialized subagents concurrently and return their aggregated results.
 
