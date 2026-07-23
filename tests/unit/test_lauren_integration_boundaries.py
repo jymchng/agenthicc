@@ -19,7 +19,6 @@ from agenthicc.tools.fs.agent_tools import batch_copy, batch_move, batch_write, 
 from agenthicc.plugins.registry import build_registry
 from agenthicc.runners.tui_session import _make_session_tools
 from agenthicc.subagents.tool import make_spawn_subagents_tool
-from agenthicc.workflows.code_plan.phase_tools import make_questions_tool
 
 pytestmark = pytest.mark.unit
 
@@ -45,14 +44,21 @@ def test_dynamic_session_tools_generate_warning_free_schemas(caplog):
         session_tools = _make_session_tools(None)
         session_tools.append(make_spawn_subagents_tool(None, "mock", []))
         registry = build_registry(project_plugin_tools=session_tools)
-        schemas = {tool["name"]: tool for tool in (generate_tool_schema(t)[2] for t in registry.tools)}
+        schemas = {
+            tool["name"]: tool for tool in (generate_tool_schema(t)[2] for t in registry.tools)
+        }
 
     assert not [
         record for record in caplog.records if "unrecognised type annotation" in record.message
     ]
     assert len(schemas) == 56
-    assert schemas["ask_user"]["input_schema"]["properties"]["questions"]["items"]["type"] == "object"
-    assert schemas["spawn_subagents"]["input_schema"]["properties"]["tasks"]["items"]["type"] == "object"
+    assert (
+        schemas["ask_user"]["input_schema"]["properties"]["questions"]["items"]["type"] == "object"
+    )
+    assert (
+        schemas["spawn_subagents"]["input_schema"]["properties"]["tasks"]["items"]["type"]
+        == "object"
+    )
 
 
 async def test_recording_transport_accepts_lauren_dict_tool_schemas(tmp_path: Path):

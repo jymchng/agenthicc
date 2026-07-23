@@ -7,7 +7,7 @@ Postponed evaluation (PEP 563) breaks that inspection.
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, TypedDict
 
 from agenthicc.subagents.pool import SubagentTask
@@ -29,9 +29,6 @@ class _SpawnTaskInput(TypedDict):
 
     type: str
     task: str
-    context: str
-    agent_type: str
-    task_description: str
 
 
 def make_spawn_subagents_tool(
@@ -109,9 +106,10 @@ def make_spawn_subagents_tool(
                     "ok": False,
                     "error": f"tasks[{i}] must be a dict with 'type' and 'task' keys",
                 }
-            agent_type = str(raw.get("type") or raw.get("agent_type") or "")
-            task_desc = str(raw.get("task") or raw.get("task_description") or "")
-            context = str(raw.get("context") or "")
+            raw_mapping: Mapping[str, object] = raw
+            agent_type = str(raw_mapping.get("type") or raw_mapping.get("agent_type") or "")
+            task_desc = str(raw_mapping.get("task") or raw_mapping.get("task_description") or "")
+            context = str(raw_mapping.get("context") or "")
             if not agent_type:
                 return {"ok": False, "error": f"tasks[{i}] missing 'type' field"}
             if not task_desc:
