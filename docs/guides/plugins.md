@@ -77,8 +77,13 @@ denied_skills = ["deploy"]
 ```
 
 The same policy may be written as `[agents.planner.skills]` with `allow` and
-`deny` lists. `/skills`, slash invocation, and automatic topic matching all
-apply both frontmatter and per-agent restrictions.
+`deny` lists. `/skills`, `/skills reload`, slash invocation, and automatic topic
+matching all apply both frontmatter and per-agent restrictions. `/skills reload`
+rescans the project and user skill directories in the current TUI session,
+refreshes skill-owned slash commands and aliases, and preserves all built-in
+and project command registrations. It reports added/removed skills and any
+non-informational discovery diagnostics; a failed scan leaves the current
+session unchanged.
 
 ## Commands
 
@@ -104,8 +109,9 @@ code execution and protect tokens with environment expansion and trust policy.
 1. Run `uv run agenthicc config show`.
 2. Verify the directory name and file suffix.
 3. Check startup warnings for syntax/import/missing-dependency failures.
-4. Run `/commands`, `/skills`, or `/mcp` inside the TUI; `/skills` shows only
-   skills permitted for the active agent.
+4. Run `/commands`, `/skills`, `/skills reload`, or `/mcp` inside the TUI;
+   `/skills` shows only skills permitted for the active agent, and the reload
+   subcommand applies newly added or edited skill files without restarting.
 5. For structured diagnostics, call
    `discover_skills_with_diagnostics(project_dir=..., user_dir=...)`.
 6. Test the loader directly in a focused unit/integration test.

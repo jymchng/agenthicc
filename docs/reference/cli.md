@@ -41,7 +41,7 @@ Run any command with `--help` for generated argument details.
 
 TUI commands are a separate registry from CLI subcommands. Current built-ins
 include `/help`, `/commands`, `/status`, `/history`, `/mode`, `/workflow`, `/init`,
-`/model`, `/models`, `/skills`, `/mcp`, `/config`, `/compact`, `/replay`,
+`/model`, `/models`, `/skills [reload]`, `/mcp`, `/config`, `/compact`, `/replay`,
 `/cancel`, `/clear`, and `/expand`.
 
 Default project-authoring skills also provide `/create-tools <instructions>`

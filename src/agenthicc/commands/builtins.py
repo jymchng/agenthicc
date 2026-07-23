@@ -8,7 +8,7 @@ from .command import Command, CommandContext, CommandHandler
 from .registry import UnifiedCommandRegistry
 
 if TYPE_CHECKING:
-    from agenthicc.skills.loader import SkillDef
+    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
 
 __all__ = ["BUILTIN_COMMANDS", "build_builtin_registry", "_make_skill_handler"]
 
@@ -225,6 +225,44 @@ def _cmd_model(ctx: CommandContext) -> bool:
 
 
 def _cmd_skills(ctx: CommandContext) -> bool:
+    requested = ctx.args.strip().lower()
+    if requested:
+        if requested != "reload":
+            ctx.console.print("Usage: /skills [reload]", markup=False)
+            return True
+        if ctx.reload_skills is None:
+            ctx.console.print(
+                "Skill reload is only available in an interactive session.",
+                markup=False,
+            )
+            return True
+
+        before = set(ctx.skills)
+        try:
+            discovery: SkillDiscoveryResult = ctx.reload_skills()
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc).strip() or type(exc).__name__
+            ctx.console.print(f"Skill reload failed: {message}", markup=False)
+            return True
+
+        after = set(ctx.skills)
+        added = sorted(after - before)
+        removed = sorted(before - after)
+        changes: list[str] = []
+        if added:
+            changes.append(f"added: {', '.join(added)}")
+        if removed:
+            changes.append(f"removed: {', '.join(removed)}")
+        suffix = f" ({'; '.join(changes)})" if changes else ""
+        ctx.console.print(
+            f"Reloaded {len(after)} skill(s){suffix}.",
+            markup=False,
+        )
+        for diagnostic in discovery.diagnostics:
+            if diagnostic.severity != "info":
+                ctx.console.print(f"Skill reload: {diagnostic}", markup=False)
+        return True
+
     visible_skills = {
         slug: skill for slug, skill in ctx.skills.items() if _skill_allowed_for_context(ctx, skill)
     }
@@ -447,7 +485,8 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/skills",
-        description="List available skills",
+        description="List or reload available skills",
+        argument_hint="[reload]",
         handler=_cmd_skills,
     ),
     Command(

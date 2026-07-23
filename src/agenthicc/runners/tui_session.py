@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import SendMessageCommand, InterruptAgentCommand
     from agenthicc.tools.approval import ApprovalService
+    from agenthicc.commands.command import Command
+    from agenthicc.commands.registry import UnifiedCommandRegistry
+    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.workflows.plugin import WorkflowContext, WorkflowPlugin
 
 
@@ -63,6 +66,38 @@ def _fmt_exc(exc: BaseException) -> str:
     name = type(exc).__name__
     msg = str(exc).strip()
     return f"{name}: {msg}" if msg else name
+
+
+def _build_skill_command(slug: str, skill: "SkillDef") -> "Command":
+    """Build the slash command owned by one discovered skill."""
+    from agenthicc.commands.builtins import _make_skill_handler  # noqa: PLC0415
+    from agenthicc.commands.command import Command  # noqa: PLC0415
+
+    return Command(
+        name=f"/{slug}",
+        description=skill.description or skill.name,
+        argument_hint="[args…]",
+        group="Skills",
+        handler=_make_skill_handler(slug, skill),
+        aliases=tuple(f"/{alias}" for alias in skill.aliases),
+        source_id=f"skill:{slug}",
+    )
+
+
+def _register_skill_commands(
+    registry: "UnifiedCommandRegistry",
+    skills: "dict[str, SkillDef]",
+) -> None:
+    """Register the current skill commands in the unified command registry."""
+    for slug, skill in skills.items():
+        try:
+            command = _build_skill_command(slug, skill)
+            if any(registry.get(name) is not None for name in (command.name, *command.aliases)):
+                continue
+            registry.register(command)
+        except Exception:  # noqa: BLE001
+            # A malformed extension must not prevent the TUI from starting.
+            pass
 
 
 def _reset_terminal_on_exit() -> None:
@@ -366,23 +401,7 @@ async def _build_session_context(
             f"[dim]Loaded {len(project_commands)} project command(s) from .agenthicc/commands/[/dim]"
         )
 
-    from agenthicc.commands.builtins import _make_skill_handler  # noqa: PLC0415
-
-    for _slug, _skill in skills.items():
-        try:
-            cmd_registry.register(
-                _Cmd(
-                    name=f"/{_slug}",
-                    description=_skill.description or _skill.name,
-                    argument_hint="[args…]",
-                    group="Skills",
-                    handler=_make_skill_handler(_slug, _skill),
-                    aliases=tuple(f"/{alias}" for alias in _skill.aliases),
-                    source_id=f"skill:{_slug}",
-                )
-            )
-        except Exception:  # noqa: BLE001
-            pass
+    _register_skill_commands(cmd_registry, skills)
 
     trigger_registry = TriggerManager()
     trigger_registry.register(AtMentionTrigger())
@@ -578,8 +597,73 @@ class TUISession:
             set_pending_menu=self._workspace.overlays.show,
             close_overlay=self._workspace.overlays.hide,
             set_pending_replay=self._set_pending_replay,
+            reload_skills=self._reload_skills,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
+
+    def _reload_skills(self) -> "SkillDiscoveryResult":
+        """Rescan skill directories and refresh skill-owned slash commands."""
+        from agenthicc.skills.loader import discover_skills_with_diagnostics  # noqa: PLC0415
+
+        cfg = self._ctx.cfg
+        global_dir = (
+            Path(cfg.skills.default_skill_directory).expanduser()
+            if cfg.skills.default_skill_directory
+            else Path.home() / ".agenthicc"
+        )
+        discovery = discover_skills_with_diagnostics(
+            project_dir=Path(".agenthicc"),
+            user_dir=global_dir,
+        )
+
+        # Build all replacement commands before mutating the live session. If
+        # discovery or command construction fails, the current session remains
+        # usable and the caller can report the failure.
+        replacement_commands = [
+            (skill, _build_skill_command(slug, skill)) for slug, skill in discovery.skills.items()
+        ]
+        registry = self._ctx.cmd_registry
+        skill_sources = {
+            command.source_id
+            for command in registry.all_commands()
+            if command.source_id.startswith("skill:")
+        }
+        for source_id in skill_sources:
+            registry.unregister_source(source_id)
+
+        # Preserve the dictionary object because workflow configuration and
+        # command contexts keep references to this session-owned mapping.
+        self._ctx.skills.clear()
+        self._ctx.skills.update(discovery.skills)
+        conflicts: list[tuple[Path, str]] = []
+        for skill, command in replacement_commands:
+            if any(registry.get(name) is not None for name in (command.name, *command.aliases)):
+                conflicts.append(
+                    (
+                        skill.path,
+                        f"{command.name}: command name or alias conflicts with an existing command",
+                    )
+                )
+                continue
+            registry.register(command)
+
+        if conflicts:
+            from agenthicc.skills.loader import SkillDiagnostic, SkillDiscoveryResult  # noqa: PLC0415
+
+            discovery = SkillDiscoveryResult(
+                skills=discovery.skills,
+                diagnostics=discovery.diagnostics
+                + tuple(
+                    SkillDiagnostic(
+                        path=path,
+                        code="command-conflict",
+                        message=message,
+                        severity="warning",
+                    )
+                    for path, message in conflicts
+                ),
+            )
+        return discovery
 
     def _handle_workflow_command(self, args: str) -> bool:
         """Handle /workflow <name> | reset (PRD-114)."""

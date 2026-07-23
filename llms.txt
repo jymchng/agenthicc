@@ -25,7 +25,8 @@ The primary entry point is `agenthicc.__main__:main`.
 - `agenthicc init` and `/init` locally inspect bounded project metadata and
   preview or explicitly write a managed `AGENTS.md` guidance section.
 - Skills use validated `SKILL.md` frontmatter, canonical names, compatibility
-  aliases, discovery diagnostics, and per-agent allow/deny policies.
+  aliases, discovery diagnostics, per-agent allow/deny policies, and live
+  `/skills reload` refresh in the interactive TUI.
 
 ## Important symbols
 

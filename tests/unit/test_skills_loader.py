@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from io import StringIO
+
 import pytest
 from unittest.mock import MagicMock
 
 from agenthicc.commands import Command, CommandContext, CommandDispatcher, UnifiedCommandRegistry
 from agenthicc.config import load_config
 from agenthicc.skills.loader import (
+    SkillDef,
+    SkillDiagnostic,
+    SkillDiscoveryResult,
     SkillPermissionSet,
     _parse_skill,
     discover_skills,
@@ -313,3 +318,65 @@ def test_skill_slash_alias_dispatches_but_permission_denial_is_enforced(tmp_path
     assert CommandDispatcher(registry).dispatch("/inspect file.py", allowed)
     pending.assert_called_once()
     assert "Review file.py" in pending.call_args.args[0]
+
+
+def test_skills_reload_command_reports_changes_and_diagnostics(tmp_path):
+    from rich.console import Console
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.commands import build_builtin_registry
+
+    old_skill = SkillDef(name="Old", slug="old", path=tmp_path / "old")
+    new_skill = SkillDef(name="New", slug="new", path=tmp_path / "new")
+    skills = {"old": old_skill}
+    output = StringIO()
+    console = Console(file=output, markup=False, force_terminal=False)
+
+    def reload_skills() -> SkillDiscoveryResult:
+        skills.clear()
+        skills["new"] = new_skill
+        return SkillDiscoveryResult(
+            skills=skills,
+            diagnostics=(
+                SkillDiagnostic(
+                    path=tmp_path / "broken" / "SKILL.md",
+                    code="invalid-frontmatter",
+                    message="metadata could not be parsed",
+                ),
+            ),
+        )
+
+    context = CommandContext(
+        text="/skills reload",
+        args="reload",
+        model="",
+        console=console,
+        config=AgenthiccConfig(),
+        skills=skills,
+        reload_skills=reload_skills,
+    )
+
+    assert CommandDispatcher(build_builtin_registry()).dispatch("/skills reload", context)
+    rendered = output.getvalue()
+    assert "Reloaded 1 skill(s)" in rendered
+    assert "added: new" in rendered
+    assert "removed: old" in rendered
+    assert "Skill reload:" in rendered
+    assert "invalid-frontmatter" in rendered
+
+
+def test_skills_reload_command_is_unavailable_without_session_callback():
+    from rich.console import Console
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.commands import build_builtin_registry
+
+    output = StringIO()
+    context = CommandContext(
+        text="/skills reload",
+        args="reload",
+        model="",
+        console=Console(file=output, markup=False, force_terminal=False),
+        config=AgenthiccConfig(),
+    )
+
+    assert CommandDispatcher(build_builtin_registry()).dispatch("/skills reload", context)
+    assert "only available in an interactive session" in output.getvalue()

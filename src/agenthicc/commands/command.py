@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from rich.console import Console
     from agenthicc.config import AgenthiccConfig
     from agenthicc.commands.registry import UnifiedCommandRegistry
-    from agenthicc.skills.loader import SkillDef
+    from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.tui.menu import MenuWidget
     from agenthicc.tui.runtime.mode_manager import ModeManager
 
@@ -46,6 +46,7 @@ class CommandContext:
     set_pending_menu: "Callable[[object], None] | None" = None
     close_overlay: "Callable[[], None] | None" = None
     set_pending_replay: "Callable[[str], None] | None" = None
+    reload_skills: "Callable[[], SkillDiscoveryResult] | None" = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

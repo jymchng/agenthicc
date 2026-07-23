@@ -1771,6 +1771,11 @@ The compatibility wrapper returns the original dictionary contract. The
 diagnostic form reports invalid frontmatter, missing `SKILL.md`, precedence,
 and alias conflicts while preserving project-over-user precedence.
 
+In the interactive TUI, `/skills reload` rescans both scopes, updates the
+session-owned skill mapping and skill slash-command aliases, and reports
+added/removed skills plus warning and error diagnostics. Existing built-in and
+project commands are never replaced by a colliding skill command.
+
 ### _parse_skill
 
 ```python
