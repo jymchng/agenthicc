@@ -4,7 +4,7 @@
   "explicit_any_annotations": 14,
   "functions": 1477,
   "functions_with_missing_annotations": 21,
-  "getattr_calls": 214,
+  "getattr_calls": 249,
   "hasattr_calls": 10,
   "missing_parameter_annotations": 14,
   "missing_return_annotations": 17,

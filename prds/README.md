@@ -9,6 +9,7 @@ against the current source before implementing them.
 - [PRD-138 — Repository Improvement Roadmap](prd-138-repository-improvement-roadmap.md)
 - [PRD-139 — OpenCode-Inspired Product Expansion and Privacy-First Advertisements](prd-139-opencode-inspired-features-and-privacy-first-ads.md)
 - [PRD-140 — Type-Safety and Static Contract Hardening](prd-140-type-safety-and-static-contract-hardening.md)
+- [PRD-141 — Background Sessions and Session Manager TUI](prd-141-background-sessions-and-session-manager-tui.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -21,6 +22,10 @@ privacy, lifecycle, and rendering contract for advertisements.
 PRD-140 is the typing-focused companion to PRD-138. It records the measured
 static-analysis debt and defines the phased contract, toolchain, and CI ratchet
 for stricter type checking without changing runtime ownership boundaries.
+
+PRD-141 defines the local-first background-session lifecycle and the TUI/CLI
+control plane for observing, cancelling, retrying, and resuming durable agent
+work without creating a second execution or persistence architecture.
 
 ## Existing PRDs
 

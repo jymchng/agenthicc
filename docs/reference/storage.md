@@ -76,3 +76,28 @@ project information that cannot be identified reliably by generic redaction.
 Never delete the entire home or workspace directory to clear a session. Remove
 one identified session directory or use a future retention command once the
 storage lifecycle work in PRD-138 P1.3 is implemented.
+
+## Background-session registry
+
+Background execution adds a local registry at `~/.agenthicc/background/`:
+
+| Path | Owner | Contents | Recovery |
+|---|---|---|---|
+| `events.jsonl` | `background.BackgroundStore` | Ordered create/update/delete lifecycle events | Replayed on every read |
+| `registry.lock` | `BackgroundStore` | Cross-process advisory lock | Recreated automatically |
+| `requests/<id>.json` | `BackgroundSupervisor` | Mode-600 worker launch request | Read once by the owned worker |
+| `trash/<id>-<nonce>/` | `BackgroundStore` | Exact deleted artifacts and manifest | `agenthicc jobs restore <id>` |
+
+The background registry is a rebuildable index, not a second conversation or
+workflow journal. Session artifacts remain under `~/.agenthicc/sessions/<id>/`
+and are consumed by the existing session/kernel persistence code. Events are
+written with append and fsync semantics; malformed trailing records are
+ignored, while a deletion tombstone prevents an old worker from resurrecting a
+deleted session.
+
+Workers claim a lease before execution and heartbeat while active. A missing
+worker or expired heartbeat is shown as `orphaned`; the default restart policy
+does not relaunch it. Resume and retry are explicit operations. Background
+deletion first cancels live work and moves only the resolved session directory
+and its matching kernel journal into recoverable trash. It never recursively
+targets the project root.

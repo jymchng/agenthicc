@@ -117,3 +117,18 @@ The current high-value risks are explicit in
 state bridge, decide whether a server API is supported, unify workflow sources
 of truth, define processor failure/backpressure semantics, and add storage
 migrations and observability.
+
+## Background-session boundary
+
+The `agenthicc.background` package is a control-plane adapter, not a second
+agent runtime. `BackgroundSupervisor` owns worker leases, bounded process
+creation, cancellation, stale detection, and control requests. A worker builds
+the normal session through `runners/session_context.py`, then delegates direct
+turns to the canonical agent-turn runner or workflows to
+`runners/headless.py`.
+
+`BackgroundStore` owns only the rebuildable lifecycle index. Kernel events,
+conversation events, workflow phase state, approvals, and memory remain under
+their existing owners. The manager TUI reads the index and renders safe
+metadata; it does not mutate frozen kernel state directly. `/bg`, `/background`,
+`agenthicc jobs`, and `agenthicc agents` all enter this same boundary.
