@@ -95,9 +95,12 @@ session unchanged.
 ## Commands
 
 Command plugins expose `COMMANDS` and are loaded from command directories. A
-command needs a name, description, optional argument hint, and handler or an
-explicit session interceptor. `/workflow` and `/compact` demonstrate the
-session-stateful case.
+command needs a slash-prefixed name, description, optional argument hint, and
+handler or menu factory. See the [user-defined commands guide](commands.md)
+for the actual TUI discovery path, picker behavior, dispatch context,
+precedence, and current `COMMAND`/`COMMANDS` integration gap. `/workflow` and
+`/compact` demonstrate the session-stateful case that requires a built-in
+interceptor.
 
 The default `/create-tools <instructions>` and `/create-commands <instructions>`
 skills guide the agent to author these extensions using the existing lauren-ai

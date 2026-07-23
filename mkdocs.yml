@@ -70,6 +70,7 @@ nav:
       - Configuration: guides/configuration.md
       - TUI: guides/tui.md
       - Workflows: guides/workflows.md
+      - User-defined commands: guides/commands.md
       - User-defined tools: guides/tools.md
       - Extensions: guides/plugins.md
       - Memory: guides/memory.md

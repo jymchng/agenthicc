@@ -229,12 +229,13 @@ never print secrets in support logs.
 | Modes | `.agenthicc/modes/`, `~/.agenthicc/modes/` | Mode plugin loader |
 | Workflows | `.agenthicc/workflows/`, `~/.agenthicc/workflows/` | `WorkflowPlugin` subclasses |
 | Skills | `.agenthicc/skills/`, `~/.agenthicc/skills/` | `SKILL.md` directories |
-| Commands | `.agenthicc/commands/`, `~/.agenthicc/commands/` | `COMMANDS` exports |
+| Commands | `.agenthicc/commands/`, `~/.agenthicc/commands/` | `COMMANDS` exports; manual code review |
 | MCP | `[[tools.mcp_servers]]` | configured server bridge |
 
-Read the [extension guide](./docs/guides/plugins.md) before enabling project
-code or dependency installation. Project-local Python is executable code and
-must be trusted deliberately.
+Read the [extension guide](./docs/guides/plugins.md) and the
+[custom-command guide](./docs/guides/commands.md) before enabling project code
+or dependency installation. Project-local Python is executable code and must
+be reviewed deliberately.
 
 ## Persistence and resume
 
@@ -294,6 +295,7 @@ PRD-138 before using the default all-session invocation on a clean checkout.
 - [Project bootstrap](./docs/guides/project-bootstrap.md)
 - [TUI](./docs/guides/tui.md)
 - [Workflows](./docs/guides/workflows.md)
+- [User-defined commands](./docs/guides/commands.md)
 - [User-defined tools](./docs/guides/tools.md)
 - [Extensions and plugins](./docs/guides/plugins.md)
 - [Memory and storage](./docs/guides/memory.md)

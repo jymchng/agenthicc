@@ -51,6 +51,9 @@ skips missing dependencies rather than installing them.
 Trust manifests and audit records live under `.agenthicc/`; do not commit
 secrets or accept a changed hash without review. See the [user-defined tools
 guide](tools.md) for the exact current tool-loading path and its limitations.
+The same manual-review warning applies to `.agenthicc/commands/`; the
+`agenthicc trust cli` manifest protects `.agenthicc/cli/` plugins, not normal
+TUI slash-command plugins. See the [user-defined commands guide](commands.md).
 
 ## Security checklist for a new integration
 

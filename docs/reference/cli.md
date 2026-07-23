@@ -47,8 +47,10 @@ include `/help`, `/commands`, `/status`, `/history`, `/mode`, `/workflow`, `/ini
 Default project-authoring skills also provide `/create-tools <instructions>`
 and `/create-commands <instructions>`. They send the supplied instructions to
 the lauren-ai agent with repository-specific implementation, testing, and
-security guidance; generated Python remains subject to normal plugin trust and
-capability checks.
+security guidance; generated Python remains executable project code and must
+be reviewed. See the [user-defined commands guide](../guides/commands.md) and
+[user-defined tools guide](../guides/tools.md) for the current trust and
+capability boundaries.
 
 `/workflow` and `/compact` are intercepted by `TUISession` because they need
 session-local state. Both must remain visible in picker completion as well as
