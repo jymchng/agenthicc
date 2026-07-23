@@ -82,6 +82,7 @@ async def _open_manager(ctx: CLIContext) -> None:
     )
     if result.action == "attach" and result.session_id:
         from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+
         # A background worker already owns execution.  Only a future runner
         # that explicitly advertises read-only attachment may be called here;
         # the current runner would otherwise start a duplicate worker.

@@ -20,7 +20,9 @@ from agenthicc.commands.registry import UnifiedCommandRegistry
 pytestmark = pytest.mark.unit
 
 
-def _request(*, kind: str = "tool", questions: list[dict[str, object]] | None = None) -> ApprovalRequest:
+def _request(
+    *, kind: str = "tool", questions: list[dict[str, object]] | None = None
+) -> ApprovalRequest:
     return ApprovalRequest(
         tool_name="ask_user" if kind == "questions" else "write_file",
         tool_use_id="tool-1",

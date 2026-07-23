@@ -252,6 +252,85 @@ def test_manager_empty_navigation_and_unavailable_activity(tmp_path: Path) -> No
     assert "error summary" in console.export_text()
 
 
+def test_manager_full_control_surface_and_activity_redaction(tmp_path: Path) -> None:
+    from rich.console import Console
+
+    from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
+
+    store = BackgroundStore(tmp_path / "background")
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+    approval = _record(tmp_path, "manager-approval")
+    waiting_input = _record(tmp_path, "manager-input")
+    complete = _record(tmp_path, "manager-complete")
+    for item in (approval, waiting_input, complete):
+        store.create(item)
+        store.transition(item.session_id, SessionStatus.STARTING)
+        store.transition(item.session_id, SessionStatus.RUNNING)
+    store.transition(approval.session_id, SessionStatus.WAITING_APPROVAL, approval_request="write")
+    store.transition(waiting_input.session_id, SessionStatus.WAITING_INPUT, input_request="answer")
+    store.transition(complete.session_id, SessionStatus.COMPLETED)
+    conversation = Path(approval.artifact_dir) / "conversation.jsonl"
+    conversation.parent.mkdir(parents=True, exist_ok=True)
+    conversation.write_text(
+        "bad\n"
+        + json.dumps({"kind": "text", "payload": {"text": "token=secret-value"}})
+        + "\n"
+        + json.dumps({"kind": "error", "payload": "not a mapping"})
+        + "\n",
+        encoding="utf-8",
+    )
+    console = Console(record=True)
+    manager = BackgroundManager(console, store=store, supervisor=supervisor, refresh_s=0.0)
+    manager.set_input_provider(lambda prompt: "provided")
+    manager.set_filters(project=str(tmp_path), workflow="demo")
+    assert manager._activity_lines(store.get(approval.session_id))
+    manager.render()
+
+    manager.set_filters(status=SessionStatus.WAITING_APPROVAL)
+    manager.handle_key("CHAR", "y")
+    manager.set_filters(status=SessionStatus.WAITING_INPUT)
+    manager.handle_key("CHAR", "i")
+    store.transition(waiting_input.session_id, SessionStatus.WAITING_INPUT, input_request="answer")
+
+    manager.set_filters(status=None)
+    manager.selected = 0
+    manager.handle_key("CHAR", "p")
+    manager.handle_key("CHAR", "v")
+    manager.handle_key("CHAR", "m")
+    manager.handle_key("CHAR", "C")
+    manager.handle_key("CHAR", "A")
+    manager.handle_key("CHAR", "/")
+    manager.handle_key("CHAR", "approval")
+    manager.handle_key("BACKSPACE")
+    manager.handle_key("ESC")
+    manager.handle_key("SPACE")
+    manager.handle_key("SPACE")
+    manager.help_visible = True
+    manager.render()
+    manager.help_visible = False
+
+    manager.set_filters(status=SessionStatus.WAITING_INPUT)
+    manager.handle_key("CHAR", "i")
+    manager.set_input_provider(lambda prompt: (_ for _ in ()).throw(RuntimeError("input broke")))
+    manager.handle_key("CHAR", "i")
+    manager.set_input_provider(None)
+    manager.handle_key("CHAR", "i")
+
+    manager.set_filters(status=SessionStatus.COMPLETED)
+    manager.handle_key("CTRL_X")
+    assert manager.handle_key("CHAR", "y") == ManagerResult("deleted", complete.session_id)
+    manager.include_deleted = True
+    manager.status_filter = None
+    manager.refresh(force=True)
+    manager.selected = next(
+        index
+        for index, item in enumerate(manager.sessions)
+        if item.session_id == complete.session_id
+    )
+    manager.handle_key("CHAR", "u")
+    assert "secret-value" not in console.export_text()
+
+
 def test_prd141_coverage_gate_builds_the_feature_command(monkeypatch: pytest.MonkeyPatch) -> None:
     from agenthicc.background import coverage_gate
 

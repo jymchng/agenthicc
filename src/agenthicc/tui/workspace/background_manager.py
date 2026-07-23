@@ -307,7 +307,8 @@ class BackgroundManager:
             pending_titles = [
                 item.title
                 for item in sessions
-                if item.session_id in (self.pending_delete_ids or (selected.session_id if selected else "",))
+                if item.session_id
+                in (self.pending_delete_ids or (selected.session_id if selected else "",))
             ]
             detail_lines.append(
                 "[bold yellow]Delete "
@@ -429,7 +430,9 @@ class BackgroundManager:
             return None
         if ch.lower() == "i" and selected.status == SessionStatus.WAITING_INPUT:
             if self.input_provider is None:
-                self.console.print("Provide input with: agenthicc jobs input " + selected.session_id)
+                self.console.print(
+                    "Provide input with: agenthicc jobs input " + selected.session_id
+                )
             else:
                 try:
                     self.supervisor.provide_input(

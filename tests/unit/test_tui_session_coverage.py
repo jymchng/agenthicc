@@ -98,7 +98,9 @@ def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.Monk
     session, ctx, _workspace, _input = _make_session()
     handled: list[str] = []
     ctx.cmd_registry.register(
-        Command("/ping", "test", handler=lambda command_ctx: handled.append(command_ctx.args) or True)
+        Command(
+            "/ping", "test", handler=lambda command_ctx: handled.append(command_ctx.args) or True
+        )
     )
     assert session.dispatch_slash("/ping hello") is True
     assert handled == ["hello"]
@@ -118,9 +120,13 @@ def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.Monk
     ctx.skills["old"] = skill
     ctx.cmd_registry.register(Command("/old", "old", source_id="skill:old"))
     discovery = SkillDiscoveryResult({"coverage": skill})
-    monkeypatch.setattr(tui_session, "discover_skills_with_diagnostics", lambda **_: discovery, raising=False)
+    monkeypatch.setattr(
+        tui_session, "discover_skills_with_diagnostics", lambda **_: discovery, raising=False
+    )
     # The import is local in the method, so patch its defining module instead.
-    monkeypatch.setattr("agenthicc.skills.loader.discover_skills_with_diagnostics", lambda **_: discovery)
+    monkeypatch.setattr(
+        "agenthicc.skills.loader.discover_skills_with_diagnostics", lambda **_: discovery
+    )
     result = session._reload_skills()
     assert "coverage" in result.skills
     assert ctx.cmd_registry.get("/old") is None
@@ -167,11 +173,16 @@ async def test_tui_direct_turn_timeout_and_success(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(tui_session, "_run_agent_turn", slow)
     ctx.cfg.execution.turn_timeout_s = 0.001
     await session.run_turn("slow")
-    assert "timed out" in (ctx.app_state.conversation.notification() or "") or ctx.app_state.conversation.turn_count() >= 0
+    assert (
+        "timed out" in (ctx.app_state.conversation.notification() or "")
+        or ctx.app_state.conversation.turn_count() >= 0
+    )
 
 
 @pytest.mark.asyncio
-async def test_tui_agent_body_workflow_resume_and_replay_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tui_agent_body_workflow_resume_and_replay_edges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from agenthicc.tui.runtime.mode_manager import RuntimeMode
 
     session, ctx, _workspace, _input = _make_session()
@@ -231,11 +242,14 @@ async def test_tui_agent_body_workflow_resume_and_replay_edges(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_tui_resume_workflow_task_and_compact_branches(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tui_resume_workflow_task_and_compact_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session, ctx, _workspace, _input = _make_session()
     await session._handle_compact_command()
     ctx.session_memory._messages = ["message"]
     await session._handle_compact_command()
+
     class Transport:
         async def complete(self, *args: object, **kwargs: object) -> object:
             return SimpleNamespace(content="compact summary")
@@ -275,3 +289,58 @@ async def test_tui_run_registers_handlers_and_stops_cleanly() -> None:
     await session.run()
     assert workspace.started and workspace.stopped
     assert ctx.command_bus._handlers
+
+
+@pytest.mark.asyncio
+async def test_build_session_context_fresh_and_resume_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the real session assembly boundary without a network call."""
+    from agenthicc.agents import registry as agents_registry
+    from agenthicc.commands import plugin_loader
+    from agenthicc.memory import journal as memory_journal
+    from agenthicc.memory import layers
+    from agenthicc.plugins import discovery
+    from agenthicc.runners import tui_session
+    from agenthicc.skills import bootstrap, loader
+    from agenthicc.workflows import registry as workflows_registry
+    from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.commands.plugin_loader import CommandPluginSet
+    from agenthicc.skills.loader import SkillDiscoveryResult
+
+    session_root = tmp_path / "sessions"
+    monkeypatch.setattr(tui_session, "_SESSIONS_DIR", session_root)
+    monkeypatch.setattr("agenthicc.tui.runtime.session_log._SESSIONS_DIR", session_root)
+    monkeypatch.setattr(memory_journal, "_SESSIONS_DIR", session_root)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tui_session, "_build_agent_runner", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bootstrap, "bootstrap_default_skills", lambda **kwargs: 0)
+    monkeypatch.setattr(
+        loader, "discover_skills_with_diagnostics", lambda **kwargs: SkillDiscoveryResult({}, ())
+    )
+    monkeypatch.setattr(
+        workflows_registry, "build_workflow_registry", lambda **kwargs: WorkflowRegistry()
+    )
+    monkeypatch.setattr(agents_registry, "build_agents_registry", lambda **kwargs: AgentsRegistry())
+    monkeypatch.setattr(discovery, "discover_project_tools", lambda **kwargs: PluginToolSet())
+    monkeypatch.setattr(discovery, "warn_conflicts", lambda tools: None)
+    monkeypatch.setattr(
+        plugin_loader, "discover_command_plugins", lambda **kwargs: CommandPluginSet()
+    )
+    monkeypatch.setattr(layers, "GlobalMemoryLayer", lambda: layers.SessionMemoryLayer())
+
+    from agenthicc.runners.tui_session import _build_session_context
+
+    fresh = await _build_session_context(
+        None, [], record_cassette_dir=tmp_path / "cassettes", headless=True
+    )
+    assert fresh.session_id and fresh.agent_runner is None
+    session_id = fresh.session_id
+    fresh.session_log.close()
+    fresh.session_memory.close()
+
+    resumed = await _build_session_context(session_id, [], headless=True)
+    assert resumed.session_id == session_id
+    assert resumed.pending_resume is None
+    resumed.session_log.close()
+    resumed.session_memory.close()

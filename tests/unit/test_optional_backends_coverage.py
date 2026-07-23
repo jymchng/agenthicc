@@ -48,7 +48,9 @@ class _MemFS:
         if path in self.dirs:
             return SimpleNamespace(mode=0o040755, size=0, mtime=1000, ctime=1000)
         if path in self.files:
-            return SimpleNamespace(mode=0o100644, size=len(self.files[path]), mtime=1000, ctime=1000)
+            return SimpleNamespace(
+                mode=0o100644, size=len(self.files[path]), mtime=1000, ctime=1000
+            )
         raise FileNotFoundError(path)
 
     def readdir(self, path: str) -> list[str]:

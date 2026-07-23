@@ -10,7 +10,12 @@ import pytest
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.conversation_store import AppState
-from agenthicc.tui.diff_renderer import _build_hunks, _word_spans, render_file_create, render_file_diff
+from agenthicc.tui.diff_renderer import (
+    _build_hunks,
+    _word_spans,
+    render_file_create,
+    render_file_diff,
+)
 from agenthicc.tui.input.buffer import InputBuffer
 from agenthicc.tui.input.capabilities import (
     _CONSUMED,
@@ -265,8 +270,13 @@ def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(
         "agenthicc.tui.runtime.session_log._SESSION_INDEX", tmp_path / "sessions" / "index.json"
     )
-    monkeypatch.setattr(replay_module, "get_session_log_path", lambda _sid: root / "conversation.jsonl")
-    monkeypatch.setattr("agenthicc.tui.runtime.session_log.get_session_log_path", lambda _sid: root / "conversation.jsonl")
+    monkeypatch.setattr(
+        replay_module, "get_session_log_path", lambda _sid: root / "conversation.jsonl"
+    )
+    monkeypatch.setattr(
+        "agenthicc.tui.runtime.session_log.get_session_log_path",
+        lambda _sid: root / "conversation.jsonl",
+    )
     register_session(session_id, str(tmp_path), "model")
     log = SessionEventLog(session_id)
     from agenthicc.tui.conversation_store import ConversationEvent
@@ -325,7 +335,10 @@ def test_scroll_buffer_appender_renders_event_families(capsys: pytest.CaptureFix
             "3", "tool_complete", {"name": "read_file", "args_str": "(x)", "output_lines": ["a"]}, 3
         ),
         ConversationEvent(
-            "4", "tool_complete", {"name": "run_command", "success": False, "output_lines": ["bad"]}, 4
+            "4",
+            "tool_complete",
+            {"name": "run_command", "success": False, "output_lines": ["bad"]},
+            4,
         ),
         ConversationEvent("5", "text", {"text": "answer"}, 5),
         ConversationEvent("6", "thinking_step", {"step": "thinking", "done": True}, 6),
@@ -338,14 +351,36 @@ def test_scroll_buffer_appender_renders_event_families(capsys: pytest.CaptureFix
         ConversationEvent(
             "11",
             "mention_chips",
-            {"chips": [{"raw": "@file.py", "kind": "file"}, {"raw": "@dir", "kind": "directory", "ok": False}]},
+            {
+                "chips": [
+                    {"raw": "@file.py", "kind": "file"},
+                    {"raw": "@dir", "kind": "directory", "ok": False},
+                ]
+            },
             11,
         ),
         ConversationEvent("12", "system", {"text": "system"}, 12),
-        ConversationEvent("13", "subagent_pool_started", {"total": 2, "workers": [{"label": "a", "task": "task"}]}, 13),
-        ConversationEvent("14", "subagent_worker_done", {"ok": True, "label": "a", "done": 1, "total": 2, "duration_ms": 10}, 14),
-        ConversationEvent("15", "subagent_worker_done", {"ok": False, "label": "b", "done": 2, "total": 2, "error": "nope"}, 15),
-        ConversationEvent("16", "subagent_pool_done", {"succeeded": 1, "total": 2, "failed": 1}, 16),
+        ConversationEvent(
+            "13",
+            "subagent_pool_started",
+            {"total": 2, "workers": [{"label": "a", "task": "task"}]},
+            13,
+        ),
+        ConversationEvent(
+            "14",
+            "subagent_worker_done",
+            {"ok": True, "label": "a", "done": 1, "total": 2, "duration_ms": 10},
+            14,
+        ),
+        ConversationEvent(
+            "15",
+            "subagent_worker_done",
+            {"ok": False, "label": "b", "done": 2, "total": 2, "error": "nope"},
+            15,
+        ),
+        ConversationEvent(
+            "16", "subagent_pool_done", {"succeeded": 1, "total": 2, "failed": 1}, 16
+        ),
     ]
     for event in events:
         appender._render_one(event)
