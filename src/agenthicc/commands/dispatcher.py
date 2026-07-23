@@ -43,6 +43,7 @@ class CommandDispatcher:
             close_overlay=ctx.close_overlay,
             set_pending_replay=ctx.set_pending_replay,
             reload_skills=ctx.reload_skills,
+            reload_commands=ctx.reload_commands,
         )
 
         # Menu factory always takes precedence; factory receives args via ctx.args.

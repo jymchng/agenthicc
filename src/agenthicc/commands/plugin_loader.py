@@ -1,12 +1,13 @@
 """Command plugin discovery and dynamic loading (PRD-46).
 
-Loads user-defined slash commands from:
-  ~/.agenthicc/commands/*.py   (user-global)
-  .agenthicc/commands/*.py     (project-local, shadows user-global)
+Loads user-defined slash commands recursively from:
+  ~/.agenthicc/commands/**/*.py   (user-global)
+  .agenthicc/commands/**/*.py     (project-local, shadows user-global)
 
 Each file must export ``COMMAND: Command`` and/or ``COMMANDS: list[Command]``.
-It may also export ``DEPENDENCIES: list[str]`` (PEP-508 requirements checked
-before import, same pattern as PRD-24 tool plugins).
+It may also export ``DEPENDENCIES: list[str]`` or provide a matching
+``<stem>.requirements.txt`` sidecar (PEP-508 requirements checked before
+import, same pattern as PRD-24 tool plugins).
 """
 
 from __future__ import annotations
@@ -16,6 +17,10 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .command import Command
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +32,7 @@ class CommandLoadResult:
     """Outcome of loading a single command plugin file."""
 
     path: Path
-    commands: list = field(default_factory=list)  # list[Command]
+    commands: list[Command] = field(default_factory=list)
     error: str | None = None
     missing_deps: list[str] = field(default_factory=list)
 
@@ -43,7 +48,7 @@ class CommandPluginSet:
     results: list[CommandLoadResult] = field(default_factory=list)
 
     @property
-    def all_commands(self) -> list:
+    def all_commands(self) -> list[Command]:
         """Flat list of Command objects from every successfully loaded file."""
         return [cmd for r in self.results for cmd in r.commands if r.ok]
 
@@ -70,6 +75,18 @@ def _check_missing_deps(requirements: list[str]) -> list[str]:
         except Exception:
             missing.append(req)
     return missing
+
+
+def _requirements_from_sidecar(path: Path) -> list[str]:
+    """Read the optional ``<stem>.requirements.txt`` next to *path*."""
+    req_file = path.parent / f"{path.stem}.requirements.txt"
+    if not req_file.exists():
+        return []
+    return [
+        line.strip()
+        for line in req_file.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +121,8 @@ def _load_command_file(path: Path) -> CommandLoadResult:
         pass  # syntax errors surface properly in Step 3 below
 
     # ── Step 2: check missing deps ────────────────────────────────────────────
+    if not declared_deps:
+        declared_deps = _requirements_from_sidecar(path)
     if declared_deps:
         missing = _check_missing_deps(declared_deps)
         if missing:
@@ -131,7 +150,7 @@ def _load_command_file(path: Path) -> CommandLoadResult:
     if single is None and multi is None:
         return CommandLoadResult(path=path, commands=[])
 
-    commands: list = []
+    commands: list[Command] = []
 
     if single is not None:
         if not isinstance(single, Command):
@@ -168,12 +187,12 @@ def _load_command_file(path: Path) -> CommandLoadResult:
 
 
 def _scan_commands_dir(root: Path) -> list[CommandLoadResult]:
-    """Load all non-private *.py files directly under *root* (no recursion)."""
+    """Load all non-private ``*.py`` files below *root* recursively."""
     if not root.is_dir():
         return []
 
     results: list[CommandLoadResult] = []
-    for py_file in sorted(root.glob("*.py")):
+    for py_file in sorted(root.rglob("*.py")):
         if py_file.name.startswith("_"):
             continue
         result = _load_command_file(py_file)

@@ -299,6 +299,24 @@ def _cmd_status(ctx: CommandContext) -> bool:
 
 
 def _cmd_commands(ctx: CommandContext) -> bool:
+    requested = ctx.args.strip()
+    if requested:
+        if requested != "reload":
+            ctx.console.print("Usage: /commands [reload]", markup=False)
+            return True
+        if ctx.reload_commands is None:
+            ctx.console.print(
+                "Command reload is only available in an interactive session.",
+                markup=False,
+            )
+            return True
+        try:
+            _ok, message = ctx.reload_commands()
+        except Exception as exc:  # noqa: BLE001
+            message = f"Command reload failed; existing commands kept: {type(exc).__name__}: {exc}"
+        ctx.console.print(message, markup=False)
+        return True
+
     registry = ctx.command_registry
     if registry is None:
         ctx.console.print("[dim]No command registry available.[/dim]")
@@ -432,6 +450,7 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/commands",
         description="List all registered commands with their source",
+        argument_hint="[reload]",
         group="Built-in",
         handler=_cmd_commands,
     ),

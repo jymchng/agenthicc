@@ -293,8 +293,8 @@ async def _build_session_context(
     from agenthicc.plugins.discovery import (  # noqa: PLC0415
         discover_project_tools,
         warn_conflicts,
-        _scan_directory,
     )
+    from agenthicc.commands.plugin_loader import discover_command_plugins  # noqa: PLC0415
 
     project_plugins = discover_project_tools(
         project_dir=Path(".agenthicc"),
@@ -307,10 +307,14 @@ async def _build_session_context(
         )
 
     # ── command plugins ───────────────────────────────────────────────────────
-    _cmd_plugin_results = _scan_directory(
-        Path.home() / ".agenthicc" / "commands"
-    ) + _scan_directory(Path(".agenthicc") / "commands")
-    project_commands = [cmd for r in _cmd_plugin_results for cmd in r.commands]
+    # Use the command-specific loader so COMMAND and COMMANDS exports share
+    # one validated contract and can later be reloaded atomically.
+    command_plugins = discover_command_plugins(
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
+    )
+    project_commands = command_plugins.all_commands
+    command_plugin_names = {command.name for command in project_commands}
 
     # ── MCP ───────────────────────────────────────────────────────────────────
     mcp_registry = None
@@ -486,6 +490,7 @@ async def _build_session_context(
         memory_router=_memory_router,
         semantic_index=_semantic_index,
         pending_resume=pending_resume,
+        command_plugin_names=command_plugin_names,
     )
 
 
@@ -598,6 +603,7 @@ class TUISession:
             close_overlay=self._workspace.overlays.hide,
             set_pending_replay=self._set_pending_replay,
             reload_skills=self._reload_skills,
+            reload_commands=self._reload_commands,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
@@ -664,6 +670,85 @@ class TUISession:
                 ),
             )
         return discovery
+
+    def _reload_commands(self) -> tuple[bool, str]:
+        """Rescan slash-command plugins and publish a valid set atomically."""
+        from agenthicc.commands import build_builtin_registry  # noqa: PLC0415
+        from agenthicc.commands.plugin_loader import discover_command_plugins  # noqa: PLC0415
+
+        try:
+            discovered = discover_command_plugins(
+                project_dir=Path(".agenthicc"),
+                user_dir=Path.home() / ".agenthicc",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                False,
+                f"Command reload failed; existing commands kept: {type(exc).__name__}: {exc}",
+            )
+
+        if discovered.failed:
+            failures: list[str] = []
+            for result in discovered.failed:
+                if result.error:
+                    reason = result.error
+                else:
+                    reason = "missing dependencies: " + ", ".join(result.missing_deps)
+                failures.append(f"{result.path}: {reason}")
+            return (
+                False,
+                "Command reload failed; existing commands kept:\n" + "\n".join(failures),
+            )
+
+        registry = self._ctx.cmd_registry
+        old_plugin_names = set(getattr(self._ctx, "command_plugin_names", set()))
+        old_plugins = {
+            command.name: command
+            for command in registry.all_commands()
+            if command.name in old_plugin_names
+        }
+        new_plugins = {command.name: command for command in discovered.all_commands}
+
+        # Preserve commands registered by other extension surfaces (for
+        # example MCP) while rebuilding the stable built-in/skill/plugin order.
+        preserved = [
+            command
+            for command in registry.all_commands()
+            if command.name not in old_plugin_names
+            and command.source_id != "builtin"
+            and not command.source_id.startswith("skill:")
+        ]
+
+        candidate = build_builtin_registry()
+        for command in preserved:
+            candidate.register(command)
+        candidate.register_many(discovered.all_commands)
+        _register_skill_commands(candidate, self._ctx.skills)
+
+        # Only publish after discovery, validation, and candidate construction
+        # have all succeeded. Consumers keep the same registry object.
+        registry.replace_with(candidate)
+        new_plugin_names = set(new_plugins)
+        command_plugin_names = getattr(self._ctx, "command_plugin_names", None)
+        if command_plugin_names is None:
+            self._ctx.command_plugin_names = set(new_plugin_names)
+        else:
+            command_plugin_names.clear()
+            command_plugin_names.update(new_plugin_names)
+
+        added = sorted(new_plugin_names - old_plugin_names)
+        removed = sorted(old_plugin_names - new_plugin_names)
+        updated = sorted(set(old_plugins) & new_plugin_names)
+        summary: list[str] = []
+        if added:
+            summary.append(f"added: {', '.join(added)}")
+        if updated:
+            summary.append(f"updated: {', '.join(updated)}")
+        if removed:
+            summary.append(f"removed: {', '.join(removed)}")
+        if not summary:
+            summary.append("no command changes")
+        return True, "Commands reloaded — " + "; ".join(summary)
 
     def _handle_workflow_command(self, args: str) -> bool:
         """Handle /workflow <name> | reset (PRD-114)."""

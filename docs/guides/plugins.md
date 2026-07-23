@@ -94,11 +94,11 @@ session unchanged.
 
 ## Commands
 
-Command plugins expose `COMMANDS` and are loaded from command directories. A
+Command plugins expose `COMMAND` and/or `COMMANDS` and are loaded from command directories. A
 command needs a slash-prefixed name, description, optional argument hint, and
 handler or menu factory. See the [user-defined commands guide](commands.md)
 for the actual TUI discovery path, picker behavior, dispatch context,
-precedence, and current `COMMAND`/`COMMANDS` integration gap. `/workflow` and
+precedence, and reload behavior. `/workflow` and
 `/compact` demonstrate the session-stateful case that requires a built-in
 interceptor.
 

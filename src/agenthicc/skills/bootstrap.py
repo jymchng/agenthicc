@@ -285,11 +285,10 @@ requested by the user below using the canonical unified command registry.
 
 1. Read `src/agenthicc/commands/command.py`, the dispatcher, registry, and
    existing command/plugin tests before editing anything.
-2. Implement project commands under `.agenthicc/commands/` and export a
-   `COMMANDS` list or tuple containing `Command` objects. The normal TUI path
-   consumes `COMMANDS`; do not rely on the lower-level loader's singular
-   `COMMAND` export. Use a focused handler or menu factory and preserve
-   `CommandContext` ownership boundaries.
+2. Implement project commands under `.agenthicc/commands/` and export either
+   a `COMMAND` object or a `COMMANDS` list/tuple containing `Command` objects.
+   Use `COMMANDS` for modules containing multiple commands. Use a focused
+   handler or menu factory and preserve `CommandContext` ownership boundaries.
 3. Keep commands discoverable by the trigger picker and test both discovery
    and submitted execution. Add argument hints and aliases when they improve
    usability; `completions_factory` exists in the model but is not currently
@@ -297,8 +296,8 @@ requested by the user below using the canonical unified command registry.
 4. Do not execute arbitrary user text, install packages, weaken trust checks,
    or expose secrets. Route filesystem, network, and tool work through the
    existing lauren-ai/tool security boundaries. Remember that normal TUI slash
-   command plugins do not receive the CLI trust prompt and are loaded at
-   session startup.
+   command plugins do not receive the CLI trust prompt. They load at session
+   startup and can be refreshed with `/commands reload`.
 5. Update user-facing documentation and add success, malformed-input,
    unavailable-resource, and permission-boundary tests as applicable.
 

@@ -229,7 +229,7 @@ never print secrets in support logs.
 | Modes | `.agenthicc/modes/`, `~/.agenthicc/modes/` | Mode plugin loader |
 | Workflows | `.agenthicc/workflows/`, `~/.agenthicc/workflows/` | `WorkflowPlugin` subclasses |
 | Skills | `.agenthicc/skills/`, `~/.agenthicc/skills/` | `SKILL.md` directories |
-| Commands | `.agenthicc/commands/`, `~/.agenthicc/commands/` | `COMMANDS` exports; manual code review |
+| Commands | `.agenthicc/commands/`, `~/.agenthicc/commands/` | `COMMAND`/`COMMANDS` exports; manual code review |
 | MCP | `[[tools.mcp_servers]]` | configured server bridge |
 
 Read the [extension guide](./docs/guides/plugins.md) and the

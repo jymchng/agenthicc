@@ -47,6 +47,7 @@ class CommandContext:
     close_overlay: "Callable[[], None] | None" = None
     set_pending_replay: "Callable[[str], None] | None" = None
     reload_skills: "Callable[[], SkillDiscoveryResult] | None" = None
+    reload_commands: "Callable[[], tuple[bool, str]] | None" = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

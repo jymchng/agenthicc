@@ -25,11 +25,14 @@ tags:
 
 # PRD-139 — OpenCode-Inspired Product Expansion and Privacy-First Advertisements
 
-Implementation status: P0 project bootstrap (`agenthicc init` and `/init`) and
-the skills metadata/discovery/permissions slice and live `/skills reload` are
-implemented. Skill coverage is in `tests/unit/test_skills_loader.py`,
+Implementation status: P0 project bootstrap (`agenthicc init` and `/init`), the
+skills metadata/discovery/permissions slice and live `/skills reload`, and the
+canonical command-plugin loader with live `/commands reload` are implemented.
+Skill coverage is in `tests/unit/test_skills_loader.py`,
 `tests/unit/test_skill_reload.py`, `tests/unit/test_skills_runner.py`, and
-command integration tests; the remaining features in this PRD remain proposed.
+command integration tests. Command reload coverage is in
+`tests/unit/test_command_reload.py` and `tests/unit/test_command_plugins.py`;
+the remaining features in this PRD remain proposed.
 
 ## 1. Executive summary
 

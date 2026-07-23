@@ -35,6 +35,18 @@ class UnifiedCommandRegistry:
         for cmd in cmds:
             self.register(cmd)
 
+    def replace_with(self, other: "UnifiedCommandRegistry") -> None:
+        """Replace contents while preserving this registry's identity.
+
+        Session-owned dispatchers and trigger handlers keep a reference to the
+        registry, so a reload builds a candidate first and publishes it in
+        place only after discovery succeeds.
+        """
+        if other is self:
+            return
+        self._commands = dict(other._commands)
+        self._aliases = dict(other._aliases)
+
     def unregister(self, name: str) -> None:
         canonical = self._aliases.pop(name, name)
         cmd = self._commands.pop(canonical, None)

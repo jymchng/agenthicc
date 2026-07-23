@@ -48,12 +48,11 @@ Restart `uv run agenthicc`, type `/greet`, and submit it. `/hello` resolves to
 the same command. The command appears in the trigger picker after typing `/`,
 and `/commands` shows its name, group, source, and description.
 
-For the normal interactive TUI, export `COMMANDS` as a list or tuple. The
-lower-level `src/agenthicc/commands/plugin_loader.py` supports a singular
-`COMMAND` export as well, but the current `TUISession` startup path uses the
-generic plugin scanner and consumes `COMMANDS`; a `COMMAND`-only file should
-not be relied on to appear in the TUI. This is a current integration gap, not
-a reason to add a second command registry in a plugin.
+For the normal interactive TUI, export `COMMANDS` as a list or tuple when a
+module contains multiple commands. A singular `COMMAND` export is also
+supported by the same command-specific loader. Both forms are discovered at
+startup and by `/commands reload`; do not add a second command registry in a
+plugin.
 
 ## Command specification
 
@@ -103,8 +102,8 @@ At TUI session construction, agenthicc:
 1. scans `~/.agenthicc/commands/` first and `.agenthicc/commands/` second;
 2. skips files whose names start with `_` and imports the remaining Python
    files;
-3. extracts `COMMANDS`, logs import/missing-dependency failures, and collects
-   valid command objects;
+3. extracts `COMMAND` and/or `COMMANDS`, logs import/missing-dependency
+   failures, and collects valid command objects;
 4. registers built-ins first, then user-global commands, then project-local
    commands; and
 5. creates the dispatcher and slash trigger using that one registry.
@@ -120,10 +119,11 @@ replace a global command or a built-in with the same name. Use `/commands` to
 inspect the effective registry. Choose unique canonical names and aliases:
 alias conflicts are not diagnosed, and aliases can affect name resolution.
 
-Project-wide commands are loaded once when the session is constructed. There
-is no `/commands reload` command; restart the session after adding or editing a
-command. `/skills reload` refreshes skill-owned commands only, not Python
-command plugins.
+Project-wide commands are loaded when the session is constructed.
+`/commands reload` rescans both command directories and updates the existing
+registry in place. Added, updated, and removed command names are reported.
+`/skills reload` refreshes skill-owned commands only, not Python command
+plugins.
 
 ## Picker and submission journey
 
@@ -149,17 +149,17 @@ reports that it has no handler.
 
 ## Dependencies and failures
 
-The normal TUI scanner accepts a module-level `DEPENDENCIES` list and checks
-whether those packages are installed. Missing dependencies cause the command
-file to be skipped with a startup warning; the normal session path does not
-auto-install them. Keep dependencies in the existing project environment.
+The normal TUI scanner accepts a module-level `DEPENDENCIES` list or a matching
+`<plugin-stem>.requirements.txt` sidecar and checks whether those packages are
+installed. Missing dependencies cause the command file to be skipped with a
+startup warning; the normal session path does not auto-install them. Keep
+dependencies in the existing project environment.
 
 The scanner probes a module for dependency metadata and then imports it again
 to extract commands. Avoid import-time side effects for this reason. A syntax
 or runtime import failure skips that file rather than preventing the entire
-TUI from starting. The current generic scanner can also silently contribute no
-commands for a malformed non-list `COMMANDS` export, so test the actual
-startup path rather than relying only on the lower-level loader's validation.
+TUI from starting. A malformed `COMMAND` or `COMMANDS` export makes reload
+fail atomically and leaves the previously active command set unchanged.
 
 ## Trust and security
 
@@ -180,7 +180,7 @@ than raising for expected malformed input.
 
 Test both halves of the user journey:
 
-- discovery from `.agenthicc/commands/` and `COMMANDS`;
+- discovery from `.agenthicc/commands/`, `COMMAND`, and `COMMANDS`;
 - user-global then project-local precedence;
 - canonical names and aliases in the picker;
 - submitted execution through `CommandDispatcher`;
@@ -189,7 +189,7 @@ Test both halves of the user journey:
 - source id and `/commands` visibility;
 - private files, syntax errors, missing dependencies, and import failures;
 - side-effect permissions, path/network boundaries, and secret redaction;
-- restart behavior after editing a plugin.
+- `/commands reload` add/update/remove behavior and rollback on failure.
 
 The focused repository coverage is in
 `tests/unit/test_command_plugins.py`,
@@ -199,6 +199,5 @@ The focused repository coverage is in
 `tests/integration/test_commands_integration.py`.
 
 Use `/create-commands <instructions>` to have the built-in authoring skill
-prepare a command, then review the generated Python and run the focused
-tests. The skill does not establish trust or reload a command into an already
-running session.
+prepare a command, then review the generated Python, run the focused tests,
+and submit `/commands reload` in the active TUI session.

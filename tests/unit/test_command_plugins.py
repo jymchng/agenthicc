@@ -47,6 +47,19 @@ def test_load_single_command_with_description(tmp_path):
     assert result.commands[0].argument_hint == "[name]"
 
 
+def test_discover_loads_singular_command_from_nested_directory(tmp_path):
+    nested = tmp_path / ".agenthicc" / "commands" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "hello.py").write_text(
+        "from agenthicc.commands import Command\n"
+        "COMMAND = Command('/nested-hello', 'Nested hello')\n"
+    )
+
+    result = discover_command_plugins(project_dir=tmp_path / ".agenthicc")
+
+    assert [command.name for command in result.all_commands] == ["/nested-hello"]
+
+
 # ---------------------------------------------------------------------------
 # _load_command_file — multiple COMMANDS export
 # ---------------------------------------------------------------------------
@@ -175,6 +188,24 @@ def test_missing_dep_reported(tmp_path):
         "COMMAND = Command('/x', 'X')\n"
     )
     result = _load_command_file(f)
+    assert not result.ok
+    assert result.missing_deps
+
+
+def test_sidecar_dependency_is_reported(tmp_path):
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    plugin = commands_dir / "needs_dep.py"
+    plugin.write_text(
+        "from agenthicc.commands import Command\n"
+        "COMMANDS = [Command('/needs-dep', 'Needs dependency')]\n"
+    )
+    (commands_dir / "needs_dep.requirements.txt").write_text(
+        "this-package-does-not-exist-agenthicc-command\n"
+    )
+
+    result = _load_command_file(plugin)
+
     assert not result.ok
     assert result.missing_deps
 

@@ -6,7 +6,7 @@ No logic lives here.  ``TUISession`` reads from this context;
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -77,3 +77,8 @@ class SessionContext:
     #: A plan to re-drive a turn the prior session left incomplete (crash
     #: mid-turn).  ``None`` on a clean start.
     pending_resume: "object | None" = None
+
+    # ── extension lifecycle ──────────────────────────────────────────────────
+    #: Canonical names loaded from normal slash-command plugin files.  Kept
+    #: separately so a reload can restore built-ins after a plugin is removed.
+    command_plugin_names: set[str] = field(default_factory=set)
