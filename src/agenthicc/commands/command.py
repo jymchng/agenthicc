@@ -37,6 +37,7 @@ class CommandContext:
     console: "Console"  # Rich Console
     config: "AgenthiccConfig"  # live, mutable config
     session_id: str = ""
+    active_agent: str = "default"
 
     skills: "dict[str, SkillDef]" = field(default_factory=dict)
     command_registry: "UnifiedCommandRegistry | None" = None

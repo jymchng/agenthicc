@@ -146,7 +146,7 @@ if TYPE_CHECKING:
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.plugins.registry import PluginTool
-    from agenthicc.skills.loader import SkillDef
+    from agenthicc.skills.loader import SkillDef, SkillPermissionSet
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
@@ -471,9 +471,15 @@ class AgentTurnRunner:
             find_matching_skills,
             process_skill_body,
         )
+        from agenthicc.skills.loader import filter_skills_for_agent  # noqa: PLC0415
 
         ctx = self._ctx
-        matched = find_matching_skills(ctx.text, ctx.skills or {})
+        available_skills = filter_skills_for_agent(
+            ctx.skills or {},
+            ctx.active_agent or "default",
+            ctx.skill_permissions,
+        )
+        matched = find_matching_skills(ctx.text, available_skills)
         if matched:
             self._skill_suffix = "\n\n---\n\n" + "\n\n".join(
                 f"## Skill: {s.name}\n{process_skill_body(s, args=[], cwd=Path(os.getcwd()))}"
@@ -848,6 +854,7 @@ async def _run_agent_turn(
     system_prompt_suffix: str = "",
     memory_router: MemoryRouter | None = None,
     semantic_index: SemanticIndex | None = None,
+    skill_permissions: SkillPermissionSet | None = None,
     retry_deadline_monotonic: float | None = None,
     resume_turn_id: str | None = None,
     resume_ledger: object | None = None,
@@ -866,6 +873,7 @@ async def _run_agent_turn(
         app_state=app_state,
         exec_cfg=exec_cfg,
         skills=skills,
+        skill_permissions=skill_permissions,
         mention_cache=mention_cache,
         project_plugin_tools=project_plugin_tools,
         mcp_registry=mcp_registry,

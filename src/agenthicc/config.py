@@ -22,6 +22,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from agenthicc.kernel import SecurityPolicy, SystemSettings
@@ -29,6 +30,7 @@ from agenthicc.kernel import SecurityPolicy, SystemSettings
 if TYPE_CHECKING:
     from lauren_ai._config import LLMConfig
     from agenthicc.tools.mcp import McpServerConfig
+    from agenthicc.skills.loader import SkillPermissionSet
 
 __all__ = [
     "AgenthiccConfig",
@@ -332,11 +334,23 @@ class BehaviourSettings:
 
 @dataclass
 class AgentSettings:
-    """Per-agent TOML metadata (supplementary to filesystem discovery)."""
+    """Per-agent TOML metadata and skill activation policy."""
 
     description: str = ""
     model: str = ""
     max_turns: int = 200
+    allowed_skills: tuple[str, ...] | None = None
+    denied_skills: tuple[str, ...] = ()
+
+    def skill_permissions(self) -> "SkillPermissionSet":
+        """Return the loader-owned permission value without a module cycle."""
+
+        from agenthicc.skills.loader import SkillPermissionSet
+
+        allowed = None if self.allowed_skills is None else frozenset(self.allowed_skills)
+        return SkillPermissionSet(
+            allowed_skills=allowed, denied_skills=frozenset(self.denied_skills)
+        )
 
 
 @dataclass
@@ -346,14 +360,58 @@ class AgentsSettings:
     agents: dict[str, AgentSettings] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, d: dict[str, dict[str, object]]) -> "AgentsSettings":
-        fields = {f for f in AgentSettings.__dataclass_fields__}
-        return cls(
-            agents={
-                name: AgentSettings(**{k: v for k, v in cfg.items() if k in fields})
-                for name, cfg in d.items()
-            }
+    def from_dict(cls, d: Mapping[str, object]) -> "AgentsSettings":
+        """Parse agent metadata while accepting legacy skill permission keys."""
+
+        def strings(value: object) -> tuple[str, ...] | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return (value,)
+            if isinstance(value, list):
+                return tuple(str(item) for item in value)
+            return None
+
+        parsed: dict[str, AgentSettings] = {}
+        for name, raw_cfg in d.items():
+            if not isinstance(raw_cfg, Mapping):
+                continue
+            raw_skill_policy = raw_cfg.get("skills")
+            skill_policy = raw_skill_policy if isinstance(raw_skill_policy, Mapping) else {}
+            allowed_value = raw_cfg.get(
+                "allowed_skills",
+                raw_cfg.get("skills_allow", skill_policy.get("allow")),
+            )
+            denied_value = raw_cfg.get(
+                "denied_skills",
+                raw_cfg.get("skills_deny", skill_policy.get("deny")),
+            )
+            allowed = strings(allowed_value)
+            denied = strings(denied_value) or ()
+            parsed[str(name)] = AgentSettings(
+                description=str(raw_cfg.get("description", "")),
+                model=str(raw_cfg.get("model", "")),
+                max_turns=int(raw_cfg.get("max_turns", 200)),
+                allowed_skills=allowed,
+                denied_skills=denied,
+            )
+        return cls(agents=parsed)
+
+    def skill_permissions_for(self, agent_type: str) -> "SkillPermissionSet":
+        """Return configured skill permissions for *agent_type*."""
+
+        settings = self.agents.get(agent_type) or self.agents.get("default")
+        if settings is None and agent_type == "default":
+            settings = self.agents.get("auto")
+        return (
+            settings.skill_permissions() if settings is not None else _default_skill_permissions()
         )
+
+
+def _default_skill_permissions() -> "SkillPermissionSet":
+    from agenthicc.skills.loader import SkillPermissionSet
+
+    return SkillPermissionSet()
 
 
 @dataclass
@@ -767,6 +825,16 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         confirm_exits=bool(beh.get("confirm_exits", True)),
     )
 
+    raw_skills = data.get("skills", {})
+    skill_data = raw_skills if isinstance(raw_skills, Mapping) else {}
+    skills = SkillsSettings(
+        install_default_skills=bool(skill_data.get("install_default_skills", True)),
+        default_skill_directory=str(skill_data.get("default_skill_directory", "")),
+    )
+
+    raw_agents = data.get("agents", {})
+    agents = AgentsSettings.from_dict(raw_agents if isinstance(raw_agents, Mapping) else {})
+
     # [workflows] section — dict[workflow_name, dict[str, Any]] (PRD-111)
     workflows: dict[str, dict[str, object]] = {
         name: dict(params)
@@ -783,6 +851,8 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         security=security,
         api=api,
         storage=storage_settings,
+        skills=skills,
+        agents=agents,
         workflows=workflows,
     )
 

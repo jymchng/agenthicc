@@ -1703,6 +1703,96 @@ claude-opus-4-8    = 10_000_000
 # summarize_at is the working-set/cost dial; the window stays the hard ceiling.
 ```
 
+## Skills — `agenthicc.skills.loader`
+
+### SkillDef
+
+```python
+@dataclass
+class SkillDef:
+    name: str
+    slug: str
+    path: Path
+    description: str = ""
+    aliases: tuple[str, ...] = ()
+    allowed_agents: tuple[str, ...] | None = None
+    denied_agents: tuple[str, ...] = ()
+```
+
+`slug` is the canonical lower-case kebab-case slash-command name. `aliases`
+preserve legacy directory or metadata names for compatibility. Skill-level
+agent restrictions are combined with configured per-agent policy; deny rules
+take precedence.
+
+### SkillDiagnostic / SkillDiscoveryResult / SkillPermissionSet
+
+```python
+@dataclass(frozen=True)
+class SkillDiagnostic:
+    path: Path
+    code: str
+    message: str
+    severity: Literal["info", "warning", "error"] = "warning"
+
+@dataclass(frozen=True)
+class SkillDiscoveryResult:
+    skills: dict[str, SkillDef]
+    diagnostics: tuple[SkillDiagnostic, ...] = ()
+
+@dataclass(frozen=True)
+class SkillPermissionSet:
+    allowed_skills: frozenset[str] | None = None
+    denied_skills: frozenset[str] = frozenset()
+```
+
+### canonical_skill_name
+
+```python
+def canonical_skill_name(value: str) -> str
+```
+
+Normalize a skill directory or alias to safe lower-case kebab-case.
+
+### discover_skills / discover_skills_with_diagnostics
+
+```python
+def discover_skills(
+    project_dir: Path | None = None,
+    user_dir: Path | None = None,
+) -> dict[str, SkillDef]
+
+def discover_skills_with_diagnostics(
+    project_dir: Path | None = None,
+    user_dir: Path | None = None,
+) -> SkillDiscoveryResult
+```
+
+The compatibility wrapper returns the original dictionary contract. The
+diagnostic form reports invalid frontmatter, missing `SKILL.md`, precedence,
+and alias conflicts while preserving project-over-user precedence.
+
+### _parse_skill
+
+```python
+def _parse_skill(skill_dir: Path) -> SkillDef | None
+```
+
+Compatibility parser for callers that only need one validated skill and do not
+need the structured diagnostics result.
+
+### filter_skills_for_agent
+
+```python
+def filter_skills_for_agent(
+    skills: Mapping[str, SkillDef],
+    agent_type: str,
+    permissions: SkillPermissionSet | None = None,
+) -> dict[str, SkillDef]
+```
+
+Return only skills allowed by both their frontmatter and the active agent's
+configured policy.
+
 ## Project bootstrap — `agenthicc.project_bootstrap`
 
 ### Bootstrap constants and errors

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from .command import Command, CommandContext
+from typing import TYPE_CHECKING
+
+from .command import Command, CommandContext, CommandHandler
 from .registry import UnifiedCommandRegistry
+
+if TYPE_CHECKING:
+    from agenthicc.skills.loader import SkillDef
 
 __all__ = ["BUILTIN_COMMANDS", "build_builtin_registry", "_make_skill_handler"]
 
@@ -220,6 +225,9 @@ def _cmd_model(ctx: CommandContext) -> bool:
 
 
 def _cmd_skills(ctx: CommandContext) -> bool:
+    visible_skills = {
+        slug: skill for slug, skill in ctx.skills.items() if _skill_allowed_for_context(ctx, skill)
+    }
     try:
         from rich.table import Table  # noqa: PLC0415
         from rich import box as _rbox  # noqa: PLC0415
@@ -228,17 +236,21 @@ def _cmd_skills(ctx: CommandContext) -> bool:
         table.add_column("Command", style="bold cyan")
         table.add_column("Name")
         table.add_column("Description")
-        if not ctx.skills:
+        if not visible_skills:
             table.add_row("—", "(no skills found)", "")
         else:
-            for slug, skill in sorted(ctx.skills.items()):
+            for slug, skill in sorted(visible_skills.items()):
+                command_names = ", ".join(f"/{name}" for name in skill.command_names)
                 table.add_row(
-                    f"/{slug}", skill.name, (getattr(skill, "description", "") or "")[:80] or "—"
+                    command_names,
+                    skill.name,
+                    (getattr(skill, "description", "") or "")[:80] or "—",
                 )
         ctx.console.print(table)
     except ImportError:
-        for slug, skill in sorted(ctx.skills.items()):
-            ctx.console.print(f"  /{slug}  {skill.name}")
+        for slug, skill in sorted(visible_skills.items()):
+            command_names = ", ".join(f"/{name}" for name in skill.command_names)
+            ctx.console.print(f"  {command_names}  {skill.name}")
     return True
 
 
@@ -313,13 +325,35 @@ def _cmd_mode(ctx: CommandContext) -> bool:
 # ── PRD-45: skill handler factory ─────────────────────────────────────────────
 
 
-def _make_skill_handler(slug: str, skill: object) -> object:
+def _skill_allowed_for_context(ctx: CommandContext, skill: "SkillDef") -> bool:
+    """Apply frontmatter and configured per-agent skill permissions."""
+
+    from agenthicc.skills.loader import SkillPermissionSet  # noqa: PLC0415
+
+    permissions = None
+    agents = getattr(ctx.config, "agents", None)
+    resolver = getattr(agents, "skill_permissions_for", None)
+    if callable(resolver):
+        candidate = resolver(ctx.active_agent)
+        if isinstance(candidate, SkillPermissionSet):
+            permissions = candidate
+    return skill.is_allowed_for(ctx.active_agent, permissions)
+
+
+def _make_skill_handler(slug: str, skill: "SkillDef") -> CommandHandler:
     """Return a CommandHandler that invokes a skill via the pending-skill mechanism."""
     from agenthicc.skills.runner import process_skill_body  # noqa: PLC0415
 
     def _handler(ctx: CommandContext) -> bool:
         import os  # noqa: PLC0415
         from pathlib import Path  # noqa: PLC0415
+
+        if not _skill_allowed_for_context(ctx, skill):
+            ctx.console.print(
+                f"Skill /{slug} is not permitted for agent {ctx.active_agent!r}.",
+                markup=False,
+            )
+            return True
 
         args = ctx.args.split() if ctx.args.strip() else []
         body = process_skill_body(

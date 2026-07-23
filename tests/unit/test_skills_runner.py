@@ -14,7 +14,7 @@ from agenthicc.skills.runner import (
     maybe_load_reference,
     process_skill_body,
 )
-from agenthicc.skills.loader import SkillDef
+from agenthicc.skills.loader import SkillDef, SkillPermissionSet
 
 pytestmark = pytest.mark.unit
 
@@ -92,6 +92,36 @@ def test_disallow_auto_triggering_prevents_match():
     }
     matched = find_matching_skills("deploy now", skills)
     assert matched == []
+
+
+def test_agent_turn_injects_only_skills_allowed_for_active_agent(tmp_path):
+    from agenthicc.runners.agent_turn import AgentTurnRunner
+    from agenthicc.runners.agent_turn_context import AgentTurnContext
+
+    review_dir = tmp_path / "review"
+    deploy_dir = tmp_path / "deploy"
+    review_dir.mkdir()
+    deploy_dir.mkdir()
+    (review_dir / "SKILL.md").write_text("---\nname: Review\n---\nReview instructions\n")
+    (deploy_dir / "SKILL.md").write_text("---\nname: Deploy\n---\nDeploy instructions\n")
+    skills = {
+        "review": SkillDef("Review", "review", review_dir, suggested_topics=["review"]),
+        "deploy": SkillDef("Deploy", "deploy", deploy_dir, suggested_topics=["deploy"]),
+    }
+    context = AgentTurnContext(
+        text="review deploy",
+        runner=None,
+        processor=MagicMock(),
+        skills=skills,
+        active_agent="planner",
+        skill_permissions=SkillPermissionSet(allowed_skills=frozenset({"review"})),
+    )
+
+    turn = AgentTurnRunner(context)
+    turn._inject_skills()
+
+    assert "Review instructions" in turn._skill_suffix
+    assert "Deploy instructions" not in turn._skill_suffix
 
 
 # ---------------------------------------------------------------------------

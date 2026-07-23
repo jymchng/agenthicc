@@ -41,7 +41,44 @@ resume rules.
 
 Skills are directories with `SKILL.md` metadata and body text. They can add
 tools, prompt instructions, and slash-command behaviour. The loader supports
-project and user scopes; the project copy wins.
+project and user scopes; the project copy wins. Discovery is deterministic and
+returns diagnostics for malformed metadata, missing files, scope overrides,
+and alias conflicts.
+
+Use a lower-case kebab-case directory name (up to 64 characters), for example
+`.agenthicc/skills/review-code/SKILL.md`. The frontmatter `name` is the display
+name; the directory name is the canonical slash command. The supported
+frontmatter includes:
+
+```yaml
+---
+name: Review Code
+description: Review implementation changes
+aliases: [review]
+suggestedTopics: [review, code quality]
+allowedAgents: [planner, reviewer]
+deniedAgents: [executor]
+---
+```
+
+Legacy snake_case keys such as `suggested_topics`, `allowed_agents`, and
+`max_turn_depth` remain readable and produce compatibility diagnostics. A
+legacy directory name is normalized to its canonical command name and remains
+available as an alias. Invoke either the canonical command or an alias, for
+example `/review-code` or `/review`.
+
+Per-agent configuration can further restrict skills. An omitted allowlist means
+all skills allowed by the skill itself; deny rules always win:
+
+```toml
+[agents.planner]
+allowed_skills = ["review-code"]
+denied_skills = ["deploy"]
+```
+
+The same policy may be written as `[agents.planner.skills]` with `allow` and
+`deny` lists. `/skills`, slash invocation, and automatic topic matching all
+apply both frontmatter and per-agent restrictions.
 
 ## Commands
 
@@ -67,8 +104,11 @@ code execution and protect tokens with environment expansion and trust policy.
 1. Run `uv run agenthicc config show`.
 2. Verify the directory name and file suffix.
 3. Check startup warnings for syntax/import/missing-dependency failures.
-4. Run `/commands`, `/skills`, or `/mcp` inside the TUI.
-5. Test the loader directly in a focused unit/integration test.
+4. Run `/commands`, `/skills`, or `/mcp` inside the TUI; `/skills` shows only
+   skills permitted for the active agent.
+5. For structured diagnostics, call
+   `discover_skills_with_diagnostics(project_dir=..., user_dir=...)`.
+6. Test the loader directly in a focused unit/integration test.
 
 The long-term extension SDK, generated catalog, and unified trust contract are
 PRD-138 P1.6/P2.4 work.

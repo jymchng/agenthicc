@@ -224,7 +224,9 @@ async def _build_session_context(
 
     # ── skills / plugins ─────────────────────────────────────────────────────
     from agenthicc.skills.bootstrap import bootstrap_default_skills  # noqa: PLC0415
-    from agenthicc.skills.loader import discover_skills as _ds  # noqa: PLC0415
+    from agenthicc.skills.loader import (  # noqa: PLC0415
+        discover_skills_with_diagnostics,
+    )
 
     _skill_global_dir = (
         Path(cfg.skills.default_skill_directory).expanduser()
@@ -241,7 +243,17 @@ async def _build_session_context(
             markup=True,
         )
 
-    skills = _ds(project_dir=Path(".agenthicc"), user_dir=_skill_global_dir)
+    skill_discovery = discover_skills_with_diagnostics(
+        project_dir=Path(".agenthicc"),
+        user_dir=_skill_global_dir,
+    )
+    skills = skill_discovery.skills
+    for diagnostic in skill_discovery.diagnostics:
+        if diagnostic.severity != "info":
+            console.print(
+                f"[yellow]Skill discovery: {diagnostic}[/yellow]",
+                markup=True,
+            )
 
     from agenthicc.plugins.discovery import (  # noqa: PLC0415
         discover_project_tools,
@@ -365,6 +377,7 @@ async def _build_session_context(
                     argument_hint="[args…]",
                     group="Skills",
                     handler=_make_skill_handler(_slug, _skill),
+                    aliases=tuple(f"/{alias}" for alias in _skill.aliases),
                     source_id=f"skill:{_slug}",
                 )
             )
@@ -558,6 +571,7 @@ class TUISession:
             config=ctx.cfg,
             session_id=ctx.session_id,
             skills=ctx.skills,
+            active_agent="default",
             command_registry=ctx.cmd_registry,
             mode_manager=ctx.mode_manager,
             set_pending_skill=self._set_pending_skill,
@@ -725,6 +739,7 @@ class TUISession:
                     app_state=ctx.app_state,
                     exec_cfg=ctx.cfg.execution,
                     skills=ctx.skills,
+                    skill_permissions=ctx.cfg.agents.skill_permissions_for("default"),
                     mention_cache=ctx.mention_cache,
                     project_plugin_tools=(
                         ctx.project_plugins.all_tools

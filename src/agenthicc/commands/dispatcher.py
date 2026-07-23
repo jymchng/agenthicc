@@ -34,6 +34,7 @@ class CommandDispatcher:
             console=ctx.console,
             config=ctx.config,
             session_id=ctx.session_id,
+            active_agent=ctx.active_agent,
             skills=ctx.skills,
             command_registry=ctx.command_registry,
             mode_manager=ctx.mode_manager,

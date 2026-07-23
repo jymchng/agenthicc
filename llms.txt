@@ -24,6 +24,8 @@ The primary entry point is `agenthicc.__main__:main`.
   conversation journaling, and durable idempotent tool replay support.
 - `agenthicc init` and `/init` locally inspect bounded project metadata and
   preview or explicitly write a managed `AGENTS.md` guidance section.
+- Skills use validated `SKILL.md` frontmatter, canonical names, compatibility
+  aliases, discovery diagnostics, and per-agent allow/deny policies.
 
 ## Important symbols
 
@@ -52,6 +54,8 @@ The primary entry point is `agenthicc.__main__:main`.
 | `inspect_session` | `agenthicc.tui.runtime.session_export` | Redacted durable session health and usage summary |
 | `ProjectSnapshot` / `ProjectBootstrapPlan` | `agenthicc.project_bootstrap` | Bounded project inspection and reviewable `AGENTS.md` proposal |
 | `build_bootstrap_plan` / `inspect_project` / `write_bootstrap_plan` | `agenthicc.project_bootstrap` | Safe project-guidance bootstrap lifecycle |
+| `SkillDef` / `SkillDiscoveryResult` | `agenthicc.skills.loader` | Validated skill metadata and diagnostic discovery result |
+| `discover_skills_with_diagnostics` / `filter_skills_for_agent` | `agenthicc.skills.loader` | Skill discovery diagnostics and per-agent permission filtering |
 
 ## Configuration
 

@@ -438,6 +438,7 @@ class WorkflowRunner:
             app_state=self._cfg.app_state,
             exec_cfg=_exec_cfg,
             skills=self._cfg.skills,
+            skill_permissions=self._cfg.cfg.agents.skill_permissions_for(spec.agent_type),
             mention_cache=self._cfg.mention_cache,
             project_plugin_tools=filtered,
             mcp_registry=self._cfg.mcp_registry,

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
+    from agenthicc.skills.loader import SkillPermissionSet, SkillDef
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,8 @@ class AgentTurnContext:
     exec_cfg: "ExecutionSettings | None" = None
 
     # ── content injection ─────────────────────────────────────────────────────
-    skills: "dict | None" = None
+    skills: "dict[str, SkillDef] | None" = None
+    skill_permissions: "SkillPermissionSet | None" = None
     mention_cache: "MentionCache | None" = None
     project_plugin_tools: "list | None" = None
     mcp_registry: "McpToolRegistry | None" = None

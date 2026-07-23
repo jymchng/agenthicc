@@ -25,10 +25,10 @@ tags:
 
 # PRD-139 — OpenCode-Inspired Product Expansion and Privacy-First Advertisements
 
-Implementation status: P0 project bootstrap (`agenthicc init` and `/init`) is
-implemented in `src/agenthicc/project_bootstrap.py`, with CLI/TUI integration,
-unit coverage in `tests/unit/test_project_bootstrap.py`, and end-to-end command
-coverage in `tests/integration/test_project_bootstrap.py`. The remaining
+Implementation status: P0 project bootstrap (`agenthicc init` and `/init`) and
+the skills metadata/discovery/permissions slice are implemented. Skill
+coverage is in `tests/unit/test_skills_loader.py`,
+`tests/unit/test_skills_runner.py`, and command integration tests; the remaining
 features in this PRD remain proposed.
 
 ## 1. Executive summary

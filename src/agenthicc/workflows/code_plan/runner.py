@@ -677,6 +677,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 app_state=self._cfg.app_state,
                 exec_cfg=exec_cfg,
                 skills=self._cfg.skills,
+                skill_permissions=self._cfg.cfg.agents.skill_permissions_for("auto"),
                 mention_cache=self._cfg.mention_cache,
                 project_plugin_tools=tools,
                 mcp_registry=self._cfg.mcp_registry,
