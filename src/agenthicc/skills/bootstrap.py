@@ -240,14 +240,20 @@ tool and security boundaries.
 1. Read the relevant existing tool modules and tests before editing anything.
 2. Clarify ambiguity in the requested contract by making the smallest safe
    assumption and stating it before implementation.
-3. Implement tools with the canonical lauren-ai callable-tool convention and
-   export them through `TOOLS` from a focused module under `.agenthicc/tools/`.
-4. Attach capability metadata. Use `WorkspaceView` for filesystem paths,
-   `NetworkGuard` and `agenthicc_http_client()` for network access, and return
-   structured recoverable errors for transient external failures.
+3. Implement a function-form `@tool()` or a no-argument class-form `@tool()`
+   with `run`, and export the callable through `TOOLS` from a focused module
+   under `.agenthicc/tools/`. `Tool`/`ToolBase` are explicit executor
+   contracts, not automatic `TOOLS` discovery contracts.
+4. Attach capability metadata. A `ToolContext` parameter is injected by
+   lauren-ai and is hidden from the model schema. Use `WorkspaceView` and
+   `NetworkGuard` when the runtime supplies them; fail closed when a required
+   guard is unavailable. Use `agenthicc_http_client()` for bounded HTTP
+   timeouts and return structured recoverable errors for transient failures.
 5. Preserve fail-closed security defaults. Do not add credential logging,
    unrestricted filesystem access, shell execution, or automatic dependency
-   installation merely to make the tool work.
+   installation merely to make the tool work. Remember that the current TUI
+   plugin path does not automatically inject a `ToolSandbox` or show the tool
+   trust prompt.
 6. Add tests for success, denial, malformed input, timeout or transient
    failure where relevant, and retry/idempotency behaviour for side effects.
 7. Update the relevant README/guide and plugin documentation. Run the focused
@@ -255,8 +261,9 @@ tool and security boundaries.
 
 ## Completion report
 
-Finish with the created tool names, files, capabilities, tests run, and any
-manual trust or configuration step the user must perform before using them.
+Finish with the created tool names, files, capabilities, tests run, and the
+manual code-review, trust, or configuration step the user must perform before
+using them.
 """,
     "create-commands": """\
 ---

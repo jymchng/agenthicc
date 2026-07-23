@@ -94,7 +94,9 @@ reconnect_attempts = 3
 
 MCP tokens and URLs support `${ENV_VAR}` expansion. Available transports are
 validated by the MCP bridge; remote servers must also pass network and trust
-policy.
+policy. For the current user-defined Python tool journey, including which
+settings are and are not connected to direct TUI plugin execution, see the
+[user-defined tools guide](tools.md).
 
 ## Memory and storage
 
@@ -125,7 +127,8 @@ max_tool_memory_mb = 512
 `WorkspaceView` resolves real paths, so `..` traversal, absolute escapes, and
 symlink escapes are rejected. `NetworkGuard` permits exact hosts and
 subdomains of an allow-listed domain. An empty network list blocks outbound
-hosts.
+hosts when an explicit guard is used. The ordinary project-tool path does not
+currently inject these boundaries into user callables automatically.
 
 Security-bypassing flags such as `--dangerously-skip-permissions` are CLI-only
 and are intentionally not persisted in TOML.

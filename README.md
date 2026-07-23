@@ -97,8 +97,10 @@ Then launch the terminal workspace and enter a natural-language request:
 
 The default session discovers built-in and project-local workflows, agents,
 tools, skills, modes, and MCP servers. Writes, command execution, and network
-access are subject to mode restrictions, capability metadata, security policy,
-and approval settings.
+access are subject to mode restrictions, capability metadata, and approval
+settings. Review the [user-defined tools guide](./docs/guides/tools.md) before
+adding executable project plugins; it documents the current sandbox and trust
+boundaries.
 
 For a non-interactive process, use headless mode. It prints a ready record and
 one JSON line for each non-empty input line:
@@ -222,7 +224,7 @@ never print secrets in support logs.
 
 | Extension | Current location | Discovery |
 |---|---|---|
-| Tools | `.agenthicc/tools/`, `~/.agenthicc/tools/` | `TOOLS` export; capability metadata and trust apply |
+| Tools | `.agenthicc/tools/`, `~/.agenthicc/tools/` | `TOOLS` export; capability metadata; review executable code manually |
 | Agents | `.agenthicc/agents/`, `~/.agenthicc/agents/` | `AgentPlugin` subclasses or `AGENTS` export |
 | Modes | `.agenthicc/modes/`, `~/.agenthicc/modes/` | Mode plugin loader |
 | Workflows | `.agenthicc/workflows/`, `~/.agenthicc/workflows/` | `WorkflowPlugin` subclasses |
@@ -292,6 +294,7 @@ PRD-138 before using the default all-session invocation on a clean checkout.
 - [Project bootstrap](./docs/guides/project-bootstrap.md)
 - [TUI](./docs/guides/tui.md)
 - [Workflows](./docs/guides/workflows.md)
+- [User-defined tools](./docs/guides/tools.md)
 - [Extensions and plugins](./docs/guides/plugins.md)
 - [Memory and storage](./docs/guides/memory.md)
 - [Security](./docs/guides/security.md)

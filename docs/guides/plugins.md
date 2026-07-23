@@ -3,17 +3,24 @@
 Extensions are discovered from project-local `.agenthicc/` directories and
 user-global `~/.agenthicc/` directories. Project definitions generally shadow
 user definitions with the same name. Python extensions are executable code and
-are subject to trust and security policy.
+must be reviewed; trust and enforcement behavior varies by extension surface.
 
 ## Tools
 
-Project/user tool files are scanned below `tools/`. A plugin can expose a
-`TOOLS` list of callables and optionally `COMMANDS` and `SUBAGENT_TYPES`.
-Class-based integrations implement `Tool` and return structured values through
-`ToolResultEnvelope` where appropriate.
+Project/user tool files are scanned below `tools/`. A normal project plugin
+must expose a `TOOLS` list of lauren-ai `@tool()` callables or no-argument
+tool classes. The complete authoring journey, registry precedence, security
+boundary, and testing contract are in the [user-defined tools guide](tools.md).
 
-Use capability metadata, `WorkspaceView`, `NetworkGuard`, the shared HTTP
-client, and bounded outputs. See the [security guide](security.md).
+`Tool` and `ToolBase` are lower-level contracts for explicit
+`AgenthiccToolExecutor` registration; implementing one does not by itself
+make an object discoverable from a `TOOLS` export.
+
+Use capability metadata, explicit `WorkspaceView`/`NetworkGuard` checks when
+available, the shared HTTP client, and bounded outputs. Project tool files are
+executable Python and the normal tool scanner currently does not show the
+repository's trust prompt, so review them before starting a session. See the
+[security guide](security.md).
 
 ## Agents
 
@@ -94,8 +101,9 @@ session-stateful case.
 
 The default `/create-tools <instructions>` and `/create-commands <instructions>`
 skills guide the agent to author these extensions using the existing lauren-ai
-tool convention and unified command registry. They do not bypass plugin trust,
-capability metadata, or the normal test/documentation expectations.
+tool convention and unified command registry. They do not establish trust or
+replace review of executable project code, and they do not replace capability,
+approval, testing, or documentation work.
 
 ## MCP servers
 

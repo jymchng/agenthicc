@@ -38,12 +38,19 @@ explicit CLI escape hatch and cannot be stored in TOML.
 ## Plugin trust
 
 Project-local tools, agents, modes, workflows, skills, and commands are Python
-code. Loading them is code execution. Review and trust them before use. Plugin
-dependency auto-install is a separate risk and should be disabled in
-unattended/headless environments until the trust policy is explicit.
+code. Loading them is code execution. Review them before use. The repository
+has a trust helper and trust-aware paths for some extension surfaces, but the
+normal `.agenthicc/tools/` discovery path currently imports project tool files
+without calling that helper or showing a prompt. A trust manifest is not an
+automatic boundary for user-defined tools today.
+
+Plugin dependency auto-install is a separate risk and should remain disabled
+in unattended/headless environments. The normal session tool scanner currently
+skips missing dependencies rather than installing them.
 
 Trust manifests and audit records live under `.agenthicc/`; do not commit
-secrets or accept a changed hash without review.
+secrets or accept a changed hash without review. See the [user-defined tools
+guide](tools.md) for the exact current tool-loading path and its limitations.
 
 ## Security checklist for a new integration
 
