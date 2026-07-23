@@ -159,6 +159,16 @@ Use `Ctrl+C` according to the current input state; the input backend owns raw
 terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md)
 for modes, overlays, input, and platform rules.
 
+## Background sessions
+
+Long-running work can be detached from an active session with `/bg` or
+`/background`. Run `agenthicc agents` (or `agenthicc jobs`) to open the
+background-session manager, where you can inspect, follow, resume, retry,
+cancel, and safely delete sessions. `Ctrl+X` deletes the selected session only
+after confirmation; `u` restores it from recoverable trash. See the
+[background sessions guide](./docs/guides/background-sessions.md) for workflow
+support, approvals, input requests, retention, and privacy details.
+
 ## Architecture in one picture
 
 ```text
@@ -295,6 +305,7 @@ PRD-138 before using the default all-session invocation on a clean checkout.
 - [Configuration](./docs/guides/configuration.md)
 - [Project bootstrap](./docs/guides/project-bootstrap.md)
 - [TUI](./docs/guides/tui.md)
+- [Background sessions](./docs/guides/background-sessions.md)
 - [Workflows](./docs/guides/workflows.md)
 - [User-defined commands](./docs/guides/commands.md)
 - [User-defined tools](./docs/guides/tools.md)

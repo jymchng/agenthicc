@@ -610,9 +610,9 @@ The core PRD-141 phases are implemented in the current source tree:
 | Phase | Evidence |
 |---|---|
 | Domain and persistence | `src/agenthicc/background/model.py` and `store.py` provide typed lifecycle states, legal transitions, leases, append-only fsync'd events, corruption tolerance, tombstones, archive, and recoverable trash. |
-| Supervisor and scriptable control | `supervisor.py`, `worker.py`, and `cli/commands/background.py` provide bounded detached workers, per-project limits, wall-clock limits, cancellation, orphan recovery, approval control, resume/retry, JSON status, and non-zero mutation failures. |
+| Supervisor and scriptable control | `supervisor.py`, `worker.py`, and `cli/commands/background.py` provide bounded detached workers, per-project limits, wall-clock limits, cancellation, orphan recovery, approval control, phase-history persistence, resume/retry, JSON status, and non-zero mutation failures. |
 | Foreground handoff | `integration.py` registers `/bg` and `/background` in the canonical trigger path and transfers the existing session identifier to one background worker. |
-| Manager TUI | `tui/workspace/background_manager.py` provides selection, search/filter hooks, pinning, approval actions, live refresh/pause, redacted activity summaries, attach/follow, and confirmed `Ctrl+X` deletion with `u` restore. `agenthicc agents` and `agenthicc jobs` share this entry point. |
+| Manager TUI | `tui/workspace/background_manager.py` provides selection, search/filter hooks, pinning, approval actions, live refresh/pause, redacted and pageable transcript summaries, phase-history rendering, attach/follow, and confirmed `Ctrl+X` deletion with `u` restore. `agenthicc agents` and `agenthicc jobs` share this entry point. |
 | Hardening and enablement | `[background]` settings, secret-redacted status output, workflow-result integration, failure-path tests, process E2E tests, `docs/guides/background-sessions.md`, and the maintained-surface 90% coverage gate are present. |
 
 Verification commands:

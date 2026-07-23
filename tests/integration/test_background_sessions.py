@@ -8,7 +8,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from agenthicc.background import BackgroundSession, BackgroundStore, SessionStatus
+from agenthicc.background import (
+    BackgroundSession,
+    BackgroundStore,
+    BackgroundSupervisor,
+    SessionStatus,
+)
 from agenthicc.background.worker import BackgroundApprovalService, WorkerRequest, run_worker
 
 pytestmark = pytest.mark.integration
@@ -269,9 +274,7 @@ async def test_worker_persists_workflow_phase_history(monkeypatch, tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_project_workflow_runs_through_background_worker(
-    monkeypatch, tmp_path: Path
-) -> None:
+async def test_project_workflow_runs_through_background_worker(monkeypatch, tmp_path: Path) -> None:
     """A real project-local workflow plugin uses the background execution path."""
 
     workflow_dir = tmp_path / ".agenthicc" / "workflows"
@@ -360,6 +363,17 @@ async def test_project_workflow_runs_through_background_worker(
     assert completed.status is SessionStatus.COMPLETED
     assert completed.phase_history == ("plan",)
     assert completed.latest_activity == "Workflow complete"
+
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+    monkeypatch.setattr(
+        "agenthicc.background.supervisor.subprocess.Popen",
+        lambda *args, **kwargs: SimpleNamespace(pid=4321),
+    )
+    supervisor.archive("project-session")
+    resumed = supervisor.resume("project-session")
+    assert resumed.status is SessionStatus.STARTING
+    assert resumed.phase_history == ("plan",)
+    assert resumed.resume_marker == "resume:2"
 
 
 def test_cli_handlers_return_redacted_status(monkeypatch, tmp_path: Path, capsys) -> None:

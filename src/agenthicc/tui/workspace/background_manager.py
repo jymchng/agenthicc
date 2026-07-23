@@ -299,8 +299,7 @@ class BackgroundManager:
                 detail_lines.append(f"[red]Error[/red] {selected.error[:180]}")
             if selected.phase_history:
                 detail_lines.append(
-                    "[bold]Phase history[/bold] "
-                    + " → ".join(selected.phase_history[-16:])
+                    "[bold]Phase history[/bold] " + " → ".join(selected.phase_history[-16:])
                 )
             if (
                 selected.session_id in self._seen_activity
@@ -312,7 +311,9 @@ class BackgroundManager:
                 detail_lines.append("[bold]Recent activity[/bold]")
                 detail_lines.extend(activity_lines)
                 if self.activity_offset:
-                    detail_lines.append("[dim]Transcript offset: {}[/dim]".format(self.activity_offset))
+                    detail_lines.append(
+                        "[dim]Transcript offset: {}[/dim]".format(self.activity_offset)
+                    )
         if self.pending_delete:
             pending_titles = [
                 item.title

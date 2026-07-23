@@ -69,6 +69,7 @@ nav:
       - Architecture: guides/architecture.md
       - Configuration: guides/configuration.md
       - TUI: guides/tui.md
+      - Background sessions: guides/background-sessions.md
       - Workflows: guides/workflows.md
       - User-defined commands: guides/commands.md
       - User-defined tools: guides/tools.md
