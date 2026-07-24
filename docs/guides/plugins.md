@@ -153,7 +153,9 @@ Project configuration is the default; `--global` targets the user config and
 `[[tools.mcp_servers]]` format, rejects duplicate names and malformed TOML,
 preserves existing file permissions, and writes `${MCP_TOKEN}` rather than a
 secret value. It validates the entry but does not connect to the server until
-the normal MCP bridge starts.
+the normal MCP bridge starts. A local Lauren MCP example directory (or its
+`server.py`) is converted to the `uv run --project ... lmcp run ... --stdio`
+launcher.
 
 ## Discovery debugging
 

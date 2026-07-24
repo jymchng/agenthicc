@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import stat
 import tomllib
 from pathlib import Path
@@ -45,6 +46,30 @@ def test_add_project_server_writes_canonical_config_and_loads(tmp_path: Path) ->
     server = config.tools.mcp_servers[0]
     assert server.name == "local-tools"
     assert server.url == "python -m my_mcp_server"
+
+
+def test_add_local_lauren_mcp_directory_builds_stdio_launcher(tmp_path: Path) -> None:
+    project = tmp_path / "filesystem"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname = 'filesystem'\n", encoding="utf-8")
+    server = project / "server.py"
+    server.write_text("# smoke-test server\n", encoding="utf-8")
+
+    result = add_mcp_server(name="filesystem", url=str(project), project_dir=tmp_path)
+
+    data = tomllib.loads(result.path.read_text(encoding="utf-8"))
+    assert data["tools"]["mcp_servers"][0]["url"] == shlex.join(
+        (
+            "uv",
+            "run",
+            "--project",
+            str(project),
+            "lmcp",
+            "run",
+            str(server),
+            "--stdio",
+        )
+    )
 
 
 def test_add_global_server_uses_global_config_root(tmp_path: Path) -> None:

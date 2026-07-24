@@ -266,8 +266,10 @@ Register an MCP server without hand-editing TOML with
 `agenthicc mcp add NAME URL`. Project scope is the default; use `--global` for
 the user configuration, `--transport` to select the existing bridge transport,
 and `--token-env ENV_VAR` to persist a token reference without exposing the
-secret to the CLI. The command validates and appends configuration but does
-not connect to the server itself.
+secret to the CLI. A local Lauren MCP directory or `server.py` is also accepted
+for stdio servers and is converted to an `lmcp run ... --stdio` launcher. The
+command validates and appends configuration but does not connect to the server
+itself.
 
 Read the [extension guide](./docs/guides/plugins.md) and the
 [custom-command guide](./docs/guides/commands.md) before enabling project code

@@ -57,7 +57,10 @@ to the project configuration by default. Use `--global` for the user config,
 an environment-variable reference such as `${MCP_TOKEN}`; the command never
 accepts or prints a raw token. `--no-auto-connect`, `--reconnect-attempts`,
 and `--reconnect-delay-seconds` configure the existing MCP bridge. The command
-only updates configuration; it does not start or connect to the server.
+only updates configuration; it does not start or connect to the server. When
+the stdio URL is an existing local directory (or `.py` server file), the CLI
+stores a `uv run --project ... lmcp run ... --stdio` launcher so Lauren MCP
+examples can be registered directly.
 
 ## TUI slash commands
 

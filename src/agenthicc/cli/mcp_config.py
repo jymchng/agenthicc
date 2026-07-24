@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import shlex
 import stat
 import tempfile
 import tomllib
@@ -128,6 +129,53 @@ def _server_block(
     return "\n".join(lines) + "\n"
 
 
+def _project_root(start: Path) -> Path:
+    """Return the nearest ancestor containing ``pyproject.toml``."""
+    for candidate in (start, *start.parents):
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return start
+
+
+def _normalise_local_stdio_source(url: str, transport: str) -> str:
+    """Turn a local Lauren MCP app path into an executable stdio command.
+
+    ``mcp add NAME PATH`` is a convenient smoke-test and development flow for
+    Lauren MCP examples. Those examples are Python applications, not directly
+    executable commands: their stdio entry point is ``lmcp run server.py
+    --stdio``. Keep ordinary command strings unchanged and only normalize an
+    existing directory or Python file.
+    """
+    if transport != "stdio":
+        return url
+    try:
+        candidate = Path(url).expanduser().resolve()
+    except (OSError, ValueError):
+        return url
+    if candidate.is_dir():
+        server_file = candidate / "server.py"
+        if not server_file.is_file():
+            raise McpConfigError(f"local MCP directory {candidate} must contain server.py")
+        project = _project_root(candidate)
+    elif candidate.is_file() and candidate.suffix == ".py":
+        server_file = candidate
+        project = _project_root(candidate.parent)
+    else:
+        return url
+    return shlex.join(
+        (
+            "uv",
+            "run",
+            "--project",
+            str(project),
+            "lmcp",
+            "run",
+            str(server_file),
+            "--stdio",
+        )
+    )
+
+
 def _existing_server_names(data: Mapping[str, object]) -> set[str]:
     tools = data.get("tools")
     if tools is None:
@@ -213,6 +261,7 @@ def add_mcp_server(
 
     if name in _existing_server_names(data):
         raise McpConfigError(f"MCP server already exists: {name}")
+    url = _normalise_local_stdio_source(url, transport)
     block = _server_block(
         name=name,
         url=url,
