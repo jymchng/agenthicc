@@ -244,7 +244,8 @@ never print secrets in support logs.
 | MCP | `[[tools.mcp_servers]]` | configured server bridge; structured results preserved |
 
 Explicit skills use the `$skill-name` or `$alias` trigger; `/` remains reserved
-for commands. Use `/skills` to inspect discovered skills. The former
+for commands. `/commands` lists slash commands only; use `/skills` to inspect
+discovered skills. The former
 `/skill-name` spelling is not executed.
 
 Read the [extension guide](./docs/guides/plugins.md) and the

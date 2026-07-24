@@ -289,6 +289,39 @@ def test_skill_auto_registers_in_dollar_dropdown():
     assert any("$git-summary" in m.value for m in matches)
 
 
+def test_commands_listing_excludes_skill_records() -> None:
+    from rich.console import Console
+
+    from agenthicc.commands import Command, CommandContext, build_builtin_registry
+    from agenthicc.commands.builtins import _cmd_commands
+    from agenthicc.config import AgenthiccConfig
+
+    registry = build_builtin_registry()
+    registry.register(
+        Command(
+            "$review",
+            "Review the changes",
+            group="Skills",
+            source_id="skill:review",
+        )
+    )
+    console = Console(record=True, force_terminal=False)
+    context = CommandContext(
+        text="/commands",
+        args="",
+        model="test/model",
+        console=console,
+        config=AgenthiccConfig(),
+        command_registry=registry,
+    )
+
+    assert _cmd_commands(context) is True
+    output = console.export_text()
+    assert "/status" in output
+    assert "$review" not in output
+    assert "Review the changes" not in output
+
+
 # ---------------------------------------------------------------------------
 # CommandDispatcher
 # ---------------------------------------------------------------------------

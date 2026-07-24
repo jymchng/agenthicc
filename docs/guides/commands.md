@@ -154,6 +154,9 @@ An unknown slash command is therefore a local command miss, not an agent
 prompt. A registered command with no handler is also consumed locally and
 reports that it has no handler.
 
+`/commands` lists only slash commands and excludes `$`-prefixed skill records.
+Use `/skills` to inspect discovered skills and their explicit invocation names.
+
 ## Commands while an agent run is active
 
 The interactive session classifies a submitted command before it enters the

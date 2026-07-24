@@ -370,6 +370,7 @@ def _cmd_commands(ctx: CommandContext) -> bool:
     if registry is None:
         ctx.console.print("[dim]No command registry available.[/dim]")
         return True
+    commands = [cmd for cmd in registry.all_commands() if not cmd.is_skill]
     try:
         from rich.table import Table  # noqa: PLC0415
         from rich import box as _rbox  # noqa: PLC0415
@@ -379,11 +380,11 @@ def _cmd_commands(ctx: CommandContext) -> bool:
         table.add_column("Group")
         table.add_column("Source", style="dim")
         table.add_column("Description")
-        for cmd in registry.all_commands():
+        for cmd in commands:
             table.add_row(cmd.name, cmd.group, cmd.source_id, cmd.description)
         ctx.console.print(table)
     except ImportError:
-        for cmd in registry.all_commands():
+        for cmd in commands:
             ctx.console.print(f"{cmd.name}  [{cmd.group}]  {cmd.description}")
     return True
 
