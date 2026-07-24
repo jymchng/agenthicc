@@ -27,6 +27,7 @@ def test_builtins_have_explicit_immediate_read_only_inventory() -> None:
         for name in (
             "/clear",
             "/commands",
+            "/config",
             "/expand",
             "/help",
             "/history",
@@ -42,6 +43,7 @@ def test_builtins_have_explicit_immediate_read_only_inventory() -> None:
     assert immediate == {
         "/clear",
         "/commands",
+        "/config",
         "/expand",
         "/help",
         "/history",
@@ -66,6 +68,7 @@ def test_builtins_have_explicit_immediate_read_only_inventory() -> None:
         ("/skills", BusyPolicy.IMMEDIATE_READ_ONLY),
         ("/skills reload", BusyPolicy.QUEUE),
         ("/commands reload", BusyPolicy.QUEUE),
+        ("/config", BusyPolicy.IMMEDIATE_READ_ONLY),
         ("/mcp status", BusyPolicy.IMMEDIATE_READ_ONLY),
         ("/mcp connect https://example.test", BusyPolicy.QUEUE),
         ("/model", BusyPolicy.IMMEDIATE_READ_ONLY),

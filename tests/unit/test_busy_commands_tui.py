@@ -57,6 +57,24 @@ async def test_usage_runs_now_during_active_run_without_queue_or_user_event() ->
 
 
 @pytest.mark.asyncio
+async def test_config_overlay_opens_immediately_during_active_run() -> None:
+    from agenthicc.tui.workspace.overlays.config_menu import ConfigMenuOverlay
+
+    session, ctx, workspace, _input = _make_session()
+    config = build_builtin_registry().get("/config")
+    assert config is not None
+    ctx.cmd_registry.register(config)
+    active = asyncio.create_task(_live_task())
+    session._agent_task = active
+
+    await session.handle_send(SendMessageCommand(text="/config"))
+
+    assert isinstance(workspace.overlays.widget, ConfigMenuOverlay)
+    assert session._msg_queue == []
+    await _stop(active)
+
+
+@pytest.mark.asyncio
 async def test_read_only_and_control_commands_are_immediate_but_messages_queue() -> None:
     session, ctx, _workspace, _input = _make_session()
     invoked: list[str] = []

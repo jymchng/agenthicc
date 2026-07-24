@@ -220,7 +220,7 @@ only determines when the existing dispatcher may invoke it.
 | `/commands` | Run now | `/commands reload` queues |
 | `/mcp` | Status runs now | Connect/disconnect/discovery queues or rejects |
 | `/model` | Pure query may run now | Provider/model change queues |
-| `/config` | Future pure view may run now | Editor/apply queues |
+| `/config` | Open the configuration overlay now | Save edits in the local overlay |
 
 Unknown or malformed subcommands use the existing command error path and
 cannot bypass the busy policy.
@@ -295,7 +295,8 @@ is installed.
 | `/cancel`, `/interrupt` | built-in control | active task cancellation | immediate control | TUI + existing interrupt tests |
 | `/bg`, `/background` | PRD-141 built-in bridge | background handoff/control | immediate control | background edges + policy path |
 | `/model` | built-in | no-arg query is local; provider/model args mutate future state | query immediate; action queues | subcommand policy |
-| `/config`, `/mode`, `/workflow` | built-in | overlay or future session/workflow state | queue | policy |
+| `/config` | built-in | open the local configuration overlay; save edits in the overlay | immediate read-only | policy + TUI coverage |
+| `/mode`, `/workflow` | built-in | future session/workflow state | queue | policy |
 | `/compact`, `/replay`, `/init` | built-in | memory, transcript, or filesystem/workflow actions | queue | policy |
 | `$skill-name`/`$alias` | skill-owned | starts an agent action | queue | policy + skill tests |
 | project/user commands | plugin | unknown until reviewed | queue by default | policy unit test |
@@ -355,8 +356,10 @@ plugins remain queue-only.
 - **A6** — Cancel/interruption and `/bg`/`/background`, when present, remain
   responsive and use existing control ownership.
 - **A7** — Normal messages and mutating/action commands remain FIFO queued.
-- **A8** — Workflow/config/model changes, reloads, compaction, replay, skills,
-  and agent-starting operations cannot use the immediate lane.
+- **A8** — Workflow/model changes, reloads, compaction, replay, skills, and
+  agent-starting operations cannot use the immediate lane. The local `/config`
+  overlay is an explicit exception: opening it is immediate and does not send
+  an agent message; its save action remains inside the overlay.
 - **A9** — Run-now, queued, and rejected outcomes are distinguishable to users.
 - **A10** — Queued commands execute once after terminal completion, revalidate,
   and never disappear silently.

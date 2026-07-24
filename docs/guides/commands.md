@@ -162,16 +162,20 @@ Use `/skills` to inspect discovered skills and their explicit invocation names.
 The interactive session classifies a submitted command before it enters the
 normal FIFO queue. Reviewed local queries such as `/usage`, `/status`,
 `/commands`, `/skills`, `/mcp status`, `/help`, `/history`, `/expand`, and
-`/clear` run immediately. `/cancel` and `/interrupt` use the same control
-owner as `Ctrl+C`; `/bg` and `/background` use the existing background-session
-handoff when that integration is enabled.
+`/clear` run immediately. The `/config` command also opens its local
+configuration overlay immediately, so it is available while a response is
+streaming. `/cancel` and `/interrupt` use the same control owner as `Ctrl+C`;
+`/bg` and `/background` use the existing background-session handoff when that
+integration is enabled.
 
 Mutating or agent-starting operations remain deferred. This includes normal
-text, `$skill` invocations, workflow/model/config changes, reload forms such
-as `/skills reload` and `/commands reload`, `/compact`, `/replay`, and MCP
-actions. User and project commands default to `queue`; an immediate-control
-policy is reserved for built-in controls. A command-policy resolver is pure,
-and resolver failures fail closed to the queue.
+text, `$skill` invocations, workflow/model changes, reload forms such as
+`/skills reload` and `/commands reload`, `/compact`, `/replay`, and MCP actions.
+The `/config` overlay is a local UI action; edits are applied by the overlay's
+save action and do not become an agent message. User and project commands
+default to `queue`; an immediate-control policy is reserved for built-in
+controls. A command-policy resolver is pure, and resolver failures fail closed
+to the queue.
 
 While the run is active, the slash picker labels entries as `runs now`,
 `queues while busy`, or `unavailable while busy`. Manual submission and the

@@ -158,6 +158,9 @@ Useful built-in slash commands include:
 | `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |
 
+`/config` opens its local configuration overlay immediately, including while a
+response is streaming.
+
 Use `Ctrl+C` according to the current input state; the input backend owns raw
 terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md)
 for modes, overlays, input, busy-run command policies, and platform rules.

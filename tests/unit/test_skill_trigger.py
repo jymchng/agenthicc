@@ -99,6 +99,27 @@ def test_skill_trigger_reuses_picker_hint_and_wrapping() -> None:
     assert len(trigger.get_lines(item, available_width=48)) > 1
 
 
+def test_skill_trigger_compacts_long_multiline_descriptions() -> None:
+    registry = UnifiedCommandRegistry()
+    registry.register(
+        Command(
+            "$hyperframes",
+            "Mandatory entry point:\n  read this first for any request to make, create, "
+            "edit, animate, or render a video, animation, or motion graphic. "
+            + "Additional guidance "
+            * 40,
+            group="Skills",
+            source_id="skill:hyperframes",
+        )
+    )
+
+    item = SkillTrigger(registry).get_matches("", CTX)[0]
+
+    assert "\n" not in item.detail
+    assert len(item.detail) <= 220
+    assert item.detail.endswith("…")
+
+
 def test_skill_trigger_has_same_line_boundary_activation_rules() -> None:
     trigger = SkillTrigger()
 

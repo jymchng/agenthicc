@@ -36,9 +36,8 @@ class SlashCommandTrigger(TriggerHandlerBase):
                 if not name.startswith(partial):
                     continue
                 # display: short single-line fallback for consumers without get_lines
-                short_desc = (
-                    cmd.description[:36] + "…" if len(cmd.description) > 36 else cmd.description
-                )
+                description = self._display_description(cmd)
+                short_desc = description[:36] + "…" if len(description) > 36 else description
                 display = f"{name:<{_NAME_COL}} {short_desc}"
                 results.append(
                     MatchItem(
@@ -50,6 +49,10 @@ class SlashCommandTrigger(TriggerHandlerBase):
                     )
                 )
         return results
+
+    def _display_description(self, cmd: Command) -> str:
+        """Return the description used by the picker and its fallback row."""
+        return cmd.description
 
     @staticmethod
     def _busy_label(cmd: Command) -> str:
@@ -67,14 +70,16 @@ class SlashCommandTrigger(TriggerHandlerBase):
     def _format_hint(self, cmd: Command, name: str | None = None, *, busy: bool = False) -> str:
         display_name = name or cmd.name
         availability = f"  • {self._busy_label(cmd)}" if busy else ""
+        description = self._display_description(cmd)
         if cmd.argument_hint:
-            return f"  ↑ {display_name} {cmd.argument_hint}  —  {cmd.description}{availability}"
-        return f"  ↑ {display_name}  —  {cmd.description}{availability}"
+            return f"  ↑ {display_name} {cmd.argument_hint}  —  {description}{availability}"
+        return f"  ↑ {display_name}  —  {description}{availability}"
 
     def _detail(self, cmd: Command, busy: bool) -> str:
+        description = self._display_description(cmd)
         if not busy:
-            return cmd.description
-        return f"{cmd.description}  [{self._busy_label(cmd)}]"
+            return description
+        return f"{description}  [{self._busy_label(cmd)}]"
 
     def on_select(
         self,
@@ -154,3 +159,15 @@ class SkillTrigger(SlashCommandTrigger):
     label = "Skill"
     skill_only = True
     include_aliases = True
+
+    _DESCRIPTION_LIMIT = 220
+
+    def _display_description(self, cmd: Command) -> str:
+        """Compact skill metadata into a readable picker description."""
+        description = " ".join(cmd.description.split())
+        if len(description) <= self._DESCRIPTION_LIMIT:
+            return description
+        cutoff = description.rfind(" ", 0, self._DESCRIPTION_LIMIT - 1)
+        if cutoff < 1:
+            cutoff = self._DESCRIPTION_LIMIT - 1
+        return description[:cutoff].rstrip() + "…"

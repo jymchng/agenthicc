@@ -523,6 +523,7 @@ BUILTIN_COMMANDS: list[Command] = [
         description="Open configuration editor",
         group="Built-in",
         menu_factory=_menu_config,
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
     ),
     Command(
         name="/expand",

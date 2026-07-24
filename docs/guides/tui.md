@@ -79,7 +79,9 @@ immediately; ordinary requests, skills, mutations, and workflow actions show
 their queue position and wait in FIFO order. The slash picker labels the same
 outcomes, so picker selection and manual typing cannot disagree. `/usage`
 shows the current local token/cost snapshot without sending a message to the
-agent. `/cancel`/`/interrupt` share the Ctrl+C cancellation owner, and
+agent. `/config` opens the configuration overlay immediately, including during
+a response, while its edits remain local to the overlay until saved.
+`/cancel`/`/interrupt` share the Ctrl+C cancellation owner, and
 `/bg`/`/background` use the background-session control plane.
 
 When a tool approval, plan review, or `ask_user()` question is pending, the
