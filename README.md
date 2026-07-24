@@ -256,6 +256,13 @@ Install a validated skill from a local path or HTTPS `SKILL.md` URL with
 directory name. Existing skill directories are never overwritten. Review
 downloaded instructions before invoking a newly installed skill.
 
+Register an MCP server without hand-editing TOML with
+`agenthicc mcp add NAME URL`. Project scope is the default; use `--global` for
+the user configuration, `--transport` to select the existing bridge transport,
+and `--token-env ENV_VAR` to persist a token reference without exposing the
+secret to the CLI. The command validates and appends configuration but does
+not connect to the server itself.
+
 Read the [extension guide](./docs/guides/plugins.md) and the
 [custom-command guide](./docs/guides/commands.md) before enabling project code
 or dependency installation. Project-local Python is executable code and must

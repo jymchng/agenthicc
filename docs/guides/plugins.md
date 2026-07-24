@@ -133,6 +133,21 @@ code execution and protect tokens with environment expansion and trust policy.
 Structured MCP results are preserved as native JSON values; JSON-encoded text
 results are decoded when possible, while ordinary text results remain strings.
 
+For a safe, repeatable registration flow, add a server through the CLI:
+
+```text
+agenthicc mcp add local-tools "python -m my_mcp_server"
+agenthicc mcp add remote "https://mcp.example.test/server" \
+  --transport streamable --token-env MCP_TOKEN --global
+```
+
+Project configuration is the default; `--global` targets the user config and
+`--project` makes project scope explicit. The command appends the existing
+`[[tools.mcp_servers]]` format, rejects duplicate names and malformed TOML,
+preserves existing file permissions, and writes `${MCP_TOKEN}` rather than a
+secret value. It validates the entry but does not connect to the server until
+the normal MCP bridge starts.
+
 ## Discovery debugging
 
 1. Run `uv run agenthicc config show`.

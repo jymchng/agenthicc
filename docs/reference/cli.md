@@ -31,6 +31,7 @@ based and implemented in `cli/registry.py`.
 | `workflows list [--json]` | List available workflow plugins and phase topology |
 | `workflows run NAME --intent TEXT [--json]` | Execute one workflow headlessly |
 | `skills add SOURCE [--project | --global] [--name NAME]` | Download and install a validated skill |
+| `mcp add NAME URL [--project | --global]` | Register an MCP server in TOML configuration |
 | `trust cli` | Trust project-local `.agenthicc/cli/` plugins |
 | `login` | Authenticate with agenthicc.ai |
 | `logout` | Revoke stored credentials |
@@ -44,6 +45,15 @@ Run any command with `--help` for generated argument details.
 directory/file or an HTTPS URL ending in `SKILL.md`; GitHub tree/blob skill
 links are also supported. Use `--name` when the source URL does not provide a
 usable directory name. Existing skills are never overwritten.
+
+`agenthicc mcp add NAME URL` appends a validated `[[tools.mcp_servers]]` entry
+to the project configuration by default. Use `--global` for the user config,
+`--project` to make project scope explicit, and `--transport` for `stdio`,
+`ws`, `websocket`, `streamable`, or `http`. Use `--token-env ENV_VAR` to store
+an environment-variable reference such as `${MCP_TOKEN}`; the command never
+accepts or prints a raw token. `--no-auto-connect`, `--reconnect-attempts`,
+and `--reconnect-delay-seconds` configure the existing MCP bridge. The command
+only updates configuration; it does not start or connect to the server.
 
 ## TUI slash commands
 

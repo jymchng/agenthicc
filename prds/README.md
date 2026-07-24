@@ -14,6 +14,7 @@ against the current source before implementing them.
 - [PRD-143 — Safe Commands During Active LPM Runs](prd-143-safe-commands-during-active-runs.md)
 - [PRD-144 — Resize-Safe Waiting Modals and Pause-Aware Display Timing](prd-144-resize-safe-waiting-modals.md)
 - [PRD-145 — CLI Skill Installation](prd-145-cli-skill-installation.md)
+- [PRD-146 — CLI MCP Server Registration](prd-146-cli-mcp-server-registration.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -45,6 +46,9 @@ telemetry while preventing a resize from changing otherwise static waiting UI.
 
 PRD-145 adds `agenthicc skills add` for validated project- or user-global
 `SKILL.md` installation without overwriting existing skills.
+
+PRD-146 adds `agenthicc mcp add` for validated, persistent MCP server
+registration using the existing `[[tools.mcp_servers]]` configuration format.
 
 ## Existing PRDs
 
