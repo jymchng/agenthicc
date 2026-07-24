@@ -12,6 +12,7 @@ against the current source before implementing them.
 - [PRD-141 — Background Sessions and Session Manager TUI](prd-141-background-sessions-and-session-manager-tui.md)
 - [PRD-142 — Dollar-Prefixed Skill Triggers](prd-142-dollar-prefixed-skill-triggers.md)
 - [PRD-143 — Safe Commands During Active LPM Runs](prd-143-safe-commands-during-active-runs.md)
+- [PRD-144 — Resize-Safe Waiting Modals and Pause-Aware Display Timing](prd-144-resize-safe-waiting-modals.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -36,6 +37,10 @@ not an executable compatibility path.
 PRD-143 evaluates a typed busy-state policy so safe read-only and run-control
 commands can remain responsive while the LPM is responding, while mutating and
 agent-starting commands remain queued.
+
+PRD-144 defines a pause-aware display clock and resize-safe Live rendering for
+approval, plan-review, and question modals. It preserves wall-clock turn
+telemetry while preventing a resize from changing otherwise static waiting UI.
 
 ## Existing PRDs
 

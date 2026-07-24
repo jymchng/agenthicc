@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from agenthicc.tui.conversation_store import ConversationStore, AgentState
+from agenthicc.tui.conversation_store import AppState, ConversationStore, AgentState
 
 
 pytestmark = pytest.mark.unit
@@ -112,6 +112,86 @@ class TestElapsedSProperty:
         conv = ConversationStore()
         assert not callable(conv.elapsed_s)
 
+    def test_display_clock_excludes_prompt_wait_but_wall_clock_does_not(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+
+        now = 100.0
+        monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
+        conv = ConversationStore()
+        conv.begin_turn("agent", "t1")
+
+        now = 101.0
+        conv.tick()
+        assert conv.display_elapsed_s() == pytest.approx(1.0)
+
+        conv.set_display_paused(True)
+        now = 111.0
+        # Rendering and paused ticks cannot charge the ten-second wait.
+        assert conv.display_elapsed_s() == pytest.approx(1.0)
+        conv.tick()
+        assert conv.display_elapsed_s() == pytest.approx(1.0)
+        assert conv.elapsed_s == pytest.approx(11.0)
+
+        # Repeated state edges are idempotent.  The first active tick establishes
+        # the new baseline; only subsequent active time is displayed.
+        conv.set_display_paused(True)
+        conv.set_display_paused(False)
+        conv.tick()
+        now = 112.0
+        conv.tick()
+        assert conv.display_elapsed_s() == pytest.approx(2.0)
+
+    def test_pending_signal_controls_display_pause_without_tick_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+
+        now = 100.0
+        monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
+        app_state = AppState.create()
+        conv = app_state.conversation
+        conv.begin_turn("agent", "t1")
+        now = 101.0
+        conv.tick()
+        before = conv.display_elapsed_s()
+
+        app_state.pending_approval.set(object())  # type: ignore[arg-type]
+        conv.tick()  # ``None`` uses the authoritative pending state.
+        assert conv.display_elapsed_s() == before
+
+        app_state.pending_approval.set(object())  # replacement remains paused
+        conv.tick()
+        assert conv.display_elapsed_s() == before
+        app_state.pending_approval.set(None)
+        now = 102.0
+        conv.tick()
+        assert conv.display_elapsed_s() > before
+
+    def test_turn_complete_retains_wall_clock_duration_during_prompt_wait(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+
+        now = 200.0
+        monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
+        conv = ConversationStore()
+        conv.begin_turn("agent", "t1")
+        now = 202.0
+        conv.tick()
+        conv.set_display_paused(True)
+        now = 222.0
+        conv.tick()
+        events = []
+        conv.on_event(events.append)
+        conv.close_turn()
+
+        completion = [event for event in events if event.kind == "turn_complete"]
+        assert len(completion) == 1
+        assert completion[0].payload["elapsed_s"] == pytest.approx(22.0)
+        assert conv.display_elapsed_s() == 0.0
+
 
 class TestFrameDrivesAnimation:
     """Verify StatusComponent reads frame() for all animated elements."""
@@ -134,6 +214,7 @@ class TestFrameDrivesAnimation:
         state.conversation.compaction_active.return_value = False
         state.conversation.notification.return_value = None
         state.conversation.workflow_override.return_value = None
+        state.pending_approval.return_value = None
         state.active_mode.return_value = MagicMock(badge="⏵⏵")
         state.workflow_run.return_value = None
         return state
@@ -203,6 +284,7 @@ class TestFrameDrivesAnimation:
             ("tool", "Waiting for approval"),
             ("plan_review", "Waiting for plan approval"),
             ("questions", "Waiting for your answer"),
+            ("unknown", "Waiting for approval"),
         ],
     )
     def test_waiting_prompt_freezes_status_animation(self, kind: str, label: str) -> None:

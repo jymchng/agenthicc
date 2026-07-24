@@ -83,15 +83,21 @@ class ApprovalService:
         async with self._lock:
             self._response = None
             self._app_state.pending_approval.set(req)
-            await req.event.wait()
-            self._app_state.pending_approval.set(None)
-            response = self._response or ApprovalResponse(allowed=False)
-            self._response = None
-            if response.remember_all:
-                self._remembered_all = self._remembered_all | req.capabilities
-            elif response.remember:
-                self._remembered_turn = self._remembered_turn | req.capabilities
-            return response
+            try:
+                await req.event.wait()
+                response = self._response or ApprovalResponse(allowed=False)
+                self._response = None
+                if response.remember_all:
+                    self._remembered_all = self._remembered_all | req.capabilities
+                elif response.remember:
+                    self._remembered_turn = self._remembered_turn | req.capabilities
+                return response
+            finally:
+                # Cancellation/error paths must release the modal and resume
+                # the cached display clock. Identity-guard the clear so a
+                # future concurrent owner cannot be removed accidentally.
+                if self._app_state.pending_approval() is req:
+                    self._app_state.pending_approval.set(None)
 
     def respond(
         self,

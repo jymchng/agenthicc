@@ -158,6 +158,12 @@ class ConversationStore:
 
         # ── animation (driven by tick) ────────────────────────────────────────
         self._start_time: float = 0.0
+        # ``elapsed_s`` is intentionally wall-clock based for turn telemetry.
+        # The status bar uses this separate cached clock so a render caused by
+        # SIGWINCH cannot change a waiting modal's visible duration.
+        self.display_elapsed_s: Signal[float] = Signal(0.0)
+        self._display_paused: bool = False
+        self._last_display_tick: float | None = None
 
         # ── internal ──────────────────────────────────────────────────────────
         self._current_turn: ConversationTurn | None = None
@@ -169,18 +175,57 @@ class ConversationStore:
 
     @property
     def elapsed_s(self) -> float:
-        """Seconds since the current turn started, or 0.0 when idle."""
+        """Wall-clock seconds since the current turn started, or 0.0 when idle.
+
+        This remains the source for turn-completion telemetry.  UI rendering
+        must use :attr:`display_elapsed_s`, which is a cached active-work
+        duration and therefore stable while a prompt owns the terminal.
+        """
         return time.monotonic() - self._start_time if self._start_time else 0.0
 
-    def tick(self, *, paused: bool = False) -> None:
-        """Advance the universal frame counter, unless animation is paused.
+    def _advance_display_clock(self, now: float) -> None:
+        """Accumulate active-work time without reading the clock from render.
+
+        ``_last_display_tick`` is moved while paused as well.  That prevents
+        the entire user-wait interval from being charged when the next active
+        tick arrives.
+        """
+        previous = self._last_display_tick
+        self._last_display_tick = now
+        if previous is None or self._display_paused or self._current_turn is None:
+            return
+        delta = max(0.0, now - previous)
+        if delta:
+            self.display_elapsed_s.set(self.display_elapsed_s() + delta)
+
+    def set_display_paused(self, paused: bool) -> None:
+        """Pause or resume the cached UI clock at an idempotent state edge.
+
+        ``AppState.pending_approval`` calls this synchronously, so repeated
+        signal writes and overlay replacements cannot double-count a wait.
+        """
+        if paused == self._display_paused:
+            return
+        now = time.monotonic()
+        # Capture active work up to the exact pause edge.  When resuming, the
+        # current paused timestamp becomes the new accumulation baseline.
+        self._advance_display_clock(now)
+        self._display_paused = paused
+        self._last_display_tick = now
+
+    def tick(self, *, paused: bool | None = None) -> None:
+        """Advance animation and cached active-work time.
 
         The session pauses this tick while an approval or question overlay is
         waiting for the user. That keeps the status bar and Live region stable
-        while a modal prompt owns the terminal; ordinary callers retain the
-        original unconditional behaviour.
+        while a modal prompt owns the terminal. ``paused=None`` uses the
+        authoritative state set by ``AppState.pending_approval``; an explicit
+        boolean is retained for session-loop callers and focused tests.
         """
-        if paused:
+        if paused is not None:
+            self.set_display_paused(paused)
+        self._advance_display_clock(time.monotonic())
+        if self._display_paused:
             return
         self.frame.set(self.frame() + 1)
 
@@ -249,6 +294,9 @@ class ConversationStore:
         self._current_turn = turn
         self.turns.set(self.turns.get() + [turn])
         self._start_time = time.monotonic()
+        self.display_elapsed_s.set(0.0)
+        self._display_paused = False
+        self._last_display_tick = self._start_time
         self.agent_state.set(AgentState.THINKING)
         return turn
 
@@ -285,6 +333,9 @@ class ConversationStore:
         self.agent_state.set(AgentState.IDLE)  # ALWAYS IDLE — invariant
         self.active_tool.set("")
         self._start_time = 0.0
+        self.display_elapsed_s.set(0.0)
+        self._display_paused = False
+        self._last_display_tick = None
 
     def end_turn(self) -> None:
         """Close the turn successfully. Prefer ``close_turn()`` for new code."""
@@ -414,10 +465,18 @@ class AppState:
         self.modal_open: Signal[bool] = Signal(False)
         # PRD-78: non-None when an agent tool is paused waiting for approval.
         self.pending_approval: Signal[ApprovalRequest | None] = Signal(None)
+        # Keep the cached display clock in sync with the authoritative prompt
+        # state.  This is synchronous and idempotent; rendering and resizing
+        # never need to inspect a wall clock to decide whether a wait is active.
+        self.pending_approval.subscribe(self._sync_display_wait_state)
         # PRD-81: holds WorkflowRun | None; set by WorkflowRunner during execution.
         self.workflow_run: Signal[WorkflowRun | None] = Signal(None)
         # PRD-79: ephemeral CLI flags — frozen after startup, read by ApprovalGate etc.
         self.cli_flags: CLIFlags = CLIFlags()
+
+    def _sync_display_wait_state(self) -> None:
+        """Mirror prompt ownership into the conversation display clock."""
+        self.conversation.set_display_paused(self.pending_approval() is not None)
 
     @classmethod
     def create(cls) -> "AppState":

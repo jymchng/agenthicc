@@ -84,9 +84,11 @@ agent. `/cancel`/`/interrupt` share the Ctrl+C cancellation owner, and
 
 When a tool approval, plan review, or `ask_user()` question is pending, the
 status bar changes from the animated Thinking state to a stable waiting label.
-The shared animation tick is paused until the response arrives, which also
-keeps terminal-resize redraws from racing a changing status bar or duplicating
-the Plan Review header.
+The shared animation tick and cached active-work duration are paused until the
+response arrives. Wall-clock turn duration remains available for completion
+telemetry, while resize redraws project the unchanged cached duration; this
+keeps a modal repaint from looking like a new frame or duplicating the Plan
+Review header.
 
 The Windows backend uses `ReadConsoleInputW` so Shift+Tab preserves its
 modifier. POSIX raw mode is a no-op for non-TTY file descriptors and restores

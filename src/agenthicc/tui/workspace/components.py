@@ -44,6 +44,17 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{s // 60}m {s % 60}s"
 
 
+def _cached_elapsed(conv: object) -> float:
+    """Read the cached UI duration without deriving time during rendering.
+
+    The numeric fallback keeps lightweight ConversationStore-shaped test
+    doubles compatible while the production store always supplies the signal.
+    """
+    value = getattr(conv, "display_elapsed_s", None)
+    value = value() if callable(value) else value
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
 def _fit(markup: str, cols: int) -> str:
     from agenthicc.tui.rendering import fit, visible_len  # noqa: PLC0415
 
@@ -68,9 +79,11 @@ def _waiting_label(state: "AppState") -> str | None:
     if not callable(pending_signal):
         return None
     pending = pending_signal()
-    kind = getattr(pending, "kind", None) if pending is not None else None
-    if not isinstance(kind, str):
+    if pending is None:
         return None
+    kind = getattr(pending, "kind", None)
+    if not isinstance(kind, str):
+        kind = ""
     return {
         "questions": "Waiting for your answer",
         "plan_review": "Waiting for plan approval",
@@ -132,7 +145,7 @@ class StatusComponent:
 
         # ── line 1: state animation + elapsed + tokens + active tool ────────────
         l1_parts = [f"{flower} [{color}]{state_text}[/{color}]"]
-        elapsed = conv.elapsed_s
+        elapsed = _cached_elapsed(conv)
         if elapsed > 0:
             l1_parts.append(f"[dim] │[/dim] {_fmt_elapsed(elapsed)}")
         inp = conv.tokens_in()

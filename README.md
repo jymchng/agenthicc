@@ -130,7 +130,9 @@ The current TUI is implemented by `tui/workspace/Workspace` and consists of:
 
 The workspace treats terminal resizing as one settled repaint, clearing
 Rich's previous geometry before redrawing so an active Plan Review is not
-duplicated in the scrollback.
+duplicated in the scrollback. While approvals, plan reviews, or questions are
+waiting, the status animation and cached active-work timer stay fixed; the
+wall-clock duration is retained for turn telemetry.
 
 Tool completions use the same operation-style header as file updates: reads,
 searches, commands, and other tools show a `● Operation(...)` header, a result
