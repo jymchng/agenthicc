@@ -13,6 +13,7 @@ against the current source before implementing them.
 - [PRD-142 — Dollar-Prefixed Skill Triggers](prd-142-dollar-prefixed-skill-triggers.md)
 - [PRD-143 — Safe Commands During Active LPM Runs](prd-143-safe-commands-during-active-runs.md)
 - [PRD-144 — Resize-Safe Waiting Modals and Pause-Aware Display Timing](prd-144-resize-safe-waiting-modals.md)
+- [PRD-145 — CLI Skill Installation](prd-145-cli-skill-installation.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -41,6 +42,9 @@ agent-starting commands remain queued.
 PRD-144 defines a pause-aware display clock and resize-safe Live rendering for
 approval, plan-review, and question modals. It preserves wall-clock turn
 telemetry while preventing a resize from changing otherwise static waiting UI.
+
+PRD-145 adds `agenthicc skills add` for validated project- or user-global
+`SKILL.md` installation without overwriting existing skills.
 
 ## Existing PRDs
 

@@ -125,17 +125,23 @@ def _add_params(parser: argparse.ArgumentParser, fn: Handler) -> None:
         empty = inspect.Parameter.empty
         if ann is CLIContext:
             continue  # injected — skip
+        # A trailing underscore lets handlers use Python keywords, e.g.
+        # ``global_`` becomes the user-facing ``--global`` option.
+        option_name = name[:-1] if name.endswith("_") else name
+        option = f"--{option_name.replace('_', '-')}"
         if ann is bool:
             parser.add_argument(
-                f"--{name.replace('_', '-')}",
+                option,
                 action="store_true",
+                dest=name,
                 default=default if default is not empty else False,
             )
         elif default is empty:
             parser.add_argument(name, metavar=name.upper())  # positional
         else:
             parser.add_argument(
-                f"--{name.replace('_', '-')}",
+                option,
+                dest=name,
                 default=default,
                 type=ann if ann in (int, float) else str,
             )

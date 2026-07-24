@@ -250,6 +250,12 @@ for commands. `/commands` lists slash commands only; use `/skills` to inspect
 discovered skills. The former
 `/skill-name` spelling is not executed.
 
+Install a validated skill from a local path or HTTPS `SKILL.md` URL with
+`agenthicc skills add SOURCE`. Project scope is the default; use
+`--global` for `~/.agenthicc/skills/` or `--name NAME` to choose the canonical
+directory name. Existing skill directories are never overwritten. Review
+downloaded instructions before invoking a newly installed skill.
+
 Read the [extension guide](./docs/guides/plugins.md) and the
 [custom-command guide](./docs/guides/commands.md) before enabling project code
 or dependency installation. Project-local Python is executable code and must

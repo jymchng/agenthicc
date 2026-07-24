@@ -30,12 +30,20 @@ based and implemented in `cli/registry.py`.
 | `sessions export SESSION_ID [--output PATH]` | Write a redacted portable session export |
 | `workflows list [--json]` | List available workflow plugins and phase topology |
 | `workflows run NAME --intent TEXT [--json]` | Execute one workflow headlessly |
+| `skills add SOURCE [--project | --global] [--name NAME]` | Download and install a validated skill |
 | `trust cli` | Trust project-local `.agenthicc/cli/` plugins |
 | `login` | Authenticate with agenthicc.ai |
 | `logout` | Revoke stored credentials |
 | `whoami` | Show current authentication state |
 
 Run any command with `--help` for generated argument details.
+
+`agenthicc skills add SOURCE` installs into the current project's
+`.agenthicc/skills/` by default. Use `--global` for `~/.agenthicc/skills/` or
+`--project` to make the project target explicit. `SOURCE` may be a local skill
+directory/file or an HTTPS URL ending in `SKILL.md`; GitHub tree/blob skill
+links are also supported. Use `--name` when the source URL does not provide a
+usable directory name. Existing skills are never overwritten.
 
 ## TUI slash commands
 

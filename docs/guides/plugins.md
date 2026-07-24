@@ -52,6 +52,21 @@ project and user scopes; the project copy wins. Discovery is deterministic and
 returns diagnostics for malformed metadata, missing files, scope overrides,
 and alias conflicts.
 
+Use the CLI to install one without manually creating the directory:
+
+```text
+agenthicc skills add https://example.com/skills/review-code/SKILL.md
+agenthicc skills add https://github.com/acme/skills/tree/main/review-code --global
+```
+
+Project scope is the default; `--global` targets `~/.agenthicc/skills/`, while
+`--project` makes the project target explicit. Local directories and files are
+also accepted for offline use. The installer limits downloads to 1 MiB,
+validates the existing skill metadata contract, uses canonical kebab-case
+directory names, stages the file before moving it into place, and refuses to
+overwrite an existing skill. A downloaded skill is still executable prompt
+content: review its `SKILL.md` before using it.
+
 Use a lower-case kebab-case directory name (up to 64 characters), for example
 `.agenthicc/skills/review-code/SKILL.md`. The frontmatter `name` is the display
 name; the directory name is the canonical skill trigger name. The supported
