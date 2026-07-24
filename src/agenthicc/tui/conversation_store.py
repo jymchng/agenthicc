@@ -104,9 +104,11 @@ class ConversationStore:
         self.agent_state: Signal[AgentState] = Signal(AgentState.IDLE)
         self.active_tool: Signal[str] = Signal("")
         self.frame: Signal[int] = Signal(0)
-        """Universal animation counter — increments every 50 ms unconditionally (PRD-120).
-        All animated elements (flower, thinking, compact spinner) derive their frame index
-        from ``frame() % N``.  The workspace subscribes once for all animation redraws."""
+        """Universal animation counter — normally increments every 50 ms (PRD-120).
+        The interactive session pauses it while a user approval/question owns
+        the terminal. All animated elements (flower, thinking, compact spinner)
+        derive their frame index from ``frame() % N``. The workspace subscribes
+        once for all animation redraws."""
         self.tokens_in: Signal[int] = Signal(0)
         self.tokens_out: Signal[int] = Signal(0)
         self.cost_usd: Signal[float] = Signal(0.0)
@@ -170,12 +172,16 @@ class ConversationStore:
         """Seconds since the current turn started, or 0.0 when idle."""
         return time.monotonic() - self._start_time if self._start_time else 0.0
 
-    def tick(self) -> None:
-        """Advance the universal frame counter. Called every ~50 ms unconditionally.
+    def tick(self, *, paused: bool = False) -> None:
+        """Advance the universal frame counter, unless animation is paused.
 
-        All animated UI elements derive their frame index from ``frame() % N``
-        (PRD-120).  No per-feature branches needed here.
+        The session pauses this tick while an approval or question overlay is
+        waiting for the user. That keeps the status bar and Live region stable
+        while a modal prompt owns the terminal; ordinary callers retain the
+        original unconditional behaviour.
         """
+        if paused:
+            return
         self.frame.set(self.frame() + 1)
 
     # ── turn lifecycle ────────────────────────────────────────────────────────

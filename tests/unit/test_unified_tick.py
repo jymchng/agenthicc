@@ -40,6 +40,13 @@ class TestFrameSignal:
             conv.tick()
         assert conv.frame() == 4
 
+    def test_tick_stays_stable_while_user_prompt_is_pending(self) -> None:
+        conv = ConversationStore()
+        conv.tick()
+        conv.tick(paused=True)
+        conv.tick(paused=True)
+        assert conv.frame() == 1
+
     def test_frame_monotonically_increases(self) -> None:
         conv = ConversationStore()
         values: list[int] = []
@@ -189,3 +196,37 @@ class TestFrameDrivesAnimation:
                     break
 
         assert len(results) > 1, "Spinner must cycle across frame values"
+
+    @pytest.mark.parametrize(
+        ("kind", "label"),
+        [
+            ("tool", "Waiting for approval"),
+            ("plan_review", "Waiting for plan approval"),
+            ("questions", "Waiting for your answer"),
+        ],
+    )
+    def test_waiting_prompt_freezes_status_animation(self, kind: str, label: str) -> None:
+        from rich.console import Console  # noqa: PLC0415
+        from unittest.mock import MagicMock  # noqa: PLC0415
+        from agenthicc.tui.workspace.components import (  # noqa: PLC0415
+            StatusComponent,
+            _FLOWERS,
+        )
+
+        rendered: set[str] = set()
+        for i in range(len(_FLOWERS)):
+            state = self._make_state(frame=i)
+            state.conversation.is_running.return_value = True
+            state.conversation.agent_state.return_value = MagicMock(name="THINKING")
+            state.conversation.agent_state().name = "THINKING"
+            state.pending_approval.return_value = MagicMock(kind=kind)
+            comp = StatusComponent(state)
+            console = Console(highlight=False, markup=False, no_color=True, width=120)
+            with console.capture() as cap:
+                console.print(comp.render())
+            rendered.add(cap.get())
+
+        assert len(rendered) == 1
+        output = next(iter(rendered))
+        assert label in output
+        assert "Thinking" not in output

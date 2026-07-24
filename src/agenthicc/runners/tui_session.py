@@ -1274,7 +1274,10 @@ class TUISession:
         async def _tick() -> None:
             while True:
                 await asyncio.sleep(0.05)
-                ctx.app_state.conversation.tick()
+                # Approval and question requests suspend the LLM turn while
+                # the overlay owns the terminal. Freeze animation during that
+                # wait so SIGWINCH redraws do not race a changing status bar.
+                ctx.app_state.conversation.tick(paused=ctx.app_state.pending_approval() is not None)
 
         tick_task = asyncio.create_task(_tick())
         try:

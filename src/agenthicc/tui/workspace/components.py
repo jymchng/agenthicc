@@ -62,6 +62,21 @@ def _thinking_markup(frame: int) -> str:
     return "".join(f"[bold]{ch}[/bold]" if i == pos else ch for i, ch in enumerate(word))
 
 
+def _waiting_label(state: "AppState") -> str | None:
+    """Return a stable label while an approval/question modal is pending."""
+    pending_signal = getattr(state, "pending_approval", None)
+    if not callable(pending_signal):
+        return None
+    pending = pending_signal()
+    kind = getattr(pending, "kind", None) if pending is not None else None
+    if not isinstance(kind, str):
+        return None
+    return {
+        "questions": "Waiting for your answer",
+        "plan_review": "Waiting for plan approval",
+    }.get(kind, "Waiting for approval")
+
+
 # ── StatusComponent ───────────────────────────────────────────────────────────
 
 
@@ -82,18 +97,22 @@ class StatusComponent:
 
         conv = self._state.conversation
         cols = _get_cols()
+        waiting_label = _waiting_label(self._state)
+        waiting = waiting_label is not None
 
         _frame = conv.frame()
         # Flower animates only while the agent is active; frozen at index 0 when idle.
         flower = (
             _FLOWERS[_frame % len(_FLOWERS)]
-            if conv.is_running() or conv.compaction_active()
+            if not waiting and (conv.is_running() or conv.compaction_active())
             else _FLOWERS[0]
         )
         agent_st = conv.agent_state()
         state_name = agent_st.name.lower()
 
-        if conv.is_running():
+        if waiting:
+            state_text = waiting_label
+        elif conv.is_running():
             if state_name == "recovering":
                 state_text = "↻ " + _thinking_markup(_frame)
             else:
