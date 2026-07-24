@@ -73,6 +73,15 @@ Current triggers include:
 - `@` — project file/mention picker;
 - trigger selection may update the input buffer or submit immediately.
 
+While the agent is responding, submitted input is classified before it enters
+the session queue. Local read-only commands and run controls can execute
+immediately; ordinary requests, skills, mutations, and workflow actions show
+their queue position and wait in FIFO order. The slash picker labels the same
+outcomes, so picker selection and manual typing cannot disagree. `/usage`
+shows the current local token/cost snapshot without sending a message to the
+agent. `/cancel`/`/interrupt` share the Ctrl+C cancellation owner, and
+`/bg`/`/background` use the background-session control plane.
+
 The Windows backend uses `ReadConsoleInputW` so Shift+Tab preserves its
 modifier. POSIX raw mode is a no-op for non-TTY file descriptors and restores
 the previous terminal state on exit.

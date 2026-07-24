@@ -69,6 +69,8 @@ plugin.
 | `menu_factory` | Optional `CommandContext → MenuWidget` factory. |
 | `source_id` | Ownership label used by `/commands` and source cleanup. |
 | `completions_factory` | Stored metadata for argument completions; not currently consumed by the TUI picker. |
+| `busy_policy` | Policy used when submitted during an active run; defaults to `queue`. |
+| `busy_policy_resolver` | Pure argument-aware policy selector; failures fail closed to `queue`. |
 
 A command should normally set exactly one of `handler` or `menu_factory`.
 When both are set, the menu factory wins for every invocation, including when
@@ -151,6 +153,27 @@ commands go through `CommandDispatcher`:
 An unknown slash command is therefore a local command miss, not an agent
 prompt. A registered command with no handler is also consumed locally and
 reports that it has no handler.
+
+## Commands while an agent run is active
+
+The interactive session classifies a submitted command before it enters the
+normal FIFO queue. Reviewed local queries such as `/usage`, `/status`,
+`/commands`, `/skills`, `/mcp status`, `/help`, `/history`, `/expand`, and
+`/clear` run immediately. `/cancel` and `/interrupt` use the same control
+owner as `Ctrl+C`; `/bg` and `/background` use the existing background-session
+handoff when that integration is enabled.
+
+Mutating or agent-starting operations remain deferred. This includes normal
+text, `$skill` invocations, workflow/model/config changes, reload forms such
+as `/skills reload` and `/commands reload`, `/compact`, `/replay`, and MCP
+actions. User and project commands default to `queue`; an immediate-control
+policy is reserved for built-in controls. A command-policy resolver is pure,
+and resolver failures fail closed to the queue.
+
+While the run is active, the slash picker labels entries as `runs now`,
+`queues while busy`, or `unavailable while busy`. Manual submission and the
+picker use the same metadata. Immediate output is local: `/usage` reads the
+existing conversation token/cost counters and never becomes an agent message.
 
 ## Dependencies and failures
 

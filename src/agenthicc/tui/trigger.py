@@ -57,6 +57,7 @@ class TriggerContext:
     cwd: Path
     session_id: str = ""  # scope results to a session if needed
     command_registry: object = None  # CommandRegistry, for cross-trigger lookups
+    busy: bool = False  # an agent run is active; used for command availability labels
 
 
 @runtime_checkable

@@ -51,6 +51,8 @@ class CommandDispatcher:
             set_pending_replay=ctx.set_pending_replay,
             reload_skills=ctx.reload_skills,
             reload_commands=ctx.reload_commands,
+            usage_snapshot=ctx.usage_snapshot,
+            cancel_active=ctx.cancel_active,
         )
 
         # Menu factory always takes precedence; factory receives args via ctx.args.

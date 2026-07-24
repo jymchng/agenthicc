@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .command import Command, CommandContext, CommandHandler
+from .command import BusyPolicy, Command, CommandContext, CommandHandler, UsageSnapshot
 from .registry import UnifiedCommandRegistry
 
 if TYPE_CHECKING:
@@ -50,7 +50,31 @@ def _cmd_replay(ctx: CommandContext) -> bool:
 
 
 def _cmd_cancel(ctx: CommandContext) -> bool:
-    ctx.console.print("[dim]No active intent to cancel.[/dim]")
+    if ctx.cancel_active is not None and ctx.cancel_active():
+        ctx.console.print("[yellow]Cancellation requested for the active run.[/yellow]")
+    else:
+        ctx.console.print("[dim]No active intent to cancel.[/dim]")
+    return True
+
+
+def _cmd_usage(ctx: CommandContext) -> bool:
+    """Show the local usage snapshot without contacting the provider."""
+    provider = ctx.usage_snapshot
+    snapshot = provider() if provider is not None else None
+    if not isinstance(snapshot, UsageSnapshot):
+        ctx.console.print("Usage is unavailable in this command context.", markup=False)
+        return True
+    state = "running" if snapshot.active_run else "idle"
+    ctx.console.print(
+        "Usage: "
+        f"input={snapshot.input_tokens:,} "
+        f"output={snapshot.output_tokens:,} "
+        f"total={snapshot.total_tokens:,} "
+        f"cost=${snapshot.cost_usd:.4f} "
+        f"state={state} "
+        f"queued={snapshot.queue_depth}",
+        markup=False,
+    )
     return True
 
 
@@ -131,6 +155,25 @@ def _cmd_init(ctx: CommandContext) -> bool:
 def _cmd_mcp(ctx: CommandContext) -> bool:
     ctx.console.print("[dim]/mcp: no MCP servers configured or not available.[/dim]")
     return True
+
+
+def _read_only_without_args(args: str) -> BusyPolicy:
+    """Make an argument-free query immediate while actions remain queued."""
+    return BusyPolicy.IMMEDIATE_READ_ONLY if not args.strip() else BusyPolicy.QUEUE
+
+
+def _mcp_busy_policy(args: str) -> BusyPolicy:
+    """Allow only local MCP status inspection in the immediate lane."""
+    return (
+        BusyPolicy.IMMEDIATE_READ_ONLY
+        if args.strip().lower() in {"", "status"}
+        else BusyPolicy.QUEUE
+    )
+
+
+def _reloadable_list_policy(args: str) -> BusyPolicy:
+    """List commands are safe; reload and malformed action forms defer."""
+    return BusyPolicy.IMMEDIATE_READ_ONLY if not args.strip() else BusyPolicy.QUEUE
 
 
 def _cmd_model(ctx: CommandContext) -> bool:
@@ -455,11 +498,14 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/cancel",
         description="Cancel the currently running intent",
+        aliases=("/interrupt",),
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_cancel,
     ),
     Command(
         name="/clear",
         description="Clear the transcript display",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_clear,
     ),
     Command(
@@ -467,6 +513,8 @@ BUILTIN_COMMANDS: list[Command] = [
         description="List all registered commands with their source",
         argument_hint="[reload]",
         group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        busy_policy_resolver=_reloadable_list_policy,
         handler=_cmd_commands,
     ),
     Command(
@@ -479,17 +527,20 @@ BUILTIN_COMMANDS: list[Command] = [
         name="/expand",
         description="Expand tool output or @mention",
         argument_hint="[tool-id-or-@path]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_expand,
     ),
     Command(
         name="/help",
         description="List available commands",
         argument_hint="[/command]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         menu_factory=_help_menu,
     ),
     Command(
         name="/history",
         description="Browse the event log",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_history,
     ),
     Command(
@@ -504,29 +555,44 @@ BUILTIN_COMMANDS: list[Command] = [
         description="Show MCP server status",
         group="MCP",
         argument_hint="[connect <url> [transport]]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        busy_policy_resolver=_mcp_busy_policy,
         handler=_cmd_mcp,
     ),
     Command(
         name="/model",
         description="Show or switch LLM provider/model",
         argument_hint="[provider] [model]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        busy_policy_resolver=_read_only_without_args,
         handler=_cmd_model,
     ),
     Command(
         name="/models",
         description="List all available LLM providers",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_model,
     ),
     Command(
         name="/skills",
         description="List or reload available skills",
         argument_hint="[reload]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        busy_policy_resolver=_reloadable_list_policy,
         handler=_cmd_skills,
     ),
     Command(
         name="/status",
         description="Show running agents and their tasks",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_status,
+    ),
+    Command(
+        name="/usage",
+        description="Show local token, cost, and active-run usage",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_usage,
     ),
     Command(
         name="/mode",

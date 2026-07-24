@@ -234,6 +234,7 @@ class UnifiedInputSession:
             initial_buf=initial,
             registry=self._registry,
             cwd=self._cwd,
+            busy=self._mode is InputMode.STREAMING,
             on_complete=on_complete,
         )
         self._overlay.show(overlay)

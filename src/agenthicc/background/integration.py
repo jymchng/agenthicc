@@ -29,6 +29,14 @@ def _last_user_text(session: object) -> str:
     if isinstance(remembered, str) and remembered.strip():
         return remembered.strip()
 
+    # TUISession records accepted plain submissions even when the optional
+    # compatibility bridge was installed after the session was constructed.
+    # This keeps /bg usable for the first active request as well as resumed
+    # sessions, without treating the /bg command itself as the intent.
+    submitted = getattr(session, "_last_submitted_text", "")
+    if isinstance(submitted, str) and submitted.strip() and not submitted.lstrip().startswith("/"):
+        return submitted.strip()
+
     conversation = getattr(getattr(session, "_ctx"), "app_state").conversation
     turns = conversation.turns()
     for turn in reversed(turns):
@@ -103,7 +111,7 @@ def install_tui_handoff() -> None:
     from agenthicc.tui.input.unified_session import UnifiedInputSession  # noqa: PLC0415
     from agenthicc.tui.input.capabilities import _EXIT  # noqa: PLC0415
     from agenthicc.commands.builtins import BUILTIN_COMMANDS  # noqa: PLC0415
-    from agenthicc.commands.command import Command  # noqa: PLC0415
+    from agenthicc.commands.command import BusyPolicy, Command  # noqa: PLC0415
 
     if not any(command.name == "/background" for command in BUILTIN_COMMANDS):
         BUILTIN_COMMANDS.append(
@@ -112,6 +120,7 @@ def install_tui_handoff() -> None:
                 aliases=("/bg",),
                 description="Detach the active session into the background manager",
                 argument_hint="(alias: /bg)",
+                busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
             )
         )
 

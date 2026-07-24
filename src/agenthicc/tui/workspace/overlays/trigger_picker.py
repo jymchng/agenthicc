@@ -44,6 +44,7 @@ class TriggerPickerOverlay(Overlay):
         registry: TriggerManager,
         cwd: "Path",
         on_complete: Callable[[TriggerResult | None], None],
+        busy: bool = False,
     ) -> None:
         from agenthicc.tui.trigger import TriggerContext  # noqa: PLC0415
 
@@ -51,7 +52,7 @@ class TriggerPickerOverlay(Overlay):
         self._registry = registry
         self._cwd = cwd
         self._complete = on_complete
-        self._ctx = TriggerContext(cwd=cwd)
+        self._ctx = TriggerContext(cwd=cwd, busy=busy)
         self._trigger: _ActiveTrigger | None = None
         self._matches: list[MatchItem] = []
         self._selected: int = 0  # index into self._matches

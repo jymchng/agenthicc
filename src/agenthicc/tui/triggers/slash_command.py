@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agenthicc.commands.command import Command
+from agenthicc.commands.command import BusyPolicy, Command
 from agenthicc.commands.registry import UnifiedCommandRegistry
 from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase, TriggerResult
 
@@ -44,18 +44,37 @@ class SlashCommandTrigger(TriggerHandlerBase):
                     MatchItem(
                         display=display,
                         value=name,
-                        hint=self._format_hint(cmd, name),
+                        hint=self._format_hint(cmd, name, busy=ctx.busy),
                         label=name,
-                        detail=cmd.description,  # full, untruncated
+                        detail=self._detail(cmd, ctx.busy),
                     )
                 )
         return results
 
-    def _format_hint(self, cmd: Command, name: str | None = None) -> str:
+    @staticmethod
+    def _busy_label(cmd: Command) -> str:
+        try:
+            policy = cmd.policy_for_args("")
+        except Exception:  # noqa: BLE001
+            policy = BusyPolicy.QUEUE
+        return {
+            BusyPolicy.IMMEDIATE_READ_ONLY: "runs now",
+            BusyPolicy.IMMEDIATE_CONTROL: "control runs now",
+            BusyPolicy.QUEUE: "queues while busy",
+            BusyPolicy.REJECT: "unavailable while busy",
+        }.get(policy, "queues while busy")
+
+    def _format_hint(self, cmd: Command, name: str | None = None, *, busy: bool = False) -> str:
         display_name = name or cmd.name
+        availability = f"  • {self._busy_label(cmd)}" if busy else ""
         if cmd.argument_hint:
-            return f"  ↑ {display_name} {cmd.argument_hint}  —  {cmd.description}"
-        return f"  ↑ {display_name}  —  {cmd.description}"
+            return f"  ↑ {display_name} {cmd.argument_hint}  —  {cmd.description}{availability}"
+        return f"  ↑ {display_name}  —  {cmd.description}{availability}"
+
+    def _detail(self, cmd: Command, busy: bool) -> str:
+        if not busy:
+            return cmd.description
+        return f"{cmd.description}  [{self._busy_label(cmd)}]"
 
     def on_select(
         self,

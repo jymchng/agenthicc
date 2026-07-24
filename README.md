@@ -152,12 +152,13 @@ Useful built-in slash commands include:
 | `/replay [session-id]` | Replay a saved conversation |
 | `/cancel`, `/clear`, `/expand` | Control the current session or output |
 | `/mcp`, `/skills` | Inspect MCP and skill integrations |
+| `/usage` | Show local tokens, cost, run state, and queued input |
 | `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |
 
 Use `Ctrl+C` according to the current input state; the input backend owns raw
 terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md)
-for modes, overlays, input, and platform rules.
+for modes, overlays, input, busy-run command policies, and platform rules.
 
 ## Background sessions
 

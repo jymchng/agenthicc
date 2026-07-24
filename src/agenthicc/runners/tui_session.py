@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from agenthicc.tui.runtime import SendMessageCommand, InterruptAgentCommand
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.commands.command import Command
+    from agenthicc.commands.command import UsageSnapshot
+    from agenthicc.commands.busy_policy import BusyDecision
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.workflows.plugin import WorkflowContext, WorkflowPlugin
@@ -531,6 +533,7 @@ class TUISession:
         self._pending_skill_body: list[str] = []
         self._msg_queue: list[str] = []
         self._agent_task: asyncio.Task[object] | None = None
+        self._last_submitted_text: str = ""
         self._turn_count: int = 0
         self._pending_replay_id: str | None = None
         self._workflow_override: str | None = None  # PRD-114: /workflow command
@@ -621,8 +624,64 @@ class TUISession:
             set_pending_replay=self._set_pending_replay,
             reload_skills=self._reload_skills,
             reload_commands=self._reload_commands,
+            usage_snapshot=self._usage_snapshot,
+            cancel_active=self._cancel_active_task,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
+
+    def _usage_snapshot(self) -> "UsageSnapshot":
+        """Read one local usage snapshot without touching the active runner."""
+        from agenthicc.commands.command import UsageSnapshot  # noqa: PLC0415
+
+        conversation = self._ctx.app_state.conversation
+        task = self._agent_task
+        return UsageSnapshot(
+            input_tokens=int(conversation.tokens_in()),
+            output_tokens=int(conversation.tokens_out()),
+            cost_usd=float(conversation.cost_usd()),
+            active_run=bool(task is not None and not task.done()),
+            queue_depth=len(self._msg_queue),
+        )
+
+    def _cancel_active_task(self) -> bool:
+        """Request cancellation through the same owner used by Ctrl+C."""
+        task = self._agent_task
+        if task is None or task.done():
+            return False
+        return task.cancel()
+
+    def _busy_decision(self, text: str) -> "BusyDecision":
+        from agenthicc.commands.busy_policy import classify_busy_command  # noqa: PLC0415
+
+        return classify_busy_command(text, self._ctx.cmd_registry)
+
+    def _notify_queued(self, text: str) -> None:
+        label = text[:40] + ("…" if len(text) > 40 else "")
+        position = len(self._msg_queue)
+        self._ctx.app_state.conversation.notification.set(f"⌛ Queued #{position}: {label}")
+
+    def _notify_busy_rejected(self, text: str, reason: str) -> None:
+        command = text.split(None, 1)[0] if text.split(None, 1) else text
+        self._ctx.app_state.conversation.notification.set(
+            f"⛔ Rejected while busy: {command} — {reason or 'try again after the run'}"
+        )
+
+    def _run_busy_immediate(self, text: str, decision: "BusyDecision") -> None:
+        """Run one approved local command through the normal route/dispatcher."""
+        try:
+            handled = self.route(text)
+        except Exception as exc:  # noqa: BLE001
+            self._ctx.app_state.conversation.notification.set(
+                f"⚠ Command failed locally: {type(exc).__name__}: {exc}"
+            )
+            return
+        if not handled:
+            # A registry/plugin race cannot fall through to the LPM.
+            self._ctx.app_state.conversation.notification.set(
+                f"⚠ Command unavailable while busy: {decision.command_name}"
+            )
+            return
+        self._ctx.app_state.conversation.notify_transient(f"▶ Ran now: {decision.command_name}")
 
     def _reload_skills(self) -> "SkillDiscoveryResult":
         """Rescan skill directories and refresh skill-owned dollar commands."""
@@ -854,9 +913,25 @@ class TUISession:
 
     def advance(self) -> None:
         """Drain _msg_queue: dispatch slash commands, start next agent task."""
+        notice_kept = False
         while self._msg_queue:
             msg = self._msg_queue.pop(0).strip()
             if not msg:
+                continue
+            # The registry can be reloaded while text is waiting. Reclassify
+            # before release so a newly rejected command is not executed from
+            # stale metadata, and report removed slash commands explicitly.
+            decision = self._busy_decision(msg)
+            if decision.policy.value == "reject":
+                self._notify_busy_rejected(msg, decision.reason)
+                notice_kept = True
+                continue
+            token = msg.split(None, 1)[0]
+            if token.startswith("/") and self._ctx.cmd_registry.get(token) is None:
+                self._ctx.app_state.conversation.notify_transient(
+                    f"⚠ Queued command no longer exists: {token}"
+                )
+                notice_kept = True
                 continue
             if self.route(msg):
                 continue
@@ -864,7 +939,8 @@ class TUISession:
             self._ctx.app_state.conversation.append_event("user_message", {"text": msg})
             self._agent_task = asyncio.create_task(self.agent_task_body(msg), name="agent-turn")
             return
-        self._ctx.app_state.conversation.notification.set(None)
+        if not notice_kept:
+            self._ctx.app_state.conversation.notification.set(None)
 
     # ── agent turn plumbing ───────────────────────────────────────────────────
 
@@ -1000,10 +1076,22 @@ class TUISession:
         if not text:
             return
 
+        # Keep the latest accepted natural-language intent available to the
+        # background control plane even if it was submitted while another run
+        # was still active and therefore entered the FIFO queue.
+        if not text.startswith(("/", "$")):
+            self._last_submitted_text = text
+
         if self._agent_task and not self._agent_task.done():
+            decision = self._busy_decision(text)
+            if decision.policy.value in {"immediate-read-only", "immediate-control"}:
+                self._run_busy_immediate(text, decision)
+                return
+            if decision.policy.value == "reject":
+                self._notify_busy_rejected(text, decision.reason)
+                return
             self._msg_queue.append(text)
-            label = text[:40] + ("…" if len(text) > 40 else "")
-            self._ctx.app_state.conversation.notification.set(f"⌛ Queued: {label}")
+            self._notify_queued(text)
             return
 
         if self.route(text):
@@ -1019,8 +1107,7 @@ class TUISession:
 
     def handle_interrupt(self, cmd: "InterruptAgentCommand") -> None:
         """Cancel the current agent task if one is running."""
-        if self._agent_task and not self._agent_task.done():
-            self._agent_task.cancel()
+        self._cancel_active_task()
 
     # ── workflow resume (PRD-94) ──────────────────────────────────────────────
 

@@ -1832,6 +1832,36 @@ session-owned skill mapping and skill slash-command aliases, and reports
 added/removed skills plus warning and error diagnostics. Existing built-in and
 project commands are never replaced by a colliding skill command.
 
+## Busy command policy — `agenthicc.commands`
+
+```python
+class BusyPolicy(StrEnum):
+    IMMEDIATE_READ_ONLY = "immediate-read-only"
+    IMMEDIATE_CONTROL = "immediate-control"
+    QUEUE = "queue"
+    REJECT = "reject"
+
+@dataclass(frozen=True)
+class UsageSnapshot:
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+    active_run: bool
+    queue_depth: int = 0
+
+def classify_busy_command(
+    text: str,
+    registry: UnifiedCommandRegistry,
+) -> BusyDecision
+```
+
+`Command.busy_policy` defaults to `QUEUE`; `busy_policy_resolver` may select a
+policy from parsed arguments. Classification is pure and does not invoke a
+handler. Resolver errors fail closed to the queue, and immediate-control is
+reserved for built-in controls. The interactive session runs approved local
+queries such as `/usage` immediately while preserving FIFO queueing for normal
+messages, skills, mutations, and agent-starting operations.
+
 ### _parse_skill
 
 ```python
