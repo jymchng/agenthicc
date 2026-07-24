@@ -17,18 +17,25 @@ async def skills_add(
     global_: bool = False,
     project: bool = False,
     name: str = "",
+    skill: str = "",
+    all_: bool = False,
 ) -> None:
-    """Install SOURCE into project ``.agenthicc/skills`` or user-global skills."""
-    from agenthicc.skills.installer import SkillInstallError, install_skill  # noqa: PLC0415
+    """Install SOURCE into project or user-global skills."""
+    from agenthicc.skills.installer import SkillInstallError, install_skills  # noqa: PLC0415
 
     try:
-        result = await install_skill(
+        requested_skills = (
+            () if all_ else tuple(item.strip() for item in skill.split(",") if item.strip())
+        )
+        results = await install_skills(
             source,
             global_scope=global_,
             project_scope=project,
             name=name,
+            skill_names=requested_skills,
         )
     except SkillInstallError as exc:
         print(f"error: {exc}")
         return
-    print(f"Installed skill {result.slug} ({result.scope}) at {result.path}")
+    for result in results:
+        print(f"Installed skill {result.slug} ({result.scope}) at {result.path}")

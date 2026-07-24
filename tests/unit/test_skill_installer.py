@@ -10,7 +10,7 @@ import pytest
 
 from agenthicc.cli.context import CLIContext
 from agenthicc.skills import installer
-from agenthicc.skills.installer import SkillInstallError, install_skill
+from agenthicc.skills.installer import SkillInstallError, install_skill, install_skills
 from agenthicc.skills.loader import discover_skills
 
 pytestmark = pytest.mark.unit
@@ -68,6 +68,84 @@ def test_install_remote_source_uses_downloaded_content_and_explicit_name(
 
     assert result.path.name == "remote-skill"
     assert "Remote instructions." in result.path.joinpath("SKILL.md").read_text()
+
+
+def test_install_local_repository_discovers_deduplicates_and_copies_skill_files(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    skills_root = repository / "skills"
+    skills_root.mkdir(parents=True)
+    alpha = _source_skill(skills_root, "alpha")
+    (alpha / "references").mkdir()
+    (alpha / "references" / "guide.md").write_text("companion", encoding="utf-8")
+    _source_skill(skills_root, "beta")
+    duplicate = _source_skill(repository / ".agents" / "skills", "alpha")
+    (duplicate / "SKILL.md").write_text(
+        "---\nname: Duplicate\ndescription: Lower-priority copy\n---\n",
+        encoding="utf-8",
+    )
+
+    results = asyncio.run(install_skills(str(repository), project_dir=tmp_path / "project"))
+
+    assert [result.slug for result in results] == ["alpha", "beta"]
+    installed_alpha = tmp_path / "project" / "skills" / "alpha"
+    assert installed_alpha.joinpath("references", "guide.md").read_text() == "companion"
+    assert "Lower-priority" not in installed_alpha.joinpath("SKILL.md").read_text()
+
+
+def test_generic_github_repository_source_clones_and_selects_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone_root = tmp_path / "clone"
+    repository = clone_root / "repository"
+    skills_root = repository / "skills"
+    skills_root.mkdir(parents=True)
+    _source_skill(skills_root, "chosen")
+    _source_skill(skills_root, "other")
+
+    async def fake_clone(source: object) -> tuple[Path, Path]:
+        assert getattr(source, "url") == "https://github.com/heygen-com/hyperframes.git"
+        assert getattr(source, "revision") is None
+        return clone_root, repository
+
+    monkeypatch.setattr(installer, "_clone_repository", fake_clone)
+    results = asyncio.run(
+        install_skills(
+            "https://github.com/heygen-com/hyperframes.git",
+            skill_names=("chosen",),
+            project_dir=tmp_path / "project",
+        )
+    )
+
+    assert [result.slug for result in results] == ["chosen"]
+    assert (tmp_path / "project" / "skills" / "chosen" / "SKILL.md").is_file()
+    assert not clone_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "https://github.com/heygen-com/hyperframes.git",
+            ("https://github.com/heygen-com/hyperframes.git", None, None),
+        ),
+        (
+            "https://github.com/heygen-com/hyperframes/tree/main/skills",
+            ("https://github.com/heygen-com/hyperframes.git", "main", "skills"),
+        ),
+        (
+            "heygen-com/hyperframes",
+            ("https://github.com/heygen-com/hyperframes.git", None, None),
+        ),
+    ],
+)
+def test_generic_github_source_normalization(
+    source: str, expected: tuple[str, str | None, str | None]
+) -> None:
+    parsed = installer._github_repository_source(source)
+    assert parsed is not None
+    assert (parsed.url, parsed.revision, parsed.subpath) == expected
 
 
 @pytest.mark.parametrize(

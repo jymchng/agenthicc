@@ -30,7 +30,7 @@ based and implemented in `cli/registry.py`.
 | `sessions export SESSION_ID [--output PATH]` | Write a redacted portable session export |
 | `workflows list [--json]` | List available workflow plugins and phase topology |
 | `workflows run NAME --intent TEXT [--json]` | Execute one workflow headlessly |
-| `skills add SOURCE [--project | --global] [--name NAME]` | Download and install a validated skill |
+| `skills add SOURCE [--project | --global] [--name NAME] [--skill NAME[,NAME]] [--all]` | Download and install validated skill(s) |
 | `mcp add NAME URL [--project | --global]` | Register an MCP server in TOML configuration |
 | `trust cli` | Trust project-local `.agenthicc/cli/` plugins |
 | `login` | Authenticate with agenthicc.ai |
@@ -42,9 +42,13 @@ Run any command with `--help` for generated argument details.
 `agenthicc skills add SOURCE` installs into the current project's
 `.agenthicc/skills/` by default. Use `--global` for `~/.agenthicc/skills/` or
 `--project` to make the project target explicit. `SOURCE` may be a local skill
-directory/file or an HTTPS URL ending in `SKILL.md`; GitHub tree/blob skill
-links are also supported. Use `--name` when the source URL does not provide a
-usable directory name. Existing skills are never overwritten.
+directory/file, a local repository, a direct HTTPS `SKILL.md` URL, a GitHub
+repository URL (including `.git`), GitHub `owner/repo` shorthand, or a GitHub
+`/tree/<revision>/<path>`/`/blob/<revision>/<path>/SKILL.md` link. Repository
+sources discover all valid skills by default, while `--skill NAME[,NAME]`
+selects specific skills and `--all` explicitly selects the full discovered set.
+Use `--name` only when installing one skill and need to override its directory
+name. Existing skills are never overwritten.
 
 `agenthicc mcp add NAME URL` appends a validated `[[tools.mcp_servers]]` entry
 to the project configuration by default. Use `--global` for the user config,

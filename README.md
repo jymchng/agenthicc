@@ -250,11 +250,14 @@ for commands. `/commands` lists slash commands only; use `/skills` to inspect
 discovered skills. The former
 `/skill-name` spelling is not executed.
 
-Install a validated skill from a local path or HTTPS `SKILL.md` URL with
-`agenthicc skills add SOURCE`. Project scope is the default; use
-`--global` for `~/.agenthicc/skills/` or `--name NAME` to choose the canonical
-directory name. Existing skill directories are never overwritten. Review
-downloaded instructions before invoking a newly installed skill.
+Install validated skills from a local path, direct HTTPS `SKILL.md` URL, or a
+generic GitHub repository with `agenthicc skills add SOURCE`. Both
+`https://github.com/owner/repo.git` and `owner/repo` sources are supported;
+repository sources discover and install all valid skills by default. Use
+`--skill NAME[,NAME]` to select specific skills, `--all` to make full
+installation explicit, and `--global` for user-global scope. Existing skill
+directories are never overwritten. Review downloaded instructions before
+invoking a newly installed skill.
 
 Register an MCP server without hand-editing TOML with
 `agenthicc mcp add NAME URL`. Project scope is the default; use `--global` for
