@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,8 +16,14 @@ from agenthicc.tui.workspace.overlays.approval import ApprovalOverlay
 from agenthicc.tui.workspace.overlays.config_menu import ConfigMenuOverlay
 from agenthicc.tui.workspace.overlays.help import HelpOverlay
 from agenthicc.tui.workspace.overlays.questions import QuestionsOverlay
+from agenthicc.tui.workspace.overlays.registry_list import (
+    CommandListOverlay,
+    RegistryMessageOverlay,
+    SkillListOverlay,
+)
 from agenthicc.commands.command import Command
 from agenthicc.commands.registry import UnifiedCommandRegistry
+from agenthicc.skills.loader import SkillDef
 
 pytestmark = pytest.mark.unit
 
@@ -122,3 +130,48 @@ def test_help_overlay_detail_and_config_editor() -> None:
     empty = ConfigMenuOverlay(None, lambda: None)
     assert empty.render()
     empty.handle_key(Key.CHAR, "s")
+
+
+def test_registry_list_overlays_render_details_and_close() -> None:
+    from rich.console import Console
+
+    closed: list[bool] = []
+    command_overlay = CommandListOverlay(
+        [Command("/deploy", "Deploy the application", group="Plugins", source_id="plugin:deploy")],
+        lambda: closed.append(True),
+    )
+    command_output = Console(file=StringIO(), record=True, force_terminal=False)
+    command_output.print(command_overlay.render())
+    command_text = command_output.export_text()
+    assert "/deploy" in command_text
+    assert "plugin:deploy" in command_text
+    command_overlay.handle_key(Key.ENTER, "")
+    command_output = Console(file=StringIO(), record=True, force_terminal=False)
+    command_output.print(command_overlay.render())
+    assert "Deploy the application" in command_output.export_text()
+    command_overlay.handle_key(Key.ESC, "")
+    command_overlay.handle_key(Key.ESC, "")
+
+    skill = SkillDef(
+        "Review",
+        "review",
+        Path("."),
+        description="Review project changes",
+        aliases=("inspect",),
+        source="project",
+        _body="body",
+    )
+    skill_overlay = SkillListOverlay([skill], lambda: closed.append(True))
+    skill_output = Console(file=StringIO(), record=True, force_terminal=False)
+    skill_output.print(skill_overlay.render())
+    skill_text = skill_output.export_text()
+    assert "$review" in skill_text
+    assert "$inspect" in skill_text
+    skill_overlay.handle_key(Key.ENTER, "")
+    assert skill_overlay.render()
+    message_overlay = RegistryMessageOverlay("Reload result", "Reloaded 1 skill(s).", lambda: None)
+    message_output = Console(file=StringIO(), record=True, force_terminal=False)
+    message_output.print(message_overlay.render())
+    assert "Reloaded 1 skill(s)." in message_output.export_text()
+    message_overlay.handle_key(Key.ESC, "")
+    assert closed

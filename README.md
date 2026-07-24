@@ -124,8 +124,8 @@ The current TUI is implemented by `tui/workspace/Workspace` and consists of:
 
 1. a scroll buffer for conversation, tool, workflow, and system events;
 2. a live status/composer/footer block owned by the workspace;
-3. overlays for help, configuration, approvals, questions, plans, and trigger
-   completion;
+3. overlays for help, command and skill listings, configuration, approvals,
+   questions, plans, and trigger completion;
 4. a single lifetime input session with POSIX and Windows terminal backends.
 
 The workspace treats terminal resizing as one settled repaint, clearing
@@ -143,7 +143,7 @@ Useful built-in slash commands include:
 
 | Command | Purpose |
 |---|---|
-| `/help`, `/commands` | Inspect available commands |
+| `/help`, `/commands` | Inspect available commands in an overlay |
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/mode [name]` | Show or change the operating mode |
 | `/workflow <name> \| reset` | Select the workflow for later turns |
@@ -153,7 +153,7 @@ Useful built-in slash commands include:
 | `/compact` | Compact conversation memory |
 | `/replay [session-id]` | Replay a saved conversation |
 | `/cancel`, `/clear`, `/expand` | Control the current session or output |
-| `/mcp`, `/skills` | Inspect MCP and skill integrations |
+| `/mcp`, `/skills` | Inspect MCP and skills; `/skills` opens an overlay |
 | `/usage` | Show local tokens, cost, run state, and queued input |
 | `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |

@@ -98,9 +98,12 @@ the previous terminal state on exit.
 
 ## Overlays and approvals
 
-The workspace can show help, configuration, trigger-picker, plan-review,
-questions, and generic tool approval overlays. Approval requests are stored in
-reactive state and route to the overlay registry in `TUISession`.
+The workspace can show help, command and skill listings, configuration,
+trigger-picker, plan-review, questions, and generic tool approval overlays.
+`/commands` and `/skills` build their listings from the live command/skill
+registries and keep the results in the overlay rather than appending them to
+the conversation scroll buffer. Approval requests are stored in reactive state
+and route to the overlay registry in `TUISession`.
 
 An overlay must not write directly to the terminal outside the workspace. It
 should update its state/callback and let the workspace redraw. New approval

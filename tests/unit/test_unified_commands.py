@@ -322,6 +322,43 @@ def test_commands_listing_excludes_skill_records() -> None:
     assert "Review the changes" not in output
 
 
+def test_commands_listing_uses_overlay_when_available() -> None:
+    from agenthicc.commands import Command, CommandContext, build_builtin_registry
+    from agenthicc.commands.builtins import _cmd_commands
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.tui.workspace.overlays.registry_list import (
+        CommandListOverlay,
+        RegistryMessageOverlay,
+    )
+    from rich.console import Console
+
+    registry = build_builtin_registry()
+    registry.register(Command("$review", "Review the changes", group="Skills"))
+    console = Console(record=True, force_terminal=False)
+    overlays: list[object] = []
+    context = CommandContext(
+        text="/commands",
+        args="",
+        model="test/model",
+        console=console,
+        config=AgenthiccConfig(),
+        command_registry=registry,
+        set_pending_menu=overlays.append,
+    )
+
+    assert _cmd_commands(context) is True
+    assert len(overlays) == 1
+    assert isinstance(overlays[0], CommandListOverlay)
+    assert console.export_text() == ""
+    assert all(not row.label.startswith("$") for row in overlays[0]._rows)
+
+    context.args = "reload"
+    context.reload_commands = lambda: (True, "Commands reloaded")
+    assert _cmd_commands(context) is True
+    assert isinstance(overlays[-1], RegistryMessageOverlay)
+    assert console.export_text() == ""
+
+
 # ---------------------------------------------------------------------------
 # CommandDispatcher
 # ---------------------------------------------------------------------------

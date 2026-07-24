@@ -176,6 +176,17 @@ def _reloadable_list_policy(args: str) -> BusyPolicy:
     return BusyPolicy.IMMEDIATE_READ_ONLY if not args.strip() else BusyPolicy.QUEUE
 
 
+def _present_registry_result(ctx: CommandContext, title: str, message: str) -> None:
+    """Show registry command output in the live overlay when available."""
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.registry_list import RegistryMessageOverlay  # noqa: PLC0415
+
+        on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
+        ctx.set_pending_menu(RegistryMessageOverlay(title, message, on_close))
+        return
+    ctx.console.print(message, markup=False)
+
+
 def _cmd_model(ctx: CommandContext) -> bool:
     try:
         from rich.table import Table  # noqa: PLC0415
@@ -277,12 +288,13 @@ def _cmd_skills(ctx: CommandContext) -> bool:
     requested = ctx.args.strip().lower()
     if requested:
         if requested != "reload":
-            ctx.console.print("Usage: /skills [reload]", markup=False)
+            _present_registry_result(ctx, "Skills", "Usage: /skills [reload]")
             return True
         if ctx.reload_skills is None:
-            ctx.console.print(
+            _present_registry_result(
+                ctx,
+                "Skills",
                 "Skill reload is only available in an interactive session.",
-                markup=False,
             )
             return True
 
@@ -291,7 +303,7 @@ def _cmd_skills(ctx: CommandContext) -> bool:
             discovery: SkillDiscoveryResult = ctx.reload_skills()
         except Exception as exc:  # noqa: BLE001
             message = str(exc).strip() or type(exc).__name__
-            ctx.console.print(f"Skill reload failed: {message}", markup=False)
+            _present_registry_result(ctx, "Skills", f"Skill reload failed: {message}")
             return True
 
         after = set(ctx.skills)
@@ -303,18 +315,25 @@ def _cmd_skills(ctx: CommandContext) -> bool:
         if removed:
             changes.append(f"removed: {', '.join(removed)}")
         suffix = f" ({'; '.join(changes)})" if changes else ""
-        ctx.console.print(
-            f"Reloaded {len(after)} skill(s){suffix}.",
-            markup=False,
-        )
+        messages = [f"Reloaded {len(after)} skill(s){suffix}."]
         for diagnostic in discovery.diagnostics:
             if diagnostic.severity != "info":
-                ctx.console.print(f"Skill reload: {diagnostic}", markup=False)
+                messages.append(f"Skill reload: {diagnostic}")
+        _present_registry_result(ctx, "Skills", "\n".join(messages))
         return True
 
     visible_skills = {
         slug: skill for slug, skill in ctx.skills.items() if _skill_allowed_for_context(ctx, skill)
     }
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.registry_list import SkillListOverlay  # noqa: PLC0415
+
+        on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
+        ctx.set_pending_menu(
+            SkillListOverlay(list(sorted(visible_skills.values(), key=lambda s: s.slug)), on_close)
+        )
+        return True
+
     try:
         from rich.table import Table  # noqa: PLC0415
         from rich import box as _rbox  # noqa: PLC0415
@@ -351,26 +370,34 @@ def _cmd_commands(ctx: CommandContext) -> bool:
     requested = ctx.args.strip()
     if requested:
         if requested != "reload":
-            ctx.console.print("Usage: /commands [reload]", markup=False)
+            _present_registry_result(ctx, "Commands", "Usage: /commands [reload]")
             return True
         if ctx.reload_commands is None:
-            ctx.console.print(
+            _present_registry_result(
+                ctx,
+                "Commands",
                 "Command reload is only available in an interactive session.",
-                markup=False,
             )
             return True
         try:
             _ok, message = ctx.reload_commands()
         except Exception as exc:  # noqa: BLE001
             message = f"Command reload failed; existing commands kept: {type(exc).__name__}: {exc}"
-        ctx.console.print(message, markup=False)
+        _present_registry_result(ctx, "Commands", message)
         return True
 
     registry = ctx.command_registry
     if registry is None:
-        ctx.console.print("[dim]No command registry available.[/dim]")
+        _present_registry_result(ctx, "Commands", "No command registry available.")
         return True
     commands = [cmd for cmd in registry.all_commands() if not cmd.is_skill]
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.registry_list import CommandListOverlay  # noqa: PLC0415
+
+        on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
+        ctx.set_pending_menu(CommandListOverlay(commands, on_close))
+        return True
+
     try:
         from rich.table import Table  # noqa: PLC0415
         from rich import box as _rbox  # noqa: PLC0415

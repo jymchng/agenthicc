@@ -144,6 +144,40 @@ def test_builtin_replay_skills_and_skill_handler_paths(
     assert _make_skill_handler("denied", denied)(ctx)
 
 
+def test_skills_listing_uses_overlay_when_available(tmp_path: Path) -> None:
+    from agenthicc.tui.workspace.overlays.registry_list import (
+        RegistryMessageOverlay,
+        SkillListOverlay,
+    )
+
+    ctx = _command_context(tmp_path)
+    skill = SkillDef(
+        "Review",
+        "review",
+        tmp_path,
+        description="Review project changes",
+        aliases=("inspect",),
+        source="project",
+        _body="body",
+    )
+    ctx.skills = {skill.slug: skill}
+    overlays: list[object] = []
+    ctx.set_pending_menu = overlays.append
+
+    assert _cmd_skills(ctx) is True
+    assert len(overlays) == 1
+    assert isinstance(overlays[0], SkillListOverlay)
+    assert overlays[0]._rows[0].label == "$review"
+    assert "$inspect" in overlays[0]._rows[0].metadata
+    assert ctx.console.export_text() == ""
+
+    ctx.args = "reload"
+    ctx.reload_skills = lambda: SkillDiscoveryResult({"review": skill})
+    assert _cmd_skills(ctx) is True
+    assert isinstance(overlays[-1], RegistryMessageOverlay)
+    assert ctx.console.export_text() == ""
+
+
 def test_builtin_init_config_menu_and_help_factories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
