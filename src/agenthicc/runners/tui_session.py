@@ -605,8 +605,13 @@ class TUISession:
     def dispatch_slash(self, text: str) -> bool:
         """Dispatch a registered command or skill trigger."""
         from agenthicc.commands import CommandContext  # noqa: PLC0415
+        from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
 
         ctx = self._ctx
+        project_tools: list[ToolLike] = list(ctx.project_plugins.all_tools)
+        if ctx.mcp_registry is not None:
+            project_tools.extend(ctx.mcp_registry.all_tools())
+        tool_registry = build_registry(project_plugin_tools=project_tools)
         context = CommandContext(
             text=text,
             args=" ".join(text.split()[1:]),
@@ -617,6 +622,8 @@ class TUISession:
             skills=ctx.skills,
             active_agent="default",
             command_registry=ctx.cmd_registry,
+            tools=tool_registry.tools,
+            workflow_registry=ctx.workflow_registry,
             mode_manager=ctx.mode_manager,
             set_pending_skill=self._set_pending_skill,
             set_pending_menu=self._workspace.overlays.show,

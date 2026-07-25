@@ -19,6 +19,8 @@ from agenthicc.commands.builtins import (
     _cmd_mode,
     _cmd_replay,
     _cmd_skills,
+    _cmd_tools,
+    _cmd_workflows,
     _make_skill_handler,
     build_builtin_registry,
 )
@@ -94,6 +96,29 @@ def test_builtin_commands_cover_status_model_mode_and_simple_handlers(
         raising=False,
     )
     assert _cmd_init(ctx)
+
+
+def test_tools_and_workflows_listing_support_tables_and_overlays(tmp_path: Path) -> None:
+    from agenthicc.tui.workspace.overlays.registry_list import (
+        ToolListOverlay,
+        WorkflowListOverlay,
+    )
+
+    ctx = _command_context(tmp_path)
+    assert _cmd_tools(ctx)
+    assert "Registered Tools" in ctx.console.export_text()
+    ctx.console = Console(record=True)
+    assert _cmd_workflows(ctx)
+    assert "Registered Workflows" in ctx.console.export_text()
+
+    overlays: list[object] = []
+    ctx.set_pending_menu = overlays.append
+    ctx.close_overlay = lambda: None
+    ctx.console = Console(record=True)
+    assert _cmd_tools(ctx)
+    assert isinstance(overlays[-1], ToolListOverlay)
+    assert _cmd_workflows(ctx)
+    assert isinstance(overlays[-1], WorkflowListOverlay)
 
 
 def test_builtin_replay_skills_and_skill_handler_paths(

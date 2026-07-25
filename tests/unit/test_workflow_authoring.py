@@ -20,7 +20,16 @@ pytestmark = pytest.mark.unit
 
 
 _VALID_SOURCE = """\
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from agenthicc.workflows.default.runner import WorkflowRunner
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
+
+
+class ExampleWorkflowRunner(WorkflowRunner):
+    async def run(self, intent: str) -> WorkflowContext:
+        return await super().run(intent)
+
+    async def resume(self, context: object) -> object:
+        return await super().resume(context)
 
 
 class ExampleWorkflow(WorkflowPlugin):
@@ -30,6 +39,10 @@ class ExampleWorkflow(WorkflowPlugin):
         PhaseSpec(name="parse", next="summarize"),
         PhaseSpec(name="summarize"),
     ]
+
+    @classmethod
+    def build_runner(cls, config, mode_manager):
+        return ExampleWorkflowRunner(cls, config, mode_manager)
 """
 
 
@@ -52,6 +65,17 @@ def test_parse_plain_python_recovers_class_level_name() -> None:
 
     assert candidate.name == "example_workflow"
     assert validate_workflow_candidate(candidate).valid is True
+
+
+def test_validation_requires_a_custom_context_preserving_runner() -> None:
+    source = _VALID_SOURCE.replace(
+        "class ExampleWorkflowRunner(WorkflowRunner):",
+        "class ExampleWorkflowRunner:",
+    )
+    report = validate_workflow_candidate(WorkflowCandidate("example_workflow", source))
+
+    assert report.valid is False
+    assert "runner-class" in {item.code for item in report.findings}
 
 
 def test_validation_accepts_phase_name_as_positional_argument() -> None:

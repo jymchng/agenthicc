@@ -144,6 +144,7 @@ Useful built-in slash commands include:
 | Command | Purpose |
 |---|---|
 | `/help`, `/commands` | Inspect available commands in an overlay |
+| `/tools`, `/workflows` | Inspect the effective tool and workflow registries in overlays |
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/mode [name]` | Show or change the operating mode |
 | `/workflow <name> \| reset` | Select a workflow; use `/workflow create_workflow`, `/workflow create_tool`, or `/workflow create_command` to author an extension, or `/workflow resume` to continue a staged run |

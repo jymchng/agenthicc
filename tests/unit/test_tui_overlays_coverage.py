@@ -20,10 +20,15 @@ from agenthicc.tui.workspace.overlays.registry_list import (
     CommandListOverlay,
     RegistryMessageOverlay,
     SkillListOverlay,
+    ToolListOverlay,
+    WorkflowListOverlay,
 )
 from agenthicc.commands.command import Command
 from agenthicc.commands.registry import UnifiedCommandRegistry
 from agenthicc.skills.loader import SkillDef
+from agenthicc.plugins.registry import build_registry
+from agenthicc.workflows.registry import WorkflowRegistry
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 
 pytestmark = pytest.mark.unit
 
@@ -175,3 +180,23 @@ def test_registry_list_overlays_render_details_and_close() -> None:
     assert "Reloaded 1 skill(s)." in message_output.export_text()
     message_overlay.handle_key(Key.ESC, "")
     assert closed
+
+
+def test_tool_and_workflow_registry_overlays_render_details() -> None:
+    from rich.console import Console
+
+    class DemoWorkflow(WorkflowPlugin):
+        name = "demo_workflow"
+        description = "A demo workflow"
+        phases = [PhaseSpec(name="start")]
+
+    workflow_registry = WorkflowRegistry()
+    workflow_registry.register(DemoWorkflow, source="project")
+    tool_overlay = ToolListOverlay(list(build_registry().tools[:1]), lambda: None)
+    workflow_overlay = WorkflowListOverlay([DemoWorkflow], workflow_registry, lambda: None)
+    assert tool_overlay.render()
+    assert workflow_overlay.render()
+    workflow_overlay.handle_key(Key.ENTER, "")
+    detail_output = Console(file=StringIO(), record=True, force_terminal=False)
+    detail_output.print(workflow_overlay.render())
+    assert "demo_workflow" in detail_output.export_text()

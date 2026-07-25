@@ -1491,11 +1491,14 @@ class AuthoringResult:
     attempts: int = 0
     artifact_kind: str = "workflow"
     artifacts: tuple[AuthoringArtifact, ...] = ()
+    summary: str = ""
 ```
 
 `to_dict()` returns a JSON-safe result suitable for the
 `WorkflowRunCompleted` event payload. `artifacts` contains the same generated
-artifact as the compatibility `artifact` field.
+artifact as the compatibility `artifact` field. `summary` is the terminal
+human-readable result emitted to the TUI transcript and included in the event
+payload.
 
 ### AuthoringArtifact
 

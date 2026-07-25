@@ -158,14 +158,16 @@ reports that it has no handler.
 excludes `$`-prefixed skill records. Select an entry and press Enter for its
 source, arguments, aliases, and full description. `/skills` uses the same
 overlay pattern for discovered, permission-filtered skills and their explicit
-`$` invocation names. These listings stay in the live overlay instead of being
-appended to the conversation scroll buffer.
+`$` invocation names. `/tools` lists the tools registered for the current
+session, including MCP tools, and `/workflows` lists loaded workflow plugins,
+their phase topology, source, and runner type. These listings stay in the
+live overlay instead of being appended to the conversation scroll buffer.
 
 ## Commands while an agent run is active
 
 The interactive session classifies a submitted command before it enters the
 normal FIFO queue. Reviewed local queries such as `/usage`, `/status`,
-`/commands`, `/skills`, `/mcp status`, `/help`, `/history`, `/expand`, and
+`/commands`, `/tools`, `/workflows`, `/skills`, `/mcp status`, `/help`, `/history`, `/expand`, and
 `/clear` run immediately. The `/config` command also opens its local
 configuration overlay immediately, so it is available while a response is
 streaming. `/cancel` and `/interrupt` use the same control owner as `Ctrl+C`;

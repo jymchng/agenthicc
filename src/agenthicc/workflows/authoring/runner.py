@@ -62,6 +62,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         self._shared_memory: ShortTermMemory | None = None
         self._workflow_run: WorkflowRun | None = None
         self._project_root = Path.cwd().resolve()
+        self._summary_emitted = False
 
     def _result(
         self,
@@ -76,7 +77,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     ) -> AuthoringResult:
         """Build a result carrying this runner's workflow and artifact kind."""
 
-        return AuthoringResult(
+        result = AuthoringResult(
             workflow=self.workflow_name,
             artifact_kind=self.artifact_kind,
             run_id=run_id,
@@ -87,6 +88,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             error=error,
             attempts=attempts,
         )
+        return dataclasses.replace(result, summary=self._summary(result))
 
     async def run(self, intent: str) -> AuthoringResult:
         """Run the complete authoring lifecycle for *intent*."""
@@ -98,6 +100,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         from agenthicc.workflows.plugin import WorkflowRun
 
         self._run_id = uuid.uuid4().hex
+        self._summary_emitted = False
         self._shared_memory = ShortTermMemory(
             max_tokens=self._cfg.cfg.execution.effective_usable_budget()
         )
@@ -261,6 +264,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             )
             intent = intent or manifest_intent
             self._run_id = run_id
+            self._summary_emitted = False
             self._workflow_run = WorkflowRun(
                 run_id=run_id,
                 workflow_name=self.workflow_name,
@@ -388,11 +392,28 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             "Create exactly one complete Python WorkflowPlugin for the user's intent. "
             "Inspect relevant repository modules and use existing agenthicc APIs. "
             "The workflow must be self-contained, use PhaseSpec transitions, and keep "
-            "external access behind existing tools/MCP capabilities.\n\n"
+            "external access behind existing tools/MCP capabilities. It must also define "
+            "a customized WorkflowRunner subclass with async run() and resume() methods; "
+            "those methods must delegate to super().run() and super().resume() so the "
+            "WorkflowContext, shared memory, phase history, and state transitions are "
+            "preserved. WorkflowPlugin.build_runner() must construct that runner.\n\n"
             "Return ONLY this envelope, with no explanation outside it:\n"
             '<workflow name="lowercase_name" description="short description">\n'
             "```python\n"
-            "from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin\n"
+            "from agenthicc.workflows.default.runner import WorkflowRunner\n"
+            "from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin\n"
+            "\n"
+            "class ExampleWorkflowRunner(WorkflowRunner):\n"
+            "    async def run(self, intent: str) -> WorkflowContext:\n"
+            "        return await super().run(intent)\n"
+            "\n"
+            "    async def resume(self, context: object) -> object:\n"
+            "        return await super().resume(context)\n"
+            "\n"
+            "class ExampleWorkflow(WorkflowPlugin):\n"
+            "    @classmethod\n"
+            "    def build_runner(cls, config, mode_manager):\n"
+            "        return ExampleWorkflowRunner(cls, config, mode_manager)\n"
             "...complete source...\n"
             "```\n"
             "</workflow>\n\n"
@@ -597,6 +618,15 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     async def _finish_run(self, result: AuthoringResult, *, status: str) -> None:
         from agenthicc.kernel import Event
+
+        # Authoring runs do not end in a normal agent response: publication is
+        # completed by the workflow runner after the approval overlay closes.
+        # Emit the terminal summary as a normal transcript text event so the
+        # user always gets a visible response instead of an apparently idle UI.
+        if not self._summary_emitted:
+            summary = result.summary or self._summary(result)
+            self._cfg.conv_store.append_event("text", {"text": summary})
+            self._summary_emitted = True
 
         if self._workflow_run is not None:
             self._workflow_run = dataclasses.replace(

@@ -65,9 +65,9 @@ examples can be registered directly.
 ## TUI slash commands
 
 TUI commands are a separate registry from CLI subcommands. Current built-ins
-include `/help`, `/commands`, `/status`, `/history`, `/mode`, `/workflow`, `/init`,
-`/model`, `/models`, `/skills [reload]`, `/mcp`, `/config`, `/compact`, `/replay`,
-`/cancel`, `/clear`, and `/expand`.
+include `/help`, `/commands`, `/tools`, `/workflows`, `/status`, `/history`,
+`/mode`, `/workflow`, `/init`, `/model`, `/models`, `/skills [reload]`, `/mcp`,
+`/config`, `/compact`, `/replay`, `/cancel`, `/clear`, and `/expand`.
 
 Default project-authoring skills also provide `/create-tools <instructions>`
 and `/create-commands <instructions>`. They send the supplied instructions to
@@ -91,6 +91,11 @@ published atomically under `.agenthicc/workflows/`, `.agenthicc/tools/`, or
 `create_tools` and `create_commands`; singular forms are aliases. A staged
 authoring run can be continued with `/workflow resume [run-id]` and is
 revalidated before publication.
+
+`/tools` and `/workflows` are read-only registry overlays. `/tools` shows the
+effective built-in, project, and MCP tools for the session. `/workflows` shows
+loaded workflow sources, phases, mode bindings, and whether the plugin
+provides a custom runner.
 
 `/init` is a local project bootstrap command. It previews by default and uses
 `/init write` or `/init write --force` for explicit writes; it does not invoke

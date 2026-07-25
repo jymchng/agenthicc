@@ -109,6 +109,32 @@ async def test_commands_and_skills_open_list_overlays_during_active_run(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_tools_and_workflows_open_list_overlays_during_active_run() -> None:
+    from agenthicc.tui.workspace.overlays.registry_list import (
+        ToolListOverlay,
+        WorkflowListOverlay,
+    )
+
+    session, ctx, workspace, _input = _make_session()
+    commands = build_builtin_registry()
+    for name in ("/tools", "/workflows"):
+        command = commands.get(name)
+        assert command is not None
+        ctx.cmd_registry.register(command)
+    active = asyncio.create_task(_live_task())
+    session._agent_task = active
+
+    await session.handle_send(SendMessageCommand(text="/tools"))
+    assert isinstance(workspace.overlays.widget, ToolListOverlay)
+    workspace.overlays.hide()
+
+    await session.handle_send(SendMessageCommand(text="/workflows"))
+    assert isinstance(workspace.overlays.widget, WorkflowListOverlay)
+    assert session._msg_queue == []
+    await _stop(active)
+
+
+@pytest.mark.asyncio
 async def test_read_only_and_control_commands_are_immediate_but_messages_queue() -> None:
     session, ctx, _workspace, _input = _make_session()
     invoked: list[str] = []

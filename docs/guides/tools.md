@@ -44,6 +44,10 @@ loaded project tool. The tool name, description, annotations, and docstring
 are used to build the schema shown to lauren-ai. `@tool()` must include the
 parentheses.
 
+Use `/tools` in the interactive session to inspect the effective tool registry.
+The overlay includes built-ins, project tools, and discovered MCP tools; press
+Enter on a tool to see its source category, capabilities, and runtime type.
+
 User-global tools use the same shape below `~/.agenthicc/tools/` and are
 available to projects run by that user. Agent-specific tools use:
 

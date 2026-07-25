@@ -16,8 +16,10 @@ if TYPE_CHECKING:
     from agenthicc.config import AgenthiccConfig
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
+    from agenthicc.tools.base import ToolLike
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.runtime.mode_manager import ModeManager
+    from agenthicc.workflows.registry import WorkflowRegistry
 
 __all__ = [
     "Command",
@@ -77,6 +79,8 @@ class CommandContext:
 
     skills: "dict[str, SkillDef]" = field(default_factory=dict)
     command_registry: "UnifiedCommandRegistry | None" = None
+    tools: "list[ToolLike] | None" = None
+    workflow_registry: "WorkflowRegistry | None" = None
     mode_manager: "ModeManager | None" = None
     set_pending_skill: "Callable[[str], None] | None" = None
     set_pending_menu: "Callable[[Overlay], None] | None" = None

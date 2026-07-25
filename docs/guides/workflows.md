@@ -37,12 +37,14 @@ Create a workflow that uses Cloakbrowser to parse facebook.com.
 ```
 
 The first line selects the workflow; the next ordinary input supplies its
-intent. The authoring run generates one `WorkflowPlugin`, validates its syntax,
-phase references, imports, and workflow contract without importing it, then
-stages the source under `.agenthicc/authoring/`. Publication requires approval
-and writes atomically to `.agenthicc/workflows/<name>.py`. A denied request
-leaves the staged candidate available for inspection and does not replace an
-existing workflow.
+intent. The authoring run generates one `WorkflowPlugin` plus a customized
+`WorkflowRunner` with explicit `run()`/`resume()` context handling, validates
+its syntax, phase references, imports, and runner contract without importing
+it, then stages the source under `.agenthicc/authoring/`. Publication requires
+approval and writes atomically to `.agenthicc/workflows/<name>.py`. A denied
+request leaves the staged candidate available for inspection and does not
+replace an existing workflow. Every terminal outcome emits a final summary in
+the transcript and in the structured `AuthoringResult`.
 
 Restart the session after publication so the normal workflow registry discovers
 the new file, then select it for a later request:
@@ -84,7 +86,22 @@ validated without importing generated code, and require explicit publication
 approval. After a tool is published, restart the session. After a command is
 published, run `/commands reload`; neither artifact is active during the
 authoring run. The structured result identifies the artifact kind, paths,
-hash, approval state, and activation instruction.
+hash, approval state, activation instruction, and final summary.
+
+## Inspect tools and workflows
+
+Use the registry overlays to inspect what the current session can execute:
+
+```text
+/tools
+/workflows
+```
+
+Both commands are immediate read-only commands and show selectable entries
+with descriptions and details. `/tools` includes built-in, project, and
+discovered MCP tools; `/workflows` includes source, phase topology, runner
+type, and mode bindings. Press Enter for details and Esc to close, just as
+with `/commands` and `/skills`.
 
 ## How user workflows are discovered
 

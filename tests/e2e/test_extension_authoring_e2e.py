@@ -161,12 +161,19 @@ async def test_authoring_publishes_and_discovers_each_extension_kind(
     transport.queue_response(_completion(_envelope(kind, name, source)))
     approval = _Approval(True)
     runner, app_state = _runner(runner_type, processor, transport, approval)
+    conversation_events = []
+    app_state.conversation.on_event(conversation_events.append)
     modules_before = set(sys.modules)
 
     result = await runner.run(f"Create a {kind} extension for project status.")
     await processor.drain()
 
     assert result.status == "published", result.to_dict()
+    assert result.summary.startswith(f"Created {kind} '")
+    assert any(
+        event.kind == "text" and result.summary in str(event.payload.get("text", ""))
+        for event in conversation_events
+    )
     assert result.artifact_kind == kind
     assert result.artifact is not None
     assert result.artifact.state == "published"

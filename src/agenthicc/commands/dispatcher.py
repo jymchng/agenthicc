@@ -44,6 +44,8 @@ class CommandDispatcher:
             active_agent=ctx.active_agent,
             skills=ctx.skills,
             command_registry=ctx.command_registry,
+            tools=ctx.tools,
+            workflow_registry=ctx.workflow_registry,
             mode_manager=ctx.mode_manager,
             set_pending_skill=ctx.set_pending_skill,
             set_pending_menu=ctx.set_pending_menu,

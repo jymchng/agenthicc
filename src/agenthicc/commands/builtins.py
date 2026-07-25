@@ -416,6 +416,101 @@ def _cmd_commands(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_tools(ctx: CommandContext) -> bool:
+    """List the tools registered for the current session."""
+    if ctx.args.strip():
+        _present_registry_result(ctx, "Tools", "Usage: /tools")
+        return True
+
+    tools = ctx.tools
+    if tools is None:
+        from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
+
+        tools = build_registry().tools
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.registry_list import ToolListOverlay  # noqa: PLC0415
+
+        on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
+        ctx.set_pending_menu(ToolListOverlay(list(tools), on_close))
+        return True
+
+    try:
+        from inspect import getattr_static  # noqa: PLC0415
+        from rich import box as _rbox  # noqa: PLC0415
+        from rich.table import Table  # noqa: PLC0415
+
+        table = Table(title="Registered Tools", box=_rbox.SIMPLE)
+        table.add_column("Tool", style="bold cyan")
+        table.add_column("Description")
+        if not tools:
+            table.add_row("—", "(no tools found)")
+        else:
+            for tool in tools:
+                name_value: object = getattr_static(
+                    tool, "name", getattr_static(tool, "__name__", type(tool).__name__)
+                )
+                description_value: object = getattr_static(
+                    tool, "description", getattr_static(tool, "__doc__", "")
+                )
+                name = str(name_value)
+                description = str(description_value).splitlines()[0]
+                table.add_row(name, description or "—")
+        ctx.console.print(table)
+    except ImportError:
+        from inspect import getattr_static  # noqa: PLC0415
+
+        for tool in tools:
+            fallback_name_value: object = getattr_static(
+                tool, "name", getattr_static(tool, "__name__", type(tool).__name__)
+            )
+            name = str(fallback_name_value)
+            ctx.console.print(f"  {name}")
+    return True
+
+
+def _cmd_workflows(ctx: CommandContext) -> bool:
+    """List workflows loaded into the current registry."""
+    if ctx.args.strip():
+        _present_registry_result(ctx, "Workflows", "Usage: /workflows")
+        return True
+
+    registry = ctx.workflow_registry
+    if registry is None:
+        from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
+
+        registry = build_workflow_registry()
+    workflows = registry.all()
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.registry_list import WorkflowListOverlay  # noqa: PLC0415
+
+        on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
+        ctx.set_pending_menu(WorkflowListOverlay(workflows, registry, on_close))
+        return True
+
+    try:
+        from rich import box as _rbox  # noqa: PLC0415
+        from rich.table import Table  # noqa: PLC0415
+
+        table = Table(title="Registered Workflows", box=_rbox.SIMPLE)
+        table.add_column("Workflow", style="bold cyan")
+        table.add_column("Source", style="dim")
+        table.add_column("Description")
+        for workflow in workflows:
+            entry = registry.get_entry(workflow.name)
+            table.add_row(
+                workflow.name,
+                entry.source if entry is not None else "registered",
+                workflow.description or "—",
+            )
+        if not workflows:
+            table.add_row("—", "", "(no workflows found)")
+        ctx.console.print(table)
+    except ImportError:
+        for workflow in workflows:
+            ctx.console.print(f"  {workflow.name}  {workflow.description}")
+    return True
+
+
 def _menu_config(ctx: CommandContext) -> "Overlay":
     from agenthicc.tui.workspace.overlays.config_menu import ConfigMenuOverlay  # noqa: PLC0415
 
@@ -544,6 +639,20 @@ BUILTIN_COMMANDS: list[Command] = [
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_reloadable_list_policy,
         handler=_cmd_commands,
+    ),
+    Command(
+        name="/tools",
+        description="List all tools registered for this session",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_tools,
+    ),
+    Command(
+        name="/workflows",
+        description="List all loaded workflows and their phases",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_workflows,
     ),
     Command(
         name="/config",

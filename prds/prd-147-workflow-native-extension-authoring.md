@@ -398,6 +398,14 @@ publish executable artifacts.
 14. README, workflow, tool, command, security, and CLI documentation describe
     the new workflow names, `$` adapters, artifact lifecycle, and activation
     boundaries.
+15. Every authoring terminal path emits a visible final summary after approval,
+    rejection, failure, cancellation, or resume; the structured result carries
+    the same summary.
+16. Generated workflows define a custom `WorkflowRunner` with explicit
+    `run()`/`resume()` delegation and a `WorkflowPlugin.build_runner()` factory,
+    preserving context and state transitions.
+17. `/tools` and `/workflows` open read-only registry overlays with selectable
+    detail views, matching `/commands` and `/skills`.
 
 ## 10. Rollout plan
 
@@ -420,6 +428,11 @@ publish executable artifacts.
   singular selector aliases.
 - Their existing `TOOLS`, `COMMAND`, and `COMMANDS` loader contracts are
   statically validated and their reload/restart requirements are reported.
+- All authoring results emit a terminal transcript summary, and generated
+  workflow candidates are required to preserve runner context through a custom
+  `WorkflowRunner`.
+- `/tools` and `/workflows` expose the effective session registries through the
+  existing overlay interaction pattern.
 
 ### Phase 3 — activation and trust hardening
 

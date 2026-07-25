@@ -23,6 +23,7 @@ from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.authoring.artifact import AuthoringResumeContext
 from agenthicc.workflows.authoring.definition import CreateWorkflow
 from agenthicc.workflows.authoring.runner import CreateWorkflowRunner
+from agenthicc.workflows.default.runner import WorkflowRunner
 from agenthicc.workflows.config import WorkflowConfig
 from agenthicc.workflows.registry import WorkflowRegistry, build_workflow_registry
 
@@ -42,7 +43,16 @@ def _completion(content: str, n: int = 1) -> Completion:
 
 def _source(name: str = "cloakbrowser_parse_fb") -> str:
     return f"""\
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from agenthicc.workflows.default.runner import WorkflowRunner
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
+
+
+class CloakbrowserParseFacebookRunner(WorkflowRunner):
+    async def run(self, intent: str) -> WorkflowContext:
+        return await super().run(intent)
+
+    async def resume(self, context: object) -> object:
+        return await super().resume(context)
 
 
 class CloakbrowserParseFacebook(WorkflowPlugin):
@@ -51,6 +61,10 @@ class CloakbrowserParseFacebook(WorkflowPlugin):
     phases = [
         PhaseSpec(name="parse", agent_type="auto"),
     ]
+
+    @classmethod
+    def build_runner(cls, config, mode_manager):
+        return CloakbrowserParseFacebookRunner(cls, config, mode_manager)
 """
 
 
@@ -133,11 +147,18 @@ async def test_create_workflow_publishes_and_is_discoverable_after_restart(
     transport = MockTransport()
     transport.queue_response(_completion(_envelope(_source()), n=1))
     runner, app_state = _runner(tmp_path, processor, transport, _Approval(True))
+    conversation_events = []
+    app_state.conversation.on_event(conversation_events.append)
 
     result = await runner.run("Create a workflow that uses Cloakbrowser to parse facebook.com.")
     await processor.drain()
 
     assert result.status == "published", result.to_dict()
+    assert result.summary.startswith("Created workflow 'cloakbrowser_parse_fb'")
+    assert any(
+        event.kind == "text" and result.summary in str(event.payload.get("text", ""))
+        for event in conversation_events
+    )
     assert result.artifact is not None
     assert result.artifact.name == "cloakbrowser_parse_fb"
     assert result.artifact.manifest_path is not None
@@ -178,6 +199,9 @@ async def test_create_workflow_publishes_and_is_discoverable_after_restart(
     generated = rebuilt.get("cloakbrowser_parse_fb")
     assert generated is not None
     assert generated.name == "cloakbrowser_parse_fb"
+    generated_runner = generated.build_runner(runner._cfg, None)
+    assert isinstance(generated_runner, WorkflowRunner)
+    assert type(generated_runner) is not WorkflowRunner
 
 
 async def test_create_workflow_does_not_publish_when_approval_is_denied(

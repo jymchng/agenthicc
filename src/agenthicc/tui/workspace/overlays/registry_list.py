@@ -12,6 +12,9 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
     from agenthicc.commands.command import Command
     from agenthicc.skills.loader import SkillDef
+    from agenthicc.tools.base import ToolLike
+    from agenthicc.workflows.plugin import WorkflowPlugin
+    from agenthicc.workflows.registry import WorkflowRegistry
 
 
 @dataclass(frozen=True)
@@ -228,3 +231,78 @@ class SkillListOverlay(_RegistryListOverlay):
             for skill in skills
         ]
         super().__init__("Available Skills", rows, on_close)
+
+
+class ToolListOverlay(_RegistryListOverlay):
+    """Interactive listing of tools available to the active session."""
+
+    name = "tools"
+
+    def __init__(self, tools: list["ToolLike"], on_close: Callable[[], None]) -> None:
+        from inspect import getattr_static
+
+        from agenthicc.tools.base import Tool
+
+        rows: list[_ListRow] = []
+        for tool in tools:
+            if isinstance(tool, Tool):
+                name = tool.name or type(tool).__name__
+                description = tool.description
+                capabilities: object = tool.capabilities
+            else:
+                name_value: object = getattr_static(tool, "__name__", type(tool).__name__)
+                description_value: object = getattr_static(tool, "__doc__", "")
+                name = str(name_value)
+                description = str(description_value)
+                capabilities = ()
+            if isinstance(capabilities, (set, frozenset, list, tuple)):
+                capability_text = ", ".join(sorted(str(item) for item in capabilities)) or "(none)"
+            else:
+                capability_text = str(capabilities or "(none)")
+            source = "MCP" if name.startswith("mcp:") else "registered"
+            rows.append(
+                _ListRow(
+                    label=name,
+                    metadata=source,
+                    description=description.splitlines()[0] if description else "",
+                    details=(
+                        ("Source", source),
+                        ("Capabilities", capability_text),
+                        ("Type", type(tool).__name__),
+                    ),
+                )
+            )
+        super().__init__("Registered Tools", sorted(rows, key=lambda row: row.label), on_close)
+
+
+class WorkflowListOverlay(_RegistryListOverlay):
+    """Interactive listing of loaded workflow plugins and their phase graphs."""
+
+    name = "workflows"
+
+    def __init__(
+        self,
+        workflows: list["type[WorkflowPlugin]"],
+        registry: "WorkflowRegistry | None",
+        on_close: Callable[[], None],
+    ) -> None:
+        rows: list[_ListRow] = []
+        for workflow in sorted(workflows, key=lambda item: item.name):
+            entry = registry.get_entry(workflow.name) if registry is not None else None
+            source = entry.source if entry is not None else "registered"
+            phases = list(workflow.phase_names())
+            runner_kind = "custom" if "build_runner" in workflow.__dict__ else "default"
+            rows.append(
+                _ListRow(
+                    label=workflow.name,
+                    metadata=f"{source} · {len(phases)} phase(s)",
+                    description=workflow.description,
+                    details=(
+                        ("Source", source),
+                        ("Phases", ", ".join(phases) or "(none)"),
+                        ("Runner", runner_kind),
+                        ("Modes", ", ".join(workflow.mode_bindings) or "(none)"),
+                    ),
+                )
+            )
+        super().__init__("Registered Workflows", rows, on_close)

@@ -109,7 +109,7 @@ class AuthoringResumeContext:
 
 @dataclass(frozen=True)
 class AuthoringResult:
-    """JSON-safe result of one ``create_workflow`` run."""
+    """JSON-safe result of one authoring workflow run."""
 
     workflow: str
     run_id: str
@@ -121,6 +121,7 @@ class AuthoringResult:
     attempts: int = 0
     artifact_kind: str = "workflow"
     artifacts: tuple[AuthoringArtifact, ...] = ()
+    summary: str = ""
 
     def __post_init__(self) -> None:
         if self.artifact is not None and not self.artifacts:
@@ -144,6 +145,7 @@ class AuthoringResult:
             "attempts": self.attempts,
             "artifact_kind": self.artifact_kind,
             "artifacts": [item.to_dict() for item in self.artifacts],
+            "summary": self.summary,
         }
 
 
@@ -179,6 +181,128 @@ def _func_name(node: ast.expr) -> str:
     if isinstance(node, ast.Attribute):
         return node.attr
     return ""
+
+
+def _class_method(node: ast.ClassDef, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """Return one method declared directly on *node*."""
+
+    for statement in node.body:
+        if (
+            isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and statement.name == name
+        ):
+            return statement
+    return None
+
+
+def _has_call_to(node: ast.AST, owner: str, method: str) -> bool:
+    """Return whether an AST subtree calls ``owner.method(...)``."""
+
+    for item in ast.walk(node):
+        if not isinstance(item, ast.Call) or not isinstance(item.func, ast.Attribute):
+            continue
+        value = item.func.value
+        if isinstance(value, ast.Name) and value.id == owner:
+            return item.func.attr == method
+        if (
+            owner == "super"
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "super"
+        ):
+            return item.func.attr == method
+    return False
+
+
+def _validate_custom_runner(
+    tree: ast.Module,
+    plugin: ast.ClassDef,
+    findings: list[ValidationFinding],
+) -> None:
+    """Require generated workflows to own an explicit runner/context boundary."""
+
+    has_runner_import = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "agenthicc.workflows.default.runner"
+        and any(alias.name == "WorkflowRunner" for alias in node.names)
+        for node in tree.body
+    )
+    if not has_runner_import:
+        findings.append(
+            ValidationFinding(
+                "runner-import",
+                "Workflow source must import WorkflowRunner from "
+                "agenthicc.workflows.default.runner.",
+            )
+        )
+
+    runner_classes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and "WorkflowRunner" in {_func_name(base) for base in node.bases}
+    ]
+    if not runner_classes:
+        findings.append(
+            ValidationFinding(
+                "runner-class",
+                "Workflow source must define a custom WorkflowRunner subclass.",
+            )
+        )
+        return
+    if len(runner_classes) != 1:
+        findings.append(
+            ValidationFinding(
+                "runner-count",
+                "Workflow source must define exactly one custom WorkflowRunner subclass.",
+            )
+        )
+
+    runner = runner_classes[0]
+    run_method = _class_method(runner, "run")
+    resume_method = _class_method(runner, "resume")
+    if not isinstance(run_method, ast.AsyncFunctionDef) or not isinstance(
+        resume_method, ast.AsyncFunctionDef
+    ):
+        findings.append(
+            ValidationFinding(
+                "runner-methods",
+                "Custom WorkflowRunner must override async run() and async resume().",
+            )
+        )
+    elif not (
+        _has_call_to(run_method, "super", "run") and _has_call_to(resume_method, "super", "resume")
+    ):
+        findings.append(
+            ValidationFinding(
+                "runner-context",
+                "Custom runner run()/resume() must preserve WorkflowRunner context "
+                "by delegating to super().",
+            )
+        )
+
+    factory = _class_method(plugin, "build_runner")
+    if factory is None:
+        findings.append(
+            ValidationFinding(
+                "runner-factory",
+                "WorkflowPlugin must override build_runner() to return its custom runner.",
+            )
+        )
+        return
+    runner_name = runner.name
+    if not any(
+        isinstance(item, ast.Call)
+        and isinstance(item.func, ast.Name)
+        and item.func.id == runner_name
+        for item in ast.walk(factory)
+    ):
+        findings.append(
+            ValidationFinding(
+                "runner-factory",
+                f"build_runner() must construct the custom runner {runner_name}.",
+            )
+        )
 
 
 def _phase_specs(node: ast.ClassDef) -> tuple[list[dict[str, object]], list[ValidationFinding]]:
@@ -461,6 +585,7 @@ def validate_workflow_candidate(candidate: WorkflowCandidate) -> ValidationRepor
                 "Source must import WorkflowPlugin from agenthicc.workflows.plugin.",
             )
         )
+    _validate_custom_runner(tree, plugin, findings)
     return ValidationReport(tuple(findings))
 
 
