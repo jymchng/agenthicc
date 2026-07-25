@@ -173,8 +173,9 @@ skill invocation in the input panel without submitting it.
 The interactive session classifies a submitted command before it enters the
 normal FIFO queue. Reviewed local queries such as `/usage`, `/status`, `/ps`,
 `/commands`, `/tools`, `/workflows`, `/skills`, `/mcp status`, `/help`, `/history`, `/expand`, and
-`/clear` run immediately. `/stop` is an immediate control command for an owned
-background terminal. The `/config` command also opens its local
+`/clear` run immediately. `/stop` is an immediate control command: with no
+arguments it stops every owned background terminal; `/stop <terminal-id>` targets
+one handle. The `/config` command also opens its local
 configuration overlay immediately, so it is available while a response is
 streaming. `/cancel` and `/interrupt` use the same control owner as `Ctrl+C`;
 `/bg` and `/background` use the existing background-session handoff when that

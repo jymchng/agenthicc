@@ -124,14 +124,14 @@ class StatusComponent:
             wait_message = (
                 "[cyan]Waiting for background terminal[/cyan] "
                 f"({_fmt_elapsed(float(elapsed_value))} • Esc to interrupt) · "
-                f"{int(running_count)} background terminals running · /ps to view · /stop to close"
+                f"{int(running_count)} background terminals running · /ps to view · /stop to stop all"
             )
             from agenthicc.tui.rendering import visible_len  # noqa: PLC0415
 
             if visible_len(wait_message) > cols:
                 wait_message = (
                     f"[cyan]Waiting terminal[/cyan] ({_fmt_elapsed(float(elapsed_value))} • Esc) · "
-                    f"{int(running_count)} running · /ps · /stop"
+                    f"{int(running_count)} running · /ps · /stop all"
                 )
             wait_line = _fit(wait_message, cols)
             model = conv.model_name()

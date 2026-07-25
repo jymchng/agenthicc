@@ -146,7 +146,7 @@ Useful built-in slash commands include:
 | `/help`, `/commands` | Inspect available commands in an overlay |
 | `/tools [reload]`, `/workflows [reload]` | Inspect or reload tools/workflows; `/tools` labels each tool `builtin` or `plugin` |
 | `/status`, `/history` | Inspect runtime status and session events |
-| `/ps [terminal-id]`, `/stop [terminal-id|all]` | Inspect or stop owned background terminals |
+| `/ps [terminal-id]`, `/stop [terminal-id|all]` | Inspect or stop owned background terminals; `/stop` stops all |
 | `/mode [name]` | Show or change the operating mode |
 | `/workflow <name> \| reset` | Select a workflow; use `/workflow create_workflow`, `/workflow create_tool`, or `/workflow create_command` to author an extension, or `/workflow resume` to continue a staged run |
 | `/model [provider] [model]` | Inspect or switch the model selection |
@@ -180,9 +180,10 @@ support, approvals, input requests, retention, and privacy details.
 Execution tools remain foreground by default. Pass `background=true` to
 `run_bash` or `run_command` to receive an owned `term-...` handle, then call
 `wait_terminal` when the result is needed. While a wait is active, `/ps`,
-`/stop`, and `Esc` remain responsive; `Esc` stops the terminal currently being
-awaited. Terminal handles and bounded output are local-only and scoped to the
-originating session.
+`/stop`, and `Esc` remain responsive; `/stop` stops all owned background
+terminals, while `Esc` stops the terminal currently being awaited. Terminal
+handles and bounded output are local-only and scoped to the originating
+session.
 
 ## Architecture in one picture
 

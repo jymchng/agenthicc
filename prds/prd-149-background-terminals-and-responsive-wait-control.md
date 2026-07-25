@@ -47,15 +47,15 @@ without freezing the composer, status line, or safe control commands.
 The intended foreground experience is:
 
 ```text
-Waiting for background terminal (6m 11s • Esc to interrupt) · 2 background terminals running · /ps to view · /stop to close
+Waiting for background terminal (6m 11s • Esc to interrupt) · 2 background terminals running · /ps to view · /stop to stop all
   └ uv run pytest tests/unit -q
 ```
 
-`/ps` opens the live terminal list. `/stop` stops the currently awaited
-terminal, or an explicitly selected handle. `Esc` is the keyboard equivalent
-of interrupting the terminal currently owning the wait. Existing foreground
-execution remains the default; background execution must be explicit or
-selected by a documented workflow/tool policy.
+`/ps` opens the live terminal list. `/stop` stops every owned background
+terminal by default, or an explicitly named handle when an ID is supplied.
+`Esc` is the keyboard equivalent of interrupting the terminal currently owning
+the wait. Existing foreground execution remains the default; background
+execution must be explicit or selected by a documented workflow/tool policy.
 
 ## 2. Evidence-backed problem statement
 
@@ -215,7 +215,7 @@ status component shows a compact, width-safe message in the existing Live
 region:
 
 ```text
-Waiting for background terminal (6m 11s • Esc to interrupt) · 2 background terminals running · /ps to view · /stop to close
+Waiting for background terminal (6m 11s • Esc to interrupt) · 2 background terminals running · /ps to view · /stop to stop all
   └ uv run pytest tests/unit -q
 ```
 
@@ -270,15 +270,17 @@ another process to a terminal.
 `/stop` is an immediate control command:
 
 ```text
-/stop                 # stop the terminal currently owning the wait
+/stop                 # stop every visible owned terminal; no ID required
 /stop term-7f3a       # stop one exact terminal
 /stop all             # request stopping all visible terminals, with confirm
 /stop --force term-7f3a
 ```
 
-Without an active wait, `/stop` reports that a terminal ID is required when
-more than one terminal exists; it may stop the sole selected terminal only if
-the UI has an unambiguous selection. It must not guess based on command text.
+Without arguments, `/stop` always requests stopping every visible owned
+terminal, regardless of whether a wait is active or a terminal is selected.
+`/stop all` is the explicit spelling and retains its confirmation requirement;
+`/stop <terminal-id>` remains the single-terminal form. It must not guess
+ownership based on command text.
 
 Stopping is a two-stage operation:
 

@@ -422,7 +422,7 @@ def _cmd_ps(ctx: CommandContext) -> bool:
 
 
 def _cmd_stop(ctx: CommandContext) -> bool:
-    """Stop the current waited terminal or an explicitly named handle."""
+    """Stop all owned terminals, or one explicitly named handle."""
 
     manager = ctx.terminal_manager
     if manager is None:
@@ -444,9 +444,8 @@ def _cmd_stop(ctx: CommandContext) -> bool:
         ctx.console.print(f"[yellow]Stop requested for {count} background terminal(s).[/yellow]")
         return True
     if target is None:
-        target = manager.current_wait_id()
-    if target is None:
-        ctx.console.print("[dim]No running background terminal is selected.[/dim]")
+        count = manager.request_stop_all(force=force)
+        ctx.console.print(f"[yellow]Stop requested for {count} background terminal(s).[/yellow]")
         return True
     if manager.request_stop(target, force=force):
         ctx.console.print(f"[yellow]Stop requested for {target}.[/yellow]")
@@ -866,7 +865,7 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/stop",
-        description="Stop the selected or named background terminal",
+        description="Stop all or one named background terminal",
         argument_hint="[terminal-id|all] [--force]",
         aliases=("/stop-terminal",),
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,

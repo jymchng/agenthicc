@@ -124,9 +124,11 @@ backgrounds a process.
 While the TUI awaits a handle, its status line shows elapsed time, the running
 terminal count, the command label, and `/ps`, `/stop`, and `Esc` controls.
 `/ps` opens the live terminal list (use `/ps --json` for redacted metadata),
-`/stop`, `/stop <terminal-id>`, and `/stop all` request graceful process-group
-shutdown. `/stop all` asks for an explicit `--confirm`; `--force` both confirms
-and skips the graceful signal. A terminal is stopped only
+`/stop` and `/stop all` request graceful process-group shutdown for every
+owned background terminal; no terminal ID or active wait is required.
+`/stop <terminal-id>` targets one handle. `/stop all` asks for an explicit
+`--confirm`; `--force` both confirms and skips the graceful signal. A terminal
+is stopped only
 through the manager entry that created its process group; arbitrary PIDs are
 never discovered or attached. Parent background-session cancellation also
 cleans up child terminal records linked to that session.

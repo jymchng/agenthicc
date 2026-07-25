@@ -447,6 +447,7 @@ class TerminalManager:
             record.terminal_id: record for record in self.store.records()
         }
         self._entries: dict[str, _RuntimeEntry] = {}
+        self._stop_tasks: dict[str, asyncio.Task[bool]] = {}
         self._wait_ids: list[str] = []
         self._closed = False
         self._recover_stale_records()
@@ -727,6 +728,9 @@ class TerminalManager:
         started = time.monotonic()
         try:
             if entry is None:
+                stop_task = self._stop_tasks.get(terminal_id)
+                if stop_task is not None and stop_task is not asyncio.current_task():
+                    await asyncio.shield(stop_task)
                 return record.result()
             while not entry.completion.done():
                 self._notify()
@@ -738,6 +742,9 @@ class TerminalManager:
                 except asyncio.TimeoutError:
                     continue
             await asyncio.shield(entry.completion)
+            stop_task = self._stop_tasks.get(terminal_id)
+            if stop_task is not None and stop_task is not asyncio.current_task():
+                await asyncio.shield(stop_task)
             return record.result()
         finally:
             try:
@@ -792,7 +799,14 @@ class TerminalManager:
             return False
         if target not in self._entries:
             return False
-        asyncio.create_task(self.stop(target, force=force), name=f"stop-{target}")
+        task = asyncio.create_task(self.stop(target, force=force), name=f"stop-{target}")
+        self._stop_tasks[target] = task
+
+        def _forget(completed: asyncio.Task[bool]) -> None:
+            if self._stop_tasks.get(target) is completed:
+                self._stop_tasks.pop(target, None)
+
+        task.add_done_callback(_forget)
         return True
 
     def request_stop_current(self, *, force: bool = False) -> bool:
@@ -815,6 +829,8 @@ class TerminalManager:
         targets = list(self._entries)
         for terminal_id in targets:
             await self.stop(terminal_id, reason="session closed")
+        if self._stop_tasks:
+            await asyncio.gather(*self._stop_tasks.values(), return_exceptions=True)
 
 
 def stop_persisted_session_terminals(

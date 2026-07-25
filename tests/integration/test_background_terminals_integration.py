@@ -60,6 +60,34 @@ async def test_ps_json_and_stop_are_immediate_owned_controls(tmp_path: Path) -> 
     await manager.close()
 
 
+async def test_stop_without_terminal_id_stops_all_owned_terminals(tmp_path: Path) -> None:
+    manager = TerminalManager(
+        session_id="stop-all-session",
+        cwd=tmp_path,
+        store_root=tmp_path / "registry",
+        cancel_grace_s=0.1,
+    )
+    started = [
+        await manager.start(
+            argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=tmp_path,
+            label=f"all-{index}",
+        )
+        for index in range(2)
+    ]
+    terminal_ids = [str(item["terminal_id"]) for item in started]
+    output = StringIO()
+    console = Console(file=output, force_terminal=False, markup=False)
+    dispatcher = CommandDispatcher(build_builtin_registry())
+    context = _context(manager, console)
+
+    assert dispatcher.dispatch("/stop", context) is True
+    await asyncio.gather(*(manager.wait(terminal_id) for terminal_id in terminal_ids))
+    assert all(manager.get(terminal_id).state.value == "stopped" for terminal_id in terminal_ids)
+    assert "Stop requested for 2 background terminal(s)." in output.getvalue()
+    await manager.close()
+
+
 async def test_terminal_overlay_can_select_and_stop_a_live_handle(tmp_path: Path) -> None:
     manager = TerminalManager(
         session_id="overlay-session",
@@ -113,6 +141,6 @@ def test_wait_status_is_width_safe_and_contains_control_hints(
     assert "Esc to interrupt" in text
     assert "2 background terminals running" in text
     assert "/ps to view" in text
-    assert "/stop to close" in text
+    assert "/stop to stop all" in text
     assert "└ uv run pytest tests/unit -q" in text
     assert StatusComponent(state).height(200) == 4
