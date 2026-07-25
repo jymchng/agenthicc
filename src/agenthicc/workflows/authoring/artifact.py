@@ -349,7 +349,7 @@ def _phase_specs(node: ast.ClassDef) -> tuple[list[dict[str, object]], list[Vali
                     )
                 )
         for keyword in item.keywords:
-            if keyword.arg in {"name", "next", "on_reject"}:
+            if keyword.arg in {"name", "next", "on_reject", "terminal_wait_policy"}:
                 values[keyword.arg] = (
                     _extract_literal_string(keyword.value)
                     if keyword.arg != "next" or not isinstance(keyword.value, ast.Constant)
@@ -367,6 +367,14 @@ def _phase_specs(node: ast.ClassDef) -> tuple[list[dict[str, object]], list[Vali
                 ValidationFinding("phase-name-missing", "Every PhaseSpec needs a name.")
             )
             continue
+        policy = values.get("terminal_wait_policy", "foreground")
+        if policy not in {"foreground", "background"}:
+            findings.append(
+                ValidationFinding(
+                    "terminal-wait-policy",
+                    "terminal_wait_policy must be 'foreground' or 'background'.",
+                )
+            )
         phases.append(values)
 
     names = [str(item["name"]) for item in phases]

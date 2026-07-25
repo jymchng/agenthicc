@@ -113,6 +113,9 @@ async def execute_workflow(
         semantic_index=session.semantic_index,
         completed_turns=completed_turns,
         params=workflow_cls.build_params(session.cfg.workflows.get(workflow_name, {})),
+        terminal_wait_policies={
+            phase.name: phase.terminal_wait_policy for phase in workflow_cls.phases
+        },
     )
     runner = workflow_cls.build_runner(workflow_config, session.mode_manager)
     error: str | None = None
@@ -176,11 +179,22 @@ async def run_headless_workflow(
     )
     session.app_state.cli_flags = ctx.flags
     session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)  # type: ignore[assignment]
+    from agenthicc.background.terminals import (  # noqa: PLC0415
+        reset_current_terminal_manager,
+        set_current_terminal_manager,
+    )
+
+    terminal_manager = getattr(session, "terminal_manager", None)
+    terminal_token = (
+        set_current_terminal_manager(terminal_manager) if terminal_manager is not None else None
+    )
     processor_task = asyncio.create_task(session.processor.run(), name="headless-processor")
     await asyncio.sleep(0)
     try:
         return await execute_workflow(session, workflow_name, intent)
     finally:
+        if terminal_token is not None:
+            reset_current_terminal_manager(terminal_token)
         await _close_headless_session(session, processor_task, cassette_base)
 
 
@@ -201,6 +215,15 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
     )
     session.app_state.cli_flags = ctx.flags
     session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)  # type: ignore[assignment]
+    from agenthicc.background.terminals import (  # noqa: PLC0415
+        reset_current_terminal_manager,
+        set_current_terminal_manager,
+    )
+
+    terminal_manager = getattr(session, "terminal_manager", None)
+    terminal_token = (
+        set_current_terminal_manager(terminal_manager) if terminal_manager is not None else None
+    )
     processor_task = asyncio.create_task(session.processor.run(), name="headless-processor")
     await asyncio.sleep(0)
     print(
@@ -242,6 +265,8 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
             print(json.dumps(result.to_dict()), flush=True)
             completed_turns += 1
     finally:
+        if terminal_token is not None:
+            reset_current_terminal_manager(terminal_token)
         await _close_headless_session(session, processor_task, cassette_base)
 
 
@@ -261,6 +286,9 @@ async def _close_headless_session(
         close_memory()
     if session.mcp_registry is not None:
         await session.mcp_registry.shutdown()
+    terminal_manager = getattr(session, "terminal_manager", None)
+    if terminal_manager is not None:
+        await terminal_manager.close()
     if cassette_base is not None:
         from agenthicc.runners.tui_session import _write_cassette_meta  # noqa: PLC0415
 

@@ -16,6 +16,15 @@ from .store import BackgroundStore, InvalidSessionTransition, SessionNotFound
 from .supervisor import BackgroundSupervisor
 from .settings import BackgroundSettings, background_enabled, load_background_settings
 from .worker import BackgroundInputService
+from .terminals import (
+    TerminalManager,
+    TerminalRecord,
+    TerminalState,
+    TerminalStore,
+    get_current_terminal_manager,
+    reset_current_terminal_manager,
+    set_current_terminal_manager,
+)
 
 __all__ = [
     "ACTIVE_STATUSES",
@@ -30,5 +39,12 @@ __all__ = [
     "SessionStatus",
     "background_enabled",
     "load_background_settings",
+    "TerminalManager",
+    "TerminalRecord",
+    "TerminalState",
+    "TerminalStore",
+    "get_current_terminal_manager",
+    "reset_current_terminal_manager",
+    "set_current_terminal_manager",
     "legal_transition",
 ]

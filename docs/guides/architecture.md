@@ -132,3 +132,12 @@ conversation events, workflow phase state, approvals, and memory remain under
 their existing owners. The manager TUI reads the index and renders safe
 metadata; it does not mutate frozen kernel state directly. `/bg`, `/background`,
 `agenthicc jobs`, and `agenthicc agents` all enter this same boundary.
+
+Terminal subprocesses are a child resource of that control plane. The
+session-scoped `background.TerminalManager` owns only process groups it
+created, stores bounded redacted records under the terminal registry, and is
+consumed by `tools/exec` for explicit `background=true` requests. A workflow
+phase may declare `terminal_wait_policy = "background"`; the declaration
+changes the default tool wait policy without embedding a shell command in the
+workflow. Cancelling a detached parent asks the terminal registry to stop its
+exact child groups before the parent session is finalized.

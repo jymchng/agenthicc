@@ -372,11 +372,31 @@ class WorkflowRunner(BaseWorkflowRunner):
 
     # ── phase execution ───────────────────────────────────────────────────────
 
+    async def _run_phase_turn(
+        self,
+        spec: "PhaseSpec",
+        text: str,
+        options: "AgentTurnOptions",
+    ) -> None:
+        """Run one phase turn with its declared terminal wait policy."""
+
+        from agenthicc.background.terminals import (  # noqa: PLC0415
+            reset_current_terminal_wait_policy,
+            set_current_terminal_wait_policy,
+        )
+
+        token = set_current_terminal_wait_policy(spec.terminal_wait_policy)
+        try:
+            from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
+
+            await _run_agent_turn(text, **options)
+        finally:
+            reset_current_terminal_wait_policy(token)
+
     async def _run_phase(
         self, spec: PhaseSpec, intent: str, context: WorkflowContext
     ) -> PhaseOutput:
         from agenthicc.workflows.plugin import PhaseOutput, _parse_output_schema  # noqa: PLC0415
-        from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
 
         if spec.agent_type == "human":
             return await self._run_human_phase(spec, context)
@@ -483,7 +503,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                         )
                     )
                     try:
-                        await _run_agent_turn(text, **_turn_kwargs)
+                        await self._run_phase_turn(spec, text, _turn_kwargs)
                     except (asyncio.CancelledError, KeyboardInterrupt):
                         raise
                     except Exception as exc:
@@ -514,7 +534,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                         )
                     )
                     try:
-                        await _run_agent_turn(text, **_turn_kwargs)
+                        await self._run_phase_turn(spec, text, _turn_kwargs)
                     except (asyncio.CancelledError, KeyboardInterrupt):
                         raise
                     except Exception as exc:
@@ -546,7 +566,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                         )
                     )
                     try:
-                        await _run_agent_turn(text, **_turn_kwargs)
+                        await self._run_phase_turn(spec, text, _turn_kwargs)
                     except (asyncio.CancelledError, KeyboardInterrupt):
                         raise
                     except Exception as exc:
@@ -561,7 +581,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                         break
 
             else:
-                await _run_agent_turn(phase_text, **_turn_kwargs)
+                await self._run_phase_turn(spec, phase_text, _turn_kwargs)
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except Exception as exc:

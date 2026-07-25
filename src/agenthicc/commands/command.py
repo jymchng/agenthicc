@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.registry import WorkflowRegistry
+    from agenthicc.background.terminals import TerminalManager
 
 __all__ = [
     "Command",
@@ -84,6 +85,7 @@ class CommandContext:
     tool_sources: "Mapping[str, str] | None" = None
     workflow_registry: "WorkflowRegistry | None" = None
     mode_manager: "ModeManager | None" = None
+    terminal_manager: "TerminalManager | None" = None
     set_pending_skill: "Callable[[str], None] | None" = None
     set_pending_menu: "Callable[[Overlay], None] | None" = None
     close_overlay: "Callable[[], None] | None" = None

@@ -384,6 +384,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                     system_prompt=_PLAN_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
                     max_turns=20,
                     ctx=ctx,
+                    phase_name="plan",
                     model_override=self._phase_model("plan"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
@@ -444,6 +445,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                     system_prompt=system_prompt,
                     max_turns=40,
                     ctx=ctx,
+                    phase_name="execute",
                     model_override=self._phase_model("execute"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
@@ -504,6 +506,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                     system_prompt=system_prompt,
                     max_turns=8,
                     ctx=ctx,
+                    phase_name="review",
                     model_override=self._phase_model("review"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
@@ -544,6 +547,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
                 max_turns=4,
                 ctx=ctx,
+                phase_name="summarize",
                 model_override=self._phase_model("summarize"),
             )
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -649,6 +653,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         system_prompt: str,
         max_turns: int,
         ctx: CodePlanContext,
+        phase_name: str = "",
         model_override: str = "",
     ) -> None:
         """Run one agent turn, optionally switching mode for its duration.
@@ -675,6 +680,13 @@ class CodePlanRunner(BaseWorkflowRunner):
         if self._cfg.approval_svc is not None and ctx.shared_memory is not None:
             ctx.shared_memory.ensure_valid()
 
+        from agenthicc.background.terminals import (  # noqa: PLC0415
+            reset_current_terminal_wait_policy,
+            set_current_terminal_wait_policy,
+        )
+
+        policy = self._cfg.terminal_wait_policies.get(phase_name, "foreground")
+        policy_token = set_current_terminal_wait_policy(policy)
         try:
             await _run_agent_turn(
                 text,
@@ -699,6 +711,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 semantic_index=self._cfg.semantic_index,
             )
         finally:
+            reset_current_terminal_wait_policy(policy_token)
             if mode is not None and self._mode_manager is not None:
                 self._cfg.app_state.active_mode.set(original_mode)
 

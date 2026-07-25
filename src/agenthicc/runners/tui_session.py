@@ -198,6 +198,40 @@ async def _build_session_context(
     # ── config / LLM ─────────────────────────────────────────────────────────
     cfg = load_config(cli_overrides=cli_overrides or [], config_path=config_path)
 
+    # PRD-149: terminal subprocesses are owned by a session-scoped manager.
+    # Keep their registry alongside the existing background-session store but
+    # in a separate namespace so agent sessions and terminal handles cannot be
+    # confused with one another.
+    from agenthicc.background.settings import load_background_settings  # noqa: PLC0415
+    from agenthicc.background.terminals import TerminalManager  # noqa: PLC0415
+
+    background_settings = load_background_settings(
+        config_path=config_path,
+        overrides=tuple(cli_overrides or ()),
+        cwd=Path.cwd(),
+    )
+    terminal_root = (
+        Path(background_settings.store_path).expanduser() / "terminals"
+        if background_settings.store_path
+        else None
+    )
+    terminal_manager = TerminalManager(
+        session_id=session_id,
+        cwd=Path.cwd(),
+        store_root=terminal_root,
+        enabled=(
+            background_settings.enabled
+            and background_settings.terminals_enabled
+            and os.environ.get("AGENTHICC_DISABLE_BACKGROUND", "") != "1"
+        ),
+        max_terminals=background_settings.max_terminals,
+        max_terminals_per_project=background_settings.max_terminals_per_project,
+        max_output_bytes=background_settings.terminal_max_output_bytes,
+        wall_timeout_s=background_settings.terminal_wall_timeout_s,
+        cancel_grace_s=background_settings.terminal_cancel_grace_s,
+        retention_days=background_settings.terminal_retention_days,
+    )
+
     # PRD-108: configure shared HTTP client timeout from config before any tool runs.
     from agenthicc.tools.http import configure as _configure_http  # noqa: PLC0415
 
@@ -502,6 +536,7 @@ async def _build_session_context(
         skills=skills,
         project_plugins=project_plugins,
         mcp_registry=mcp_registry,
+        terminal_manager=terminal_manager,
         cfg=cfg,
         session_id=session_id,
         model_label=model_label,
@@ -537,6 +572,11 @@ class TUISession:
         self._turn_count: int = 0
         self._pending_replay_id: str | None = None
         self._workflow_override: str | None = None  # PRD-114: /workflow command
+        terminal_manager = getattr(ctx, "terminal_manager", None)
+        if terminal_manager is not None:
+            self._terminal_unsub = terminal_manager.changed.subscribe(self._sync_terminal_status)
+        else:
+            self._terminal_unsub = lambda: None
 
         from agenthicc.commands import CommandDispatcher  # noqa: PLC0415
         from agenthicc.workflows.config import WorkflowConfig  # noqa: PLC0415
@@ -558,6 +598,7 @@ class TUISession:
             memory_router=ctx.memory_router,
             semantic_index=ctx.semantic_index,
         )
+        self._sync_terminal_status()
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -600,6 +641,32 @@ class TUISession:
 
         app_state.pending_approval.subscribe(_on_approval_change)
 
+    def _sync_terminal_status(self) -> None:
+        """Project the current terminal wait into the reactive status bar."""
+
+        terminal_manager = getattr(self._ctx, "terminal_manager", None)
+        if terminal_manager is None:
+            return
+        snapshot = terminal_manager.wait_snapshot()
+        conversation = self._ctx.app_state.conversation
+        if snapshot is None:
+            conversation.clear_terminal_wait()
+            redraw = getattr(self._workspace, "_redraw", None)
+            if callable(redraw):
+                redraw()
+            return
+        elapsed_value = snapshot.get("elapsed_s", 0.0)
+        count_value = snapshot.get("running_count", 0)
+        conversation.set_terminal_wait(
+            terminal_id=str(snapshot["terminal_id"]),
+            label=str(snapshot["label"]),
+            elapsed_s=float(elapsed_value) if isinstance(elapsed_value, (int, float)) else 0.0,
+            running_count=int(count_value) if isinstance(count_value, int) else 0,
+        )
+        redraw = getattr(self._workspace, "_redraw", None)
+        if callable(redraw):
+            redraw()
+
     # ── public routing ────────────────────────────────────────────────────────
 
     def dispatch_slash(self, text: str) -> bool:
@@ -626,6 +693,7 @@ class TUISession:
             tool_sources=tool_registry.sources,
             workflow_registry=ctx.workflow_registry,
             mode_manager=ctx.mode_manager,
+            terminal_manager=getattr(ctx, "terminal_manager", None),
             set_pending_skill=self._set_pending_skill,
             set_pending_menu=self._workspace.overlays.show,
             close_overlay=self._workspace.overlays.hide,
@@ -663,6 +731,12 @@ class TUISession:
         task = self._agent_task
         if task is None or task.done():
             return False
+        # Esc/Ctrl+C first stops the owned terminal currently awaited by this
+        # turn, then cancels the agent task.  The process group therefore does
+        # not outlive a cancelled foreground wait.
+        terminal_manager = getattr(self._ctx, "terminal_manager", None)
+        if terminal_manager is not None:
+            terminal_manager.request_stop_current()
         return task.cancel()
 
     def _busy_decision(self, text: str) -> "BusyDecision":
@@ -1135,10 +1209,16 @@ class TUISession:
 
                 # PRD-116: build per-workflow params from merged TOML/CLI/env config.
                 _wf_params = _plugin_cls.build_params(ctx.cfg.workflows.get(_plugin_cls.name, {}))
+                _phase_specs = getattr(_plugin_cls, "phases", ())
                 _wf_config = _dc.replace(
                     self._wf_config_base,
                     completed_turns=self._turn_count,
                     params=_wf_params,
+                    terminal_wait_policies={
+                        phase.name: phase.terminal_wait_policy
+                        for phase in _phase_specs
+                        if hasattr(phase, "name") and hasattr(phase, "terminal_wait_policy")
+                    },
                 )
                 # Plugin owns runner construction — no name-based branching.
                 _wf_runner = _plugin_cls.build_runner(_wf_config, ctx.mode_manager)
@@ -1364,7 +1444,16 @@ class TUISession:
             import dataclasses as _dc  # noqa: PLC0415
 
             _wf_params = wf_defn.build_params(ctx.cfg.workflows.get(wf_defn.name, {}))
-            _wf_config = _dc.replace(self._wf_config_base, params=_wf_params)
+            _phase_specs = getattr(wf_defn, "phases", ())
+            _wf_config = _dc.replace(
+                self._wf_config_base,
+                params=_wf_params,
+                terminal_wait_policies={
+                    phase.name: phase.terminal_wait_policy
+                    for phase in _phase_specs
+                    if hasattr(phase, "name") and hasattr(phase, "terminal_wait_policy")
+                },
+            )
             runner = wf_defn.build_runner(_wf_config, ctx.mode_manager)
             await runner.resume(context)
             # PRD-89: exit workflow-bound mode after completion
@@ -1488,6 +1577,12 @@ async def _run_tui_session(
         cfg=ctx.cfg,
     )
     session = TUISession(ctx, workspace, input_session)
+    from agenthicc.background.terminals import (  # noqa: PLC0415
+        reset_current_terminal_manager,
+        set_current_terminal_manager,
+    )
+
+    terminal_context_token = set_current_terminal_manager(ctx.terminal_manager)
     try:
         from agenthicc.tui.welcome import print_welcome  # noqa: PLC0415
 
@@ -1498,6 +1593,8 @@ async def _run_tui_session(
         )
         await session.run()
     finally:
+        reset_current_terminal_manager(terminal_context_token)
+        session._terminal_unsub()
         ctx.session_log.close()
         # PRD-129 Phase 2: close the durable conversation journal handle.
         _close = getattr(ctx.session_memory, "close", None)
@@ -1515,6 +1612,7 @@ async def _run_tui_session(
             configure_file_cache(None)
         if ctx.mcp_registry:
             await ctx.mcp_registry.shutdown()
+        await ctx.terminal_manager.close()
         if cassette_base is not None:
             _write_cassette_meta(cassette_base / ctx.session_id, ctx.session_id)
 

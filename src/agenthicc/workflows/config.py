@@ -47,6 +47,8 @@ class WorkflowConfig:
     completed_turns: int = field(default=0)
     params: "WorkflowParams | None" = field(default=None)
     """Per-workflow tunable parameters (phase model overrides, etc.) — PRD-111."""
+    terminal_wait_policies: dict[str, str] = field(default_factory=dict)
+    """Phase-name to terminal policy map (PRD-149)."""
 
     def all_plugin_tools(self) -> list["ToolLike"]:
         """Return project tools while accepting legacy list-based configs."""

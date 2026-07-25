@@ -110,6 +110,48 @@ class StatusComponent:
 
         conv = self._state.conversation
         cols = _get_cols()
+        _terminal_wait_signal = getattr(conv, "terminal_waiting", None)
+        terminal_waiting = (
+            _terminal_wait_signal() is True if callable(_terminal_wait_signal) else False
+        )
+        if terminal_waiting:
+            elapsed_signal = getattr(conv, "terminal_wait_elapsed_s", None)
+            elapsed_value = elapsed_signal() if callable(elapsed_signal) else 0.0
+            count_signal = getattr(conv, "terminal_running_count", None)
+            running_count = count_signal() if callable(count_signal) else 0
+            label_signal = getattr(conv, "terminal_wait_label", None)
+            label = label_signal() if callable(label_signal) else "terminal"
+            wait_message = (
+                "[cyan]Waiting for background terminal[/cyan] "
+                f"({_fmt_elapsed(float(elapsed_value))} • Esc to interrupt) · "
+                f"{int(running_count)} background terminals running · /ps to view · /stop to close"
+            )
+            from agenthicc.tui.rendering import visible_len  # noqa: PLC0415
+
+            if visible_len(wait_message) > cols:
+                wait_message = (
+                    f"[cyan]Waiting terminal[/cyan] ({_fmt_elapsed(float(elapsed_value))} • Esc) · "
+                    f"{int(running_count)} running · /ps · /stop"
+                )
+            wait_line = _fit(wait_message, cols)
+            model = conv.model_name()
+            command_line = f"[dim]└ {_e(str(label))}[/dim]"
+            if model:
+                command_line += f" [dim]│ {_e(model)}[/dim]"
+            command_line = _fit(command_line, cols)
+            sid = conv.session_id()
+            turns = conv.turn_count()
+            cost = conv.cost_usd()
+            meta = ""
+            if sid:
+                meta += f"[dim]{_e(sid)}[/dim]"
+            meta += f"[dim] │  {turns} turn{'s' if turns != 1 else ''}[/dim]"
+            meta += f"[dim] │  ${cost:.3f}[/dim]"
+            return Group(
+                Text.from_markup(wait_line),
+                Text.from_markup(command_line),
+                Text.from_markup(_fit(meta, cols)),
+            )
         waiting_label = _waiting_label(self._state)
         waiting = waiting_label is not None
 
@@ -205,7 +247,11 @@ class StatusComponent:
         Layout: 1 (blank) + 1 (line1) + 1 (line2, if model) + 1 (line3, if model)
         → 2 when no model set, 4 when all three lines present.
         """
-        has_model = bool(self._state.conversation.model_name())
+        conv = self._state.conversation
+        terminal_signal = getattr(conv, "terminal_waiting", None)
+        if callable(terminal_signal) and terminal_signal() is True:
+            return 4  # blank separator + wait line + command line + metadata
+        has_model = bool(conv.model_name())
         blank = 1  # Text("") prepended by Workspace._build()
         line1 = 1  # always: flower + state + runtime
         line2 = 1 if has_model else 0  # model name

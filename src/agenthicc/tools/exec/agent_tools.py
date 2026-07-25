@@ -13,53 +13,95 @@ __all__ = [
     "run_python",
     "run_python_expr",
     "run_tests",
+    "wait_terminal",
     "shell",
     "EXEC_AGENT_TOOLS",
 ]
 
-_CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
+
+def _CTX() -> dict[str, object]:
+    """Build a tool context with the session-owned terminal manager, if any."""
+
+    from agenthicc.background.terminals import (  # noqa: PLC0415
+        get_current_terminal_manager,
+        get_current_terminal_wait_policy,
+    )
+
+    context: dict[str, object] = {"workspace_root": os.getcwd()}
+    manager = get_current_terminal_manager()
+    if manager is not None:
+        context["terminal_manager"] = manager
+    context["terminal_wait_policy"] = get_current_terminal_wait_policy()
+    return context
 
 
 @tool_execute
 @tool()
-async def shell(command: str, timeout: float = 30.0) -> dict[str, object]:
+async def shell(
+    command: str,
+    timeout: float = 30.0,
+    background: bool = False,
+    label: str = "",
+) -> dict[str, object]:
     """Execute a shell command and return stdout/stderr.
 
     Args:
         command: Shell command string to execute.
         timeout: Maximum seconds to wait (default 30).
+        background: Return an owned terminal handle instead of waiting.
+        label: Optional bounded label shown in the terminal manager.
     """
     from agenthicc.tools.exec import RunBashTool  # noqa: PLC0415
 
-    return await RunBashTool().execute({"command": command, "timeout": timeout}, _CTX())
+    return await RunBashTool().execute(
+        {"command": command, "timeout": timeout, "background": background, "label": label}, _CTX()
+    )
 
 
 @tool_execute
 @tool()
-async def run_bash(command: str, timeout: float = 30.0) -> dict[str, object]:
+async def run_bash(
+    command: str,
+    timeout: float = 30.0,
+    background: bool = False,
+    label: str = "",
+) -> dict[str, object]:
     """Execute a bash shell command and return stdout/stderr.
 
     Args:
         command: Shell command string to execute.
         timeout: Maximum seconds to wait (default 30).
+        background: Return an owned terminal handle instead of waiting.
+        label: Optional bounded label shown in the terminal manager.
     """
     from agenthicc.tools.exec import RunBashTool  # noqa: PLC0415
 
-    return await RunBashTool().execute({"command": command, "timeout": timeout}, _CTX())
+    return await RunBashTool().execute(
+        {"command": command, "timeout": timeout, "background": background, "label": label}, _CTX()
+    )
 
 
 @tool_execute
 @tool()
-async def run_command(argv: list[str], timeout: float = 30.0) -> dict[str, object]:
+async def run_command(
+    argv: list[str],
+    timeout: float = 30.0,
+    background: bool = False,
+    label: str = "",
+) -> dict[str, object]:
     """Execute an executable directly (no shell) and return stdout/stderr.
 
     Args:
         argv: Command and arguments as a list, e.g. ["python", "-c", "print(1)"].
         timeout: Maximum seconds to wait (default 30).
+        background: Return an owned terminal handle instead of waiting.
+        label: Optional bounded label shown in the terminal manager.
     """
     from agenthicc.tools.exec import RunCommandTool  # noqa: PLC0415
 
-    return await RunCommandTool().execute({"argv": argv, "timeout": timeout}, _CTX())
+    return await RunCommandTool().execute(
+        {"argv": argv, "timeout": timeout, "background": background, "label": label}, _CTX()
+    )
 
 
 @tool_execute
@@ -114,5 +156,29 @@ async def run_tests(
     )
 
 
+@tool_execute
+@tool()
+async def wait_terminal(terminal_id: str, timeout: float = 0.0) -> dict[str, object]:
+    """Wait for an owned background terminal handle.
+
+    Args:
+        terminal_id: Handle returned by a background run_bash/run_command call.
+        timeout: Optional maximum seconds to wait before stopping it.
+    """
+    from agenthicc.tools.exec import WaitTerminalTool  # noqa: PLC0415
+
+    return await WaitTerminalTool().execute(
+        {"terminal_id": terminal_id, "timeout": timeout}, _CTX()
+    )
+
+
 #: All exec agent tools — ready to pass to @use_tools().
-EXEC_AGENT_TOOLS = [shell, run_bash, run_command, run_python, run_python_expr, run_tests]
+EXEC_AGENT_TOOLS = [
+    shell,
+    run_bash,
+    run_command,
+    run_python,
+    run_python_expr,
+    run_tests,
+    wait_terminal,
+]

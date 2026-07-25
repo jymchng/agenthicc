@@ -260,7 +260,7 @@ class TestBuildRegistry:
 
     def test_build_registry_total_50_tools(self) -> None:
         reg = build_registry()
-        assert len(reg.tools) == 50
+        assert len(reg.tools) == 51
 
 
 # ── _expand_allowed glob helper ───────────────────────────────────────────────

@@ -51,7 +51,7 @@ def test_dynamic_session_tools_generate_warning_free_schemas(caplog):
     assert not [
         record for record in caplog.records if "unrecognised type annotation" in record.message
     ]
-    assert len(schemas) == 56
+    assert len(schemas) == 57
     assert (
         schemas["ask_user"]["input_schema"]["properties"]["questions"]["items"]["type"] == "object"
     )

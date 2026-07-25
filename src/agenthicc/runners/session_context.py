@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from agenthicc.plugins.discovery import PluginToolSet
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.skills.loader import SkillDef
+    from agenthicc.background.terminals import TerminalManager
 
 
 @dataclass
@@ -61,6 +62,7 @@ class SessionContext:
     skills: "dict[str, SkillDef]"
     project_plugins: "PluginToolSet"
     mcp_registry: "McpToolRegistry | None"
+    terminal_manager: "TerminalManager"
 
     # ── config ────────────────────────────────────────────────────────────────
     cfg: "AgenthiccConfig"

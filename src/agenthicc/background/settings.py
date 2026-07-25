@@ -28,6 +28,13 @@ class BackgroundSettings:
     wall_timeout_s: float = 0.0
     max_activity_bytes: int = 64_000
     trash_retention_days: int = 30
+    terminals_enabled: bool = True
+    max_terminals: int = 4
+    max_terminals_per_project: int = 8
+    terminal_max_output_bytes: int = 64_000
+    terminal_wall_timeout_s: float = 0.0
+    terminal_cancel_grace_s: float = 5.0
+    terminal_retention_days: int = 30
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object]) -> "BackgroundSettings":
@@ -58,6 +65,9 @@ class BackgroundSettings:
         store_path = raw.get("store_path", "")
         if not isinstance(store_path, str):
             raise ValueError("background.store_path must be a string")
+        terminals_enabled = raw.get("terminals_enabled", True)
+        if not isinstance(terminals_enabled, bool):
+            raise ValueError("background.terminals_enabled must be a boolean")
         return cls(
             enabled=enabled,
             store_path=store_path,
@@ -68,6 +78,13 @@ class BackgroundSettings:
             wall_timeout_s=nonnegative_float("wall_timeout_s", 0.0),
             max_activity_bytes=positive_int("max_activity_bytes", 64_000),
             trash_retention_days=positive_int("trash_retention_days", 30, allow_zero=True),
+            terminals_enabled=terminals_enabled,
+            max_terminals=positive_int("max_terminals", 4),
+            max_terminals_per_project=positive_int("max_terminals_per_project", 8),
+            terminal_max_output_bytes=positive_int("terminal_max_output_bytes", 64_000),
+            terminal_wall_timeout_s=nonnegative_float("terminal_wall_timeout_s", 0.0),
+            terminal_cancel_grace_s=nonnegative_float("terminal_cancel_grace_s", 5.0),
+            terminal_retention_days=positive_int("terminal_retention_days", 30, allow_zero=True),
         )
 
 

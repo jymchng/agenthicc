@@ -44,6 +44,8 @@ The primary entry point is `agenthicc.__main__:main`.
 | `JsonScalar` / `JsonValue` / `JsonObject` | `agenthicc.types` | Recursive JSON vocabulary for open boundary data |
 | `ToolExecutor` | `agenthicc.tools` | lauren-ai-backed callable/class tool dispatcher |
 | `ToolResult` / `ToolResultEnvelope` | `agenthicc.tools` | Typed compatibility and adapter result envelopes |
+| `TerminalManager` / `TerminalStore` | `agenthicc.background.terminals` | Owned process groups, bounded output, handles, wait, stop, and local recovery |
+| `TerminalState` / `TerminalRecord` | `agenthicc.background.terminals` | Durable background-terminal lifecycle and redacted result metadata |
 | `ToolSandbox` / `WorkspaceView` | `agenthicc.tools` | Timeout, resource, network, and real-path boundaries |
 | `ToolMetadata` / `ToolErrorKind` | `agenthicc.tools` | Generated catalog metadata and stable error taxonomy |
 | `SearchWebTool` / `FetchPageTool` | `agenthicc.skills.web_search` | Native lauren-ai tools for Brave search and visible page-text extraction |
@@ -87,6 +89,8 @@ Session artifacts are under `~/.agenthicc/sessions/`: kernel JSONL, conversation
 JSONL, and an fsync-backed conversation journal. Project memory/cache/trust
 data lives under `.agenthicc/`; global memory defaults to
 `~/.agenthicc/global.db`.
+Owned terminal records are stored under `~/.agenthicc/background/terminals/`
+and remain separate from durable agent-session records.
 
 ## Invariants
 

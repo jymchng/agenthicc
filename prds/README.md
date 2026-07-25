@@ -17,6 +17,7 @@ against the current source before implementing them.
 - [PRD-146 — CLI MCP Server Registration](prd-146-cli-mcp-server-registration.md)
 - [PRD-147 — Workflow-Native Extension Authoring](prd-147-workflow-native-extension-authoring.md)
 - [PRD-148 — Unified Interrupt and Graceful Cancellation](prd-148-unified-interrupt-and-graceful-cancellation.md)
+- [PRD-149 — Background Terminals and Responsive Wait Control](prd-149-background-terminals-and-responsive-wait-control.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -61,6 +62,11 @@ TUI, `lauren-ai` agent turns, workflows, durable journals, headless execution,
 and the PRD-141 background-session lifecycle. It distinguishes user
 cancellation from failure and successful completion while preserving partial
 work and idempotency evidence.
+
+PRD-149 extends the background-session control plane to owned terminal
+subprocesses. It defines responsive foreground waiting, live `/ps` inspection,
+`/stop` control, Esc interruption, bounded output, process-group cleanup, and
+recovery semantics for long-running `run_bash` and `run_command` calls.
 
 ## Existing PRDs
 

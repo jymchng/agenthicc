@@ -150,6 +150,19 @@ class PhaseSpec:
     parallel_with: tuple[str, ...] = ()
     """Names of sibling phases to run concurrently with this one via asyncio.gather."""
 
+    terminal_wait_policy: str = "foreground"
+    """Terminal execution default for this phase: ``foreground`` or ``background``.
+
+    ``background`` is an explicit workflow declaration, not inference from a
+    shell command.  It makes the existing run_bash/run_command tools return an
+    owned handle; the phase can then call wait_terminal when it needs the
+    result.
+    """
+
+    def __post_init__(self) -> None:
+        if self.terminal_wait_policy not in {"foreground", "background"}:
+            raise ValueError("terminal_wait_policy must be 'foreground' or 'background'")
+
     @property
     def resolved_allowed_caps(self) -> frozenset[ToolCapability] | None:
         """Effective allowed capabilities: override → field → role default."""

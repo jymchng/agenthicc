@@ -83,6 +83,13 @@ stale_after_s = 30.0
 wall_timeout_s = 0.0       # 0 means no wall-clock timeout
 max_activity_bytes = 64000
 trash_retention_days = 30
+terminals_enabled = true
+max_terminals = 4
+max_terminals_per_project = 8
+terminal_max_output_bytes = 64000
+terminal_wall_timeout_s = 0.0
+terminal_cancel_grace_s = 5.0
+terminal_retention_days = 30
 ```
 
 Defaults are conservative. Invalid values fail closed before a worker is
@@ -93,6 +100,42 @@ The background registry is an append-only, fsync'd JSONL event stream. It is a
 derived lifecycle index; the canonical conversation, workflow, kernel, and
 approval journals remain owned by their existing runtime components. A missing
 worker lease becomes `orphaned` and requires an explicit resume or retry.
+
+## Owned background terminals
+
+`run_bash` and `run_command` keep their existing foreground result by default.
+An explicit request such as:
+
+```json
+{
+  "command": "uv run pytest tests/unit -q",
+  "background": true,
+  "label": "unit tests",
+  "timeout": 1200
+}
+```
+
+returns a `term-...` handle immediately. `wait_terminal` follows the handle
+and returns bounded stdout/stderr, exit status, elapsed time, and truncation
+metadata. A workflow phase can opt into this default with
+`PhaseSpec(..., terminal_wait_policy="background")`; command text alone never
+backgrounds a process.
+
+While the TUI awaits a handle, its status line shows elapsed time, the running
+terminal count, the command label, and `/ps`, `/stop`, and `Esc` controls.
+`/ps` opens the live terminal list (use `/ps --json` for redacted metadata),
+`/stop`, `/stop <terminal-id>`, and `/stop all` request graceful process-group
+shutdown. `/stop all` asks for an explicit `--confirm`; `--force` both confirms
+and skips the graceful signal. A terminal is stopped only
+through the manager entry that created its process group; arbitrary PIDs are
+never discovered or attached. Parent background-session cancellation also
+cleans up child terminal records linked to that session.
+
+Terminal records are persisted below `~/.agenthicc/background/terminals/` (or
+the configured `store_path`), with mode-600 JSONL events. Commands, labels,
+and captured output are bounded and common credential-shaped values are
+redacted. Active records found after a manager restart become `orphaned`
+diagnostics rather than being reported as successful or silently relaunched.
 
 ## Verification
 

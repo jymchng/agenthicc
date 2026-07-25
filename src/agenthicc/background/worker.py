@@ -8,17 +8,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import json
 import os
 import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from agenthicc.background.model import SessionStatus
 from agenthicc.background.store import BackgroundStore, InvalidSessionTransition
 from agenthicc.cli.context import CLIContext, CLIFlags
+
+if TYPE_CHECKING:
+    from agenthicc.background.terminals import TerminalManager
 
 
 @dataclass(frozen=True)
@@ -247,6 +251,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     session = None
     processor_task: asyncio.Task[object] | None = None
     heartbeat_task: asyncio.Task[None] | None = None
+    terminal_token: contextvars.Token[TerminalManager | None] | None = None
     heartbeat_stop = asyncio.Event()
     original_cwd = os.getcwd()
     try:
@@ -300,6 +305,11 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             headless=True,
         )
         session.app_state.cli_flags = ctx.flags
+        from agenthicc.background.terminals import set_current_terminal_manager  # noqa: PLC0415
+
+        terminal_manager = getattr(session, "terminal_manager", None)
+        if terminal_manager is not None:
+            terminal_token = set_current_terminal_manager(terminal_manager)
         setattr(
             session,
             "approval_svc",
@@ -381,6 +391,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             pass
         return 1
     finally:
+        if terminal_token is not None:
+            from agenthicc.background.terminals import reset_current_terminal_manager  # noqa: PLC0415
+
+            reset_current_terminal_manager(terminal_token)
         heartbeat_stop.set()
         if heartbeat_task is not None:
             heartbeat_task.cancel()

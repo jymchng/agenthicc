@@ -1762,11 +1762,19 @@ Non-zero exit codes become `{"ok": False, "error": stderr}`.
 ```python
 class ExecToolKit:
     def tools(self) -> list[Tool]: ...
-    # Returns 5 tools: run_bash, run_command, run_python, run_python_expr, run_tests
+    # Returns 6 tools: run_bash, run_command, run_python, run_python_expr,
+    # run_tests, wait_terminal
 ```
 
 `run_bash` uses `asyncio.create_subprocess_shell`. Timeouts kill the process
 group via `os.killpg`. Output capped at 64 KB with `[... truncated]` suffix.
+
+`run_bash` and `run_command` accept an explicit `background: bool = false` and
+optional label. With a session-owned terminal manager, background calls return
+a stable `term-...` handle; `wait_terminal(terminal_id)` follows it. Foreground
+calls retain the existing result contract. `/ps` and `/stop` provide immediate
+TUI inspection and process-group control, and `Esc` stops the terminal owning
+the current wait.
 
 ---
 

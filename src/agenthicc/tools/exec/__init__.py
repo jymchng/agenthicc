@@ -8,10 +8,22 @@ import sys
 import tempfile
 import time
 from collections.abc import Mapping
+from typing import TYPE_CHECKING, cast
 
-from agenthicc.tools.base import Tool, arg_float, arg_str
+from agenthicc.tools.base import Tool, arg_bool, arg_float, arg_str
 
-__all__ = ["ExecToolKit"]
+if TYPE_CHECKING:
+    from agenthicc.background.terminals import TerminalManager
+
+__all__ = [
+    "ExecToolKit",
+    "RunBashTool",
+    "RunCommandTool",
+    "RunPythonTool",
+    "RunPythonExprTool",
+    "RunTestsTool",
+    "WaitTerminalTool",
+]
 
 _MAX_OUTPUT_BYTES = 64 * 1024
 
@@ -115,6 +127,8 @@ class RunBashTool(Tool):
             "cwd": {"type": "string"},
             "timeout": {"type": "number", "default": 30.0},
             "env": {"type": "object"},
+            "background": {"type": "boolean", "default": False},
+            "label": {"type": "string"},
         },
         "required": ["command"],
     }
@@ -124,6 +138,26 @@ class RunBashTool(Tool):
     ) -> dict[str, object]:
         command = arg_str(args, "command")
         cwd = arg_str(args, "cwd", arg_str(context, "workspace_root", "."))
+        policy = context.get("terminal_wait_policy", "foreground")
+        background_requested = arg_bool(args, "background", False) or policy == "background"
+        if background_requested:
+            manager = cast("TerminalManager | None", context.get("terminal_manager"))
+            if manager is None:
+                return {
+                    "ok": False,
+                    "background": True,
+                    "state": "rejected",
+                    "error": "background terminals are unavailable in this execution context",
+                }
+            return await manager.start(
+                command=command,
+                cwd=cwd,
+                timeout=arg_float(args, "timeout", 30.0),
+                env=_arg_env(args),
+                shell=True,
+                label=arg_str(args, "label", ""),
+                tool_call_id=arg_str(context, "tool_call_id", ""),
+            )
         return await _run_proc(
             [command],
             cwd=cwd,
@@ -143,6 +177,8 @@ class RunCommandTool(Tool):
             "cwd": {"type": "string"},
             "timeout": {"type": "number", "default": 30.0},
             "env": {"type": "object"},
+            "background": {"type": "boolean", "default": False},
+            "label": {"type": "string"},
         },
         "required": ["argv"],
     }
@@ -151,6 +187,26 @@ class RunCommandTool(Tool):
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
         cwd = arg_str(args, "cwd", arg_str(context, "workspace_root", "."))
+        policy = context.get("terminal_wait_policy", "foreground")
+        background_requested = arg_bool(args, "background", False) or policy == "background"
+        if background_requested:
+            manager = cast("TerminalManager | None", context.get("terminal_manager"))
+            if manager is None:
+                return {
+                    "ok": False,
+                    "background": True,
+                    "state": "rejected",
+                    "error": "background terminals are unavailable in this execution context",
+                }
+            return await manager.start(
+                argv=_arg_argv(args),
+                cwd=cwd,
+                timeout=arg_float(args, "timeout", 30.0),
+                env=_arg_env(args),
+                shell=False,
+                label=arg_str(args, "label", ""),
+                tool_call_id=arg_str(context, "tool_call_id", ""),
+            )
         return await _run_proc(
             _arg_argv(args),
             cwd=cwd,
@@ -294,6 +350,37 @@ class RunTestsTool(Tool):
         return result
 
 
+class WaitTerminalTool(Tool):
+    """Wait for a handle returned by a background execution tool."""
+
+    name = "wait_terminal"
+    description = "Wait for an owned background terminal to finish and return its output."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "terminal_id": {"type": "string"},
+            "timeout": {"type": "number", "default": 0.0},
+        },
+        "required": ["terminal_id"],
+    }
+
+    async def execute(
+        self, args: Mapping[str, object], context: Mapping[str, object]
+    ) -> dict[str, object]:
+        manager = cast("TerminalManager | None", context.get("terminal_manager"))
+        if manager is None:
+            return {
+                "ok": False,
+                "background": True,
+                "state": "rejected",
+                "error": "background terminals are unavailable in this execution context",
+            }
+        return await manager.wait(
+            arg_str(args, "terminal_id"),
+            timeout=arg_float(args, "timeout", 0.0),
+        )
+
+
 class ExecToolKit:
     def tools(self) -> list[Tool]:
         return [
@@ -302,4 +389,5 @@ class ExecToolKit:
             RunPythonTool(),
             RunPythonExprTool(),
             RunTestsTool(),
+            WaitTerminalTool(),
         ]

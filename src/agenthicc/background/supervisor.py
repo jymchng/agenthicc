@@ -310,6 +310,16 @@ class BackgroundSupervisor:
             deadline = time.monotonic() + self.cancel_grace_s
             while time.monotonic() < deadline and self._alive(pid):
                 time.sleep(0.05)
+        # Detached terminal tools use their own process groups.  The worker's
+        # process-group signal cannot reach those child groups, so explicitly
+        # clean up only records linked to this exact parent session.
+        from .terminals import stop_persisted_session_terminals  # noqa: PLC0415
+
+        stop_persisted_session_terminals(
+            session_id,
+            store_root=self.store.root / "terminals",
+            grace_s=self.cancel_grace_s,
+        )
         current = self.store.get(session_id, include_deleted=True)
         if current.status == SessionStatus.CANCELLING:
             return self.store.transition(

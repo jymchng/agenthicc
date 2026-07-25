@@ -4,7 +4,7 @@ Tools are organised by domain and implemented in their respective sub-packages:
 
   tools/fs/agent_tools.py      — 24 filesystem tools
   tools/git/agent_tools.py     — 11 git tools
-  tools/exec/agent_tools.py    — 6 shell/exec tools
+  tools/exec/agent_tools.py    — 7 shell/exec tools
   tools/outlook/agent_tools.py — 9 Outlook/calendar tools (Win32 or Graph API)
 
 This module re-exports all individual tools, the combined AGENT_TOOLS list,
@@ -58,6 +58,7 @@ from agenthicc.tools.exec.agent_tools import (
     run_python_expr,
     run_tests,
     shell,
+    wait_terminal,
 )
 
 # ── outlook / calendar ────────────────────────────────────────────────────────
@@ -113,6 +114,7 @@ __all__ = [
     "run_python_expr",
     "run_tests",
     "shell",
+    "wait_terminal",
     # outlook
     "calendar_events",
     "create_event",

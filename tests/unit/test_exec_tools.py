@@ -99,8 +99,8 @@ class TestRunTestsTool:
 
 
 class TestExecToolKit:
-    def test_returns_5_tools(self):
+    def test_returns_background_aware_tools(self):
         tools = ExecToolKit().tools()
-        assert len(tools) == 5
+        assert len(tools) == 6
         names = {t.name for t in tools}
-        assert "run_bash" in names and "run_tests" in names
+        assert {"run_bash", "run_tests", "wait_terminal"} <= names

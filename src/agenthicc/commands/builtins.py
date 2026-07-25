@@ -370,6 +370,91 @@ def _cmd_status(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_ps(ctx: CommandContext) -> bool:
+    """Open or print the owned background-terminal manager."""
+
+    manager = ctx.terminal_manager
+    if manager is None:
+        ctx.console.print("[dim]Background terminal management is unavailable.[/dim]")
+        return True
+    args = ctx.args.strip().split()
+    if "--json" in args:
+        import json  # noqa: PLC0415
+
+        ctx.console.print(
+            json.dumps([record.to_dict() for record in manager.list_records()], sort_keys=True),
+            markup=False,
+        )
+        return True
+    selected = next((item for item in args if not item.startswith("-")), "")
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.terminals import TerminalListOverlay  # noqa: PLC0415
+
+        on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
+        ctx.set_pending_menu(TerminalListOverlay(manager, on_close, selected_id=selected))
+        return True
+
+    records = manager.list_records()
+    if not records:
+        ctx.console.print("[dim]No background terminals for this session.[/dim]")
+        return True
+    try:
+        from rich import box as _rbox  # noqa: PLC0415
+        from rich.table import Table  # noqa: PLC0415
+
+        table = Table(title="Background Terminals", box=_rbox.SIMPLE)
+        table.add_column("ID", style="bold")
+        table.add_column("State")
+        table.add_column("Command")
+        table.add_column("Return")
+        for record in records:
+            table.add_row(
+                record.terminal_id,
+                record.state.value,
+                record.label,
+                "—" if record.returncode is None else str(record.returncode),
+            )
+        ctx.console.print(table)
+    except ImportError:
+        for record in records:
+            ctx.console.print(f"{record.terminal_id} {record.state.value} {record.label}")
+    return True
+
+
+def _cmd_stop(ctx: CommandContext) -> bool:
+    """Stop the current waited terminal or an explicitly named handle."""
+
+    manager = ctx.terminal_manager
+    if manager is None:
+        ctx.console.print("[dim]Background terminal management is unavailable.[/dim]")
+        return True
+    args = ctx.args.strip().split()
+    force = "--force" in args
+    targets = [item for item in args if not item.startswith("-")]
+    target = targets[0] if targets else None
+    if target == "all":
+        confirmed = force or "--confirm" in args
+        if not confirmed:
+            ctx.console.print(
+                "[yellow]This will stop every visible background terminal. "
+                "Repeat as /stop all --confirm (or --force) to confirm.[/yellow]"
+            )
+            return True
+        count = manager.request_stop_all(force=force)
+        ctx.console.print(f"[yellow]Stop requested for {count} background terminal(s).[/yellow]")
+        return True
+    if target is None:
+        target = manager.current_wait_id()
+    if target is None:
+        ctx.console.print("[dim]No running background terminal is selected.[/dim]")
+        return True
+    if manager.request_stop(target, force=force):
+        ctx.console.print(f"[yellow]Stop requested for {target}.[/yellow]")
+    else:
+        ctx.console.print(f"[dim]No running owned terminal found for {target}.[/dim]")
+    return True
+
+
 def _cmd_commands(ctx: CommandContext) -> bool:
     requested = ctx.args.strip()
     if requested:
@@ -770,6 +855,22 @@ BUILTIN_COMMANDS: list[Command] = [
         description="Show running agents and their tasks",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_status,
+    ),
+    Command(
+        name="/ps",
+        description="Open the live manager for owned background terminals",
+        aliases=("/processes",),
+        argument_hint="[terminal-id] [--json]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_ps,
+    ),
+    Command(
+        name="/stop",
+        description="Stop the selected or named background terminal",
+        argument_hint="[terminal-id|all] [--force]",
+        aliases=("/stop-terminal",),
+        busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+        handler=_cmd_stop,
     ),
     Command(
         name="/usage",

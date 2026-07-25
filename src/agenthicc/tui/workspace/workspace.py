@@ -113,6 +113,10 @@ class Workspace:
             conv.workflow_override,  # PRD-114: /workflow indicator
             conv.compaction_active,  # PRD-119: compaction on/off toggle
             conv.subagent_pool_state,  # PRD-124: subagent pool progress
+            conv.terminal_waiting,  # PRD-149: owned terminal wait
+            conv.terminal_wait_label,
+            conv.terminal_wait_elapsed_s,
+            conv.terminal_running_count,
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
 

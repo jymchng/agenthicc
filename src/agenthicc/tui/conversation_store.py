@@ -121,6 +121,14 @@ class ConversationStore:
         """True while a compaction LLM call is in flight (PRD-119)."""
         self.subagent_pool_state: Signal[SubagentPoolState | None] = Signal(None)
         """Live state of the active SubagentPool — None when no pool is running (PRD-124)."""
+        # PRD-149: owned background-terminal wait projection.  These are
+        # separate signals so a live wait can refresh its elapsed/count line
+        # without changing the conversation event stream.
+        self.terminal_waiting: Signal[bool] = Signal(False)
+        self.terminal_wait_id: Signal[str] = Signal("")
+        self.terminal_wait_label: Signal[str] = Signal("")
+        self.terminal_wait_elapsed_s: Signal[float] = Signal(0.0)
+        self.terminal_running_count: Signal[int] = Signal(0)
         # Internal: per-line notification stack.
         # notify_transient() appends; each dismiss closure removes only its own
         # entry by identity, leaving other lines untouched.
@@ -228,6 +236,31 @@ class ConversationStore:
         if self._display_paused:
             return
         self.frame.set(self.frame() + 1)
+
+    def set_terminal_wait(
+        self,
+        *,
+        terminal_id: str,
+        label: str,
+        elapsed_s: float,
+        running_count: int,
+    ) -> None:
+        """Project one active terminal wait into the reactive status bar."""
+
+        self.terminal_waiting.set(True)
+        self.terminal_wait_id.set(terminal_id)
+        self.terminal_wait_label.set(label)
+        self.terminal_wait_elapsed_s.set(max(0.0, elapsed_s))
+        self.terminal_running_count.set(max(0, running_count))
+
+    def clear_terminal_wait(self) -> None:
+        """Clear terminal wait state after completion, cancellation, or close."""
+
+        self.terminal_waiting.set(False)
+        self.terminal_wait_id.set("")
+        self.terminal_wait_label.set("")
+        self.terminal_wait_elapsed_s.set(0.0)
+        self.terminal_running_count.set(0)
 
     # ── turn lifecycle ────────────────────────────────────────────────────────
 
