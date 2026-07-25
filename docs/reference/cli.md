@@ -81,12 +81,16 @@ capability boundaries.
 session-local state. Both must remain visible in picker completion as well as
 executable when submitted.
 
-To author a workflow interactively, submit `/workflow create_workflow` and
-then enter the intent as the next ordinary input. The generated workflow is
-staged, validated, approval-gated, and published under
-`.agenthicc/workflows/`; restart the session before selecting the generated
-name with `/workflow <name>`. A staged authoring run can be continued with
-`/workflow resume [run-id]`; it is revalidated before publication.
+To author an extension interactively, submit one of
+`/workflow create_workflow`, `/workflow create_tool`, or
+`/workflow create_command`, then enter the intent as the next ordinary input.
+The generated source is staged, statically validated, approval-gated, and
+published atomically under `.agenthicc/workflows/`, `.agenthicc/tools/`, or
+`.agenthicc/commands/`. Restart after a workflow or tool publication; run
+`/commands reload` after a command publication. The plural registry names are
+`create_tools` and `create_commands`; singular forms are aliases. A staged
+authoring run can be continued with `/workflow resume [run-id]` and is
+revalidated before publication.
 
 `/init` is a local project bootstrap command. It previews by default and uses
 `/init write` or `/init write --force` for explicit writes; it does not invoke

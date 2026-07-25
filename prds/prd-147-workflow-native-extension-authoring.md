@@ -42,6 +42,14 @@ The primary result of `create_workflow` is a project-local
 workflows produce the corresponding tool or command plugin while sharing the
 same safety and lifecycle contract.
 
+Implementation status: Phases 1 and 2 are implemented in
+`src/agenthicc/workflows/authoring/`. `create_workflow` remains the canonical
+workflow authoring name; `create_tools`/`create_commands` are the canonical
+tool and command names, with singular `create_tool`/`create_command` selector
+aliases. The shared runner and focused E2E coverage exercise both loader
+contracts. Centralized trust hardening and durable staged-run retention remain
+follow-up work, so this PRD stays `In progress`.
+
 ## 2. Evidence-backed problem statement
 
 The current implementation has two separate concepts that look similar to a
@@ -399,18 +407,19 @@ publish executable artifacts.
 - Build validation helpers for workflow, tool, and command contracts.
 - Add fixture-driven tests with a deterministic fake agent runner.
 
-### Phase 1 — `create_workflow`
+### Phase 1 — `create_workflow` (implemented)
 
-- Add the shared authoring runner and `create_workflow` definition.
-- Wire `/workflow create_workflow`, the input-panel intent handoff, the
-  optional `$create-workflow` adapter, and the `workflows run` path.
-- Publish only after approval and verify discovery after restart/reload.
+- The shared authoring runner and `create_workflow` definition are implemented.
+- `/workflow create_workflow`, the input-panel intent handoff, and the
+  `workflows run` path use the authoring runner.
+- Publication is approval-gated and discovery is verified after restart.
 
-### Phase 2 — sibling authoring workflows
+### Phase 2 — sibling authoring workflows (implemented)
 
-- Add `create_tools` and `create_commands` definitions using the same runner.
-- Validate their existing loader/export conventions and report their current
-  reload/restart requirements.
+- `create_tools` and `create_commands` definitions use the shared runner, with
+  singular selector aliases.
+- Their existing `TOOLS`, `COMMAND`, and `COMMANDS` loader contracts are
+  statically validated and their reload/restart requirements are reported.
 
 ### Phase 3 — activation and trust hardening
 

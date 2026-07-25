@@ -237,6 +237,17 @@ The focused repository coverage is in
 `tests/unit/test_command_lifecycle.py`, and
 `tests/integration/test_commands_integration.py`.
 
-Use `/create-commands <instructions>` to have the built-in authoring skill
-prepare a command, then review the generated Python, run the focused tests,
-and submit `/commands reload` in the active TUI session.
+For the first-class authoring workflow, submit the selector and then the intent
+as two inputs:
+
+```text
+/workflow create_command
+Create a /project-status command that reports the current project status.
+```
+
+The singular selector is an alias for `create_commands`. The runner stages and
+statically validates a `Command` export, asks for publication approval, and
+writes `.agenthicc/commands/<module>.py` atomically. Submit `/commands reload`
+after approval to discover the command in the active TUI session. The legacy
+`/create-commands <instructions>` skill remains available as a prompt-only
+convenience path; it does not replace review or establish plugin trust.

@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 class WorkflowRegistry:
     def __init__(self) -> None:
         self._entries: dict[str, WorkflowEntry] = {}
+        self._aliases: dict[str, str] = {}
 
     def register(
         self,
@@ -30,6 +31,9 @@ class WorkflowRegistry:
         if not name:
             log.warning("WorkflowPlugin subclass %r has no name — skipped", plugin_cls)
             return
+        # A real plugin using an alias spelling takes precedence over the
+        # built-in compatibility alias with that same spelling.
+        self._aliases.pop(name, None)
         existing = self._entries.get(name)
         if existing is not None:
             if source == "user" and existing.source == "builtin":
@@ -40,12 +44,20 @@ class WorkflowRegistry:
 
     def get(self, name: str) -> type[WorkflowPlugin] | None:
         """Return the plugin class for *name*, or ``None``."""
-        entry = self._entries.get(name)
+        entry = self._entries.get(self._aliases.get(name, name))
         return entry.plugin_cls if entry else None
 
     def get_entry(self, name: str) -> WorkflowEntry | None:
         """Return the full entry (plugin + provenance) for *name*."""
-        return self._entries.get(name)
+        return self._entries.get(self._aliases.get(name, name))
+
+    def register_alias(self, alias: str, target: str) -> None:
+        """Register a non-discoverable spelling for a canonical workflow."""
+
+        if not alias or alias in self._entries:
+            return
+        if target in self._entries:
+            self._aliases[alias] = target
 
     def all(self) -> list[type[WorkflowPlugin]]:
         return [e.plugin_cls for e in self._entries.values()]
@@ -91,9 +103,17 @@ def build_workflow_registry(
     # registration adjacent to the canonical registry assembly so the
     # root-owned compatibility loader remains a pure workflow-definition
     # loader while ``build_workflow_registry()`` exposes every built-in.
-    from agenthicc.workflows.authoring.definition import CreateWorkflow  # noqa: PLC0415
+    from agenthicc.workflows.authoring.definition import (  # noqa: PLC0415
+        CreateCommands,
+        CreateTools,
+        CreateWorkflow,
+    )
 
     registry.register(CreateWorkflow, source="builtin")
+    registry.register(CreateTools, source="builtin")
+    registry.register(CreateCommands, source="builtin")
+    registry.register_alias("create_tool", "create_tools")
+    registry.register_alias("create_command", "create_commands")
 
     _scan_workflow_dir(user_dir / "workflows", "user", registry)
     _scan_workflow_dir(project_dir / "workflows", "project", registry)

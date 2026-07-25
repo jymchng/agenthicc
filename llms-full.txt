@@ -1428,6 +1428,54 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 Run the complete `generate → validate → review → publish → summarize`
 authoring lifecycle.
 
+### CreateTools
+
+`CreateTools` is the built-in `WorkflowPlugin` named `create_tools`; its
+singular selector alias is `create_tool`. `CreateCommands` is named
+`create_commands` and is also selectable as `create_command`. Both use the
+shared authoring runner lifecycle. Tool candidates must import Lauren's
+`@tool`, export a non-empty `TOOLS` list of top-level callables, and publish to
+`.agenthicc/tools/<module>.py`. Command candidates must import
+`agenthicc.commands.Command` and export `COMMAND` or `COMMANDS`, publishing to
+`.agenthicc/commands/<module>.py`.
+
+Tool publication reports `restart-session`; command publication reports
+`commands-reload`. Generated source is staged and statically validated before
+approval, and is not imported during the authoring run.
+
+### CreateCommands
+
+`CreateCommands` is the built-in command-authoring `WorkflowPlugin`. It uses
+the same lifecycle described above and publishes validated `COMMAND` or
+`COMMANDS` exports.
+
+### CreateTool
+
+Compatibility alias for the canonical `CreateTools` workflow definition.
+
+### CreateCommand
+
+Compatibility alias for the canonical `CreateCommands` workflow definition.
+
+### CreateToolRunner
+
+```python
+class CreateToolRunner(CreateWorkflowRunner): ...
+```
+
+Selects the tool artifact contract and `.agenthicc/tools/` destination while sharing
+manifest, hash, approval, atomic publication, cancellation, and resume logic.
+
+### CreateCommandRunner
+
+```python
+class CreateCommandRunner(CreateWorkflowRunner): ...
+```
+
+Selects the command artifact contract and `.agenthicc/commands/` destination
+while sharing manifest, hash, approval, atomic publication, cancellation, and
+resume logic.
+
 ### AuthoringResult
 
 ```python
@@ -1451,7 +1499,7 @@ artifact as the compatibility `artifact` field.
 
 ### AuthoringArtifact
 
-Contains the generated workflow name, staged/published paths, manifest path,
+Contains the generated artifact name, staged/published paths, manifest path,
 publication state, source SHA-256 digest, and static `ValidationReport`.
 
 ### AuthoringResumeContext
@@ -1463,7 +1511,7 @@ class AuthoringResumeContext:
     intent: str = ""
 ```
 
-Identifies a staged authoring manifest for `CreateWorkflowRunner.resume()`.
+Identifies a staged authoring manifest for any authoring runner's `resume()`.
 
 ### parse_workflow_response / validate_workflow_candidate
 
@@ -1474,6 +1522,33 @@ def validate_workflow_candidate(candidate: WorkflowCandidate) -> ValidationRepor
 
 Parse the strict authoring envelope and validate source without importing or
 executing generated Python.
+
+### parse_authoring_response
+
+```python
+def parse_authoring_response(text: str, artifact_kind: str) -> WorkflowCandidate
+def validate_tool_candidate(candidate: WorkflowCandidate) -> ValidationReport
+def validate_command_candidate(candidate: WorkflowCandidate) -> ValidationReport
+```
+
+Parse tool or command envelopes and statically validate their existing loader
+contracts without importing generated Python.
+
+### validate_tool_candidate
+
+```python
+def validate_tool_candidate(candidate: WorkflowCandidate) -> ValidationReport
+```
+
+Validate a non-empty Lauren `TOOLS` export without importing it.
+
+### validate_command_candidate
+
+```python
+def validate_command_candidate(candidate: WorkflowCandidate) -> ValidationReport
+```
+
+Validate a `COMMAND` or `COMMANDS` export without importing it.
 
 ## Config — `agenthicc.config`
 

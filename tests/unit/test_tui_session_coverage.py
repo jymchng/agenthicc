@@ -244,6 +244,43 @@ async def test_tui_workflow_selector_passes_next_input_as_exact_intent() -> None
     assert intents == ["Create a workflow that uses Cloakbrowser to parse facebook.com."]
 
 
+@pytest.mark.parametrize(
+    ("selector", "workflow_name"),
+    [("create_tool", "create_tools"), ("create_command", "create_commands")],
+)
+@pytest.mark.asyncio
+async def test_tui_extension_selector_alias_passes_next_input_as_exact_intent(
+    selector: str, workflow_name: str
+) -> None:
+    session, ctx, _workspace, _input = _make_session()
+    intents: list[str] = []
+
+    class AuthoringWorkflow:
+        name = workflow_name
+
+        @classmethod
+        def build_params(cls, raw: object) -> object:
+            return raw
+
+        @classmethod
+        def build_runner(cls, config: object, mode: object) -> object:
+            class Runner:
+                async def run(self, intent: str) -> None:
+                    intents.append(intent)
+                    ctx.app_state.workflow_run.set(SimpleNamespace(status="complete"))
+
+            return Runner()
+
+    ctx.workflow_registry.register(AuthoringWorkflow)  # type: ignore[arg-type]
+    # The production registry resolves the singular alias to the plural
+    # definition; this local fixture registers the same alias explicitly.
+    ctx.workflow_registry.register_alias(selector, workflow_name)
+    assert session.route(f"/workflow {selector}") is True
+    await session.run_turn("Create the requested extension.")
+
+    assert intents == ["Create the requested extension."]
+
+
 @pytest.mark.asyncio
 async def test_tui_workflow_resume_uses_latest_staged_authoring_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -272,6 +309,42 @@ async def test_tui_workflow_resume_uses_latest_staged_authoring_run(
             return Runner()
 
     ctx.workflow_registry.register(CreateWorkflow)  # type: ignore[arg-type]
+    assert session.route("/workflow resume") is True
+    assert session._agent_task is not None
+    await session._agent_task
+
+    assert len(resumed) == 1
+    assert getattr(resumed[0], "run_id") == run_id
+
+
+@pytest.mark.asyncio
+async def test_tui_workflow_resume_uses_manifest_authoring_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    session, ctx, _workspace, _input = _make_session()
+    run_id = "b" * 32
+    manifest = tmp_path / ".agenthicc" / "authoring" / run_id / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"workflow": "create_tools"}\n', encoding="utf-8")
+    resumed: list[object] = []
+
+    class CreateTools:
+        name = "create_tools"
+
+        @classmethod
+        def build_params(cls, raw: object) -> object:
+            return raw
+
+        @classmethod
+        def build_runner(cls, config: object, mode: object) -> object:
+            class Runner:
+                async def resume(self, context: object) -> None:
+                    resumed.append(context)
+
+            return Runner()
+
+    ctx.workflow_registry.register(CreateTools)  # type: ignore[arg-type]
     assert session.route("/workflow resume") is True
     assert session._agent_task is not None
     await session._agent_task

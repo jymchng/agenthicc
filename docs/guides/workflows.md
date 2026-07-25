@@ -59,6 +59,33 @@ default workflow. The authoring result and `WorkflowRunCompleted` event include
 the generated name, staged/published paths, manifest, validation findings,
 approval state, and the `restart-session` activation instruction.
 
+## Create tools and commands
+
+The same two-step journey creates project extensions using the existing loader
+contracts:
+
+```text
+/workflow create_tool
+Create a tool that checks the configured Cloakbrowser endpoint.
+
+/workflow create_command
+Create a /cloak-status command that reports the endpoint status.
+```
+
+`create_tools` and `create_commands` are the canonical registry names; the
+singular `create_tool` and `create_command` spellings are aliases for the TUI
+and CLI. Tool authoring must produce a Lauren `@tool`-decorated callable in a
+`TOOLS` export and publishes to `.agenthicc/tools/<module>.py`. Command
+authoring must produce a `Command` in `COMMAND` or `COMMANDS` and publishes to
+`.agenthicc/commands/<module>.py`.
+
+Both are staged under the same run-scoped authoring directory, statically
+validated without importing generated code, and require explicit publication
+approval. After a tool is published, restart the session. After a command is
+published, run `/commands reload`; neither artifact is active during the
+authoring run. The structured result identifies the artifact kind, paths,
+hash, approval state, and activation instruction.
+
 ## How user workflows are discovered
 
 Workflow discovery happens when a TUI or headless session starts. The registry

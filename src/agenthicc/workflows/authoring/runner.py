@@ -1,4 +1,4 @@
-"""Runner for the workflow-native ``create_workflow`` authoring flow (PRD-147)."""
+"""Shared runner for workflow, tool, and command authoring (PRD-147)."""
 
 from __future__ import annotations
 
@@ -20,8 +20,11 @@ from agenthicc.workflows.authoring.artifact import (
     ValidationFinding,
     ValidationReport,
     WorkflowCandidate,
+    parse_authoring_response,
     parse_workflow_response,
     source_sha256,
+    validate_command_candidate,
+    validate_tool_candidate,
     validate_workflow_candidate,
 )
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
@@ -40,9 +43,17 @@ _RUN_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 class CreateWorkflowRunner(BaseWorkflowRunner):
-    """Generate, validate, approve, and publish one workflow artifact."""
+    """Generate, validate, approve, and publish one executable artifact.
+
+    The lifecycle is shared by the three built-in authoring workflows. Concrete
+    subclasses only select the artifact contract, destination, and prompt.
+    """
 
     workflow_name = "create_workflow"
+    artifact_kind = "workflow"
+    destination_dir = "workflows"
+    artifact_label = "workflow"
+    activation = "restart-session"
 
     def __init__(self, config: WorkflowConfig, mode_manager: ModeManager | None = None) -> None:
         self._cfg = config
@@ -52,11 +63,36 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         self._workflow_run: WorkflowRun | None = None
         self._project_root = Path.cwd().resolve()
 
+    def _result(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        artifact: AuthoringArtifact | None = None,
+        approval: str = "not-requested",
+        activation: str | None = None,
+        error: str | None = None,
+        attempts: int = 0,
+    ) -> AuthoringResult:
+        """Build a result carrying this runner's workflow and artifact kind."""
+
+        return AuthoringResult(
+            workflow=self.workflow_name,
+            artifact_kind=self.artifact_kind,
+            run_id=run_id,
+            status=status,
+            artifact=artifact,
+            approval=approval,
+            activation=activation,
+            error=error,
+            attempts=attempts,
+        )
+
     async def run(self, intent: str) -> AuthoringResult:
         """Run the complete authoring lifecycle for *intent*."""
 
         if not intent.strip():
-            raise ValueError("Workflow authoring intent must not be empty")
+            raise ValueError(f"{self.artifact_label.title()} authoring intent must not be empty")
         from lauren_ai._memory import ShortTermMemory
         from agenthicc.kernel import Event
         from agenthicc.workflows.plugin import WorkflowRun
@@ -115,7 +151,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             else:
                 await self._complete_phase(
                     "stage",
-                    "No artifact staged because generation did not produce a valid workflow.",
+                    f"No artifact staged because generation did not produce a valid {self.artifact_label}.",
                     approved=False,
                 )
             await self._complete_phase(
@@ -125,8 +161,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 structured=report.to_dict(),
             )
             if candidate is None or not report.valid:
-                result = AuthoringResult(
-                    workflow=self.workflow_name,
+                result = self._result(
                     run_id=self._run_id,
                     status="failed",
                     approval="not-requested",
@@ -138,12 +173,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 return result
 
             if artifact is None:
-                raise RuntimeError("valid workflow candidate was not staged")
+                raise RuntimeError(f"valid {self.artifact_label} candidate was not staged")
             await self._start_phase("review")
             approval = await self._request_publication_approval(artifact, candidate)
             if not approval:
-                result = AuthoringResult(
-                    workflow=self.workflow_name,
+                result = self._result(
                     run_id=self._run_id,
                     status="rejected",
                     artifact=dataclasses.replace(artifact, state="staged"),
@@ -161,13 +195,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             await self._complete_phase("review", "Publication approved.", approved=True)
             await self._start_phase("publish")
             published = self._publish(artifact, candidate)
-            result = AuthoringResult(
-                workflow=self.workflow_name,
+            result = self._result(
                 run_id=self._run_id,
                 status="published",
                 artifact=published,
                 approval="approved",
-                activation="restart-session",
+                activation=self.activation,
                 attempts=attempts,
             )
             await self._complete_phase(
@@ -181,8 +214,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             return result
         except (asyncio.CancelledError, KeyboardInterrupt):
             await self._finish_run(
-                AuthoringResult(
-                    workflow=self.workflow_name,
+                self._result(
                     run_id=self._run_id,
                     status="cancelled",
                     artifact=artifact,
@@ -192,9 +224,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             )
             raise
         except Exception as exc:  # noqa: BLE001
-            log.exception("create_workflow failed")
-            result = AuthoringResult(
-                workflow=self.workflow_name,
+            log.exception("%s authoring failed", self.workflow_name)
+            result = self._result(
                 run_id=self._run_id,
                 status="failed",
                 artifact=artifact,
@@ -254,13 +285,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             )
 
             if manifest_state == "published":
-                result = AuthoringResult(
-                    workflow=self.workflow_name,
+                result = self._result(
                     run_id=run_id,
                     status="published",
                     artifact=artifact,
                     approval="already-approved",
-                    activation="restart-session",
+                    activation=self.activation,
                 )
                 await self._finish_run(result, status="complete")
                 return result
@@ -268,8 +298,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             await self._start_phase("review")
             approved = await self._request_publication_approval(artifact, candidate)
             if not approved:
-                result = AuthoringResult(
-                    workflow=self.workflow_name,
+                result = self._result(
                     run_id=run_id,
                     status="rejected",
                     artifact=dataclasses.replace(artifact, state="staged"),
@@ -286,13 +315,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             await self._complete_phase("review", "Publication approved.", approved=True)
             await self._start_phase("publish")
             published = self._publish(artifact, candidate)
-            result = AuthoringResult(
-                workflow=self.workflow_name,
+            result = self._result(
                 run_id=run_id,
                 status="published",
                 artifact=published,
                 approval="approved",
-                activation="restart-session",
+                activation=self.activation,
             )
             await self._complete_phase(
                 "publish",
@@ -305,8 +333,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             return result
         except (asyncio.CancelledError, KeyboardInterrupt):
             await self._finish_run(
-                AuthoringResult(
-                    workflow=self.workflow_name,
+                self._result(
                     run_id=run_id,
                     status="cancelled",
                     artifact=artifact,
@@ -316,8 +343,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             )
             raise
         except Exception as exc:  # noqa: BLE001
-            result = AuthoringResult(
-                workflow=self.workflow_name,
+            result = self._result(
                 run_id=run_id,
                 status="failed",
                 artifact=artifact,
@@ -338,6 +364,41 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             await self._finish_run(result, status="failed")
             return result
 
+    def _parse_candidate(self, text: str) -> WorkflowCandidate:
+        """Parse the model envelope for this artifact kind."""
+
+        if self.artifact_kind == "workflow":
+            return parse_workflow_response(text)
+        return parse_authoring_response(text, self.artifact_kind)
+
+    def _validate_candidate(self, candidate: WorkflowCandidate) -> ValidationReport:
+        """Validate the model candidate using the selected export contract."""
+
+        if self.artifact_kind == "workflow":
+            return validate_workflow_candidate(candidate)
+        if self.artifact_kind == "tool":
+            return validate_tool_candidate(candidate)
+        return validate_command_candidate(candidate)
+
+    def _generation_prompt(self, intent: str) -> str:
+        """Return the contract-specific design prompt."""
+
+        return (
+            "You are the design phase of agenthicc's create_workflow workflow.\n\n"
+            "Create exactly one complete Python WorkflowPlugin for the user's intent. "
+            "Inspect relevant repository modules and use existing agenthicc APIs. "
+            "The workflow must be self-contained, use PhaseSpec transitions, and keep "
+            "external access behind existing tools/MCP capabilities.\n\n"
+            "Return ONLY this envelope, with no explanation outside it:\n"
+            '<workflow name="lowercase_name" description="short description">\n'
+            "```python\n"
+            "from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin\n"
+            "...complete source...\n"
+            "```\n"
+            "</workflow>\n\n"
+            f"USER INTENT:\n{intent}\n"
+        )
+
     async def _generate(
         self, intent: str
     ) -> tuple[WorkflowCandidate | None, ValidationReport, int, str]:
@@ -348,21 +409,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         last_text = ""
         for attempt in range(1, _MAX_GENERATION_ATTEMPTS + 1):
             output: list[str] = []
-            prompt = (
-                "You are the design phase of agenthicc's create_workflow workflow.\n\n"
-                "Create exactly one complete Python WorkflowPlugin for the user's intent. "
-                "Inspect relevant repository modules and use existing agenthicc APIs. "
-                "The workflow must be self-contained, use PhaseSpec transitions, and keep "
-                "external access behind existing tools/MCP capabilities.\n\n"
-                "Return ONLY this envelope, with no explanation outside it:\n"
-                '<workflow name="lowercase_name" description="short description">\n'
-                "```python\n"
-                "from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin\n"
-                "...complete source...\n"
-                "```\n"
-                "</workflow>\n\n"
-                f"USER INTENT:\n{intent}\n"
-            )
+            prompt = self._generation_prompt(intent)
             if feedback:
                 prompt += f"\nThe previous candidate failed validation. Correct these findings:\n{feedback}\n"
             await _run_agent_turn(
@@ -385,19 +432,19 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 output_collector=output,
                 system_prompt_suffix=(
                     "You are generating source for a staged user extension. "
-                    "Never write directly to .agenthicc/workflows."
+                    f"Never write directly to .agenthicc/{self.destination_dir}."
                 ),
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
             )
             last_text = "".join(output).strip()
             try:
-                candidate = parse_workflow_response(last_text)
+                candidate = self._parse_candidate(last_text)
             except ValueError as exc:
                 feedback = str(exc)
                 last_report = ValidationReport((ValidationFinding("response-parse", str(exc)),))
                 continue
-            last_report = validate_workflow_candidate(candidate)
+            last_report = self._validate_candidate(candidate)
             if last_report.valid:
                 return candidate, last_report, attempt, last_text
             feedback = "\n".join(f"- {item.message}" for item in last_report.findings)
@@ -430,7 +477,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             raise ValueError("authoring manifest belongs to a different workflow")
         if required_string("run_id") != run_id:
             raise ValueError("authoring manifest run id does not match the resume request")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", required_string("name")):
+            raise ValueError("authoring manifest contains an invalid artifact name")
         name = required_string("name")
+        if required_string("artifact_kind") != self.artifact_kind:
+            raise ValueError("authoring manifest belongs to a different artifact kind")
         description = manifest_value.get("description", "")
         if not isinstance(description, str):
             raise ValueError("authoring manifest description must be a string")
@@ -438,16 +489,18 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         staged_path = root.resolve(required_string("staged_path"))
         if staged_path != expected_stage:
             raise ValueError("authoring staged path does not match the run manifest")
-        expected_destination = root.resolve(Path(".agenthicc") / "workflows" / f"{name}.py")
+        expected_destination = root.resolve(
+            Path(".agenthicc") / self.destination_dir / f"{name}.py"
+        )
         destination = root.resolve(required_string("destination"))
         if destination != expected_destination:
             raise ValueError("authoring destination does not match the run manifest")
         source = staged_path.read_text(encoding="utf-8")
         digest = required_string("sha256")
         if source_sha256(source) != digest:
-            raise ValueError("staged workflow changed after its last validation")
+            raise ValueError(f"staged {self.artifact_label} changed after its last validation")
         candidate = WorkflowCandidate(name=name, code=source, description=description)
-        report = validate_workflow_candidate(candidate)
+        report = self._validate_candidate(candidate)
         if not report.valid:
             raise ValueError(self._validation_text(report))
         state = manifest_value.get("state", "staged")
@@ -461,7 +514,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 not destination.exists()
                 or source_sha256(destination.read_text(encoding="utf-8")) != digest
             ):
-                raise ValueError("published workflow no longer matches its manifest")
+                raise ValueError(f"published {self.artifact_label} no longer matches its manifest")
         manifest_intent = manifest_value.get("intent", "")
         if not isinstance(manifest_intent, str):
             raise ValueError("authoring manifest intent must be a string")
@@ -593,11 +646,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             "workflow": self.workflow_name,
             "run_id": self._run_id,
             "intent": intent,
-            "artifact_kind": "workflow",
+            "artifact_kind": self.artifact_kind,
             "name": candidate.name,
             "description": candidate.description,
             "staged_path": str(stage_path),
-            "destination": str(Path(".agenthicc") / "workflows" / f"{candidate.name}.py"),
+            "destination": str(Path(".agenthicc") / self.destination_dir / f"{candidate.name}.py"),
             "state": "staged",
             "published_path": None,
             "sha256": digest,
@@ -615,9 +668,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             return False
         from agenthicc.tools.approval import ApprovalRequest
 
-        destination = Path(".agenthicc") / "workflows" / f"{candidate.name}.py"
+        destination = Path(".agenthicc") / self.destination_dir / f"{candidate.name}.py"
         request = ApprovalRequest(
-            tool_name="publish_workflow",
+            tool_name=f"publish_{self.artifact_kind}",
             tool_use_id=uuid.uuid4().hex,
             tool_input={
                 "destination": str(destination),
@@ -638,17 +691,19 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         candidate: WorkflowCandidate,
     ) -> AuthoringArtifact:
         root = WorkspaceView(self._project_root)
-        destination = root.resolve(Path(".agenthicc") / "workflows" / f"{candidate.name}.py")
+        destination = root.resolve(
+            Path(".agenthicc") / self.destination_dir / f"{candidate.name}.py"
+        )
         destination.parent.mkdir(parents=True, exist_ok=True)
         source = root.resolve(artifact.staged_path)
         current = source.read_text(encoding="utf-8")
         if source_sha256(current) != artifact.sha256:
-            raise ValueError("staged workflow changed after validation")
+            raise ValueError(f"staged {self.artifact_label} changed after validation")
         temporary = destination.parent / f".{candidate.name}.{self._run_id}.tmp"
         root.write_text(temporary, current)
         os.replace(temporary, destination)
         if artifact.manifest_path is None:
-            raise ValueError("staged workflow has no manifest path")
+            raise ValueError(f"staged {self.artifact_label} has no manifest path")
         manifest_path = root.resolve(artifact.manifest_path)
         manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
         if not isinstance(manifest_value, dict):
@@ -662,20 +717,95 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             published_path=str(destination),
         )
 
-    @staticmethod
-    def _validation_text(report: ValidationReport) -> str:
+    def _validation_text(self, report: ValidationReport) -> str:
         if report.valid:
-            return "Workflow source validation passed."
-        return "Workflow source validation failed: " + "; ".join(
+            return f"{self.artifact_label.title()} source validation passed."
+        return f"{self.artifact_label.title()} source validation failed: " + "; ".join(
             item.message for item in report.findings
         )
 
-    @staticmethod
-    def _summary(result: AuthoringResult) -> str:
+    def _summary(self, result: AuthoringResult) -> str:
         if result.status == "published" and result.artifact is not None:
             return (
-                f"Created workflow {result.artifact.name!r} at "
-                f"{result.artifact.published_path}. Restart the session, then use "
-                f"/workflow {result.artifact.name}."
+                f"Created {self.artifact_label} {result.artifact.name!r} at "
+                f"{result.artifact.published_path}. {self._activation_message(result.artifact.name)}"
             )
-        return result.error or f"Workflow authoring ended with status {result.status}."
+        return result.error or (
+            f"{self.artifact_label.title()} authoring ended with status {result.status}."
+        )
+
+    def _activation_message(self, name: str) -> str:
+        """Describe the explicit activation step for the generated artifact."""
+
+        return f"Restart the session, then use /workflow {name}."
+
+
+class CreateToolRunner(CreateWorkflowRunner):
+    """Shared authoring lifecycle specialized for ``TOOLS`` modules."""
+
+    workflow_name = "create_tools"
+    artifact_kind = "tool"
+    destination_dir = "tools"
+    artifact_label = "tool"
+
+    def _generation_prompt(self, intent: str) -> str:
+        return (
+            "You are the design phase of agenthicc's create_tools workflow.\n\n"
+            "Create exactly one project tool module for the user's intent. Inspect the "
+            "existing tool guides, lauren-ai tool conventions, and relevant tests. The "
+            "module must use Lauren's @tool decorator and export every public callable "
+            "through a literal TOOLS list. Keep filesystem, network, approval, and output "
+            "behavior inside existing agenthicc boundaries.\n\n"
+            "Return ONLY this envelope, with no explanation outside it:\n"
+            '<tool name="lowercase_module_name" description="short description">\n'
+            "```python\n"
+            "from lauren_ai import tool\n"
+            "\n"
+            '@tool(name="tool_name", description="...")\n'
+            "async def tool_name(...) -> dict[str, object]:\n"
+            "    ...\n"
+            "\n"
+            "TOOLS = [tool_name]\n"
+            "```\n"
+            "</tool>\n\n"
+            f"USER INTENT:\n{intent}\n"
+        )
+
+    def _activation_message(self, name: str) -> str:
+        return "Restart the session, then ask the agent to use the generated tool."
+
+
+class CreateCommandRunner(CreateWorkflowRunner):
+    """Shared authoring lifecycle specialized for ``Command`` modules."""
+
+    workflow_name = "create_commands"
+    artifact_kind = "command"
+    destination_dir = "commands"
+    artifact_label = "command"
+    activation = "commands-reload"
+
+    def _generation_prompt(self, intent: str) -> str:
+        return (
+            "You are the design phase of agenthicc's create_commands workflow.\n\n"
+            "Create exactly one project command module for the user's intent. Inspect "
+            "agenthicc.commands.Command, the command plugin loader, dispatcher, and tests. "
+            "Export COMMAND for one command or COMMANDS for multiple commands, with a "
+            "small validated handler or menu factory. Do not execute shell text or bypass "
+            "existing capability and approval boundaries.\n\n"
+            "Return ONLY this envelope, with no explanation outside it:\n"
+            '<command name="lowercase_module_name" description="short description">\n'
+            "```python\n"
+            "from agenthicc.commands import Command, CommandContext\n"
+            "\n"
+            "def handle_command(ctx: CommandContext) -> bool:\n"
+            '    ctx.console.print("...")\n'
+            "    return True\n"
+            "\n"
+            'COMMAND = Command("/example", "...", handler=handle_command)\n'
+            "```\n"
+            "</command>\n\n"
+            f"USER INTENT:\n{intent}\n"
+        )
+
+    def _activation_message(self, name: str) -> str:
+        return "Run /commands reload, then invoke the generated slash command."

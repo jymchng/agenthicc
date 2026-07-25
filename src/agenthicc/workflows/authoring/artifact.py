@@ -15,14 +15,19 @@ __all__ = [
     "ValidationFinding",
     "ValidationReport",
     "WorkflowCandidate",
+    "parse_authoring_response",
     "parse_workflow_response",
+    "validate_command_candidate",
+    "validate_tool_candidate",
     "validate_workflow_candidate",
 ]
 
 MAX_WORKFLOW_SOURCE_BYTES = 100_000
 _WORKFLOW_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _FENCE_RE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
-_WORKFLOW_BLOCK_RE = re.compile(r"<workflow\b([^>]*)>(.*?)</workflow>", re.IGNORECASE | re.DOTALL)
+_AUTHORING_BLOCK_RE = re.compile(
+    r"<(workflow|tool|command)\b([^>]*)>(.*?)</\1>", re.IGNORECASE | re.DOTALL
+)
 _NAME_ATTR_RE = re.compile(r"\bname\s*=\s*(['\"])(.*?)\1", re.DOTALL)
 _DESCRIPTION_ATTR_RE = re.compile(r"\bdescription\s*=\s*(['\"])(.*?)\1", re.DOTALL)
 
@@ -85,6 +90,7 @@ class AuthoringArtifact:
         return {
             "name": self.name,
             "state": self.state,
+            "path": self.published_path or self.staged_path,
             "staged_path": self.staged_path,
             "published_path": self.published_path,
             "sha256": self.sha256,
@@ -282,22 +288,30 @@ def _candidate_from_source(name: str, code: str, description: str) -> WorkflowCa
     return WorkflowCandidate(name=name, code=code, description=description)
 
 
-def parse_workflow_response(text: str) -> WorkflowCandidate:
-    """Parse the strict workflow envelope returned by the authoring agent.
+def parse_authoring_response(text: str, artifact_kind: str) -> WorkflowCandidate:
+    """Parse one strict authoring envelope without importing its source.
 
     Accepted forms are a JSON object containing ``name`` and ``code``, or a
-    ``<workflow name="...">`` block containing a Python fenced code block.
-    A plain Python response is accepted as a compatibility fallback when its
-    class-level workflow name can be recovered by static validation.
+    ``<workflow>``, ``<tool>``, or ``<command>`` block containing a Python
+    fenced code block. A plain Python response remains a compatibility
+    fallback; contract validation will reject it when a module name cannot be
+    recovered from the envelope.
     """
 
+    if artifact_kind not in {"workflow", "tool", "command"}:
+        raise ValueError(f"unsupported authoring artifact kind: {artifact_kind!r}")
     raw = text.strip()
     candidates: list[str] = []
     if raw:
         candidates.append(raw)
-    block = _WORKFLOW_BLOCK_RE.search(raw)
+    block = _AUTHORING_BLOCK_RE.search(raw)
     if block:
-        candidates.insert(0, block.group(2).strip())
+        if block.group(1).lower() != artifact_kind:
+            raise ValueError(
+                f"authoring response envelope kind {block.group(1).lower()!r} "
+                f"does not match {artifact_kind!r}"
+            )
+        candidates.insert(0, block.group(3).strip())
 
     for candidate_text in candidates:
         json_text = candidate_text
@@ -318,21 +332,32 @@ def parse_workflow_response(text: str) -> WorkflowCandidate:
             description = raw_description if isinstance(raw_description, str) else ""
             return _candidate_from_source(name.strip(), code_value.strip(), description.strip())
 
-    code_match = _FENCE_RE.search(block.group(2) if block else raw)
+    code_match = _FENCE_RE.search(block.group(3) if block else raw)
     code = code_match.group(1).strip() if code_match else ""
-    if not code and ("WorkflowPlugin" in raw or "PhaseSpec" in raw):
+    markers = {
+        "workflow": ("WorkflowPlugin", "PhaseSpec"),
+        "tool": ("TOOLS", "@tool", "from lauren_ai"),
+        "command": ("COMMAND", "Command(", "from agenthicc.commands"),
+    }[artifact_kind]
+    if not code and any(marker in raw for marker in markers):
         code = raw
     if not code:
-        raise ValueError("authoring response did not contain workflow Python source")
+        raise ValueError(f"authoring response did not contain {artifact_kind} Python source")
 
     name = ""
     description = ""
     if block:
-        name_match = _NAME_ATTR_RE.search(block.group(1))
-        description_match = _DESCRIPTION_ATTR_RE.search(block.group(1))
+        name_match = _NAME_ATTR_RE.search(block.group(2))
+        description_match = _DESCRIPTION_ATTR_RE.search(block.group(2))
         name = name_match.group(2).strip() if name_match else ""
         description = description_match.group(2).strip() if description_match else ""
     return _candidate_from_source(name, code, description)
+
+
+def parse_workflow_response(text: str) -> WorkflowCandidate:
+    """Parse the strict workflow envelope returned by the authoring agent."""
+
+    return parse_authoring_response(text, "workflow")
 
 
 def validate_workflow_candidate(candidate: WorkflowCandidate) -> ValidationReport:
@@ -435,6 +460,293 @@ def validate_workflow_candidate(candidate: WorkflowCandidate) -> ValidationRepor
                 "plugin-import",
                 "Source must import WorkflowPlugin from agenthicc.workflows.plugin.",
             )
+        )
+    return ValidationReport(tuple(findings))
+
+
+def _extension_source_findings(
+    candidate: WorkflowCandidate, artifact_label: str
+) -> tuple[list[ValidationFinding], ast.Module | None]:
+    """Return shared static findings and a parsed extension module."""
+
+    findings: list[ValidationFinding] = []
+    if not _WORKFLOW_NAME_RE.fullmatch(candidate.name):
+        findings.append(
+            ValidationFinding(
+                "artifact-name",
+                f"{artifact_label} name must start with a letter and contain only lowercase "
+                "letters, digits, and underscores (2-64 characters).",
+            )
+        )
+    source = candidate.code.strip()
+    if not source:
+        findings.append(ValidationFinding("source-empty", f"{artifact_label} source is empty."))
+        return findings, None
+    if len(source.encode("utf-8")) > MAX_WORKFLOW_SOURCE_BYTES:
+        findings.append(
+            ValidationFinding("source-too-large", f"{artifact_label} source exceeds 100 KiB.")
+        )
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        findings.append(
+            ValidationFinding("syntax", f"{artifact_label} source is not valid Python: {exc}.")
+        )
+        return findings, None
+
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"eval", "exec", "compile", "__import__"}
+        ):
+            findings.append(
+                ValidationFinding(
+                    "unsafe-call",
+                    f"{artifact_label} source may not call {node.func.id}() directly.",
+                )
+            )
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "os"
+            and node.func.attr == "system"
+        ):
+            findings.append(
+                ValidationFinding(
+                    "unsafe-call", f"{artifact_label} source may not call os.system()."
+                )
+            )
+        if isinstance(node, ast.Import) and any(
+            alias.name.split(".", 1)[0] in {"subprocess", "ctypes"} for alias in node.names
+        ):
+            findings.append(
+                ValidationFinding(
+                    "unsafe-import",
+                    f"{artifact_label} source may not import subprocess or ctypes.",
+                )
+            )
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.split(".", 1)[0] in {"subprocess", "ctypes"}:
+                findings.append(
+                    ValidationFinding(
+                        "unsafe-import",
+                        f"{artifact_label} source may not import {node.module}.",
+                    )
+                )
+    return findings, tree
+
+
+def _top_level_assignment(tree: ast.Module, name: str) -> ast.expr | None:
+    """Return a single top-level assignment value, or ``None`` when absent."""
+
+    value: ast.expr | None = None
+    for statement in tree.body:
+        targets: list[ast.expr]
+        assigned: ast.expr | None
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            assigned = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            assigned = statement.value
+        else:
+            continue
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            if value is not None:
+                return None
+            value = assigned
+    return value
+
+
+def _decorator_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Call):
+        return _decorator_name(node.func)
+    return ""
+
+
+def validate_tool_candidate(candidate: WorkflowCandidate) -> ValidationReport:
+    """Validate the executable ``TOOLS`` plugin contract without importing it."""
+
+    findings, tree = _extension_source_findings(candidate, "Tool module")
+    if tree is None:
+        return ValidationReport(tuple(findings))
+
+    has_tool_import = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module in {"lauren_ai", "lauren_ai._tools"}
+        and any(alias.name == "tool" for alias in node.names)
+        for node in tree.body
+    )
+    if not has_tool_import:
+        findings.append(
+            ValidationFinding(
+                "tool-import",
+                "Tool module must import tool from lauren_ai or lauren_ai._tools.",
+            )
+        )
+
+    tools_value = _top_level_assignment(tree, "TOOLS")
+    if not isinstance(tools_value, (ast.List, ast.Tuple)):
+        findings.append(
+            ValidationFinding("tools-export", "Tool module must export TOOLS as a list.")
+        )
+        return ValidationReport(tuple(findings))
+    if not tools_value.elts:
+        findings.append(
+            ValidationFinding("tools-empty", "TOOLS must contain at least one callable.")
+        )
+
+    definitions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    exported_names: list[str] = []
+    for item in tools_value.elts:
+        if not isinstance(item, ast.Name):
+            findings.append(
+                ValidationFinding(
+                    "tool-entry", "Every TOOLS entry must reference a top-level callable."
+                )
+            )
+            continue
+        if item.id in exported_names:
+            findings.append(
+                ValidationFinding("tool-duplicate", f"Duplicate tool export: {item.id!r}.")
+            )
+            continue
+        exported_names.append(item.id)
+        definition = definitions.get(item.id)
+        if definition is None:
+            findings.append(
+                ValidationFinding("tool-entry", f"TOOLS references undefined callable {item.id!r}.")
+            )
+            continue
+        decorators = definition.decorator_list
+        if not any(_decorator_name(decorator) == "tool" for decorator in decorators):
+            findings.append(
+                ValidationFinding(
+                    "tool-decorator",
+                    f"Exported tool {item.id!r} must use Lauren's @tool decorator.",
+                )
+            )
+    return ValidationReport(tuple(findings))
+
+
+def _command_call_details(node: ast.AST) -> tuple[str | None, list[ValidationFinding]]:
+    findings: list[ValidationFinding] = []
+    if not isinstance(node, ast.Call) or _func_name(node.func) != "Command":
+        return None, [
+            ValidationFinding("command-entry", "Every command export must be a Command(... ) call.")
+        ]
+
+    name_node: ast.expr | None = node.args[0] if node.args else None
+    description_node: ast.expr | None = node.args[1] if len(node.args) > 1 else None
+    for keyword in node.keywords:
+        if keyword.arg == "name":
+            name_node = keyword.value
+        elif keyword.arg == "description":
+            description_node = keyword.value
+        elif keyword.arg in {"handler", "menu_factory"} and isinstance(keyword.value, ast.Name):
+            # The reference is checked by the caller once all definitions are known.
+            pass
+    name = _extract_literal_string(name_node) if name_node is not None else None
+    if name is None or not name.startswith("/") or any(char.isspace() for char in name):
+        findings.append(
+            ValidationFinding(
+                "command-name",
+                "Command names must be literal slash-prefixed strings without whitespace.",
+            )
+        )
+    description = (
+        _extract_literal_string(description_node) if description_node is not None else None
+    )
+    if description is None:
+        findings.append(
+            ValidationFinding(
+                "command-description", "Every Command must have a literal description."
+            )
+        )
+    return name, findings
+
+
+def validate_command_candidate(candidate: WorkflowCandidate) -> ValidationReport:
+    """Validate ``COMMAND``/``COMMANDS`` exports without executing the module."""
+
+    findings, tree = _extension_source_findings(candidate, "Command module")
+    if tree is None:
+        return ValidationReport(tuple(findings))
+
+    has_command_import = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module in {"agenthicc.commands", "agenthicc.commands.command"}
+        and any(alias.name == "Command" for alias in node.names)
+        for node in tree.body
+    )
+    if not has_command_import:
+        findings.append(
+            ValidationFinding(
+                "command-import",
+                "Command module must import Command from agenthicc.commands.",
+            )
+        )
+
+    definitions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    command_names: list[str] = []
+    export_count = 0
+    for export_name in ("COMMAND", "COMMANDS"):
+        value = _top_level_assignment(tree, export_name)
+        if value is None:
+            continue
+        export_count += 1
+        nodes = [value]
+        if export_name == "COMMANDS":
+            if not isinstance(value, (ast.List, ast.Tuple)):
+                findings.append(
+                    ValidationFinding(
+                        "commands-export", "COMMANDS must be a list or tuple of Command objects."
+                    )
+                )
+                continue
+            if not value.elts:
+                findings.append(ValidationFinding("commands-empty", "COMMANDS must not be empty."))
+            nodes = list(value.elts)
+        for node in nodes:
+            name, entry_findings = _command_call_details(node)
+            findings.extend(entry_findings)
+            if name is not None:
+                if name in command_names:
+                    findings.append(
+                        ValidationFinding(
+                            "command-duplicate", f"Duplicate command export: {name!r}."
+                        )
+                    )
+                command_names.append(name)
+            if isinstance(node, ast.Call):
+                for keyword in node.keywords:
+                    if keyword.arg in {"handler", "menu_factory"} and isinstance(
+                        keyword.value, ast.Name
+                    ):
+                        if keyword.value.id not in definitions:
+                            findings.append(
+                                ValidationFinding(
+                                    "command-handler",
+                                    f"Command references undefined {keyword.arg} {keyword.value.id!r}.",
+                                )
+                            )
+    if export_count == 0:
+        findings.append(
+            ValidationFinding("command-export", "Command module must export COMMAND or COMMANDS.")
         )
     return ValidationReport(tuple(findings))
 

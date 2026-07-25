@@ -259,6 +259,17 @@ Useful repository contracts are covered by
 `tests/unit/test_tool_executor_contract.py`, and
 `tests/unit/test_sandbox.py`.
 
-For the built-in authoring workflow, use `/create-tools <instructions>`.
-That skill helps generate the module and tests; it does not establish trust or
-replace a human review of executable plugin code.
+For the first-class authoring workflow, submit the selector and then the intent
+as two inputs:
+
+```text
+/workflow create_tool
+Create a tool that reports the current project status.
+```
+
+The singular selector is an alias for `create_tools`. The runner stages and
+statically validates a Lauren `@tool`-decorated `TOOLS` export, asks for
+publication approval, and writes `.agenthicc/tools/<module>.py` atomically.
+Restart the session after approval before using the new tool. The legacy
+`/create-tools <instructions>` skill remains available as a prompt-only
+convenience path; it does not replace review or establish plugin trust.
