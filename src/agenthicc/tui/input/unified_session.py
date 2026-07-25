@@ -89,6 +89,18 @@ class UnifiedInputSession:
             STREAMING_CAPABILITIES if mode == InputMode.STREAMING else IDLE_CAPABILITIES
         )
 
+    def set_text(self, text: str) -> None:
+        """Replace the composer contents without submitting the text.
+
+        Registry overlays use this after a detail-page selection. Keeping the
+        mutation here ensures the reactive ``InputState`` is updated before
+        the overlay is hidden and redrawn.
+        """
+        self._buf.set(list(text))
+        self._paste.condensed = False
+        self._ctrl_c_count = 0
+        self._push()
+
     # ── main loop ─────────────────────────────────────────────────────────────
 
     async def run(self) -> None:

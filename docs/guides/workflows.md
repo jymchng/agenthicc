@@ -46,8 +46,8 @@ request leaves the staged candidate available for inspection and does not
 replace an existing workflow. Every terminal outcome emits a final summary in
 the transcript and in the structured `AuthoringResult`.
 
-Restart the session after publication so the normal workflow registry discovers
-the new file, then select it for a later request:
+Run `/workflows reload` after publication so the normal workflow registry
+discovers the new file, then select it for a later request:
 
 ```text
 /workflow cloakbrowser_parse_fb
@@ -59,7 +59,7 @@ specific run), revalidate its manifest and source, and continue at approval
 without regenerating it. Use `/workflow reset` to return to the active mode's
 default workflow. The authoring result and `WorkflowRunCompleted` event include
 the generated name, staged/published paths, manifest, validation findings,
-approval state, and the `restart-session` activation instruction.
+approval state, and the `workflows-reload` activation instruction.
 
 ## Create tools and commands
 
@@ -83,9 +83,10 @@ authoring must produce a `Command` in `COMMAND` or `COMMANDS` and publishes to
 
 Both are staged under the same run-scoped authoring directory, statically
 validated without importing generated code, and require explicit publication
-approval. After a tool is published, restart the session. After a command is
-published, run `/commands reload`; neither artifact is active during the
-authoring run. The structured result identifies the artifact kind, paths,
+approval. After a tool is published, run `/tools reload` or restart the
+session. After a command is published, run `/commands reload`; neither
+artifact is active during the authoring run. The structured result identifies
+the artifact kind, paths,
 hash, approval state, activation instruction, and final summary.
 
 ## Inspect tools and workflows
@@ -102,6 +103,12 @@ with descriptions and details. `/tools` includes built-in, project, and
 discovered MCP tools; `/workflows` includes source, phase topology, runner
 type, and mode bindings. Press Enter for details and Esc to close, just as
 with `/commands` and `/skills`.
+
+Use `/workflows reload` after adding or editing a workflow file. It rebuilds the
+session registry in place and reports added or removed workflow names; if
+discovery fails, the previous registry remains active. In the workflows
+overlay, press Enter on a workflow and then Enter again on its details page to
+place `/workflow <name>` in the input panel without submitting it.
 
 ## How user workflows are discovered
 
@@ -122,8 +129,9 @@ workflow-specific trust prompt at import time, so only place code there that
 you trust. Tool capabilities, modes, and approvals still apply when phases
 run.
 
-The registry is built once per session. Editing a workflow file requires a
-session restart; `/skills reload` does not reload workflows.
+The registry is built once per session by default. Editing a workflow file can
+be picked up with `/workflows reload`; a session restart remains appropriate
+when changing dependencies or other process-level state.
 
 ## CLI and headless execution
 

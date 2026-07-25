@@ -65,7 +65,7 @@ examples can be registered directly.
 ## TUI slash commands
 
 TUI commands are a separate registry from CLI subcommands. Current built-ins
-include `/help`, `/commands`, `/tools`, `/workflows`, `/status`, `/history`,
+include `/help`, `/commands`, `/tools [reload]`, `/workflows [reload]`, `/status`, `/history`,
 `/mode`, `/workflow`, `/init`, `/model`, `/models`, `/skills [reload]`, `/mcp`,
 `/config`, `/compact`, `/replay`, `/cancel`, `/clear`, and `/expand`.
 
@@ -86,16 +86,19 @@ To author an extension interactively, submit one of
 `/workflow create_command`, then enter the intent as the next ordinary input.
 The generated source is staged, statically validated, approval-gated, and
 published atomically under `.agenthicc/workflows/`, `.agenthicc/tools/`, or
-`.agenthicc/commands/`. Restart after a workflow or tool publication; run
-`/commands reload` after a command publication. The plural registry names are
+`.agenthicc/commands/`. Run `/workflows reload` or `/tools reload` after a
+workflow or tool publication; run `/commands reload` after a command
+publication. The plural registry names are
 `create_tools` and `create_commands`; singular forms are aliases. A staged
 authoring run can be continued with `/workflow resume [run-id]` and is
 revalidated before publication.
 
-`/tools` and `/workflows` are read-only registry overlays. `/tools` shows the
-effective built-in, project, and MCP tools for the session. `/workflows` shows
-loaded workflow sources, phases, mode bindings, and whether the plugin
-provides a custom runner.
+`/tools` and `/workflows` are registry overlays; adding `reload` rescans their
+respective live registries without restarting. `/tools` shows the effective
+built-in, project, and MCP tools for the session. `/workflows` shows loaded
+workflow sources, phases, mode bindings, and whether the plugin provides a
+custom runner. Press Enter on a details page to place the selected command,
+skill, or workflow invocation in the input panel without submitting it.
 
 `/init` is a local project bootstrap command. It previews by default and uses
 `/init write` or `/init write --force` for explicit writes; it does not invoke

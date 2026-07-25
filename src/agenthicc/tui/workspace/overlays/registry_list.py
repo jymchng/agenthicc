@@ -25,6 +25,7 @@ class _ListRow:
     metadata: str
     description: str
     details: tuple[tuple[str, str], ...]
+    selection: str | None = None
 
 
 def _shorten(value: str, limit: int) -> str:
@@ -45,10 +46,12 @@ class _RegistryListOverlay(Overlay):
         title: str,
         rows: list[_ListRow],
         on_close: Callable[[], None],
+        on_select: Callable[[str], None] | None = None,
     ) -> None:
         self._title = title
         self._rows = rows
         self._on_close = on_close
+        self._on_select = on_select
         self._selected = 0
         self._scroll = 0
         self._detail: _ListRow | None = None
@@ -89,13 +92,24 @@ class _RegistryListOverlay(Overlay):
         lines.extend(
             [
                 separator,
-                Text("  ↑↓ navigate   Enter detail   Esc close", style="dim"),
+                Text(
+                    "  ↑↓ navigate   Enter detail   Esc close"
+                    if self._on_select is None
+                    else "  ↑↓ navigate   Enter detail/use   Esc close",
+                    style="dim",
+                ),
             ]
         )
         return Group(*lines)
 
     def handle_key(self, key: Key, ch: str) -> bool:
         if self._detail is not None:
+            if key == Key.ENTER and self._on_select is not None:
+                selection = self._detail.selection
+                if selection:
+                    self._on_select(selection)
+                    self._on_close()
+                return True
             if key in (Key.ESC, Key.LEFT):
                 self._detail = None
             return True
@@ -136,7 +150,12 @@ class _RegistryListOverlay(Overlay):
             line = Text(f"  {label}: ", style="dim")
             line.append(value)
             lines.append(line)
-        lines.extend([Text(""), separator, Text("  Esc/← back   Esc again close", style="dim")])
+        detail_hint = (
+            "Enter use   Esc/← back   Esc again close"
+            if self._on_select is not None and row.selection
+            else "Esc/← back   Esc again close"
+        )
+        lines.extend([Text(""), separator, Text(f"  {detail_hint}", style="dim")])
         return Group(*lines)
 
 
@@ -185,6 +204,7 @@ class CommandListOverlay(_RegistryListOverlay):
         self,
         commands: list["Command"],
         on_close: Callable[[], None],
+        on_select: Callable[[str], None] | None = None,
     ) -> None:
         rows = [
             _ListRow(
@@ -197,10 +217,11 @@ class CommandListOverlay(_RegistryListOverlay):
                     ("Arguments", command.argument_hint or "(none)"),
                     ("Aliases", ", ".join(command.aliases) or "(none)"),
                 ),
+                selection=(command.name if command.name.startswith("/") else f"/{command.name}"),
             )
             for command in commands
         ]
-        super().__init__("Registered Commands", rows, on_close)
+        super().__init__("Registered Commands", rows, on_close, on_select)
 
 
 class SkillListOverlay(_RegistryListOverlay):
@@ -212,6 +233,7 @@ class SkillListOverlay(_RegistryListOverlay):
         self,
         skills: list["SkillDef"],
         on_close: Callable[[], None],
+        on_select: Callable[[str], None] | None = None,
     ) -> None:
         rows = [
             _ListRow(
@@ -227,10 +249,11 @@ class SkillListOverlay(_RegistryListOverlay):
                     ("Source", skill.source),
                     ("Tools", ", ".join(skill.tools) or "(none)"),
                 ),
+                selection=f"${skill.slug}",
             )
             for skill in skills
         ]
-        super().__init__("Available Skills", rows, on_close)
+        super().__init__("Available Skills", rows, on_close, on_select)
 
 
 class ToolListOverlay(_RegistryListOverlay):
@@ -285,6 +308,7 @@ class WorkflowListOverlay(_RegistryListOverlay):
         workflows: list["type[WorkflowPlugin]"],
         registry: "WorkflowRegistry | None",
         on_close: Callable[[], None],
+        on_select: Callable[[str], None] | None = None,
     ) -> None:
         rows: list[_ListRow] = []
         for workflow in sorted(workflows, key=lambda item: item.name):
@@ -303,6 +327,7 @@ class WorkflowListOverlay(_RegistryListOverlay):
                         ("Runner", runner_kind),
                         ("Modes", ", ".join(workflow.mode_bindings) or "(none)"),
                     ),
+                    selection=f"/workflow {workflow.name}",
                 )
             )
-        super().__init__("Registered Workflows", rows, on_close)
+        super().__init__("Registered Workflows", rows, on_close, on_select)

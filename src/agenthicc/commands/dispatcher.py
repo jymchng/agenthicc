@@ -53,6 +53,9 @@ class CommandDispatcher:
             set_pending_replay=ctx.set_pending_replay,
             reload_skills=ctx.reload_skills,
             reload_commands=ctx.reload_commands,
+            reload_tools=ctx.reload_tools,
+            reload_workflows=ctx.reload_workflows,
+            set_input_text=ctx.set_input_text,
             usage_snapshot=ctx.usage_snapshot,
             cancel_active=ctx.cancel_active,
         )

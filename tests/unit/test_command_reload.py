@@ -77,6 +77,26 @@ def test_commands_reload_without_interactive_callback_is_handled() -> None:
     assert "only available in an interactive session" in output.getvalue()
 
 
+@pytest.mark.parametrize(
+    ("command", "field", "label"),
+    [
+        ("/tools", "reload_tools", "Tool"),
+        ("/workflows", "reload_workflows", "Workflow"),
+    ],
+)
+def test_registry_reload_commands_dispatch_callbacks(command: str, field: str, label: str) -> None:
+    output = StringIO()
+    context = _command_context(output=output, args="reload")
+    called: list[bool] = []
+    setattr(context, field, lambda: called.append(True) or (True, f"{label}s reloaded"))
+
+    handled = CommandDispatcher(context.command_registry).dispatch(f"{command} reload", context)
+
+    assert handled is True
+    assert called == [True]
+    assert f"{label}s reloaded" in output.getvalue()
+
+
 def _reload_session(registry: UnifiedCommandRegistry, *, skills=None, plugin_names=None):
     context = SimpleNamespace(
         cmd_registry=registry,

@@ -93,7 +93,8 @@ The work that cannot be obtained by composition alone is:
 3. syntax, contract, and discovery validation before publication;
 4. explicit approval and overwrite behavior;
 5. an activation/reload story that does not import newly generated Python
-   into the current process silently;
+   into the current process silently and provides explicit `/tools reload` and
+   `/workflows reload` controls;
 6. consistent trust behavior for executable generated extensions, including
    the current workflow-loader trust gap recorded by PRD-138.
 
@@ -233,11 +234,11 @@ bounded explanation and must not claim that an artifact was published.
 
 Publication and activation are separate:
 
-- workflow artifacts require a new registry discovery cycle, initially a
-  session restart;
+- workflow artifacts can be activated through explicit `/workflows reload` or
+  a session restart;
 - command artifacts use the existing `/commands reload` path after approval;
-- tool artifacts require the existing plugin discovery lifecycle, initially a
-  session restart unless a safe tool reload API is added;
+- tool artifacts can be activated through explicit `/tools reload` or a session
+  restart;
 - no generated Python is imported automatically in the authoring run.
 
 The result must state the exact next action rather than implying that the
@@ -406,6 +407,11 @@ publish executable artifacts.
     preserving context and state transitions.
 17. `/tools` and `/workflows` open read-only registry overlays with selectable
     detail views, matching `/commands` and `/skills`.
+18. `/tools reload` and `/workflows reload` refresh their live registries
+    atomically, preserving the previous registry on discovery failure.
+19. Pressing Enter on a details page places the canonical invocation in the
+    input panel: `/workflow <name>`, `/command-name`, or `$<skill-name>`;
+    it does not submit the input.
 
 ## 10. Rollout plan
 
@@ -433,13 +439,15 @@ publish executable artifacts.
   `WorkflowRunner`.
 - `/tools` and `/workflows` expose the effective session registries through the
   existing overlay interaction pattern.
+- `/tools reload` and `/workflows reload` provide explicit activation without
+  requiring a session restart, while preserving the existing registry object.
 
 ### Phase 3 — activation and trust hardening
 
 - Integrate generated-artifact trust decisions with PRD-138's centralized
   plugin policy.
-- Add safe tool/workflow reload only if it can preserve registry ownership and
-  avoid importing untrusted code implicitly.
+- Harden the explicit tool/workflow reload paths so they preserve registry
+  ownership and avoid importing untrusted code implicitly.
 - Add durable cleanup/retention controls for staged authoring runs.
 
 ## 11. Verification

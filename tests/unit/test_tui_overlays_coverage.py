@@ -200,3 +200,39 @@ def test_tool_and_workflow_registry_overlays_render_details() -> None:
     detail_output = Console(file=StringIO(), record=True, force_terminal=False)
     detail_output.print(workflow_overlay.render())
     assert "demo_workflow" in detail_output.export_text()
+
+
+def test_registry_detail_enter_inserts_commands_and_closes_overlay() -> None:
+    from agenthicc.skills.loader import SkillDef
+
+    selected: list[str] = []
+    closed: list[bool] = []
+    command_overlay = CommandListOverlay(
+        [Command("/deploy", "Deploy the application")],
+        lambda: closed.append(True),
+        selected.append,
+    )
+    command_overlay.handle_key(Key.ENTER, "")
+    command_overlay.handle_key(Key.ENTER, "")
+
+    skill = SkillDef("Review", "review", Path("."), _body="body")
+    skill_overlay = SkillListOverlay([skill], lambda: closed.append(True), selected.append)
+    skill_overlay.handle_key(Key.ENTER, "")
+    skill_overlay.handle_key(Key.ENTER, "")
+
+    workflow_registry = WorkflowRegistry()
+
+    class DemoWorkflow(WorkflowPlugin):
+        name = "demo_workflow"
+        description = "A demo workflow"
+        phases = [PhaseSpec(name="start")]
+
+    workflow_registry.register(DemoWorkflow, source="project")
+    workflow_overlay = WorkflowListOverlay(
+        [DemoWorkflow], workflow_registry, lambda: closed.append(True), selected.append
+    )
+    workflow_overlay.handle_key(Key.ENTER, "")
+    workflow_overlay.handle_key(Key.ENTER, "")
+
+    assert selected == ["/deploy", "$review", "/workflow demo_workflow"]
+    assert len(closed) == 3

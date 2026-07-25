@@ -88,6 +88,9 @@ class CommandContext:
     set_pending_replay: "Callable[[str], None] | None" = None
     reload_skills: "Callable[[], SkillDiscoveryResult] | None" = None
     reload_commands: "Callable[[], tuple[bool, str]] | None" = None
+    reload_tools: "Callable[[], tuple[bool, str]] | None" = None
+    reload_workflows: "Callable[[], tuple[bool, str]] | None" = None
+    set_input_text: "Callable[[str], None] | None" = None
     usage_snapshot: "Callable[[], UsageSnapshot] | None" = None
     cancel_active: "Callable[[], bool] | None" = None
 

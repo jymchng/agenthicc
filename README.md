@@ -144,7 +144,7 @@ Useful built-in slash commands include:
 | Command | Purpose |
 |---|---|
 | `/help`, `/commands` | Inspect available commands in an overlay |
-| `/tools`, `/workflows` | Inspect the effective tool and workflow registries in overlays |
+| `/tools [reload]`, `/workflows [reload]` | Inspect or reload the effective tool and workflow registries |
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/mode [name]` | Show or change the operating mode |
 | `/workflow <name> \| reset` | Select a workflow; use `/workflow create_workflow`, `/workflow create_tool`, or `/workflow create_command` to author an extension, or `/workflow resume` to continue a staged run |
@@ -154,7 +154,7 @@ Useful built-in slash commands include:
 | `/compact` | Compact conversation memory |
 | `/replay [session-id]` | Replay a saved conversation |
 | `/cancel`, `/clear`, `/expand` | Control the current session or output |
-| `/mcp`, `/skills` | Inspect MCP and skills; `/skills` opens an overlay |
+| `/mcp`, `/skills [reload]` | Inspect MCP and skills; reload or open their overlay |
 | `/usage` | Show local tokens, cost, run state, and queued input |
 | `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |
@@ -253,6 +253,12 @@ Explicit skills use the `$skill-name` or `$alias` trigger; `/` remains reserved
 for commands. `/commands` lists slash commands only; use `/skills` to inspect
 discovered skills. The former
 `/skill-name` spelling is not executed.
+
+In a registry overlay, press Enter on an entry to open its details. Press Enter
+again on the details page to place the invocation in the input panel:
+`/workflow <name>` for workflows, the command's canonical `/name` for
+commands, and `$<skill-name>` for skills. The text is prepared but not
+submitted.
 
 Install validated skills from a local path, direct HTTPS `SKILL.md` URL, or a
 generic GitHub repository with `agenthicc skills add SOURCE`. Both

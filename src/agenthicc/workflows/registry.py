@@ -59,6 +59,13 @@ class WorkflowRegistry:
         if target in self._entries:
             self._aliases[alias] = target
 
+    def replace_with(self, other: "WorkflowRegistry") -> None:
+        """Replace entries in place while preserving session-owned identity."""
+        if other is self:
+            return
+        self._entries = dict(other._entries)
+        self._aliases = dict(other._aliases)
+
     def all(self) -> list[type[WorkflowPlugin]]:
         return [e.plugin_cls for e in self._entries.values()]
 

@@ -125,8 +125,10 @@ Project-wide commands are loaded when the session is constructed.
 `/commands reload` rescans both command directories and updates the existing
 registry in place. Added, updated, and removed command names are reported.
 `/skills reload` refreshes skill-owned dollar triggers only, not Python command
-plugins. Explicit skills use `$skill-name`; slash-prefixed skill names are not
-accepted.
+plugins. `/tools reload` rescans project and user-global tool plugins, while
+`/workflows reload` rebuilds the workflow registry in place. Reload failures
+keep the previous live registry. Explicit skills use `$skill-name`; slash-
+prefixed skill names are not accepted.
 
 ## Picker and submission journey
 
@@ -161,7 +163,9 @@ overlay pattern for discovered, permission-filtered skills and their explicit
 `$` invocation names. `/tools` lists the tools registered for the current
 session, including MCP tools, and `/workflows` lists loaded workflow plugins,
 their phase topology, source, and runner type. These listings stay in the
-live overlay instead of being appended to the conversation scroll buffer.
+live overlay instead of being appended to the conversation scroll buffer. On a
+details page, press Enter again to place the selected canonical command or
+skill invocation in the input panel without submitting it.
 
 ## Commands while an agent run is active
 
@@ -176,7 +180,8 @@ integration is enabled.
 
 Mutating or agent-starting operations remain deferred. This includes normal
 text, `$skill` invocations, workflow/model changes, reload forms such as
-`/skills reload` and `/commands reload`, `/compact`, `/replay`, and MCP actions.
+`/skills reload`, `/tools reload`, `/workflows reload`, and `/commands reload`,
+`/compact`, `/replay`, and MCP actions.
 The `/config` overlay is a local UI action; edits are applied by the overlay's
 save action and do not become an agent message. User and project commands
 default to `queue`; an immediate-control policy is reserved for built-in
@@ -231,6 +236,9 @@ Test both halves of the user journey:
 - private files, syntax errors, missing dependencies, and import failures;
 - side-effect permissions, path/network boundaries, and secret redaction;
 - `/commands reload` add/update/remove behavior and rollback on failure.
+- `/tools reload` and `/workflows reload` replacement, rollback, and registry
+  identity preservation;
+- details-page Enter insertion for commands, skills, and workflows.
 
 The focused repository coverage is in
 `tests/unit/test_command_plugins.py`,

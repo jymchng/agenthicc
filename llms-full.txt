@@ -1413,8 +1413,9 @@ Built-in `WorkflowPlugin` selected by `/workflow create_workflow`. The next
 ordinary input is treated as the authoring intent. Its custom runner generates
 one workflow source candidate, validates it statically, stages it under
 `.agenthicc/authoring/<run_id>/`, requests publication approval, and atomically
-publishes approved source under `.agenthicc/workflows/`. A restart is required
-for the normal registry to discover the generated plugin. `/workflow resume`
+publishes approved source under `.agenthicc/workflows/`. Run `/workflows reload`
+or restart the session for the normal registry to discover the generated
+plugin. `/workflow resume`
 continues the newest staged run after manifest/hash revalidation without
 regenerating the source.
 
@@ -1439,9 +1440,10 @@ shared authoring runner lifecycle. Tool candidates must import Lauren's
 `agenthicc.commands.Command` and export `COMMAND` or `COMMANDS`, publishing to
 `.agenthicc/commands/<module>.py`.
 
-Tool publication reports `restart-session`; command publication reports
-`commands-reload`. Generated source is staged and statically validated before
-approval, and is not imported during the authoring run.
+Workflow publication reports `workflows-reload`; tool publication reports
+`tools-reload`; command publication reports `commands-reload`. Generated source
+is staged and statically validated before approval, and is not imported during
+the authoring run.
 
 ### CreateCommands
 

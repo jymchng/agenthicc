@@ -5,6 +5,21 @@ from __future__ import annotations
 import pytest
 from agenthicc.tui.input.buffer import InputBuffer
 
+
+def test_unified_input_session_set_text_updates_composer() -> None:
+    from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime import CommandBus
+
+    state = AppState.create()
+    session = UnifiedInputSession(state, CommandBus())
+
+    session.set_text("/workflow demo")
+
+    assert "".join(state.input.buf()) == "/workflow demo"
+    assert state.input.cursor() == len("/workflow demo")
+
+
 pytestmark = pytest.mark.unit
 
 

@@ -53,7 +53,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     artifact_kind = "workflow"
     destination_dir = "workflows"
     artifact_label = "workflow"
-    activation = "restart-session"
+    activation = "workflows-reload"
 
     def __init__(self, config: WorkflowConfig, mode_manager: ModeManager | None = None) -> None:
         self._cfg = config
@@ -767,7 +767,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     def _activation_message(self, name: str) -> str:
         """Describe the explicit activation step for the generated artifact."""
 
-        return f"Restart the session, then use /workflow {name}."
+        return f"Run /workflows reload, then use /workflow {name}."
 
 
 class CreateToolRunner(CreateWorkflowRunner):
@@ -777,6 +777,7 @@ class CreateToolRunner(CreateWorkflowRunner):
     artifact_kind = "tool"
     destination_dir = "tools"
     artifact_label = "tool"
+    activation = "tools-reload"
 
     def _generation_prompt(self, intent: str) -> str:
         return (
@@ -802,7 +803,7 @@ class CreateToolRunner(CreateWorkflowRunner):
         )
 
     def _activation_message(self, name: str) -> str:
-        return "Restart the session, then ask the agent to use the generated tool."
+        return "Run /tools reload, then ask the agent to use the generated tool."
 
 
 class CreateCommandRunner(CreateWorkflowRunner):

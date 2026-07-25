@@ -631,10 +631,17 @@ class TUISession:
             set_pending_replay=self._set_pending_replay,
             reload_skills=self._reload_skills,
             reload_commands=self._reload_commands,
+            reload_tools=self._reload_tools,
+            reload_workflows=self._reload_workflows,
+            set_input_text=self._set_input_text,
             usage_snapshot=self._usage_snapshot,
             cancel_active=self._cancel_active_task,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
+
+    def _set_input_text(self, text: str) -> None:
+        """Put a registry selection in the composer without submitting it."""
+        self._input_session.set_text(text)
 
     def _usage_snapshot(self) -> "UsageSnapshot":
         """Read one local usage snapshot without touching the active runner."""
@@ -753,6 +760,73 @@ class TUISession:
                 ),
             )
         return discovery
+
+    def _reload_tools(self) -> tuple[bool, str]:
+        """Rescan project/user tool plugins and publish them atomically."""
+        from agenthicc.plugins.discovery import discover_project_tools, warn_conflicts
+
+        try:
+            discovered = discover_project_tools(
+                project_dir=Path(".agenthicc"),
+                user_dir=Path.home() / ".agenthicc",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return False, f"Tool reload failed; existing tools kept: {type(exc).__name__}: {exc}"
+
+        if discovered.failed:
+            failures: list[str] = []
+            for result in discovered.failed:
+                reason = result.error or ("missing dependencies: " + ", ".join(result.missing_deps))
+                failures.append(f"{result.path}: {reason}")
+            return False, "Tool reload failed; existing tools kept:\n" + "\n".join(failures)
+
+        old_count = len(self._ctx.project_plugins.all_tools)
+        warn_conflicts(discovered)
+        self._ctx.project_plugins = discovered
+
+        # WorkflowConfig is session-owned and frozen; replace its plugin set so
+        # subsequent workflow turns see the same freshly loaded tools.
+        import dataclasses
+
+        self._wf_config_base = dataclasses.replace(
+            self._wf_config_base,
+            plugin_tools=discovered,
+        )
+        new_count = len(discovered.all_tools)
+        return True, f"Tools reloaded — {new_count} tool(s) available (was {old_count})."
+
+    def _reload_workflows(self) -> tuple[bool, str]:
+        """Rebuild workflows and replace the live registry in place."""
+        from agenthicc.workflows.registry import build_workflow_registry
+
+        try:
+            discovered = build_workflow_registry(
+                project_dir=Path(".agenthicc"),
+                user_dir=Path.home() / ".agenthicc",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return False, (
+                f"Workflow reload failed; existing workflows kept: {type(exc).__name__}: {exc}"
+            )
+
+        registry = self._ctx.workflow_registry
+        old_names = set(registry.names())
+        new_names = set(discovered.names())
+        registry.replace_with(discovered)
+
+        if self._workflow_override is not None and self._workflow_override not in new_names:
+            self._workflow_override = None
+            self._ctx.app_state.conversation.workflow_override.set(None)
+
+        changes: list[str] = []
+        added = sorted(new_names - old_names)
+        removed = sorted(old_names - new_names)
+        if added:
+            changes.append(f"added: {', '.join(added)}")
+        if removed:
+            changes.append(f"removed: {', '.join(removed)}")
+        suffix = "; ".join(changes) if changes else "no workflow changes"
+        return True, f"Workflows reloaded — {len(new_names)} workflow(s); {suffix}."
 
     def _reload_commands(self) -> tuple[bool, str]:
         """Rescan slash-command plugins and publish a valid set atomically."""

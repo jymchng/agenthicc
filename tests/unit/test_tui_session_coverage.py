@@ -139,6 +139,69 @@ def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.Monk
     assert ctx.cmd_registry.get("/coverage") is None
 
 
+def test_tui_reload_tools_replaces_session_tools_and_workflow_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.plugins.discovery import LoadResult, PluginToolSet
+
+    session, ctx, _workspace, _input = _make_session()
+    old_plugins = ctx.project_plugins
+
+    async def old_tool() -> dict[str, object]:
+        return {"name": "old"}
+
+    async def new_tool() -> dict[str, object]:
+        return {"name": "new"}
+
+    discovered = PluginToolSet([LoadResult(path=Path(".agenthicc/tools/new.py"), tools=[new_tool])])
+    monkeypatch.setattr(
+        "agenthicc.plugins.discovery.discover_project_tools",
+        lambda **_: discovered,
+    )
+
+    ok, message = session._reload_tools()
+
+    assert ok is True
+    assert "1 tool(s) available" in message
+    assert ctx.project_plugins is discovered
+    assert ctx.project_plugins is not old_plugins
+    assert session._wf_config_base.plugin_tools is discovered
+
+
+def test_tui_reload_workflows_preserves_registry_identity_and_resets_removed_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, ctx, _workspace, _input = _make_session()
+
+    class OldWorkflow:
+        name = "old_workflow"
+
+    class NewWorkflow:
+        name = "new_workflow"
+
+    ctx.workflow_registry.register(OldWorkflow)  # type: ignore[arg-type]
+    session._workflow_override = "old_workflow"
+    ctx.app_state.conversation.workflow_override.set("old_workflow")
+    replacement = WorkflowRegistry()
+    replacement.register(NewWorkflow)  # type: ignore[arg-type]
+    original_registry = ctx.workflow_registry
+    monkeypatch.setattr(
+        "agenthicc.workflows.registry.build_workflow_registry",
+        lambda **_: replacement,
+    )
+
+    ok, message = session._reload_workflows()
+
+    assert ok is True
+    assert "added: new_workflow" in message
+    assert "removed: old_workflow" in message
+    assert ctx.workflow_registry is original_registry
+    assert ctx.workflow_registry.get("old_workflow") is None
+    assert ctx.workflow_registry.get("new_workflow") is NewWorkflow
+    assert session._workflow_override is None
+    assert ctx.app_state.conversation.workflow_override() is None
+
+
 def test_tui_routes_dollar_skills_and_rejects_legacy_slash() -> None:
     session, ctx, _workspace, _input = _make_session()
     handled: list[str] = []

@@ -330,7 +330,11 @@ def _cmd_skills(ctx: CommandContext) -> bool:
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
         ctx.set_pending_menu(
-            SkillListOverlay(list(sorted(visible_skills.values(), key=lambda s: s.slug)), on_close)
+            SkillListOverlay(
+                list(sorted(visible_skills.values(), key=lambda s: s.slug)),
+                on_close,
+                ctx.set_input_text,
+            )
         )
         return True
 
@@ -395,7 +399,7 @@ def _cmd_commands(ctx: CommandContext) -> bool:
         from agenthicc.tui.workspace.overlays.registry_list import CommandListOverlay  # noqa: PLC0415
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
-        ctx.set_pending_menu(CommandListOverlay(commands, on_close))
+        ctx.set_pending_menu(CommandListOverlay(commands, on_close, ctx.set_input_text))
         return True
 
     try:
@@ -418,8 +422,23 @@ def _cmd_commands(ctx: CommandContext) -> bool:
 
 def _cmd_tools(ctx: CommandContext) -> bool:
     """List the tools registered for the current session."""
-    if ctx.args.strip():
-        _present_registry_result(ctx, "Tools", "Usage: /tools")
+    requested = ctx.args.strip().lower()
+    if requested:
+        if requested != "reload":
+            _present_registry_result(ctx, "Tools", "Usage: /tools [reload]")
+            return True
+        if ctx.reload_tools is None:
+            _present_registry_result(
+                ctx,
+                "Tools",
+                "Tool reload is only available in an interactive session.",
+            )
+            return True
+        try:
+            _ok, message = ctx.reload_tools()
+        except Exception as exc:  # noqa: BLE001
+            message = f"Tool reload failed; existing tools kept: {type(exc).__name__}: {exc}"
+        _present_registry_result(ctx, "Tools", message)
         return True
 
     tools = ctx.tools
@@ -470,8 +489,25 @@ def _cmd_tools(ctx: CommandContext) -> bool:
 
 def _cmd_workflows(ctx: CommandContext) -> bool:
     """List workflows loaded into the current registry."""
-    if ctx.args.strip():
-        _present_registry_result(ctx, "Workflows", "Usage: /workflows")
+    requested = ctx.args.strip().lower()
+    if requested:
+        if requested != "reload":
+            _present_registry_result(ctx, "Workflows", "Usage: /workflows [reload]")
+            return True
+        if ctx.reload_workflows is None:
+            _present_registry_result(
+                ctx,
+                "Workflows",
+                "Workflow reload is only available in an interactive session.",
+            )
+            return True
+        try:
+            _ok, message = ctx.reload_workflows()
+        except Exception as exc:  # noqa: BLE001
+            message = (
+                f"Workflow reload failed; existing workflows kept: {type(exc).__name__}: {exc}"
+            )
+        _present_registry_result(ctx, "Workflows", message)
         return True
 
     registry = ctx.workflow_registry
@@ -484,7 +520,7 @@ def _cmd_workflows(ctx: CommandContext) -> bool:
         from agenthicc.tui.workspace.overlays.registry_list import WorkflowListOverlay  # noqa: PLC0415
 
         on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
-        ctx.set_pending_menu(WorkflowListOverlay(workflows, registry, on_close))
+        ctx.set_pending_menu(WorkflowListOverlay(workflows, registry, on_close, ctx.set_input_text))
         return True
 
     try:
@@ -643,15 +679,19 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/tools",
         description="List all tools registered for this session",
+        argument_hint="[reload]",
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        busy_policy_resolver=_reloadable_list_policy,
         handler=_cmd_tools,
     ),
     Command(
         name="/workflows",
         description="List all loaded workflows and their phases",
+        argument_hint="[reload]",
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        busy_policy_resolver=_reloadable_list_policy,
         handler=_cmd_workflows,
     ),
     Command(
