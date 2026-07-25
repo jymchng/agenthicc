@@ -26,6 +26,39 @@ The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
 Workflow selection is influenced by the active mode, registry mappings, and the
 session-local `/workflow` override.
 
+## Create a workflow from the input panel
+
+The built-in `create_workflow` authoring workflow turns a natural-language
+request into a project-local workflow artifact:
+
+```text
+/workflow create_workflow
+Create a workflow that uses Cloakbrowser to parse facebook.com.
+```
+
+The first line selects the workflow; the next ordinary input supplies its
+intent. The authoring run generates one `WorkflowPlugin`, validates its syntax,
+phase references, imports, and workflow contract without importing it, then
+stages the source under `.agenthicc/authoring/`. Publication requires approval
+and writes atomically to `.agenthicc/workflows/<name>.py`. A denied request
+leaves the staged candidate available for inspection and does not replace an
+existing workflow.
+
+Restart the session after publication so the normal workflow registry discovers
+the new file, then select it for a later request:
+
+```text
+/workflow cloakbrowser_parse_fb
+Parse the requested Facebook page and summarize the results.
+```
+
+Use `/workflow resume [run-id]` to resume the newest staged authoring run (or a
+specific run), revalidate its manifest and source, and continue at approval
+without regenerating it. Use `/workflow reset` to return to the active mode's
+default workflow. The authoring result and `WorkflowRunCompleted` event include
+the generated name, staged/published paths, manifest, validation findings,
+approval state, and the `restart-session` activation instruction.
+
 ## How user workflows are discovered
 
 Workflow discovery happens when a TUI or headless session starts. The registry
@@ -239,6 +272,9 @@ Current implementation caveats to account for when authoring workflows:
   not only the visible transcript.
 - `/workflow` does nothing: ensure it is in the canonical built-in command
   registry and intercepted before generic slash dispatch.
+- `create_workflow` is unknown: restart the session after upgrading and verify
+  that the built-in workflow registry contains it. The command selects the
+  authoring workflow; the following ordinary input is the intent.
 - Custom runner is ignored: implement `build_runner()`, not the historical
   `runner_factory()` hook, and restart the session after changing the file.
 

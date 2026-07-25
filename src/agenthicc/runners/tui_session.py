@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from agenthicc.commands.busy_policy import BusyDecision
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
-    from agenthicc.workflows.plugin import WorkflowContext, WorkflowPlugin
+    from agenthicc.workflows.plugin import WorkflowPlugin
     from agenthicc.tools.base import ToolLike
 
 
@@ -827,9 +827,12 @@ class TUISession:
         return True, "Commands reloaded — " + "; ".join(summary)
 
     def _handle_workflow_command(self, args: str) -> bool:
-        """Handle /workflow <name> | reset (PRD-114)."""
+        """Handle /workflow <name> | reset | resume [run-id]."""
         name = args.strip()
         conv = self._ctx.app_state.conversation
+        if name == "resume" or name.startswith("resume "):
+            run_id = name.partition(" ")[2].strip() or None
+            return self._handle_workflow_resume(run_id)
         if not name or name == "reset":
             self._workflow_override = None
             conv.workflow_override.set(None)
@@ -843,6 +846,47 @@ class TUISession:
         self._workflow_override = name
         conv.workflow_override.set(name)
         conv.notify_transient(f"⚡ Workflow → {name}")
+        return True
+
+    @staticmethod
+    def _latest_authoring_run_id() -> str | None:
+        """Return the newest staged authoring run, if one is available."""
+        authoring_root = Path(".agenthicc") / "authoring"
+        if not authoring_root.is_dir():
+            return None
+        candidates: list[tuple[float, str]] = []
+        for manifest in authoring_root.glob("*/manifest.json"):
+            run_id = manifest.parent.name
+            if len(run_id) != 32 or any(char not in "0123456789abcdef" for char in run_id):
+                continue
+            try:
+                candidates.append((manifest.stat().st_mtime, run_id))
+            except OSError:
+                continue
+        return max(candidates)[1] if candidates else None
+
+    def _handle_workflow_resume(self, run_id: str | None) -> bool:
+        """Resume the newest or explicitly named staged authoring run."""
+        conv = self._ctx.app_state.conversation
+        if self._agent_task is not None and not self._agent_task.done():
+            conv.notify_transient("⚠ Cannot resume a workflow while another run is active")
+            return True
+        if run_id is None:
+            run_id = self._latest_authoring_run_id()
+        if run_id is None:
+            conv.notify_transient("⚠ No staged workflow-authoring run is available")
+            return True
+        workflow = self._ctx.workflow_registry.get("create_workflow")
+        if workflow is None:
+            conv.notify_transient("⚠ The create_workflow authoring workflow is unavailable")
+            return True
+        from agenthicc.workflows.authoring.artifact import AuthoringResumeContext
+
+        self._agent_task = asyncio.create_task(
+            self._resume_workflow_task(workflow, AuthoringResumeContext(run_id)),
+            name="workflow-resume",
+        )
+        conv.notify_transient(f"↻ Resuming workflow-authoring run {run_id[:12]}…")
         return True
 
     async def _handle_compact_command(self) -> None:
@@ -1196,9 +1240,7 @@ class TUISession:
             name="resume-turn",
         )
 
-    async def _resume_workflow_task(
-        self, wf_defn: type[WorkflowPlugin], context: WorkflowContext
-    ) -> None:
+    async def _resume_workflow_task(self, wf_defn: type[WorkflowPlugin], context: object) -> None:
         """Resume a WorkflowRunner with error handling matching agent_task_body."""
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
 

@@ -1405,6 +1405,76 @@ dangerous-permissions flag.
 
 ---
 
+## Workflow authoring — `agenthicc.workflows.authoring`
+
+### CreateWorkflow
+
+Built-in `WorkflowPlugin` selected by `/workflow create_workflow`. The next
+ordinary input is treated as the authoring intent. Its custom runner generates
+one workflow source candidate, validates it statically, stages it under
+`.agenthicc/authoring/<run_id>/`, requests publication approval, and atomically
+publishes approved source under `.agenthicc/workflows/`. A restart is required
+for the normal registry to discover the generated plugin. `/workflow resume`
+continues the newest staged run after manifest/hash revalidation without
+regenerating the source.
+
+### CreateWorkflowRunner
+
+```python
+class CreateWorkflowRunner(BaseWorkflowRunner):
+    async def run(self, intent: str) -> AuthoringResult
+```
+
+Run the complete `generate → validate → review → publish → summarize`
+authoring lifecycle.
+
+### AuthoringResult
+
+```python
+@dataclass(frozen=True)
+class AuthoringResult:
+    workflow: str
+    run_id: str
+    status: str
+    artifact: AuthoringArtifact | None = None
+    approval: str = "not-requested"
+    activation: str | None = None
+    error: str | None = None
+    attempts: int = 0
+    artifact_kind: str = "workflow"
+    artifacts: tuple[AuthoringArtifact, ...] = ()
+```
+
+`to_dict()` returns a JSON-safe result suitable for the
+`WorkflowRunCompleted` event payload. `artifacts` contains the same generated
+artifact as the compatibility `artifact` field.
+
+### AuthoringArtifact
+
+Contains the generated workflow name, staged/published paths, manifest path,
+publication state, source SHA-256 digest, and static `ValidationReport`.
+
+### AuthoringResumeContext
+
+```python
+@dataclass(frozen=True)
+class AuthoringResumeContext:
+    run_id: str
+    intent: str = ""
+```
+
+Identifies a staged authoring manifest for `CreateWorkflowRunner.resume()`.
+
+### parse_workflow_response / validate_workflow_candidate
+
+```python
+def parse_workflow_response(text: str) -> WorkflowCandidate
+def validate_workflow_candidate(candidate: WorkflowCandidate) -> ValidationReport
+```
+
+Parse the strict authoring envelope and validate source without importing or
+executing generated Python.
+
 ## Config — `agenthicc.config`
 
 ### load_config

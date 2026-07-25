@@ -15,6 +15,7 @@ against the current source before implementing them.
 - [PRD-144 — Resize-Safe Waiting Modals and Pause-Aware Display Timing](prd-144-resize-safe-waiting-modals.md)
 - [PRD-145 — CLI Skill Installation](prd-145-cli-skill-installation.md)
 - [PRD-146 — CLI MCP Server Registration](prd-146-cli-mcp-server-registration.md)
+- [PRD-147 — Workflow-Native Extension Authoring](prd-147-workflow-native-extension-authoring.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -49,6 +50,10 @@ PRD-145 adds `agenthicc skills add` for validated project- or user-global
 
 PRD-146 adds `agenthicc mcp add` for validated, persistent MCP server
 registration using the existing `[[tools.mcp_servers]]` configuration format.
+
+PRD-147 proposes converting the default `$create-*` authoring skills into
+first-class workflows that stage, validate, approve, and publish workflows,
+tools, and commands through their existing extension contracts.
 
 ## Existing PRDs
 

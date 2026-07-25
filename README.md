@@ -146,7 +146,7 @@ Useful built-in slash commands include:
 | `/help`, `/commands` | Inspect available commands in an overlay |
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/mode [name]` | Show or change the operating mode |
-| `/workflow <name> \| reset` | Select the workflow for later turns |
+| `/workflow <name> \| reset` | Select a workflow; use `/workflow create_workflow` to author one or `/workflow resume` to continue a staged run |
 | `/model [provider] [model]` | Inspect or switch the model selection |
 | `/config` | Open the configuration overlay |
 | `/init` | Preview or explicitly write project `AGENTS.md` guidance |

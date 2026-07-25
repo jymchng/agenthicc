@@ -25,6 +25,18 @@ from agenthicc.workflows.code_plan import (
     CodePlanState,
     CodePlanContext,
 )
+from agenthicc.workflows.authoring import (
+    AuthoringArtifact,
+    AuthoringResumeContext,
+    AuthoringResult,
+    CreateWorkflow,
+    CreateWorkflowRunner,
+    ValidationFinding,
+    ValidationReport,
+    WorkflowCandidate,
+    parse_workflow_response,
+    validate_workflow_candidate,
+)
 
 
 __all__ = [
@@ -49,4 +61,14 @@ __all__ = [
     "CodePlanRunner",
     "CodePlanState",
     "CodePlanContext",
+    "AuthoringArtifact",
+    "AuthoringResumeContext",
+    "AuthoringResult",
+    "CreateWorkflow",
+    "CreateWorkflowRunner",
+    "ValidationFinding",
+    "ValidationReport",
+    "WorkflowCandidate",
+    "parse_workflow_response",
+    "validate_workflow_candidate",
 ]

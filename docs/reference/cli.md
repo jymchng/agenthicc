@@ -81,6 +81,13 @@ capability boundaries.
 session-local state. Both must remain visible in picker completion as well as
 executable when submitted.
 
+To author a workflow interactively, submit `/workflow create_workflow` and
+then enter the intent as the next ordinary input. The generated workflow is
+staged, validated, approval-gated, and published under
+`.agenthicc/workflows/`; restart the session before selecting the generated
+name with `/workflow <name>`. A staged authoring run can be continued with
+`/workflow resume [run-id]`; it is revalidated before publication.
+
 `/init` is a local project bootstrap command. It previews by default and uses
 `/init write` or `/init write --force` for explicit writes; it does not invoke
 the model or inspect arbitrary source files.

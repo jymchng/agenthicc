@@ -25,5 +25,5 @@ class BaseWorkflowRunner(abc.ABC):
         """
 
     @abc.abstractmethod
-    async def resume(self, context: object) -> None:
+    async def resume(self, context: object) -> object:
         """Resume an interrupted run from a saved context / DataBus."""

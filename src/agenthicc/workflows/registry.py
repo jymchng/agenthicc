@@ -87,6 +87,14 @@ def build_workflow_registry(
     for plugin_cls in load_builtin_workflows():
         registry.register(plugin_cls, source="builtin")
 
+    # PRD-147: the authoring workflow lives in its own package.  Keep this
+    # registration adjacent to the canonical registry assembly so the
+    # root-owned compatibility loader remains a pure workflow-definition
+    # loader while ``build_workflow_registry()`` exposes every built-in.
+    from agenthicc.workflows.authoring.definition import CreateWorkflow  # noqa: PLC0415
+
+    registry.register(CreateWorkflow, source="builtin")
+
     _scan_workflow_dir(user_dir / "workflows", "user", registry)
     _scan_workflow_dir(project_dir / "workflows", "project", registry)
 
