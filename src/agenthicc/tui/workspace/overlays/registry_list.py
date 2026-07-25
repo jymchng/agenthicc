@@ -262,8 +262,6 @@ class ToolListOverlay(_RegistryListOverlay):
     name = "tools"
 
     def __init__(self, tools: list["ToolLike"], on_close: Callable[[], None]) -> None:
-        from inspect import getattr_static
-
         from agenthicc.tools.base import Tool
 
         rows: list[_ListRow] = []
@@ -273,8 +271,11 @@ class ToolListOverlay(_RegistryListOverlay):
                 description = tool.description
                 capabilities: object = tool.capabilities
             else:
-                name_value: object = getattr_static(tool, "__name__", type(tool).__name__)
-                description_value: object = getattr_static(tool, "__doc__", "")
+                # Callable plugin tools expose their user-facing metadata on
+                # the function object. getattr_static() returns the function
+                # type's descriptors here instead of the actual metadata.
+                name_value: object = getattr(tool, "__name__", type(tool).__name__)
+                description_value: object = getattr(tool, "__doc__", "")
                 name = str(name_value)
                 description = str(description_value)
                 capabilities = ()

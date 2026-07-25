@@ -26,7 +26,6 @@ from agenthicc.tui.workspace.overlays.registry_list import (
 from agenthicc.commands.command import Command
 from agenthicc.commands.registry import UnifiedCommandRegistry
 from agenthicc.skills.loader import SkillDef
-from agenthicc.plugins.registry import build_registry
 from agenthicc.workflows.registry import WorkflowRegistry
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 
@@ -185,6 +184,9 @@ def test_registry_list_overlays_render_details_and_close() -> None:
 def test_tool_and_workflow_registry_overlays_render_details() -> None:
     from rich.console import Console
 
+    def demo_tool() -> None:
+        """A function-shaped tool used to verify callable metadata rendering."""
+
     class DemoWorkflow(WorkflowPlugin):
         name = "demo_workflow"
         description = "A demo workflow"
@@ -192,9 +194,13 @@ def test_tool_and_workflow_registry_overlays_render_details() -> None:
 
     workflow_registry = WorkflowRegistry()
     workflow_registry.register(DemoWorkflow, source="project")
-    tool_overlay = ToolListOverlay(list(build_registry().tools[:1]), lambda: None)
+    tool_overlay = ToolListOverlay([demo_tool], lambda: None)
     workflow_overlay = WorkflowListOverlay([DemoWorkflow], workflow_registry, lambda: None)
-    assert tool_overlay.render()
+    tool_output = Console(file=StringIO(), record=True, force_terminal=False)
+    tool_output.print(tool_overlay.render())
+    tool_text = tool_output.export_text()
+    assert "demo_tool" in tool_text
+    assert "function objects" not in tool_text
     assert workflow_overlay.render()
     workflow_overlay.handle_key(Key.ENTER, "")
     detail_output = Console(file=StringIO(), record=True, force_terminal=False)

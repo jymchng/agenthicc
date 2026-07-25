@@ -16,6 +16,7 @@ against the current source before implementing them.
 - [PRD-145 — CLI Skill Installation](prd-145-cli-skill-installation.md)
 - [PRD-146 — CLI MCP Server Registration](prd-146-cli-mcp-server-registration.md)
 - [PRD-147 — Workflow-Native Extension Authoring](prd-147-workflow-native-extension-authoring.md)
+- [PRD-148 — Unified Interrupt and Graceful Cancellation](prd-148-unified-interrupt-and-graceful-cancellation.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -54,6 +55,12 @@ registration using the existing `[[tools.mcp_servers]]` configuration format.
 PRD-147 proposes converting the default `$create-*` authoring skills into
 first-class workflows that stage, validate, approve, and publish workflows,
 tools, and commands through their existing extension contracts.
+
+PRD-148 defines the missing unified interrupt contract across the foreground
+TUI, `lauren-ai` agent turns, workflows, durable journals, headless execution,
+and the PRD-141 background-session lifecycle. It distinguishes user
+cancellation from failure and successful completion while preserving partial
+work and idempotency evidence.
 
 ## Existing PRDs
 
