@@ -95,7 +95,8 @@ revalidated before publication.
 
 `/tools` and `/workflows` are registry overlays; adding `reload` rescans their
 respective live registries without restarting. `/tools` shows the effective
-built-in, project, and MCP tools for the session. `/workflows` shows loaded
+built-in, project, and MCP tools for the session and labels each one
+`builtin` or `plugin`. `/workflows` shows loaded
 workflow sources, phases, mode bindings, and whether the plugin provides a
 custom runner. Press Enter on a details page to place the selected command,
 skill, or workflow invocation in the input panel without submitting it.

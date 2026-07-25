@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from agenthicc.tools.base import ToolLike
+from agenthicc.tools.base import Tool, ToolLike
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ class ToolRegistry:
 
     _by_name: dict[str, ToolLike] = field(default_factory=dict)
     _tool_groups: dict[str, str] = field(default_factory=dict)  # name → group.name
+    _source_by_name: dict[str, str] = field(default_factory=dict)
     _groups: list[ToolGroup] = field(default_factory=list)
 
     # ── mutation ──────────────────────────────────────────────────────────
@@ -99,6 +100,12 @@ class ToolRegistry:
             else:
                 log.debug("Tool %r overridden by %s", name, source)
         self._by_name[name] = tool
+        self._source_by_name[name] = source
+        # Tool instances use their declared ``name`` in the TUI, while
+        # callable tools are keyed by ``__name__`` above. Keep both forms so
+        # the source label remains available for either tool shape.
+        if isinstance(tool, Tool) and tool.name:
+            self._source_by_name[tool.name] = source
         if group:
             self._tool_groups[name] = group
 
@@ -134,6 +141,17 @@ class ToolRegistry:
     @property
     def names(self) -> list[str]:
         return list(self._by_name.keys())
+
+    @property
+    def sources(self) -> dict[str, str]:
+        """Return tool-name provenance for presentation layers.
+
+        Values preserve the registry source identifiers (for example,
+        ``"builtin"`` or ``"project-plugin"``). Consumers can collapse
+        those identifiers into user-facing categories without losing the
+        more precise registry information.
+        """
+        return dict(self._source_by_name)
 
     def glob_expand(self, pattern: str) -> frozenset[str]:
         """Expand a glob pattern to a frozenset of matching tool names.

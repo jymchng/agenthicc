@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from rich.console import Console
     from agenthicc.config import AgenthiccConfig
     from agenthicc.commands.registry import UnifiedCommandRegistry
@@ -80,6 +81,7 @@ class CommandContext:
     skills: "dict[str, SkillDef]" = field(default_factory=dict)
     command_registry: "UnifiedCommandRegistry | None" = None
     tools: "list[ToolLike] | None" = None
+    tool_sources: "Mapping[str, str] | None" = None
     workflow_registry: "WorkflowRegistry | None" = None
     mode_manager: "ModeManager | None" = None
     set_pending_skill: "Callable[[str], None] | None" = None

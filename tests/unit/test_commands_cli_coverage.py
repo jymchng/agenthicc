@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -105,8 +106,12 @@ def test_tools_and_workflows_listing_support_tables_and_overlays(tmp_path: Path)
     )
 
     ctx = _command_context(tmp_path)
+    ctx.console = Console(file=StringIO(), record=True, force_terminal=False)
     assert _cmd_tools(ctx)
-    assert "Registered Tools" in ctx.console.export_text()
+    table_text = ctx.console.export_text()
+    assert "Available Tools" in table_text
+    assert "builtin" in table_text
+    assert "Registered Tools" not in table_text
     ctx.console = Console(record=True)
     assert _cmd_workflows(ctx)
     assert "Registered Workflows" in ctx.console.export_text()
@@ -117,6 +122,12 @@ def test_tools_and_workflows_listing_support_tables_and_overlays(tmp_path: Path)
     ctx.console = Console(record=True)
     assert _cmd_tools(ctx)
     assert isinstance(overlays[-1], ToolListOverlay)
+    overlay_output = Console(record=True)
+    overlay_output.print(overlays[-1].render())
+    overlay_text = overlay_output.export_text()
+    assert "Available Tools" in overlay_text
+    assert "builtin" in overlay_text
+    assert "registered" not in overlay_text.lower()
     assert _cmd_workflows(ctx)
     assert isinstance(overlays[-1], WorkflowListOverlay)
 

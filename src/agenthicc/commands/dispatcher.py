@@ -45,6 +45,7 @@ class CommandDispatcher:
             skills=ctx.skills,
             command_registry=ctx.command_registry,
             tools=ctx.tools,
+            tool_sources=ctx.tool_sources,
             workflow_registry=ctx.workflow_registry,
             mode_manager=ctx.mode_manager,
             set_pending_skill=ctx.set_pending_skill,

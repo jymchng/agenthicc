@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.overlay import Overlay
@@ -261,9 +262,15 @@ class ToolListOverlay(_RegistryListOverlay):
 
     name = "tools"
 
-    def __init__(self, tools: list["ToolLike"], on_close: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        tools: list["ToolLike"],
+        on_close: Callable[[], None],
+        source_by_name: Mapping[str, str] | None = None,
+    ) -> None:
         from agenthicc.tools.base import Tool
 
+        source_by_name = source_by_name or {}
         rows: list[_ListRow] = []
         for tool in tools:
             if isinstance(tool, Tool):
@@ -283,7 +290,7 @@ class ToolListOverlay(_RegistryListOverlay):
                 capability_text = ", ".join(sorted(str(item) for item in capabilities)) or "(none)"
             else:
                 capability_text = str(capabilities or "(none)")
-            source = "MCP" if name.startswith("mcp:") else "registered"
+            source = "builtin" if source_by_name.get(name) == "builtin" else "plugin"
             rows.append(
                 _ListRow(
                     label=name,
@@ -296,7 +303,7 @@ class ToolListOverlay(_RegistryListOverlay):
                     ),
                 )
             )
-        super().__init__("Registered Tools", sorted(rows, key=lambda row: row.label), on_close)
+        super().__init__("Available Tools", sorted(rows, key=lambda row: row.label), on_close)
 
 
 class WorkflowListOverlay(_RegistryListOverlay):

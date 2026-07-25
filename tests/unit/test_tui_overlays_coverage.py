@@ -192,14 +192,24 @@ def test_tool_and_workflow_registry_overlays_render_details() -> None:
         description = "A demo workflow"
         phases = [PhaseSpec(name="start")]
 
+    def builtin_tool() -> None:
+        """A builtin-shaped tool used to verify source rendering."""
+
     workflow_registry = WorkflowRegistry()
     workflow_registry.register(DemoWorkflow, source="project")
-    tool_overlay = ToolListOverlay([demo_tool], lambda: None)
+    tool_overlay = ToolListOverlay(
+        [builtin_tool, demo_tool],
+        lambda: None,
+        {"builtin_tool": "builtin", "demo_tool": "project-plugin"},
+    )
     workflow_overlay = WorkflowListOverlay([DemoWorkflow], workflow_registry, lambda: None)
     tool_output = Console(file=StringIO(), record=True, force_terminal=False)
     tool_output.print(tool_overlay.render())
     tool_text = tool_output.export_text()
     assert "demo_tool" in tool_text
+    assert "builtin" in tool_text
+    assert "plugin" in tool_text
+    assert "registered" not in tool_text.lower()
     assert "function objects" not in tool_text
     assert workflow_overlay.render()
     workflow_overlay.handle_key(Key.ENTER, "")

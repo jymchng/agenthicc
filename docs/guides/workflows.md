@@ -100,9 +100,9 @@ Use the registry overlays to inspect what the current session can execute:
 
 Both commands are immediate read-only commands and show selectable entries
 with descriptions and details. `/tools` includes built-in, project, and
-discovered MCP tools; `/workflows` includes source, phase topology, runner
-type, and mode bindings. Press Enter for details and Esc to close, just as
-with `/commands` and `/skills`.
+discovered MCP tools, and labels each tool `builtin` or `plugin`; `/workflows`
+includes source, phase topology, runner type, and mode bindings. Press Enter
+for details and Esc to close, just as with `/commands` and `/skills`.
 
 Use `/workflows reload` after adding or editing a workflow file. It rebuilds the
 session registry in place and reports added or removed workflow names; if

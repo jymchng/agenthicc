@@ -160,8 +160,9 @@ reports that it has no handler.
 excludes `$`-prefixed skill records. Select an entry and press Enter for its
 source, arguments, aliases, and full description. `/skills` uses the same
 overlay pattern for discovered, permission-filtered skills and their explicit
-`$` invocation names. `/tools` lists the tools registered for the current
-session, including MCP tools, and `/workflows` lists loaded workflow plugins,
+`$` invocation names. `/tools` lists the tools available to the current
+session, including MCP tools, and labels each one as `builtin` or `plugin`.
+`/workflows` lists loaded workflow plugins,
 their phase topology, source, and runner type. These listings stay in the
 live overlay instead of being appended to the conversation scroll buffer. On a
 details page, press Enter again to place the selected canonical command or

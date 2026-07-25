@@ -623,6 +623,7 @@ class TUISession:
             active_agent="default",
             command_registry=ctx.cmd_registry,
             tools=tool_registry.tools,
+            tool_sources=tool_registry.sources,
             workflow_registry=ctx.workflow_registry,
             mode_manager=ctx.mode_manager,
             set_pending_skill=self._set_pending_skill,

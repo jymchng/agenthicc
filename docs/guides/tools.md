@@ -44,10 +44,11 @@ loaded project tool. The tool name, description, annotations, and docstring
 are used to build the schema shown to lauren-ai. `@tool()` must include the
 parentheses.
 
-Use `/tools` in the interactive session to inspect the effective tool registry,
+Use `/tools` in the interactive session to inspect the effective tool catalog,
 or `/tools reload` to rescan project and user-global tool plugins without
-restarting. The overlay includes built-ins, project tools, and discovered MCP
-tools; press Enter on a tool to see its source category, capabilities, and
+restarting. The listing includes a `Source` column with `builtin` or `plugin`;
+MCP tools are shown as plugins because they are integrations loaded into the
+session. Press Enter on a tool to see its source category, capabilities, and
 runtime type. Reload failures leave the previous tool registry active.
 
 User-global tools use the same shape below `~/.agenthicc/tools/` and are

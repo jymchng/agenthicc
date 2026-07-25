@@ -24,6 +24,7 @@ def test_register_dedup_last_wins():
     reg.register(t1, source="builtin")
     reg.register(t2, source="plugin")
     assert reg.tools == [t2]
+    assert reg.sources["ping"] == "plugin"
 
 
 def test_register_many_preserves_order():
@@ -57,6 +58,13 @@ def test_build_registry_plugin_shadows_builtin():
     reg = build_registry(project_plugin_tools=[shadow], agent_name=None)
     # Plugin wins
     assert reg._by_name["read_file"] is shadow
+    assert reg.sources["read_file"] == "project-plugin"
+
+
+def test_build_registry_tracks_builtin_source():
+    reg = build_registry(project_plugin_tools=[], agent_name=None)
+    assert reg.sources["read_file"] == "builtin"
+    assert reg.sources["git_status"] == "builtin"
 
 
 def test_summary_log():
