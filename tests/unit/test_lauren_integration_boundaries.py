@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from lauren_ai._agents import agent, use_tools
@@ -19,6 +21,7 @@ from agenthicc.tools.fs.agent_tools import batch_copy, batch_move, batch_write, 
 from agenthicc.plugins.registry import build_registry
 from agenthicc.runners.tui_session import _make_session_tools
 from agenthicc.subagents.tool import make_spawn_subagents_tool
+from agenthicc.tools.mcp import AgenthiccMcpTool, McpToolSchema
 
 pytestmark = pytest.mark.unit
 
@@ -128,3 +131,63 @@ async def test_streamed_agent_turn_with_read_file_does_not_crash(tmp_path: Path)
         assert len(inner.calls) == 2
     finally:
         os.chdir(previous_cwd)
+
+
+async def test_mcp_execute_object_becomes_callable_agent_tool(tmp_path: Path):
+    """A discovered MCP tool is exposed and dispatched as a Lauren callable."""
+    bridge = SimpleNamespace(
+        server_name="demo",
+        call_tool=AsyncMock(return_value={"content": "pong"}),
+    )
+    mcp_tool = AgenthiccMcpTool(
+        bridge,
+        McpToolSchema(
+            name="ping",
+            description="Ping the MCP server.",
+            input_schema={
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+            },
+        ),
+    )
+    registry = build_registry(project_plugin_tools=[mcp_tool])
+    exposed = next(
+        tool for tool in registry.tools if getattr(tool, "__name__", "") == mcp_tool.name
+    )
+
+    assert callable(exposed)
+    assert getattr(exposed, "__lauren_ai_tool__").name == mcp_tool.name
+    assert getattr(exposed, "__lauren_ai_tool__").parameters["input_schema"] == mcp_tool.parameters
+
+    @agent(model="deepseek-v4-flash")
+    @use_tools(exposed)
+    class TestMcpAgent: ...
+
+    agent_instance = TestMcpAgent()
+    populate_agent_tools(agent_instance, [exposed])
+
+    inner = MockTransport()
+    inner.queue_tool_use(mcp_tool.name, {"value": "hello"})
+    inner.queue_response(
+        Completion(
+            id="mcp-c2",
+            model="deepseek-v4-flash",
+            content="done",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    recorder = RecordingTransport(inner, tmp_path / "mcp-cassette.jsonl")
+    runner = AgentRunnerBase(transport=recorder)
+
+    stream = await runner.run_stream(agent_instance, "ping")
+    chunks = [chunk async for chunk in stream]
+
+    assert "".join(chunk.delta for chunk in chunks) == "done"
+    bridge.call_tool.assert_awaited_once()
+    call_args = bridge.call_tool.await_args
+    assert call_args.args == ("ping", {"value": "hello"})
+    assert isinstance(call_args.kwargs.get("tool_call_id"), str)
+    assert call_args.kwargs["tool_call_id"]

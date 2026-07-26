@@ -97,8 +97,11 @@ reconnect_attempts = 3
 
 MCP tokens and URLs support `${ENV_VAR}` expansion. Available transports are
 validated by the MCP bridge; remote servers must also pass network and trust
-policy. For the current user-defined Python tool journey, including which
-settings are and are not connected to direct TUI plugin execution, see the
+policy. Discovered MCP tools are adapted into callable agent tools with their
+advertised input schemas, so stdio and remote MCP tools can be invoked in the
+same agent turn as built-in tools. For the current user-defined Python tool
+journey, including which settings are and are not connected to direct TUI
+plugin execution, see the
 [user-defined tools guide](tools.md).
 
 ## Memory and storage

@@ -122,7 +122,7 @@ class Tool(abc.ABC):
         ...
 
 
-ToolLike: TypeAlias = Callable[..., object] | Tool
+ToolLike: TypeAlias = Callable[..., object] | Tool | ToolBase
 
 
 def arg_str(args: Mapping[str, object], key: str, default: str | None = None) -> str:

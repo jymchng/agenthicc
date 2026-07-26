@@ -564,7 +564,7 @@ with `lauren_ai.tool()` are accepted directly as well.
 ### ToolLike
 
 ```python
-ToolLike = Callable[..., object] | Tool
+ToolLike = Callable[..., object] | Tool | ToolBase
 ```
 
 Compatibility type accepted by the tool registry and executor for legacy class

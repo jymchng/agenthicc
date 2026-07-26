@@ -578,6 +578,65 @@ class AgenthiccToolExecutor:
 ToolExecutor = AgenthiccToolExecutor
 
 
+def _make_lauren_tool(
+    tool: Tool | ToolBase,
+    *,
+    source: str = "unknown",
+    timeout_s: float = 30.0,
+) -> Callable[..., Awaitable[object]]:
+    """Adapt an Agenthicc tool object to Lauren's callable tool contract.
+
+    Agenthicc's legacy ``Tool`` and typed ``ToolBase`` contracts expose an
+    ``execute`` method, while Lauren's ``@use_tools`` and agent metadata
+    require a callable carrying ``TOOL_META``.  This adapter deliberately
+    reuses the same implementation used by :class:`AgenthiccToolExecutor` so
+    both direct execution and agent-runner execution preserve argument
+    mapping, context injection, timeout handling, and result unwrapping.
+
+    The returned callable is safe to pass to ``@use_tools`` and
+    ``populate_agent_tools``.  Its metadata contains the original tool's
+    exact JSON input schema rather than a generic ``**kwargs`` schema.
+
+    Parameters
+    ----------
+    tool:
+        Legacy or typed Agenthicc tool instance to adapt.
+    source:
+        Provenance retained in the generated static metadata.
+    timeout_s:
+        Maximum duration for one invocation.
+    """
+    adapter = AgenthiccToolExecutor(default_timeout_s=timeout_s)
+    registered, metadata = adapter._prepare(  # noqa: SLF001
+        tool,
+        name=None,
+        source=source,
+        capabilities=None,
+        destructive=None,
+        requires_approval=None,
+        timeout_s=timeout_s,
+        max_retries=0,
+    )
+    implementation = cast(
+        Callable[..., Awaitable[object]],
+        registered.implementation,
+    )
+    # _prepare creates the exact Lauren metadata used by the canonical
+    # executor, but the implementation is intentionally an internal adapter
+    # function. Mark it as a first-class Lauren tool before exposing it to
+    # @use_tools.
+    setattr(implementation, TOOL_META, registered.lauren_meta)
+    setattr(
+        implementation,
+        "__lauren_ai_tool_metadata__",
+        {CAPABILITIES_KEY: metadata.capabilities},
+    )
+    implementation.__name__ = metadata.name
+    implementation.__qualname__ = metadata.name
+    implementation.__doc__ = metadata.description
+    return implementation
+
+
 def _describe(tool: object, explicit_name: str | None) -> tuple[str, str, dict[str, object]]:
     meta = getattr(tool, TOOL_META, None)
     name = explicit_name or str(getattr(meta, "name", "") or getattr(tool, "name", ""))

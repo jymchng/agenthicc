@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from agenthicc.tools.base import Tool, ToolLike
+from agenthicc.tools.base import Tool, ToolBase, ToolLike
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +84,14 @@ class ToolRegistry:
         belongs to a *different* group (cross-domain shadowing).  Same-group
         override stays at DEBUG.
         """
+        # Lauren's agent decorators accept callable tools with TOOL_META, not
+        # Agenthicc's legacy/typed execute-object contracts. Adapt at the
+        # shared registry boundary so MCP and project-provided Tool objects
+        # cannot become opaque entries in @use_tools(...).
+        if isinstance(tool, (Tool, ToolBase)):
+            from agenthicc.tools.executor import _make_lauren_tool  # noqa: PLC0415
+
+            tool = _make_lauren_tool(tool, source=source)
         name = getattr(tool, "__name__", repr(tool))
         if name in self._by_name:
             existing_group = self._tool_groups.get(name, "")
