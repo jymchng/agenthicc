@@ -56,6 +56,67 @@ class TestResolutionOrder:
         e = _exec("Claude-Opus-4-8", **{"claude-opus-4-8": 5_000_000})
         assert e.effective_context_window() == 5_000_000
 
+    def test_legacy_lauren_resolver_without_default_keyword(self, monkeypatch) -> None:
+        """A one-argument lauren-ai resolver must not abort TUI startup."""
+        from lauren_ai import _config as lauren_config
+
+        def legacy_context_window_for(model: str) -> int:
+            return 321_000 if model == "legacy-model" else 200_000
+
+        monkeypatch.setattr(
+            lauren_config,
+            "context_window_for",
+            legacy_context_window_for,
+            raising=False,
+        )
+
+        from agenthicc.config import _context_window_for
+
+        assert _context_window_for("legacy-model", default=0) == 321_000
+        assert _context_window_for("unknown-legacy-model", default=777_000) == 777_000
+        assert (
+            ExecutionSettings(provider="openai", model="legacy-model").effective_context_window()
+            == 321_000
+        )
+
+    def test_lauren_resolver_with_default_keyword_still_gets_sentinel(self, monkeypatch) -> None:
+        from lauren_ai import _config as lauren_config
+
+        calls: list[int] = []
+
+        def modern_context_window_for(model: str, *, default: int = 200_000) -> int:
+            calls.append(default)
+            return default
+
+        monkeypatch.setattr(
+            lauren_config,
+            "context_window_for",
+            modern_context_window_for,
+            raising=False,
+        )
+
+        from agenthicc.config import _context_window_for
+
+        assert _context_window_for("unknown-modern-model", default=0) == 0
+        assert calls == [0]
+
+    def test_unexpected_default_keyword_from_wrapper_is_retried(self, monkeypatch) -> None:
+        from lauren_ai import _config as lauren_config
+
+        class LegacyWrapper:
+            def __call__(self, model: str, **kwargs: object) -> int:
+                if kwargs:
+                    raise TypeError(
+                        "context_window_for() got an unexpected keyword argument 'default'"
+                    )
+                return 654_321
+
+        monkeypatch.setattr(lauren_config, "context_window_for", LegacyWrapper(), raising=False)
+
+        from agenthicc.config import _context_window_for
+
+        assert _context_window_for("wrapped-legacy-model", default=0) == 654_321
+
 
 class TestUsableBudget:
     def test_usable_is_under_window(self) -> None:

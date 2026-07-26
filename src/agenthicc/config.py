@@ -117,7 +117,10 @@ def _context_window_for(model: str, *, default: int = _DEFAULT_CONTEXT_WINDOW) -
 
     Older lauren-ai releases do not expose the registry that newer releases
     provide, so the local compatibility table is used only as a fallback.
-    Prefix matching handles dated model ids and provider-qualified ids.
+    Some intermediate releases expose context_window_for(model) without the
+    newer default parameter; that optional API mismatch must not break TUI
+    startup. Prefix matching handles dated model ids and provider-qualified
+    ids.
     """
     try:
         from lauren_ai import _config as lauren_config  # noqa: PLC0415
@@ -126,8 +129,13 @@ def _context_window_for(model: str, *, default: int = _DEFAULT_CONTEXT_WINDOW) -
     except ImportError:
         context_window_for = None
     if callable(context_window_for):
-        resolved = context_window_for(model, default=default)
-        if isinstance(resolved, int):
+        resolved = _call_lauren_context_window(
+            lauren_config,
+            context_window_for,
+            model,
+            default,
+        )
+        if resolved is not None:
             return resolved
 
     normalized = model.lower()
@@ -137,6 +145,85 @@ def _context_window_for(model: str, *, default: int = _DEFAULT_CONTEXT_WINDOW) -
         if normalized.startswith(prefix):
             return window
     return default
+
+
+def _call_lauren_context_window(
+    lauren_config: object,
+    resolver: object,
+    model: str,
+    default: int,
+) -> int | None:
+    """Call lauren-ai's optional context resolver across API generations.
+
+    lauren-ai first exposed a one-argument resolver and later added a default
+    keyword. Calling the newer signature unconditionally raises TypeError in
+    the older build used by some platform installations. When the legacy
+    resolver cannot distinguish an unknown model from its own default, use its
+    exported registry (when available), then the local compatibility table and
+    the known library default to preserve Agenthicc's default=0 sentinel
+    behaviour.
+    """
+    if not callable(resolver):
+        return None
+
+    import inspect  # noqa: PLC0415
+
+    try:
+        signature = inspect.signature(resolver)
+    except (TypeError, ValueError):
+        signature = None
+
+    accepts_default = False
+    if signature is not None:
+        accepts_default = any(
+            parameter.name == "default" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+
+    if accepts_default:
+        try:
+            resolved = resolver(model, default=default)
+        except TypeError:
+            # A wrapper can advertise a permissive signature while forwarding
+            # to a legacy implementation. Retry the oldest supported call.
+            pass
+        else:
+            return resolved if isinstance(resolved, int) else None
+
+    try:
+        resolved = resolver(model)
+    except (TypeError, ValueError):
+        # The optional registry is advisory; a broken or incompatible helper
+        # must not prevent the local compatibility table from resolving it.
+        return None
+    if not isinstance(resolved, int):
+        return None
+
+    if default == _DEFAULT_CONTEXT_WINDOW:
+        return resolved
+
+    registry_value = _context_window_from_lauren_registry(lauren_config, model)
+    if registry_value is not None:
+        return registry_value
+
+    library_default = vars(lauren_config).get("DEFAULT_CONTEXT_WINDOW", _DEFAULT_CONTEXT_WINDOW)
+    if isinstance(library_default, int) and resolved == library_default:
+        return None
+    return resolved
+
+
+def _context_window_from_lauren_registry(lauren_config: object, model: str) -> int | None:
+    """Resolve a model from an optional lauren-ai registry mapping."""
+    registry = vars(lauren_config).get("MODEL_CONTEXT_WINDOWS")
+    if not isinstance(registry, Mapping):
+        return None
+
+    needle = model.lower()
+    matches: list[tuple[int, int]] = []
+    for key, value in registry.items():
+        if isinstance(key, str) and isinstance(value, int) and key.lower() in needle:
+            matches.append((len(key), value))
+    return max(matches)[1] if matches else None
 
 
 # Default models per provider
