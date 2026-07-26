@@ -131,6 +131,25 @@ Its accepted parameter names are `plan_model`, `execute_model`,
 `review_model`, and `summary_model`. Custom workflows choose their own
 names and map them to phase names in `get_phase_models()`.
 
+## Use `create_workflow` to author this shape
+
+The built-in authoring workflow can generate the Python side of this design
+from a natural-language request:
+
+```text
+/workflow create_workflow
+Create a release workflow with plan, execute, and verify phases. Use a custom
+runner, make the execute model configurable through TOML, and include the
+copy-ready configuration template in the module documentation.
+```
+
+The design phase is instructed to use `build_runner()` for custom orchestration
+and typed `WorkflowParams`/`build_params()` for `[workflows.<name>]` values. It
+stages and validates the Python source before approval, then publishes only
+`.agenthicc/workflows/<name>.py`. The generated TOML is a template for the
+user to copy into `.agenthicc/agenthicc.toml`; the authoring workflow does not
+silently modify configuration files or publish secrets.
+
 ## 4. Choose a provider
 
 Provider selection is currently session-wide:
@@ -187,6 +206,28 @@ After editing a plugin file, reload the registry in the active session:
 Restarting the session reloads both the workflow and configuration. The
 `/workflows reload` command reloads Python workflow files, not the TOML
 configuration.
+
+You can keep a separate configuration file for a workflow or environment and
+select it explicitly:
+
+```toml
+# .agenthicc/release.toml
+extends = "agenthicc.toml"
+
+[workflows.release_review]
+plan_model = "claude-sonnet-4-5"
+execute_model = "claude-haiku-4-5"
+verify_model = "claude-sonnet-4-5"
+```
+
+```bash
+uv run agenthicc --config .agenthicc/release.toml \
+  workflows run release_review --intent "Prepare the release" --json
+```
+
+The same `--config` option selects the file for a TUI session. `extends` is
+resolved relative to the file that declares it, so this pattern can share the
+base project configuration without duplicating provider credentials.
 
 ## Configuration precedence and current limitations
 

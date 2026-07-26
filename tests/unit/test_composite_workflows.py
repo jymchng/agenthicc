@@ -292,6 +292,10 @@ def test_create_workflow_skill_has_required_frontmatter() -> None:
     assert "source: default" in content
     assert "WorkflowPlugin" in content
     assert "run_phase" in content
+    assert "Custom runners and typed TOML configuration" in content
+    assert "WorkflowParams" in content
+    assert "build_params()" in content
+    assert "agenthicc/agenthicc.toml" in content
 
 
 @pytest.mark.unit

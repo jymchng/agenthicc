@@ -343,6 +343,88 @@ class MyWorkflow(WorkflowPlugin):
 
 Activate with ``/workflow my_workflow`` in the TUI.
 
+## Custom runners and typed TOML configuration
+
+Use the generic ``WorkflowRunner`` when the declared ``PhaseSpec`` graph fully
+describes the behavior. Write a custom ``WorkflowRunner`` subclass when the
+workflow needs custom orchestration, context transformation, post-processing,
+or a composite ``code_plan`` flow. Override
+``WorkflowPlugin.build_runner(config, mode_manager)`` so the registry actually
+constructs the custom runner. Preserve resumability:
+
+```python
+from agenthicc.workflows.default.runner import WorkflowRunner
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
+
+class MyRunner(WorkflowRunner):
+    async def run(self, intent: str) -> WorkflowContext:
+        context = await super().run(intent)
+        # Add workflow-specific orchestration here.
+        return context
+
+    async def resume(self, context: object) -> object:
+        return await super().resume(context)
+
+class MyWorkflow(WorkflowPlugin):
+    name = "my_workflow"
+    phases = [PhaseSpec(name="step1")]
+
+    @classmethod
+    def build_runner(cls, config, mode_manager):
+        return MyRunner(cls, config, mode_manager)
+```
+
+For values that should be changed without editing Python, use a typed
+``WorkflowParams`` dataclass and ``build_params()``:
+
+```python
+from collections.abc import Mapping
+from dataclasses import dataclass
+from agenthicc.workflows.plugin import WorkflowParams, WorkflowPlugin
+
+@dataclass
+class MyParams(WorkflowParams):
+    plan_model: str = ""
+    execute_model: str = ""
+
+    def get_phase_models(self) -> dict[str, str]:
+        return {"plan": self.plan_model, "execute": self.execute_model}
+
+def _text(source: Mapping[str, object], key: str) -> str:
+    value = source.get(key, "")
+    return value.strip() if isinstance(value, str) else ""
+
+class MyWorkflow(WorkflowPlugin):
+    name = "my_workflow"
+
+    @classmethod
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
+        return MyParams(
+            plan_model=_text(source, "plan_model"),
+            execute_model=_text(source, "execute_model"),
+        )
+```
+
+The corresponding project configuration is normally
+``.agenthicc/agenthicc.toml``:
+
+```toml
+[execution]
+provider = "anthropic"
+model = "claude-sonnet-4-5"
+
+[workflows.my_workflow]
+plan_model = ""
+execute_model = "claude-haiku-4-5"
+```
+
+``[workflows.<name>]`` is passed to ``build_params()``. Empty model values use
+the global execution model. Provider, credentials, and ``base_url`` are
+session-wide; do not invent per-phase provider keys. Never put API keys in a
+generated workflow or TOML template. The authoring workflow publishes the
+Python artifact only, so present any required TOML as a copy-ready template
+and tell the user which config file to update and when to restart the session.
+
 ## PhaseSpec key fields
 
 | Field | Purpose |
@@ -441,9 +523,12 @@ PhaseSpec(name="human_check", agent_type="human", next="execute", on_reject="pla
 ## What to produce
 
 1. The complete ``.agenthicc/workflows/<name>.py`` file.
-2. A brief explanation of each phase's purpose.
-3. Any TOML configuration needed (e.g. ``[workflows.my_workflow]`` section).
-4. How to activate it.
+2. A custom runner when the workflow needs behavior beyond the declarative
+   phase graph, including context-preserving ``run()`` and ``resume()``.
+3. A typed ``WorkflowParams``/``build_params()`` implementation when TOML
+   configuration is required.
+4. A copy-ready TOML template, with no secrets, and the exact file to update.
+5. A brief explanation of each phase's purpose and how to activate it.
 """,
 }
 

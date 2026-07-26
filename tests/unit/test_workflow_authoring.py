@@ -14,6 +14,7 @@ from agenthicc.workflows.authoring.artifact import (
     validate_workflow_candidate,
 )
 from agenthicc.workflows.authoring.definition import CreateCommands, CreateTools, CreateWorkflow
+from agenthicc.workflows.authoring.runner import CreateWorkflowRunner
 from agenthicc.workflows.registry import build_workflow_registry
 
 pytestmark = pytest.mark.unit
@@ -76,6 +77,20 @@ def test_validation_requires_a_custom_context_preserving_runner() -> None:
 
     assert report.valid is False
     assert "runner-class" in {item.code for item in report.findings}
+
+
+def test_create_workflow_prompt_teaches_runner_and_toml_contract() -> None:
+    runner = object.__new__(CreateWorkflowRunner)
+
+    prompt = runner._generation_prompt("Create a configurable release workflow.")
+
+    assert "custom WorkflowRunner or CodePlanRunner" in prompt
+    assert "WorkflowParams" in prompt
+    assert "build_params(source)" in prompt
+    assert "[workflows.<name>]" in prompt
+    assert "provider switching" in prompt
+    assert "copy-ready agenthicc.toml template" in prompt
+    assert "Never include API keys" in prompt
 
 
 def test_validation_accepts_phase_name_as_positional_argument() -> None:

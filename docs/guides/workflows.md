@@ -61,6 +61,24 @@ default workflow. The authoring result and `WorkflowRunCompleted` event include
 the generated name, staged/published paths, manifest, validation findings,
 approval state, and the `workflows-reload` activation instruction.
 
+The authoring agent is also instructed to choose the right configuration
+boundary for the generated workflow. It can:
+
+- define a custom `WorkflowRunner` or `CodePlanRunner` and wire it through
+  `WorkflowPlugin.build_runner()` when declarative `PhaseSpec` values are not
+  enough;
+- define typed `WorkflowParams`, `get_phase_models()`, and `build_params()` for
+  values supplied by `[workflows.<name>]` in TOML; and
+- include a copy-ready `agenthicc.toml` template when the workflow needs
+  configurable model or phase settings.
+
+The authoring run publishes the Python workflow artifact only. It never writes
+API keys or silently edits a TOML file. Copy the generated template into the
+project's `.agenthicc/agenthicc.toml` (or another explicitly selected config
+file), restart the session to load configuration, then run `/workflows reload`
+after changing the Python workflow. Provider selection remains session-wide;
+the generated workflow must not claim to support per-phase provider switching.
+
 ## Create tools and commands
 
 The same two-step journey creates project extensions using the existing loader
