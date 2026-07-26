@@ -537,6 +537,9 @@ class Tool:
     description: str
     parameters: dict[str, object]
 
+    @property
+    def provider_name(self) -> str: ...
+
     async def execute(
         self,
         args: dict[str, object],

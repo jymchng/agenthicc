@@ -103,6 +103,9 @@ same agent turn as built-in tools. For the current user-defined Python tool
 journey, including which settings are and are not connected to direct TUI
 plugin execution, see the
 [user-defined tools guide](tools.md).
+The internal identity `mcp:<server>:<tool>` is retained for MCP routing;
+the provider-facing schema uses a valid equivalent such as
+`mcp_database-dev_create_row`.
 
 ## Memory and storage
 

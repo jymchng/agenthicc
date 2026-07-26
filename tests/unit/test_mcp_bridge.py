@@ -96,6 +96,23 @@ def test_tool_name_is_compound():
     assert tool.name == "mcp:myserver:my_tool"
 
 
+def test_provider_name_is_valid_for_llm_tool_schema():
+    tool = _make_tool()
+    assert tool.provider_name == "mcp_myserver_my_tool"
+    assert all(char.isalnum() or char in "-_" for char in tool.provider_name)
+
+
+def test_provider_name_sanitizes_realistic_mcp_identity():
+    bridge = MagicMock()
+    bridge.server_name = "database-dev"
+    tool = AgenthiccMcpTool(
+        bridge,
+        McpToolSchema(name="create_row", description="Create a row", input_schema={}),
+    )
+    assert tool.name == "mcp:database-dev:create_row"
+    assert tool.provider_name == "mcp_database-dev_create_row"
+
+
 def test_tool_description_passthrough():
     tool = _make_tool()
     assert tool.description == "Does stuff"

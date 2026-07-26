@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -22,6 +23,27 @@ from agenthicc.kernel import Event
 log = logging.getLogger(__name__)
 
 _ENV_RE = re.compile(r"\${([A-Z_][A-Z0-9_]*)}")
+_INVALID_PROVIDER_TOOL_CHARS_RE = re.compile(r"[^A-Za-z0-9_-]")
+_PROVIDER_TOOL_NAME_MAX_LENGTH = 64
+
+
+def _provider_safe_tool_name(name: str) -> str:
+    """Return a provider-compatible representation of an MCP tool name.
+
+    Agenthicc keeps MCP tools internally under the canonical
+    ``mcp:<server>:<tool>`` identity. Provider tool schemas are stricter and
+    accept only alphanumeric characters, hyphens, and underscores (and may
+    impose a 64-character limit). Replace separators and other punctuation,
+    then add a short digest when truncation is required.
+    """
+    safe = _INVALID_PROVIDER_TOOL_CHARS_RE.sub("_", name)
+    if not safe:
+        safe = "mcp_tool"
+    if len(safe) > _PROVIDER_TOOL_NAME_MAX_LENGTH:
+        digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+        safe = f"{safe[: _PROVIDER_TOOL_NAME_MAX_LENGTH - 9]}_{digest}"
+    return safe
+
 
 # ---------------------------------------------------------------------------
 # Optional lauren_mcp import guard (G7)
@@ -110,6 +132,11 @@ class AgenthiccMcpTool(Tool):
     @property
     def name(self) -> str:  # type: ignore[override]
         return f"mcp:{self._bridge.server_name}:{self._schema.name}"
+
+    @property
+    def provider_name(self) -> str:
+        """Return the provider-safe name used in Lauren tool schemas."""
+        return _provider_safe_tool_name(self.name)
 
     @property
     def description(self) -> str:  # type: ignore[override]

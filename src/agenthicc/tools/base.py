@@ -106,6 +106,11 @@ class Tool(abc.ABC):
     destructive: ClassVar[bool] = False
     requires_approval: ClassVar[bool] = False
 
+    @property
+    def provider_name(self) -> str:
+        """Return the name used when exposing this tool to an LLM provider."""
+        return self.name
+
     @abc.abstractmethod
     async def execute(
         self,

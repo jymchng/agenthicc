@@ -153,11 +153,11 @@ async def test_mcp_execute_object_becomes_callable_agent_tool(tmp_path: Path):
     )
     registry = build_registry(project_plugin_tools=[mcp_tool])
     exposed = next(
-        tool for tool in registry.tools if getattr(tool, "__name__", "") == mcp_tool.name
+        tool for tool in registry.tools if getattr(tool, "__name__", "") == mcp_tool.provider_name
     )
 
     assert callable(exposed)
-    assert getattr(exposed, "__lauren_ai_tool__").name == mcp_tool.name
+    assert getattr(exposed, "__lauren_ai_tool__").name == mcp_tool.provider_name
     assert getattr(exposed, "__lauren_ai_tool__").parameters["input_schema"] == mcp_tool.parameters
 
     @agent(model="deepseek-v4-flash")
@@ -168,7 +168,7 @@ async def test_mcp_execute_object_becomes_callable_agent_tool(tmp_path: Path):
     populate_agent_tools(agent_instance, [exposed])
 
     inner = MockTransport()
-    inner.queue_tool_use(mcp_tool.name, {"value": "hello"})
+    inner.queue_tool_use(mcp_tool.provider_name, {"value": "hello"})
     inner.queue_response(
         Completion(
             id="mcp-c2",

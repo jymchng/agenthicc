@@ -607,9 +607,10 @@ def _make_lauren_tool(
         Maximum duration for one invocation.
     """
     adapter = AgenthiccToolExecutor(default_timeout_s=timeout_s)
+    provider_name = tool.provider_name if isinstance(tool, Tool) else None
     registered, metadata = adapter._prepare(  # noqa: SLF001
         tool,
-        name=None,
+        name=provider_name if isinstance(provider_name, str) else None,
         source=source,
         capabilities=None,
         destructive=None,
@@ -634,6 +635,9 @@ def _make_lauren_tool(
     implementation.__name__ = metadata.name
     implementation.__qualname__ = metadata.name
     implementation.__doc__ = metadata.description
+    canonical_name = tool.name
+    if canonical_name:
+        setattr(implementation, "__agenthicc_tool_name__", canonical_name)
     return implementation
 
 

@@ -88,6 +88,7 @@ class ToolRegistry:
         # Agenthicc's legacy/typed execute-object contracts. Adapt at the
         # shared registry boundary so MCP and project-provided Tool objects
         # cannot become opaque entries in @use_tools(...).
+        canonical_name = tool.name if isinstance(tool, (Tool, ToolBase)) else None
         if isinstance(tool, (Tool, ToolBase)):
             from agenthicc.tools.executor import _make_lauren_tool  # noqa: PLC0415
 
@@ -109,6 +110,8 @@ class ToolRegistry:
                 log.debug("Tool %r overridden by %s", name, source)
         self._by_name[name] = tool
         self._source_by_name[name] = source
+        if isinstance(canonical_name, str) and canonical_name:
+            self._source_by_name[canonical_name] = source
         # Tool instances use their declared ``name`` in the TUI, while
         # callable tools are keyed by ``__name__`` above. Keep both forms so
         # the source label remains available for either tool shape.
