@@ -75,6 +75,9 @@ The live usable context budget is derived from the resolved model window and
 reservations; it is not a second independent `session_memory_max_tokens`
 setting in the current configuration model.
 
+For project workflow definitions and per-phase model overrides, see the
+[custom workflows and TOML configuration guide](custom-workflows-and-config.md).
+
 ## Tools and MCP
 
 ```toml

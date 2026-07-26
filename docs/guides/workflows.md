@@ -213,7 +213,9 @@ necessarily its execution source of truth today.
 ## Parameters and model overrides
 
 `WorkflowParams` and `[workflows.<name>]` configuration allow tunable workflow
-values. For example, the built-in `code_plan` workflow accepts:
+values. The end-user setup, custom `build_params()` example, and configuration
+precedence are documented in [Custom workflows and TOML configuration](custom-workflows-and-config.md).
+For example, the built-in `code_plan` workflow accepts:
 
 ```toml
 [workflows.code_plan]
@@ -226,6 +228,11 @@ summary_model = ""
 Custom plugins receive the raw section through `build_params()`. A generic
 plugin gets the base `WorkflowParams`, which has no custom settings, unless it
 overrides `build_params()` with its own typed `WorkflowParams` subclass.
+
+The model override is phase-specific, but provider selection is not: the
+current session uses one `[execution].provider` and phase parameters replace
+only the model. Do not add a per-phase `provider` key expecting the default
+runner to switch transports.
 
 ## Composite workflows
 

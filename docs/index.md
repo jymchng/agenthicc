@@ -28,6 +28,8 @@ capability-gated tools.
 
 - [Workflows](guides/workflows.md) — define phases, roles, transitions, and
   resume behaviour.
+- [Custom workflows and TOML configuration](guides/custom-workflows-and-config.md)
+  — define project workflows and configure per-phase models.
 - [Extensions](guides/plugins.md) — tools, agents, modes, skills, commands, and
   MCP servers.
 - [Memory](guides/memory.md) — session/project/global memory and semantic

@@ -71,6 +71,7 @@ nav:
       - TUI: guides/tui.md
       - Background sessions: guides/background-sessions.md
       - Workflows: guides/workflows.md
+      - Custom workflows and TOML configuration: guides/custom-workflows-and-config.md
       - User-defined commands: guides/commands.md
       - User-defined tools: guides/tools.md
       - Extensions: guides/plugins.md

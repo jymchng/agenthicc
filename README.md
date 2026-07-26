@@ -370,6 +370,7 @@ PRD-138 before using the default all-session invocation on a clean checkout.
 - [TUI](./docs/guides/tui.md)
 - [Background sessions](./docs/guides/background-sessions.md)
 - [Workflows](./docs/guides/workflows.md)
+- [Custom workflows and TOML configuration](./docs/guides/custom-workflows-and-config.md)
 - [User-defined commands](./docs/guides/commands.md)
 - [User-defined tools](./docs/guides/tools.md)
 - [Extensions and plugins](./docs/guides/plugins.md)
