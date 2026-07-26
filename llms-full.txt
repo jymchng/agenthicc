@@ -2117,3 +2117,85 @@ def write_bootstrap_plan(plan: ProjectBootstrapPlan, *, force: bool = False) -> 
 
 Atomically write a plan. Existing files require `force=True`; symlinks and
 plans made stale by an intervening edit are rejected.
+
+## Client-neutral session service — `agenthicc.session_service`
+
+### SessionService
+
+Coordinates client-neutral session snapshots, typed commands, durable event
+projection, idempotency, replay, compaction, capability filtering, and bounded
+subscriptions without replacing the kernel or workflow runtime.
+
+### SessionSnapshot
+
+Policy-filtered read model containing stable session identity, lifecycle,
+workflow/agent metadata, queue/resource counts, capabilities, and the latest
+event sequence.
+
+### SessionCommand
+
+Versioned mutation envelope carrying command kind, session identity, client and
+idempotency IDs, optional expected sequence, payload, and capabilities.
+
+### SessionEvent
+
+Versioned client-visible event envelope with stable ID, per-session sequence,
+source, turn linkage, durability, visibility, and redacted payload.
+
+### SessionEventStore
+
+Append-only JSONL store with fsync-backed writes, replay, explicit compaction,
+and safe session identifiers.
+
+### CommandResult
+
+Structured accepted/replayed command outcome with stable code, message, and
+data fields.
+
+### SessionError
+
+Structured service error carrying a machine-readable code, message, and HTTP
+status suitable for local and transport adapters.
+
+### EventDurability
+
+Enum distinguishing replayable durable events from ephemeral presentation
+updates.
+
+### SessionState
+
+Client-neutral lifecycle enum covering creation, idle/running, waits,
+background, terminal outcomes, and archival.
+
+### SessionSubscription
+
+Bounded asynchronous event subscription that reports replay gaps and
+backpressure without blocking the session runtime.
+
+### SessionClient
+
+Transport-neutral protocol for creating, inspecting, controlling, and replaying
+session resources.
+
+### InProcessSessionClient
+
+Local adapter over `SessionService` for TUI, tests, and automation.
+
+### HttpSessionClient
+
+Async client for the explicit local HTTP/SSE session transport.
+
+### LocalSessionServer
+
+Loopback-first authenticated HTTP/SSE adapter exposing health, snapshots,
+durable replay, live streams, and typed commands.
+
+### WebSessionAdapter
+
+Named HTTP adapter contract for future web clients; it owns no agent runtime or
+Rich presentation state.
+
+### IdeSessionAdapter
+
+Named HTTP adapter contract for future IDE/ACP clients with the same
+client-neutral snapshot and event semantics.

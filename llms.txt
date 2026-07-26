@@ -22,6 +22,9 @@ The primary entry point is `agenthicc.__main__:main`.
   safety helpers.
 - `memory/` provides session/project/global tiers, semantic search, compaction,
   conversation journaling, and durable idempotent tool replay support.
+- `session_service/` provides client-neutral snapshots, typed commands,
+  versioned durable events, replay, bounded subscriptions, and an explicit
+  loopback HTTP/SSE adapter shared by TUI, headless, CLI, web, and IDE clients.
 - `agenthicc init` and `/init` locally inspect bounded project metadata and
   preview or explicitly write a managed `AGENTS.md` guidance section.
 - Skills use validated `SKILL.md` frontmatter, canonical names, compatibility
@@ -57,6 +60,10 @@ The primary entry point is `agenthicc.__main__:main`.
 | `UnifiedInputSession` | `agenthicc.tui.input` | Lifetime input/raw-mode loop |
 | `export_session` | `agenthicc.tui.runtime.session_export` | Redacted portable session export |
 | `inspect_session` | `agenthicc.tui.runtime.session_export` | Redacted durable session health and usage summary |
+| `SessionService` / `SessionSnapshot` / `SessionCommand` | `agenthicc.session_service` | Client-neutral session coordination and policy-filtered read model |
+| `SessionEvent` / `SessionEventStore` | `agenthicc.session_service` | Versioned durable event envelope and fsync-backed replay ledger |
+| `InProcessSessionClient` / `HttpSessionClient` | `agenthicc.session_service` | In-process and local HTTP client adapters |
+| `WebSessionAdapter` / `IdeSessionAdapter` | `agenthicc.session_service` | Transport adapters for future web and IDE/ACP clients |
 | `ProjectSnapshot` / `ProjectBootstrapPlan` | `agenthicc.project_bootstrap` | Bounded project inspection and reviewable `AGENTS.md` proposal |
 | `build_bootstrap_plan` / `inspect_project` / `write_bootstrap_plan` | `agenthicc.project_bootstrap` | Safe project-guidance bootstrap lifecycle |
 | `SkillDef` / `SkillDiscoveryResult` | `agenthicc.skills.loader` | Validated skill metadata and diagnostic discovery result |

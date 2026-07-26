@@ -53,6 +53,7 @@ class EventProcessor:
         self._persist = persist
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
         self._readers: list[asyncio.Queue[AppState]] = []
+        self._event_readers: list[asyncio.Queue[Event]] = []
         self._event_log: list[Event] = []
         self._events_since_snapshot = 0
         self._running = False
@@ -76,6 +77,21 @@ class EventProcessor:
     def unsubscribe(self, q: asyncio.Queue[AppState]) -> None:
         try:
             self._readers.remove(q)
+        except ValueError:
+            pass
+
+    def subscribe_events(self, *, maxsize: int = 1024) -> asyncio.Queue[Event]:
+        """Subscribe to applied kernel events without owning reducer state."""
+
+        q: asyncio.Queue[Event] = asyncio.Queue(maxsize=maxsize)
+        self._event_readers.append(q)
+        return q
+
+    def unsubscribe_events(self, q: asyncio.Queue[Event]) -> None:
+        """Remove a client-neutral event projection subscriber."""
+
+        try:
+            self._event_readers.remove(q)
         except ValueError:
             pass
 
@@ -121,6 +137,14 @@ class EventProcessor:
                 if log_file is not None:
                     log_file.write(json.dumps(event.to_dict()) + "\n")
                     log_file.flush()
+
+                for event_reader in self._event_readers:
+                    try:
+                        event_reader.put_nowait(event)
+                    except asyncio.QueueFull:
+                        logger.error(
+                            "kernel event projection queue is full; durable journal remains authoritative"
+                        )
 
                 for reader in self._readers:
                     try:

@@ -118,6 +118,14 @@ async def execute_workflow(
         },
     )
     runner = workflow_cls.build_runner(workflow_config, session.mode_manager)
+    session_service = getattr(session, "session_service", None)
+    if session_service is not None:
+        await session_service.publish(
+            session.session_id,
+            source="headless",
+            kind="workflow_started",
+            payload={"workflow": workflow_name, "intent": intent},
+        )
     error: str | None = None
     runner_result: object | None = None
     try:
@@ -151,7 +159,7 @@ async def execute_workflow(
                 run_id = event_run_id
     if not phases and workflow_run is not None:
         phases = [str(record.phase_name) for record in getattr(workflow_run, "phase_history", [])]
-    return WorkflowExecutionResult(
+    result = WorkflowExecutionResult(
         session_id=session.session_id,
         workflow_name=workflow_name,
         run_id=run_id,
@@ -159,6 +167,20 @@ async def execute_workflow(
         phases=tuple(phases),
         error=error,
     )
+    if session_service is not None:
+        await session_service.publish(
+            session.session_id,
+            source="headless",
+            kind="workflow_run_failed" if result.status == "failed" else "workflow_run_completed",
+            payload={
+                "workflow": result.workflow_name,
+                "run_id": result.run_id,
+                "status": result.status,
+                "phases": list(result.phases),
+                "error": result.error,
+            },
+        )
+    return result
 
 
 async def run_headless_workflow(
@@ -276,6 +298,10 @@ async def _close_headless_session(
     cassette_base: Path | None,
 ) -> None:
     """Close durable handles and background services for a headless session."""
+    projection_task = getattr(session, "kernel_projection_task", None)
+    if projection_task is not None:
+        projection_task.cancel()
+        await asyncio.gather(projection_task, return_exceptions=True)
     await session.processor.drain()
     await session.processor.stop()
     processor_task.cancel()
@@ -289,6 +315,9 @@ async def _close_headless_session(
     terminal_manager = getattr(session, "terminal_manager", None)
     if terminal_manager is not None:
         await terminal_manager.close()
+    session_service = getattr(session, "session_service", None)
+    if session_service is not None:
+        await session_service.close()
     if cassette_base is not None:
         from agenthicc.runners.tui_session import _write_cassette_meta  # noqa: PLC0415
 
@@ -304,10 +333,22 @@ async def _run_headless(ctx: CLIContext | None = None) -> None:
 
     state = AppState.create(settings=SystemSettings(), policy=SecurityPolicy())
 
+    from agenthicc.session_service import SessionCommand, SessionService
+
+    session_service = SessionService()
+    await session_service.ensure_session(
+        state.session_id,
+        project_root=Path.cwd(),
+        capabilities=frozenset({"read", "control", "workspace"}),
+    )
+
     processor = EventProcessor(initial_state=state, persist=False)
     sub = processor.subscribe()
     proc_task = asyncio.create_task(processor.run())
-    print(json.dumps({"status": "ready", "mode": "headless"}), flush=True)
+    print(
+        json.dumps({"status": "ready", "mode": "headless", "session_id": state.session_id}),
+        flush=True,
+    )
     try:
         while True:
             line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
@@ -317,8 +358,26 @@ async def _run_headless(ctx: CLIContext | None = None) -> None:
             if not text:
                 continue
             intent_id = uuid.uuid4().hex
+            command_result = await session_service.submit(
+                SessionCommand(
+                    kind="submit_message",
+                    session_id=state.session_id,
+                    client_id="headless",
+                    idempotency_key=f"headless-{intent_id}",
+                    payload={"text": text},
+                    capabilities=frozenset({"read", "control", "workspace"}),
+                )
+            )
             await processor.emit(
                 Event.create("IntentCreated", {"intent_id": intent_id, "raw_text": text})
+            )
+            turn_id = command_result.data.get("turn_id")
+            await session_service.publish(
+                state.session_id,
+                source="headless",
+                kind="intent_created",
+                payload={"intent_id": intent_id, "raw_text": text},
+                turn_id=turn_id if isinstance(turn_id, str) else None,
             )
             try:
                 snap = await asyncio.wait_for(sub.get(), timeout=2.0)
@@ -336,5 +395,6 @@ async def _run_headless(ctx: CLIContext | None = None) -> None:
             except asyncio.TimeoutError:
                 print(json.dumps({"event_type": "Error", "message": "timeout"}), flush=True)
     finally:
+        await session_service.close()
         proc_task.cancel()
         await asyncio.gather(proc_task, return_exceptions=True)

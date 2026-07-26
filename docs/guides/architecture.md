@@ -21,6 +21,26 @@ TUISession                 EventProcessor
                              workflow/agent turns
                                      │
                        capability-gated tools and memory
+
+The client-neutral session service sits beside this runtime as the shared
+coordination and projection boundary:
+
+```text
+TUI / headless / CLI / HTTP-SSE / IDE adapter
+                    │ typed commands, snapshots, event cursors
+                    ▼
+          session_service.SessionService
+                    │ kernel event subscription + owning service events
+                    ▼
+          EventProcessor + workflow/background/terminal owners
+```
+
+`SessionService` owns the client-facing snapshot, command idempotency ledger,
+capability projection, durable event cursor, replay boundary, and bounded
+subscriptions. It does not replace frozen kernel `AppState`, the reducer,
+workflow runners, or the existing session journals. The loopback transport
+(`LocalSessionServer`) and `HttpSessionClient` are adapters over this same
+in-process service; installing agenthicc does not start a listening socket.
 ```
 
 The headless runner uses the kernel directly and currently handles stdin

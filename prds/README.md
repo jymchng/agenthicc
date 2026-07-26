@@ -18,6 +18,7 @@ against the current source before implementing them.
 - [PRD-147 — Workflow-Native Extension Authoring](prd-147-workflow-native-extension-authoring.md)
 - [PRD-148 — Unified Interrupt and Graceful Cancellation](prd-148-unified-interrupt-and-graceful-cancellation.md)
 - [PRD-149 — Background Terminals and Responsive Wait Control](prd-149-background-terminals-and-responsive-wait-control.md)
+- [PRD-150 — Client-Neutral Session Service and Multi-Client Event Projection](prd-150-client-neutral-session-service-and-event-projection.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -67,6 +68,14 @@ PRD-149 extends the background-session control plane to owned terminal
 subprocesses. It defines responsive foreground waiting, live `/ps` inspection,
 `/stop` control, Esc interruption, bounded output, process-group cleanup, and
 recovery semantics for long-running `run_bash` and `run_command` calls.
+
+PRD-150 defines and implements the client-neutral session service and versioned
+event projection needed for the TUI, headless runner, CLI, web, and IDE clients
+to observe and control one session without creating parallel state or execution
+paths. It selects an explicit loopback-first HTTP/SSE adapter, depends on the
+state/API boundary decisions in PRD-138, and aligns the HTTP direction in
+PRD-121 with the existing kernel and session ownership boundaries. See the
+implementation evidence at the end of the PRD.
 
 ## Existing PRDs
 

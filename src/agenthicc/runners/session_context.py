@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.skills.loader import SkillDef
     from agenthicc.background.terminals import TerminalManager
+    from agenthicc.session_service import SessionService
+    from asyncio import Task
 
 
 @dataclass
@@ -85,3 +87,7 @@ class SessionContext:
     #: Canonical names loaded from normal slash-command plugin files.  Kept
     #: separately so a reload can restore built-ins after a plugin is removed.
     command_plugin_names: set[str] = field(default_factory=set)
+
+    # ── client-neutral session boundary (PRD-150) ───────────────────────────
+    session_service: "SessionService | None" = None
+    kernel_projection_task: "Task[None] | None" = None

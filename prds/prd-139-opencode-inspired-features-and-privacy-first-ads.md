@@ -11,6 +11,7 @@ related_prds:
   - PRD-46   # Command Plugins
   - PRD-81   # Workflow Revamp
   - PRD-114  # Composite Workflows
+  - PRD-150  # Client-Neutral Session Service and Multi-Client Event Projection
 supersedes: []
 tags:
   - product-expansion
@@ -28,6 +29,9 @@ tags:
 Implementation status: P0 project bootstrap (`agenthicc init` and `/init`), the
 skills metadata/discovery/permissions slice and live `/skills reload`, and the
 canonical command-plugin loader with live `/commands reload` are implemented.
+The client-neutral session service slice in PRD-150 is implemented, including
+shared snapshots, commands, event replay, headless/TUI projection, CLI
+inspection/export, and the loopback attachment reference client.
 Skill coverage is in `tests/unit/test_skills_loader.py`,
 `tests/unit/test_skill_reload.py`, `tests/unit/test_skills_runner.py`, and
 command integration tests. Command reload coverage is in
@@ -174,7 +178,7 @@ requires the P0 contracts, and `P2` is later reach/scale work.
 
 | OpenCode-inspired capability | agenthicc today | Proposed agenthicc feature | Status / priority |
 |---|---|---|---|
-| One session model usable by TUI, CLI, web, and IDE clients | TUI, headless JSON-lines, and CLI inspect/export paths are separate client surfaces | Define a client-neutral session service and event projection; keep the TUI and headless runner as adapters | Partial / P0-P1 |
+| One session model usable by TUI, CLI, web, and IDE clients | TUI, headless JSON-lines, and CLI inspect/export paths are separate client surfaces | Define a client-neutral session service and event projection; keep the TUI and headless runner as adapters ([PRD-150](prd-150-client-neutral-session-service-and-event-projection.md)) | Partial / P0-P1 |
 | Continue, select, fork, and navigate child sessions | Resume and session listing/show/inspect exist; no first-class branch/fork UX | Add `/session`, `session fork`, child lineage, fork-at-message, and a session picker with search | Partial / P0 |
 | Undo/redo/revert of conversation and filesystem changes | Durable logs and replay exist, but there is no safe user-facing reversible edit operation | Add message revert, unrevert, redo semantics, file-change checkpoints, and explicit confirmation for destructive rollback | Gap / P0 |
 | Snapshots and session diffs | Git/status and session artifacts exist; no unified pre/post-turn snapshot contract | Capture a project-relative snapshot before mutating runs, show diff by turn/workflow phase, and restore through `WorkspaceView` | Partial / P0 |

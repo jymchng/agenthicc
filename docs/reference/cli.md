@@ -28,6 +28,13 @@ based and implemented in `cli/registry.py`.
 | `sessions show SESSION_ID` | Print stored event summaries |
 | `sessions inspect SESSION_ID [--json]` | Summarize durable state and resume health |
 | `sessions export SESSION_ID [--output PATH]` | Write a redacted portable session export |
+| `session list [--project-root PATH] [--json]` | List client-neutral session snapshots |
+| `session show SESSION_ID [--json]` | Show one client-neutral session snapshot |
+| `session events SESSION_ID [--after N]` | Replay the shared durable event projection |
+| `session export SESSION_ID [--output PATH]` | Export a redacted snapshot and event projection |
+| `session send SESSION_ID --text TEXT` | Queue a message through the shared command envelope |
+| `session control SESSION_ID KIND [--payload JSON]` | Submit a typed control command |
+| `session serve [--host HOST] [--port PORT] [--auth-token TOKEN]` | Serve local snapshots/events over HTTP/SSE |
 | `workflows list [--json]` | List available workflow plugins and phase topology |
 | `workflows run NAME --intent TEXT [--json]` | Execute one workflow headlessly |
 | `skills add SOURCE [--project | --global] [--name NAME] [--skill NAME[,NAME]] [--all]` | Download and install validated skill(s) |
@@ -61,6 +68,12 @@ only updates configuration; it does not start or connect to the server. When
 the stdio URL is an existing local directory (or `.py` server file), the CLI
 stores a `uv run --project ... lmcp run ... --stdio` launcher so Lauren MCP
 examples can be registered directly.
+
+The singular `session` group is the canonical client-neutral surface. Its
+commands read the service projection and event cursor rather than writing
+kernel or conversation journals directly. `session serve` binds to loopback by
+default, does not start an agent runner, and requires `--auth-token` before a
+non-loopback bind is accepted.
 
 ## TUI slash commands
 

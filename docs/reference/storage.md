@@ -19,6 +19,26 @@ The session runner currently places the kernel log beside the session directory
 and the conversation stores inside the directory. Keep these names distinct in
 support tooling.
 
+## Client-neutral session projection
+
+The service projection is stored separately at
+`~/.agenthicc/session-service/<session-id>.jsonl` by default:
+
+| Store | Owner | Contents | Recovery |
+|---|---|---|---|
+| `<id>.jsonl` | `session_service.SessionEventStore` | Versioned client-visible events, command acceptance records, and lifecycle metadata | Replay into `SessionSnapshot`; malformed lines are skipped |
+
+This is a coordination/read-model ledger, not a replacement for the kernel
+event log or conversation journal. Durable event sequences are per session.
+`SessionService.compact()` explicitly removes records before a sequence and
+clients requesting an older cursor receive `replay_gap` and must refresh their
+snapshot. Ephemeral presentation events are never written to this store.
+
+Service exports contain only the policy-filtered snapshot and durable event
+projection. Project roots, workflow/agent fields, credentials, and private
+payload keys are filtered before delivery; a support export can still contain
+user prompts and tool results and must be reviewed before sharing.
+
 ## Project and global stores
 
 | Store | Default location | Data |

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -168,6 +169,18 @@ async def _build_session_context(
     session_id = resume_id or create_session_id()
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # PRD-150: every client observes the same session projection.  The TUI
+    # remains responsible for Rich/reactive presentation, while the service
+    # owns the client-neutral snapshot and event cursor.
+    from agenthicc.session_service import SessionService  # noqa: PLC0415
+
+    session_service = SessionService()
+    await session_service.ensure_session(
+        session_id,
+        project_root=Path.cwd(),
+        capabilities=frozenset({"read", "control", "workspace"}),
+    )
+
     # ── cassette dir: <base>/<session_id>/ ───────────────────────────────────
     cassette_dir: Path | None = (
         record_cassette_dir / session_id if record_cassette_dir is not None else None
@@ -194,6 +207,18 @@ async def _build_session_context(
         register_session(session_id, os.getcwd(), "")
 
     processor = EventProcessor(initial_state=k_state, persist=True)
+    if resume_id:
+        await session_service.import_kernel_log(session_id, log_path)
+    kernel_event_queue = processor.subscribe_events()
+
+    async def _project_kernel_events() -> None:
+        while True:
+            kernel_event = await kernel_event_queue.get()
+            await session_service.publish_kernel_event(session_id, kernel_event)
+
+    kernel_projection_task = asyncio.create_task(
+        _project_kernel_events(), name=f"session-kernel-projection-{session_id}"
+    )
 
     # ── config / LLM ─────────────────────────────────────────────────────────
     cfg = load_config(cli_overrides=cli_overrides or [], config_path=config_path)
@@ -262,6 +287,37 @@ async def _build_session_context(
 
     session_log = SessionEventLog(session_id)
     app_state.conversation.on_event(session_log.append)
+
+    def _project_conversation_event(event: object) -> None:
+        """Project TUI events without making the reactive store authoritative."""
+
+        try:
+            kind = getattr(event, "kind", "")
+            payload = getattr(event, "payload", {})
+            if not isinstance(kind, str) or not isinstance(payload, dict):
+                return
+            turn_id = payload.get("turn_id") if isinstance(payload.get("turn_id"), str) else None
+            task = asyncio.create_task(
+                session_service.publish(
+                    session_id,
+                    source="tui",
+                    kind=kind,
+                    payload=payload,
+                    turn_id=turn_id,
+                )
+            )
+
+            def _consume_projection_error(done: asyncio.Task[object]) -> None:
+                if not done.cancelled():
+                    done.exception()
+
+            task.add_done_callback(_consume_projection_error)
+        except RuntimeError:
+            # Construction-time events can occur before an event loop owns the
+            # adapter. The kernel/session journal remains authoritative then.
+            return
+
+    app_state.conversation.on_event(_project_conversation_event)
 
     # ── runtime services ──────────────────────────────────────────────────────
     command_bus = CommandBus()
@@ -545,6 +601,8 @@ async def _build_session_context(
         semantic_index=_semantic_index,
         pending_resume=pending_resume,
         command_plugin_names=command_plugin_names,
+        session_service=session_service,
+        kernel_projection_task=kernel_projection_task,
     )
 
 
@@ -608,6 +666,37 @@ class TUISession:
 
     def _set_pending_replay(self, session_id: str) -> None:
         self._pending_replay_id = session_id
+
+    def _publish_session_event(
+        self,
+        kind: str,
+        payload: dict[str, object] | None = None,
+        *,
+        turn_id: str | None = None,
+    ) -> None:
+        """Send a TUI lifecycle event to the client-neutral projection."""
+
+        service = getattr(self._ctx, "session_service", None)
+        if service is None:
+            return
+        try:
+            task = asyncio.create_task(
+                service.publish(
+                    self._ctx.session_id,
+                    source="tui",
+                    kind=kind,
+                    payload=payload or {},
+                    turn_id=turn_id,
+                )
+            )
+        except RuntimeError:
+            return
+
+        def _consume_projection_error(done: asyncio.Task[object]) -> None:
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(_consume_projection_error)
 
     def _wire_approval_overlay(self) -> None:
         workspace = self._workspace
@@ -1168,7 +1257,13 @@ class TUISession:
                 continue
             self._ctx.app_state.conversation.notification.set(None)
             self._ctx.app_state.conversation.append_event("user_message", {"text": msg})
-            self._agent_task = asyncio.create_task(self.agent_task_body(msg), name="agent-turn")
+            turn_id = f"turn_{uuid.uuid4().hex}"
+            self._publish_session_event(
+                "turn_queued", {"text": msg, "client_id": "tui"}, turn_id=turn_id
+            )
+            self._agent_task = asyncio.create_task(
+                self.agent_task_body(msg, turn_id=turn_id), name="agent-turn"
+            )
             return
         if not notice_kept:
             self._ctx.app_state.conversation.notification.set(None)
@@ -1287,23 +1382,43 @@ class TUISession:
             # PRD-129 Phase 2: no per-turn snapshot save — the JournaledShortTermMemory
             # already fsync'd every transition durably as it happened.
 
-    async def agent_task_body(self, text: str, resume: object | None = None) -> None:
+    async def agent_task_body(
+        self,
+        text: str,
+        resume: object | None = None,
+        turn_id: str | None = None,
+    ) -> None:
         """Wrap run_turn with error handling; advance queue on completion."""
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
 
         conv = self._ctx.app_state.conversation
+        turn_failed = False
+        turn_cancelled = False
+        if turn_id is not None:
+            self._publish_session_event("turn_started", turn_id=turn_id)
         try:
             await self.run_turn(text, resume=resume)
         except asyncio.CancelledError:
+            turn_cancelled = True
             # close_turn() is idempotent — inner layers may have already called it.
             conv.close_turn()
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:
+            turn_failed = True
             # Only emit an error event if the turn is still open; if _stream()
             # already closed it (via its own finally), this is a no-op.
             conv.close_turn(error=_fmt_exc(exc) if conv.is_turn_active else None)
             self._input_session.set_mode(InputMode.IDLE)
         finally:
+            if turn_id is not None:
+                self._publish_session_event(
+                    "turn_cancelled"
+                    if turn_cancelled
+                    else "turn_failed"
+                    if turn_failed
+                    else "turn_completed",
+                    turn_id=turn_id,
+                )
             self._agent_task = None
             self.advance()
 
@@ -1335,12 +1450,26 @@ class TUISession:
             if self._pending_skill_body:
                 body = self._pending_skill_body.pop()
                 self._ctx.app_state.conversation.append_event("user_message", {"text": text})
-                self._agent_task = asyncio.create_task(
-                    self.agent_task_body(body), name="agent-turn"
-                )
+                turn_id = f"turn_{uuid.uuid4().hex}"
+                publish_event = getattr(self, "_publish_session_event", None)
+                if callable(publish_event):
+                    publish_event(
+                        "turn_queued", {"text": body, "client_id": "tui"}, turn_id=turn_id
+                    )
+                    task = self.agent_task_body(body, turn_id=turn_id)
+                else:
+                    task = self.agent_task_body(body)
+                self._agent_task = asyncio.create_task(task, name="agent-turn")
             return
         self._ctx.app_state.conversation.append_event("user_message", {"text": text})
-        self._agent_task = asyncio.create_task(self.agent_task_body(text), name="agent-turn")
+        turn_id = f"turn_{uuid.uuid4().hex}"
+        publish_event = getattr(self, "_publish_session_event", None)
+        if callable(publish_event):
+            publish_event("turn_queued", {"text": text, "client_id": "tui"}, turn_id=turn_id)
+            task = self.agent_task_body(text, turn_id=turn_id)
+        else:
+            task = self.agent_task_body(text)
+        self._agent_task = asyncio.create_task(task, name="agent-turn")
 
     def handle_interrupt(self, cmd: "InterruptAgentCommand") -> None:
         """Cancel the current agent task if one is running."""
@@ -1613,6 +1742,12 @@ async def _run_tui_session(
         if ctx.mcp_registry:
             await ctx.mcp_registry.shutdown()
         await ctx.terminal_manager.close()
+        if ctx.kernel_projection_task is not None:
+            ctx.kernel_projection_task.cancel()
+            await asyncio.gather(ctx.kernel_projection_task, return_exceptions=True)
+        session_service = getattr(ctx, "session_service", None)
+        if session_service is not None:
+            await session_service.close()
         if cassette_base is not None:
             _write_cassette_meta(cassette_base / ctx.session_id, ctx.session_id)
 

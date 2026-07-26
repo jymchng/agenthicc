@@ -118,6 +118,24 @@ completion. Workflow execution uses the same lauren-ai runner, plugin registry,
 session persistence, capability checks, and approval boundary as the TUI. It
 does not imply a REST server.
 
+All clients can inspect the same client-neutral session projection. The new
+`session` commands use the shared snapshot, command, and replay contracts:
+
+```bash
+uv run agenthicc session list --json
+uv run agenthicc session show SESSION_ID --json
+uv run agenthicc session events SESSION_ID --after 12
+uv run agenthicc session export SESSION_ID --output session-export.json
+uv run agenthicc session send SESSION_ID --text 'continue the work'
+uv run agenthicc session control SESSION_ID cancel
+```
+
+The default session service is in-process and stores its projection under
+`~/.agenthicc/session-service/`. `agenthicc session serve` is an explicit
+loopback-only HTTP/SSE attachment transport; non-loopback binding requires a
+bearer token. It is an adapter over the existing session/kernel runtime, not a
+second agent server. See the [client-neutral session guide](./docs/guides/session-service.md).
+
 ## Terminal workspace
 
 The current TUI is implemented by `tui/workspace/Workspace` and consists of:
