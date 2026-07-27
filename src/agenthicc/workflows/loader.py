@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import logging
+import sys
 from pathlib import Path
 
 from agenthicc.workflows.plugin import WorkflowPlugin
@@ -37,7 +38,15 @@ def load_python_workflows(
             log.warning("Could not create module spec for %s", path)
             return []
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        # Register in sys.modules before exec_module so that decorators
+        # (e.g. @dataclasses.dataclass) can look up the class's module
+        # via sys.modules[cls.__module__] during class definition.
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            # Clean up to avoid leaking module objects across reloads.
+            sys.modules.pop(module_name, None)
 
         results: list[type[WorkflowPlugin]] = []
         for _attr_name, obj in inspect.getmembers(module, inspect.isclass):
