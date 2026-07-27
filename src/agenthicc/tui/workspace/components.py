@@ -44,15 +44,24 @@ def _fmt_elapsed(seconds: float) -> str:
     return f"{s // 60}m {s % 60}s"
 
 
-def _cached_elapsed(conv: object) -> float:
-    """Read the cached UI duration without deriving time during rendering.
+def _cached_elapsed(conv: object, *, total_activity: bool = True) -> float:
+    """Read a cached duration without deriving time during rendering.
 
-    The numeric fallback keeps lightweight ConversationStore-shaped test
-    doubles compatible while the production store always supplies the signal.
+    ``activity_elapsed_s`` spans consecutive internal LLM turns until the
+    outer TUI activity returns to IDLE. Waiting overlays intentionally use the
+    per-turn display clock so their content remains stable while the user is
+    answering a prompt. The fallback keeps lightweight ConversationStore-
+    shaped test doubles compatible.
     """
-    value = getattr(conv, "display_elapsed_s", None)
-    value = value() if callable(value) else value
-    return float(value) if isinstance(value, (int, float)) else 0.0
+    names = (
+        ("activity_elapsed_s", "display_elapsed_s") if total_activity else ("display_elapsed_s",)
+    )
+    for name in names:
+        value = getattr(conv, name, None)
+        value = value() if callable(value) else value
+        if isinstance(value, (int, float)):
+            return float(value)
+    return 0.0
 
 
 def _fit(markup: str, cols: int) -> str:
@@ -187,7 +196,7 @@ class StatusComponent:
 
         # ── line 1: state animation + elapsed + tokens + active tool ────────────
         l1_parts = [f"{flower} [{color}]{state_text}[/{color}]"]
-        elapsed = _cached_elapsed(conv)
+        elapsed = _cached_elapsed(conv, total_activity=not waiting)
         if elapsed > 0:
             l1_parts.append(f"[dim] │[/dim] {_fmt_elapsed(elapsed)}")
         inp = conv.tokens_in()

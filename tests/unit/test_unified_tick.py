@@ -192,6 +192,112 @@ class TestElapsedSProperty:
         assert completion[0].payload["elapsed_s"] == pytest.approx(22.0)
         assert conv.display_elapsed_s() == 0.0
 
+    def test_activity_clock_accumulates_across_internal_turns_until_idle(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+
+        now = 100.0
+        monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
+        conv = ConversationStore()
+
+        # TUISession owns this outer scope while a workflow may run several
+        # individual LLM turns.
+        conv.begin_activity()
+        conv.begin_turn("agent", "phase-1")
+        now = 103.0
+        conv.tick()
+        assert conv.activity_elapsed_s() == pytest.approx(3.0)
+
+        conv.close_turn()
+        assert conv.agent_state() != AgentState.IDLE
+        now = 108.0
+        conv.tick(paused=True)  # no turn, but outer activity continues through a wait
+        assert conv.activity_elapsed_s() == pytest.approx(8.0)
+        now = 110.0
+        conv.tick(paused=True)
+        assert conv.activity_elapsed_s() == pytest.approx(10.0)
+
+        conv.begin_turn("agent", "phase-2")
+        now = 111.0
+        conv.tick()
+        assert conv.activity_elapsed_s() == pytest.approx(11.0)
+        conv.close_turn()
+        assert conv.activity_elapsed_s() == pytest.approx(11.0)
+
+        now = 114.0
+        total = conv.end_activity()
+        assert total == pytest.approx(14.0)
+        assert conv.agent_state() == AgentState.IDLE
+        assert conv.activity_elapsed_s() == 0.0
+
+    def test_activity_clock_resets_at_the_next_idle_to_active_edge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+
+        now = 50.0
+        monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
+        conv = ConversationStore()
+        conv.begin_activity()
+        now = 55.0
+        conv.tick()
+        assert conv.activity_elapsed_s() == pytest.approx(5.0)
+        conv.end_activity()
+
+        now = 90.0
+        conv.begin_activity()
+        conv.tick()
+        assert conv.activity_elapsed_s() == pytest.approx(0.0)
+
+    def test_status_renders_total_activity_across_internal_turns(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from io import StringIO  # noqa: PLC0415
+
+        from rich.console import Console  # noqa: PLC0415
+
+        from agenthicc.tui.workspace.components import StatusComponent  # noqa: PLC0415
+
+        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+
+        now = 10.0
+        monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
+        app_state = AppState.create()
+        conv = app_state.conversation
+        conv.model_name.set("test-model")
+        conv.begin_activity()
+        conv.begin_turn("agent", "phase-1")
+
+        now = 13.0
+        conv.tick()
+        first = StringIO()
+        Console(file=first, force_terminal=False, markup=False, width=120).print(
+            StatusComponent(app_state).render()
+        )
+        assert "Thinking" in first.getvalue()
+        assert "3s" in first.getvalue()
+
+        conv.close_turn()
+        now = 18.0
+        conv.tick()
+        conv.begin_turn("agent", "phase-2")
+        second = StringIO()
+        Console(file=second, force_terminal=False, markup=False, width=120).print(
+            StatusComponent(app_state).render()
+        )
+        assert "Thinking" in second.getvalue()
+        assert "8s" in second.getvalue()
+
+        conv.close_turn()
+        conv.end_activity()
+        idle = StringIO()
+        Console(file=idle, force_terminal=False, markup=False, width=120).print(
+            StatusComponent(app_state).render()
+        )
+        assert "Thinking" not in idle.getvalue()
+        assert "8s" not in idle.getvalue()
+
 
 class TestFrameDrivesAnimation:
     """Verify StatusComponent reads frame() for all animated elements."""

@@ -1394,6 +1394,7 @@ class TUISession:
         conv = self._ctx.app_state.conversation
         turn_failed = False
         turn_cancelled = False
+        conv.begin_activity()
         if turn_id is not None:
             self._publish_session_event("turn_started", turn_id=turn_id)
         try:
@@ -1410,6 +1411,7 @@ class TUISession:
             conv.close_turn(error=_fmt_exc(exc) if conv.is_turn_active else None)
             self._input_session.set_mode(InputMode.IDLE)
         finally:
+            conv.end_activity()
             if turn_id is not None:
                 self._publish_session_event(
                     "turn_cancelled"
@@ -1569,6 +1571,7 @@ class TUISession:
         ctx = self._ctx
         self._input_session.set_mode(InputMode.STREAMING)
         ctx.approval_svc.reset_turn_memory()
+        ctx.app_state.conversation.begin_activity()
         try:
             import dataclasses as _dc  # noqa: PLC0415
 
@@ -1604,6 +1607,7 @@ class TUISession:
             conv.close_turn(error=_fmt_exc(exc) if conv.is_turn_active else None)
             self._input_session.set_mode(InputMode.IDLE)
         finally:
+            ctx.app_state.conversation.end_activity()
             self._agent_task = None
             self.advance()
 

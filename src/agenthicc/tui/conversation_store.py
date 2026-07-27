@@ -172,6 +172,17 @@ class ConversationStore:
         self.display_elapsed_s: Signal[float] = Signal(0.0)
         self._display_paused: bool = False
         self._last_display_tick: float | None = None
+        # The outer activity spans all LLM turns belonging to one user request
+        # (for example, every phase of a workflow).  ``begin_turn``/
+        # ``close_turn`` still delimit individual ConversationTurn records,
+        # but the status bar must not reset while that outer activity remains
+        # live.  This is deliberately wall-clock based: the value represents
+        # the total time between the activity becoming non-idle and returning
+        # to IDLE, including internal turn boundaries and user-owned waits.
+        self.activity_elapsed_s: Signal[float] = Signal(0.0)
+        self._activity_start_time: float = 0.0
+        self._activity_active: bool = False
+        self._activity_external_scope: bool = False
 
         # ── internal ──────────────────────────────────────────────────────────
         self._current_turn: ConversationTurn | None = None
@@ -185,9 +196,10 @@ class ConversationStore:
     def elapsed_s(self) -> float:
         """Wall-clock seconds since the current turn started, or 0.0 when idle.
 
-        This remains the source for turn-completion telemetry.  UI rendering
-        must use :attr:`display_elapsed_s`, which is a cached active-work
-        duration and therefore stable while a prompt owns the terminal.
+        This remains the source for turn-completion telemetry.  The status bar
+        uses :attr:`activity_elapsed_s` for the total outer activity duration;
+        :attr:`display_elapsed_s` remains the cached per-turn active-work
+        duration used by waiting-modal behavior.
         """
         return time.monotonic() - self._start_time if self._start_time else 0.0
 
@@ -205,6 +217,61 @@ class ConversationStore:
         delta = max(0.0, now - previous)
         if delta:
             self.display_elapsed_s.set(self.display_elapsed_s() + delta)
+
+    def _advance_activity_clock(self, now: float) -> None:
+        """Refresh the total wall-clock duration of the outer agent activity."""
+
+        if not self._activity_active:
+            return
+        elapsed = max(0.0, now - self._activity_start_time)
+        if elapsed != self.activity_elapsed_s():
+            self.activity_elapsed_s.set(elapsed)
+
+    def begin_activity(self) -> None:
+        """Start the total-duration clock for one user-level agent activity.
+
+        The operation is idempotent so the TUI can establish the outer scope
+        before dispatching a direct turn or a multi-phase workflow. Individual
+        ``begin_turn`` calls nested inside that scope do not reset this clock.
+        """
+
+        if self._activity_active:
+            # An outer caller may claim an activity after a direct turn has
+            # already opened its implicit scope. Preserve the single clock but
+            # transfer the final IDLE boundary to that outer caller.
+            self._activity_external_scope = True
+            return
+        self._start_activity(external=True)
+
+    def _start_activity(self, *, external: bool) -> None:
+        """Start an activity clock, recording who owns its idle boundary."""
+
+        if self._activity_active:
+            return
+        self._activity_active = True
+        self._activity_external_scope = external
+        self._activity_start_time = time.monotonic()
+        self.activity_elapsed_s.set(0.0)
+
+    @property
+    def is_activity_active(self) -> bool:
+        """Whether the outer user-level activity is between its idle edges."""
+
+        return self._activity_active
+
+    def end_activity(self) -> float:
+        """Stop and reset the outer activity clock, returning its total seconds."""
+
+        if not self._activity_active:
+            return 0.0
+        self._advance_activity_clock(time.monotonic())
+        elapsed = self.activity_elapsed_s()
+        self._activity_active = False
+        self._activity_external_scope = False
+        self._activity_start_time = 0.0
+        self.activity_elapsed_s.set(0.0)
+        self.agent_state.set(AgentState.IDLE)
+        return elapsed
 
     def set_display_paused(self, paused: bool) -> None:
         """Pause or resume the cached UI clock at an idempotent state edge.
@@ -232,7 +299,9 @@ class ConversationStore:
         """
         if paused is not None:
             self.set_display_paused(paused)
-        self._advance_display_clock(time.monotonic())
+        now = time.monotonic()
+        self._advance_activity_clock(now)
+        self._advance_display_clock(now)
         if self._display_paused:
             return
         self.frame.set(self.frame() + 1)
@@ -323,6 +392,11 @@ class ConversationStore:
 
     def begin_turn(self, agent_name: str, turn_id: str | None = None) -> ConversationTurn:
         tid = turn_id or str(uuid.uuid4())
+        # Direct callers that do not have an outer TUI activity still get a
+        # correctly scoped total clock. TUISession starts the outer scope first
+        # for workflows so consecutive internal turns share one duration.
+        if not self._activity_active:
+            self._start_activity(external=False)
         turn = ConversationTurn(turn_id=tid, agent_name=agent_name)
         self._current_turn = turn
         self.turns.set(self.turns.get() + [turn])
@@ -339,9 +413,13 @@ class ConversationStore:
         return self._current_turn is not None
 
     def close_turn(self, *, error: str | None = None) -> None:
-        """Idempotent single cleanup path — always returns to IDLE.
+        """Idempotent cleanup for one ConversationTurn.
 
         Safe to call multiple times; subsequent calls are no-ops.
+
+        When an outer activity is active, this closes only the individual
+        ConversationTurn and leaves the store non-idle. The outer
+        ``end_activity()`` call owns the final transition to IDLE.
 
         Parameters
         ----------
@@ -349,7 +427,8 @@ class ConversationStore:
             Human-readable error string including the exception class name
             (``"ReadTimeout: ..."``) or ``None`` for a clean exit.
             When set, appends an ``error`` scroll-buffer event and marks the
-            turn as ``AgentState.ERROR`` internally before resetting to IDLE.
+            turn as ``AgentState.ERROR`` internally. An outer activity remains
+            non-idle until its own ``end_activity()`` call.
         """
         # Capture elapsed before clearing _start_time.
         elapsed = self.elapsed_s
@@ -362,13 +441,23 @@ class ConversationStore:
             # Always emit turn_complete (with elapsed) so the scroll buffer can
             # print "✾ Worked for …" regardless of success or error path.
             self.append_event("turn_complete", {"elapsed_s": elapsed})
+        activity_active = self._activity_active
+        external_activity = self._activity_external_scope
         self._current_turn = None
-        self.agent_state.set(AgentState.IDLE)  # ALWAYS IDLE — invariant
+        # An outer TUI activity owns the real IDLE boundary. Between workflow
+        # phases, remain non-idle so the status duration continues accumulating;
+        # end_activity() performs the final transition to IDLE.
+        if external_activity:
+            self.agent_state.set(AgentState.THINKING)
+        else:
+            self.agent_state.set(AgentState.IDLE)
         self.active_tool.set("")
         self._start_time = 0.0
         self.display_elapsed_s.set(0.0)
         self._display_paused = False
         self._last_display_tick = None
+        if activity_active and not external_activity:
+            self.end_activity()
 
     def end_turn(self) -> None:
         """Close the turn successfully. Prefer ``close_turn()`` for new code."""

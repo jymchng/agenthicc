@@ -96,6 +96,7 @@ class Workspace:
             conv.active_tool,
             conv.frame,
             conv.model_name,
+            conv.activity_elapsed_s,
             conv.display_elapsed_s,
             conv.tokens_in,
             conv.tokens_out,

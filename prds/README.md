@@ -19,6 +19,7 @@ against the current source before implementing them.
 - [PRD-148 — Unified Interrupt and Graceful Cancellation](prd-148-unified-interrupt-and-graceful-cancellation.md)
 - [PRD-149 — Background Terminals and Responsive Wait Control](prd-149-background-terminals-and-responsive-wait-control.md)
 - [PRD-150 — Client-Neutral Session Service and Multi-Client Event Projection](prd-150-client-neutral-session-service-and-event-projection.md)
+- [PRD-151 — Reliable Command Execution and Build/Development-Server Lifecycle](prd-151-reliable-command-execution-and-build-server-lifecycle.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -76,6 +77,13 @@ paths. It selects an explicit loopback-first HTTP/SSE adapter, depends on the
 state/API boundary decisions in PRD-138, and aligns the HTTP direction in
 PRD-121 with the existing kernel and session ownership boundaries. See the
 implementation evidence at the end of the PRD.
+
+PRD-151 investigates the unreliable command outcome and lifecycle contract
+behind long-running builds and development servers. It defines the corrective
+result semantics, seconds-based deadline hierarchy, cancellation cleanup,
+explicit service/readiness mode, and workflow completion gates needed to make
+`next build` failures visible and `npm run dev` manageable through PRD-149's
+owned terminals.
 
 ## Existing PRDs
 

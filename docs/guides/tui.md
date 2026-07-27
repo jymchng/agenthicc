@@ -86,11 +86,12 @@ a response, while its edits remain local to the overlay until saved.
 
 When a tool approval, plan review, or `ask_user()` question is pending, the
 status bar changes from the animated Thinking state to a stable waiting label.
-The shared animation tick and cached active-work duration are paused until the
-response arrives. Wall-clock turn duration remains available for completion
-telemetry, while resize redraws project the unchanged cached duration; this
-keeps a modal repaint from looking like a new frame or duplicating the Plan
-Review header.
+The Thinking duration is the total wall-clock time for the outer user activity:
+it continues across internal LLM turns and workflow phases and ends only when
+the activity returns to IDLE. Resize redraws do not derive a new timestamp
+directly; the cached activity clock is refreshed by the shared tick. The older
+per-turn active-work clock remains available for turn-level telemetry and
+waiting-modal behavior.
 
 The Windows backend uses `ReadConsoleInputW` so Shift+Tab preserves its
 modifier. POSIX raw mode is a no-op for non-TTY file descriptors and restores
