@@ -183,7 +183,9 @@ response is streaming.
 
 Use `Ctrl+C` according to the current input state; the input backend owns raw
 terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md)
-for modes, overlays, input, busy-run command policies, and platform rules.
+for modes, overlays, input, busy-run command policies, and platform rules. ESC
+returns the input state to idle immediately after cancelling a run, so the
+double-Ctrl+C exit sequence remains responsive on Windows.
 
 ## Background sessions
 

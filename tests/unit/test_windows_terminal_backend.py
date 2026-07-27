@@ -167,6 +167,16 @@ class TestReadKeyConsoleLoop:
         )
         assert backend._read_key_console() == (Key.TAB, "")
 
+    def test_stop_request_breaks_console_read_loop(self) -> None:
+        backend = WindowsBackend()
+
+        def stop_after_poll() -> None:
+            backend._stop_requested.set()
+
+        backend._next_input_event = stop_after_poll  # type: ignore[method-assign]
+        with pytest.raises(OSError, match="terminal input stopped"):
+            backend._read_key_console()
+
 
 # ── getwch fallback still decodes basic keys ──────────────────────────────────
 

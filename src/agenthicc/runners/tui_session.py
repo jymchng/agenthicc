@@ -817,16 +817,29 @@ class TUISession:
 
     def _cancel_active_task(self) -> bool:
         """Request cancellation through the same owner used by Ctrl+C."""
+        from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
+
         task = self._agent_task
         if task is None or task.done():
+            # A cancellation request can race the task's finalizer.  Do not
+            # leave the input pipeline in STREAMING while the task reference
+            # is already finished; otherwise Ctrl+C is treated as another
+            # interrupt instead of the idle exit sequence.
+            self._input_session.set_mode(InputMode.IDLE)
             return False
         # Esc/Ctrl+C first stops the owned terminal currently awaited by this
         # turn, then cancels the agent task.  The process group therefore does
         # not outlive a cancelled foreground wait.
         terminal_manager = getattr(self._ctx, "terminal_manager", None)
-        if terminal_manager is not None:
-            terminal_manager.request_stop_current()
-        return task.cancel()
+        try:
+            if terminal_manager is not None:
+                terminal_manager.request_stop_current()
+            return task.cancel()
+        finally:
+            # Switch immediately.  The task's finally block also sets IDLE,
+            # but waiting for that callback creates a race with a quick
+            # ESC → Ctrl+C exit attempt on Windows.
+            self._input_session.set_mode(InputMode.IDLE)
 
     def _busy_decision(self, text: str) -> "BusyDecision":
         from agenthicc.commands.busy_policy import classify_busy_command  # noqa: PLC0415
@@ -1660,11 +1673,20 @@ class TUISession:
         try:
             await self._input_session.run()
         finally:
+            # Input can exit while an ESC-triggered cancellation is still
+            # unwinding. Cancel and await the owned task before closing the
+            # session; otherwise Windows may leave its executor/terminal wait
+            # alive during asyncio shutdown.
+            self._msg_queue.clear()
+            agent_task = self._agent_task
+            if agent_task is not None and not agent_task.done():
+                agent_task.cancel()
             tick_task.cancel()
             proc_task.cancel()
             if ad_task:
                 ad_task.cancel()
             await asyncio.gather(
+                *([agent_task] if agent_task else []),
                 tick_task,
                 proc_task,
                 *([ad_task] if ad_task else []),
@@ -1818,5 +1840,11 @@ def _run_tui(ctx: CLIContext) -> None:
     except Exception as exc:
         print(f"TUI error: {exc}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        # Windows can still deliver a console Ctrl+C as an OS-level interrupt
+        # when a host terminal ignores the raw-input mode request. Treat it as
+        # a normal TUI exit after asyncio has run its cleanup path; never leave
+        # a traceback or a half-reset terminal behind.
+        pass
     finally:
         _reset_terminal_on_exit()

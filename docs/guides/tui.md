@@ -66,6 +66,10 @@ active capability list. IDLE supports triggers, history, cursor movement,
 paste, mode cycling, and submission. STREAMING reduces the capability set so
 the user can queue input or interrupt an active turn.
 
+ESC cancels the active turn and immediately returns the input pipeline to IDLE,
+even while asynchronous task cleanup is still finishing. This keeps the
+normal double-Ctrl+C exit sequence responsive after an interrupt on Windows.
+
 Current triggers include:
 
 - `/` — command picker backed by the unified command registry;

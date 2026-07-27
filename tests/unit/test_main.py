@@ -538,6 +538,22 @@ class TestRunTui:
         captured = capsys.readouterr()
         assert "TUI error" in captured.err
 
+    def test_tui_keyboard_interrupt_is_a_clean_exit(self, monkeypatch):
+        """A host-level Ctrl+C must not escape as a traceback."""
+        import agenthicc.runners.tui_session as ts
+
+        ctx = self._make_ctx()
+
+        def raising_asyncio_run(coro):
+            coro.close()
+            raise KeyboardInterrupt
+
+        with patch.dict("sys.modules", {"rich.console": MagicMock()}):
+            with patch(
+                "agenthicc.runners.tui_session.asyncio.run", side_effect=raising_asyncio_run
+            ):
+                ts._run_tui(ctx)
+
 
 # ---------------------------------------------------------------------------
 # TestDoLogin / TestDoLogout

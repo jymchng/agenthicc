@@ -247,8 +247,47 @@ async def test_tui_queue_and_interrupt_paths() -> None:
 
     session._agent_task = asyncio.create_task(idle())
     session.handle_interrupt(InterruptAgentCommand())
+    from agenthicc.tui.input.unified_session import InputMode
+
+    assert _input.modes[-1] is InputMode.IDLE
     with pytest.raises(asyncio.CancelledError):
         await session._agent_task
+
+
+@pytest.mark.asyncio
+async def test_esc_then_ctrl_c_reaches_idle_exit_sequence() -> None:
+    """A quick exit attempt must not be swallowed by stale streaming mode."""
+
+    from agenthicc.runners.tui_session import TUISession
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.input.capabilities import _EXIT
+    from agenthicc.tui.input.unified_session import InputMode, UnifiedInputSession
+
+    _unused_session, ctx, workspace, _unused_input = _make_session()
+    input_session = UnifiedInputSession(ctx.app_state, ctx.command_bus)
+    session = TUISession(ctx, workspace, input_session)
+    ctx.command_bus.register(InterruptAgentCommand, session.handle_interrupt)
+
+    async def idle() -> None:
+        await asyncio.sleep(60)
+
+    task = asyncio.create_task(idle())
+    session._agent_task = task
+    input_session.set_mode(InputMode.STREAMING)
+
+    # ESC requests cancellation and immediately returns the input pipeline to
+    # IDLE, even though the task's cancellation callback has not run yet.
+    await input_session._dispatch(Key.ESC, "")
+    assert input_session._mode is InputMode.IDLE
+
+    # The next Ctrl+C is now the first half of the normal idle exit sequence;
+    # the following one exits cleanly instead of being another interrupt.
+    assert await input_session._dispatch(Key.CTRL_C, "") is None
+    assert input_session._ctrl_c_count == 1
+    assert await input_session._dispatch(Key.CTRL_C, "") is _EXIT
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 @pytest.mark.asyncio

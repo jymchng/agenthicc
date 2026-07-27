@@ -27,6 +27,7 @@ A ``getwch()`` fallback is retained for environments without a real console.
 from __future__ import annotations
 
 import ctypes
+import threading
 from typing import cast
 import sys
 from contextlib import contextmanager
@@ -51,6 +52,12 @@ _RIGHT_CTRL_PRESSED = 0x0004
 _ENABLE_PROCESSED_INPUT = 0x0001
 _ENABLE_LINE_INPUT = 0x0002
 _ENABLE_ECHO_INPUT = 0x0004
+
+# WaitForSingleObject results and the short polling interval used to make a
+# ReadConsoleInputW worker cancellable when the asyncio task is interrupted.
+_WAIT_OBJECT_0 = 0x00000000
+_WAIT_TIMEOUT = 0x00000102
+_INPUT_POLL_TIMEOUT_MS = 50
 
 # Virtual key codes
 _VK_BACK = 0x08
@@ -199,6 +206,7 @@ class WindowsBackend:
 
     def __init__(self) -> None:
         self._orig_mode: int | None = None  # saved console input mode for restore
+        self._stop_requested = threading.Event()
 
     # ── TerminalBackend interface ─────────────────────────────────────────────
 
@@ -211,6 +219,8 @@ class WindowsBackend:
 
     def read_key(self) -> tuple[Key, str]:
         """Read one keystroke; blocks until a decodable key is available."""
+        if self._stop_requested.is_set():
+            raise OSError("terminal input stopped")
         if self._console_handle() is not None:
             return self._read_key_console()
         return self._read_key_getwch()
@@ -242,6 +252,16 @@ class WindowsBackend:
         """
         k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
         handle = k32.GetStdHandle(_STD_INPUT_HANDLE)
+        try:
+            wait = k32.WaitForSingleObject
+        except AttributeError:
+            wait = None
+        if wait is not None:
+            result = int(wait(handle, _INPUT_POLL_TIMEOUT_MS))
+            if result == _WAIT_TIMEOUT:
+                return None
+            if result != _WAIT_OBJECT_0:
+                return None
         record = _INPUT_RECORD()
         read = ctypes.c_ulong(0)
         ok = k32.ReadConsoleInputW(handle, ctypes.byref(record), 1, ctypes.byref(read))
@@ -258,7 +278,7 @@ class WindowsBackend:
 
     def _read_key_console(self) -> tuple[Key, str]:
         """Loop over console input records until one decodes to a key."""
-        while True:
+        while not self._stop_requested.is_set():
             ev = self._next_input_event()
             if ev is None:
                 continue
@@ -270,6 +290,7 @@ class WindowsBackend:
             decoded = _decode_key_event(vk, unicode_char, ctrl_state)
             if decoded is not None:
                 return decoded
+        raise OSError("terminal input stopped")
 
     # ── getwch fallback path (no real console) ────────────────────────────────
 
@@ -327,6 +348,7 @@ class WindowsBackend:
         (``❯ ▌``) is immediately visible (without it the bar sits invisible in
         the OS buffer until the first keypress).
         """
+        self._stop_requested.clear()
         self._set_raw_input_mode()
         sys.stdout.write(
             "\x1b[?25l"  # hide OS cursor (matches POSIX raw_mode)
@@ -336,6 +358,10 @@ class WindowsBackend:
         try:
             yield
         finally:
+            # A read may be running in the executor while the asyncio task is
+            # being cancelled.  Signal it before restoring the console so the
+            # polling loop exits instead of keeping asyncio.run() alive.
+            self._stop_requested.set()
             self._restore_input_mode()
             try:
                 sys.stdout.write("\x1b[m\x1b[?2004l\x1b[?25h")
@@ -372,6 +398,7 @@ class WindowsBackend:
 
     def restore(self) -> None:
         """Best-effort terminal restore (input mode + cursor + paste)."""
+        self._stop_requested.set()
         self._restore_input_mode()
         try:
             sys.stdout.write("\x1b[m\x1b[?2004l\x1b[?25h")
