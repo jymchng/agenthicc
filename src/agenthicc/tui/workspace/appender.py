@@ -75,6 +75,9 @@ _TOOL_DISPLAY_OP: dict[str, str] = {
     "run_python": "Run",
     "run_python_expr": "Run",
     "run_tests": "Test",
+    "inspect_terminal": "Inspect",
+    "wait_terminal_ready": "Wait",
+    "stop_terminal": "Stop",
     "git_status": "Status",
     "git_diff": "Diff",
     "git_log": "Log",
@@ -257,6 +260,8 @@ class ScrollBufferAppender:
         name = str(payload.get("name", ""))
         args_str = str(payload.get("args_str", ""))
         success = bool(payload.get("success", True))
+        state = payload.get("state")
+        ready = payload.get("ready") is True
         operation = _tool_display_operation(name)
         output_lines_raw = payload.get("output_lines", [])
         output_lines = (
@@ -274,7 +279,24 @@ class ScrollBufferAppender:
             markup=True,
             highlight=False,
         )
-        status = "[green]Completed[/green]" if success else "[red]Failed[/red]"
+        if state == "running" and ready:
+            status = "[cyan]Ready[/cyan]"
+        elif state == "running":
+            status = "[cyan]Running[/cyan]"
+        elif state == "waiting":
+            status = "[yellow]Waiting[/yellow]"
+        elif state == "timed_out":
+            status = "[red]Timed out[/red]"
+        elif state == "cancelled":
+            status = "[red]Cancelled[/red]"
+        elif state == "starting_timeout":
+            status = "[red]Readiness timeout[/red]"
+        elif state is None and success:
+            status = "[green]Completed[/green]"
+        elif state == "exited" and success:
+            status = "[green]Completed[/green]"
+        else:
+            status = "[red]Failed[/red]"
         count = f"  [dim]{_line_count_label(output_count)}[/dim]" if output_count else ""
         self._console.print(
             f"[dim]└─[/dim] {status}{dur}{count}",

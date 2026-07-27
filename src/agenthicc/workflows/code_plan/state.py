@@ -49,4 +49,5 @@ class CodePlanContext:
     review_summary: str = ""  # set after REVIEW phase (approve)
     rejection_reason: str = ""  # set when REVIEW rejects
     fail_reason: str = ""  # set on FAILED
+    command_outcomes: list[dict[str, object]] = dataclasses.field(default_factory=list)
     shared_memory: ShortTermMemory | None = None  # shared across all phases

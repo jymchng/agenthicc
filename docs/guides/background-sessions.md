@@ -117,9 +117,15 @@ An explicit request such as:
 
 returns a `term-...` handle immediately. `wait_terminal` follows the handle
 and returns bounded stdout/stderr, exit status, elapsed time, and truncation
-metadata. A workflow phase can opt into this default with
+metadata. Its `timeout` is an observer timeout in seconds and does not stop
+the process; use `/stop` or `stop_terminal` to terminate it. A workflow phase can opt into this default with
 `PhaseSpec(..., terminal_wait_policy="background")`; command text alone never
 backgrounds a process.
+
+Use `lifecycle="service"` for development servers and an explicit loopback
+`readiness` probe. The service remains `running` after readiness; it is not a
+successful finite command. See the [reliable command execution guide](./command-execution.md)
+for build, environment, timeout, readiness, and workflow-gate examples.
 
 While the TUI awaits a handle, its status line shows elapsed time, the running
 terminal count, the command label, and `/ps`, `/stop`, and `Esc` controls.

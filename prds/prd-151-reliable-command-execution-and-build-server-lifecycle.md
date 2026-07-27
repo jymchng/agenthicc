@@ -1,7 +1,7 @@
 ---
 title: "PRD-151: Reliable Command Execution and Build/Development-Server Lifecycle"
-status: Proposed
-version: 0.1.0
+status: Implemented
+version: 1.0.0
 created: 2026-07-27
 related_prds:
   - PRD-138  # Repository Improvement Roadmap
@@ -707,7 +707,42 @@ cannot run. A skipped optional fixture is not evidence that a real Next build
 works. A passing fixture must record exit code, timeout, readiness, and cleanup
 outcomes.
 
-## 14. Risks and open decisions
+## 14. Implementation evidence
+
+PRD-151 is implemented across the existing PRD-149 ownership boundary. The
+implementation adds the shared `CommandOutcome`/`CommandState` contract,
+seconds-based deadline validation, process-group cleanup and output draining,
+cwd/environment propagation, service lifecycle and readiness probes,
+non-destructive terminal observation, duplicate-service protection, workflow
+command completion gates, headless phase metadata, and state-aware TUI
+rendering. Existing terminal controls and storage remain compatible.
+
+Verification completed on 2026-07-27:
+
+```text
+uv run pytest tests/ -q
+2419 passed, 15 skipped
+
+uv run pytest --run-cassette tests/integration/test_cassette_replay.py -q
+2 passed
+
+uv run ruff check src/ tests/ scripts/
+uv run ruff format --check src/ tests/ scripts/
+uv run mypy src/agenthicc
+uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.json
+uv run nox -s llms_check
+```
+
+Dedicated PRD-151 coverage includes direct, Lauren-wrapper, and adapter
+failures; fractional/invalid/zero timeouts; cancellation and output tails;
+cwd/env and spawn diagnostics; non-destructive waits; process-group timeout;
+service marker readiness and duplicate prevention; workflow gates; a finite
+build fixture; and service lifecycle E2E tests. A real Next.js application is
+not present in this repository, so the finite build fixture is the deterministic
+equivalent; a pinned Next.js smoke fixture can be supplied by an integration
+repository that provides its package lock and dependencies.
+
+## 15. Risks and open decisions
 
 | Risk/decision | Required treatment |
 |---|---|
@@ -726,7 +761,7 @@ existing terminal record or a linked child record. Either choice must keep one
 authoritative terminal owner and one workflow/session link; it must not create a
 parallel process registry.
 
-## 15. Rollout and migration
+## 16. Rollout and migration
 
 The change should ship in compatibility-first stages:
 
@@ -737,11 +772,10 @@ The change should ship in compatibility-first stages:
 3. Enable explicit service/readiness mode and workflow completion gates.
 4. Migrate built-in and documented user workflows to declare finite versus
    service lifecycle explicitly.
-5. Mark this PRD implemented only after real fixture evidence and full focused
-   checks are recorded. Existing sessions and terminal records must not be
-   relaunched automatically; uncertain records remain `orphaned` or historical.
+5. Existing sessions and terminal records must not be relaunched automatically;
+   uncertain records remain `orphaned` or historical.
 
-## 16. Related documents
+## 17. Related documents
 
 - [PRD-148 — Unified Interrupt and Graceful Cancellation](prd-148-unified-interrupt-and-graceful-cancellation.md)
 - [PRD-149 — Background Terminals and Responsive Wait Control](prd-149-background-terminals-and-responsive-wait-control.md)

@@ -80,6 +80,7 @@ class CodePlan(WorkflowPlugin):
             next="review",
             max_iterations=10,
             require_explicit_completion=True,
+            require_successful_commands=True,
             mode_override="Auto",
             system_prompt_override=(
                 "You are in the EXECUTION phase. You already explored and planned "

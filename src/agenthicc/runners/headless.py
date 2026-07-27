@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,10 +27,11 @@ class WorkflowExecutionResult:
     status: str
     phases: tuple[str, ...]
     error: str | None = None
+    phase_metadata: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         """Return the stable JSON representation used by CLI and stdin modes."""
-        return {
+        result: dict[str, object] = {
             "event_type": "WorkflowRunCompleted",
             "session_id": self.session_id,
             "workflow": self.workflow_name,
@@ -39,6 +40,9 @@ class WorkflowExecutionResult:
             "phases": list(self.phases),
             "error": self.error,
         }
+        if self.phase_metadata:
+            result["phase_metadata"] = self.phase_metadata
+        return result
 
 
 class _HeadlessApprovalService:
@@ -144,6 +148,7 @@ async def execute_workflow(
             error = fail_reason
     run_id = str(getattr(workflow_run, "run_id", "") or "")
     phases: list[str] = []
+    phase_metadata: dict[str, object] = {}
     for event in getattr(session.processor, "event_log", []):
         if getattr(event, "event_type", "") != "WorkflowPhaseCompleted":
             continue
@@ -154,6 +159,8 @@ async def execute_workflow(
         phase_name = payload.get("phase_name") if isinstance(payload, dict) else None
         if isinstance(phase_name, str) and phase_name:
             phases.append(phase_name)
+            if isinstance(payload, dict) and isinstance(payload.get("metadata"), dict):
+                phase_metadata[phase_name] = dict(payload["metadata"])
         if not run_id:
             if isinstance(event_run_id, str):
                 run_id = event_run_id
@@ -166,6 +173,7 @@ async def execute_workflow(
         status=status,
         phases=tuple(phases),
         error=error,
+        phase_metadata=phase_metadata,
     )
     if session_service is not None:
         await session_service.publish(

@@ -256,10 +256,22 @@ class WorkflowRunner(BaseWorkflowRunner):
                         *[self._run_phase(ps, intent, context) for ps in peer_specs],
                         return_exceptions=True,
                     )
+                    parallel_gate_error: str | None = None
                     for ps, output in zip(peer_specs, outputs):
                         if isinstance(output, BaseException):
                             log.error("Parallel phase %r failed: %s", ps.name, output)
                         else:
+                            gate_error = self._command_gate_error(ps, output)
+                            if gate_error is not None:
+                                parallel_gate_error = gate_error
+                                output = dataclasses.replace(
+                                    output,
+                                    approved=False,
+                                    metadata={
+                                        **output.metadata,
+                                        "command_gate_error": gate_error,
+                                    },
+                                )
                             context.add_output(output)
                             record = PhaseRunRecord(
                                 phase_name=ps.name,
@@ -274,6 +286,10 @@ class WorkflowRunner(BaseWorkflowRunner):
                                 phase_history=wf_run.phase_history + [record],
                             )
                     _processed_parallel.update(ps.name for ps in peer_specs)
+                    if parallel_gate_error is not None:
+                        wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+                        self._cfg.app_state.workflow_run.set(wf_run)
+                        return
                     phase_name = spec.next
                     continue
 
@@ -289,6 +305,16 @@ class WorkflowRunner(BaseWorkflowRunner):
                 )
 
                 output = await self._run_phase(spec, intent, context)
+                command_gate_error = self._command_gate_error(spec, output)
+                if command_gate_error is not None:
+                    output = dataclasses.replace(
+                        output,
+                        approved=False,
+                        metadata={
+                            **output.metadata,
+                            "command_gate_error": command_gate_error,
+                        },
+                    )
                 context.add_output(output)
 
                 record = PhaseRunRecord(
@@ -315,11 +341,28 @@ class WorkflowRunner(BaseWorkflowRunner):
                             "full_text": output.full_text,
                             "approved": output.approved,
                             "structured": output.structured or {},
+                            "metadata": output.metadata,
                         },
                     )
                 )
 
                 phase_name = self._determine_transition(spec, output)
+                if command_gate_error is not None:
+                    wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+                    self._cfg.app_state.workflow_run.set(wf_run)
+                    await self._cfg.processor.emit(
+                        Event.create(
+                            "WorkflowRunCompleted",
+                            {
+                                "run_id": run_id,
+                                "workflow_name": self._plugin.name,
+                                "phases_run": len(wf_run.phase_history),
+                                "status": "failed",
+                                "error": command_gate_error,
+                            },
+                        )
+                    )
+                    return
 
             wf_run = dataclasses.replace(wf_run, status="complete", current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
@@ -409,6 +452,7 @@ class WorkflowRunner(BaseWorkflowRunner):
         )
         output_buf: list[str] = []
         t0 = time.monotonic()
+        command_outcomes: list[dict[str, object]] = []
 
         plan_event: asyncio.Event | None = None
         plan_data: dict[str, object] = {}
@@ -482,6 +526,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             "completed_turns": self._cfg.completed_turns,
             "approval_svc": self._cfg.approval_svc,
             "output_collector": output_buf,
+            "command_outcomes": command_outcomes,
             "system_prompt_suffix": role_prompt,
         }
 
@@ -591,6 +636,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                 role=spec.agent_type,
                 full_text=f"[Phase error: {exc}]",
                 approved=False,
+                metadata={"command_outcomes": list(command_outcomes)} if command_outcomes else {},
                 agent_id="error",
                 duration_s=time.monotonic() - t0,
             )
@@ -610,6 +656,9 @@ class WorkflowRunner(BaseWorkflowRunner):
                         role=spec.agent_type,
                         full_text=_text_value(review_data.get("summary"), "".join(output_buf)),
                         approved=True,
+                        metadata={"command_outcomes": list(command_outcomes)}
+                        if command_outcomes
+                        else {},
                         agent_id=uuid.uuid4().hex[:8],
                         duration_s=time.monotonic() - t0,
                     )
@@ -619,6 +668,9 @@ class WorkflowRunner(BaseWorkflowRunner):
                         role=spec.agent_type,
                         full_text=_text_value(review_data.get("reason"), "".join(output_buf)),
                         approved=False,
+                        metadata={"command_outcomes": list(command_outcomes)}
+                        if command_outcomes
+                        else {},
                         agent_id=uuid.uuid4().hex[:8],
                         duration_s=time.monotonic() - t0,
                     )
@@ -629,7 +681,10 @@ class WorkflowRunner(BaseWorkflowRunner):
                     role=spec.agent_type,
                     full_text="".join(output_buf),
                     approved=False,
-                    metadata={"__next_phase__": spec.name},
+                    metadata={
+                        "__next_phase__": spec.name,
+                        "command_outcomes": list(command_outcomes),
+                    },
                     agent_id=uuid.uuid4().hex[:8],
                     duration_s=time.monotonic() - t0,
                 )
@@ -643,6 +698,9 @@ class WorkflowRunner(BaseWorkflowRunner):
                     role=spec.agent_type,
                     full_text="".join(output_buf),
                     approved=False,
+                    metadata={"command_outcomes": list(command_outcomes)}
+                    if command_outcomes
+                    else {},
                     agent_id=uuid.uuid4().hex[:8],
                     duration_s=time.monotonic() - t0,
                 )
@@ -656,6 +714,9 @@ class WorkflowRunner(BaseWorkflowRunner):
                     role=spec.agent_type,
                     full_text="".join(output_buf),
                     approved=False,
+                    metadata={"command_outcomes": list(command_outcomes)}
+                    if command_outcomes
+                    else {},
                     agent_id=uuid.uuid4().hex[:8],
                     duration_s=time.monotonic() - t0,
                 )
@@ -673,7 +734,10 @@ class WorkflowRunner(BaseWorkflowRunner):
                 role=spec.agent_type,
                 full_text=full_text,
                 approved=False,
-                metadata={"__next_phase__": spec.name},  # retry same phase
+                metadata={
+                    "__next_phase__": spec.name,
+                    "command_outcomes": list(command_outcomes),
+                },  # retry same phase
                 agent_id=uuid.uuid4().hex[:8],
                 duration_s=time.monotonic() - t0,
             )
@@ -688,6 +752,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             full_text=full_text,
             structured=structured,
             approved=approved,
+            metadata={"command_outcomes": list(command_outcomes)} if command_outcomes else {},
             agent_id=uuid.uuid4().hex[:8],
             duration_s=time.monotonic() - t0,
         )
@@ -732,6 +797,43 @@ class WorkflowRunner(BaseWorkflowRunner):
             approved=response.allowed,
             agent_id="human",
         )
+
+    @staticmethod
+    def _command_gate_error(spec: "PhaseSpec", output: "PhaseOutput") -> str | None:
+        """Return a transition-blocking error for declared command requirements."""
+
+        if not (spec.require_successful_commands or spec.require_readiness):
+            return None
+        raw = output.metadata.get("command_outcomes", [])
+        outcomes = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        latest: dict[str, dict[str, object]] = {}
+        for item in outcomes:
+            terminal_id = item.get("terminal_id")
+            if isinstance(terminal_id, str):
+                latest[terminal_id] = item
+        considered = list(latest.values()) or outcomes
+        if spec.require_successful_commands:
+            failures = [
+                item
+                for item in considered
+                if item.get("state") not in {"exited"}
+                or item.get("ok") is not True
+                or item.get("returncode") not in {0, None}
+            ]
+            if failures:
+                state = str(failures[-1].get("state", "failed"))
+                reason = str(
+                    failures[-1].get("termination_reason") or failures[-1].get("stderr") or state
+                ).strip()
+                return f"required command did not succeed ({state}): {reason[:400]}"
+        if spec.require_readiness:
+            ready = [item for item in considered if item.get("ready") is True]
+            if not ready:
+                state = (
+                    str(considered[-1].get("state", "not_started")) if considered else "not_started"
+                )
+                return f"required service readiness was not established ({state})"
+        return None
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

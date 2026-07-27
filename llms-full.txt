@@ -1765,19 +1765,31 @@ Non-zero exit codes become `{"ok": False, "error": stderr}`.
 ```python
 class ExecToolKit:
     def tools(self) -> list[Tool]: ...
-    # Returns 6 tools: run_bash, run_command, run_python, run_python_expr,
-    # run_tests, wait_terminal
+    # Returns 9 tools: run_bash, run_command, run_python, run_python_expr,
+    # run_tests, wait_terminal, inspect_terminal, wait_terminal_ready,
+    # stop_terminal
 ```
 
-`run_bash` uses `asyncio.create_subprocess_shell`. Timeouts kill the process
-group via `os.killpg`. Output capped at 64 KB with `[... truncated]` suffix.
+`run_bash` uses Bash where available and returns a canonical command outcome.
+Success requires state `exited` and return code zero. Timeout values are
+seconds, fractional values are supported, zero means no operation deadline,
+and invalid values are rejected before spawn. Output is capped at 64 KB with
+`[... truncated]` suffix while timeout and cancellation paths preserve the
+diagnostic tail.
 
 `run_bash` and `run_command` accept an explicit `background: bool = false` and
-optional label. With a session-owned terminal manager, background calls return
-a stable `term-...` handle; `wait_terminal(terminal_id)` follows it. Foreground
-calls retain the existing result contract. `/ps` and `/stop` provide immediate
-TUI inspection and process-group control, and `Esc` stops the terminal owning
-the current wait.
+optional label, `cwd`, string-only `env`, and `lifecycle` (`oneshot` or
+`service`). With a session-owned terminal manager, background calls return a
+stable `term-...` handle; `wait_terminal(terminal_id)` observes it without
+killing the process on observer timeout. `wait_terminal_ready` supports
+loopback HTTP/TCP and explicit output-marker probes. `/ps` and `/stop` provide
+immediate TUI inspection and process-group control, and `Esc` stops the
+terminal owning the current wait.
+
+`CommandOutcome`, `CommandState`, and `CommandKind` are the execution
+vocabulary. Workflow phases can set `command_lifecycle`,
+`require_successful_commands`, and `require_readiness`; the runner gates phase
+transitions on structured outcomes instead of human-readable output.
 
 ---
 

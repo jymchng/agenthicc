@@ -45,6 +45,7 @@ class AgentTurnOptions(TypedDict):
     completed_turns: int
     approval_svc: "ApprovalService | None"
     output_collector: "list[str] | None"
+    command_outcomes: "list[dict[str, object]] | None"
     system_prompt_suffix: str
 
 
@@ -104,3 +105,6 @@ class AgentTurnContext:
     #: A pre-seeded ``DurableIdempotencyLedger`` for the resumed turn, loaded with
     #: the tools the crashed attempt already ran.  ``None`` = build a fresh one.
     resume_ledger: "IdempotencyLedger | None" = None
+
+    #: Structured outcomes from command tools used during this turn.
+    command_outcomes: "list[dict[str, object]] | None" = None

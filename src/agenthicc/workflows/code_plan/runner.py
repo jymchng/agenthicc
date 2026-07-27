@@ -236,6 +236,9 @@ class CodePlanRunner(BaseWorkflowRunner):
                             "approved": None,
                             "structured": {},
                             "edge_label": next_label,
+                            "metadata": {
+                                "command_outcomes": list(ctx.command_outcomes),
+                            },
                         },
                     )
                 )
@@ -354,6 +357,8 @@ class CodePlanRunner(BaseWorkflowRunner):
         """Loop until finalize_plan() or exit_code_plan() fires; return EXECUTE, EXITED, or FAILED."""
         from agenthicc.workflows.code_plan.phase_tools import make_planner_tools  # noqa: PLC0415
 
+        ctx.command_outcomes.clear()
+
         from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
 
         self._set_phase("plan", 0, ctx)
@@ -417,6 +422,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         from agenthicc.workflows.code_plan.phase_tools import make_executor_tools  # noqa: PLC0415
 
         self._set_phase("execute", 1, ctx)
+        ctx.command_outcomes.clear()
 
         # Embed intent + approved plan in the system prompt so every retry turn
         # has full context, independent of conversation-history trimming.
@@ -427,6 +433,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         )
 
         for attempt in range(1, _MAX_EXECUTE_ATTEMPTS + 1):
+            ctx.command_outcomes.clear()
             execute_event: asyncio.Event = asyncio.Event()
             execute_data: dict[str, object] = {}
 
@@ -456,6 +463,10 @@ class CodePlanRunner(BaseWorkflowRunner):
                 log.error("_execute permanent error on attempt %d: %s", attempt, exc)
                 return CodePlanState.FAILED
 
+            command_error = self._command_gate_error(ctx.command_outcomes)
+            if command_error is not None:
+                ctx.fail_reason = command_error
+                continue
             if execute_event.is_set():
                 summary = execute_data.get("summary", "")
                 ctx.execute_summary = summary if isinstance(summary, str) else ""
@@ -467,6 +478,8 @@ class CodePlanRunner(BaseWorkflowRunner):
     async def _review(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until approve_review() or reject_review() fires; return SUMMARIZE, EXECUTE, or FAILED."""
         from agenthicc.workflows.code_plan.phase_tools import make_reviewer_tools  # noqa: PLC0415
+
+        ctx.command_outcomes.clear()
 
         self._set_phase("review", 2, ctx)
 
@@ -534,6 +547,7 @@ class CodePlanRunner(BaseWorkflowRunner):
     async def _summarize(self, ctx: CodePlanContext) -> CodePlanState:
         """Single turn; always returns COMPLETE."""
         self._set_phase("summarize", 3, ctx)
+        ctx.command_outcomes.clear()
         text: str = (
             f"Task: {ctx.intent}\n\n"
             f"What was implemented: {ctx.execute_summary or '(see conversation)'}\n"
@@ -706,6 +720,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 completed_turns=self._cfg.completed_turns,
                 approval_svc=self._cfg.approval_svc,
                 output_collector=[],
+                command_outcomes=ctx.command_outcomes,
                 system_prompt_suffix=system_prompt,
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
@@ -714,6 +729,27 @@ class CodePlanRunner(BaseWorkflowRunner):
             reset_current_terminal_wait_policy(policy_token)
             if mode is not None and self._mode_manager is not None:
                 self._cfg.app_state.active_mode.set(original_mode)
+
+    @staticmethod
+    def _command_gate_error(outcomes: list[dict[str, object]]) -> str | None:
+        latest: dict[str, dict[str, object]] = {}
+        for outcome in outcomes:
+            terminal_id = outcome.get("terminal_id")
+            if isinstance(terminal_id, str):
+                latest[terminal_id] = outcome
+        considered = list(latest.values()) or outcomes
+        for outcome in considered:
+            if (
+                outcome.get("state") != "exited"
+                or outcome.get("ok") is not True
+                or outcome.get("returncode") not in {0, None}
+            ):
+                state = str(outcome.get("state", "failed"))
+                reason = str(
+                    outcome.get("termination_reason") or outcome.get("stderr") or state
+                ).strip()
+                return f"required command did not succeed ({state}): {reason[:400]}"
+        return None
 
     def _base_tools(self) -> _ToolList:
         """Return capability-filtered project tools for the current mode."""

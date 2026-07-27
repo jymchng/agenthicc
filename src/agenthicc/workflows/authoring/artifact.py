@@ -349,7 +349,13 @@ def _phase_specs(node: ast.ClassDef) -> tuple[list[dict[str, object]], list[Vali
                     )
                 )
         for keyword in item.keywords:
-            if keyword.arg in {"name", "next", "on_reject", "terminal_wait_policy"}:
+            if keyword.arg in {
+                "name",
+                "next",
+                "on_reject",
+                "terminal_wait_policy",
+                "command_lifecycle",
+            }:
                 values[keyword.arg] = (
                     _extract_literal_string(keyword.value)
                     if keyword.arg != "next" or not isinstance(keyword.value, ast.Constant)
@@ -361,6 +367,11 @@ def _phase_specs(node: ast.ClassDef) -> tuple[list[dict[str, object]], list[Vali
                 values[keyword.arg] = [
                     _extract_literal_string(element) for element in keyword.value.elts
                 ]
+            elif keyword.arg in {"require_successful_commands", "require_readiness"}:
+                if isinstance(keyword.value, ast.Constant) and isinstance(
+                    keyword.value.value, bool
+                ):
+                    values[keyword.arg] = keyword.value.value
         phase_name = values.get("name")
         if not isinstance(phase_name, str) or not phase_name:
             findings.append(
@@ -373,6 +384,28 @@ def _phase_specs(node: ast.ClassDef) -> tuple[list[dict[str, object]], list[Vali
                 ValidationFinding(
                     "terminal-wait-policy",
                     "terminal_wait_policy must be 'foreground' or 'background'.",
+                )
+            )
+        lifecycle = values.get("command_lifecycle", "oneshot")
+        if lifecycle not in {"oneshot", "service"}:
+            findings.append(
+                ValidationFinding(
+                    "command-lifecycle",
+                    "command_lifecycle must be 'oneshot' or 'service'.",
+                )
+            )
+        if lifecycle == "service" and policy != "background":
+            findings.append(
+                ValidationFinding(
+                    "service-policy",
+                    "service command_lifecycle requires terminal_wait_policy='background'.",
+                )
+            )
+        if values.get("require_readiness") and lifecycle != "service":
+            findings.append(
+                ValidationFinding(
+                    "readiness-lifecycle",
+                    "require_readiness requires command_lifecycle='service'.",
                 )
             )
         phases.append(values)

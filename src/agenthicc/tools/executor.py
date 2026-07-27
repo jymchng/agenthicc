@@ -30,6 +30,7 @@ from agenthicc.tools.base import Tool, ToolBase, ToolResult, ToolResultEnvelope
 from agenthicc.tools.capabilities import CAPABILITIES_KEY, get_tool_capabilities
 from agenthicc.tools.context import ToolCallContext
 from agenthicc.tools.sandbox import ToolSandbox
+from agenthicc.tools.exec.outcome import CommandState, outcome_from_mapping
 
 if TYPE_CHECKING:
     from agenthicc.tools.hooks import ToolHook
@@ -113,10 +114,7 @@ def normalize_result(raw: object) -> ToolResult:
             except (TypeError, ValueError):
                 decoded = None
             if decoded is not None:
-                if isinstance(decoded, dict) and decoded.get("ok") is False:
-                    error = str(decoded.get("error", "tool returned an error"))
-                    return ToolResult.failure(error, error_kind=_result_error_kind(error).value)
-                return ToolResult.success(decoded)
+                return _normalize_decoded(decoded)
         return ToolResult.success(content)
     if isinstance(raw, str):
         try:
@@ -124,14 +122,63 @@ def normalize_result(raw: object) -> ToolResult:
         except (TypeError, ValueError):
             decoded = None
         if decoded is not None:
-            if isinstance(decoded, dict) and decoded.get("ok") is False:
-                error = str(decoded.get("error", "tool returned an error"))
-                return ToolResult.failure(error, error_kind=_result_error_kind(error).value)
-            return ToolResult.success(decoded)
-    if isinstance(raw, dict) and raw.get("ok") is False:
-        error = str(raw.get("error", "tool returned an error"))
-        return ToolResult.failure(error, error_kind=_result_error_kind(error).value)
+            return _normalize_decoded(decoded)
+    if isinstance(raw, dict):
+        return _normalize_decoded(raw)
     return ToolResult.success(raw)
+
+
+def _normalize_decoded(value: object) -> ToolResult:
+    """Normalize structured command mappings before generic success handling."""
+
+    if not isinstance(value, dict):
+        return ToolResult.success(value)
+    outcome = outcome_from_mapping(value)
+    if (
+        outcome is not None
+        and outcome.state in {CommandState.RUNNING, CommandState.WAITING}
+        and isinstance(value.get("terminal_id"), str)
+    ):
+        # A service observation is a successful tool operation even though the
+        # owned process is intentionally not a completed finite command.
+        return ToolResult.success(value)
+    if value.get("ok") is False:
+        error = str(
+            value.get("error")
+            or value.get("termination_reason")
+            or value.get("stderr")
+            or "tool returned an error"
+        )
+        return ToolResult(
+            ok=False, value=value, error=error, error_kind=_result_error_kind(error).value
+        )
+    if outcome is not None:
+        failure_states = {
+            CommandState.FAILED,
+            CommandState.TIMED_OUT,
+            CommandState.CANCELLED,
+            CommandState.SPAWN_FAILED,
+            CommandState.REJECTED,
+            CommandState.ORPHANED,
+        }
+        if outcome.state in failure_states or (
+            outcome.state not in {CommandState.RUNNING, CommandState.WAITING}
+            and outcome.returncode is not None
+            and outcome.returncode != 0
+        ):
+            error = str(
+                value.get("error")
+                or value.get("termination_reason")
+                or value.get("stderr")
+                or f"command {outcome.state.value}"
+            )
+            return ToolResult(
+                ok=False,
+                value=value,
+                error=error,
+                error_kind=_result_error_kind(error).value,
+            )
+    return ToolResult.success(value)
 
 
 class AgenthiccToolExecutor:
@@ -447,7 +494,10 @@ class AgenthiccToolExecutor:
                 )
                 result = tool.execute(typed_context, dict(kwargs))
             if inspect.isawaitable(result):
-                result = await self._run_with_limits(cast(Awaitable[object], result), timeout_s)
+                result = await self._run_with_limits(
+                    cast(Awaitable[object], result),
+                    _requested_timeout(kwargs, timeout_s),
+                )
             return _unwrap_agenthicc_result(result)
 
         return _adapter
@@ -469,12 +519,12 @@ class AgenthiccToolExecutor:
             if inspect.iscoroutinefunction(fn):
                 async_fn = cast(Callable[..., Awaitable[object]], fn)
                 result = async_fn(**call_kwargs)
-                result = await self._run_with_limits(result, timeout_s)
+                result = await self._run_with_limits(result, _requested_timeout(kwargs, timeout_s))
             else:
                 sync_fn = cast(Callable[..., object], fn)
                 result = await self._run_with_limits(
                     asyncio.to_thread(sync_fn, **call_kwargs),
-                    timeout_s,
+                    _requested_timeout(kwargs, timeout_s),
                 )
             return _unwrap_agenthicc_result(result)
 
@@ -485,6 +535,8 @@ class AgenthiccToolExecutor:
         operation: Awaitable[object],
         timeout_s: float,
     ) -> object:
+        if timeout_s <= 0:
+            return await operation
         if self._sandbox is not None:
             return await self._sandbox.run(operation, timeout_s)
         return await asyncio.wait_for(operation, timeout=timeout_s)
@@ -712,6 +764,21 @@ def _context_parameter(tool: object) -> str | None:
         if name in {"ctx", "context", "tool_context"} or parameter.annotation is ToolContext:
             return name
     return None
+
+
+def _requested_timeout(kwargs: dict[str, object], default: float) -> float:
+    """Honor a tool's seconds timeout instead of hiding it behind 30s."""
+
+    raw = kwargs.get("timeout")
+    if raw is None:
+        return default
+    try:
+        if isinstance(raw, bool):
+            return default
+        value = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 and value != float("inf") else default
 
 
 def _unwrap_agenthicc_result(result: object) -> object:

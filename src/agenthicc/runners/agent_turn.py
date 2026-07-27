@@ -14,7 +14,7 @@ import asyncio
 import json
 import os
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -206,8 +206,17 @@ def _tool_output_preview(result: object) -> tuple[list[str], int]:
 class _ToolOutputCaptureHook(LifecycleHook):
     """Capture tool results for the scroll-buffer completion event."""
 
-    def __init__(self, outputs: dict[str, tuple[list[str], int]]) -> None:
+    def __init__(
+        self,
+        outputs: dict[str, tuple[list[str], int]],
+        command_outcomes: list[dict[str, object]] | None = None,
+        command_states: dict[str, str] | None = None,
+        command_ready: dict[str, bool] | None = None,
+    ) -> None:
         self._outputs = outputs
+        self._command_outcomes = command_outcomes
+        self._command_states = command_states
+        self._command_ready = command_ready
 
     async def after_tool_call(
         self,
@@ -215,6 +224,24 @@ class _ToolOutputCaptureHook(LifecycleHook):
         ctx: ToolCallContext,
     ) -> AfterToolHookDecision:
         self._outputs[ctx.tool_use_id] = _tool_output_preview(result)
+        if self._command_outcomes is not None and ctx.tool_name in {
+            "run_bash",
+            "run_command",
+            "shell",
+            "run_python",
+            "run_python_expr",
+            "run_tests",
+            "wait_terminal",
+            "wait_terminal_ready",
+            "stop_terminal",
+        }:
+            candidate = result
+            if isinstance(candidate, Mapping) and isinstance(candidate.get("state"), str):
+                self._command_outcomes.append(dict(candidate))
+                if self._command_states is not None:
+                    self._command_states[ctx.tool_use_id] = str(candidate["state"])
+                if self._command_ready is not None and isinstance(candidate.get("ready"), bool):
+                    self._command_ready[ctx.tool_use_id] = bool(candidate["ready"])
         return AfterToolHookDecision.proceed()
 
     async def on_tool_error(
@@ -252,6 +279,8 @@ class AgentTurnRunner:
         self._tool_args: dict[str, dict[str, object]] = {}
         self._tool_names: dict[str, str] = {}
         self._tool_outputs: dict[str, tuple[list[str], int]] = {}
+        self._tool_states: dict[str, str] = {}
+        self._tool_ready: dict[str, bool] = {}
         self._file_snapshots: dict[str, tuple[str, str]] = {}
 
         # Content produced during the turn.
@@ -374,6 +403,8 @@ class AgentTurnRunner:
             self._tool_names[tid] = name
             self._tool_args[tid] = args
             self._tool_outputs.pop(tid, None)
+            self._tool_states.pop(tid, None)
+            self._tool_ready.pop(tid, None)
             if self._ctx.conv_store:
                 self._ctx.conv_store.set_tool(name)
             if name in self._FILE_EDIT_TOOLS and args.get("path"):
@@ -399,6 +430,8 @@ class AgentTurnRunner:
         ms: float | None = getattr(sig, "duration_ms", None)
         name = self._tool_names.pop(tid, tid)
         args = self._tool_args.pop(tid, {})
+        state = self._tool_states.pop(tid, None)
+        ready = self._tool_ready.pop(tid, None)
         conv = self._ctx.conv_store
 
         showed_diff = False
@@ -439,6 +472,8 @@ class AgentTurnRunner:
                         "tool_use_id": tid,
                         "name": name,
                         "success": success,
+                        "state": state,
+                        "ready": ready,
                         "args_str": _fmt_args(args),
                         "dur_str": f"  [dim]{ms:.0f}ms[/dim]" if ms else "",
                         "output_lines": output_lines,
@@ -549,7 +584,14 @@ class AgentTurnRunner:
         populate_agent_tools(agent_instance, registry.tools)
 
         # Global hooks
-        hooks: list[object] = [_ToolOutputCaptureHook(self._tool_outputs)]
+        hooks: list[object] = [
+            _ToolOutputCaptureHook(
+                self._tool_outputs,
+                self._ctx.command_outcomes,
+                self._tool_states,
+                self._tool_ready,
+            )
+        ]
         if ctx.app_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
 
@@ -878,6 +920,7 @@ async def _run_agent_turn(
     retry_deadline_monotonic: float | None = None,
     resume_turn_id: str | None = None,
     resume_ledger: IdempotencyLedger | None = None,
+    command_outcomes: list[dict[str, object]] | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -907,5 +950,6 @@ async def _run_agent_turn(
         retry_deadline_monotonic=retry_deadline_monotonic,
         resume_turn_id=resume_turn_id,
         resume_ledger=resume_ledger,
+        command_outcomes=command_outcomes,
     )
     await AgentTurnRunner(ctx).run()

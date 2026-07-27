@@ -138,3 +138,8 @@ as an arbitrary process-discovery mechanism. Parent-session cancellation uses
 only the persisted process group associated with that exact session to request
 cleanup. Output and metadata obey the configured terminal byte/retention
 limits and are redacted before persistence or JSON display.
+
+PRD-151 terminal records also retain the declared `lifecycle`, readiness result
+and evidence, deadline owner, termination reason, cancellation flag, and
+cleanup result. A service remains an owned `running` record after readiness;
+its readiness milestone is not stored as a finite-command `exited` result.

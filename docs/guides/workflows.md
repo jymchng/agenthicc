@@ -26,6 +26,34 @@ The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
 Workflow selection is influenced by the active mode, registry mappings, and the
 session-local `/workflow` override.
 
+## Command lifecycle gates
+
+Declare command intent in a phase when a build or development server is part
+of the workflow contract:
+
+```python
+PhaseSpec(
+    name="build",
+    terminal_wait_policy="foreground",
+    command_lifecycle="oneshot",
+    require_successful_commands=True,
+)
+
+PhaseSpec(
+    name="preview",
+    terminal_wait_policy="background",
+    command_lifecycle="service",
+    require_readiness=True,
+)
+```
+
+The runner receives structured command outcomes from the shared execution
+layer. A non-zero exit, timeout, cancellation, spawn failure, rejection, or
+orphaned handle prevents `next` from being followed. Service phases retain the
+owned terminal handle and readiness evidence in phase metadata; `running` is
+not treated as a completed finite command. User-defined workflow validation
+rejects invalid lifecycle/policy combinations before activation.
+
 ## Create a workflow from the input panel
 
 The built-in `create_workflow` authoring workflow turns a natural-language

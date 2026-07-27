@@ -73,11 +73,11 @@ def _intent_from_meta(meta_path: Path, fallback: str = "enhance this repo") -> s
 )
 @pytest.mark.timeout(600)
 async def test_plan_mode_end_to_end_orchestration(tmp_path, monkeypatch) -> None:
-    """Verify that the code_plan workflow still routes through all four phases.
+    """Verify that code_plan fails closed when a recorded command fails.
 
     What this catches:
     - Missing tools (finalize_plan removed from plan phase tool list)
-    - Broken state machine transitions (review → execute instead of → summarize)
+    - Broken command completion gate (failed command still reaches review)
     - Approval gate removed (workflow skips plan approval)
     - Max-iterations regression (phase hits cap before calling completion tool)
     """
@@ -90,13 +90,15 @@ async def test_plan_mode_end_to_end_orchestration(tmp_path, monkeypatch) -> None
     monkeypatch.chdir(tmp_path)  # ensure no local files are read/written during replay
     result: ReplayResult = await run_headless_replay(cassette)
 
-    # ── structural assertions ─────────────────────────────────────────────────
-    assert result.status == "complete", (
-        f"Workflow did not reach 'complete'.  Status: {result.status!r}. "
-        f"Error: {result.error!r}.  Phases completed: {result.phases}"
+    # The historical recording contains a smoke-test command that exits 1.
+    # PRD-151 intentionally makes that outcome authoritative: the execution
+    # phase must stop instead of claiming a completed workflow.
+    assert result.status == "failed", (
+        f"Workflow unexpectedly reached completion. Status: {result.status!r}. "
+        f"Error: {result.error!r}. Phases completed: {result.phases}"
     )
-    assert result.phases == ["plan", "execute", "review", "summarize"], (
-        f"Phase sequence mismatch: {result.phases}"
+    assert result.phases == ["plan", "execute"], (
+        f"Fail-closed phase sequence mismatch: {result.phases}"
     )
 
     # ── tool-call assertions ──────────────────────────────────────────────────
@@ -106,9 +108,8 @@ async def test_plan_mode_end_to_end_orchestration(tmp_path, monkeypatch) -> None
     assert "mark_execute_complete" in result.tools_called, (
         "mark_execute_complete was not called — execute phase may not be completing"
     )
-    assert "approve_review" in result.tools_called, (
-        "approve_review was not called — review phase may not be reaching completion"
-    )
+    # The replay transport still contains the historical review requests, but
+    # no review phase completion event is emitted after the execute gate fails.
 
     # ── approval-gate assertions ──────────────────────────────────────────────
     assert result.approvals_consumed >= 1, (

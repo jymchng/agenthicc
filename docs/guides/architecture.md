@@ -161,3 +161,9 @@ phase may declare `terminal_wait_policy = "background"`; the declaration
 changes the default tool wait policy without embedding a shell command in the
 workflow. Cancelling a detached parent asks the terminal registry to stop its
 exact child groups before the parent session is finalized.
+
+The PRD-151 execution contract is shared by foreground and owned-terminal
+paths: `CommandOutcome` derives success only from a zero exit, records the
+deadline owner and cleanup result, and distinguishes finite command exit from
+service readiness. `wait_terminal` is observational and never kills a process
+because its observer timed out; explicit stop controls own termination.

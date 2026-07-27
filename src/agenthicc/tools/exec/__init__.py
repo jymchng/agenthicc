@@ -4,13 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import signal
 import sys
 import tempfile
 import time
+import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from agenthicc.tools.base import Tool, arg_bool, arg_float, arg_str
+from agenthicc.tools.base import Tool, arg_bool, arg_str
+from agenthicc.tools.exec.outcome import (
+    CommandKind,
+    CommandOutcome,
+    CommandState,
+    invalid_timeout_result,
+    resolve_deadline,
+    validate_timeout,
+)
 
 if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
@@ -23,9 +35,38 @@ __all__ = [
     "RunPythonExprTool",
     "RunTestsTool",
     "WaitTerminalTool",
+    "InspectTerminalTool",
+    "WaitTerminalReadinessTool",
+    "StopTerminalTool",
+    "CommandKind",
+    "CommandOutcome",
+    "CommandState",
 ]
 
 _MAX_OUTPUT_BYTES = 64 * 1024
+_SECRET_FLAGS = re.compile(
+    r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key|authorization))\s*(?:=|\s)\s*([^\s]+)"
+)
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b((?:api[_-]?key|token|secret|password|passwd|authorization))\s*=\s*([^\s;&]+)"
+)
+
+
+def _redact_execution_text(value: str) -> str:
+    value = _SECRET_FLAGS.sub(lambda match: f"{match.group(1)}=<redacted>", value)
+    return _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}=<redacted>", value)
+
+
+def _spawn_failure_kind(exc: BaseException) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return "executable_or_shell"
+    if isinstance(exc, NotADirectoryError):
+        return "cwd"
+    if isinstance(exc, PermissionError):
+        return "permission"
+    if isinstance(exc, ValueError):
+        return "environment"
+    return "spawn"
 
 
 def _arg_env(args: Mapping[str, object]) -> dict[str, str] | None:
@@ -41,9 +82,9 @@ def _arg_env(args: Mapping[str, object]) -> dict[str, str] | None:
 
 def _arg_argv(args: Mapping[str, object]) -> list[str]:
     value = args.get("argv")
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
         return list(value)
-    raise ValueError("tool argument 'argv' must be a list of strings")
+    raise ValueError("tool argument 'argv' must be a non-empty list of strings")
 
 
 def _result_text(result: Mapping[str, object], key: str) -> str:
@@ -67,8 +108,69 @@ async def _run_proc(
     shell: bool = False,
 ) -> dict[str, object]:
     t0 = time.perf_counter()
-    timed_out = False
     effective_env = {**os.environ, **(env or {})}
+    kind = CommandKind.SHELL if shell else CommandKind.EXEC
+    deadline = resolve_deadline(timeout)
+    process: asyncio.subprocess.Process | None = None
+    communication: asyncio.Task[tuple[bytes, bytes]] | None = None
+
+    if not os.path.isdir(cwd):
+        return CommandOutcome(
+            state=CommandState.SPAWN_FAILED,
+            command_kind=kind,
+            stderr=f"cwd is not a directory: {cwd}",
+            duration_ms=0.0,
+            termination_reason="spawn failed: invalid cwd",
+            deadline=deadline,
+            cleanup_result="not_spawned",
+            spawn_failure="cwd",
+            command=_redact_execution_text(cmd[0]) if shell else None,
+            argv=None if shell else tuple(_redact_execution_text(item) for item in cmd),
+            cwd=cwd,
+        ).to_dict()
+
+    async def cleanup(*, reason: str) -> str:
+        if process is None or process.returncode is not None:
+            return "already_exited"
+        try:
+            if os.name == "nt":
+                process.send_signal(1)
+            else:
+                pgid = os.getpgid(process.pid)
+                os.killpg(pgid, signal.SIGINT)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                process.terminate()
+            except (ProcessLookupError, OSError):
+                pass
+        try:
+            await asyncio.wait_for(asyncio.shield(process.wait()), timeout=0.5)
+            return f"graceful_{reason}"
+        except asyncio.TimeoutError:
+            try:
+                if os.name == "nt":
+                    process.kill()
+                else:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    process.kill()
+                except (ProcessLookupError, OSError):
+                    return "cleanup_unproven"
+            try:
+                await asyncio.wait_for(asyncio.shield(process.wait()), timeout=1.0)
+                return f"force_{reason}"
+            except asyncio.TimeoutError:
+                return "cleanup_unproven"
+
+    async def output_after_cleanup() -> tuple[bytes, bytes]:
+        if communication is None:
+            return b"", b""
+        try:
+            return await asyncio.wait_for(asyncio.shield(communication), timeout=1.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            return b"", b"[process output could not be fully drained]\n"
+
     try:
         if shell:
             proc = await asyncio.create_subprocess_shell(
@@ -78,6 +180,11 @@ async def _run_proc(
                 cwd=cwd,
                 env=effective_env,
                 start_new_session=True,
+                executable=(
+                    "/bin/bash"
+                    if os.name != "nt" and os.path.exists("/bin/bash")
+                    else shutil.which("bash")
+                ),
             )
         else:
             proc = await asyncio.create_subprocess_exec(
@@ -88,38 +195,115 @@ async def _run_proc(
                 env=effective_env,
                 start_new_session=True,
             )
+        process = proc
+        communication = asyncio.create_task(process.communicate(), name="command-output")
+        cleanup_result = "not_required"
+        state = CommandState.EXITED
+        termination_reason: str | None = None
+        cancelled = False
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            if deadline.effective_s is None:
+                stdout_b, stderr_b = await asyncio.shield(communication)
+            else:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    asyncio.shield(communication), timeout=deadline.effective_s
+                )
         except asyncio.TimeoutError:
-            timed_out = True
-            try:
-                os.killpg(os.getpgid(proc.pid), 9)
-            except (ProcessLookupError, PermissionError, OSError):
-                proc.kill()
-            stdout_b, stderr_b = b"", b"[process killed: timeout]\n"
-            await asyncio.gather(proc.wait(), return_exceptions=True)
-    except FileNotFoundError as exc:
-        return {
-            "stdout": "",
-            "stderr": str(exc),
-            "returncode": -1,
-            "duration_ms": 0.0,
-            "timed_out": False,
-        }
+            state = CommandState.TIMED_OUT
+            termination_reason = "command deadline expired"
+            cleanup_result = await cleanup(reason="timeout")
+            stdout_b, stderr_b = await output_after_cleanup()
+            stderr_b += b"[process stopped: command timeout]\n"
+        except asyncio.CancelledError:
+            state = CommandState.CANCELLED
+            cancelled = True
+            termination_reason = "owning task cancelled"
+            cleanup_task = asyncio.create_task(cleanup(reason="cancellation"))
+            cleanup_result = await asyncio.shield(cleanup_task)
+            stdout_b, stderr_b = await output_after_cleanup()
+            stderr_b += b"[process stopped: cancellation]\n"
+        else:
+            stdout_b, stderr_b = stdout_b, stderr_b
+        if state is CommandState.EXITED and process.returncode != 0:
+            state = CommandState.FAILED
+            termination_reason = f"process exited with return code {process.returncode}"
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError) as exc:
+        outcome = CommandOutcome(
+            state=CommandState.SPAWN_FAILED,
+            command_kind=kind,
+            stderr=str(exc),
+            duration_ms=round((time.perf_counter() - t0) * 1000, 1),
+            termination_reason=f"spawn failed: {type(exc).__name__}",
+            spawn_failure=_spawn_failure_kind(exc),
+            deadline=deadline,
+            cleanup_result="not_spawned",
+            command=_redact_execution_text(cmd[0]) if shell else None,
+            argv=None if shell else tuple(_redact_execution_text(item) for item in cmd),
+            cwd=cwd,
+        )
+        return outcome.to_dict()
 
-    duration_ms = (time.perf_counter() - t0) * 1000
-    return {
-        "stdout": _truncate(stdout_b.decode(errors="replace")),
-        "stderr": _truncate(stderr_b.decode(errors="replace")),
-        "returncode": proc.returncode if not timed_out else -1,
-        "duration_ms": round(duration_ms, 1),
-        "timed_out": timed_out,
-    }
+    stdout = _truncate(_redact_execution_text(stdout_b.decode(errors="replace")))
+    stderr = _truncate(_redact_execution_text(stderr_b.decode(errors="replace")))
+    outcome = CommandOutcome(
+        state=state,
+        command_kind=kind,
+        returncode=process.returncode if process is not None else -1,
+        stdout=stdout,
+        stderr=stderr,
+        duration_ms=round((time.perf_counter() - t0) * 1000, 1),
+        timed_out=state is CommandState.TIMED_OUT,
+        cancelled=cancelled,
+        truncated=("[... truncated]" in stdout or "[... truncated]" in stderr),
+        termination_reason=termination_reason,
+        deadline=deadline,
+        cleanup_result=cleanup_result,
+        command=_redact_execution_text(cmd[0]) if shell else None,
+        argv=None if shell else tuple(_redact_execution_text(item) for item in cmd),
+        cwd=cwd,
+    )
+    return outcome.to_dict()
+
+
+def _timeout(
+    args: Mapping[str, object], default: float, kind: CommandKind
+) -> tuple[float | None, dict[str, object] | None]:
+    raw = args.get("timeout", default)
+    try:
+        return validate_timeout(raw), None
+    except ValueError:
+        return None, invalid_timeout_result(raw, command_kind=kind)
+
+
+def _cwd(args: Mapping[str, object], context: Mapping[str, object]) -> str:
+    requested = args.get("cwd")
+    root = context.get("workspace_root", ".")
+    base = (Path(root) if isinstance(root, str) else Path(".")).resolve()
+    if isinstance(requested, str) and requested:
+        path = Path(requested)
+        return str(path if path.is_absolute() else base / path)
+    return str(base)
+
+
+def _lifecycle(args: Mapping[str, object]) -> str:
+    lifecycle = args.get("lifecycle", "oneshot")
+    if not isinstance(lifecycle, str) or lifecycle not in {"oneshot", "service"}:
+        raise ValueError("lifecycle must be 'oneshot' or 'service'")
+    return lifecycle
+
+
+def _readiness(args: Mapping[str, object]) -> dict[str, object] | None:
+    value = args.get("readiness")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("readiness must be an object")
+    return {str(key): item for key, item in value.items()}
 
 
 class RunBashTool(Tool):
     name = "run_bash"
-    description = "Run a shell command and return its stdout/stderr."
+    description = "Run a Bash command with an authoritative outcome."
     parameters = {
         "type": "object",
         "properties": {
@@ -129,6 +313,8 @@ class RunBashTool(Tool):
             "env": {"type": "object"},
             "background": {"type": "boolean", "default": False},
             "label": {"type": "string"},
+            "lifecycle": {"type": "string", "enum": ["oneshot", "service"]},
+            "readiness": {"type": "object"},
         },
         "required": ["command"],
     }
@@ -137,9 +323,38 @@ class RunBashTool(Tool):
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
         command = arg_str(args, "command")
-        cwd = arg_str(args, "cwd", arg_str(context, "workspace_root", "."))
+        cwd = _cwd(args, context)
+        timeout, invalid = _timeout(args, 30.0, CommandKind.SHELL)
+        if invalid is not None:
+            return invalid
+        try:
+            env_overlay = _arg_env(args)
+        except ValueError as exc:
+            return {
+                **invalid_timeout_result(0, command_kind=CommandKind.SHELL),
+                "termination_reason": str(exc),
+                "error": str(exc),
+            }
+        try:
+            lifecycle = _lifecycle(args)
+            readiness = _readiness(args)
+        except ValueError as exc:
+            return {
+                **invalid_timeout_result(0, command_kind=CommandKind.SHELL),
+                "termination_reason": str(exc),
+                "error": str(exc),
+            }
         policy = context.get("terminal_wait_policy", "foreground")
-        background_requested = arg_bool(args, "background", False) or policy == "background"
+        background_requested = (
+            arg_bool(args, "background", False) or policy == "background" or lifecycle == "service"
+        )
+        if lifecycle == "service" and not background_requested:
+            return {
+                "ok": False,
+                "state": "rejected",
+                "command_kind": CommandKind.SHELL.value,
+                "error": "service lifecycle requires background ownership",
+            }
         if background_requested:
             manager = cast("TerminalManager | None", context.get("terminal_manager"))
             if manager is None:
@@ -152,17 +367,19 @@ class RunBashTool(Tool):
             return await manager.start(
                 command=command,
                 cwd=cwd,
-                timeout=arg_float(args, "timeout", 30.0),
-                env=_arg_env(args),
+                timeout=timeout or 0.0,
+                env=env_overlay,
                 shell=True,
                 label=arg_str(args, "label", ""),
                 tool_call_id=arg_str(context, "tool_call_id", ""),
+                lifecycle=lifecycle,
+                readiness=readiness,
             )
         return await _run_proc(
             [command],
             cwd=cwd,
-            timeout=arg_float(args, "timeout", 30.0),
-            env=_arg_env(args),
+            timeout=timeout or 0.0,
+            env=env_overlay,
             shell=True,
         )
 
@@ -179,6 +396,8 @@ class RunCommandTool(Tool):
             "env": {"type": "object"},
             "background": {"type": "boolean", "default": False},
             "label": {"type": "string"},
+            "lifecycle": {"type": "string", "enum": ["oneshot", "service"]},
+            "readiness": {"type": "object"},
         },
         "required": ["argv"],
     }
@@ -186,9 +405,32 @@ class RunCommandTool(Tool):
     async def execute(
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        cwd = arg_str(args, "cwd", arg_str(context, "workspace_root", "."))
+        cwd = _cwd(args, context)
+        timeout, invalid = _timeout(args, 30.0, CommandKind.EXEC)
+        if invalid is not None:
+            return invalid
+        try:
+            env_overlay = _arg_env(args)
+            argv = _arg_argv(args)
+        except ValueError as exc:
+            return {
+                **invalid_timeout_result(0, command_kind=CommandKind.EXEC),
+                "termination_reason": str(exc),
+                "error": str(exc),
+            }
+        try:
+            lifecycle = _lifecycle(args)
+            readiness = _readiness(args)
+        except ValueError as exc:
+            return {
+                **invalid_timeout_result(0, command_kind=CommandKind.EXEC),
+                "termination_reason": str(exc),
+                "error": str(exc),
+            }
         policy = context.get("terminal_wait_policy", "foreground")
-        background_requested = arg_bool(args, "background", False) or policy == "background"
+        background_requested = (
+            arg_bool(args, "background", False) or policy == "background" or lifecycle == "service"
+        )
         if background_requested:
             manager = cast("TerminalManager | None", context.get("terminal_manager"))
             if manager is None:
@@ -199,19 +441,21 @@ class RunCommandTool(Tool):
                     "error": "background terminals are unavailable in this execution context",
                 }
             return await manager.start(
-                argv=_arg_argv(args),
+                argv=argv,
                 cwd=cwd,
-                timeout=arg_float(args, "timeout", 30.0),
-                env=_arg_env(args),
+                timeout=timeout or 0.0,
+                env=env_overlay,
                 shell=False,
                 label=arg_str(args, "label", ""),
                 tool_call_id=arg_str(context, "tool_call_id", ""),
+                lifecycle=lifecycle,
+                readiness=readiness,
             )
         return await _run_proc(
-            _arg_argv(args),
+            argv,
             cwd=cwd,
-            timeout=arg_float(args, "timeout", 30.0),
-            env=_arg_env(args),
+            timeout=timeout or 0.0,
+            env=env_overlay,
             shell=False,
         )
 
@@ -233,6 +477,9 @@ class RunPythonTool(Tool):
     ) -> dict[str, object]:
         cwd = arg_str(context, "workspace_root", ".")
         code = arg_str(args, "code")
+        timeout, invalid = _timeout(args, 30.0, CommandKind.EXEC)
+        if invalid is not None:
+            return invalid
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
             f.write(code)
             tmp_path = f.name
@@ -240,7 +487,7 @@ class RunPythonTool(Tool):
             return await _run_proc(
                 [sys.executable, tmp_path],
                 cwd=cwd,
-                timeout=arg_float(args, "timeout", 30.0),
+                timeout=timeout or 0.0,
                 shell=False,
             )
         finally:
@@ -267,11 +514,14 @@ class RunPythonExprTool(Tool):
     ) -> dict[str, object]:
         cwd = arg_str(context, "workspace_root", ".")
         expression = arg_str(args, "expression")
+        timeout, invalid = _timeout(args, 10.0, CommandKind.EXEC)
+        if invalid is not None:
+            return invalid
         code = f"_r = ({expression}); print(repr(_r))"
         result = await _run_proc(
             [sys.executable, "-c", code],
             cwd=cwd,
-            timeout=arg_float(args, "timeout", 10.0),
+            timeout=timeout or 0.0,
             shell=False,
         )
         result["result"] = _result_text(result, "stdout").strip()
@@ -298,6 +548,9 @@ class RunTestsTool(Tool):
         import uuid  # noqa: PLC0415
 
         cwd = arg_str(context, "workspace_root", ".")
+        timeout, invalid = _timeout(args, 120.0, CommandKind.EXEC)
+        if invalid is not None:
+            return invalid
         raw_extra = args.get("args") or []
         if not isinstance(raw_extra, list) or not all(isinstance(item, str) for item in raw_extra):
             raise ValueError("tool argument 'args' must be a list of strings")
@@ -322,7 +575,7 @@ class RunTestsTool(Tool):
         result = await _run_proc(
             cmd,
             cwd=cwd,
-            timeout=arg_float(args, "timeout", 120.0),
+            timeout=timeout or 0.0,
             shell=False,
         )
 
@@ -375,10 +628,110 @@ class WaitTerminalTool(Tool):
                 "state": "rejected",
                 "error": "background terminals are unavailable in this execution context",
             }
+        timeout, invalid = _timeout(args, 0.0, CommandKind.EXEC)
+        if invalid is not None:
+            invalid.update({"background": True, "terminal_id": arg_str(args, "terminal_id")})
+            return invalid
         return await manager.wait(
             arg_str(args, "terminal_id"),
-            timeout=arg_float(args, "timeout", 0.0),
+            timeout=timeout or 0.0,
         )
+
+
+class InspectTerminalTool(Tool):
+    """Inspect one owned terminal without waiting or stopping it."""
+
+    name = "inspect_terminal"
+    description = "Inspect the state and bounded output of an owned terminal."
+    parameters = {
+        "type": "object",
+        "properties": {"terminal_id": {"type": "string"}},
+        "required": ["terminal_id"],
+    }
+
+    async def execute(
+        self, args: Mapping[str, object], context: Mapping[str, object]
+    ) -> dict[str, object]:
+        manager = cast("TerminalManager | None", context.get("terminal_manager"))
+        terminal_id = arg_str(args, "terminal_id")
+        if manager is None:
+            return {"ok": False, "state": "rejected", "error": "terminal manager unavailable"}
+        record = manager.get(terminal_id)
+        if record is None:
+            return {"ok": False, "state": "unknown", "terminal_id": terminal_id}
+        if record.session_id != manager.session_id:
+            return {
+                "ok": False,
+                "state": "rejected",
+                "terminal_id": terminal_id,
+                "error": "terminal belongs to another session",
+            }
+        return record.result()
+
+
+class WaitTerminalReadinessTool(Tool):
+    """Wait for an owned service's readiness probe without killing it."""
+
+    name = "wait_terminal_ready"
+    description = "Wait for an owned service readiness probe without stopping it."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "terminal_id": {"type": "string"},
+            "readiness": {"type": "object"},
+        },
+        "required": ["terminal_id"],
+    }
+
+    async def execute(
+        self, args: Mapping[str, object], context: Mapping[str, object]
+    ) -> dict[str, object]:
+        manager = cast("TerminalManager | None", context.get("terminal_manager"))
+        if manager is None:
+            return {"ok": False, "state": "rejected", "error": "terminal manager unavailable"}
+        value = args.get("readiness")
+        if value is not None and not isinstance(value, Mapping):
+            return {
+                "ok": False,
+                "state": "rejected",
+                "error": "readiness must be an object",
+            }
+        readiness = value if isinstance(value, Mapping) else None
+        return await manager.wait_readiness(arg_str(args, "terminal_id"), readiness)
+
+
+class StopTerminalTool(Tool):
+    """Stop one exact owned terminal through its process-group owner."""
+
+    name = "stop_terminal"
+    description = "Stop one owned terminal gracefully, with bounded escalation."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "terminal_id": {"type": "string"},
+            "force": {"type": "boolean", "default": False},
+        },
+        "required": ["terminal_id"],
+    }
+
+    async def execute(
+        self, args: Mapping[str, object], context: Mapping[str, object]
+    ) -> dict[str, object]:
+        manager = cast("TerminalManager | None", context.get("terminal_manager"))
+        terminal_id = arg_str(args, "terminal_id")
+        if manager is None:
+            return {"ok": False, "state": "rejected", "error": "terminal manager unavailable"}
+        stopped = await manager.stop(
+            terminal_id,
+            force=arg_bool(args, "force", False),
+            reason="tool stop",
+        )
+        record = manager.get(terminal_id)
+        if record is None:
+            return {"ok": False, "state": "unknown", "terminal_id": terminal_id}
+        result = record.result()
+        result["stop_requested"] = stopped
+        return result
 
 
 class ExecToolKit:
@@ -390,4 +743,7 @@ class ExecToolKit:
             RunPythonExprTool(),
             RunTestsTool(),
             WaitTerminalTool(),
+            InspectTerminalTool(),
+            WaitTerminalReadinessTool(),
+            StopTerminalTool(),
         ]

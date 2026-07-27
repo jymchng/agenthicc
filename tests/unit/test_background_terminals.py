@@ -92,15 +92,17 @@ class TestTerminalLifecycle:
         assert "terminal_id" not in result
         await manager.close()
 
-    async def test_wait_timeout_stops_owned_process(self, tmp_path: Path):
+    async def test_wait_timeout_is_non_destructive(self, tmp_path: Path):
         manager = _manager(tmp_path, cancel_grace_s=0.1)
         started = await RunCommandTool().execute(
             {"argv": [sys.executable, "-c", "import time; time.sleep(30)"], "background": True},
             {"workspace_root": str(tmp_path), "terminal_manager": manager},
         )
         result = await _wait_with_timeout(manager, started, 0.05)
-        assert result["state"] == "stopped"
-        assert result["returncode"] != 0
+        assert result["state"] == "waiting"
+        assert result["waiting"] is True
+        assert manager.running_count() == 1
+        await manager.stop(str(started["terminal_id"]), reason="test cleanup")
         assert manager.running_count() == 0
         await manager.close()
 

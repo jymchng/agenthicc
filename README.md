@@ -205,6 +205,13 @@ terminals, while `Esc` stops the terminal currently being awaited. Terminal
 handles and bounded output are local-only and scoped to the originating
 session.
 
+For finite builds, use an explicit `cwd` and a seconds-based `timeout`; a
+non-zero exit, timeout, cancellation, or spawn failure is always reported as a
+failed command. For development servers, use
+`lifecycle="service"` with a readiness probe rather than waiting for a process
+that is intended to remain alive. See the [command execution guide](./docs/guides/command-execution.md)
+for result states, readiness controls, workflow gates, and diagnostics.
+
 ## Architecture in one picture
 
 ```text

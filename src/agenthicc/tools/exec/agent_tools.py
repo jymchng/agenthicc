@@ -7,6 +7,8 @@ import os
 from lauren_ai._tools import tool
 from agenthicc.tools.capabilities import tool_execute
 
+ReadinessValue = str | int | bool | dict[str, str | int | bool]
+
 __all__ = [
     "run_bash",
     "run_command",
@@ -14,6 +16,9 @@ __all__ = [
     "run_python_expr",
     "run_tests",
     "wait_terminal",
+    "inspect_terminal",
+    "wait_terminal_ready",
+    "stop_terminal",
     "shell",
     "EXEC_AGENT_TOOLS",
 ]
@@ -42,6 +47,10 @@ async def shell(
     timeout: float = 30.0,
     background: bool = False,
     label: str = "",
+    cwd: str = "",
+    env: dict[str, str] | None = None,
+    lifecycle: str = "oneshot",
+    readiness: dict[str, ReadinessValue] | None = None,
 ) -> dict[str, object]:
     """Execute a shell command and return stdout/stderr.
 
@@ -50,11 +59,25 @@ async def shell(
         timeout: Maximum seconds to wait (default 30).
         background: Return an owned terminal handle instead of waiting.
         label: Optional bounded label shown in the terminal manager.
+        cwd: Working directory for the command; defaults to the workspace.
+        env: String environment overlay.
+        lifecycle: ``oneshot`` or owned ``service``.
+        readiness: Optional URL, TCP, or output-marker readiness probe.
     """
     from agenthicc.tools.exec import RunBashTool  # noqa: PLC0415
 
     return await RunBashTool().execute(
-        {"command": command, "timeout": timeout, "background": background, "label": label}, _CTX()
+        {
+            "command": command,
+            "timeout": timeout,
+            "background": background,
+            "label": label,
+            "cwd": cwd,
+            "env": env,
+            "lifecycle": lifecycle,
+            "readiness": readiness,
+        },
+        _CTX(),
     )
 
 
@@ -65,6 +88,10 @@ async def run_bash(
     timeout: float = 30.0,
     background: bool = False,
     label: str = "",
+    cwd: str = "",
+    env: dict[str, str] | None = None,
+    lifecycle: str = "oneshot",
+    readiness: dict[str, ReadinessValue] | None = None,
 ) -> dict[str, object]:
     """Execute a bash shell command and return stdout/stderr.
 
@@ -73,11 +100,25 @@ async def run_bash(
         timeout: Maximum seconds to wait (default 30).
         background: Return an owned terminal handle instead of waiting.
         label: Optional bounded label shown in the terminal manager.
+        cwd: Working directory for the command; defaults to the workspace.
+        env: String environment overlay.
+        lifecycle: ``oneshot`` or owned ``service``.
+        readiness: Optional URL, TCP, or output-marker readiness probe.
     """
     from agenthicc.tools.exec import RunBashTool  # noqa: PLC0415
 
     return await RunBashTool().execute(
-        {"command": command, "timeout": timeout, "background": background, "label": label}, _CTX()
+        {
+            "command": command,
+            "timeout": timeout,
+            "background": background,
+            "label": label,
+            "cwd": cwd,
+            "env": env,
+            "lifecycle": lifecycle,
+            "readiness": readiness,
+        },
+        _CTX(),
     )
 
 
@@ -88,6 +129,10 @@ async def run_command(
     timeout: float = 30.0,
     background: bool = False,
     label: str = "",
+    cwd: str = "",
+    env: dict[str, str] | None = None,
+    lifecycle: str = "oneshot",
+    readiness: dict[str, ReadinessValue] | None = None,
 ) -> dict[str, object]:
     """Execute an executable directly (no shell) and return stdout/stderr.
 
@@ -96,11 +141,25 @@ async def run_command(
         timeout: Maximum seconds to wait (default 30).
         background: Return an owned terminal handle instead of waiting.
         label: Optional bounded label shown in the terminal manager.
+        cwd: Working directory for the command; defaults to the workspace.
+        env: String environment overlay.
+        lifecycle: ``oneshot`` or owned ``service``.
+        readiness: Optional URL, TCP, or output-marker readiness probe.
     """
     from agenthicc.tools.exec import RunCommandTool  # noqa: PLC0415
 
     return await RunCommandTool().execute(
-        {"argv": argv, "timeout": timeout, "background": background, "label": label}, _CTX()
+        {
+            "argv": argv,
+            "timeout": timeout,
+            "background": background,
+            "label": label,
+            "cwd": cwd,
+            "env": env,
+            "lifecycle": lifecycle,
+            "readiness": readiness,
+        },
+        _CTX(),
     )
 
 
@@ -163,13 +222,48 @@ async def wait_terminal(terminal_id: str, timeout: float = 0.0) -> dict[str, obj
 
     Args:
         terminal_id: Handle returned by a background run_bash/run_command call.
-        timeout: Optional maximum seconds to wait before stopping it.
+        timeout: Optional observer timeout in seconds. It never stops the process.
     """
     from agenthicc.tools.exec import WaitTerminalTool  # noqa: PLC0415
 
     return await WaitTerminalTool().execute(
         {"terminal_id": terminal_id, "timeout": timeout}, _CTX()
     )
+
+
+@tool_execute
+@tool()
+async def inspect_terminal(terminal_id: str) -> dict[str, object]:
+    """Inspect one owned terminal and its bounded output tail."""
+
+    from agenthicc.tools.exec import InspectTerminalTool  # noqa: PLC0415
+
+    return await InspectTerminalTool().execute({"terminal_id": terminal_id}, _CTX())
+
+
+@tool_execute
+@tool()
+async def wait_terminal_ready(
+    terminal_id: str,
+    readiness: dict[str, ReadinessValue] | None = None,
+) -> dict[str, object]:
+    """Wait for an owned service readiness probe without stopping it."""
+
+    from agenthicc.tools.exec import WaitTerminalReadinessTool  # noqa: PLC0415
+
+    return await WaitTerminalReadinessTool().execute(
+        {"terminal_id": terminal_id, "readiness": readiness}, _CTX()
+    )
+
+
+@tool_execute
+@tool()
+async def stop_terminal(terminal_id: str, force: bool = False) -> dict[str, object]:
+    """Stop one exact owned terminal, escalating only when needed."""
+
+    from agenthicc.tools.exec import StopTerminalTool  # noqa: PLC0415
+
+    return await StopTerminalTool().execute({"terminal_id": terminal_id, "force": force}, _CTX())
 
 
 #: All exec agent tools — ready to pass to @use_tools().
@@ -181,4 +275,7 @@ EXEC_AGENT_TOOLS = [
     run_python_expr,
     run_tests,
     wait_terminal,
+    inspect_terminal,
+    wait_terminal_ready,
+    stop_terminal,
 ]

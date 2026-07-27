@@ -159,9 +159,24 @@ class PhaseSpec:
     result.
     """
 
+    command_lifecycle: str = "oneshot"
+    """Command lifecycle required by this phase: ``oneshot`` or ``service``."""
+
+    require_successful_commands: bool = False
+    """Gate phase transitions on successful command outcomes when enabled."""
+
+    require_readiness: bool = False
+    """Require a successful service readiness result before transition."""
+
     def __post_init__(self) -> None:
         if self.terminal_wait_policy not in {"foreground", "background"}:
             raise ValueError("terminal_wait_policy must be 'foreground' or 'background'")
+        if self.command_lifecycle not in {"oneshot", "service"}:
+            raise ValueError("command_lifecycle must be 'oneshot' or 'service'")
+        if self.command_lifecycle == "service" and self.terminal_wait_policy != "background":
+            raise ValueError("service command_lifecycle requires terminal_wait_policy='background'")
+        if self.require_readiness and self.command_lifecycle != "service":
+            raise ValueError("require_readiness requires command_lifecycle='service'")
 
     @property
     def resolved_allowed_caps(self) -> frozenset[ToolCapability] | None:

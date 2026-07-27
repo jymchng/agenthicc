@@ -78,12 +78,11 @@ state/API boundary decisions in PRD-138, and aligns the HTTP direction in
 PRD-121 with the existing kernel and session ownership boundaries. See the
 implementation evidence at the end of the PRD.
 
-PRD-151 investigates the unreliable command outcome and lifecycle contract
-behind long-running builds and development servers. It defines the corrective
-result semantics, seconds-based deadline hierarchy, cancellation cleanup,
-explicit service/readiness mode, and workflow completion gates needed to make
-`next build` failures visible and `npm run dev` manageable through PRD-149's
-owned terminals.
+PRD-151 implements the reliable command outcome and lifecycle contract behind
+long-running builds and development servers. It adds canonical result states,
+seconds-based deadlines, cancellation cleanup, explicit service/readiness mode,
+and workflow completion gates so `next build` failures are visible and
+`npm run dev` is manageable through PRD-149's owned terminals.
 
 ## Existing PRDs
 

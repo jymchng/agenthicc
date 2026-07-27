@@ -49,6 +49,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `ToolResult` / `ToolResultEnvelope` | `agenthicc.tools` | Typed compatibility and adapter result envelopes |
 | `TerminalManager` / `TerminalStore` | `agenthicc.background.terminals` | Owned process groups, bounded output, handles, wait, stop, and local recovery |
 | `TerminalState` / `TerminalRecord` | `agenthicc.background.terminals` | Durable background-terminal lifecycle and redacted result metadata |
+| `CommandOutcome` / `CommandState` / `CommandKind` | `agenthicc.tools.exec` | Canonical command states, deadlines, cancellation, and service lifecycle |
 | `ToolSandbox` / `WorkspaceView` | `agenthicc.tools` | Timeout, resource, network, and real-path boundaries |
 | `ToolMetadata` / `ToolErrorKind` | `agenthicc.tools` | Generated catalog metadata and stable error taxonomy |
 | `SearchWebTool` / `FetchPageTool` | `agenthicc.skills.web_search` | Native lauren-ai tools for Brave search and visible page-text extraction |
