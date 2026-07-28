@@ -20,6 +20,22 @@ _PHASE_TRANSITION_TOOL_NAMES = {
 }
 
 
+def _transition_failure(
+    error: str,
+    fix: str,
+    **extra: object,
+) -> dict[str, object]:
+    """Return the common actionable shape for a rejected phase handoff."""
+
+    return {
+        "ok": False,
+        "error": error,
+        "fix": fix,
+        "message": f"{error} Fix: {fix}",
+        **extra,
+    }
+
+
 def authoring_transition_tool_name(phase_name: str) -> str:
     """Return the unique handoff tool name for an authoring phase."""
 
@@ -65,20 +81,28 @@ def make_authoring_transition_tools(
                 of the generated artifact. Ignored by other phases.
         """
 
-        cleaned = summary.strip()
-        if not cleaned:
-            message = "The phase transition was rejected: summary must not be empty."
+        if not isinstance(summary, str) or not summary.strip():
+            message = "The phase transition was rejected: summary must be a non-empty string."
+            fix = f"Provide concise evidence of the completed work, then call {transition_tool_name}(summary) again."
             transition_data["last_error"] = message
-            return {
-                "ok": False,
-                "error": message,
-                "fix": (
-                    "Provide concise evidence of the work completed, then call "
-                    f"{transition_tool_name}(summary) again."
-                ),
-            }
+            return _transition_failure(message, fix, retry=True)
+
+        cleaned = summary.strip()
         transition_data["summary_candidate"] = cleaned
         if phase_name == "execute":
+            if not isinstance(artifact_name, str) or not isinstance(artifact_description, str):
+                message = (
+                    f"The {phase_name} phase transition was rejected: artifact metadata "
+                    "must be strings."
+                )
+                fix = (
+                    "Provide artifact_name as the stable lowercase filename stem and "
+                    "artifact_description as a concise non-empty description, then "
+                    f"call {transition_tool_name}(summary, artifact_name, artifact_description) again."
+                )
+                transition_data["last_error"] = message
+                transition_data.pop("summary_candidate", None)
+                return _transition_failure(message, fix, retry=True)
             if artifact_name.strip():
                 transition_data["artifact_name"] = artifact_name.strip()
             if artifact_description.strip():
@@ -93,10 +117,10 @@ def make_authoring_transition_tools(
                 )
             if failure is not None:
                 error, fix = failure
-                message = f"The {phase_name} phase cannot advance: {error} Fix: {fix}"
-                transition_data["last_error"] = message
+                error_message = f"The {phase_name} phase cannot advance: {error} Fix: {fix}"
+                transition_data["last_error"] = error_message
                 transition_data.pop("summary_candidate", None)
-                return {"ok": False, "error": message, "fix": fix, "retry": True}
+                return _transition_failure(error_message, fix, message=error_message, retry=True)
         transition_data["summary"] = cleaned
         transition_data.pop("summary_candidate", None)
         transition_data["phase"] = phase_name
@@ -132,22 +156,21 @@ def make_authoring_review_tools(
         """Ask for publication approval and signal the review transition."""
 
         if transition_data.get("approval_decided") is True:
-            return {
-                "ok": False,
-                "error": "Publication approval has already been decided for this review attempt.",
-                "fix": "Stop the review phase and let the runner apply the decision.",
-            }
+            return _transition_failure(
+                "Publication approval has already been decided for this review attempt.",
+                "Stop calling the review transition tool and let the runner apply the recorded approval decision.",
+                retry=False,
+            )
         try:
             allowed = await request_approval()
         except Exception as exc:  # noqa: BLE001
             message = f"Publication approval could not be requested: {type(exc).__name__}: {exc}"
             transition_data["last_error"] = message
-            return {
-                "ok": False,
-                "error": message,
-                "fix": "Resolve the approval-service error and request review again.",
-                "retry": True,
-            }
+            return _transition_failure(
+                message,
+                "Resolve the approval-service error and request publication approval again.",
+                retry=True,
+            )
 
         transition_data["approval_decided"] = True
         transition_data["approved"] = allowed
@@ -160,11 +183,10 @@ def make_authoring_review_tools(
                     "to the publish phase."
                 ),
             }
-        return {
-            "ok": False,
-            "error": "Publication approval was denied; the artifact remains staged.",
-            "fix": "Do not publish the artifact. Stop the review phase so the runner can summarize the rejection.",
-            "rejected": True,
-        }
+        return _transition_failure(
+            "Publication approval was denied; the artifact remains staged.",
+            "Do not publish the artifact. Stop the review phase so the runner can summarize the rejection.",
+            rejected=True,
+        )
 
     return [request_publication_approval]

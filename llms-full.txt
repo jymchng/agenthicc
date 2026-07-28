@@ -1543,8 +1543,10 @@ phase-specific transition tool is called; workflow execute additionally requires
 the agent-owned filesystem write.
 
 The optional ``validator`` checks phase prerequisites before the transition
-event is set. Rejected handoffs return an actionable ``error`` and ``retry``
-flag, and preserve ``last_error`` for the next bounded agent attempt.
+event is set. Every rejected handoff returns ``ok: false``, an actionable
+``error``, a concrete ``fix``, and a human-readable ``message`` explaining the
+correction and retry call; malformed payloads and approval-service failures use
+the same shape.
 
 ### make_authoring_review_tools
 

@@ -111,7 +111,7 @@ typed context, per-state functions, explicit match-based dispatch, and resume:
 
 | AuthoringState | agenthicc.workflows.authoring.state | Typed create_* lifecycle state |
 | AuthoringContext | agenthicc.workflows.authoring.state | Typed data shared by authoring phase handlers |
-| make_authoring_transition_tools | agenthicc.workflows.authoring.phase_tools | Tool-gated handoff; workflow execute records the agent-owned `write_file` result |
+| make_authoring_transition_tools | agenthicc.workflows.authoring.phase_tools | Tool-gated handoff; rejected transitions return actionable `error`, `fix`, and `message` fields |
 | make_authoring_review_tools | agenthicc.workflows.authoring.phase_tools | Approval-gated review transition with actionable denial feedback |
 | make_authoring_inspection_tools | agenthicc.workflows.authoring.inspection_tools | Read-only packaged docs and current API inspection |
 

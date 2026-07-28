@@ -112,6 +112,15 @@ unambiguous in the model's tool catalog:
 | `execute` | `write_file(path=".agenthicc/workflows/<name>.py", content=<complete source>)`, then `complete_execute_phase(summary, artifact_name, artifact_description)` |
 | `summarize` | `complete_summarize_phase(summary)` |
 
+Rejected phase transitions always return a structured failure containing
+`ok: false`, an `error`, a human-readable `message`, and a concrete `fix` that
+tells the agent what to correct and which transition tool to call again. This
+also applies to approval denials, missing or empty summaries, invalid artifact
+metadata, failed approval services, and CodePlan completion/review handoffs.
+Retryable validation failures keep the phase active so the agent can use that
+returned guidance on its next turn; deliberate decisions such as approval
+denial still follow their configured terminal or rejection transition.
+
 The design phase must not call a mutating filesystem tool. It produces the
 implementation specification and calls `complete_design_phase`. The execute
 phase makes one complete `write_file` call, waits for its successful result, and

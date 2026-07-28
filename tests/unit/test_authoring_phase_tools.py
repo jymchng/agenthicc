@@ -29,6 +29,22 @@ async def test_design_transition_tool_only_signals_phase_completion() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transition_failure_returns_message_and_fix() -> None:
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+    (complete,) = make_authoring_transition_tools("design", event, data)
+
+    result = await complete("")
+
+    assert result["ok"] is False
+    assert result["error"]
+    assert result["fix"]
+    assert result["message"] == f"{result['error']} Fix: {result['fix']}"
+    assert result["retry"] is True
+    assert not event.is_set()
+
+
+@pytest.mark.asyncio
 async def test_execute_transition_tool_captures_artifact_metadata() -> None:
     event = asyncio.Event()
     data: dict[str, object] = {}
@@ -39,6 +55,21 @@ async def test_execute_transition_tool_captures_artifact_metadata() -> None:
     assert result["ok"] is True
     assert data["artifact_name"] == "cloakbrowser_parse_fb"
     assert data["artifact_description"] == "Parse Facebook."
+
+
+@pytest.mark.asyncio
+async def test_execute_transition_invalid_metadata_returns_actionable_message() -> None:
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+    (complete,) = make_authoring_transition_tools("execute", event, data)
+
+    result = await complete("source is ready", None, "description")
+
+    assert result["ok"] is False
+    assert "artifact metadata" in str(result["error"])
+    assert "artifact_name" in str(result["fix"])
+    assert "Fix:" in str(result["message"])
+    assert not event.is_set()
 
 
 @pytest.mark.asyncio
@@ -102,8 +133,28 @@ async def test_review_tool_reports_denial_and_signals_runner() -> None:
     assert result["ok"] is False
     assert result["rejected"] is True
     assert "Do not publish" in str(result["fix"])
+    assert "Fix:" in str(result["message"])
     assert data == {"approval_decided": True, "approved": False}
     assert event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_review_tool_returns_actionable_message_on_approval_error() -> None:
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+
+    async def fail() -> bool:
+        raise RuntimeError("approval service unavailable")
+
+    (request_approval,) = make_authoring_review_tools(fail, event, data)
+
+    result = await request_approval()
+
+    assert result["ok"] is False
+    assert "approval service unavailable" in str(result["error"])
+    assert "request publication approval again" in str(result["fix"])
+    assert "Fix:" in str(result["message"])
+    assert not event.is_set()
 
 
 def test_authoring_state_names_are_explicit() -> None:

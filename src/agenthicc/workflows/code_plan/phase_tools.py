@@ -28,6 +28,22 @@ if TYPE_CHECKING:
 _QuestionInput = dict[str, str | list[str]]
 
 
+def _transition_failure(
+    error: str,
+    fix: str,
+    **extra: object,
+) -> dict[str, object]:
+    """Return an actionable failure result for a rejected phase handoff."""
+
+    return {
+        "ok": False,
+        "error": error,
+        "fix": fix,
+        "message": f"{error} Fix: {fix}",
+        **extra,
+    }
+
+
 def make_planner_tools(
     approval_svc: ApprovalService | None,
     plan_event: asyncio.Event,
@@ -68,9 +84,17 @@ def make_planner_tools(
         Args:
             plan: The complete plan text to present to the user.
         """
+        if not isinstance(plan, str) or not plan.strip():
+            return _transition_failure(
+                "The planning transition was rejected: plan must be a non-empty string.",
+                "Provide the complete implementation plan, then call request_plan_approval(plan) again.",
+                approved=False,
+            )
+
         if approval_svc is None:
             approval_state["granted"] = True
             return {
+                "ok": True,
                 "approved": True,
                 "feedback": "The plan is approved. Call finalize_plan() now to hand off to the execution phase.",
             }
@@ -85,7 +109,15 @@ def make_planner_tools(
             event=asyncio.Event(),
             kind="plan_review",  # → PlanApprovalOverlay in tui_session.py
         )
-        response = await approval_svc.request_approval(req)
+        try:
+            response = await approval_svc.request_approval(req)
+        except Exception as exc:  # noqa: BLE001
+            approval_state["granted"] = False
+            return _transition_failure(
+                f"Plan approval could not be requested: {type(exc).__name__}: {exc}",
+                "Resolve the approval-service error, then call request_plan_approval(plan) again.",
+                approved=False,
+            )
         # Always update the gate so each rejection correctly resets it.
         approval_state["granted"] = response.allowed
         feedback = response.message or ""
@@ -94,10 +126,19 @@ def make_planner_tools(
                 "The plan is approved. Call finalize_plan() now to hand off to the execution phase."
             )
             feedback = f"{feedback}\n\n{suffix}" if feedback else suffix
-        return {
-            "approved": response.allowed,
-            "feedback": feedback,
-        }
+        if response.allowed:
+            return {
+                "ok": True,
+                "approved": True,
+                "feedback": feedback,
+            }
+        return _transition_failure(
+            "The plan approval request was rejected; the plan cannot advance yet.",
+            "Revise the plan using the review feedback, then call request_plan_approval(plan) again. "
+            "Call finalize_plan() only after approved=True.",
+            approved=False,
+            feedback=feedback,
+        )
 
     @_tool()
     async def finalize_plan(plan: str) -> dict[str, object]:
@@ -112,16 +153,17 @@ def make_planner_tools(
         Args:
             plan: The final, approved plan text.
         """
+        if not isinstance(plan, str) or not plan.strip():
+            return _transition_failure(
+                "The planning transition was rejected: finalized plan must be non-empty.",
+                "Provide the complete approved plan, then call finalize_plan(plan) again.",
+            )
         if not approval_state["granted"]:
-            return {
-                "ok": False,
-                "error": (
-                    "The plan has not been approved. "
-                    "Call request_plan_approval() first and ensure it returns "
-                    "approved=True before calling finalize_plan()."
-                ),
-            }
-        plan_data["plan"] = plan
+            return _transition_failure(
+                "The plan has not been approved, so the phase cannot advance.",
+                "Call request_plan_approval(plan) first and call finalize_plan(plan) only after it returns approved=True.",
+            )
+        plan_data["plan"] = plan.strip()
         plan_event.set()
         return {
             "ok": True,
@@ -194,7 +236,12 @@ def make_executor_tools(
         Args:
             summary: One or two sentences describing what was implemented.
         """
-        execute_data["summary"] = summary
+        if not isinstance(summary, str) or not summary.strip():
+            return _transition_failure(
+                "The execution transition was rejected: completion summary must be non-empty.",
+                "Finish all implementation work and call mark_execute_complete(summary) with a concise summary of what changed.",
+            )
+        execute_data["summary"] = summary.strip()
         execute_event.set()
         return {
             "ok": True,
@@ -235,8 +282,13 @@ def make_reviewer_tools(
         Args:
             summary: One or two sentences describing what was verified.
         """
+        if not isinstance(summary, str) or not summary.strip():
+            return _transition_failure(
+                "The review transition was rejected: approval summary must be non-empty.",
+                "Describe the verification evidence and call approve_review(summary) again.",
+            )
         review_data["action"] = "approve"
-        review_data["summary"] = summary
+        review_data["summary"] = summary.strip()
         review_event.set()
         return {
             "ok": True,
@@ -258,8 +310,13 @@ def make_reviewer_tools(
         Args:
             reason: One or two sentences describing exactly what needs to be fixed.
         """
+        if not isinstance(reason, str) or not reason.strip():
+            return _transition_failure(
+                "The review rejection was rejected: a non-empty reason is required.",
+                "Describe the concrete issue that must be fixed and call reject_review(reason) again.",
+            )
         review_data["action"] = "reject"
-        review_data["reason"] = reason
+        review_data["reason"] = reason.strip()
         review_event.set()
         return {
             "ok": True,

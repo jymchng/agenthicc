@@ -39,6 +39,8 @@ class TestApprovalGate:
         result = await fp(plan="My plan")
         assert result["ok"] is False
         assert "approved" in result["error"].lower() or "approval" in result["error"].lower()
+        assert result["fix"]
+        assert result["message"]
         assert not plan_event.is_set()
         assert "plan" not in plan_data
 
@@ -50,6 +52,8 @@ class TestApprovalGate:
         await rpa(plan="My plan")  # rejected
         result = await fp(plan="My plan")  # should be blocked
         assert result["ok"] is False
+        assert result["fix"]
+        assert result["message"]
         assert not plan_event.is_set()
 
     async def test_finalize_succeeds_after_approval(self):
@@ -108,6 +112,21 @@ class TestApprovalGate:
         assert result["ok"] is False
         assert "error" in result
         assert len(result["error"]) > 0
+        assert "fix" in result
+        assert "message" in result
+
+    async def test_empty_plan_returns_actionable_failure(self):
+        """Both planning handoff tools explain how to repair an empty plan."""
+        rpa, fp, _, _, _ = _make_tools()
+
+        approval_result = await rpa(plan="")
+        finalize_result = await fp(plan="")
+
+        for result in (approval_result, finalize_result):
+            assert result["ok"] is False
+            assert result["error"]
+            assert result["fix"]
+            assert result["message"]
 
     async def test_headless_auto_approves(self):
         """approval_svc=None auto-approves, allowing finalize_plan."""
@@ -130,6 +149,24 @@ class TestApprovalGate:
         result = await rpa(plan="My plan")
         assert result["approved"] is False
         assert result["feedback"] == "add error handling"
+        assert result["error"]
+        assert result["fix"]
+        assert result["message"]
+
+    async def test_approval_service_error_returns_actionable_failure(self):
+        """Approval service errors are returned to the agent with a retry fix."""
+        from agenthicc.workflows.code_plan.phase_tools import make_planner_tools
+
+        approval_svc = MagicMock()
+        approval_svc.request_approval = AsyncMock(side_effect=RuntimeError("overlay failed"))
+        rpa, _ = make_planner_tools(approval_svc, asyncio.Event(), {})[:2]
+
+        result = await rpa(plan="My plan")
+
+        assert result["ok"] is False
+        assert "overlay failed" in result["error"]
+        assert "request_plan_approval" in result["fix"]
+        assert result["message"]
 
 
 # ── mode reset (Bug 2) ────────────────────────────────────────────────────────

@@ -36,6 +36,10 @@ async def test_planner_executor_reviewer_and_questions_tools() -> None:
     result = await mark_complete("implemented")
     assert result["ok"] is True and execute_data["summary"] == "implemented"
 
+    empty_execute = await mark_complete("")
+    assert empty_execute["ok"] is False
+    assert empty_execute["fix"] and empty_execute["message"]
+
     review_event = asyncio.Event()
     review_data: dict[str, object] = {}
     approve, reject = make_reviewer_tools(review_event, review_data)
@@ -43,6 +47,13 @@ async def test_planner_executor_reviewer_and_questions_tools() -> None:
     assert review_data["action"] == "approve"
     assert (await reject("needs work"))["ok"] is True
     assert review_data["action"] == "reject"
+
+    empty_approval = await approve("")
+    empty_rejection = await reject("")
+    assert empty_approval["ok"] is False
+    assert empty_rejection["ok"] is False
+    assert empty_approval["fix"] and empty_approval["message"]
+    assert empty_rejection["fix"] and empty_rejection["message"]
 
     assert (await make_questions_tool(None)[0]([]))["cancelled"] is True
     approval = SimpleNamespace(
