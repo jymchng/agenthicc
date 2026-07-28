@@ -106,22 +106,6 @@ def build_workflow_registry(
     for plugin_cls in load_builtin_workflows():
         registry.register(plugin_cls, source="builtin")
 
-    # PRD-147: the authoring workflow lives in its own package.  Keep this
-    # registration adjacent to the canonical registry assembly so the
-    # root-owned compatibility loader remains a pure workflow-definition
-    # loader while ``build_workflow_registry()`` exposes every built-in.
-    from agenthicc.workflows.authoring.definition import (  # noqa: PLC0415
-        CreateCommands,
-        CreateTools,
-        CreateWorkflow,
-    )
-
-    registry.register(CreateWorkflow, source="builtin")
-    registry.register(CreateTools, source="builtin")
-    registry.register(CreateCommands, source="builtin")
-    registry.register_alias("create_tool", "create_tools")
-    registry.register_alias("create_command", "create_commands")
-
     _scan_workflow_dir(user_dir / "workflows", "user", registry)
     _scan_workflow_dir(project_dir / "workflows", "project", registry)
 

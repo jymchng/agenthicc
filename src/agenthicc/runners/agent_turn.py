@@ -576,10 +576,15 @@ class AgentTurnRunner:
             project_plugin_tools=project_tools,
         )
         excluded_capabilities = ctx.excluded_capabilities
+        allowed_tool_names = ctx.allowed_tool_names
         visible_tools = [
             tool
             for tool in registry.tools
-            if not (get_tool_capabilities(tool) & excluded_capabilities)
+            if (
+                allowed_tool_names is None
+                or getattr(tool, "__name__", getattr(tool, "name", "")) in allowed_tool_names
+            )
+            and not (get_tool_capabilities(tool) & excluded_capabilities)
         ]
         visible_names = {
             getattr(tool, "__name__", getattr(tool, "name", "")) for tool in visible_tools
@@ -599,6 +604,13 @@ class AgentTurnRunner:
                 else ""
             )
         )
+        if allowed_tool_names is not None:
+            system += (
+                "\n\n### Phase-local tool policy\n"
+                "Only the tools listed above are available in this phase. Do not call shell, "
+                "run_bash, run_command, or any other omitted tool. When calling write_file, "
+                "provide both required arguments: path and complete content."
+            )
 
         @agent_decorator(model=self._model_id, system=system)
         @use_tools(*visible_tools)
@@ -656,7 +668,10 @@ class AgentTurnRunner:
                 retry_config=_subagent_retry,
             )
             registry.register(spawn_tool, source="builtin")
-            if not (get_tool_capabilities(spawn_tool) & excluded_capabilities):
+            spawn_name = getattr(spawn_tool, "__name__", getattr(spawn_tool, "name", ""))
+            if (allowed_tool_names is None or spawn_name in allowed_tool_names) and not (
+                get_tool_capabilities(spawn_tool) & excluded_capabilities
+            ):
                 visible_tools.append(spawn_tool)
                 populate_agent_tools(agent_instance, visible_tools)
 
@@ -943,6 +958,7 @@ async def _run_agent_turn(
     output_collector: list[str] | None = None,
     system_prompt_suffix: str = "",
     excluded_capabilities: frozenset[str] = frozenset(),
+    allowed_tool_names: frozenset[str] | None = None,
     memory_router: MemoryRouter | None = None,
     semantic_index: SemanticIndex | None = None,
     skill_permissions: SkillPermissionSet | None = None,
@@ -975,6 +991,7 @@ async def _run_agent_turn(
         output_collector=output_collector,
         system_prompt_suffix=system_prompt_suffix,
         excluded_capabilities=excluded_capabilities,
+        allowed_tool_names=allowed_tool_names,
         memory_router=memory_router,
         semantic_index=semantic_index,
         retry_deadline_monotonic=retry_deadline_monotonic,

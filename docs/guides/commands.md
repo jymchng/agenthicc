@@ -48,23 +48,19 @@ Restart `uv run agenthicc`, type `/greet`, and submit it. `/hello` resolves to
 the same command. The command appears in the trigger picker after typing `/`,
 and `/commands` shows its name, group, source, and description.
 
-## Author a command with `create_command`
+## Author a command with `/create-commands`
 
-For an agent-generated command, select the built-in authoring workflow and
-enter the intent in the next input:
+For an agent-generated command, invoke the project-authoring skill with its
+intent:
 
 ```text
-/workflow create_command
-Create a /cloak-status command that reports the configured Cloakbrowser
-endpoint status without executing arbitrary shell text.
+/create-commands Create a /cloak-status command that reports the configured
+Cloakbrowser endpoint status without executing arbitrary shell text.
 ```
 
-The authoring agent generates the complete raw Python module directly,
-including `ARTIFACT_NAME`, `ARTIFACT_DESCRIPTION`, and a literal `COMMAND` or
-`COMMANDS` export. Its interpret, design, stage, validate, review, publish, and
-summarize phases have explicit prompts and preserve staging, static validation,
-approval, and activation boundaries. It publishes only after approval. Run
-`/commands reload` before invoking the generated command.
+The skill guides the agent to generate a complete raw Python module with a
+literal `COMMAND` or `COMMANDS` export. Review the generated code and run
+`/commands reload` after placing it in the trusted project commands directory.
 
 For the normal interactive TUI, export `COMMANDS` as a list or tuple when a
 module contains multiple commands. A singular `COMMAND` export is also
@@ -268,17 +264,13 @@ The focused repository coverage is in
 `tests/unit/test_command_lifecycle.py`, and
 `tests/integration/test_commands_integration.py`.
 
-For the first-class authoring workflow, submit the selector and then the intent
-as two inputs:
+For the prompt-driven authoring skill, submit its instructions directly:
 
 ```text
-/workflow create_command
-Create a /project-status command that reports the current project status.
+/create-commands Create a /project-status command that reports the current project status.
 ```
 
-The singular selector is an alias for `create_commands`. The runner stages and
-statically validates a `Command` export, asks for publication approval, and
-writes `.agenthicc/commands/<module>.py` atomically. Submit `/commands reload`
-after approval to discover the command in the active TUI session. The legacy
-`/create-commands <instructions>` skill remains available as a prompt-only
-convenience path; it does not replace review or establish plugin trust.
+The `/create-commands` skill is independent of `create_workflow`; it gives the
+agent project-specific guidance for producing a trusted `Command` export.
+Review generated code and reload the command registry after placing a trusted
+plugin in `.agenthicc/commands/`.

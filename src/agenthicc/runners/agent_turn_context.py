@@ -48,6 +48,7 @@ class AgentTurnOptions(TypedDict):
     command_outcomes: "list[dict[str, object]] | None"
     system_prompt_suffix: str
     excluded_capabilities: NotRequired[frozenset[str]]
+    allowed_tool_names: NotRequired[frozenset[str] | None]
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,9 @@ class AgentTurnContext:
     #: Capability tags excluded from this turn's tool surface. Unannotated
     #: phase-control tools remain available.
     excluded_capabilities: frozenset[str] = frozenset()
+    #: Optional exact tool-name allowlist for phase-local workflows.  ``None``
+    #: preserves the normal full registry surface.
+    allowed_tool_names: frozenset[str] | None = None
 
     # ── transport retry (PRD-126) ─────────────────────────────────────────────
     #: Absolute ``time.monotonic()`` deadline for retry scheduling.  When a turn

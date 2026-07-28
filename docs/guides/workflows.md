@@ -80,15 +80,16 @@ writes the complete source with the canonical `write_file` tool to
 `.agenthicc/workflows/<name>.py`, then calls its execute handoff. The runner does
 not copy assistant text, publish, parse, or statically validate the source, and
 no staging directory or publish phase is involved. Every terminal outcome emits
-a final summary in the transcript and in the structured `AuthoringResult`.
+a final summary in the transcript and in the typed `CreateWorkflowContext`.
 
 Assistant prose is never an artifact. If the agent does not successfully write
 the file and call its execute handoff, the runner retries up to
 `[execution].authoring_max_generation_attempts` bounded attempts (20 by default,
 clamped to 1–20) and then
 returns a failure without creating a `.py` file. The runner trusts the agent's
-successful filesystem-tool handoff for the reported path; it does not inspect
-the file or create a runner-owned manifest.
+successful filesystem-tool handoff for the reported path and checks only that
+the exact file exists; it does not parse or validate the file or create a
+runner-owned manifest.
 
 Authoring phases are explicit state-machine nodes. The definition supplies a
 separate phase prompt and turn budget for `interpret`, `design`, `execute`, and
@@ -135,15 +136,11 @@ authoring workflows keep their existing tool and command capability boundaries.
 
 Like `code_plan`, one `ShortTermMemory` is created for each authoring run and
 shared by every `create_workflow` phase. The phase tool set also includes
-`memory_write`, `memory_read`, `semantic_search`, and `publish_artifact`, so the
-authoring agent can carry decisions and relevant context across interpretation,
-design, execute, and summary. Design excludes write, execute, network, and git
-write capabilities; execute receives the write-capable tool surface subject to
-the active runtime mode.
-
-The sibling `create_tools` and `create_commands` workflows retain their separate
-six-phase staged, statically validated, approval-gated lifecycle. Their
-parser/validator behavior is unchanged by the permissive `create_workflow` path.
+`memory_write`, `memory_read`, and `semantic_search`, so the authoring agent can
+carry decisions and relevant context across interpretation, design, execute,
+and summary. Design excludes write, execute, network, and git-write
+capabilities. Execute receives the canonical `write_file` tool plus safe
+read-only tools; shell and command-execution tools are not exposed.
 
 The design and execute agents receive two read-only built-ins:
 `inspect_agenthicc_documentation(path)` reads the installed documentation, and
@@ -219,33 +216,9 @@ file), restart the session to load configuration, then run `/workflows reload`
 after changing the Python workflow. Provider selection remains session-wide;
 the generated workflow must not claim to support per-phase provider switching.
 
-## Create tools and commands
-
-The same two-step journey creates project extensions using the existing loader
-contracts:
-
-```text
-/workflow create_tool
-Create a tool that checks the configured Cloakbrowser endpoint.
-
-/workflow create_command
-Create a /cloak-status command that reports the endpoint status.
-```
-
-`create_tools` and `create_commands` are the canonical registry names; the
-singular `create_tool` and `create_command` spellings are aliases for the TUI
-and CLI. Tool authoring must produce a Lauren `@tool`-decorated callable in a
-`TOOLS` export and publishes to `.agenthicc/tools/<module>.py`. Command
-authoring must produce a `Command` in `COMMAND` or `COMMANDS` and publishes to
-`.agenthicc/commands/<module>.py`.
-
-Both are staged under the same run-scoped authoring directory, statically
-validated without importing generated code, and require explicit publication
-approval. After a tool is published, run `/tools reload` or restart the
-session. After a command is published, run `/commands reload`; neither
-artifact is active during the authoring run. The structured result identifies
-the artifact kind, paths,
-hash, approval state, activation instruction, and final summary.
+Project tools and slash commands are separate plugin surfaces. Use the
+`/create-tools` and `/create-commands` skills when those extensions are needed;
+they are not workflow definitions and are not phases of `create_workflow`.
 
 ## Inspect tools and workflows
 

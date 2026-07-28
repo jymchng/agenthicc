@@ -1,149 +1,109 @@
-"""Built-in workflow authoring definitions (PRD-147)."""
+"""Builtin definition and parameters for ``create_workflow``."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
     from agenthicc.tui.runtime.mode_manager import ModeManager
-    from agenthicc.workflows.authoring.runner import (
-        CreateCommandRunner,
-        CreateToolRunner,
-        CreateWorkflowRunner,
-    )
+    from agenthicc.workflows.authoring.runner import CreateWorkflowRunner
     from agenthicc.workflows.config import WorkflowConfig
 
 
+@dataclass
+class CreateWorkflowParams(WorkflowParams):
+    """Optional per-phase model overrides for workflow authoring."""
+
+    interpret_model: str = ""
+    design_model: str = ""
+    execute_model: str = ""
+    summarize_model: str = ""
+
+    def get_phase_models(self) -> dict[str, str]:
+        return {
+            "interpret": self.interpret_model,
+            "design": self.design_model,
+            "execute": self.execute_model,
+            "summarize": self.summarize_model,
+        }
+
+
 class CreateWorkflow(WorkflowPlugin):
-    """Design, execute, and directly write one project-local workflow plugin."""
+    """Author one project-local specialized workflow from natural language."""
 
     name = "create_workflow"
-    description = "Create an agenthicc workflow from the next user intent."
+    description = "Interpret, design, write, and summarize a custom workflow."
     mode_bindings: list[str] = []
+    max_total_phase_runs = 0
     phases = [
         PhaseSpec(
             name="interpret",
             agent_type="planner",
-            system_prompt_override=(
-                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow from "
-                "the user's request. You are authoring that new workflow, not executing "
-                "the runtime task it will later perform. In this INTERPRET phase, study "
-                "only the current contracts needed to understand the request and turn it "
-                "into one precise workflow intent. Identify the workflow's purpose, stable "
-                "name, runtime inputs, expected outputs, required MCP/tools or services, "
-                "phase responsibilities, verification evidence, safety and capability "
-                "constraints, activation requirements, and measurable success criteria. "
-                "Preserve the user's meaning; resolve ambiguity conservatively and do not "
-                "invent integrations that are not available. Do not generate Python source, "
-                "publish anything, or execute the future workflow in this phase. "
-                "TRANSITION: when the intent is precise enough for source generation, call "
-                "complete_interpret_phase(summary) with the normalized intent and evidence. "
-                "That tool invocation is the only accepted handoff and moves the run to "
-                "the DESIGN phase; a prose response alone does not advance the workflow."
-            ),
-            next="design",
             max_turns=20,
+            max_iterations=20,
+            next="design",
+            system_prompt_override=(
+                "You are the INTERPRET phase of create_workflow. The ultimate purpose is to "
+                "create one specialized agenthicc workflow for the user's use case. Normalize "
+                "the intent, choose a valid stable lowercase workflow name, identify runtime "
+                "inputs, outputs, tools or MCP services, safety boundaries, and success criteria. "
+                "Do not generate source or modify files. When complete, call "
+                "complete_interpret_phase(summary, workflow_name). A prose response alone cannot "
+                "advance the phase."
+            ),
         ),
         PhaseSpec(
             name="design",
             agent_type="planner",
-            system_prompt_override=(
-                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow from "
-                "the interpreted user intent. You are the DESIGN phase of that authoring "
-                "run: produce the complete implementation specification for the future "
-                "workflow, rather than answering the runtime request yourself or writing "
-                "source code. Inspect the current plugin, "
-                "PhaseSpec, runner, tool, capability, workspace, MCP, approval, and "
-                "activation contracts before deciding how to implement it. Prefer one "
-                "declarative WorkflowPlugin with literal PhaseSpec values and the inherited "
-                "runner; introduce a custom runner only when the requested orchestration "
-                "cannot be expressed by a phase graph. Give every generated phase a "
-                "self-contained prompt that specifies its objective, available tools, "
-                "inputs, outputs, verification evidence, safety boundaries, completion "
-                "signal, and next-phase handoff. Keep generated code secure, typed, "
-                "loader-compatible, and faithful to the interpreted intent. Do not "
-                "generate the final Python source, call write_file, call batch_write, "
-                "execute shell commands, or modify the workspace in this phase. "
-                "STATEFUL RUNNER GUIDANCE: when the requested workflow has its own "
-                "conditional branches, loops, retries, transformed context, parallel "
-                "work, phase-specific tools, or non-standard completion gates, strongly "
-                "prefer a custom runner modeled on code_plan. The design specification "
-                "must then define a typed State enum with terminal states, a typed "
-                "dataclass Context, one bounded async function for each non-terminal "
-                "state, and an explicit run() driver that uses while-not-terminal and "
-                "match/case to call those state functions. It must also define how "
-                "resume() restores the context and dispatches the same state functions. "
-                "Use BaseWorkflowRunner for an independent lifecycle or CodePlanRunner "
-                "and its public run_phase() only for intentional composition; do not "
-                "pretend that changing PhaseSpec values changes CodePlanRunner's own "
-                "state machine. Do not add this structure when a simple declarative "
-                "phase graph genuinely expresses the requested behavior. "
-                "TRANSITION: when the implementation specification is complete, call "
-                "complete_design_phase(summary). Include the stable workflow name, "
-                "phase graph, complete per-phase prompts, APIs/tools/MCP services, "
-                "inputs, outputs, verification behavior, safety constraints, runner "
-                "choice, custom state/context/function contracts when applicable, and "
-                "activation notes in that summary. A successful handoff moves the run "
-                "to EXECUTE; a prose response alone does not advance the workflow."
-            ),
-            next="execute",
-            max_iterations=20,
             max_turns=20,
+            max_iterations=20,
+            next="execute",
+            system_prompt_override=(
+                "You are the DESIGN phase of create_workflow. Produce a complete implementation "
+                "design for the normalized intent. Inspect current agenthicc contracts and docs "
+                "as needed. Define every generated phase's objective, self-contained prompt, "
+                "inputs, outputs, tools, evidence, and transition. Prefer declarative PhaseSpec "
+                "when sufficient. For conditional, looping, parallel, or transformed workflows, "
+                "design a typed State(Enum), typed dataclass Context, one bounded async function "
+                "per non-terminal state, and a run() while-not-terminal match/case driver, with "
+                "resume() using the same dispatch path, following code_plan. Do not write source. "
+                "Call complete_design_phase(design); prose alone cannot advance."
+            ),
         ),
         PhaseSpec(
             name="execute",
             agent_type="executor",
-            system_prompt_override=(
-                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow from "
-                "the interpreted user intent. You are the EXECUTE phase of that authoring "
-                "run. Consume the design specification from the previous phase and "
-                "implement the complete workflow source directly. Inspect only the "
-                "current contracts still needed to resolve implementation details. Prefer "
-                "one declarative WorkflowPlugin with literal PhaseSpec values and the "
-                "inherited runner; introduce a custom runner only when the specification "
-                "cannot be expressed by a phase graph. Generate exactly one complete "
-                "Python workflow source file. TRANSITION: use the canonical write_file tool with "
-                "path .agenthicc/workflows/<stable_name>.py, wait for its successful "
-                "result, and then call complete_execute_phase(summary, artifact_name, "
-                "artifact_description). Do not use batch_write, shell redirection, an "
-                "unguarded filesystem API, or a response envelope. The runner never "
-                "copies assistant response text, parses or validates the source, stages "
-                "or publishes the file, or asks for end-user approval. A successful "
-                "handoff moves the run to SUMMARIZE; if the write or handoff fails, "
-                "retry it rather than returning prose. If the design specifies a "
-                "custom stateful runner, implement it directly in this file: define "
-                "the typed State enum and terminal states, typed dataclass Context, "
-                "one bounded async state function per non-terminal state, a run() "
-                "while-not-terminal match/case driver, and resume() using the same "
-                "dispatch path. Follow the code_plan runner pattern, use "
-                "BaseWorkflowRunner for an independent lifecycle, and use "
-                "CodePlanRunner.run_phase() only for deliberate composition."
-            ),
-            next="summarize",
-            max_iterations=20,
             max_turns=20,
+            max_iterations=20,
+            next="summarize",
+            mode_override="Auto",
+            system_prompt_override=(
+                "You are the EXECUTE phase of create_workflow. Generate the complete workflow "
+                "Python source directly from the design and write it with the canonical "
+                "write_file tool to .agenthicc/workflows/<workflow_name>.py. The content argument "
+                "must contain the complete source; do not use shell, batch_write, a response "
+                "envelope, staging, validation, publishing, or end-user approval. If the design "
+                "requires a custom runner, implement its typed state/context phase functions and "
+                "outer match/case loop directly. After write_file succeeds, call "
+                "complete_execute_phase(summary, artifact_name, artifact_description). The runner "
+                "only checks the exact file exists and never copies assistant prose."
+            ),
         ),
         PhaseSpec(
             name="summarize",
             agent_type="auto",
-            system_prompt_override=(
-                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow and finish "
-                "its authoring run with an accurate, actionable handoff to the user. You "
-                "are in the SUMMARIZE phase, the final phase of this authoring state machine. "
-                "Report only the authoritative structured result: workflow name, status, "
-                "artifact kind, agent-written path when reported, unresolved errors, and "
-                "the exact next action to reload, discover, or run "
-                "the newly created workflow. Do not claim activation or success that the "
-                "result does not prove. "
-                "TRANSITION: after stating the complete truthful summary, call "
-                "complete_summarize_phase(summary). That tool invocation closes the final "
-                "phase and moves the runner to its terminal COMPLETE, REJECTED, or FAILED "
-                "state; there is no later authoring phase, so do not continue with extra "
-                "implementation or runtime execution."
-            ),
             max_turns=20,
+            max_iterations=20,
+            system_prompt_override=(
+                "You are the terminal SUMMARIZE phase of create_workflow. Report the truthful "
+                "workflow name, exact agent-written path, what was created, and the next action "
+                "to reload and run it. Do not claim source validation or activation. Call "
+                "complete_summarize_phase(summary); prose alone cannot close the run."
+            ),
         ),
     ]
 
@@ -155,212 +115,14 @@ class CreateWorkflow(WorkflowPlugin):
     ) -> CreateWorkflowRunner:
         from agenthicc.workflows.authoring.runner import CreateWorkflowRunner
 
-        return CreateWorkflowRunner(config, mode_manager, phase_specs=tuple(cls.phases))
-
-
-class CreateTools(WorkflowPlugin):
-    """Generate and publish one validated project ``TOOLS`` module."""
-
-    name = "create_tools"
-    description = "Create a validated lauren-ai tool plugin from the next user intent."
-    mode_bindings: list[str] = []
-    phases = [
-        PhaseSpec(
-            name="interpret",
-            agent_type="planner",
-            system_prompt_override=(
-                "Normalize the user's request into one tool intent. Identify the "
-                "callable purpose, inputs, outputs, external services, filesystem or "
-                "network needs, capabilities, error cases, and measurable success "
-                "criteria. Preserve the user's meaning and hand off a concise tool "
-                "contract to design. TRANSITION: call "
-                "complete_interpret_phase(summary) after the tool contract is precise."
-            ),
-            next="design",
-            max_turns=8,
-        ),
-        PhaseSpec(
-            name="design",
-            agent_type="planner",
-            system_prompt_override=(
-                "Generate the complete raw Python source for the requested lauren-ai "
-                "tool module. Include ARTIFACT_NAME, ARTIFACT_DESCRIPTION, the @tool "
-                "decorator, a literal TOOLS export, accurate annotations, bounded "
-                "errors, and only the configured integrations the tool can actually "
-                "use. Do not return an envelope or write to the discoverable tools "
-                "directory. TRANSITION: return the complete source directly, then call "
-                "complete_design_phase(summary). The runner captures and validates the "
-                "response before staging it."
-            ),
-            next="stage",
-            max_iterations=2,
-            max_turns=20,
-        ),
-        PhaseSpec(
-            name="stage",
-            agent_type="auto",
-            system_prompt_override=(
-                "Store the generated tool source in the run-scoped authoring staging "
-                "area with its manifest and hash. Keep it undiscoverable and do not "
-                "publish, import, or execute it before validation and explicit approval. "
-                "Call complete_stage_phase(summary) only when it is ready for staging."
-            ),
-            next="review",
-            max_turns=4,
-        ),
-        PhaseSpec(
-            name="review",
-            agent_type="human",
-            system_prompt_override=(
-                "Present the validated staged tool, its callable behavior, capability "
-                "and integration requirements, source path, validation findings, and "
-                "activation implications for explicit publication approval. If denied, "
-                "call request_publication_approval() for the decision. If denied, "
-                "preserve the staged artifact and explain how it can be resumed."
-            ),
-            next="publish",
-            on_reject="summarize",
-            max_turns=4,
-        ),
-        PhaseSpec(
-            name="publish",
-            agent_type="auto",
-            system_prompt_override=(
-                "After explicit approval, atomically publish the validated tool to the "
-                "project tools directory, preserve its manifest and digest, and report "
-                "the exact /tools reload action. Call complete_publish_phase(summary) "
-                "before publication. Never publish an unvalidated or unapproved tool."
-            ),
-            next="summarize",
-            max_turns=4,
-        ),
-        PhaseSpec(
-            name="summarize",
-            agent_type="auto",
-            system_prompt_override=(
-                "Summarize the tool-authoring outcome with the artifact name, status, "
-                "staged or published path, validation result, approval state, required "
-                "reload action, and any unresolved prerequisite. Never claim the tool "
-                "is active before reload. Call complete_summarize_phase(summary) after "
-                "stating the authoritative result."
-            ),
-            max_turns=4,
-        ),
-    ]
+        return CreateWorkflowRunner(config, mode_manager)
 
     @classmethod
-    def build_runner(
-        cls,
-        config: WorkflowConfig,
-        mode_manager: ModeManager | None,
-    ) -> CreateToolRunner:
-        from agenthicc.workflows.authoring.runner import CreateToolRunner
-
-        return CreateToolRunner(config, mode_manager, phase_specs=tuple(cls.phases))
+    def build_params(cls, source: Mapping[str, object]) -> CreateWorkflowParams:
+        names = ("interpret_model", "design_model", "execute_model", "summarize_model")
+        return CreateWorkflowParams(
+            **{name: value for name in names if isinstance(value := source.get(name), str)}
+        )
 
 
-class CreateCommands(WorkflowPlugin):
-    """Generate and publish one validated project command plugin."""
-
-    name = "create_commands"
-    description = "Create a validated slash-command plugin from the next user intent."
-    mode_bindings: list[str] = []
-    phases = [
-        PhaseSpec(
-            name="interpret",
-            agent_type="planner",
-            system_prompt_override=(
-                "Normalize the user's request into one slash-command intent. Identify "
-                "the canonical command name, arguments, aliases, output, context "
-                "callbacks, busy-state behavior, capabilities, and measurable success "
-                "criteria. Preserve the user's meaning and hand off a concise command "
-                "contract to design. TRANSITION: call "
-                "complete_interpret_phase(summary) after the command contract is precise."
-            ),
-            next="design",
-            max_turns=8,
-        ),
-        PhaseSpec(
-            name="design",
-            agent_type="planner",
-            system_prompt_override=(
-                "Generate the complete raw Python source for the requested slash-command "
-                "module. Include ARTIFACT_NAME, ARTIFACT_DESCRIPTION, canonical literal "
-                "Command metadata, exactly one compatible COMMAND or COMMANDS export, "
-                "and a bounded handler or menu factory. Do not return an envelope or "
-                "write to the discoverable commands directory. TRANSITION: return the "
-                "complete source directly, then call complete_design_phase(summary). "
-                "The runner captures and validates the response before staging it."
-            ),
-            next="stage",
-            max_iterations=2,
-            max_turns=20,
-        ),
-        PhaseSpec(
-            name="stage",
-            agent_type="auto",
-            system_prompt_override=(
-                "Store the generated command source in the run-scoped authoring staging "
-                "area with its manifest and hash. Keep it undiscoverable and do not "
-                "publish, import, or execute it before validation and explicit approval. "
-                "Call complete_stage_phase(summary) only when it is ready for staging."
-            ),
-            next="review",
-            max_turns=4,
-        ),
-        PhaseSpec(
-            name="review",
-            agent_type="human",
-            system_prompt_override=(
-                "Present the validated staged command, invocation syntax, argument and "
-                "busy-state behavior, source path, validation findings, and activation "
-                "implications for explicit publication approval. If denied, preserve the "
-                "staged artifact and explain how it can be resumed. Call "
-                "request_publication_approval() for the decision."
-            ),
-            next="publish",
-            on_reject="summarize",
-            max_turns=4,
-        ),
-        PhaseSpec(
-            name="publish",
-            agent_type="auto",
-            system_prompt_override=(
-                "After explicit approval, atomically publish the validated command to "
-                "the project commands directory, preserve its manifest and digest, and "
-                "report the exact /commands reload action. Never publish an unvalidated "
-                "or unapproved command. Call complete_publish_phase(summary) before "
-                "publication."
-            ),
-            next="summarize",
-            max_turns=4,
-        ),
-        PhaseSpec(
-            name="summarize",
-            agent_type="auto",
-            system_prompt_override=(
-                "Summarize the command-authoring outcome with the artifact name, status, "
-                "staged or published path, validation result, approval state, canonical "
-                "invocation, required reload action, and unresolved errors. Never claim "
-                "the command is active before reload. Call complete_summarize_phase(summary) "
-                "after stating the authoritative result."
-            ),
-            max_turns=4,
-        ),
-    ]
-
-    @classmethod
-    def build_runner(
-        cls,
-        config: WorkflowConfig,
-        mode_manager: ModeManager | None,
-    ) -> CreateCommandRunner:
-        from agenthicc.workflows.authoring.runner import CreateCommandRunner
-
-        return CreateCommandRunner(config, mode_manager, phase_specs=tuple(cls.phases))
-
-
-# Singular names are the concise interactive spellings. The registry exposes
-# them as aliases while keeping the PRD's plural names canonical for discovery.
-CreateTool = CreateTools
-CreateCommand = CreateCommands
+__all__ = ["CreateWorkflow", "CreateWorkflowParams"]

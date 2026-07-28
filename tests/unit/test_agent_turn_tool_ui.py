@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -28,6 +29,34 @@ def test_tool_argument_preview_keeps_inspection_module_names() -> None:
 
     assert "agenthicc.workflows.code_plan.definition" in rendered
     assert "max_chars=10000" in rendered
+
+
+def test_phase_allowlist_builds_agent_with_write_file_but_not_shell() -> None:
+    from lauren_ai._agents import AGENT_META
+
+    from agenthicc.runners.agent_turn_context import AgentTurnContext
+
+    context = AgentTurnContext(
+        text="write the workflow",
+        runner=SimpleNamespace(_transport=MagicMock(), _signals=None),
+        processor=MagicMock(),
+        exec_cfg=SimpleNamespace(base_system_prompt=""),
+        active_agent="executor",
+        project_plugin_tools=[],
+        mcp_registry=None,
+        allowed_tool_names=frozenset({"write_file"}),
+    )
+    runner = AgentTurnRunner(context)
+    runner._model_id = "mock-model"
+
+    agent, _active_runner = runner._build_agent()
+    meta = getattr(type(agent), AGENT_META)
+
+    assert set(meta.tools) == {"write_file"}
+    assert "shell" not in meta.tools
+    assert "run_bash" not in meta.tools
+    assert "Do not call shell" in meta.system
+    assert "path and complete content" in meta.system
 
 
 def test_tool_output_preview_prefers_file_content_and_counts_omitted_lines() -> None:

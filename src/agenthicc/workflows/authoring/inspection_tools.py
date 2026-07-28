@@ -1,28 +1,29 @@
-"""Read-only documentation and API inspection tools for authoring agents."""
+"""Bounded, read-only inspection tools used while designing workflows."""
 
 from __future__ import annotations
 
 import importlib
 import importlib.resources
 import inspect
-from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
+from lauren_ai._tools import tool
+from agenthicc.tools.base import ToolLike
 
-_MAX_INSPECTION_CHARS = 20_000
-_ALLOWED_DOC_SUFFIXES = {".md", ".rst", ".txt"}
+_MAX_CHARS = 20_000
+_DOC_SUFFIXES = {".md", ".rst", ".txt"}
 
 
-def _limit(value: int) -> int:
+def _safe_limit(value: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return 8_000
-    return max(500, min(value, _MAX_INSPECTION_CHARS))
+    return max(500, min(value, _MAX_CHARS))
 
 
 def _safe_doc_parts(path: str) -> tuple[str, ...] | None:
     candidate = Path(path)
-    if candidate.is_absolute() or candidate.suffix.lower() not in _ALLOWED_DOC_SUFFIXES:
+    if candidate.is_absolute() or candidate.suffix.lower() not in _DOC_SUFFIXES:
         return None
     parts = tuple(candidate.parts)
     if not parts or any(part in {"", ".", ".."} for part in parts):
@@ -30,17 +31,13 @@ def _safe_doc_parts(path: str) -> tuple[str, ...] | None:
     return parts
 
 
-def _documentation_resource(parts: tuple[str, ...]) -> tuple[str, str] | None:
-    """Return ``(display_path, text)`` from package data or a source checkout."""
-
-    package_docs = importlib.resources.files("agenthicc").joinpath("docs")
-    resource = package_docs.joinpath(*parts)
+def _find_doc(parts: tuple[str, ...]) -> tuple[str, str] | None:
+    resource = importlib.resources.files("agenthicc").joinpath("docs", *parts)
     try:
         if resource.is_file():
             return f"agenthicc/docs/{'/'.join(parts)}", resource.read_text(encoding="utf-8")
     except (FileNotFoundError, OSError):
         pass
-
     try:
         installed = distribution("agenthicc").locate_file(
             Path("share") / "agenthicc" / "docs" / Path(*parts)
@@ -51,18 +48,13 @@ def _documentation_resource(parts: tuple[str, ...]) -> tuple[str, str] | None:
         installed_path = Path(str(installed))
         if installed_path.is_file():
             return str(installed_path), installed_path.read_text(encoding="utf-8")
-
-    # The source checkout keeps the canonical docs at repository root.  The
-    # package-data path above is used after installation, so this fallback
-    # makes the same tool useful during local authoring and in tests.
-    repository_docs = Path(__file__).resolve().parents[4] / "docs"
-    source_path = repository_docs.joinpath(*parts)
+    source_path = Path(__file__).resolve().parents[4] / "docs" / Path(*parts)
     if source_path.is_file():
         return str(source_path), source_path.read_text(encoding="utf-8")
     return None
 
 
-def _module_is_allowed(module: str) -> bool:
+def _allowed_module(module: str) -> bool:
     return (
         module == "agenthicc"
         or module.startswith("agenthicc.")
@@ -71,113 +63,87 @@ def _module_is_allowed(module: str) -> bool:
     )
 
 
-def make_authoring_inspection_tools() -> list[Callable[..., object]]:
-    """Return bounded, read-only tools available in every ``create_*`` design turn."""
+def make_inspection_tools() -> list[ToolLike]:
+    """Return documentation and source inspection callables."""
 
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-
-    @_tool()
+    @tool()
     async def inspect_agenthicc_documentation(
-        path: str,
-        max_chars: int = 8_000,
+        path: str, max_chars: int = 8_000
     ) -> dict[str, object]:
-        """Read one installed agenthicc documentation file.
-
-        Use repository-relative paths such as ``guides/workflows.md`` or
-        ``guides/command-execution.md``.  The tool is read-only and refuses
-        absolute paths and traversal outside the packaged documentation.
+        """Read one bounded documentation file below the installed agenthicc docs directory.
 
         Args:
-            path: Relative path below the installed agenthicc ``docs`` directory.
-            max_chars: Maximum returned characters, bounded by the tool.
+            path: Relative .md, .rst, or .txt path such as guides/workflows.md.
+            max_chars: Maximum number of returned characters.
         """
 
         parts = _safe_doc_parts(path)
         if parts is None:
-            return {
-                "ok": False,
-                "error": "path must be a relative .md, .rst, or .txt documentation path",
-            }
-        found = _documentation_resource(parts)
+            return {"ok": False, "error": "path must be a relative documentation path"}
+        found = _find_doc(parts)
         if found is None:
             return {"ok": False, "error": f"documentation file not found: {path}"}
         display_path, content = found
-        limit = _limit(max_chars)
-        truncated = len(content) > limit
+        limit = _safe_limit(max_chars)
         return {
             "ok": True,
             "path": display_path,
             "content": content[:limit],
-            "truncated": truncated,
+            "truncated": len(content) > limit,
         }
 
-    @_tool()
+    @tool()
     async def inspect_agenthicc_source(
         module: str,
         symbol: str = "",
         max_chars: int = 8_000,
     ) -> dict[str, object]:
-        """Inspect the current installed Python API surface with ``inspect``.
-
-        Only ``agenthicc`` modules are importable.  With no symbol, the tool
-        returns module names and module source; with a symbol, it returns the
-        symbol's signature, docstring, and source. Public and private Python
-        identifiers are inspectable. Use this before generating
-        code so the artifact targets the installed API rather than stale memory.
+        """Inspect current agenthicc source, including private symbols.
 
         Args:
-            module: Dotted module name beginning with ``agenthicc``.
-            symbol: Optional public or private class, function, or constant in
-                the module.
-            max_chars: Maximum source/doc text returned, bounded by the tool.
+            module: Dotted agenthicc module name.
+            symbol: Optional Python identifier to inspect.
+            max_chars: Maximum source and documentation characters.
         """
 
-        if not _module_is_allowed(module):
+        if not _allowed_module(module):
             return {"ok": False, "error": "only agenthicc.* modules may be inspected"}
         if symbol and not symbol.isidentifier():
             return {"ok": False, "error": "symbol must be a Python identifier"}
-        limit = _limit(max_chars)
+        limit = _safe_limit(max_chars)
         try:
             imported = importlib.import_module(module)
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"could not import {module}: {type(exc).__name__}: {exc}"}
-
         target: object = imported
         if symbol:
-            module_members = vars(imported)
-            if symbol not in module_members:
+            if symbol not in vars(imported):
                 return {"ok": False, "error": f"{module}.{symbol} was not found"}
-            target = module_members[symbol]
-
-        if (
-            inspect.ismodule(target)
-            or inspect.isclass(target)
-            or inspect.isfunction(target)
-            or inspect.ismethod(target)
-        ):
-            try:
-                source = inspect.getsource(target)
-            except (OSError, TypeError):
-                source = ""
-        else:
-            source = ""
-        doc = inspect.getdoc(target) or ""
+            target = vars(imported)[symbol]
         try:
             signature = str(inspect.signature(target)) if callable(target) else ""
         except (TypeError, ValueError):
             signature = ""
-        all_names = sorted(dir(imported))
-        public_names = [name for name in all_names if not name.startswith("_")]
+        try:
+            source = (
+                inspect.getsource(target)
+                if inspect.ismodule(target) or inspect.isclass(target) or inspect.isfunction(target)
+                else ""
+            )
+        except (OSError, TypeError):
+            source = ""
         return {
             "ok": True,
             "module": module,
             "symbol": symbol or None,
             "signature": signature,
-            "docstring": doc[:limit],
+            "docstring": (inspect.getdoc(target) or "")[:limit],
             "source": source[:limit],
             "source_truncated": len(source) > limit,
-            "public_names": public_names[:500],
-            "names": all_names[:500],
+            "names": sorted(dir(imported))[:500],
         }
 
     return [inspect_agenthicc_documentation, inspect_agenthicc_source]
+
+
+__all__ = ["make_inspection_tools"]

@@ -102,18 +102,17 @@ and remain separate from durable agent-session records.
 
 ## Invariants
 
-Authoring extensions use typed phase states, tool-gated phase handoffs, and
-read-only packaged documentation/API inspection. `create_workflow` separates
-read-only design from execute-owned writing across four phases; sibling tool
-and command extensions retain staged approval. Non-trivial generated workflows
-are encouraged to use a code_plan-style custom state machine with typed state,
-typed context, per-state functions, explicit match-based dispatch, and resume:
+`create_workflow` uses typed phase state, tool-gated handoffs, and read-only
+packaged documentation/API inspection. It separates interpretation, design,
+execute-owned writing, and summary across four phases. Non-trivial generated
+workflows are encouraged to use a code_plan-style custom state machine with
+typed state, typed context, per-state functions, explicit match-based dispatch,
+and resume:
 
-| AuthoringState | agenthicc.workflows.authoring.state | Typed create_* lifecycle state |
-| AuthoringContext | agenthicc.workflows.authoring.state | Typed data shared by authoring phase handlers |
-| make_authoring_transition_tools | agenthicc.workflows.authoring.phase_tools | Tool-gated handoff; rejected transitions return actionable `error`, `fix`, and `message` fields |
-| make_authoring_review_tools | agenthicc.workflows.authoring.phase_tools | Approval-gated review transition with actionable denial feedback |
-| make_authoring_inspection_tools | agenthicc.workflows.authoring.inspection_tools | Read-only packaged docs and current API inspection |
+| CreateWorkflowState | agenthicc.workflows.authoring.state | Interpret/design/execute/summarize state machine with terminal states |
+| CreateWorkflowContext | agenthicc.workflows.authoring.state | Typed intent, phase artifacts, write evidence, and summaries |
+| make_*_tools | agenthicc.workflows.authoring.phase_tools | Phase-local handoffs; rejected transitions return actionable `error`, `fix`, and `message` fields |
+| make_inspection_tools | agenthicc.workflows.authoring.inspection_tools | Read-only packaged docs and current API inspection, including private symbols |
 
 - Start `EventProcessor.run()` before `emit()` and await `drain()` before reading.
 - `root_reducer` is pure and kernel `AppState` is frozen.

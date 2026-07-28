@@ -419,9 +419,10 @@ execute_model = "claude-haiku-4-5"
 ``[workflows.<name>]`` is passed to ``build_params()``. Empty model values use
 the global execution model. Provider, credentials, and ``base_url`` are
 session-wide; do not invent per-phase provider keys. Never put API keys in a
-generated workflow or TOML template. The authoring workflow publishes the
-Python artifact only, so present any required TOML as a copy-ready template
-and tell the user which config file to update and when to restart the session.
+generated workflow or TOML template. The authoring workflow writes the Python
+artifact directly to ``.agenthicc/workflows/<name>.py`` and does not modify
+configuration, so present any required TOML as a copy-ready template and tell
+the user which config file to update and when to restart the session.
 
 ## PhaseSpec key fields
 

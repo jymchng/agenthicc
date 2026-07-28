@@ -1420,9 +1420,10 @@ execute, the write-capable agent writes the complete source with the canonical
 `write_file` tool to `.agenthicc/workflows/<stable_name>.py`, then calls
 `complete_execute_phase(...)`.
 The runner never copies assistant prose, parses, validates, stages, publishes,
-or requests approval for workflow source. Run `/workflows reload` or restart
-the session for the normal registry to discover the generated plugin. There is
-no runner-owned staged manifest to resume for `create_workflow`.
+or requests approval for workflow source. It checks only that the exact agent-
+written path exists. Run `/workflows reload` or restart the session for the
+normal registry to discover the generated plugin. There is no runner-owned
+staged manifest to resume for `create_workflow`.
 For a non-trivial generated workflow, the authoring prompt encourages a
 `code_plan`-style custom runner: typed enum states and dataclass context, one
 bounded async function per non-terminal state, an explicit
@@ -1430,11 +1431,24 @@ bounded async function per non-terminal state, an explicit
 dispatch path. Declarative `PhaseSpec` graphs remain appropriate for simple
 workflows; `CodePlanRunner.run_phase()` is reserved for intentional composition.
 
+### CreateWorkflowParams
+
+```python
+@dataclass
+class CreateWorkflowParams(WorkflowParams):
+    interpret_model: str = ""
+    design_model: str = ""
+    execute_model: str = ""
+    summarize_model: str = ""
+```
+
+Optional per-phase model overrides read from `[workflows.create_workflow]`.
+
 ### CreateWorkflowRunner
 
 ```python
 class CreateWorkflowRunner(BaseWorkflowRunner):
-    async def run(self, intent: str) -> AuthoringResult
+    async def run(self, intent: str) -> CreateWorkflowContext
 ```
 
 Run the `interpret → design → execute → summarize` lifecycle for
@@ -1444,212 +1458,76 @@ phase-local handoff. Assistant response text alone is never an artifact; a
 missing write or handoff is retried within the bounded generation budget and
 then reported as a failure without a runner-created file.
 
-### CreateTools
-
-`CreateTools` is the built-in `WorkflowPlugin` named `create_tools`; its
-singular selector alias is `create_tool`. `CreateCommands` is named
-`create_commands` and is also selectable as `create_command`. Both use the
-shared authoring runner lifecycle. Tool candidates must import Lauren's
-`@tool`, export a non-empty `TOOLS` list of top-level callables, and publish to
-`.agenthicc/tools/<module>.py`. Command candidates must import
-`agenthicc.commands.Command` and export `COMMAND` or `COMMANDS`, publishing to
-`.agenthicc/commands/<module>.py`.
-
-Workflow agent-owned writing reports `workflows-reload`; tool publication reports
-`tools-reload`; command publication reports `commands-reload`. Generated source
-is staged and statically validated before approval, and is not imported during
-the authoring run.
-
-### CreateCommands
-
-`CreateCommands` is the built-in command-authoring `WorkflowPlugin`. It uses
-the same lifecycle described above and publishes validated `COMMAND` or
-`COMMANDS` exports.
-
-### CreateTool
-
-Compatibility alias for the canonical `CreateTools` workflow definition.
-
-### CreateCommand
-
-Compatibility alias for the canonical `CreateCommands` workflow definition.
-
-### CreateToolRunner
-
-```python
-class CreateToolRunner(CreateWorkflowRunner): ...
-```
-
-Selects the tool artifact contract and `.agenthicc/tools/` destination while sharing
-manifest, hash, approval, atomic publication, cancellation, and resume logic.
-
-### CreateCommandRunner
-
-```python
-class CreateCommandRunner(CreateWorkflowRunner): ...
-```
-
-Selects the command artifact contract and `.agenthicc/commands/` destination
-while sharing manifest, hash, approval, atomic publication, cancellation, and
-resume logic.
-
-### AuthoringState
-
-class AuthoringState(Enum):
-    INTERPRET = auto()
-    DESIGN = auto()
-    EXECUTE = auto()
-    STAGE = auto()
-    REVIEW = auto()
-    PUBLISH = auto()
-    SUMMARIZE = auto()
-    COMPLETE = auto()
-    REJECTED = auto()
-    FAILED = auto()
-
-Explicit typed lifecycle state shared by the three built-in authoring
-workflows. `create_workflow` uses INTERPRET, DESIGN, EXECUTE, and SUMMARIZE; the
-extension workflows additionally use STAGE, REVIEW, and PUBLISH. Terminal
-states are COMPLETE, REJECTED, and FAILED.
-
-### AuthoringContext
+### PhaseArtifact
 
 ```python
 @dataclass
-class AuthoringContext: ...
+class PhaseArtifact:
+    phase_name: str
+    summary: str
+    data: dict[str, object]
+    attempts: int
 ```
 
-Mutable typed data carried across the explicit authoring phase handlers,
-    including the interpreted intent, candidate, validation report, staged artifact,
-result, and phase completion payload.
+Structured evidence recorded in `CreateWorkflowContext` after a successful
+phase handoff.
 
-### make_authoring_transition_tools
+Project tools and commands are separate plugin surfaces. The
+`/create-tools` and `/create-commands` skills are not workflow definitions and
+are not registered as `create_*` workflow phases.
 
-def make_authoring_transition_tools(
-    phase_name: str,
-    transition_event: asyncio.Event,
-    transition_data: dict[str, object],
-    validator: Callable[[dict[str, object]], tuple[str, str] | None] | None = None,
-) -> list[Callable[..., object]]
+### CreateWorkflowState
 
-Creates phase-local completion tools. Design and execute each expose a unique
-phase transition tool. For `create_workflow`, the execute agent writes source
-with `write_file` before this tool records the handoff; the runner does not
-capture or promote assistant response text. Each phase receives a distinct transition
-tool name: complete_interpret_phase, complete_design_phase,
-complete_execute_phase, complete_stage_phase, complete_publish_phase, or complete_summarize_phase. The review phase uses
-request_publication_approval. A phase handoff is accepted only after its
-phase-specific transition tool is called; workflow execute additionally requires
-the agent-owned filesystem write.
+```python
+class CreateWorkflowState(Enum):
+    INTERPRET = auto()
+    DESIGN = auto()
+    EXECUTE = auto()
+    SUMMARIZE = auto()
+    COMPLETE = auto()
+    FAILED = auto()
+```
 
-The optional ``validator`` checks phase prerequisites before the transition
-event is set. Every rejected handoff returns ``ok: false``, an actionable
-``error``, a concrete ``fix``, and a human-readable ``message`` explaining the
-correction and retry call; malformed payloads and approval-service failures use
-the same shape.
+Explicit typed state for the four create-workflow phases and terminal outcomes.
+A phase changes state only after its phase-local handoff tool sets completion.
 
-### make_authoring_review_tools
+### CreateWorkflowContext
 
-def make_authoring_review_tools(
-    request_approval: Callable[[], Awaitable[bool]],
-    transition_event: asyncio.Event,
-    transition_data: dict[str, object],
-) -> list[Callable[..., object]]
+```python
+@dataclass
+class CreateWorkflowContext: ...
+```
 
-Creates the review-phase ``request_publication_approval`` tool. The tool records
-the approval decision, signals the runner, and returns a fix-oriented result
-when publication is denied or approval cannot be requested.
+Mutable typed data carried across phases, including the original intent,
+normalized workflow name, design, agent-written path and description, per-phase
+artifacts, attempt counts, shared memory, and final failure or summary text.
 
-### make_authoring_inspection_tools
+### Phase handoff tool factories
 
-def make_authoring_inspection_tools() -> list[Callable[..., object]]
+```python
+def make_interpret_tools(event, data) -> list[ToolLike]: ...
+def make_design_tools(event, data) -> list[ToolLike]: ...
+def make_execute_tools(event, data, *, expected_root, expected_name) -> list[ToolLike]: ...
+def make_summarize_tools(event, data) -> list[ToolLike]: ...
+```
 
-Creates bounded read-only inspect_agenthicc_documentation and
-inspect_agenthicc_source tools. Documentation paths are relative to the
-installed documentation tree; source inspection is limited to agenthicc.*
+Each factory creates one phase-local completion tool. Rejected payloads return
+`ok: false`, an actionable `error`, a concrete `fix`, and a human-readable
+`message`. Execute only checks that the agent-created exact path exists; it does
+not write, parse, validate, stage, publish, or request approval.
+
+### make_inspection_tools
+
+```python
+def make_inspection_tools() -> list[ToolLike]: ...
+```
+
+Creates bounded read-only `inspect_agenthicc_documentation` and
+`inspect_agenthicc_source` tools. Documentation paths are relative to the
+installed documentation tree; source inspection is limited to `agenthicc.*`
 modules, while both public and private Python identifiers are inspectable with
-Python's inspect API.
-
-### AuthoringResult
-
-```python
-@dataclass(frozen=True)
-class AuthoringResult:
-    workflow: str
-    run_id: str
-    status: str
-    artifact: AuthoringArtifact | None = None
-    approval: str = "not-requested"
-    activation: str | None = None
-    error: str | None = None
-    attempts: int = 0
-    artifact_kind: str = "workflow"
-    artifacts: tuple[AuthoringArtifact, ...] = ()
-    summary: str = ""
-```
-
-`to_dict()` returns a JSON-safe result suitable for the
-`WorkflowRunCompleted` event payload. `artifacts` contains the same generated
-artifact as the compatibility `artifact` field. `summary` is the terminal
-human-readable result emitted to the TUI transcript and included in the event
-payload.
-
-### AuthoringArtifact
-
-Contains the generated artifact name, agent-reported or staged/published paths,
-manifest path when an extension owns one, publication state, source SHA-256
-digest when computed by an extension, and a `ValidationReport`.
-
-### AuthoringResumeContext
-
-```python
-@dataclass(frozen=True)
-class AuthoringResumeContext:
-    run_id: str
-    intent: str = ""
-```
-
-Identifies a staged authoring manifest for any authoring runner's `resume()`.
-
-### parse_workflow_response / validate_workflow_candidate
-
-```python
-def parse_workflow_response(text: str) -> WorkflowCandidate
-def validate_workflow_candidate(candidate: WorkflowCandidate) -> ValidationReport
-```
-
-Parse complete raw workflow source (while retaining legacy envelope
-compatibility) and validate it without importing or executing generated Python.
-These remain compatibility utilities; the `create_workflow` runner does not
-call them because source ownership belongs to the execute agent.
-
-### parse_authoring_response
-
-```python
-def parse_authoring_response(text: str, artifact_kind: str) -> WorkflowCandidate
-def validate_tool_candidate(candidate: WorkflowCandidate) -> ValidationReport
-def validate_command_candidate(candidate: WorkflowCandidate) -> ValidationReport
-```
-
-Parse complete raw tool or command source (while retaining legacy envelope
-compatibility) and statically validate the existing loader contracts without
-importing generated Python.
-
-### validate_tool_candidate
-
-```python
-def validate_tool_candidate(candidate: WorkflowCandidate) -> ValidationReport
-```
-
-Validate a non-empty Lauren `TOOLS` export without importing it.
-
-### validate_command_candidate
-
-```python
-def validate_command_candidate(candidate: WorkflowCandidate) -> ValidationReport
-```
-
-Validate a `COMMAND` or `COMMANDS` export without importing it.
+Python's inspect API. No staged-artifact or publication result type is part of
+the current workflow package.
 
 ## Config — `agenthicc.config`
 

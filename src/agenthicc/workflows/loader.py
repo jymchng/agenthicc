@@ -20,9 +20,11 @@ log = logging.getLogger(__name__)
 def load_builtin_workflows() -> list[type[WorkflowPlugin]]:
     """Return all builtin WorkflowPlugin subclasses (PRD-112, PRD-116)."""
     from agenthicc.workflows.code_plan.definition import CodePlan  # noqa: PLC0415
+    from agenthicc.workflows.authoring.definition import CreateWorkflow  # noqa: PLC0415
 
     return [
         CodePlan,
+        CreateWorkflow,
     ]
 
 

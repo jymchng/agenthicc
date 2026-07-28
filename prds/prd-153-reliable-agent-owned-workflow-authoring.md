@@ -1,6 +1,6 @@
 ---
 title: "PRD-153: Reliable Agent-Owned Workflow Authoring"
-status: In progress
+status: Complete
 date: 2026-07-28
 scope: create_workflow design/execute phase separation and direct file creation
 related:
@@ -61,7 +61,8 @@ allowing interrupted prose and failed reads to compound across attempts.
 - No runner-owned staging, publication, source parsing, static validation, or
   source hashing for `create_workflow`.
 - No weakening of `WorkspaceView`, capability, mode, or approval controls.
-- No change to the six-phase `create_tools` or `create_commands` lifecycle.
+- Project tools and slash commands remain separate skill/plugin surfaces; they
+  are not registered as additional workflow-authoring definitions.
 
 ## 5. Functional requirements
 
@@ -160,7 +161,8 @@ After completion, the user runs `/workflows reload` and then
    without runner copying or publishing.
 9. Design cannot use write/execute/network/git-write capabilities even though
    built-in tools are normally registered globally.
-10. Existing extension-authoring tests and behavior remain unchanged.
+10. No deleted staged-authoring symbol is imported by the active source or test
+    suite; project extension skills remain independently discoverable.
 11. Documentation and public reference material describe the four-phase
    lifecycle and execute-owned write.
 
@@ -194,8 +196,8 @@ does not bypass the active mode. Diagnostics include paths and statuses only;
 source contents, credentials, and secrets are not logged.
 
 The change is backwards-compatible for the `/workflow create_workflow` user
-journey and preserves the agent-owned artifact contract. Existing custom
-authoring workflows retain their own declared phases. Implementation remains
+journey and preserves the agent-owned artifact contract. Existing user-defined
+workflow plugins retain their own declared phases. Implementation remains
 inside the current boundaries: authoring state/runner, built-in workflow
 definition, transition tools, agent-turn tool filtering, tests, and workflow
 documentation.
@@ -206,7 +208,7 @@ documentation.
 uv run ruff check src/ tests/ scripts/
 uv run ruff format --check src/ tests/ scripts/
 uv run mypy src/agenthicc
-uv run pytest tests/unit/test_workflow_authoring.py -q
-uv run pytest tests/e2e/test_create_workflow_e2e.py -q
+uv run pytest tests/unit/test_create_workflow.py -q
+uv run pytest tests/e2e/test_create_workflow_state_machine_e2e.py -q
 uv run pytest tests/ -q
 ```

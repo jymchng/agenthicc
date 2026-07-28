@@ -111,9 +111,8 @@ per-state functions, explicit `match` transitions, and resumable execution;
 simple workflows can use declarative `PhaseSpec` values. Run `/workflows reload`
 and then `/workflow <name>` after authoring.
 
-The same authoring lifecycle is available through `/workflow create_tool` and
-`/workflow create_command`; these generate raw Python extension modules and
-require `/tools reload` or `/commands reload` after publication.
+Project tools and slash commands are authored separately through the
+`/create-tools` and `/create-commands` skills; they are not workflow selectors.
 
 Authoring design turns can inspect the installed API with the built-in
 `inspect_agenthicc_documentation` and `inspect_agenthicc_source` tools before
@@ -185,7 +184,7 @@ Useful built-in slash commands include:
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/ps [terminal-id]`, `/stop [terminal-id|all]` | Inspect or stop owned background terminals; `/stop` stops all |
 | `/mode [name]` | Show or change the operating mode |
-| `/workflow <name> \| reset` | Select a workflow; use `/workflow create_workflow`, `/workflow create_tool`, or `/workflow create_command` to author an extension, or `/workflow resume` to continue a staged run |
+| `/workflow <name> \| reset` | Select a workflow; use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
 | `/model [provider] [model]` | Inspect or switch the model selection |
 | `/config` | Open the configuration overlay |
 | `/init` | Preview or explicitly write project `AGENTS.md` guidance |
@@ -270,7 +269,7 @@ model = "claude-opus-4-8"
 max_concurrent_intents = 8
 max_parallel_tasks = 4
 max_agent_turns = 200
-authoring_max_generation_attempts = 3
+authoring_max_generation_attempts = 20
 authoring_max_phase_turns = 20
 auto_compact = true
 transport_max_retries = 3

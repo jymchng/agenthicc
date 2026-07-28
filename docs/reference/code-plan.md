@@ -239,10 +239,10 @@ copying only the prompts:
    rejection loops, terminal failures, and resume behavior.
 
 The built-in `create_workflow` authoring runner follows this same structure with
-the phases `INTERPRET`, `DESIGN`, `STAGE`, `VALIDATE`, `REVIEW`, `PUBLISH`, and
-`SUMMARIZE`. Its transition validators extend the pattern by checking the
-candidate, immutable staged digest, validation report, and explicit approval
-before allowing a side effect.
+the phases `INTERPRET`, `DESIGN`, `EXECUTE`, and `SUMMARIZE`. Its execute
+handoff checks that the agent-written file exists at the exact expected path;
+the runner does not parse, validate, stage, publish, or approve generated
+source.
 
 ## Definition metadata versus runtime behavior
 

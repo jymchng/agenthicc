@@ -44,23 +44,18 @@ loaded project tool. The tool name, description, annotations, and docstring
 are used to build the schema shown to lauren-ai. `@tool()` must include the
 parentheses.
 
-## Author a tool with `create_tool`
+## Author a tool with `/create-tools`
 
-For an agent-generated tool, select the built-in authoring workflow and enter
-the intent in the next input:
+For an agent-generated tool, invoke the project-authoring skill with its intent:
 
 ```text
-/workflow create_tool
-Create a tool that checks the configured Cloakbrowser endpoint and returns a
-bounded recoverable status object.
+/create-tools Create a tool that checks the configured Cloakbrowser endpoint
+and returns a bounded recoverable status object.
 ```
 
-The authoring agent generates the complete raw Python module directly, including
-`ARTIFACT_NAME`, `ARTIFACT_DESCRIPTION`, the `@tool` decorator, and a literal
-`TOOLS` export. Its interpret, design, stage, validate, review, publish, and
-summarize phases have explicit prompts and preserve the existing staging,
-validation, approval, and activation boundaries. It publishes only after
-approval. Run `/tools reload` before using the generated tool.
+The skill guides the agent to generate a complete raw Python module, including
+the `@tool` decorator and a literal `TOOLS` export. Review the generated code
+and run `/tools reload` after placing it in the trusted project tools directory.
 
 Use `/tools` in the interactive session to inspect the effective tool catalog,
 or `/tools reload` to rescan project and user-global tool plugins without
@@ -284,17 +279,13 @@ Useful repository contracts are covered by
 `tests/unit/test_tool_executor_contract.py`, and
 `tests/unit/test_sandbox.py`.
 
-For the first-class authoring workflow, submit the selector and then the intent
-as two inputs:
+For the prompt-driven authoring skill, submit its instructions directly:
 
 ```text
-/workflow create_tool
-Create a tool that reports the current project status.
+/create-tools Create a tool that reports the current project status.
 ```
 
-The singular selector is an alias for `create_tools`. The runner stages and
-statically validates a Lauren `@tool`-decorated `TOOLS` export, asks for
-publication approval, and writes `.agenthicc/tools/<module>.py` atomically.
-Restart the session after approval before using the new tool. The legacy
-`/create-tools <instructions>` skill remains available as a prompt-only
-convenience path; it does not replace review or establish plugin trust.
+The `/create-tools` skill is independent of `create_workflow`; it gives the
+agent project-specific guidance for producing a Lauren `@tool`-decorated
+`TOOLS` export. Review generated code and reload the tool registry after
+placing a trusted plugin in `.agenthicc/tools/`.

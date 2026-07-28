@@ -94,17 +94,17 @@ capability boundaries.
 session-local state. Both must remain visible in picker completion as well as
 executable when submitted.
 
-To author an extension interactively, submit one of
-`/workflow create_workflow`, `/workflow create_tool`, or
-`/workflow create_command`, then enter the intent as the next ordinary input.
-The generated source is staged, statically validated, approval-gated, and
-published atomically under `.agenthicc/workflows/`, `.agenthicc/tools/`, or
-`.agenthicc/commands/`. Run `/workflows reload` or `/tools reload` after a
-workflow or tool publication; run `/commands reload` after a command
-publication. The plural registry names are
-`create_tools` and `create_commands`; singular forms are aliases. A staged
-authoring run can be continued with `/workflow resume [run-id]` and is
-revalidated before publication.
+To author a workflow interactively, submit
+`/workflow create_workflow`, then enter the intent as the next ordinary input.
+The execute phase writes the complete source directly to
+`.agenthicc/workflows/<name>.py`; it does not use a staging directory,
+approval gate, parser, validator, or publish phase. Run `/workflows reload`
+after the run completes. `/workflow resume` is not used for this direct-write
+authoring flow; run `/workflow create_workflow` again if the run is interrupted.
+
+Project tools and commands remain available through the `/create-tools` and
+`/create-commands` skills and their respective reload commands; they are not
+workflow selectors.
 
 `/tools` and `/workflows` are registry overlays; adding `reload` rescans their
 respective live registries without restarting. `/tools` shows the effective

@@ -95,12 +95,12 @@ def test_workflows_init_exports_code_plan() -> None:
 
 
 @pytest.mark.unit
-def test_load_builtin_workflows_returns_all_five() -> None:
+def test_load_builtin_workflows_returns_current_builtins() -> None:
     from agenthicc.workflows.loader import load_builtin_workflows
 
     defs = load_builtin_workflows()
     names = {d.name for d in defs}
-    assert "code_plan" in names
+    assert names == {"code_plan", "create_workflow"}
 
 
 @pytest.mark.unit
