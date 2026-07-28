@@ -1,7 +1,7 @@
 ---
 title: "PRD-152: Agent-Executable create_* Authoring"
 status: Implemented
-version: 1.1.0
+version: 1.3.0
 created: 2026-07-28
 related_prds:
   - PRD-116  # WorkflowPlugin registry and runner dispatch
@@ -296,6 +296,49 @@ literal `TOOLS` list or tuple. `create_commands` must use the canonical
 invalid exports, malformed names, and unsupported loader shapes before
 publication.
 
+### 5.8 Generation recovery and bounded retries
+
+A response that contains repository exploration, tool-call activity, analysis,
+or an incomplete explanation instead of source is a recoverable generation
+failure, not an immediate terminal authoring failure. The authoring runner must:
+
+1. convert the parser or validator result into actionable feedback naming the
+   exact failure and the required correction;
+2. start another bounded generation attempt with the original intent and the
+   correction feedback, explicitly requiring complete source-only output;
+3. emit a visible system event that an attempt failed and is being retried; and
+4. stop only after `[execution].authoring_max_generation_attempts` complete
+   attempts, defaulting to 3 and clamping the effective value to 1–10.
+
+Parse failures must explain that the previous response was not source and may
+have contained tool activity or prose. Validation failures must include each
+blocking finding code and message. When the limit is exhausted, the structured
+result must report the final finding and number of attempts, and no partial
+artifact may be staged or published.
+
+### 5.9 Tool-gated phases and installed API inspection
+
+The three authoring workflows share an explicit typed lifecycle state machine:
+`interpret → design → stage → validate → review → publish → summarize`. Each
+phase has its own `PhaseSpec` prompt and bounded multi-turn budget. The global
+`[execution].authoring_max_phase_turns` setting defaults to 20 and is clamped
+to 1–100; a phase definition may request a lower budget.
+
+The design agent may use several turns for inspection and implementation, but
+the runner accepts the handoff only after the phase-local completion tool is
+called. `submit_generated_source` captures one complete raw Python artifact
+directly. It never asks the model to construct an XML, JSON, or Markdown
+envelope. Existing raw-text parsing remains a compatibility path for older
+transports and staged runs.
+
+Every design phase receives read-only
+`inspect_agenthicc_documentation(path)` and
+`inspect_agenthicc_source(module, symbol)` tools. The first reads packaged
+documentation; the second imports only `agenthicc.*` modules and uses Python's
+`inspect` API to expose current signatures and source. The build configuration
+installs the documentation tree with the package so an installed authoring
+agent can inspect the same guidance as a source checkout.
+
 ## 6. User journeys
 
 ### 6.1 Author an agent-executable specialized workflow
@@ -367,6 +410,8 @@ repair must preserve the user's intent and return complete source again.
 | Workflow construction and discovery | `workflows/registry.py`, `workflows/loader.py` |
 | Runtime phase context and outputs | `workflows/plugin.py` |
 | Publication approval and staging | `workflows/authoring/runner.py` |
+| Authoring lifecycle states and phase tools | `workflows/authoring/state.py`, `phase_tools.py` |
+| Installed documentation/API inspection | `workflows/authoring/inspection_tools.py`, `pyproject.toml` |
 
 The implementation must not add a second prompt renderer or runner registry.
 `CreateWorkflowRunner._generation_prompt`, `CreateToolRunner._generation_prompt`,
@@ -408,6 +453,8 @@ destination, staging, approval, and publication checks remain unchanged.
   tool names.
 - Prompt text and generated source remain bounded by the existing artifact
   limits.
+- Documentation inspection is read-only, rejects traversal and absolute paths,
+  and source inspection is limited to public `agenthicc.*` modules.
 - A malformed or incomplete generated prompt must fail validation before
   publication.
 
@@ -433,6 +480,13 @@ destination, staging, approval, and publication checks remain unchanged.
 - Allow direct custom lifecycle implementations without `super()` checks.
 - Add static validation for non-empty literal phase prompts.
 - Preserve validation for custom factory wiring and supported runner bases.
+
+### Phase 2A — Generation recovery
+
+- Feed parse and validation findings back into the next source-generation prompt.
+- Emit visible retry notices instead of silently discarding malformed responses.
+- Add `[execution].authoring_max_generation_attempts` with a safe default and
+  upper bound, and report the exhausted attempt count in the final result.
 
 ### Phase 3 — Regression coverage
 
@@ -511,6 +565,18 @@ destination, staging, approval, and publication checks remain unchanged.
     artifact-appropriate prompts for all seven authoring phases.
 19. Unit and E2E tests prove raw tool and command generation, metadata recovery,
     publication, loader discovery, approval, retry, resume, and reload guidance.
+20. A non-source or invalid-source response receives actionable feedback and a
+    visible retry event, then succeeds when a later attempt returns valid
+    source; repeated failures stop at the configured bounded attempt limit and
+   report that limit without publication.
+21. All three authoring workflows expose explicit typed lifecycle states and
+    phase-specific prompts with bounded multi-turn budgets.
+22. A design agent can submit complete raw source with the phase-local tool and
+    the runner validates it before staging; no envelope is required.
+23. Design agents can inspect packaged documentation and current Python API
+    signatures/source through bounded read-only built-in tools.
+24. The built distribution contains the documentation tree alongside the
+    installable agenthicc source package.
 
 ## 11. Verification
 
@@ -585,6 +651,10 @@ phase prompt to a later runtime agent.
 Verification completed:
 
 ```text
-2430 passed, 15 skipped — uv run pytest tests/ -q
-ruff check, ruff format --check, mypy, and type_audit — passed
+2437 passed, 15 skipped — uv run pytest tests/ -q
+ruff check, ruff format --check, mypy, type_audit, and nox llms_check — passed
+uv build --wheel --out-dir /tmp/agenthicc-build — passed; wheel contains
+share/agenthicc/docs alongside the installable source package
+Installed-wheel smoke test — passed; the documentation inspection tool reads
+share/agenthicc/docs/guides/workflows.md without the repository checkout.
 ```

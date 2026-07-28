@@ -227,6 +227,8 @@ def test_create_workflow_prompt_teaches_runner_and_toml_contract() -> None:
     assert "system_prompt_override" in prompt
     assert "eight" in prompt
     assert "super()" in prompt
+    assert "inspect_agenthicc_documentation" in prompt
+    assert "inspect_agenthicc_source" in prompt
     assert "inherited" in prompt
     assert "WorkflowParams" in prompt
     assert "build_params(source)" in prompt
@@ -254,9 +256,27 @@ def test_extension_authoring_prompts_generate_raw_source_directly(
     assert "complete raw Python source" in prompt
     assert "Do not use XML, JSON" in prompt
     assert "Return ONLY this envelope" not in prompt
+    assert "inspect_agenthicc_documentation" in prompt
+    assert "inspect_agenthicc_source" in prompt
     assert "ARTIFACT_DESCRIPTION" in prompt
     assert required_text in prompt
     assert intent in prompt
+
+
+def test_builtin_authoring_definitions_have_distinct_bounded_phase_contracts() -> None:
+    for definition in (CreateWorkflow, CreateTools, CreateCommands):
+        assert [phase.name for phase in definition.phases] == [
+            "interpret",
+            "design",
+            "stage",
+            "validate",
+            "review",
+            "publish",
+            "summarize",
+        ]
+        assert all(phase.system_prompt_override.strip() for phase in definition.phases)
+        assert all(1 <= phase.max_turns <= 20 for phase in definition.phases)
+        assert len({phase.system_prompt_override for phase in definition.phases}) == 7
 
 
 def test_validation_accepts_phase_name_as_positional_argument() -> None:

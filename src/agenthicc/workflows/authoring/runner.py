@@ -28,17 +28,23 @@ from agenthicc.workflows.authoring.artifact import (
     validate_workflow_candidate,
 )
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
+from agenthicc.workflows.authoring.state import AuthoringState, state_for_phase
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.workflows.plugin import WorkflowRun
+    from agenthicc.workflows.plugin import PhaseSpec
+    from agenthicc.tools.base import ToolLike
 
 log = logging.getLogger(__name__)
 
 _PHASES = ("interpret", "design", "stage", "validate", "review", "publish", "summarize")
-_MAX_GENERATION_ATTEMPTS = 2
+_DEFAULT_MAX_GENERATION_ATTEMPTS = 3
+_MAX_GENERATION_ATTEMPTS = 10
+_DEFAULT_MAX_PHASE_TURNS = 20
+_MAX_PHASE_TURNS = 100
 _RUN_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -55,7 +61,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     artifact_label = "workflow"
     activation = "workflows-reload"
 
-    def __init__(self, config: WorkflowConfig, mode_manager: ModeManager | None = None) -> None:
+    def __init__(
+        self,
+        config: WorkflowConfig,
+        mode_manager: ModeManager | None = None,
+        phase_specs: tuple[PhaseSpec, ...] | list[PhaseSpec] | None = None,
+    ) -> None:
         self._cfg = config
         self._mode_manager = mode_manager
         self._run_id = ""
@@ -63,6 +74,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         self._workflow_run: WorkflowRun | None = None
         self._project_root = Path.cwd().resolve()
         self._summary_emitted = False
+        self._phase_specs = {spec.name: spec for spec in (phase_specs or ())}
+        self._state = AuthoringState.INTERPRET
 
     def _result(
         self,
@@ -101,6 +114,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
         self._run_id = uuid.uuid4().hex
         self._summary_emitted = False
+        self._state = AuthoringState.INTERPRET
         self._shared_memory = ShortTermMemory(
             max_tokens=self._cfg.cfg.execution.effective_usable_budget()
         )
@@ -128,14 +142,17 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         artifact: AuthoringArtifact | None = None
         result: AuthoringResult
         try:
+            interpreted_intent = intent
+            if self._phase_specs:
+                interpreted_intent = await self._run_interpret_phase(intent)
             await self._complete_phase(
                 "interpret",
-                intent,
+                interpreted_intent,
                 approved=True,
-                structured={"intent": intent},
+                structured={"intent": intent, "interpretation": interpreted_intent},
             )
             await self._start_phase("design")
-            candidate, report, attempts, generation_text = await self._generate(intent)
+            candidate, report, attempts, generation_text = await self._generate(interpreted_intent)
             await self._complete_phase(
                 "design",
                 generation_text,
@@ -159,7 +176,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 )
             await self._complete_phase(
                 "validate",
-                self._validation_text(report),
+                self._validation_text(report, attempts=attempts),
                 approved=report.valid,
                 structured=report.to_dict(),
             )
@@ -168,7 +185,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     run_id=self._run_id,
                     status="failed",
                     approval="not-requested",
-                    error=self._validation_text(report),
+                    error=self._validation_text(report, attempts=attempts),
                     attempts=attempts,
                 )
                 await self._complete_phase("summarize", result.error or "Generation failed")
@@ -384,6 +401,161 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             return validate_tool_candidate(candidate)
         return validate_command_candidate(candidate)
 
+    def _generation_attempt_limit(self) -> int:
+        """Return the bounded source-generation attempt limit from execution config."""
+
+        configured = self._cfg.cfg.execution.authoring_max_generation_attempts
+        if isinstance(configured, bool) or not isinstance(configured, int):
+            configured = _DEFAULT_MAX_GENERATION_ATTEMPTS
+        return max(1, min(configured, _MAX_GENERATION_ATTEMPTS))
+
+    def _phase_max_turns(self, phase_name: str) -> int:
+        """Resolve a phase's bounded multi-turn budget.
+
+        A definition may specialize the default, while the execution setting
+        remains the operator's global safety ceiling for every ``create_*``
+        phase.  Both values are clamped to keep malformed TOML harmless.
+        """
+
+        configured = self._cfg.cfg.execution.authoring_max_phase_turns
+        if isinstance(configured, bool) or not isinstance(configured, int):
+            configured = _DEFAULT_MAX_PHASE_TURNS
+        configured = max(1, min(configured, _MAX_PHASE_TURNS))
+        spec = self._phase_specs.get(phase_name)
+        if spec is None or spec.max_turns <= 0:
+            return configured
+        return max(1, min(spec.max_turns, configured, _MAX_PHASE_TURNS))
+
+    def _phase_prompt(self, phase_name: str) -> str:
+        """Return the literal phase contract selected by the workflow definition."""
+
+        try:
+            phase_specs = self._phase_specs
+        except AttributeError:
+            # Prompt-only callers and older integrations may construct the
+            # runner with ``object.__new__``; those calls have no definition
+            # metadata but still need the stable generation contract.
+            return ""
+        spec = phase_specs.get(phase_name)
+        if spec is None or not spec.system_prompt_override.strip():
+            return ""
+        return (
+            f"\n\n[AUTHORING PHASE: {phase_name}]\n"
+            f"{spec.system_prompt_override.strip()}\n"
+            "The phase may use multiple agent turns. Do not advance by merely "
+            "writing a conversational answer; use the phase transition tool when "
+            "the objective is complete."
+        )
+
+    def _generation_feedback(
+        self,
+        report: ValidationReport,
+        *,
+        parse_error: str | None = None,
+    ) -> str:
+        """Build actionable correction instructions for the next agent attempt."""
+
+        if parse_error is not None:
+            return (
+                "The previous response was not a parseable source artifact. "
+                f"Parser finding: {parse_error}\n"
+                "It contained analysis, tool-call activity, or incomplete output "
+                "instead of the requested source. Do not repeat repository inspection "
+                "or describe what you will generate. Now return the complete source "
+                "file directly, with no prose, XML, JSON, or Markdown fence."
+            )
+        findings = "\n".join(
+            f"- [{item.code}] {item.message}" for item in report.findings if item.blocking
+        )
+        return (
+            "The previous source artifact was returned but failed static validation. "
+            "Preserve the user's intent and correct every blocking finding below:\n"
+            f"{findings}\n"
+            "Return the complete corrected source file directly, not a patch, plan, "
+            "explanation, XML, JSON, or Markdown fence. Re-check the source contract "
+            "before responding."
+        )
+
+    async def _run_interpret_phase(self, intent: str) -> str:
+        """Run the tool-gated interpretation phase for definition-backed runs."""
+
+        from agenthicc.workflows.authoring.inspection_tools import (
+            make_authoring_inspection_tools,
+        )
+        from agenthicc.workflows.authoring.phase_tools import make_authoring_transition_tools
+
+        transition_event = asyncio.Event()
+        transition_data: dict[str, object] = {}
+        await self._run_authoring_turn(
+            intent,
+            phase_name="interpret",
+            tools=(
+                [
+                    *self._cfg.all_plugin_tools(),
+                    *make_authoring_inspection_tools(),
+                    *make_authoring_transition_tools(
+                        "interpret",
+                        transition_event,
+                        transition_data,
+                    ),
+                ]
+            ),
+            active_agent="planner",
+            system_prompt=(
+                "You are interpreting an authoring request. Inspect only the current "
+                "contracts needed for this artifact, normalize the user's intent, "
+                "and call complete_authoring_phase(summary) when the design handoff "
+                "is precise. Do not generate source in this phase."
+                + self._phase_prompt("interpret")
+            ),
+        )
+        if not transition_event.is_set():
+            raise ValueError("interpret phase ended without complete_authoring_phase()")
+        summary = transition_data.get("summary")
+        return summary if isinstance(summary, str) else intent
+
+    async def _run_authoring_turn(
+        self,
+        text: str,
+        *,
+        phase_name: str,
+        tools: list[ToolLike],
+        active_agent: str,
+        system_prompt: str,
+        output: list[str] | None = None,
+    ) -> None:
+        """Run one bounded tool-capable turn for an authoring phase."""
+
+        from agenthicc.runners.agent_turn import _run_agent_turn
+
+        if self._shared_memory is None:
+            raise RuntimeError("authoring shared memory is not initialized")
+        await _run_agent_turn(
+            text,
+            runner=self._cfg.agent_runner,
+            processor=self._cfg.processor,
+            session_memory=self._shared_memory,
+            max_agent_turns=max(
+                1,
+                min(self._phase_max_turns(phase_name), self._cfg.cfg.execution.max_agent_turns),
+            ),
+            conv_store=self._cfg.conv_store,
+            app_state=self._cfg.app_state,
+            exec_cfg=self._cfg.cfg.execution,
+            skills=self._cfg.skills,
+            skill_permissions=self._cfg.cfg.agents.skill_permissions_for(active_agent),
+            mention_cache=self._cfg.mention_cache,
+            project_plugin_tools=tools,
+            mcp_registry=self._cfg.mcp_registry,
+            active_agent=active_agent,
+            completed_turns=self._cfg.completed_turns,
+            approval_svc=self._cfg.approval_svc,
+            output_collector=output if output is not None else [],
+            system_prompt_suffix=system_prompt,
+            memory_router=self._cfg.memory_router,
+            semantic_index=self._cfg.semantic_index,
+        )
+
     def _generation_prompt(self, intent: str) -> str:
         """Return the direct source-generation contract for ``create_workflow``."""
 
@@ -413,6 +585,13 @@ when available:
 - ``docs/guides/workflows.md``
 - ``docs/guides/custom-workflows-and-config.md``
 - ``docs/guides/command-execution.md`` when commands or services are involved
+
+Use the built-in read-only authoring tools before writing code:
+``inspect_agenthicc_documentation(path)`` reads the installed documentation and
+``inspect_agenthicc_source(module, symbol)`` uses Python introspection to show
+the API surface, signatures, and current source. Prefer those tools over
+guessing from memory; the installed package is authoritative. Inspect the
+specific loader, PhaseSpec, runner, and tool contracts needed by this request.
 
 Use only existing agenthicc APIs and preserve the repository's ownership,
 capability, approval, workspace, network, and activation boundaries.
@@ -511,36 +690,70 @@ specifications, prompts, and any justified custom runner. Do not wrap the code
 in XML, JSON, Markdown fences, or another special envelope. Do not add an
 explanation before or after the source.
 
+When the phase-local authoring tools are available, pass this same complete raw
+source to ``submit_generated_source(source, artifact_name, artifact_description)``
+and then call ``complete_authoring_phase(summary)``. The tool call is only the
+handoff signal; the source itself must still be generated directly and remains
+subject to static validation.
+
 USER INTENT:
 {intent}
+{self._phase_prompt("design")}
 """
 
     async def _generate(
         self, intent: str
     ) -> tuple[WorkflowCandidate | None, ValidationReport, int, str]:
         from agenthicc.runners.agent_turn import _run_agent_turn
+        from agenthicc.workflows.authoring.inspection_tools import (
+            make_authoring_inspection_tools,
+        )
+        from agenthicc.workflows.authoring.phase_tools import make_authoring_transition_tools
 
         feedback = ""
         last_report = ValidationReport()
         last_text = ""
-        for attempt in range(1, _MAX_GENERATION_ATTEMPTS + 1):
+        attempt_limit = self._generation_attempt_limit()
+        for attempt in range(1, attempt_limit + 1):
             output: list[str] = []
+            transition_event = asyncio.Event()
+            transition_data: dict[str, object] = {}
             prompt = self._generation_prompt(intent)
             if feedback:
-                prompt += f"\nThe previous candidate failed validation. Correct these findings:\n{feedback}\n"
+                prompt += (
+                    "\n\nRECOVERY ATTEMPT\n"
+                    f"This is correction attempt {attempt} of {attempt_limit}.\n"
+                    f"{feedback}\n"
+                )
             await _run_agent_turn(
                 prompt,
                 runner=self._cfg.agent_runner,
                 processor=self._cfg.processor,
                 session_memory=self._shared_memory,
-                max_agent_turns=min(12, self._cfg.cfg.execution.max_agent_turns),
+                max_agent_turns=max(
+                    1,
+                    min(
+                        self._phase_max_turns("design"),
+                        self._cfg.cfg.execution.max_agent_turns,
+                    ),
+                ),
                 conv_store=self._cfg.conv_store,
                 app_state=self._cfg.app_state,
                 exec_cfg=self._cfg.cfg.execution,
                 skills=self._cfg.skills,
                 skill_permissions=self._cfg.cfg.agents.skill_permissions_for("planner"),
                 mention_cache=self._cfg.mention_cache,
-                project_plugin_tools=self._cfg.all_plugin_tools(),
+                project_plugin_tools=(
+                    [
+                        *self._cfg.all_plugin_tools(),
+                        *make_authoring_inspection_tools(),
+                        *make_authoring_transition_tools(
+                            "design",
+                            transition_event,
+                            transition_data,
+                        ),
+                    ]
+                ),
                 mcp_registry=self._cfg.mcp_registry,
                 active_agent="planner",
                 completed_turns=self._cfg.completed_turns,
@@ -553,18 +766,68 @@ USER INTENT:
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
             )
-            last_text = "".join(output).strip()
+            submitted_source = transition_data.get("source")
+            last_text = (
+                submitted_source.strip()
+                if transition_event.is_set() and isinstance(submitted_source, str)
+                else "".join(output).strip()
+            )
+            if self._phase_specs and not transition_event.is_set():
+                parse_error = (
+                    "the design agent did not call complete_authoring_phase(); "
+                    "a phase cannot advance from free-form text"
+                )
+                last_report = ValidationReport(
+                    (ValidationFinding("phase-transition", parse_error),)
+                )
+                feedback = self._generation_feedback(last_report, parse_error=parse_error)
+                if attempt < attempt_limit:
+                    self._cfg.conv_store.append_event(
+                        "system",
+                        {
+                            "text": (
+                                f"{self.artifact_label.title()} design phase attempt "
+                                f"{attempt}/{attempt_limit} did not call its transition "
+                                "tool; retrying. "
+                                f"{feedback}"
+                            )
+                        },
+                    )
+                continue
             try:
                 candidate = self._parse_candidate(last_text)
             except ValueError as exc:
-                feedback = str(exc)
-                last_report = ValidationReport((ValidationFinding("response-parse", str(exc)),))
+                finding = ValidationFinding("response-parse", str(exc))
+                last_report = ValidationReport((finding,))
+                feedback = self._generation_feedback(last_report, parse_error=str(exc))
+                if attempt < attempt_limit:
+                    self._cfg.conv_store.append_event(
+                        "system",
+                        {
+                            "text": (
+                                f"{self.artifact_label.title()} source generation attempt "
+                                f"{attempt}/{attempt_limit} needs correction; retrying. "
+                                f"{feedback}"
+                            )
+                        },
+                    )
                 continue
             last_report = self._validate_candidate(candidate)
             if last_report.valid:
                 return candidate, last_report, attempt, last_text
-            feedback = "\n".join(f"- {item.message}" for item in last_report.findings)
-        return None, last_report, _MAX_GENERATION_ATTEMPTS, last_text
+            feedback = self._generation_feedback(last_report)
+            if attempt < attempt_limit:
+                self._cfg.conv_store.append_event(
+                    "system",
+                    {
+                        "text": (
+                            f"{self.artifact_label.title()} source generation attempt "
+                            f"{attempt}/{attempt_limit} failed validation; retrying. "
+                            f"{feedback}"
+                        )
+                    },
+                )
+        return None, last_report, attempt_limit, last_text
 
     def _load_staged_artifact(
         self, run_id: str
@@ -650,6 +913,7 @@ USER INTENT:
 
         if self._workflow_run is None:
             return
+        self._state = state_for_phase(name)
         index = _PHASES.index(name)
         self._workflow_run = dataclasses.replace(
             self._workflow_run,
@@ -664,6 +928,7 @@ USER INTENT:
                     "run_id": self._run_id,
                     "phase_name": name,
                     "workflow_name": self.workflow_name,
+                    "state": self._state.name,
                 },
             )
         )
@@ -683,9 +948,16 @@ USER INTENT:
             return
         if self._workflow_run.current_phase != name:
             await self._start_phase(name)
+        phase_spec = self._phase_specs.get(name)
         record = PhaseRunRecord(
             phase_name=name,
-            role="human" if name == "review" else "auto",
+            role=(
+                "human"
+                if name == "review"
+                else phase_spec.agent_type
+                if phase_spec is not None
+                else "auto"
+            ),
             approved=approved,
             output_summary=text[:500],
             iteration=1,
@@ -707,12 +979,21 @@ USER INTENT:
                     "full_text": text[:8_000],
                     "approved": approved,
                     "structured": structured or {},
+                    "state": state_for_phase(name).name,
                 },
             )
         )
 
     async def _finish_run(self, result: AuthoringResult, *, status: str) -> None:
         from agenthicc.kernel import Event
+
+        self._state = (
+            AuthoringState.COMPLETE
+            if status == "complete"
+            else AuthoringState.REJECTED
+            if result.status == "rejected"
+            else AuthoringState.FAILED
+        )
 
         # Authoring runs do not end in a normal agent response: publication is
         # completed by the workflow runner after the approval overlay closes.
@@ -740,6 +1021,7 @@ USER INTENT:
                     if self._workflow_run
                     else 0,
                     "status": status,
+                    "state": self._state.name,
                     "result": result.to_dict(),
                 },
             )
@@ -842,12 +1124,15 @@ USER INTENT:
             published_path=str(destination),
         )
 
-    def _validation_text(self, report: ValidationReport) -> str:
+    def _validation_text(self, report: ValidationReport, *, attempts: int | None = None) -> str:
         if report.valid:
             return f"{self.artifact_label.title()} source validation passed."
-        return f"{self.artifact_label.title()} source validation failed: " + "; ".join(
+        message = f"{self.artifact_label.title()} source validation failed: " + "; ".join(
             item.message for item in report.findings
         )
+        if attempts is not None and attempts > 1:
+            message += f" Generation stopped after {attempts} attempts."
+        return message
 
     def _summary(self, result: AuthoringResult) -> str:
         if result.status == "published" and result.artifact is not None:
@@ -888,6 +1173,13 @@ an implementation. Use only existing agenthicc APIs. Keep filesystem,
 network, approval, dependency, and output behavior inside the repository's
 existing ownership and security boundaries.
 
+Before generating source, call the built-in
+``inspect_agenthicc_documentation(path)`` and
+``inspect_agenthicc_source(module, symbol)`` tools. Use Python introspection
+against the installed agenthicc modules to confirm the latest decorator,
+context, capability, loader, and HTTP APIs rather than relying on stale
+examples.
+
 SOURCE CONTRACT
 
 - Return only the complete raw Python source file. Do not use XML, JSON,
@@ -919,6 +1211,7 @@ service; report that prerequisite at runtime instead of fabricating it.
 
 USER INTENT:
 {intent}
+{self._phase_prompt("design")}
 """
 
     def _activation_message(self, name: str) -> str:
@@ -947,6 +1240,13 @@ contracts, command plugin loader, dispatcher, picker behavior, busy policies,
 relevant guides, and tests before choosing an implementation. Use only existing
 agenthicc APIs and preserve command ownership, capability, approval, and busy
 state boundaries.
+
+Before generating source, call the built-in
+``inspect_agenthicc_documentation(path)`` and
+``inspect_agenthicc_source(module, symbol)`` tools. Use Python introspection
+against the installed agenthicc modules to confirm the latest command,
+context, loader, dispatcher, and busy-policy APIs rather than relying on stale
+examples.
 
 SOURCE CONTRACT
 
@@ -978,6 +1278,7 @@ the command's normal bounded behavior.
 
 USER INTENT:
 {intent}
+{self._phase_prompt("design")}
 """
 
     def _activation_message(self, name: str) -> str:

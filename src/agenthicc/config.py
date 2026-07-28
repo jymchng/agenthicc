@@ -264,6 +264,11 @@ class ExecutionSettings:
     max_parallel_tasks: int = 4
     agent_pool_size: int = 16
     max_agent_turns: int = 200  # max agentic-loop iterations per intent
+    authoring_max_generation_attempts: int = 3
+    """Maximum complete source-generation attempts for ``create_*`` workflows."""
+
+    authoring_max_phase_turns: int = 20
+    """Maximum agent sub-turns allowed in one ``create_*`` phase by default."""
     turn_timeout_s: float = 0.0  # per-turn watchdog; 0 = no limit
     # Conversation compaction.  auto_compact gates the proactive LLM compaction
     # ladder in lauren-ai's runner (PRD-135): when True, summarisation fires each
@@ -914,6 +919,8 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_parallel_tasks=_as_int(ex.get("max_parallel_tasks"), 4),
         agent_pool_size=_as_int(ex.get("agent_pool_size"), 16),
         max_agent_turns=_as_int(ex.get("max_agent_turns"), 200),
+        authoring_max_generation_attempts=_as_int(ex.get("authoring_max_generation_attempts"), 3),
+        authoring_max_phase_turns=_as_int(ex.get("authoring_max_phase_turns"), 20),
         auto_compact=_as_bool(ex.get("auto_compact"), True),
         context_windows=_context_windows,
         prompt_cache=_as_bool(ex.get("prompt_cache"), True),

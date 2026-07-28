@@ -12,7 +12,7 @@ import pytest
 
 from lauren_ai._agents._runner import AgentRunnerBase
 from lauren_ai._signals import SignalBus
-from lauren_ai._transport import Completion, TokenUsage
+from lauren_ai._transport import Completion, TokenUsage, ToolCall
 from lauren_ai._transport._mock import MockTransport
 
 from agenthicc.agents.registry import build_agents_registry
@@ -37,6 +37,20 @@ def _completion(content: str, n: int = 1) -> Completion:
         content=content,
         tool_calls=[],
         stop_reason="end_turn",
+        usage=TokenUsage(input_tokens=10, output_tokens=10),
+    )
+
+
+def _tool_completion(tool_calls: list[tuple[str, dict[str, object]]], n: int) -> Completion:
+    return Completion(
+        id=f"create-workflow-tool-{n}",
+        model="mock-model",
+        content="",
+        tool_calls=[
+            ToolCall(tool_use_id=f"tool-{n}-{index}", name=name, input=payload)
+            for index, (name, payload) in enumerate(tool_calls)
+        ],
+        stop_reason="tool_use",
         usage=TokenUsage(input_tokens=10, output_tokens=10),
     )
 
@@ -250,7 +264,43 @@ async def test_create_workflow_retries_after_invalid_source(
 
     assert result.status == "published", result.to_dict()
     assert result.attempts == 2
+    recovery_prompt = str(transport.calls[1].messages)
+    assert "RECOVERY ATTEMPT" in recovery_prompt
+    assert "phase-reference" in recovery_prompt
+    assert "Return the complete corrected source file directly" in recovery_prompt
     assert (tmp_path / ".agenthicc" / "workflows" / "cloakbrowser_parse_fb.py").exists()
+
+
+async def test_create_workflow_retries_non_source_response_with_actionable_feedback(
+    tmp_path: Path, processor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    transport = MockTransport()
+    transport.queue_response(
+        _completion(
+            "I inspected the registry and understand the contracts. "
+            "Let me generate the complete workflow source."
+        )
+    )
+    transport.queue_response(_completion(_source(), n=2))
+    runner, app_state = _runner(tmp_path, processor, transport, _Approval(True))
+    conversation_events = []
+    app_state.conversation.on_event(conversation_events.append)
+
+    result = await runner.run("Create a parser workflow after inspecting the registry.")
+    await processor.drain()
+
+    assert result.status == "published", result.to_dict()
+    assert result.attempts == 2
+    recovery_prompt = str(transport.calls[1].messages)
+    assert "not a parseable source artifact" in recovery_prompt
+    assert "tool-call activity" in recovery_prompt
+    assert "complete source file directly" in recovery_prompt
+    assert any(
+        event.kind == "system"
+        and "needs correction; retrying" in str(event.payload.get("text", ""))
+        for event in conversation_events
+    )
 
 
 async def test_create_workflow_malformed_output_fails_without_publication(
@@ -260,6 +310,7 @@ async def test_create_workflow_malformed_output_fails_without_publication(
     transport = MockTransport()
     transport.queue_response(_completion("not a workflow", n=1))
     transport.queue_response(_completion("still not a workflow", n=2))
+    transport.queue_response(_completion("still not a workflow", n=3))
     runner, _app_state = _runner(tmp_path, processor, transport, _Approval(True))
 
     result = await runner.run("Create a workflow with malformed model output.")
@@ -268,8 +319,29 @@ async def test_create_workflow_malformed_output_fails_without_publication(
     assert result.status == "failed"
     assert result.error is not None
     assert "did not contain workflow Python source" in result.error
+    assert "after 3 attempts" in result.error
     assert result.artifact is None
     assert not list((tmp_path / ".agenthicc" / "workflows").glob("*.py"))
+
+
+async def test_create_workflow_honors_configured_generation_attempt_limit(
+    tmp_path: Path, processor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    transport = MockTransport()
+    transport.queue_response(_completion("not a workflow", n=1))
+    transport.queue_response(_completion("still not a workflow", n=2))
+    runner, _app_state = _runner(tmp_path, processor, transport, _Approval(True))
+    runner._cfg.cfg.execution.authoring_max_generation_attempts = 2
+
+    result = await runner.run("Create a workflow with a two-attempt generation limit.")
+    await processor.drain()
+
+    assert result.status == "failed"
+    assert result.attempts == 2
+    assert result.error is not None
+    assert "after 2 attempts" in result.error
+    assert len(transport.calls) == 2
 
 
 async def test_create_workflow_resume_publishes_staged_candidate_without_regeneration(
@@ -378,7 +450,30 @@ async def test_headless_style_execution_emits_structured_authoring_result(
     """The existing headless execution seam can run the builtin authoring plugin."""
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(_source(), n=1))
+    transport.queue_response(
+        _tool_completion(
+            [("complete_authoring_phase", {"summary": "The parser intent is explicit."})],
+            1,
+        )
+    )
+    transport.queue_response(_completion("Interpretation handed off.", n=2))
+    transport.queue_response(
+        _tool_completion(
+            [
+                (
+                    "submit_generated_source",
+                    {
+                        "source": _source(),
+                        "artifact_name": "cloakbrowser_parse_fb",
+                        "artifact_description": "Parse Facebook with Cloakbrowser.",
+                    },
+                ),
+                ("complete_authoring_phase", {"summary": "The source is ready for staging."}),
+            ],
+            3,
+        )
+    )
+    transport.queue_response(_completion("Source handed off.", n=4))
     approval = _Approval(True)
     runner, app_state = _runner(tmp_path, processor, transport, approval)
     registry = WorkflowRegistry()

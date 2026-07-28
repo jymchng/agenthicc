@@ -23,6 +23,9 @@ from agenthicc.workflows.authoring.runner import (
     CreateToolRunner,
     CreateWorkflowRunner,
 )
+from agenthicc.workflows.authoring.inspection_tools import make_authoring_inspection_tools
+from agenthicc.workflows.authoring.phase_tools import make_authoring_transition_tools
+from agenthicc.workflows.authoring.state import AuthoringState, state_for_phase
 
 __all__ = [
     "AuthoringArtifact",
@@ -36,6 +39,10 @@ __all__ = [
     "CreateCommandRunner",
     "CreateToolRunner",
     "CreateWorkflowRunner",
+    "AuthoringState",
+    "state_for_phase",
+    "make_authoring_transition_tools",
+    "make_authoring_inspection_tools",
     "parse_authoring_response",
     "ValidationFinding",
     "ValidationReport",

@@ -76,6 +76,30 @@ request leaves the staged candidate available for inspection and does not
 replace an existing workflow. Every terminal outcome emits a final summary in
 the transcript and in the structured `AuthoringResult`.
 
+If the design agent returns analysis, tool-call activity, or incomplete output
+instead of source, authoring reports the exact parser finding, emits a visible
+retry notice, and sends correction instructions back to the agent. It retries
+up to `[execution].authoring_max_generation_attempts` complete attempts (3 by
+default, bounded to 1–10) before failing without staging or publishing a
+partial artifact.
+
+Authoring phases are explicit state-machine nodes. The definition supplies a
+separate phase prompt and turn budget for `interpret`, `design`, `stage`,
+`validate`, `review`, `publish`, and `summarize`; the operator can cap every
+phase with `[execution].authoring_max_phase_turns` (20 by default). During
+design, the agent can take several tool-call turns and must use the
+phase-local completion tool to hand off. `submit_generated_source` captures
+the complete raw Python file directly, so the authoring contract does not
+depend on an XML, JSON, or Markdown response envelope.
+
+The design agent also receives two read-only built-ins:
+`inspect_agenthicc_documentation(path)` reads the installed documentation, and
+`inspect_agenthicc_source(module, symbol)` uses Python's `inspect` API against
+the installed `agenthicc` package. These tools are intended to keep generated
+workflows, tools, and commands aligned with the current API surface. The
+documentation tree is included in built distributions under
+`share/agenthicc/docs` and remains available from the repository checkout.
+
 Run `/workflows reload` after publication so the normal workflow registry
 discovers the new file, then select it for a later request:
 

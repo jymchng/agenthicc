@@ -122,6 +122,8 @@ class TestLoadConfig:
         assert config.execution.max_concurrent_intents == 8
         assert config.execution.max_parallel_tasks == 4
         assert config.execution.agent_pool_size == 16
+        assert config.execution.authoring_max_generation_attempts == 3
+        assert config.execution.authoring_max_phase_turns == 20
         assert config.security.sandbox_mode is True
         assert config.security.allowed_paths == ["/workspace"]
         assert config.security.max_tool_cpu_seconds == 30
@@ -134,6 +136,22 @@ class TestLoadConfig:
         assert config.hooks == {}
         assert config.tools.allowed == []
         assert config.tools.denied == []
+
+    def test_authoring_generation_attempts_are_configurable(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        _write(
+            project,
+            """
+            [execution]
+            authoring_max_generation_attempts = 6
+            authoring_max_phase_turns = 7
+            """,
+        )
+
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+
+        assert config.execution.authoring_max_generation_attempts == 6
+        assert config.execution.authoring_max_phase_turns == 7
 
     def test_invalid_toml_raises(self, tmp_path):
         bad = tmp_path / "agenthicc.toml"

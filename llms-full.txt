@@ -1481,6 +1481,45 @@ Selects the command artifact contract and `.agenthicc/commands/` destination
 while sharing manifest, hash, approval, atomic publication, cancellation, and
 resume logic.
 
+### AuthoringState
+
+class AuthoringState(Enum):
+    INTERPRET = auto()
+    DESIGN = auto()
+    STAGE = auto()
+    VALIDATE = auto()
+    REVIEW = auto()
+    PUBLISH = auto()
+    SUMMARIZE = auto()
+    COMPLETE = auto()
+    REJECTED = auto()
+    FAILED = auto()
+
+Explicit typed lifecycle state shared by the three built-in authoring
+workflows. Terminal states are COMPLETE, REJECTED, and FAILED.
+
+### make_authoring_transition_tools
+
+def make_authoring_transition_tools(
+    phase_name: str,
+    transition_event: asyncio.Event,
+    transition_data: dict[str, object],
+) -> list[Callable[..., object]]
+
+Creates phase-local completion tools. The design phase also exposes
+submit_generated_source, which captures complete raw source directly before
+the runner parses and validates it. A phase handoff is accepted only after
+complete_authoring_phase is called.
+
+### make_authoring_inspection_tools
+
+def make_authoring_inspection_tools() -> list[Callable[..., object]]
+
+Creates bounded read-only inspect_agenthicc_documentation and
+inspect_agenthicc_source tools. Documentation paths are relative to the
+installed documentation tree; source inspection is limited to public
+agenthicc.* modules and uses Python's inspect API.
+
 ### AuthoringResult
 
 ```python
@@ -1528,8 +1567,8 @@ def parse_workflow_response(text: str) -> WorkflowCandidate
 def validate_workflow_candidate(candidate: WorkflowCandidate) -> ValidationReport
 ```
 
-Parse the strict authoring envelope and validate source without importing or
-executing generated Python.
+Parse complete raw workflow source (while retaining legacy envelope
+compatibility) and validate it without importing or executing generated Python.
 
 ### parse_authoring_response
 
@@ -1539,8 +1578,9 @@ def validate_tool_candidate(candidate: WorkflowCandidate) -> ValidationReport
 def validate_command_candidate(candidate: WorkflowCandidate) -> ValidationReport
 ```
 
-Parse tool or command envelopes and statically validate their existing loader
-contracts without importing generated Python.
+Parse complete raw tool or command source (while retaining legacy envelope
+compatibility) and statically validate the existing loader contracts without
+importing generated Python.
 
 ### validate_tool_candidate
 
@@ -1896,6 +1936,9 @@ PROVIDER_API_KEY_ENVVAR: dict[str, str]
 ```
 
 ### ExecutionSettings (updated)
+
+Authoring settings include authoring_max_generation_attempts (default 3) and
+authoring_max_phase_turns (default 20); both bound the shared create_* lifecycle.
 
 ```python
 @dataclass

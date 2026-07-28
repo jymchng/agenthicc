@@ -12,7 +12,7 @@ import pytest
 
 from lauren_ai._agents._runner import AgentRunnerBase
 from lauren_ai._signals import SignalBus
-from lauren_ai._transport import Completion, TokenUsage
+from lauren_ai._transport import Completion, TokenUsage, ToolCall
 from lauren_ai._transport._mock import MockTransport
 
 from agenthicc.agents.registry import build_agents_registry
@@ -37,6 +37,20 @@ def _completion(content: str, n: int = 1) -> Completion:
         content=content,
         tool_calls=[],
         stop_reason="end_turn",
+        usage=TokenUsage(input_tokens=10, output_tokens=10),
+    )
+
+
+def _tool_completion(tool_calls: list[tuple[str, dict[str, object]]], n: int) -> Completion:
+    return Completion(
+        id=f"extension-authoring-tool-{n}",
+        model="mock-model",
+        content="",
+        tool_calls=[
+            ToolCall(tool_use_id=f"tool-{n}-{index}", name=name, input=payload)
+            for index, (name, payload) in enumerate(tool_calls)
+        ],
+        stop_reason="tool_use",
         usage=TokenUsage(input_tokens=10, output_tokens=10),
     )
 
@@ -276,6 +290,7 @@ async def test_authoring_retries_contract_validation_before_publication(
     assert result.status == "published", result.to_dict()
     assert result.attempts == 2
     assert len(transport.calls) == 2
+    assert "RECOVERY ATTEMPT" in str(transport.calls[1].messages)
 
 
 @pytest.mark.parametrize(
@@ -332,16 +347,18 @@ async def test_authoring_malformed_model_output_fails_without_partial_publicatio
     transport = MockTransport()
     transport.queue_response(_completion("not an authoring envelope", 1))
     transport.queue_response(_completion("still not an authoring envelope", 2))
+    transport.queue_response(_completion("still not an authoring envelope", 3))
     runner, _app_state = _runner(runner_type, processor, transport, _Approval(True))
 
     result = await runner.run(f"Create a malformed {kind} extension.")
     await processor.drain()
 
     assert result.status == "failed"
-    assert result.attempts == 2
+    assert result.attempts == 3
     assert result.artifact is None
     assert result.error is not None
     assert f"did not contain {kind} Python source" in result.error
+    assert "after 3 attempts" in result.error
     assert not list(
         (tmp_path / ".agenthicc" / ("tools" if kind == "tool" else "commands")).glob(f"{name}.py")
     )
@@ -437,7 +454,30 @@ async def test_headless_authoring_fails_closed_without_explicit_permission(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(source))
+    transport.queue_response(
+        _tool_completion(
+            [("complete_authoring_phase", {"summary": "The extension contract is explicit."})],
+            1,
+        )
+    )
+    transport.queue_response(_completion("Interpretation handed off.", n=2))
+    transport.queue_response(
+        _tool_completion(
+            [
+                (
+                    "submit_generated_source",
+                    {
+                        "source": source,
+                        "artifact_name": name,
+                        "artifact_description": f"Generated {kind}.",
+                    },
+                ),
+                ("complete_authoring_phase", {"summary": "The source is ready for staging."}),
+            ],
+            3,
+        )
+    )
+    transport.queue_response(_completion("Source handed off.", n=4))
     approval = _Approval(False)
     runner, app_state = _runner(
         CreateToolRunner if kind == "tool" else CreateCommandRunner,

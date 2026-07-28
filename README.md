@@ -112,6 +112,12 @@ The same authoring lifecycle is available through `/workflow create_tool` and
 `/workflow create_command`; these generate raw Python extension modules and
 require `/tools reload` or `/commands reload` after publication.
 
+Authoring design turns can inspect the installed API with the built-in
+`inspect_agenthicc_documentation` and `inspect_agenthicc_source` tools before
+generating source. Each authoring phase has its own prompt and bounded
+multi-turn budget; tune the global cap with
+`[execution].authoring_max_phase_turns` when needed.
+
 For a non-interactive process, use headless mode. It prints a ready record and
 one JSON line for each non-empty input line:
 
@@ -261,6 +267,8 @@ model = "claude-opus-4-8"
 max_concurrent_intents = 8
 max_parallel_tasks = 4
 max_agent_turns = 200
+authoring_max_generation_attempts = 3
+authoring_max_phase_turns = 20
 auto_compact = true
 transport_max_retries = 3
 

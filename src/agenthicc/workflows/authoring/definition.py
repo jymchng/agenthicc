@@ -34,6 +34,7 @@ class CreateWorkflow(WorkflowPlugin):
                 "the design phase."
             ),
             next="design",
+            max_turns=8,
         ),
         PhaseSpec(
             name="design",
@@ -49,6 +50,7 @@ class CreateWorkflow(WorkflowPlugin):
             ),
             next="stage",
             max_iterations=2,
+            max_turns=20,
         ),
         PhaseSpec(
             name="stage",
@@ -59,6 +61,7 @@ class CreateWorkflow(WorkflowPlugin):
                 "do not publish or execute it before validation and explicit approval."
             ),
             next="validate",
+            max_turns=4,
         ),
         PhaseSpec(
             name="validate",
@@ -71,6 +74,7 @@ class CreateWorkflow(WorkflowPlugin):
                 "only a complete safe candidate to review."
             ),
             next="review",
+            max_turns=8,
         ),
         PhaseSpec(
             name="review",
@@ -83,6 +87,7 @@ class CreateWorkflow(WorkflowPlugin):
             ),
             next="publish",
             on_reject="summarize",
+            max_turns=4,
         ),
         PhaseSpec(
             name="publish",
@@ -94,6 +99,7 @@ class CreateWorkflow(WorkflowPlugin):
                 "publish an unvalidated or unapproved artifact."
             ),
             next="summarize",
+            max_turns=4,
         ),
         PhaseSpec(
             name="summarize",
@@ -104,6 +110,7 @@ class CreateWorkflow(WorkflowPlugin):
                 "the exact next action needed to discover and run the specialized "
                 "workflow. Mention unresolved errors without claiming success."
             ),
+            max_turns=4,
         ),
     ]
 
@@ -115,7 +122,7 @@ class CreateWorkflow(WorkflowPlugin):
     ) -> CreateWorkflowRunner:
         from agenthicc.workflows.authoring.runner import CreateWorkflowRunner
 
-        return CreateWorkflowRunner(config, mode_manager)
+        return CreateWorkflowRunner(config, mode_manager, phase_specs=tuple(cls.phases))
 
 
 class CreateTools(WorkflowPlugin):
@@ -136,6 +143,7 @@ class CreateTools(WorkflowPlugin):
                 "contract to design."
             ),
             next="design",
+            max_turns=8,
         ),
         PhaseSpec(
             name="design",
@@ -150,6 +158,7 @@ class CreateTools(WorkflowPlugin):
             ),
             next="stage",
             max_iterations=2,
+            max_turns=20,
         ),
         PhaseSpec(
             name="stage",
@@ -160,6 +169,7 @@ class CreateTools(WorkflowPlugin):
                 "publish, import, or execute it before validation and explicit approval."
             ),
             next="validate",
+            max_turns=4,
         ),
         PhaseSpec(
             name="validate",
@@ -172,6 +182,7 @@ class CreateTools(WorkflowPlugin):
                 "pass only a loader-compatible candidate to review."
             ),
             next="review",
+            max_turns=8,
         ),
         PhaseSpec(
             name="review",
@@ -184,6 +195,7 @@ class CreateTools(WorkflowPlugin):
             ),
             next="publish",
             on_reject="summarize",
+            max_turns=4,
         ),
         PhaseSpec(
             name="publish",
@@ -195,6 +207,7 @@ class CreateTools(WorkflowPlugin):
                 "unapproved tool."
             ),
             next="summarize",
+            max_turns=4,
         ),
         PhaseSpec(
             name="summarize",
@@ -205,6 +218,7 @@ class CreateTools(WorkflowPlugin):
                 "reload action, and any unresolved prerequisite. Never claim the tool "
                 "is active before reload."
             ),
+            max_turns=4,
         ),
     ]
 
@@ -216,7 +230,7 @@ class CreateTools(WorkflowPlugin):
     ) -> CreateToolRunner:
         from agenthicc.workflows.authoring.runner import CreateToolRunner
 
-        return CreateToolRunner(config, mode_manager)
+        return CreateToolRunner(config, mode_manager, phase_specs=tuple(cls.phases))
 
 
 class CreateCommands(WorkflowPlugin):
@@ -237,6 +251,7 @@ class CreateCommands(WorkflowPlugin):
                 "contract to design."
             ),
             next="design",
+            max_turns=8,
         ),
         PhaseSpec(
             name="design",
@@ -250,6 +265,7 @@ class CreateCommands(WorkflowPlugin):
             ),
             next="stage",
             max_iterations=2,
+            max_turns=20,
         ),
         PhaseSpec(
             name="stage",
@@ -260,6 +276,7 @@ class CreateCommands(WorkflowPlugin):
                 "publish, import, or execute it before validation and explicit approval."
             ),
             next="validate",
+            max_turns=4,
         ),
         PhaseSpec(
             name="validate",
@@ -272,6 +289,7 @@ class CreateCommands(WorkflowPlugin):
                 "precisely and pass only a loader-compatible candidate to review."
             ),
             next="review",
+            max_turns=8,
         ),
         PhaseSpec(
             name="review",
@@ -284,6 +302,7 @@ class CreateCommands(WorkflowPlugin):
             ),
             next="publish",
             on_reject="summarize",
+            max_turns=4,
         ),
         PhaseSpec(
             name="publish",
@@ -295,6 +314,7 @@ class CreateCommands(WorkflowPlugin):
                 "or unapproved command."
             ),
             next="summarize",
+            max_turns=4,
         ),
         PhaseSpec(
             name="summarize",
@@ -305,6 +325,7 @@ class CreateCommands(WorkflowPlugin):
                 "invocation, required reload action, and unresolved errors. Never claim "
                 "the command is active before reload."
             ),
+            max_turns=4,
         ),
     ]
 
@@ -316,7 +337,7 @@ class CreateCommands(WorkflowPlugin):
     ) -> CreateCommandRunner:
         from agenthicc.workflows.authoring.runner import CreateCommandRunner
 
-        return CreateCommandRunner(config, mode_manager)
+        return CreateCommandRunner(config, mode_manager, phase_specs=tuple(cls.phases))
 
 
 # Singular names are the concise interactive spellings. The registry exposes

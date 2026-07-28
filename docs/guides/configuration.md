@@ -62,6 +62,8 @@ the code rather than hard-coding them in support material.
 | `max_parallel_tasks` | 4 | Workflow parallelism setting |
 | `agent_pool_size` | 16 | Legacy/domain capacity setting still present in kernel settings |
 | `max_agent_turns` | 200 | Agent-loop iteration cap |
+| `authoring_max_generation_attempts` | 3 | Maximum complete source-generation attempts for `create_*` authoring; clamped to 1–10 |
+| `authoring_max_phase_turns` | 20 | Maximum agent sub-turns in one `create_*` phase; phase definitions may request less, and the value is clamped to 1–100 |
 | `auto_compact` | true | Enable proactive model-aware conversation compaction |
 | `context_windows` | `{}` | Model id → context window under `[memory.context_windows]` |
 | `prompt_cache` | true | Enable provider prompt-cache integration where supported |
