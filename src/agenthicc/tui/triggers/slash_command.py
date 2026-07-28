@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from agenthicc.commands.command import BusyPolicy, Command
 from agenthicc.commands.registry import UnifiedCommandRegistry
 from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase, TriggerResult
+
+if TYPE_CHECKING:
+    from agenthicc.workflows.registry import WorkflowRegistry
 
 _NAME_COL = 24  # characters reserved for the command name column
 
@@ -17,12 +22,25 @@ class SlashCommandTrigger(TriggerHandlerBase):
     skill_only = False
     include_aliases = False
 
-    def __init__(self, registry: UnifiedCommandRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: UnifiedCommandRegistry | None = None,
+        workflow_registry: WorkflowRegistry | None = None,
+    ) -> None:
         self._registry = registry  # UnifiedCommandRegistry | None
+        # Keep the live registry reference rather than taking a snapshot.  The
+        # TUI reload path replaces the registry contents in place, so newly
+        # discovered workflows become available without rebuilding triggers.
+        self._workflow_registry = workflow_registry
 
     def get_matches(self, fragment: str, ctx: TriggerContext) -> list[MatchItem]:
         if self._registry is None:
             return []
+
+        argument_matches = self._get_argument_matches(fragment)
+        if argument_matches is not None:
+            return argument_matches
+
         partial = self.char + fragment
         cmds = [
             cmd
@@ -49,6 +67,88 @@ class SlashCommandTrigger(TriggerHandlerBase):
                     )
                 )
         return results
+
+    def _get_argument_matches(self, fragment: str) -> list[MatchItem] | None:
+        """Return argument completions when *fragment* contains a command.
+
+        The trigger fragment intentionally includes everything after ``/``.
+        For example, ``workflow co`` is parsed as command ``/workflow`` and
+        argument prefix ``co``.  Returning ``None`` means that the caller
+        should perform the normal command-name lookup instead of treating the
+        fragment as an argument-bearing command.
+        """
+        if " " not in fragment or self._registry is None:
+            return None
+
+        command_part, argument_part = fragment.split(" ", 1)
+        if not command_part:
+            return []
+
+        command = self._registry.get(self.char + command_part)
+        if command is None or _is_skill_command(command) is not self.skill_only:
+            return []
+
+        completions: list[str]
+        if command.name == "/workflow":
+            if self._workflow_registry is None:
+                return []
+            # Workflow names are identifiers, not free-form text.  Do not
+            # return a partially matched name: the selected value must be a
+            # complete command that TUISession.route() can execute.
+            prefix = argument_part.strip()
+            if " " in prefix:
+                return []
+            completions = [
+                name for name in self._workflow_registry.names() if name.startswith(prefix)
+            ]
+        elif command.completions_factory is not None:
+            try:
+                completions = command.completions_factory(argument_part.strip())
+            except Exception:  # noqa: BLE001
+                # A plugin completion provider must never break the input
+                # loop.  It simply contributes no suggestions for this turn.
+                return []
+        else:
+            return []
+
+        try:
+            unique_completions = sorted(set(completions))
+        except (TypeError, ValueError):
+            # A malformed plugin result is handled like a failed provider;
+            # completion must never take down the interactive input loop.
+            return []
+
+        results: list[MatchItem] = []
+        for completion in unique_completions:
+            if not isinstance(completion, str) or not completion:
+                continue
+            value = f"{command.name} {completion}"
+            workflow = (
+                self._workflow_registry.get(completion)
+                if command.name == "/workflow" and self._workflow_registry is not None
+                else None
+            )
+            detail = workflow.description if workflow is not None else f"Use {value}"
+            results.append(
+                MatchItem(
+                    display=f"{value:<{_NAME_COL}} {detail}",
+                    value=value,
+                    hint=f"  ↑ {value}  —  {detail}",
+                    label=value,
+                    detail=detail,
+                )
+            )
+        return results
+
+    def has_argument_completions(self, item: MatchItem | None) -> bool:
+        """Whether selecting *item* can continue into argument completion."""
+        if item is None or self._registry is None:
+            return False
+        command = self._registry.get(item.value)
+        return command is not None and (
+            command.completions_factory is not None
+            or (command.name == "/workflow" and self._workflow_registry is not None)
+        )
 
     def _display_description(self, cmd: Command) -> str:
         """Return the description used by the picker and its fallback row."""

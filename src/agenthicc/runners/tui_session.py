@@ -509,7 +509,7 @@ async def _build_session_context(
 
     trigger_registry = TriggerManager()
     trigger_registry.register(AtMentionTrigger())
-    trigger_registry.register(SlashCommandTrigger(cmd_registry))
+    trigger_registry.register(SlashCommandTrigger(cmd_registry, workflow_registry))
     trigger_registry.register(SkillTrigger(cmd_registry))
 
     # ── agent runner ──────────────────────────────────────────────────────────

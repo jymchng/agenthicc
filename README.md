@@ -200,7 +200,7 @@ Useful built-in slash commands include:
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/ps [terminal-id]`, `/stop [terminal-id|all]` | Inspect or stop owned background terminals; `/stop` stops all |
 | `/mode [name]` | Show or change the operating mode |
-| `/workflow <name> \| reset` | Select a workflow; use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
+| `/workflow <name> \| reset` | Select a workflow (the interactive picker autocompletes registered names); use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
 | `/model [provider] [model]` | Inspect or switch the model selection |
 | `/config` | Open the configuration overlay |
 | `/init` | Preview or explicitly write project `AGENTS.md` guidance |

@@ -26,6 +26,11 @@ The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
 Workflow selection is influenced by the active mode, registry mappings, and the
 session-local `/workflow` override.
 
+In the interactive input panel, type `/workflow` and press Space to switch the
+command picker to live workflow-name completion. The suggestions come from the
+current built-in, user, and project workflow registry; selecting one inserts the
+executable `/workflow <name>` command without submitting it.
+
 For the state machine, phase-local transition tools, retry boundaries, and
 extension pattern, see the [`code_plan` structure reference](../reference/code-plan.md).
 

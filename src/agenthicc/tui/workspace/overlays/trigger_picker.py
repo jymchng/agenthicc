@@ -216,8 +216,25 @@ class TriggerPickerOverlay(Overlay):
                 if self._trigger:
                     if ch == " ":
                         # Space commits the selected item so the user can type
-                        # arguments without a second Enter.
+                        # arguments without a second Enter.  Commands with an
+                        # argument provider stay in this overlay and switch
+                        # the active fragment to the argument portion; this is
+                        # what makes `/workflow ` immediately show workflow
+                        # names instead of losing the picker.
                         item = self._matches[self._selected] if self._matches else None
+                        has_argument_completions = getattr(
+                            self._trigger.handler, "has_argument_completions", None
+                        )
+                        if item is not None and callable(has_argument_completions):
+                            if has_argument_completions(item):
+                                result = self._trigger.handler.on_select(
+                                    item, self._trigger.fragment, self._buf.buf
+                                )
+                                selected = result.buffer[len(self._trigger.pre_buf) :]
+                                self._trigger.fragment = "".join(selected).lstrip("/") + " "
+                                self._update_matches()
+                                return True
+
                         result = self._trigger.handler.on_select(
                             item, self._trigger.fragment, self._buf.buf
                         )
