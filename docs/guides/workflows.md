@@ -101,6 +101,26 @@ after their own gate succeeds. `submit_generated_source` captures the complete
 raw Python file directly, so the authoring contract does not depend on an XML,
 JSON, or Markdown response envelope.
 
+Each phase has a distinct transition tool, which makes the required handoff
+unambiguous in the model's tool catalog:
+
+| Phase | Required handoff |
+| --- | --- |
+| `interpret` | `complete_interpret_phase(summary)` |
+| `design` | `submit_generated_source(...)`, then `complete_design_phase(summary)` |
+| `stage` | `complete_stage_phase(summary)` |
+| `validate` | `complete_validate_phase(summary)` |
+| `review` | `request_publication_approval()` |
+| `publish` | `complete_publish_phase(summary)` |
+| `summarize` | `complete_summarize_phase(summary)` |
+
+The design phase is strict: source-looking assistant prose is not treated as a
+handoff. If the agent generates code but omits either design tool call, the
+retry instruction tells it to put the complete source in
+`submit_generated_source` and then call `complete_design_phase`. This preserves
+the source directly in structured tool input while ensuring the state machine
+cannot advance until the phase transition has actually succeeded.
+
 Like `code_plan`, one `ShortTermMemory` is created for each authoring run and
 shared by every `create_workflow` phase. The phase tool set also includes
 `memory_write`, `memory_read`, `semantic_search`, and `publish_artifact`, so the

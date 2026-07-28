@@ -9,6 +9,23 @@ from collections.abc import Awaitable, Callable
 TransitionValidator = Callable[[dict[str, object]], tuple[str, str] | None]
 
 
+_PHASE_TRANSITION_TOOL_NAMES = {
+    "interpret": "complete_interpret_phase",
+    "design": "complete_design_phase",
+    "stage": "complete_stage_phase",
+    "validate": "complete_validate_phase",
+    "review": "request_publication_approval",
+    "publish": "complete_publish_phase",
+    "summarize": "complete_summarize_phase",
+}
+
+
+def authoring_transition_tool_name(phase_name: str) -> str:
+    """Return the unique handoff tool name for an authoring phase."""
+
+    return _PHASE_TRANSITION_TOOL_NAMES.get(phase_name, f"complete_{phase_name}_phase")
+
+
 def make_authoring_transition_tools(
     phase_name: str,
     transition_event: asyncio.Event,
@@ -19,14 +36,17 @@ def make_authoring_transition_tools(
 
     The tools close over one phase invocation.  A model can inspect, reason,
     and take multiple turns, but the runner only advances when the phase's
-    completion tool is called.  ``submit_generated_source`` additionally
-    captures source without relying on a response envelope or delimiter.
+    phase-specific completion tool is called.  ``submit_generated_source``
+    additionally captures source without relying on a response envelope or
+    delimiter.
     """
 
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
 
-    @_tool()
-    async def complete_authoring_phase(summary: str) -> dict[str, object]:
+    transition_tool_name = authoring_transition_tool_name(phase_name)
+
+    @_tool(name=transition_tool_name)
+    async def complete_phase(summary: str) -> dict[str, object]:
         """Complete the current authoring phase and request its configured transition.
 
         Call this only after the current phase objective is complete.  The
@@ -43,7 +63,10 @@ def make_authoring_transition_tools(
             return {
                 "ok": False,
                 "error": message,
-                "fix": "Provide concise evidence of the work completed, then call the tool again.",
+                "fix": (
+                    "Provide concise evidence of the work completed, then call "
+                    f"{transition_tool_name}(summary) again."
+                ),
             }
         transition_data["summary_candidate"] = cleaned
         if validator is not None:
@@ -68,11 +91,11 @@ def make_authoring_transition_tools(
             "ok": True,
             "message": (
                 f"The {phase_name} phase is complete. Stop this phase now; "
-                "the runner will apply the configured transition."
+                f"the runner will apply the configured transition after {transition_tool_name}()."
             ),
         }
 
-    tools: list[Callable[..., object]] = [complete_authoring_phase]
+    tools: list[Callable[..., object]] = [complete_phase]
 
     if phase_name == "design":
 
@@ -117,8 +140,8 @@ def make_authoring_transition_tools(
             return {
                 "ok": True,
                 "message": (
-                    "Complete source captured. Now call complete_authoring_phase(summary) "
-                    "to hand the artifact to staging."
+                    "Complete source captured. Now call "
+                    f"{transition_tool_name}(summary) to hand the artifact to staging."
                 ),
             }
 
@@ -142,7 +165,7 @@ def make_authoring_review_tools(
 
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
 
-    @_tool()
+    @_tool(name=authoring_transition_tool_name("review"))
     async def request_publication_approval() -> dict[str, object]:
         """Ask for publication approval and signal the review transition."""
 

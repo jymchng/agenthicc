@@ -469,7 +469,7 @@ async def test_headless_style_execution_emits_structured_authoring_result(
     transport.queue_response(_completion("I inspected the current workflow API.", n=2))
     transport.queue_response(
         _tool_completion(
-            [("complete_authoring_phase", {"summary": "The parser intent is explicit."})],
+            [("complete_interpret_phase", {"summary": "The parser intent is explicit."})],
             3,
         )
     )
@@ -485,7 +485,7 @@ async def test_headless_style_execution_emits_structured_authoring_result(
                         "artifact_description": "Parse Facebook with Cloakbrowser.",
                     },
                 ),
-                ("complete_authoring_phase", {"summary": "The source is ready for staging."}),
+                ("complete_design_phase", {"summary": "The source is ready for staging."}),
             ],
             5,
         )
@@ -493,24 +493,24 @@ async def test_headless_style_execution_emits_structured_authoring_result(
     transport.queue_response(_completion("Source handed off.", n=6))
     transport.queue_response(
         _tool_completion(
-            [("complete_authoring_phase", {"summary": "The staged source is valid."})],
+            [("complete_stage_phase", {"summary": "The staged source is valid."})],
             7,
         )
     )
     transport.queue_response(_completion("Validation handed off.", n=8))
     transport.queue_response(
-        _tool_completion([("complete_authoring_phase", {"summary": "Validation passed."})], 9)
+        _tool_completion([("complete_validate_phase", {"summary": "Validation passed."})], 9)
     )
     transport.queue_response(_completion("Validation agent handed off.", n=10))
     transport.queue_response(_tool_completion([("request_publication_approval", {})], 11))
     transport.queue_response(_completion("Review handed off.", n=12))
     transport.queue_response(
-        _tool_completion([("complete_authoring_phase", {"summary": "Publication is ready."})], 13)
+        _tool_completion([("complete_publish_phase", {"summary": "Publication is ready."})], 13)
     )
     transport.queue_response(_completion("Publication handed off.", n=14))
     transport.queue_response(
         _tool_completion(
-            [("complete_authoring_phase", {"summary": "The workflow was published."})], 15
+            [("complete_summarize_phase", {"summary": "The workflow was published."})], 15
         )
     )
     transport.queue_response(_completion("Summary handed off.", n=16))
@@ -585,3 +585,45 @@ async def test_interpretation_exhaustion_is_structured_without_missing_tool_exce
     assert context.result is not None
     assert context.result.status == "failed"
     assert "transition tool was not called successfully" in (context.result.error or "")
+
+
+async def test_design_retry_requires_source_submission_and_unique_transition_tool(
+    tmp_path: Path, processor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Source-looking prose must be repaired through both design handoff tools."""
+
+    monkeypatch.chdir(tmp_path)
+    runner, _app_state = _runner(tmp_path, processor, MockTransport(), _Approval(True))
+    runner._phase_specs = {
+        "design": PhaseSpec(
+            name="design",
+            agent_type="planner",
+            max_iterations=2,
+            system_prompt_override="Generate and hand off the workflow source.",
+        )
+    }
+    runner._cfg.cfg.execution.authoring_max_generation_attempts = 2
+    prompts: list[str] = []
+
+    async def source_only_turn(text: str, *args, **kwargs) -> None:
+        del args
+        prompts.append(text)
+        output = kwargs.get("output")
+        if isinstance(output, list):
+            output.append(_source())
+
+    monkeypatch.setattr(runner, "_run_authoring_turn", source_only_turn)
+
+    candidate, report, attempts, _source_text = await runner._generate(
+        "Create a Cloakbrowser parser workflow."
+    )
+
+    assert candidate is None
+    assert attempts == 2
+    assert report.findings[0].code == "phase-transition"
+    assert len(prompts) == 2
+    recovery = prompts[1]
+    assert "submit_generated_source(source=..." in recovery
+    assert "complete_design_phase(summary=...)" in recovery
+    assert "do not repeat it there" in recovery.lower()
+    assert "runner cannot advance" in recovery.lower()

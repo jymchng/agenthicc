@@ -8,6 +8,7 @@ import pytest
 
 from agenthicc.workflows.authoring.inspection_tools import make_authoring_inspection_tools
 from agenthicc.workflows.authoring.phase_tools import (
+    authoring_transition_tool_name,
     make_authoring_review_tools,
     make_authoring_transition_tools,
 )
@@ -60,6 +61,29 @@ async def test_transition_tool_returns_actionable_validator_feedback() -> None:
     assert "last_error" in data
 
 
+@pytest.mark.parametrize(
+    ("phase_name", "expected_name"),
+    [
+        ("interpret", "complete_interpret_phase"),
+        ("design", "complete_design_phase"),
+        ("stage", "complete_stage_phase"),
+        ("validate", "complete_validate_phase"),
+        ("publish", "complete_publish_phase"),
+        ("summarize", "complete_summarize_phase"),
+    ],
+)
+def test_authoring_transition_tools_have_unique_phase_names(
+    phase_name: str, expected_name: str
+) -> None:
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+    tools = make_authoring_transition_tools(phase_name, event, data)
+    metadata = getattr(tools[0], "__lauren_ai_tool__")
+
+    assert authoring_transition_tool_name(phase_name) == expected_name
+    assert metadata.name == expected_name
+
+
 @pytest.mark.asyncio
 async def test_review_tool_reports_denial_and_signals_runner() -> None:
     event = asyncio.Event()
@@ -70,6 +94,7 @@ async def test_review_tool_reports_denial_and_signals_runner() -> None:
 
     (request_approval,) = make_authoring_review_tools(deny, event, data)
 
+    assert getattr(request_approval, "__lauren_ai_tool__").name == ("request_publication_approval")
     result = await request_approval()
 
     assert result["ok"] is False

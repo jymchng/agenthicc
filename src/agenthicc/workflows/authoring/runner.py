@@ -30,6 +30,7 @@ from agenthicc.workflows.authoring.artifact import (
 )
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.authoring.phase_tools import (
+    authoring_transition_tool_name,
     make_authoring_review_tools,
     make_authoring_transition_tools,
 )
@@ -254,6 +255,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         """
 
         limit = self._phase_attempt_limit(phase_name)
+        transition_tool_name = authoring_transition_tool_name(phase_name)
         last_error = ""
         for attempt in range(1, limit + 1):
             transition_event = asyncio.Event()
@@ -265,7 +267,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     else (
                         f"Continue the {phase_name} phase. The previous transition was not "
                         f"accepted: {last_error} Fix the reported issue, then invoke the "
-                        "phase transition tool again. Do not stop at a prose response."
+                        f"{transition_tool_name}() tool again. Do not stop at a prose response."
                     ),
                     phase_name=phase_name,
                     tools=tool_builder(transition_event, transition_data),
@@ -322,7 +324,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             system_prompt=(
                 "You are in the interpretation phase of an authoring state machine. "
                 "Inspect only the current contracts needed for this artifact, normalize "
-                "the user's intent, and call complete_authoring_phase(summary) when the "
+                f"the user's intent, and call {authoring_transition_tool_name('interpret')}(summary) when the "
                 "design handoff is precise. Do not generate source yet."
                 + self._phase_prompt("interpret")
             ),
@@ -401,11 +403,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 text=(
                     f"The {self.artifact_label} passed design validation. Confirm that it "
                     "is ready to be stored in the run-scoped staging area, then call "
-                    "complete_authoring_phase(summary). Do not publish or execute it."
+                    f"{authoring_transition_tool_name('stage')}(summary). Do not publish or execute it."
                 ),
                 system_prompt=(
                     "You are in the staging phase. Confirm the candidate is ready for "
-                    "isolated run-scoped staging. Call complete_authoring_phase(summary) "
+                    f"isolated run-scoped staging. Call {authoring_transition_tool_name('stage')}(summary) "
                     "only after checking the handoff requirements; do not write to the "
                     "discoverable extension directory, publish, or execute generated code."
                     + self._phase_prompt("stage")
@@ -470,7 +472,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 system_prompt=(
                     "You are the validation agent in an authoring state machine. Inspect "
                     "the staged artifact and current agenthicc API, confirm the deterministic "
-                    "report, and call complete_authoring_phase(summary) only when it is safe "
+                    f"report, and call {authoring_transition_tool_name('validate')}(summary) only when it is safe "
                     "to request publication review. Do not modify or publish the artifact."
                     + self._phase_prompt("validate")
                 ),
@@ -620,12 +622,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 text=(
                     f"The staged {self.artifact_label} passed review. Confirm that it is "
                     "approved and ready for atomic publication, then call "
-                    "complete_authoring_phase(summary)."
+                    f"{authoring_transition_tool_name('publish')}(summary)."
                 ),
                 system_prompt=(
                     "You are in the publication phase. Confirm the staged artifact is the "
                     "same validated artifact that received explicit approval, then call "
-                    "complete_authoring_phase(summary). Do not alter the source or claim "
+                    f"{authoring_transition_tool_name('publish')}(summary). Do not alter the source or claim "
                     "publication before the runner completes it." + self._phase_prompt("publish")
                 ),
                 active_agent="auto",
@@ -684,13 +686,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 phase_name="summarize",
                 text=(
                     f"Summarize the authoring result: {ctx.result.to_dict()}. Call "
-                    "complete_authoring_phase(summary) with the exact status, artifact "
+                    f"{authoring_transition_tool_name('summarize')}(summary) with the exact status, artifact "
                     "location, validation/approval outcome, and required activation step."
                 ),
                 system_prompt=(
                     "You are in the summary phase. Report only the authoritative authoring "
                     "result supplied in the phase context. Call "
-                    "complete_authoring_phase(summary) after including status, artifact "
+                    f"{authoring_transition_tool_name('summarize')}(summary) after including status, artifact "
                     "path, validation and approval outcome, and the next activation action. "
                     "Never claim publication or activation that the result does not show."
                     + self._phase_prompt("summarize")
@@ -986,12 +988,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         return (
             f"\n\n[AUTHORING PHASE: {phase_name}]\n"
             f"{spec.system_prompt_override.strip()}\n"
+            f"This phase's unique transition tool is {authoring_transition_tool_name(phase_name)}(summary).\n"
             "The phase may use multiple agent turns. Do not advance by merely "
             "writing a conversational answer; use the phase transition tool when "
             "the objective is complete.\n"
             "ULTIMATE PURPOSE REMINDER: create one new specialized agenthicc workflow "
             "from the user's intent. TRANSITION REMINDER: invoke the phase-local "
-            f"transition tool only after completing this phase; a successful handoff "
+            f"{authoring_transition_tool_name(phase_name)} only after completing this phase; a successful handoff "
             f"moves the authoring run to {next_phase}.{rejection_route}\n"
             "MEMORY REMINDER: one shared session memory is carried across all authoring "
             "phases. Use memory_write/memory_read for important authoring decisions and "
@@ -1004,9 +1007,27 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         report: ValidationReport,
         *,
         parse_error: str | None = None,
+        phase_transition_required: bool = False,
+        source_submitted: bool = False,
     ) -> str:
         """Build actionable correction instructions for the next agent attempt."""
 
+        if phase_transition_required:
+            if source_submitted:
+                return (
+                    "The complete source was submitted, but the design handoff was not "
+                    "completed. Do not repeat the source in assistant prose. Call "
+                    "complete_design_phase(summary=...) now, after the submitted source "
+                    "has been checked. A plain response cannot advance this phase."
+                )
+            return (
+                "The design phase is tool-gated. If you generated Python in assistant "
+                "prose, do not repeat it there. Put the complete raw Python source in "
+                "submit_generated_source(source=..., artifact_name=..., "
+                "artifact_description=...), then immediately call "
+                "complete_design_phase(summary=...). The runner cannot advance from "
+                "source text, analysis, or an envelope alone."
+            )
         if parse_error is not None:
             return (
                 "The previous response was not a parseable source artifact. "
@@ -1218,17 +1239,25 @@ prompt, tool/API, expected output, success criterion, and handoff. Verify the
 source, class-level workflow name and description, phase references, runner
 choice, and activation notes.
 
-Generate the source directly as code. Return ONLY the complete raw Python source file:
+Generate the source directly as code. In a normal authoring run, do not place it
+in assistant prose: put the complete raw Python source file in
+submit_generated_source(source, artifact_name, artifact_description), then call
+complete_design_phase(summary). These tool calls are mandatory for the design
+handoff; source text cannot advance the phase. Return the raw source as the
+response itself only for a legacy invocation without phase-local tools:
 start with the imports and include the full ``WorkflowPlugin`` class, phase
 specifications, prompts, and any justified custom runner. Do not wrap the code
 in XML, JSON, Markdown fences, or another special envelope. Do not add an
 explanation before or after the source.
 
-When the phase-local authoring tools are available, pass this same complete raw
-source to ``submit_generated_source(source, artifact_name, artifact_description)``
-and then call ``complete_authoring_phase(summary)``. The tool call is only the
-handoff signal; the source itself must still be generated directly and remains
-subject to static validation.
+When the phase-local authoring tools are available, "generate the source
+directly" means place the complete raw source in the
+``submit_generated_source(source, artifact_name, artifact_description)`` tool
+argument; do not print the source in assistant prose. Then immediately call
+``complete_design_phase(summary)``. These two calls are mandatory in the normal
+authoring run: source text, analysis, or a special response envelope cannot
+advance the design phase. If no phase-local tools are available for a legacy
+direct invocation, raw source text remains the accepted fallback.
 
 USER INTENT:
 {intent}
@@ -1243,7 +1272,7 @@ USER INTENT:
         if transition_data.get("source_submitted") is not True:
             return (
                 "no complete source was submitted",
-                "call submit_generated_source() with the complete raw Python file before completing design",
+                "call submit_generated_source() with the complete raw Python file before calling complete_design_phase()",
             )
         source = transition_data.get("source")
         name = transition_data.get("artifact_name")
@@ -1394,21 +1423,26 @@ USER INTENT:
             submitted_source = transition_data.get("source")
             last_text = (
                 submitted_source.strip()
-                if transition_event.is_set() and isinstance(submitted_source, str)
+                if isinstance(submitted_source, str)
                 else "".join(output).strip()
             )
             if self._phase_specs and not transition_event.is_set():
                 parse_error = str(
                     transition_data.get("last_error")
                     or (
-                        "the design agent did not call complete_authoring_phase(); "
+                        "the design agent did not call complete_design_phase(); "
                         "a phase cannot advance from free-form text"
                     )
                 )
                 last_report = ValidationReport(
                     (ValidationFinding("phase-transition", parse_error),)
                 )
-                feedback = self._generation_feedback(last_report, parse_error=parse_error)
+                feedback = self._generation_feedback(
+                    last_report,
+                    parse_error=parse_error,
+                    phase_transition_required=True,
+                    source_submitted=isinstance(submitted_source, str),
+                )
                 if attempt < attempt_limit:
                     self._cfg.conv_store.append_event(
                         "system",
@@ -1810,9 +1844,12 @@ examples.
 
 SOURCE CONTRACT
 
-- Return only the complete raw Python source file. Do not use XML, JSON,
-  Markdown fences, or any other special response envelope, and do not add
-  explanation before or after the code.
+- Generate the complete raw Python source directly. In a normal authoring run,
+  put it in submit_generated_source(source, artifact_name, artifact_description)
+  and then call complete_design_phase(summary); do not put the source in
+  assistant prose. Do not use XML, JSON, Markdown fences, or any other special
+  response envelope. A raw response is accepted only for a legacy invocation
+  without phase-local tools.
 - Set literal module metadata ``ARTIFACT_NAME = "lowercase_module_name"`` and
   ``ARTIFACT_DESCRIPTION = "short description"``. The authoring lifecycle uses
   these values to choose the staged and published filename when no legacy
@@ -1836,6 +1873,13 @@ Before returning, verify the metadata, decorator, TOOLS export, annotations,
 capability boundary, error handling, and loader compatibility. Return the
 source directly even when the requested tool requires a configured external
 service; report that prerequisite at runtime instead of fabricating it.
+
+When phase-local authoring tools are available, place this complete raw source
+in submit_generated_source(source, artifact_name, artifact_description)
+instead of printing it in assistant prose, then call
+complete_design_phase(summary). A plain response cannot advance design.
+For a legacy direct invocation without those tools, raw source text remains the
+accepted fallback.
 
 USER INTENT:
 {intent}
@@ -1878,9 +1922,12 @@ examples.
 
 SOURCE CONTRACT
 
-- Return only the complete raw Python source file. Do not use XML, JSON,
-  Markdown fences, or any other special response envelope, and do not add
-  explanation before or after the code.
+- Generate the complete raw Python source directly. In a normal authoring run,
+  put it in submit_generated_source(source, artifact_name, artifact_description)
+  and then call complete_design_phase(summary); do not put the source in
+  assistant prose. Do not use XML, JSON, Markdown fences, or any other special
+  response envelope. A raw response is accepted only for a legacy invocation
+  without phase-local tools.
 - Set literal module metadata ``ARTIFACT_NAME = "lowercase_module_name"`` and
   ``ARTIFACT_DESCRIPTION = "short description"``. The authoring lifecycle uses
   these values to choose the staged and published filename when no legacy
@@ -1903,6 +1950,13 @@ names and descriptions, handler or menu contract, argument behavior, busy
 policy, and loader compatibility. Return the source directly even when the
 requested command depends on a prerequisite; report that prerequisite through
 the command's normal bounded behavior.
+
+When phase-local authoring tools are available, place this complete raw source
+in submit_generated_source(source, artifact_name, artifact_description)
+instead of printing it in assistant prose, then call
+complete_design_phase(summary). A plain response cannot advance design.
+For a legacy direct invocation without those tools, raw source text remains the
+accepted fallback.
 
 USER INTENT:
 {intent}

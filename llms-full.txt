@@ -1520,8 +1520,13 @@ def make_authoring_transition_tools(
 
 Creates phase-local completion tools. The design phase also exposes
 submit_generated_source, which captures complete raw source directly before
-the runner parses and validates it. A phase handoff is accepted only after
-complete_authoring_phase is called.
+the runner parses and validates it. Each phase receives a distinct transition
+tool name: complete_interpret_phase, complete_design_phase,
+complete_stage_phase, complete_validate_phase, complete_publish_phase, or
+complete_summarize_phase. The review phase uses
+request_publication_approval. A phase handoff is accepted only after its
+phase-specific transition tool is called; design additionally requires
+submit_generated_source first.
 
 The optional ``validator`` checks phase prerequisites before the transition
 event is set. Rejected handoffs return an actionable ``error`` and ``retry``

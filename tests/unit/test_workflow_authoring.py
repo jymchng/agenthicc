@@ -286,13 +286,13 @@ def test_create_workflow_gives_every_phase_twenty_agent_turns() -> None:
 
 def test_create_workflow_prompts_repeat_mission_and_phase_handoffs() -> None:
     expected_handoffs = {
-        "interpret": ("complete_authoring_phase(summary)", "DESIGN"),
-        "design": ("submit_generated_source", "STAGE"),
-        "stage": ("complete_authoring_phase(summary)", "VALIDATE"),
-        "validate": ("complete_authoring_phase(summary)", "REVIEW"),
+        "interpret": ("complete_interpret_phase(summary)", "DESIGN"),
+        "design": ("complete_design_phase(summary)", "STAGE"),
+        "stage": ("complete_stage_phase(summary)", "VALIDATE"),
+        "validate": ("complete_validate_phase(summary)", "REVIEW"),
         "review": ("request_publication_approval()", "PUBLISH"),
-        "publish": ("complete_authoring_phase(summary)", "SUMMARIZE"),
-        "summarize": ("complete_authoring_phase(summary)", "terminal"),
+        "publish": ("complete_publish_phase(summary)", "SUMMARIZE"),
+        "summarize": ("complete_summarize_phase(summary)", "terminal"),
     }
 
     for phase in CreateWorkflow.phases:
