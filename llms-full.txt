@@ -1412,65 +1412,81 @@ dangerous-permissions flag.
 
 ### CreateWorkflow
 
-Built-in `WorkflowPlugin` selected by `/workflow create_workflow`. The next
-ordinary input is treated as the authoring intent. Its four phases are
-`interpret → design → execute → summarize`. Design is read-only and calls
-`complete_design_phase(design)` with the implementation specification. During
-execute, the write-capable agent writes the complete source with the canonical
-`write_file` tool to `.agenthicc/workflows/<stable_name>.py`, then calls
-`complete_execute_phase(...)`.
-The runner never copies assistant prose, parses, validates, stages, publishes,
-or requests approval for workflow source. It checks only that the exact agent-
-written path exists. Run `/workflows reload` or restart the session for the
-normal registry to discover the generated plugin. There is no runner-owned
-staged manifest to resume for `create_workflow`.
-For a non-trivial generated workflow, the authoring prompt encourages a
-`code_plan`-style custom runner: typed enum states and dataclass context, one
-bounded async function per non-terminal state, an explicit
-`while not state.is_terminal`/`match` driver, and `resume()` through the same
-dispatch path. Declarative `PhaseSpec` graphs remain appropriate for simple
-workflows; `CodePlanRunner.run_phase()` is reserved for intentional composition.
+Built-in `WorkflowPlugin` selected by `/workflow create_workflow`; the next
+ordinary input is the authoring intent. Its four phases are
+`design → generate → validate → summarize`, modelled on `code_plan`: one agent
+runs all four sharing a single `ShortTermMemory`, and every transition happens
+only because a phase tool was called.
+
+Design is read-only and human-gated: `request_design_approval(design,
+workflow_name)` raises the plan-review overlay and `finalize_design(design,
+workflow_name)` refuses until it returned `approved=True`. Generate runs with
+`mode_override="Auto"` so the write tools are available and the agent writes the
+plugin source to `.agenthicc/workflows/<name>.py`. Validate imports that file
+deterministically before the agent votes, and routes `on_reject` back to
+generate. `mode_bindings` is empty, so the workflow is manual-only.
+
+Run `/workflows reload` (or restart the session) for the registry to discover the
+generated plugin. There is no staged manifest to resume: `resume()` restarts the
+state machine from `design` with the original intent.
 
 ### CreateWorkflowParams
 
 ```python
 @dataclass
 class CreateWorkflowParams(WorkflowParams):
-    interpret_model: str = ""
     design_model: str = ""
-    execute_model: str = ""
-    summarize_model: str = ""
+    generate_model: str = ""
+    validate_model: str = ""
+    summary_model: str = ""
 ```
 
 Optional per-phase model overrides read from `[workflows.create_workflow]`.
+`get_phase_models()` maps the `summarize` phase onto `summary_model`.
 
 ### CreateWorkflowRunner
 
 ```python
 class CreateWorkflowRunner(BaseWorkflowRunner):
+    workflow_name: str = "create_workflow"
+    total_phases: int = 4
+
     async def run(self, intent: str) -> CreateWorkflowContext
+    async def resume(self, context: object) -> CreateWorkflowContext
 ```
 
-Run the `interpret → design → execute → summarize` lifecycle for
-`create_workflow`. Design advances only after its phase-local specification
-handoff. Execute advances only after the agent's `write_file` call and its
-phase-local handoff. Assistant response text alone is never an artifact; a
-missing write or handoff is retried within the bounded generation budget and
-then reported as a failure without a runner-created file.
+Explicit state-machine runner. `run()` drives an outer
+`while not state.is_terminal` loop that dispatches to one bounded async method
+per phase (`_design`, `_generate`, `_validate`, `_summarize`); each method is an
+inner retry loop that runs agent turns until its transition tool sets an
+`asyncio.Event`. Assistant prose is never parsed for a transition, so a phase
+that ends without a tool call is retried and then reported as a failure.
+
+Retry budgets come from `execution.authoring_max_generation_attempts` (inner-loop
+attempts per phase, and the ceiling on `validate → generate` repair cycles) and
+`execution.authoring_max_phase_turns` (sub-turns per agent turn); both are
+clamped to at least 1. `resume()` raises `TypeError` for anything that is not a
+`WorkflowContext`.
+
+`_validate` calls `validate_workflow_file` before the agent votes and **overrides
+an `approve_workflow` call when the report failed**, routing back to generate, so
+a workflow that does not import can never be accepted.
 
 ### PhaseArtifact
 
 ```python
 @dataclass
 class PhaseArtifact:
-    phase_name: str
-    summary: str
-    data: dict[str, object]
-    attempts: int
+    phase: str
+    kind: str
+    content: str
+    metadata: dict[str, object] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.time)
 ```
 
-Structured evidence recorded in `CreateWorkflowContext` after a successful
-phase handoff.
+One artefact produced by a phase, recorded in `CreateWorkflowContext.artifacts`
+keyed by `phase`. Kinds are `design` (or `exit`), `workflow_file`,
+`validation_report`, and `summary`.
 
 Project tools and commands are separate plugin surfaces. The
 `/create-tools` and `/create-commands` skills are not workflow definitions and
@@ -1480,54 +1496,160 @@ are not registered as `create_*` workflow phases.
 
 ```python
 class CreateWorkflowState(Enum):
-    INTERPRET = auto()
     DESIGN = auto()
-    EXECUTE = auto()
+    GENERATE = auto()
+    VALIDATE = auto()
     SUMMARIZE = auto()
-    COMPLETE = auto()
-    FAILED = auto()
+    COMPLETE = auto()   # terminal — success
+    EXITED = auto()     # terminal — agent exited without authoring
+    FAILED = auto()     # terminal — exhausted retries or permanent error
+
+    @property
+    def is_terminal(self) -> bool
 ```
 
-Explicit typed state for the four create-workflow phases and terminal outcomes.
-A phase changes state only after its phase-local handoff tool sets completion.
+Explicit typed state for the four phases and the three terminal outcomes. State
+changes only in the outer loop, and only from a phase method's return value.
 
 ### CreateWorkflowContext
 
 ```python
 @dataclass
-class CreateWorkflowContext: ...
+class CreateWorkflowContext:
+    intent: str
+    run_id: str
+    design: str = ""
+    workflow_name: str = ""
+    generated_path: str = ""
+    generation_summary: str = ""
+    validation_report: str = ""
+    validation_summary: str = ""
+    rejection_reason: str = ""
+    suggestion: str = ""
+    fail_reason: str = ""
+    repair_cycles: int = 0
+    artifacts: dict[str, PhaseArtifact] = field(default_factory=dict)
+    command_outcomes: list[dict[str, object]] = field(default_factory=list)
+    shared_memory: ShortTermMemory | None = None
+
+    def add_artifact(self, artifact: PhaseArtifact) -> None
 ```
 
-Mutable typed data carried across phases, including the original intent,
-normalized workflow name, design, agent-written path and description, per-phase
-artifacts, attempt counts, shared memory, and final failure or summary text.
+Mutable typed data carried across every phase of one run. `shared_memory` is the
+single `ShortTermMemory` all four phases append to.
 
-### Phase handoff tool factories
+Phase transition tools are the only way a `create_workflow` phase advances. Each
+factory closes over an `asyncio.Event` plus a data dict that the runner inspects
+*after* the turn returns. Rejected payloads return `ok: false`, an actionable
+`error`, a concrete `fix`, and a human-readable `message`, and leave the event
+unset so the phase retries.
+
+### make_design_tools
 
 ```python
-def make_interpret_tools(event, data) -> list[ToolLike]: ...
-def make_design_tools(event, data) -> list[ToolLike]: ...
-def make_execute_tools(event, data, *, expected_root, expected_name) -> list[ToolLike]: ...
-def make_summarize_tools(event, data) -> list[ToolLike]: ...
+def make_design_tools(
+    approval_svc: ApprovalService | None,
+    design_event: asyncio.Event,
+    design_data: dict[str, object],
+    exit_event: asyncio.Event | None = None,
+) -> list[ToolLike]
 ```
 
-Each factory creates one phase-local completion tool. Rejected payloads return
-`ok: false`, an actionable `error`, a concrete `fix`, and a human-readable
-`message`. Execute only checks that the agent-created exact path exists; it does
-not write, parse, validate, stage, publish, or request approval.
+Returns `request_design_approval(design, workflow_name)`,
+`finalize_design(design, workflow_name)`, and — when `exit_event` is given —
+`exit_create_workflow(suggestion)`. A shared gate makes `finalize_design` refuse
+until approval returned `approved=True`, and a later denial closes the gate
+again. `request_design_approval` raises a `kind="plan_review"` request and
+reports approval-service errors as a failure result instead of raising.
+`approval_svc=None` auto-approves (headless/tests).
+
+### make_generation_tools
+
+```python
+def make_generation_tools(
+    generate_event: asyncio.Event,
+    generate_data: dict[str, object],
+) -> list[ToolLike]
+```
+
+Returns `mark_generation_complete(summary, path)`, which records the summary and
+the exact path the agent wrote. The runner validates that path itself; the tool
+performs no filesystem access.
+
+### make_validation_tools
+
+```python
+def make_validation_tools(
+    validate_event: asyncio.Event,
+    validate_data: dict[str, object],
+) -> list[ToolLike]
+```
+
+Returns `approve_workflow(summary)` and `reject_workflow(reason)`, recording
+`action: "approve" | "reject"`. An approval is still overridden by the runner
+when `validate_workflow_file` reported errors.
+
+### validate_workflow_name
+
+```python
+def validate_workflow_name(name: object) -> str | None
+```
+
+Returns an error string, or `None` when *name* is a valid `lower_snake_case`
+slug usable both as a workflow name and as a module filename.
+
+### validate_workflow_file
+
+```python
+def validate_workflow_file(
+    path: str,
+    *,
+    expected_name: str = "",
+    root: Path | None = None,
+) -> ValidationReport
+```
+
+Deterministically check a generated plugin file the way the loader will. Refuses
+without importing when the path resolves outside `root` (default `Path.cwd()`),
+is missing, is not a `.py` file, is underscore-prefixed, or is empty; reports
+syntax errors with a line number and import failures with the exception type.
+On a successful import it requires at least one `WorkflowPlugin` subclass with a
+non-empty name, a non-reserved name matching `expected_name`, a description,
+list `mode_bindings`, a working `build_params({})`, and a consistent phase graph
+(unique names, positive `max_turns`, `next`/`on_reject`/`on_error` edges that
+resolve). Unreachable phases, unknown `agent_type` or `output_schema` values, and
+a filename that differs from the workflow name are warnings.
+
+### ValidationReport
+
+```python
+@dataclass(frozen=True)
+class ValidationReport:
+    path: str
+    ok: bool
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    plugin_names: tuple[str, ...] = ()
+    phase_names: tuple[str, ...] = ()
+
+    def render(self) -> str
+```
+
+`ok` is True only when `errors` is empty. `render()` returns the numbered report
+block injected into the validating agent's system prompt.
 
 ### make_inspection_tools
 
 ```python
-def make_inspection_tools() -> list[ToolLike]: ...
+def make_inspection_tools() -> list[ToolLike]
 ```
 
-Creates bounded read-only `inspect_agenthicc_documentation` and
-`inspect_agenthicc_source` tools. Documentation paths are relative to the
-installed documentation tree; source inspection is limited to `agenthicc.*`
-modules, while both public and private Python identifiers are inspectable with
-Python's inspect API. No staged-artifact or publication result type is part of
-the current workflow package.
+Creates the four read-only authoring-surface tools injected into the design
+phase: `describe_phasespec` (every `PhaseSpec` field, type, default, and purpose,
+read live from the dataclass), `list_tool_capabilities` (every `ToolCapability`),
+`list_agent_roles` (every `PhaseRole`), and `show_example_workflow` (a complete,
+known-valid workflow file to adapt). They take no session state and cause no
+side effects.
 
 ## Config — `agenthicc.config`
 

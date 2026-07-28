@@ -1,8 +1,37 @@
-"""Typed state and context for ``create_workflow``."""
+"""CreateWorkflowState — explicit state machine for the create_workflow workflow.
+
+``create_workflow`` is a *meta-workflow*: it drives a single agent through the
+phases of authoring a brand-new agenthicc :class:`~agenthicc.workflows.plugin.WorkflowPlugin`
+and writing it to ``.agenthicc/workflows/<name>.py``.  It is modelled tightly on
+``code_plan``:
+
+* an **outer loop** (:meth:`~agenthicc.workflows.create_workflow.runner.CreateWorkflowRunner.run`)
+  that evolves this state;
+* an **inner loop** (each phase method) that runs agent turns until the phase's
+  transition tool fires;
+* **phase transitions only via tool calls** — never by parsing the agent's prose;
+* a **context** (:class:`CreateWorkflowContext`) that captures the artefact each
+  phase produced as a :class:`PhaseArtifact`.
+
+State graph::
+
+    DESIGN    → GENERATE   (design approved + finalize_design)
+           ↺  → DESIGN     (design not finalized — retry)
+           → EXITED     (exit_create_workflow — request needs no new workflow)
+    GENERATE  → VALIDATE   (mark_generation_complete + a file path recorded)
+           ↺  → GENERATE   (nothing marked complete — retry)
+    VALIDATE  → SUMMARIZE  (approve_workflow AND deterministic validation passed)
+           → GENERATE   (reject_workflow, or the agent approved a file that
+                            failed deterministic validation — fix and retry)
+    SUMMARIZE → COMPLETE
+    EXITED    (terminal — agent exited without authoring)
+    FAILED    (terminal — a phase exhausted retries or hit a permanent error)
+"""
 
 from __future__ import annotations
 
 import dataclasses
+import time
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
@@ -11,106 +40,72 @@ if TYPE_CHECKING:
 
 
 class CreateWorkflowState(Enum):
-    """States in the workflow-authoring state machine.
+    """Every possible state in the create_workflow workflow."""
 
-    The four non-terminal states correspond to the four phase methods on
-    :class:`CreateWorkflowRunner`.  A phase method returns the next state; it
-    never mutates the state machine's routing directly.
-    """
-
-    INTERPRET = auto()
     DESIGN = auto()
-    EXECUTE = auto()
+    GENERATE = auto()
+    VALIDATE = auto()
     SUMMARIZE = auto()
-    COMPLETE = auto()
-    FAILED = auto()
+    COMPLETE = auto()  # terminal — success
+    EXITED = auto()  # terminal — agent exited without authoring
+    FAILED = auto()  # terminal — exhausted retries or permanent error
 
     @property
     def is_terminal(self) -> bool:
-        """Return whether this state ends the run."""
-
-        return self in {CreateWorkflowState.COMPLETE, CreateWorkflowState.FAILED}
+        """True when no further phase should run."""
+        return self in (
+            CreateWorkflowState.COMPLETE,
+            CreateWorkflowState.EXITED,
+            CreateWorkflowState.FAILED,
+        )
 
 
 @dataclasses.dataclass
 class PhaseArtifact:
-    """Structured evidence captured when one phase hands off successfully."""
+    """One concrete artefact produced by a phase of a create_workflow run.
 
-    phase_name: str
-    summary: str
-    data: dict[str, object] = dataclasses.field(default_factory=dict)
-    attempts: int = 0
+    Stored in :attr:`CreateWorkflowContext.artifacts` keyed by ``phase`` so the
+    outer loop and downstream phases can inspect exactly what each phase produced
+    without re-deriving it from the conversation transcript.
+
+    :param phase: The phase that produced the artefact (``"design"``, ``"generate"``, …).
+    :param kind: A short machine label for the artefact (``"design"``, ``"workflow_file"``, …).
+    :param content: The primary textual content of the artefact.
+    :param metadata: Structured side-channel facts (paths, ok-flags, counts).
+    :param created_at: Wall-clock time the artefact was recorded.
+    """
+
+    phase: str
+    kind: str
+    content: str
+    metadata: dict[str, object] = dataclasses.field(default_factory=dict)
+    created_at: float = dataclasses.field(default_factory=time.time)
 
 
 @dataclasses.dataclass
 class CreateWorkflowContext:
-    """Mutable context shared by every phase in one authoring run.
+    """Data carried across every phase of one create_workflow run.
 
-    The context stores values supplied by handoff tools.  Assistant prose is
-    deliberately not promoted to an artifact by the runner.
+    The runner mutates a single instance in place as the outer loop advances; the
+    :attr:`artifacts` map is the durable record of what each phase produced.
     """
 
     intent: str
     run_id: str
-    state: CreateWorkflowState = CreateWorkflowState.INTERPRET
-    workflow_name: str = ""
-    interpreted_intent: str = ""
-    design: str = ""
-    artifact_path: str = ""
-    artifact_description: str = ""
-    execute_summary: str = ""
-    final_summary: str = ""
-    fail_reason: str = ""
-    phase_attempts: dict[str, int] = dataclasses.field(default_factory=dict)
-    phase_artifacts: dict[str, PhaseArtifact] = dataclasses.field(default_factory=dict)
+    design: str = ""  # approved design text, set after DESIGN
+    workflow_name: str = ""  # lower_snake_case slug of the workflow being authored
+    generated_path: str = ""  # path the workflow file was written to, set after GENERATE
+    generation_summary: str = ""  # agent's summary of what it generated
+    validation_report: str = ""  # deterministic loader/validator report
+    validation_summary: str = ""  # agent's approval summary, set on VALIDATE approve
+    rejection_reason: str = ""  # set when VALIDATE routes back to GENERATE
+    suggestion: str = ""  # set on EXITED — what the agent suggests instead
+    fail_reason: str = ""  # set on FAILED
+    repair_cycles: int = 0  # times VALIDATE routed back to GENERATE (bounds the repair loop)
+    artifacts: dict[str, PhaseArtifact] = dataclasses.field(default_factory=dict)
     command_outcomes: list[dict[str, object]] = dataclasses.field(default_factory=list)
-    shared_memory: "ShortTermMemory | None" = None
+    shared_memory: ShortTermMemory | None = None  # shared across all phases
 
-    def add_artifact(
-        self,
-        phase_name: str,
-        summary: str,
-        *,
-        data: dict[str, object] | None = None,
-        attempts: int = 0,
-    ) -> PhaseArtifact:
-        """Record one phase's structured handoff and return the record."""
-
-        artifact = PhaseArtifact(
-            phase_name=phase_name,
-            summary=summary.strip(),
-            data=dict(data or {}),
-            attempts=attempts,
-        )
-        self.phase_artifacts[phase_name] = artifact
-        self.phase_attempts[phase_name] = attempts
-        return artifact
-
-    def as_system_block(self) -> str:
-        """Render bounded prior-phase evidence for a subsequent agent turn."""
-
-        lines = [
-            "[CREATE_WORKFLOW CONTEXT]",
-            f"Original intent: {self.intent}",
-            f"Workflow name: {self.workflow_name or '(not chosen yet)'}",
-        ]
-        if self.design:
-            lines.append(f"Design available: {self.design[:4_000]}")
-        if self.artifact_path:
-            lines.append(f"Agent-written artifact path: {self.artifact_path}")
-        if self.phase_artifacts:
-            lines.append("Completed phases:")
-            for artifact in self.phase_artifacts.values():
-                summary = artifact.summary[:2_000]
-                if len(artifact.summary) > 2_000:
-                    summary += "..."
-                lines.append(f"- {artifact.phase_name} (attempt {artifact.attempts}): {summary}")
-                for key, value in artifact.data.items():
-                    rendered = str(value)
-                    if len(rendered) > 800:
-                        rendered = rendered[:800] + "..."
-                    lines.append(f"  {key}: {rendered}")
-        return "\n".join(lines)
-
-
-__all__ = ["CreateWorkflowState", "PhaseArtifact", "CreateWorkflowContext"]
+    def add_artifact(self, artifact: PhaseArtifact) -> None:
+        """Record *artifact*, keyed by its phase (latest write for a phase wins)."""
+        self.artifacts[artifact.phase] = artifact

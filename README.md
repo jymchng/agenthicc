@@ -103,22 +103,27 @@ adding executable project plugins; it documents the current sandbox and trust
 boundaries.
 
 To create a specialized workflow, select `/workflow create_workflow` and enter
-the intent in the next input. The authoring agent generates complete Python
-source directly, gives every phase its own runtime prompt, and writes the
-workflow to `.agenthicc/workflows/<name>.py`. For non-trivial behavior it is
-guided to create a `code_plan`-style custom runner with typed states, context,
-per-state functions, explicit `match` transitions, and resumable execution;
-simple workflows can use declarative `PhaseSpec` values. Run `/workflows reload`
-and then `/workflow <name>` after authoring.
+the intent in the next input. It runs `design → generate → validate → summarize`
+on the same state-machine pattern as `code_plan`: the design is presented for your
+approval, the generate phase writes complete Python source to
+`.agenthicc/workflows/<name>.py` with a runtime prompt for every phase, and the
+validate phase imports that file and loops back to generate until it loads
+cleanly — an approval of a file that does not import is overridden. For
+non-trivial behavior the agent is guided to create a `code_plan`-style custom
+runner with typed states, context, per-state functions, explicit `match`
+transitions, and resumable execution; simple workflows can use declarative
+`PhaseSpec` values. Run `/workflows reload` and then `/workflow <name>` after
+authoring.
 
 Project tools and slash commands are authored separately through the
 `/create-tools` and `/create-commands` skills; they are not workflow selectors.
 
-Authoring design turns can inspect the installed API with the built-in
-`inspect_agenthicc_documentation` and `inspect_agenthicc_source` tools before
-generating source. Each authoring phase has its own prompt and bounded
-multi-turn budget; tune the global cap with
-`[execution].authoring_max_phase_turns` when needed.
+Design turns inspect the real authoring API with the built-in
+`describe_phasespec`, `list_tool_capabilities`, `list_agent_roles`, and
+`show_example_workflow` tools, which read from the running code rather than from
+prose. Each authoring phase has its own prompt and bounded multi-turn budget;
+tune the caps with `[execution].authoring_max_phase_turns` and
+`[execution].authoring_max_generation_attempts`.
 
 For a non-interactive process, use headless mode. It prints a ready record and
 one JSON line for each non-empty input line:

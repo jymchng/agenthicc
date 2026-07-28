@@ -1,6 +1,14 @@
-"""End-to-end model/tool journey for the clean-slate create_workflow runner."""
+"""E2E tests: the create_workflow state machine driven by real agent turns.
 
-from __future__ import annotations
+These tests do not stub ``_run_turn``.  A ``MockTransport`` returns real
+``tool_use`` completions, so the whole chain runs for real: the agent-turn
+runner executes the phase-transition tools, the real ``write_file`` tool writes
+the workflow into the workspace, the runner imports that file to validate it,
+and the workflow registry then discovers the generated plugin.
+
+NOTE: no ``from __future__ import annotations`` — the ``@tool()`` decorator
+inspects annotations at decoration time.
+"""
 
 import asyncio
 from pathlib import Path
@@ -15,145 +23,493 @@ from lauren_ai._transport._mock import MockTransport
 from agenthicc.agents.registry import build_agents_registry
 from agenthicc.config import AgenthiccConfig
 from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
+from agenthicc.tools.fs.agent_tools import read_file, write_file
 from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.config import WorkflowConfig
-from agenthicc.workflows.create_workflow.runner import CreateWorkflowRunner
-from agenthicc.workflows.create_workflow.state import CreateWorkflowState
+from agenthicc.workflows.create_workflow import CreateWorkflow, CreateWorkflowRunner
+from agenthicc.workflows.registry import build_workflow_registry
 
 pytestmark = pytest.mark.e2e
 
 
-def _completion(number: int, *, content: str = "") -> Completion:
+# ── generated workflow sources the fake model "writes" ────────────────────────
+
+_GOOD_SOURCE = '''\
+"""doc_review — draft a document, then review it."""
+
+from __future__ import annotations
+
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+
+class DocReview(WorkflowPlugin):
+    name = "doc_review"
+    description = "Draft a document, then review it."
+    mode_bindings = []
+    phases = [
+        PhaseSpec(
+            name="draft",
+            max_turns=20,
+            next="review",
+            mode_override="Auto",
+            system_prompt_override="You are in the DRAFT phase. Write the document.",
+        ),
+        PhaseSpec(
+            name="review",
+            max_turns=8,
+            on_reject="draft",
+            output_schema="free_text",
+            system_prompt_override="You are in the REVIEW phase. Check the document.",
+        ),
+    ]
+'''
+
+_BROKEN_SOURCE = '''\
+"""doc_review — first attempt, with a dangling transition edge."""
+
+from __future__ import annotations
+
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+
+class DocReview(WorkflowPlugin):
+    name = "doc_review"
+    description = "Draft a document, then review it."
+    mode_bindings = []
+    phases = [PhaseSpec(name="draft", next="reviewww")]
+'''
+
+_TARGET = ".agenthicc/workflows/doc_review.py"
+
+
+# ── transport plumbing ────────────────────────────────────────────────────────
+
+
+def _text(index: int, content: str) -> Completion:
+    """A plain end_turn completion."""
     return Completion(
-        id=f"create-workflow-e2e-{number}",
+        id=f"c{index}",
         model="mock-model",
         content=content,
         tool_calls=[],
         stop_reason="end_turn",
-        usage=TokenUsage(input_tokens=10, output_tokens=10),
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
 
 
-def _tool_completion(number: int, name: str, payload: dict[str, object]) -> Completion:
+def _tool_use(index: int, name: str, payload: dict) -> Completion:
+    """A tool_use completion invoking exactly one tool."""
     return Completion(
-        id=f"create-workflow-e2e-tool-{number}",
+        id=f"c{index}",
         model="mock-model",
         content="",
-        tool_calls=[ToolCall(tool_use_id=f"tool-{number}", name=name, input=payload)],
+        tool_calls=[ToolCall(tool_use_id=f"tc-{index}", name=name, input=payload)],
         stop_reason="tool_use",
-        usage=TokenUsage(input_tokens=10, output_tokens=10),
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
     )
+
+
+def _script(*steps: tuple[str, dict] | str) -> MockTransport:
+    """Queue *steps* onto a MockTransport.
+
+    A ``(tool_name, payload)`` tuple becomes a tool_use completion; a plain
+    string becomes an end_turn text completion.
+    """
+    mock = MockTransport()
+    for index, step in enumerate(steps):
+        if isinstance(step, tuple):
+            mock.queue_response(_tool_use(index, step[0], step[1]))
+        else:
+            mock.queue_response(_text(index, step))
+    return mock
+
+
+_DESIGN_STEPS: tuple[tuple[str, dict] | str, ...] = (
+    ("request_design_approval", {"design": "draft → review", "workflow_name": "doc_review"}),
+    ("finalize_design", {"design": "draft → review", "workflow_name": "doc_review"}),
+    "The design is finalized.",
+)
+
+
+def _generate_steps(source: str) -> tuple[tuple[str, dict] | str, ...]:
+    return (
+        ("write_file", {"path": _TARGET, "content": source}),
+        ("mark_generation_complete", {"summary": "wrote doc_review", "path": _TARGET}),
+        "The workflow file is written.",
+    )
+
+
+_APPROVE_STEPS: tuple[tuple[str, dict] | str, ...] = (
+    ("approve_workflow", {"summary": "it imports and matches the design"}),
+    "Approved.",
+)
+
+_REJECT_STEPS: tuple[tuple[str, dict] | str, ...] = (
+    ("reject_workflow", {"reason": "the draft phase points at a phase that does not exist"}),
+    "Rejected.",
+)
+
+_SUMMARY_STEPS: tuple[tuple[str, dict] | str, ...] = (
+    "Created doc_review at .agenthicc/workflows/doc_review.py with phases draft → review.",
+)
+
+
+# ── fixtures ──────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture
-async def processor(tmp_path: Path):
+def app_state():
+    return TUIAppState.create()
+
+
+@pytest.fixture
+async def processor(tmp_path):
     kernel_state = AppState.create(
         settings=SystemSettings(
-            event_log_path=str(tmp_path / "events.jsonl"),
-            snapshot_path=str(tmp_path / "snapshot.json"),
+            event_log_path=str(tmp_path / "ev.jsonl"),
+            snapshot_path=str(tmp_path / "snap.json"),
         ),
         policy=SecurityPolicy(),
     )
-    processor = EventProcessor(initial_state=kernel_state, persist=False)
-    task = asyncio.create_task(processor.run())
-    await asyncio.sleep(0)
-    yield processor
+    proc = EventProcessor(initial_state=kernel_state, persist=False)
+    task = asyncio.create_task(proc.run())
+    yield proc
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
 
 
-def _make_runner(
-    processor: EventProcessor,
-    transport: MockTransport,
-) -> tuple[CreateWorkflowRunner, TUIAppState]:
-    app_state = TUIAppState.create()
+def _runner(app_state, processor, mock: MockTransport) -> CreateWorkflowRunner:
+    """Build a CreateWorkflowRunner over a real agent runner and real fs tools."""
+    cfg = AgenthiccConfig()
+    cfg.execution.authoring_max_generation_attempts = 3
+    cfg.execution.authoring_max_phase_turns = 8
     config = WorkflowConfig(
         conv_store=app_state.conversation,
         app_state=app_state,
         processor=processor,
-        agent_runner=AgentRunnerBase(transport=transport, signals=SignalBus()),
-        approval_svc=None,
-        cfg=AgenthiccConfig(),
+        agent_runner=AgentRunnerBase(transport=mock, signals=SignalBus()),
+        approval_svc=None,  # headless: design approval auto-grants
+        cfg=cfg,
         skills={},
-        plugin_tools=[],
+        plugin_tools=[write_file, read_file],
         mcp_registry=None,
         mention_cache=MagicMock(),
         agents_registry=build_agents_registry(),
+        params=CreateWorkflow.build_params({}),
     )
-    return CreateWorkflowRunner(config), app_state
+    return CreateWorkflowRunner(config)
 
 
-async def test_real_agent_runner_completes_all_tool_gated_phases(
-    tmp_path: Path, processor: EventProcessor, monkeypatch: pytest.MonkeyPatch
-) -> None:
+# ── happy path ────────────────────────────────────────────────────────────────
+
+
+async def test_e2e_authors_a_workflow_end_to_end(app_state, processor, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    source = "from agenthicc.workflows.plugin import WorkflowPlugin\n"
-    transport = MockTransport()
-    transport.queue_response(
-        _tool_completion(
-            1,
-            "complete_interpret_phase",
-            {"summary": "A parser workflow", "workflow_name": "parser_workflow"},
-        )
+    mock = _script(
+        *_DESIGN_STEPS,
+        *_generate_steps(_GOOD_SOURCE),
+        *_APPROVE_STEPS,
+        *_SUMMARY_STEPS,
     )
-    transport.queue_response(_completion(2))
-    transport.queue_response(
-        _tool_completion(3, "complete_design_phase", {"design": "Parser design"})
-    )
-    transport.queue_response(_completion(4))
-    transport.queue_response(
-        _tool_completion(
-            5,
-            "write_file",
-            {"path": ".agenthicc/workflows/parser_workflow.py", "content": source},
-        )
-    )
-    transport.queue_response(
-        _tool_completion(
-            6,
-            "complete_execute_phase",
-            {
-                "summary": "Source written",
-                "artifact_name": "parser_workflow",
-                "artifact_description": "A parser workflow",
-            },
-        )
-    )
-    transport.queue_response(_completion(7))
-    transport.queue_response(
-        _tool_completion(8, "complete_summarize_phase", {"summary": "Ready to reload"})
-    )
-    transport.queue_response(_completion(9))
+    runner = _runner(app_state, processor, mock)
 
-    runner, app_state = _make_runner(processor, transport)
-    context = await runner.run("Create a parser workflow")
+    ctx = await runner.run("create a doc_review workflow that drafts then reviews a document")
     await processor.drain()
 
-    artifact = tmp_path / ".agenthicc" / "workflows" / "parser_workflow.py"
-    assert context.state is CreateWorkflowState.COMPLETE
-    assert artifact.read_text(encoding="utf-8") == source
-    assert [record.phase_name for record in app_state.workflow_run().phase_history] == [
-        "interpret",
-        "design",
-        "execute",
-        "summarize",
-    ]
+    # The state machine ran every phase and finished.
     assert app_state.workflow_run().status == "complete"
+    assert app_state.workflow_run().current_phase is None
+    assert set(ctx.artifacts) == {"design", "generate", "validate", "summarize"}
+
+    # The design phase captured the approved design and name via tool calls only.
+    assert ctx.design == "draft → review"
+    assert ctx.workflow_name == "doc_review"
+
+    # The generation phase really wrote the file through the real write tool.
+    written = tmp_path / _TARGET
+    assert written.exists()
+    assert "class DocReview(WorkflowPlugin)" in written.read_text(encoding="utf-8")
+
+    # The validation phase imported it and passed.
+    assert ctx.artifacts["validate"].metadata["ok"] is True
+    assert ctx.artifacts["validate"].metadata["phase_names"] == ["draft", "review"]
+    assert ctx.validation_summary == "it imports and matches the design"
+    assert ctx.repair_cycles == 0
 
 
-async def test_real_agent_prose_cannot_complete_interpret_phase(
-    tmp_path: Path, processor: EventProcessor, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_e2e_generated_workflow_is_immediately_loadable(
+    app_state, processor, tmp_path, monkeypatch
+):
     monkeypatch.chdir(tmp_path)
-    transport = MockTransport()
-    for number in range(1, 3):
-        transport.queue_response(_completion(number, content="The workflow is ready."))
+    mock = _script(
+        *_DESIGN_STEPS,
+        *_generate_steps(_GOOD_SOURCE),
+        *_APPROVE_STEPS,
+        *_SUMMARY_STEPS,
+    )
+    runner = _runner(app_state, processor, mock)
+    await runner.run("create a doc_review workflow")
+    await processor.drain()
 
-    runner, app_state = _make_runner(processor, transport)
-    runner._cfg.cfg.execution.authoring_max_generation_attempts = 2
-    context = await runner.run("Create a workflow")
+    registry = build_workflow_registry(
+        project_dir=tmp_path / ".agenthicc",
+        user_dir=tmp_path / "absent",
+    )
+    plugin_cls = registry.get("doc_review")
+    assert plugin_cls is not None
+    assert plugin_cls.description == "Draft a document, then review it."
+    assert plugin_cls.phase_names() == ["draft", "review"]
 
-    assert context.state is CreateWorkflowState.FAILED
-    assert "Interpret phase exhausted" in context.fail_reason
+    # And the new plugin builds a real runner through the normal factory path.
+    built = plugin_cls.build_runner(runner._cfg, None)
+    assert built is not None
+
+
+async def test_e2e_emits_the_full_workflow_event_lifecycle(
+    app_state, processor, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    mock = _script(
+        *_DESIGN_STEPS,
+        *_generate_steps(_GOOD_SOURCE),
+        *_APPROVE_STEPS,
+        *_SUMMARY_STEPS,
+    )
+    runner = _runner(app_state, processor, mock)
+
+    queue = processor.subscribe_events()
+    try:
+        await runner.run("create a doc_review workflow")
+        await processor.drain()
+    finally:
+        processor.unsubscribe_events(queue)
+
+    seen: list[str] = []
+    while not queue.empty():
+        seen.append(queue.get_nowait().event_type)
+
+    assert "WorkflowRunStarted" in seen
+    assert seen.count("WorkflowPhaseStarted") == 4
+    assert seen.count("WorkflowPhaseCompleted") == 4
+    assert "WorkflowRunCompleted" in seen
+    assert seen.index("WorkflowRunStarted") < seen.index("WorkflowRunCompleted")
+
+
+# ── repair loop ───────────────────────────────────────────────────────────────
+
+
+async def test_e2e_broken_file_is_rejected_regenerated_and_accepted(
+    app_state, processor, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    mock = _script(
+        *_DESIGN_STEPS,
+        *_generate_steps(_BROKEN_SOURCE),
+        *_REJECT_STEPS,
+        *_generate_steps(_GOOD_SOURCE),
+        *_APPROVE_STEPS,
+        *_SUMMARY_STEPS,
+    )
+    runner = _runner(app_state, processor, mock)
+
+    ctx = await runner.run("create a doc_review workflow")
+    await processor.drain()
+
+    assert ctx.repair_cycles == 1
+    assert app_state.workflow_run().status == "complete"
+    assert ctx.artifacts["validate"].metadata["ok"] is True
+    written = (tmp_path / _TARGET).read_text(encoding="utf-8")
+    assert "reviewww" not in written
+
+
+async def test_e2e_a_wrong_approval_cannot_finish_the_run(
+    app_state, processor, tmp_path, monkeypatch
+):
+    """The agent approves a broken file; the deterministic check overrules it."""
+    monkeypatch.chdir(tmp_path)
+    mock = _script(
+        *_DESIGN_STEPS,
+        *_generate_steps(_BROKEN_SOURCE),
+        *_APPROVE_STEPS,  # wrong — the file does not load
+        *_generate_steps(_GOOD_SOURCE),
+        *_APPROVE_STEPS,  # now legitimate
+        *_SUMMARY_STEPS,
+    )
+    runner = _runner(app_state, processor, mock)
+
+    ctx = await runner.run("create a doc_review workflow")
+    await processor.drain()
+
+    assert ctx.repair_cycles == 1
+    assert ctx.artifacts["generate"].metadata["repair_cycle"] == 1
+    assert app_state.workflow_run().status == "complete"
+    assert ctx.artifacts["validate"].metadata["ok"] is True
+
+
+async def test_e2e_run_fails_when_the_repair_budget_is_exhausted(
+    app_state, processor, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    steps: list[tuple[str, dict] | str] = list(_DESIGN_STEPS)
+    # attempts = 1 → one generate, one reject, and the second rejection fails.
+    for _ in range(4):
+        steps.extend(_generate_steps(_BROKEN_SOURCE))
+        steps.extend(_REJECT_STEPS)
+    mock = _script(*steps)
+    runner = _runner(app_state, processor, mock)
+    runner._max_repair_cycles = 1
+
+    ctx = await runner.run("create a doc_review workflow")
+    await processor.drain()
+
     assert app_state.workflow_run().status == "failed"
+    assert "limit 1" in ctx.fail_reason
+    assert ctx.repair_cycles == 2
+
+
+# ── exit path ─────────────────────────────────────────────────────────────────
+
+
+async def test_e2e_exits_without_authoring_when_no_workflow_is_wanted(
+    app_state, processor, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    mock = _script(
+        ("exit_create_workflow", {"suggestion": "just ask the question directly"}),
+        "No new workflow is needed here.",
+    )
+    runner = _runner(app_state, processor, mock)
+
+    ctx = await runner.run("what is a workflow anyway?")
+    await processor.drain()
+
+    assert app_state.workflow_run().status == "exited"
+    assert ctx.suggestion == "just ask the question directly"
+    assert ctx.artifacts["design"].kind == "exit"
     assert not (tmp_path / ".agenthicc" / "workflows").exists()
+
+
+# ── failure paths ─────────────────────────────────────────────────────────────
+
+
+async def test_e2e_design_that_never_finalizes_fails_the_run(
+    app_state, processor, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    mock = _script("I am thinking about it.", "Still thinking.", "Yet more thinking.")
+    runner = _runner(app_state, processor, mock)
+    runner._max_attempts = 3
+
+    ctx = await runner.run("create a doc_review workflow")
+    await processor.drain()
+
+    assert app_state.workflow_run().status == "failed"
+    assert "without calling finalize_design()" in ctx.fail_reason
+    assert ctx.artifacts == {}
+
+
+async def test_e2e_generation_without_a_file_is_reported_to_the_agent(
+    app_state, processor, tmp_path, monkeypatch
+):
+    """Marking generation complete without writing anything fails validation.
+
+    The repair budget is set to zero so the *first* validation report is also the
+    final one, letting the test assert on exactly what the agent was shown.
+    """
+    monkeypatch.chdir(tmp_path)
+    mock = _script(
+        *_DESIGN_STEPS,
+        ("mark_generation_complete", {"summary": "all done", "path": _TARGET}),
+        "Marked complete.",
+        *_REJECT_STEPS,
+    )
+    runner = _runner(app_state, processor, mock)
+    runner._max_repair_cycles = 0
+
+    ctx = await runner.run("create a doc_review workflow")
+    await processor.drain()
+
+    report = ctx.artifacts["validate"].content
+    assert "result: FAIL" in report
+    assert "No file exists" in report
+    assert app_state.workflow_run().status == "failed"
+    assert not (tmp_path / _TARGET).exists()
+
+
+async def test_e2e_writing_outside_the_workspace_is_refused(
+    app_state, processor, tmp_path, monkeypatch
+):
+    """A path outside the workspace root is never imported, even if it is valid."""
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path.parent / "escaped_workflow.py"
+    outside.write_text(_GOOD_SOURCE, encoding="utf-8")
+
+    mock = _script(
+        *_DESIGN_STEPS,
+        ("mark_generation_complete", {"summary": "wrote it", "path": str(outside)}),
+        "Marked complete.",
+        *_REJECT_STEPS,
+    )
+    runner = _runner(app_state, processor, mock)
+    runner._max_repair_cycles = 0
+
+    ctx = await runner.run("create a doc_review workflow")
+    await processor.drain()
+
+    report = ctx.artifacts["validate"].content
+    assert "outside the workspace root" in report
+    assert ctx.artifacts["validate"].metadata["ok"] is False
+    assert ctx.artifacts["validate"].metadata["plugin_names"] == []
+    assert app_state.workflow_run().status == "failed"
+
+
+# ── shared context across phases ──────────────────────────────────────────────
+
+
+async def test_e2e_one_shared_memory_spans_every_phase(app_state, processor, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    mock = _script(
+        *_DESIGN_STEPS,
+        *_generate_steps(_GOOD_SOURCE),
+        *_APPROVE_STEPS,
+        *_SUMMARY_STEPS,
+    )
+    runner = _runner(app_state, processor, mock)
+
+    ctx = await runner.run("create a doc_review workflow")
+    await processor.drain()
+
+    assert ctx.shared_memory is not None
+    # Four phases of real turns all appended to the same ShortTermMemory, so the
+    # generation phase can see the design turn without re-deriving it.
+    messages = ctx.shared_memory.messages()
+    assert len(messages) > 4
+    roles = {message.get("role") for message in messages if isinstance(message, dict)}
+    assert "user" in roles
+
+
+async def test_e2e_artifacts_record_what_each_phase_produced(
+    app_state, processor, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    mock = _script(
+        *_DESIGN_STEPS,
+        *_generate_steps(_GOOD_SOURCE),
+        *_APPROVE_STEPS,
+        *_SUMMARY_STEPS,
+    )
+    runner = _runner(app_state, processor, mock)
+    ctx = await runner.run("create a doc_review workflow")
+    await processor.drain()
+
+    kinds = {phase: artifact.kind for phase, artifact in ctx.artifacts.items()}
+    assert kinds == {
+        "design": "design",
+        "generate": "workflow_file",
+        "validate": "validation_report",
+        "summarize": "summary",
+    }
+    assert ctx.artifacts["design"].metadata["workflow_name"] == "doc_review"
+    assert Path(str(ctx.artifacts["generate"].metadata["path"])).name == "doc_review.py"
+    assert ctx.artifacts["validate"].metadata["errors"] == []
+    assert ctx.artifacts["summarize"].metadata["repair_cycles"] == 0

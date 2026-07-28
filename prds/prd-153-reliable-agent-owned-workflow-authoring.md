@@ -11,6 +11,13 @@ related:
 
 # PRD-153 — Reliable Agent-Owned Workflow Authoring
 
+> **Historical.** Superseded by
+> [PRD-154](prd-154-create-workflow-architecture.md), which rebuilt
+> `create_workflow` from a clean slate as a `code_plan`-style state machine. The
+> `interpret → design → execute → summarize` graph below no longer exists; the
+> current graph is `design → generate → validate → summarize` with a
+> deterministic import check gating acceptance.
+
 ## 1. Summary
 
 `create_workflow` separates planning from implementation:

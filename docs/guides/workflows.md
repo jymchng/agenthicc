@@ -60,7 +60,7 @@ rejects invalid lifecycle/policy combinations before activation.
 ## Create a workflow from the input panel
 
 The built-in `create_workflow` authoring workflow turns a natural-language
-request into a project-local workflow artifact:
+request into a project-local workflow file:
 
 ```text
 /workflow create_workflow
@@ -68,119 +68,152 @@ Create a workflow that uses Cloakbrowser to parse facebook.com.
 ```
 
 The first line selects the workflow; the next ordinary input supplies its
-intent. The authoring state machine separates specification from execution:
-the read-only `design` agent hands off an implementation specification, then a
-write-capable `execute` agent generates one complete Python `WorkflowPlugin`
-source file directly. Each generated `PhaseSpec` carries a literal
-`system_prompt_override` describing its objective, tools, inputs, outputs,
-verification, completion signal, and handoff. Declarative workflows use the
-inherited generic `WorkflowRunner`; custom `run()`/`resume()` implementations
-are reserved for behavior the phase graph cannot express. The execute agent
-writes the complete source with the canonical `write_file` tool to
-`.agenthicc/workflows/<name>.py`, then calls its execute handoff. The runner does
-not copy assistant text, publish, parse, or statically validate the source, and
-no staging directory or publish phase is involved. A successful terminal
-outcome emits a final summary in the transcript and in the typed
-`CreateWorkflowContext`; failed runs retain their failure reason.
+intent. `create_workflow` is modelled on `code_plan`, and shares its shape
+exactly:
 
-Assistant prose is never an artifact. If the agent does not successfully write
-the file and call its execute handoff, the runner retries up to
-`[execution].authoring_max_generation_attempts` bounded attempts (20 by default,
-clamped to 1–20) and then
-returns a failure without creating a `.py` file. The runner derives the
-expected path from the interpreted name and checks only that the exact file
-exists; it does not parse or validate the file or create a runner-owned
-manifest.
+- an **outer loop** in `CreateWorkflowRunner.run()` that evolves
+  `CreateWorkflowState` and nothing else;
+- an **inner loop** in each phase method that runs agent turns until that
+  phase's transition tool fires;
+- **transitions only via tool calls** — assistant prose is never parsed for a
+  handoff signal, so a turn that ends without a tool call is simply retried;
+- a **typed context**, `CreateWorkflowContext`, that records the artefact each
+  phase produced as a `PhaseArtifact`.
 
-Authoring phases are explicit state-machine nodes. The definition supplies a
-separate phase prompt and turn budget for `interpret`, `design`, `execute`, and
-`summarize`;
-the operator can cap every phase with
-`[execution].authoring_max_phase_turns` (20 by default). The built-in
-`create_workflow` definition gives all four phases a 20-turn budget. Interpret,
-design, execute, and summarize use their phase-local completion tools. Design
-is read-only and only hands off the implementation specification. Execute uses
-`write_file` for the complete source and then its phase-local handoff; it has no
-parser, validator, approval, staging, review, or publish gate. The execute agent
-owns the filesystem write.
+### Phase graph
 
-Each phase has a distinct transition tool, which makes the required handoff
-unambiguous in the model's tool catalog:
+| Phase | Mode | Required handoff | On success | On rejection |
+| --- | --- | --- | --- | --- |
+| `design` | read-only | `request_design_approval(design, workflow_name)` then `finalize_design(design, workflow_name)` | `generate` | retry `design` |
+| `generate` | `Auto` | write the file, then `mark_generation_complete(summary, path)` | `validate` | — |
+| `validate` | read-only | `approve_workflow(summary)` or `reject_workflow(reason)` | `summarize` | `generate` |
+| `summarize` | read-only | — (single turn) | complete | — |
 
-| Phase | Required handoff |
+`design` may also call `exit_create_workflow(suggestion)` when the request is not
+actually about authoring a workflow; the run then ends in the `EXITED` terminal
+state without writing anything. Terminal states are `COMPLETE`, `EXITED`, and
+`FAILED`.
+
+### Design is human-gated
+
+`request_design_approval` raises the plan-review overlay with the proposed name
+and phase graph. `finalize_design` refuses with an actionable `ok: false` result
+until that approval returned `approved=True`, and a later denial closes the gate
+again, so a rejected design cannot be handed off. In headless runs with no
+approval service the request auto-approves.
+
+Rejected transitions always return a structured failure containing `ok: false`,
+an `error`, a human-readable `message`, and a concrete `fix` naming the tool to
+call again. Invalid workflow names, empty designs, empty summaries, missing
+paths, and approval-service errors all take that path and keep the phase active.
+
+### Generation writes the file directly
+
+`generate` runs with `mode_override="Auto"` so the write tools are available. The
+agent writes one complete Python `WorkflowPlugin` source file to
+`.agenthicc/workflows/<name>.py` and then calls
+`mark_generation_complete(summary, path)` with the exact path it wrote. The
+runner never copies assistant text into a file, never stages a copy, and never
+publishes: the file the agent wrote is the artifact.
+
+### Validation is deterministic first, agent second
+
+Before the validating agent is asked for anything, the runner imports the
+generated file exactly the way `load_python_workflows` will and checks it against
+the real `WorkflowPlugin` contract. `validate_workflow_file` reports:
+
+- refusal, without importing, for a path outside the workspace root, a missing
+  file, a directory, a non-`.py` or underscore-prefixed filename, or an empty
+  file;
+- syntax errors with a line number, and import failures with the exception type
+  and message;
+- a missing `WorkflowPlugin` subclass, a name that does not match the approved
+  design, a reserved builtin name, an empty description, non-list
+  `mode_bindings`, or a `build_params({})` that raises or returns the wrong type;
+- phase-graph faults: duplicate or empty phase names, non-`PhaseSpec` entries,
+  `max_turns` below 1, and `next` / `on_reject` / `on_error` edges that do not
+  resolve.
+
+Unreachable phases, unknown `agent_type` or `output_schema` values, and a
+filename that differs from the workflow name are reported as warnings.
+
+That report is injected into the validating agent's prompt as evidence. The agent
+still has to call `approve_workflow` or `reject_workflow` — the transition is
+always a tool call — but **an approval is overridden when the report failed**, and
+the run loops back to `generate` with the concrete errors attached. A workflow
+that does not import can therefore never be accepted, however confident the model
+is.
+
+### Budgets
+
+Two previously advisory settings drive the loops:
+
+- `[execution].authoring_max_generation_attempts` (20 by default) bounds the
+  inner-loop attempts of every phase *and* the number of `validate → generate`
+  repair cycles;
+- `[execution].authoring_max_phase_turns` (20 by default) bounds the LLM
+  sub-turns inside one agent turn.
+
+Both are clamped to at least 1. Exhausting either budget ends the run in `FAILED`
+with a reason naming the missing handoff, and the failure is reported in the
+transcript.
+
+### Shared context and tools
+
+Like `code_plan`, one `ShortTermMemory` is created per authoring run and shared by
+all four phases, so the generating agent already has the design in context. Every
+phase also receives `memory_write`, `memory_read`, and `semantic_search`, and the
+project tool set filtered by the active mode's blocked capabilities. The built-in
+tool registry supplies the workspace-guarded canonical `write_file` tool even when
+no project tool plugin exports it, so `generate` can always write its file.
+
+The design phase additionally receives four read-only inspection tools whose
+content is read live from the running code, so the guidance cannot drift from the
+API:
+
+| Tool | Returns |
 | --- | --- |
-| `interpret` | `complete_interpret_phase(summary, workflow_name)` |
-| `design` | `complete_design_phase(design)` |
-| `execute` | `write_file(path=".agenthicc/workflows/<name>.py", content=<complete source>)`, then `complete_execute_phase(summary, artifact_name, artifact_description)` |
-| `summarize` | `complete_summarize_phase(summary)` |
+| `describe_phasespec()` | every `PhaseSpec` field with its type, default, and purpose |
+| `list_tool_capabilities()` | every `ToolCapability` value with a description |
+| `list_agent_roles()` | every `PhaseRole` usable as `agent_type` |
+| `show_example_workflow()` | a complete, known-valid workflow file to adapt |
 
-Rejected phase transitions always return a structured failure containing
-`ok: false`, an `error`, a human-readable `message`, and a concrete `fix` that
-tells the agent what to correct and which transition tool to call again. This
-also applies to approval denials, missing or empty summaries, invalid artifact
-metadata, failed approval services, and CodePlan completion/review handoffs.
-Retryable validation failures keep the phase active so the agent can use that
-returned guidance on its next turn; deliberate decisions such as approval
-denial still follow their configured terminal or rejection transition.
+`design` also gets `ask_user` for clarifying questions.
 
-The design phase must not call a mutating filesystem tool. It produces the
-implementation specification and calls `complete_design_phase`. The execute
-phase makes one complete `write_file` call, waits for its successful result, and
-then calls `complete_execute_phase` with matching stable filename metadata. A
-response containing only analysis or source prose does not advance either
-phase. The runner does not inspect or copy assistant responses, ask for
-approval, or create a staging copy.
+### Activate the generated workflow
 
-The normal built-in tool registry supplies the workspace-guarded canonical
-`write_file` tool to `create_workflow` even when no project tool plugin exports
-it. Other workflow and command plugin surfaces retain their own ownership
-boundaries.
-
-Like `code_plan`, one `ShortTermMemory` is created for each authoring run and
-shared by every `create_workflow` phase. The phase tool set also includes
-`memory_write`, `memory_read`, and `semantic_search`, so the authoring agent can
-carry decisions and relevant context across interpretation, design, execute,
-and summary. Design excludes write, execute, network, and git-write
-capabilities. Execute receives the canonical `write_file` tool plus safe
-read-only tools; shell and command-execution tools are not exposed.
-
-The authoring phases receive two bounded read-only inspection tools:
-`inspect_agenthicc_documentation(path)` reads current packaged or checkout
-documentation, and `inspect_agenthicc_source(module, symbol)` uses Python's
-`inspect` API against the current `agenthicc` package. Both public and private
-Python identifiers are valid symbols, so helpers such as `_parse_output_schema`
-can be inspected.
-The TUI preserves complete module and path
-arguments in the tool-call preview, so a displayed inspection target matches
-the value actually sent to the tool. These tools are intended to keep generated
-workflows, tools, and commands aligned with the current API surface. The
-documentation tree is included in built distributions under
-`share/agenthicc/docs` and remains available from the repository checkout.
-
-Run `/workflows reload` after the agent's direct write so the normal workflow registry
-discovers the new file, then select it for a later request:
+Run `/workflows reload` after the run so the normal workflow registry discovers
+the new file, then select it for a later request:
 
 ```text
 /workflow cloakbrowser_parse_fb
 Parse the requested Facebook page and summarize the results.
 ```
 
-`create_workflow` has no runner-owned staged manifest to resume. If a run is
-interrupted, inspect the file written by the agent or run the authoring workflow
-again. Use `/workflow reset` to return to the active mode's default workflow.
-The authoring result and `WorkflowRunCompleted` event include the agent-reported
-path when supplied, `approval: not-requested`, and the `workflows-reload`
-activation instruction; they do not claim a runner-computed digest or
-publication.
+`create_workflow` has no runner-owned staged manifest to resume: `resume()`
+restarts the state machine from `design` with the original intent, and the design
+phase can read whatever the interrupted run already wrote. Use `/workflow reset`
+to return to the active mode's default workflow.
 
-The authoring agent is also instructed to choose the right configuration
-boundary for the generated workflow. It can:
+Per-phase models come from `[workflows.create_workflow]`:
+
+```toml
+[workflows.create_workflow]
+design_model   = ""             # empty → execution.model
+generate_model = "claude-opus-5"
+validate_model = ""
+summary_model  = ""
+```
+
+### What the generated workflow should look like
+
+The authoring prompt steers the agent toward the right configuration boundary:
 
 - rely on the inherited `WorkflowPlugin.build_runner()` when declarative
   `PhaseSpec` values are enough;
 - define a custom stateful runner when the workflow needs conditional branches,
   loops, retries, transformed context, parallel work, phase-specific tools, or
-  custom completion gates; and
+  custom completion gates;
 - define typed `WorkflowParams`, `get_phase_models()`, and `build_params()` for
   values supplied by `[workflows.<name>]` in TOML; and
 - include a copy-ready `agenthicc.toml` template when the workflow needs
@@ -189,8 +222,9 @@ boundary for the generated workflow. It can:
 ### Custom stateful runners generated by `create_workflow`
 
 For non-trivial specialized behavior, the authoring agent is encouraged to
-generate a runner shaped like `code_plan`, rather than hiding control flow in
-one generic phase prompt. The generated source should contain:
+generate a runner shaped like `code_plan` and `create_workflow` themselves,
+rather than hiding control flow in one generic phase prompt. The generated source
+should contain:
 
 1. a typed `State(Enum)` with all non-terminal and terminal states;
 2. a typed `@dataclass` context carrying the user intent, run id, shared memory,
@@ -198,26 +232,24 @@ one generic phase prompt. The generated source should contain:
 3. one bounded asynchronous function for each non-terminal state;
 4. a `run(intent)` driver that initializes the context and advances it with
    `while not state.is_terminal` and `match state` dispatch; and
-5. a `resume(context)` implementation that restores the context and uses the
-   same state functions and transitions.
+5. a `resume(context)` implementation that uses the same state functions and
+   transitions.
 
 Each state function should return the next state explicitly after handling its
 success, retry, rejection, and failure paths. It should update phase events and
-carry structured handoff data just as `CodePlanRunner` does. Use
-`BaseWorkflowRunner` for an independent state machine. Use `CodePlanRunner`
-and its public `run_phase()` only when the generated workflow intentionally
-composes with CodePlan; changing `CodePlan.phases` alone does not change the
-CodePlan runner. A custom runner is not needed for a genuinely simple
-declarative `PhaseSpec` graph, and `super()` is only required for intentional
-parent-runner composition.
+carry structured handoff data just as `CodePlanRunner` and
+`CreateWorkflowRunner` do. Use `BaseWorkflowRunner` for an independent state
+machine. Use `CodePlanRunner` and its public `run_phase()` only when the
+generated workflow intentionally composes with CodePlan; changing
+`CodePlan.phases` alone does not change the CodePlan runner. A custom runner is
+not needed for a genuinely simple declarative `PhaseSpec` graph.
 
-The authoring agent writes the Python workflow artifact only through `write_file`.
-The runner never publishes it. The workflow never writes API keys or silently
-edits a TOML file. Copy the generated template into the
-project's `.agenthicc/agenthicc.toml` (or another explicitly selected config
-file), restart the session to load configuration, then run `/workflows reload`
-after changing the Python workflow. Provider selection remains session-wide;
-the generated workflow must not claim to support per-phase provider switching.
+The workflow never writes API keys and never silently edits a TOML file. Copy any
+generated template into the project's `.agenthicc/agenthicc.toml` (or another
+explicitly selected config file), restart the session to load configuration, then
+run `/workflows reload` after changing the Python workflow. Provider selection
+remains session-wide; a generated workflow must not claim to support per-phase
+provider switching.
 
 Project tools and slash commands are separate plugin surfaces. Use the
 `/create-tools` and `/create-commands` skills when those extensions are needed;
@@ -441,7 +473,9 @@ They should produce explicit workflow state and a test for the chosen policy.
 Current implementation caveats to account for when authoring workflows:
 
 - Phase graph references are not validated at discovery time; invalid `next`
-  or `on_reject` names are found only during execution.
+  or `on_reject` names are found only during execution. Workflows authored
+  through `create_workflow` are the exception: its validate phase resolves every
+  edge before the run can finish.
 - `on_error` is declared on `PhaseSpec` but is currently reserved rather than
   an active transition hook.
 - Generic parallel-phase failures are logged while the workflow may continue;

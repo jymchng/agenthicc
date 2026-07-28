@@ -21,6 +21,13 @@ tags:
 
 # PRD-147 — Workflow-Native Extension Authoring
 
+> **Historical.** The `create_workflow` portion of this PRD is superseded by
+> [PRD-154](prd-154-create-workflow-architecture.md), which rebuilt the workflow
+> as a `code_plan`-style state machine with the phases
+> `design → generate → validate → summarize`. The `interpret`/`execute` phase
+> names and handoff tools described below no longer exist. The `create_tools` and
+> `create_commands` skill surfaces are unaffected.
+
 ## 1. Summary
 
 Convert the default authoring skills `$create-workflow`, `$create-tools`, and

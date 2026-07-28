@@ -1,113 +1,146 @@
-"""Workflow plugin definition for ``create_workflow``."""
+"""CreateWorkflow plugin definition and tunable parameters.
+
+Co-located with the state machine and runner that back it, mirroring
+``agenthicc.workflows.code_plan.definition``.
+
+The declarative ``phases`` list here is the metadata the TUI and the workflow
+registry read (names, order, per-phase prompts, the write-capable mode override,
+and the validate → generate rejection edge).  Execution itself is driven by
+:class:`~agenthicc.workflows.create_workflow.runner.CreateWorkflowRunner`, whose
+state machine follows exactly this graph.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import dataclasses
 from collections.abc import Mapping
+from dataclasses import field
 from typing import TYPE_CHECKING
-
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.workflows.create_workflow.runner import CreateWorkflowRunner
 
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
-@dataclass
+#: TOML keys accepted under ``[workflows.create_workflow]``.
+_PARAM_FIELDS: tuple[str, ...] = (
+    "design_model",
+    "generate_model",
+    "validate_model",
+    "summary_model",
+)
+
+
+@dataclasses.dataclass
 class CreateWorkflowParams(WorkflowParams):
-    """Optional model overrides for the authoring phases."""
+    """Tunable parameters for the create_workflow workflow.
 
-    interpret_model: str = ""
-    design_model: str = ""
-    execute_model: str = ""
-    summarize_model: str = ""
+    Each field maps to a TOML key under ``[workflows.create_workflow]``.
+
+    Example agenthicc.toml::
+
+        [workflows.create_workflow]
+        generate_model = "claude-opus-5"   # strongest model writes the source
+        validate_model = ""               # empty → use execution.model
+    """
+
+    design_model: str = field(default="")
+    generate_model: str = field(default="")
+    validate_model: str = field(default="")
+    summary_model: str = field(default="")
 
     def get_phase_models(self) -> dict[str, str]:
-        """Return the configured phase-to-model mapping."""
-
+        """Map phase name → configured model override (empty = global default)."""
         return {
-            "interpret": self.interpret_model,
             "design": self.design_model,
-            "execute": self.execute_model,
-            "summarize": self.summarize_model,
+            "generate": self.generate_model,
+            "validate": self.validate_model,
+            "summarize": self.summary_model,
         }
 
 
 class CreateWorkflow(WorkflowPlugin):
-    """Create one project-local ``WorkflowPlugin`` from a user's use case."""
+    """Author a new custom workflow: Design → Generate → Validate → Summary.
+
+    The meta-workflow downstream users invoke to build their own workflows.  One
+    agent runs all four phases sharing a single ``ShortTermMemory``, so the phase
+    that writes the file already has the approved design in context.
+
+    Design is read-only and gated on human approval.  Generation runs in ``Auto``
+    mode so the write tools are available.  Validation imports the generated file
+    deterministically before the agent votes, and a rejection loops back to
+    generation.
+    """
 
     name = "create_workflow"
-    description = "Interpret, design, write, and summarize a custom workflow."
-    mode_bindings: list[str] = []
-    max_total_phase_runs = 0
-
+    description = "Design → Generate → Validate → Summary  (author a new custom workflow)"
+    mode_bindings: list[str] = []  # manual only — invoke with /workflow create_workflow
     phases = [
         PhaseSpec(
-            name="interpret",
-            agent_type="planner",
-            max_turns=20,
-            max_iterations=20,
-            next="design",
-            system_prompt_override=(
-                "You are the INTERPRET phase of create_workflow. Normalize the user's use case "
-                "into a precise purpose for one downstream custom workflow. Choose a stable "
-                "lowercase Python workflow name, identify inputs, outputs, tools, safety limits, "
-                "and success criteria. You may inspect files and documentation, but do not write "
-                "source. When complete, call "
-                "complete_interpret_phase(summary, workflow_name). This is the only tool call "
-                "that can advance to DESIGN. A prose response alone cannot advance the phase."
-            ),
-        ),
-        PhaseSpec(
             name="design",
-            agent_type="planner",
+            agent_type="auto",
             max_turns=20,
+            next="generate",
+            on_reject="design",
             max_iterations=20,
-            next="execute",
+            require_plan_finalization=True,
+            mode_override=None,
             system_prompt_override=(
-                "You are the DESIGN phase of create_workflow. Turn the normalized use case into "
-                "a complete implementation design for a downstream WorkflowPlugin. Describe "
-                "each generated phase, its prompt and tools, typed inputs/outputs, transition "
-                "rules, limits, persistence and resume behaviour, and tests. For stateful or "
-                "conditional behaviour, follow code_plan: use a typed State enum, a typed Context "
-                "dataclass, one bounded async method per phase, and an outer while-not-terminal "
-                "match/case loop. Do not write source. Call "
-                "complete_design_phase(design); this is the only tool call that can advance to "
-                "EXECUTE. Prose alone cannot advance the phase."
+                "You are in the DESIGN phase of create_workflow. Design the new workflow — "
+                "its lower_snake_case name, its phases, and the transition graph — without "
+                "writing any files. Inspect the authoring API with describe_phasespec(), "
+                "list_tool_capabilities(), list_agent_roles() and show_example_workflow(). "
+                "Present the design with request_design_approval(design, workflow_name) and "
+                "call finalize_design(design, workflow_name) once it is approved. If the "
+                "request is not about creating a new workflow, call "
+                "exit_create_workflow(suggestion) instead."
             ),
         ),
         PhaseSpec(
-            name="execute",
-            agent_type="executor",
+            name="generate",
+            agent_type="auto",
             max_turns=20,
+            next="validate",
             max_iterations=20,
-            next="summarize",
+            require_explicit_completion=True,
             mode_override="Auto",
             system_prompt_override=(
-                "You are the EXECUTE phase of create_workflow. Generate the complete Python "
-                "source from the design and write it directly with write_file to "
-                ".agenthicc/workflows/<workflow_name>.py. Use current agenthicc contracts; do not "
-                "invent historical paths. A custom runner must keep phase methods, the outer "
-                "state loop, tool-gated transitions, context artifacts, and resume logic in its "
-                "own ownership boundary. Do not use shell, staging, parsing, validation, or an "
-                "assistant response as a substitute for write_file. After write_file succeeds, "
-                "call complete_execute_phase(summary, artifact_name, artifact_description). "
-                "This is the only tool call that can advance to SUMMARIZE."
+                "You are in the GENERATION phase of create_workflow. You already designed "
+                "the workflow — do NOT re-design. Write the complete WorkflowPlugin source "
+                "to .agenthicc/workflows/<name>.py with the write tools: module docstring, "
+                "imports, the plugin class, and every approved PhaseSpec. When the file is "
+                "fully written, call mark_generation_complete(summary, path)."
+            ),
+        ),
+        PhaseSpec(
+            name="validate",
+            agent_type="auto",
+            max_turns=20,
+            next="summarize",
+            on_reject="generate",
+            max_iterations=20,
+            require_explicit_review=True,
+            mode_override=None,
+            system_prompt_override=(
+                "You are in the VALIDATION phase of create_workflow. The generated file has "
+                "already been imported and checked; read that report first. Call "
+                "reject_workflow(reason) if it lists any error or the file does not match the "
+                "approved design, otherwise call approve_workflow(summary). You MUST call "
+                "exactly one of these two tools."
             ),
         ),
         PhaseSpec(
             name="summarize",
             agent_type="auto",
-            max_turns=20,
-            max_iterations=20,
+            max_turns=4,
+            output_schema="free_text",
+            mode_override=None,
             system_prompt_override=(
-                "You are the terminal SUMMARIZE phase of create_workflow. Report the truthful "
-                "workflow name, exact written path, what the generated workflow does, and the "
-                "next action for the user to reload and run it. Do not claim that source was "
-                "validated or activated unless the tools prove it. Call "
-                "complete_summarize_phase(summary); this is the only tool call that can complete "
-                "the create_workflow run. Prose alone cannot close the run."
+                "You are in the SUMMARY phase of create_workflow. Tell the user which "
+                "workflow was created, where it lives, what its phases are, and that "
+                "'/workflows reload' makes it available in this session."
             ),
         ),
     ]
@@ -118,20 +151,24 @@ class CreateWorkflow(WorkflowPlugin):
         config: WorkflowConfig,
         mode_manager: ModeManager | None,
     ) -> CreateWorkflowRunner:
-        """Build the explicit authoring state-machine runner."""
-
-        from agenthicc.workflows.create_workflow.runner import CreateWorkflowRunner
+        """Return a CreateWorkflowRunner — uses its own state machine."""
+        from agenthicc.workflows.create_workflow.runner import (  # noqa: PLC0415
+            CreateWorkflowRunner,
+        )
 
         return CreateWorkflowRunner(config, mode_manager)
 
     @classmethod
-    def build_params(cls, source: Mapping[str, object]) -> CreateWorkflowParams:
-        """Build typed parameters from the workflow configuration mapping."""
-
-        names = ("interpret_model", "design_model", "execute_model", "summarize_model")
+    def build_params(cls, source: Mapping[str, object]) -> WorkflowParams:
+        """Build :class:`CreateWorkflowParams` from *source* (merged TOML/CLI)."""
+        values: dict[str, str] = {
+            field_name: value
+            for field_name in _PARAM_FIELDS
+            if isinstance(value := source.get(field_name), str)
+        }
         return CreateWorkflowParams(
-            **{name: value for name in names if isinstance(value := source.get(name), str)}
+            design_model=values.get("design_model", ""),
+            generate_model=values.get("generate_model", ""),
+            validate_model=values.get("validate_model", ""),
+            summary_model=values.get("summary_model", ""),
         )
-
-
-__all__ = ["CreateWorkflow", "CreateWorkflowParams"]

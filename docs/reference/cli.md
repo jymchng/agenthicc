@@ -96,11 +96,13 @@ executable when submitted.
 
 To author a workflow interactively, submit
 `/workflow create_workflow`, then enter the intent as the next ordinary input.
-The execute phase writes the complete source directly to
-`.agenthicc/workflows/<name>.py`; it does not use a staging directory,
-approval gate, parser, validator, or publish phase. Run `/workflows reload`
-after the run completes. `/workflow resume` is not used for this direct-write
-authoring flow; run `/workflow create_workflow` again if the run is interrupted.
+Its phases are `design → generate → validate → summarize`: the design is gated on
+your approval, the generate phase writes the complete source directly to
+`.agenthicc/workflows/<name>.py`, and the validate phase imports that file and
+loops back to generate until it loads cleanly. There is no staging directory or
+publish phase. Run `/workflows reload` after the run completes. `/workflow resume`
+is not used for this direct-write authoring flow; run `/workflow create_workflow`
+again if the run is interrupted.
 
 Project tools and commands remain available through the `/create-tools` and
 `/create-commands` skills and their respective reload commands; they are not

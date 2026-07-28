@@ -1,208 +1,573 @@
-"""Integration coverage for the explicit create_workflow state machine."""
+"""Integration tests for create_workflow across real component boundaries.
+
+Every test here wires at least one real collaborator rather than a stub:
+
+* a real :class:`~agenthicc.kernel.processor.EventProcessor` receiving the
+  workflow lifecycle events;
+* a real :class:`~agenthicc.tools.approval.ApprovalService` driving the design
+  approval gate through ``pending_approval`` / ``respond``;
+* real TOML config through :func:`~agenthicc.config.load_config`;
+* the real workflow loader and registry importing the file the run produced.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from agenthicc.config import AgenthiccConfig
-from agenthicc.kernel import AppState, EventProcessor, SecurityPolicy, SystemSettings
-from agenthicc.tui.conversation_store import AppState as TUIAppState
+from agenthicc.config import AgenthiccConfig, load_config
+from agenthicc.kernel import AppState as KernelAppState
+from agenthicc.kernel import EventProcessor, SecurityPolicy, SystemSettings
+from agenthicc.tools.approval import ApprovalService
+from agenthicc.tui.conversation_store import AppState
 from agenthicc.workflows.config import WorkflowConfig
-from agenthicc.workflows.create_workflow.runner import CreateWorkflowRunner
-from agenthicc.workflows.create_workflow.state import CreateWorkflowContext, CreateWorkflowState
+from agenthicc.workflows.create_workflow import (
+    CreateWorkflow,
+    CreateWorkflowParams,
+    CreateWorkflowRunner,
+    CreateWorkflowState,
+    validate_workflow_file,
+)
+from agenthicc.workflows.loader import load_builtin_workflows, load_python_workflows
+from agenthicc.workflows.registry import build_workflow_registry
 
 pytestmark = pytest.mark.integration
 
 
+# ── fixtures / helpers ────────────────────────────────────────────────────────
+
+
 @pytest.fixture
 async def processor(tmp_path: Path):
-    kernel_state = AppState.create(
+    """A real, running EventProcessor with persistence disabled."""
+    kernel_state = KernelAppState.create(
         settings=SystemSettings(
-            event_log_path=str(tmp_path / "events.jsonl"),
-            snapshot_path=str(tmp_path / "snapshot.json"),
+            event_log_path=str(tmp_path / "ev.jsonl"),
+            snapshot_path=str(tmp_path / "snap.json"),
         ),
         policy=SecurityPolicy(),
     )
-    processor = EventProcessor(initial_state=kernel_state, persist=False)
-    task = asyncio.create_task(processor.run())
-    await asyncio.sleep(0)
-    yield processor
+    proc = EventProcessor(initial_state=kernel_state, persist=False)
+    task = asyncio.create_task(proc.run())
+    yield proc
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
 
 
-def _make_runner(processor: EventProcessor) -> tuple[CreateWorkflowRunner, TUIAppState]:
-    app_state = TUIAppState.create()
-    config = WorkflowConfig(
-        conv_store=app_state.conversation,
-        app_state=app_state,
-        processor=processor,
-        agent_runner=MagicMock(),
-        approval_svc=None,
-        cfg=AgenthiccConfig(),
+_GENERATED_SOURCE = '''\
+"""doc_review — draft a document, then review it."""
+
+from __future__ import annotations
+
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+
+class DocReview(WorkflowPlugin):
+    name = "doc_review"
+    description = "Draft a document, then review it."
+    mode_bindings = []
+    phases = [
+        PhaseSpec(
+            name="draft",
+            max_turns=20,
+            next="review",
+            mode_override="Auto",
+            system_prompt_override="You are in the DRAFT phase. Write the document.",
+        ),
+        PhaseSpec(
+            name="review",
+            max_turns=8,
+            on_reject="draft",
+            output_schema="free_text",
+            system_prompt_override="You are in the REVIEW phase. Check the document.",
+        ),
+    ]
+'''
+
+_BROKEN_SOURCE = '''\
+"""doc_review — first attempt with a dangling edge."""
+
+from __future__ import annotations
+
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+
+class DocReview(WorkflowPlugin):
+    name = "doc_review"
+    description = "Draft a document, then review it."
+    mode_bindings = []
+    phases = [PhaseSpec(name="draft", next="reviewww")]
+'''
+
+
+def _workflow_config(
+    *,
+    app: AppState,
+    proc: EventProcessor,
+    cfg: AgenthiccConfig,
+    approval_svc: ApprovalService | None = None,
+) -> WorkflowConfig:
+    return WorkflowConfig(
+        conv_store=app.conversation,
+        app_state=app,
+        processor=proc,
+        agent_runner=SimpleNamespace(
+            _transport=SimpleNamespace(_config=SimpleNamespace(model="transport"))
+        ),  # type: ignore[arg-type]
+        approval_svc=approval_svc,
+        cfg=cfg,
         skills={},
         plugin_tools=[],
         mcp_registry=None,
-        mention_cache=MagicMock(),
-        agents_registry=MagicMock(),
+        mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
+        agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
+        params=CreateWorkflow.build_params({}),
     )
-    return CreateWorkflowRunner(config), app_state
 
 
-def _invoke_named_tool(tools: list[object], name: str, *args: object) -> object:
-    for candidate in tools:
-        if getattr(candidate, "__name__", "") == name:
-            return candidate(*args)
-    raise AssertionError(f"missing phase tool {name}")
+def _base_config(tmp_path: Path) -> AgenthiccConfig:
+    cfg = AgenthiccConfig()
+    cfg.execution.authoring_max_generation_attempts = 3
+    cfg.execution.authoring_max_phase_turns = 4
+    cfg.execution.effective_usable_budget = lambda: 10_000  # type: ignore[method-assign]
+    return cfg
 
 
-async def test_real_processor_observes_all_phase_boundaries_and_artifacts(
-    processor: EventProcessor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    runner, app_state = _make_runner(processor)
-    calls: list[str] = []
+def _runner(
+    tmp_path: Path,
+    proc: EventProcessor,
+    *,
+    approval_svc: ApprovalService | None = None,
+    app: AppState | None = None,
+    cfg: AgenthiccConfig | None = None,
+) -> CreateWorkflowRunner:
+    app = app or AppState.create()
+    runner = CreateWorkflowRunner(
+        _workflow_config(
+            app=app,
+            proc=proc,
+            cfg=cfg or _base_config(tmp_path),
+            approval_svc=approval_svc,
+        )
+    )
+    runner._workspace_root = lambda: tmp_path  # type: ignore[method-assign]
+    runner._cfg.app_state.update_workflow_phase = MagicMock()  # type: ignore[method-assign]
+    return runner
 
-    async def fake_turn(*_args: object, **kwargs: object) -> None:
-        phase = str(kwargs["phase_name"])
-        calls.append(phase)
-        tools = kwargs["tools"]
-        if phase == "interpret":
-            await _invoke_named_tool(
-                tools, "complete_interpret_phase", "A parser workflow", "parser_workflow"
+
+def _by_name(tools: object) -> dict[str, object]:
+    assert isinstance(tools, list)
+    return {getattr(tool, "__name__", ""): tool for tool in tools}
+
+
+async def _call(tools: object, name: str, *args: object) -> object:
+    tool = _by_name(tools)[name]
+    assert callable(tool)
+    return await tool(*args)
+
+
+def _authoring_turn(
+    tmp_path: Path,
+    *,
+    sources: list[str],
+    verdicts: list[str],
+) -> object:
+    """Return a fake ``_run_turn`` that really writes files and really votes.
+
+    *sources* is consumed one entry per generation phase; *verdicts* one entry
+    per validation phase (``"approve"`` or ``"reject"``).
+    """
+    target = tmp_path / ".agenthicc" / "workflows" / "doc_review.py"
+
+    async def run_turn(_text: str, **kwargs: object) -> None:
+        tools = _by_name(kwargs["tools"])
+        if "finalize_design" in tools:
+            await _call(kwargs["tools"], "request_design_approval", "draft → review", "doc_review")
+            await _call(kwargs["tools"], "finalize_design", "draft → review", "doc_review")
+        elif "mark_generation_complete" in tools:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(sources.pop(0), encoding="utf-8")
+            await _call(
+                kwargs["tools"],
+                "mark_generation_complete",
+                "wrote the doc_review workflow",
+                str(target),
             )
-        elif phase == "design":
-            await _invoke_named_tool(tools, "complete_design_phase", "A typed parser design")
-        elif phase == "execute":
-            path = tmp_path / ".agenthicc" / "workflows" / "parser_workflow.py"
-            path.parent.mkdir(parents=True)
-            path.write_text(
-                "from agenthicc.workflows.plugin import WorkflowPlugin\n", encoding="utf-8"
-            )
-            await _invoke_named_tool(
-                tools,
-                "complete_execute_phase",
-                "The source was written.",
-                "parser_workflow",
-                "A parser workflow",
-            )
-        else:
-            await _invoke_named_tool(tools, "complete_summarize_phase", "Ready to reload.")
+        elif "approve_workflow" in tools:
+            if verdicts.pop(0) == "approve":
+                await _call(kwargs["tools"], "approve_workflow", "imports and matches the design")
+            else:
+                await _call(kwargs["tools"], "reject_workflow", "the phase graph is broken")
 
-    runner._run_turn = fake_turn  # type: ignore[method-assign]
-    runner._phase_tools = lambda: []  # type: ignore[method-assign]
+    return run_turn
 
-    context = await runner.run("Create a parser workflow")
+
+# ── builtin registration ──────────────────────────────────────────────────────
+
+
+async def test_create_workflow_is_a_registered_builtin() -> None:
+    assert CreateWorkflow in load_builtin_workflows()
+    registry = build_workflow_registry(project_dir=Path("/nonexistent"), user_dir=Path("/nope"))
+    assert registry.get("create_workflow") is CreateWorkflow
+    entry = registry.get_entry("create_workflow")
+    assert entry is not None
+    assert entry.source == "builtin"
+    assert entry.plugin_cls is CreateWorkflow
+
+
+async def test_registry_builds_the_state_machine_runner(tmp_path: Path, processor) -> None:
+    registry = build_workflow_registry(project_dir=Path("/nonexistent"), user_dir=Path("/nope"))
+    plugin_cls = registry.get("create_workflow")
+    assert plugin_cls is not None
+    app = AppState.create()
+    config = _workflow_config(app=app, proc=processor, cfg=_base_config(tmp_path))
+    built = plugin_cls.build_runner(config, None)
+    assert isinstance(built, CreateWorkflowRunner)
+    assert built.total_phases == len(plugin_cls.phases)
+
+
+# ── real processor: full lifecycle ────────────────────────────────────────────
+
+
+async def test_full_run_against_a_real_processor(tmp_path: Path, processor) -> None:
+    runner = _runner(tmp_path, processor)
+    runner._run_turn = _authoring_turn(  # type: ignore[method-assign]
+        tmp_path, sources=[_GENERATED_SOURCE], verdicts=["approve"]
+    )
+
+    ctx = await runner.run("build me a doc review workflow")
     await processor.drain()
 
-    assert context.state is CreateWorkflowState.COMPLETE
-    assert calls == ["interpret", "design", "execute", "summarize"]
-    assert set(context.phase_artifacts) == set(calls)
-    assert context.artifact_path == str(
-        (tmp_path / ".agenthicc" / "workflows" / "parser_workflow.py").resolve()
+    assert ctx.workflow_name == "doc_review"
+    assert ctx.repair_cycles == 0
+    assert set(ctx.artifacts) == {"design", "generate", "validate", "summarize"}
+    assert runner._cfg.app_state.workflow_run().status == "complete"
+    assert (tmp_path / ".agenthicc" / "workflows" / "doc_review.py").exists()
+
+
+async def test_repair_loop_against_a_real_processor(tmp_path: Path, processor) -> None:
+    """A broken first attempt is rejected, regenerated, and then accepted."""
+    runner = _runner(tmp_path, processor)
+    runner._run_turn = _authoring_turn(  # type: ignore[method-assign]
+        tmp_path,
+        sources=[_BROKEN_SOURCE, _GENERATED_SOURCE],
+        verdicts=["reject", "approve"],
     )
-    assert app_state.workflow_run().status == "complete"
-    assert [record.phase_name for record in app_state.workflow_run().phase_history] == calls
+
+    ctx = await runner.run("build me a doc review workflow")
+    await processor.drain()
+
+    assert ctx.repair_cycles == 1
+    assert ctx.validation_summary == "imports and matches the design"
+    assert runner._cfg.app_state.workflow_run().status == "complete"
+    assert ctx.artifacts["validate"].metadata["ok"] is True
 
 
-async def test_prose_never_advances_and_hits_bounded_attempts(
-    processor: EventProcessor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_deterministic_check_overrides_a_wrong_approval(tmp_path: Path, processor) -> None:
+    """Approving a broken file cannot finish the run — it loops back to generate."""
+    runner = _runner(tmp_path, processor)
+    runner._run_turn = _authoring_turn(  # type: ignore[method-assign]
+        tmp_path,
+        sources=[_BROKEN_SOURCE, _GENERATED_SOURCE],
+        verdicts=["approve", "approve"],
+    )
+
+    ctx = await runner.run("build me a doc review workflow")
+    await processor.drain()
+
+    assert ctx.repair_cycles == 1
+    # The second generation ran inside repair cycle 1, i.e. the wrong approval
+    # was re-routed instead of finishing the run.
+    assert ctx.artifacts["generate"].metadata["repair_cycle"] == 1
+    assert runner._cfg.app_state.workflow_run().status == "complete"
+    assert ctx.artifacts["validate"].metadata["ok"] is True
+
+
+# ── real registry: the generated workflow becomes loadable ────────────────────
+
+
+async def test_generated_workflow_is_discovered_by_the_real_registry(
+    tmp_path: Path, processor
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    runner, app_state = _make_runner(processor)
-    runner._cfg.cfg.execution.authoring_max_generation_attempts = 2
-    calls = 0
+    runner = _runner(tmp_path, processor)
+    runner._run_turn = _authoring_turn(  # type: ignore[method-assign]
+        tmp_path, sources=[_GENERATED_SOURCE], verdicts=["approve"]
+    )
+    ctx = await runner.run("build me a doc review workflow")
+    await processor.drain()
 
-    async def prose_only(*_args: object, **_kwargs: object) -> None:
-        nonlocal calls
-        calls += 1
-
-    runner._run_turn = prose_only  # type: ignore[method-assign]
-    runner._phase_tools = lambda: []  # type: ignore[method-assign]
-
-    context = await runner.run("Create a workflow")
-
-    assert context.state is CreateWorkflowState.FAILED
-    assert calls == 2
-    assert "Interpret phase exhausted" in context.fail_reason
-    assert app_state.workflow_run().status == "failed"
-    assert not (tmp_path / ".agenthicc" / "workflows").exists()
+    registry = build_workflow_registry(
+        project_dir=tmp_path / ".agenthicc",
+        user_dir=tmp_path / "no-user-dir",
+    )
+    entry = registry.get_entry("doc_review")
+    assert entry is not None
+    assert entry.source == "project"
+    assert entry.path == ctx.generated_path
+    assert entry.plugin_cls.phase_names() == ["draft", "review"]
+    first = entry.plugin_cls.first_phase()
+    assert first is not None
+    assert first.mode_override == "Auto"
 
 
-async def test_invalid_handoff_is_retried_with_the_same_phase(
-    processor: EventProcessor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_generated_workflow_loads_through_load_python_workflows(
+    tmp_path: Path, processor
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    runner, _ = _make_runner(processor)
-    prompts: list[str] = []
-    attempts = 0
-
-    async def retrying_turn(*args: object, **kwargs: object) -> None:
-        nonlocal attempts
-        attempts += 1
-        prompts.append(str(args[0]))
-        tools = kwargs["tools"]
-        if attempts == 1:
-            await _invoke_named_tool(tools, "complete_interpret_phase", "normalized", "Bad Name")
-        else:
-            await _invoke_named_tool(tools, "complete_interpret_phase", "normalized", "good_name")
-
-    runner._run_turn = retrying_turn  # type: ignore[method-assign]
-    runner._phase_tools = lambda: []  # type: ignore[method-assign]
-
-    result = await runner._interpret(
-        CreateWorkflowContext(intent="intent", run_id="run"),
-        max_agent_turns=2,
+    runner = _runner(tmp_path, processor)
+    runner._run_turn = _authoring_turn(  # type: ignore[method-assign]
+        tmp_path, sources=[_GENERATED_SOURCE], verdicts=["approve"]
     )
-    assert result is CreateWorkflowState.DESIGN
-    assert attempts == 2
-    assert "RETRY REQUIRED" in prompts[1]
-    assert "complete_interpret_phase(summary, workflow_name)" in prompts[1]
+    ctx = await runner.run("build me a doc review workflow")
+    await processor.drain()
+
+    plugins = load_python_workflows(Path(ctx.generated_path), source="project")
+    assert [plugin.name for plugin in plugins] == ["doc_review"]
+    assert plugins[0].build_params({}) is not None
 
 
-async def test_resume_uses_current_state_and_preserves_completed_artifacts(
-    processor: EventProcessor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_generated_workflow_does_not_shadow_the_builtins(tmp_path: Path, processor) -> None:
+    runner = _runner(tmp_path, processor)
+    runner._run_turn = _authoring_turn(  # type: ignore[method-assign]
+        tmp_path, sources=[_GENERATED_SOURCE], verdicts=["approve"]
+    )
+    await runner.run("build me a doc review workflow")
+    await processor.drain()
+
+    registry = build_workflow_registry(
+        project_dir=tmp_path / ".agenthicc",
+        user_dir=tmp_path / "no-user-dir",
+    )
+    assert {"code_plan", "create_workflow", "doc_review"} <= set(registry.names())
+    code_plan = registry.get_entry("code_plan")
+    assert code_plan is not None
+    assert code_plan.source == "builtin"
+
+
+# ── real approval service ─────────────────────────────────────────────────────
+
+
+async def test_design_gate_uses_the_real_approval_service(tmp_path: Path, processor) -> None:
+    app = AppState.create()
+    approval = ApprovalService(app)
+    runner = _runner(tmp_path, processor, approval_svc=approval, app=app)
+
+    async def responder() -> None:
+        """Approve the first plan_review request that appears."""
+        for _ in range(200):
+            pending = app.pending_approval()
+            if pending is not None:
+                assert pending.kind == "plan_review"
+                assert pending.tool_input["workflow_name"] == "doc_review"
+                approval.respond(True, message="looks good")
+                return
+            await asyncio.sleep(0.005)
+        raise AssertionError("no approval request was ever raised")
+
+    async def run_turn(_text: str, **kwargs: object) -> None:
+        task = asyncio.create_task(responder())
+        try:
+            await _call(kwargs["tools"], "request_design_approval", "draft → review", "doc_review")
+            await _call(kwargs["tools"], "finalize_design", "draft → review", "doc_review")
+        finally:
+            await task
+
+    runner._run_turn = run_turn  # type: ignore[method-assign]
+    from agenthicc.workflows.create_workflow.state import CreateWorkflowContext
+
+    ctx = CreateWorkflowContext(intent="build doc_review", run_id="run", shared_memory=MagicMock())
+    assert await runner._design(ctx) is CreateWorkflowState.GENERATE
+    assert ctx.workflow_name == "doc_review"
+    assert app.pending_approval() is None
+
+
+async def test_denied_design_blocks_the_handoff_with_the_real_service(
+    tmp_path: Path, processor
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    runner, app_state = _make_runner(processor)
-    context = CreateWorkflowContext(
-        intent="Create a reporting workflow",
-        run_id="resume-run",
-        state=CreateWorkflowState.DESIGN,
-        workflow_name="reporting_workflow",
-        interpreted_intent="A reporting workflow",
-    )
-    context.add_artifact(
-        "interpret",
-        context.interpreted_intent,
-        data={"workflow_name": context.workflow_name},
-        attempts=1,
-    )
+    app = AppState.create()
+    approval = ApprovalService(app)
+    runner = _runner(tmp_path, processor, approval_svc=approval, app=app)
 
-    async def finish_remaining(*_args: object, **kwargs: object) -> None:
-        phase = kwargs["phase_name"]
-        tools = kwargs["tools"]
-        if phase == "design":
-            await _invoke_named_tool(tools, "complete_design_phase", "Reporting design")
-        elif phase == "execute":
-            path = tmp_path / ".agenthicc" / "workflows" / "reporting_workflow.py"
-            path.parent.mkdir(parents=True)
-            path.write_text("source", encoding="utf-8")
-            await _invoke_named_tool(
-                tools, "complete_execute_phase", "written", "reporting_workflow", "Reports"
+    async def responder() -> None:
+        for _ in range(200):
+            if app.pending_approval() is not None:
+                approval.respond(False, message="too vague")
+                return
+            await asyncio.sleep(0.005)
+        raise AssertionError("no approval request was ever raised")
+
+    async def run_turn(_text: str, **kwargs: object) -> None:
+        task = asyncio.create_task(responder())
+        try:
+            denied = await _call(
+                kwargs["tools"], "request_design_approval", "draft → review", "doc_review"
             )
-        else:
-            await _invoke_named_tool(tools, "complete_summarize_phase", "complete")
+            assert isinstance(denied, dict)
+            assert denied["approved"] is False
+            blocked = await _call(
+                kwargs["tools"], "finalize_design", "draft → review", "doc_review"
+            )
+            assert isinstance(blocked, dict)
+            assert blocked["ok"] is False
+        finally:
+            await task
 
-    runner._run_turn = finish_remaining  # type: ignore[method-assign]
-    runner._phase_tools = lambda: []  # type: ignore[method-assign]
-    resumed = await runner.resume(context)
+    runner._run_turn = run_turn  # type: ignore[method-assign]
+    from agenthicc.workflows.create_workflow.state import CreateWorkflowContext
 
-    assert resumed is context
-    assert resumed.state is CreateWorkflowState.COMPLETE
-    assert resumed.phase_artifacts["interpret"].summary == "A reporting workflow"
-    assert app_state.workflow_run().run_id == "resume-run"
+    ctx = CreateWorkflowContext(intent="build doc_review", run_id="run", shared_memory=MagicMock())
+    assert await runner._design(ctx) is CreateWorkflowState.FAILED
+    assert "without calling finalize_design()" in ctx.fail_reason
+
+
+# ── real TOML config ──────────────────────────────────────────────────────────
+
+
+def test_authoring_budgets_come_from_real_toml(tmp_path: Path) -> None:
+    toml = tmp_path / "agenthicc.toml"
+    toml.write_text(
+        "[execution]\nauthoring_max_generation_attempts = 6\nauthoring_max_phase_turns = 9\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(project_path=toml, user_path=tmp_path / "missing.toml")
+    assert cfg.execution.authoring_max_generation_attempts == 6
+    assert cfg.execution.authoring_max_phase_turns == 9
+
+    app = AppState.create()
+    config = WorkflowConfig(
+        conv_store=app.conversation,
+        app_state=app,
+        processor=SimpleNamespace(emit=None),  # type: ignore[arg-type]
+        agent_runner=SimpleNamespace(_transport=None),  # type: ignore[arg-type]
+        approval_svc=None,
+        cfg=cfg,
+        skills={},
+        plugin_tools=[],
+        mcp_registry=None,
+        mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
+        agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
+    )
+    runner = CreateWorkflowRunner(config)
+    assert runner._max_attempts == 6
+    assert runner._max_phase_turns == 9
+    assert runner._max_repair_cycles == 6
+
+
+def test_phase_models_come_from_real_toml(tmp_path: Path) -> None:
+    toml = tmp_path / "agenthicc.toml"
+    toml.write_text(
+        '[workflows.create_workflow]\ngenerate_model = "big-model"\nvalidate_model = "small"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(project_path=toml, user_path=tmp_path / "missing.toml")
+    params = CreateWorkflow.build_params(cfg.workflows.get("create_workflow", {}))
+    assert isinstance(params, CreateWorkflowParams)
+
+    app = AppState.create()
+    base = _base_config(tmp_path)
+    config = WorkflowConfig(
+        conv_store=app.conversation,
+        app_state=app,
+        processor=SimpleNamespace(emit=None),  # type: ignore[arg-type]
+        agent_runner=SimpleNamespace(_transport=None),  # type: ignore[arg-type]
+        approval_svc=None,
+        cfg=base,
+        skills={},
+        plugin_tools=[],
+        mcp_registry=None,
+        mention_cache=SimpleNamespace(),  # type: ignore[arg-type]
+        agents_registry=SimpleNamespace(),  # type: ignore[arg-type]
+        params=params,
+    )
+    runner = CreateWorkflowRunner(config)
+    assert runner._phase_model("generate") == "big-model"
+    assert runner._phase_model("validate") == "small"
+    assert runner._phase_model("design") == ""
+
+
+async def test_per_phase_model_reaches_the_turn(tmp_path: Path, processor) -> None:
+    app = AppState.create()
+    config = dataclasses.replace(
+        _workflow_config(app=app, proc=processor, cfg=_base_config(tmp_path)),
+        params=CreateWorkflowParams(generate_model="big-model"),
+    )
+    runner = CreateWorkflowRunner(config)
+    runner._workspace_root = lambda: tmp_path  # type: ignore[method-assign]
+    runner._cfg.app_state.update_workflow_phase = MagicMock()  # type: ignore[method-assign]
+
+    seen: dict[str, object] = {}
+
+    async def run_turn(_text: str, **kwargs: object) -> None:
+        seen[str(kwargs["phase_name"])] = kwargs["model_override"]
+        tools = _by_name(kwargs["tools"])
+        if "mark_generation_complete" in tools:
+            await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x.py")
+
+    runner._run_turn = run_turn  # type: ignore[method-assign]
+    from agenthicc.workflows.create_workflow.state import CreateWorkflowContext
+
+    ctx = CreateWorkflowContext(intent="build it", run_id="run", shared_memory=MagicMock())
+    ctx.workflow_name = "doc_review"
+    await runner._generate(ctx)
+    assert seen == {"generate": "big-model"}
+
+
+# ── validation against real files ─────────────────────────────────────────────
+
+
+def test_validation_accepts_a_real_builtin_style_definition(tmp_path: Path) -> None:
+    """A file shaped like the real builtin definitions passes validation."""
+    directory = tmp_path / ".agenthicc" / "workflows"
+    directory.mkdir(parents=True)
+    path = directory / "doc_review.py"
+    path.write_text(_GENERATED_SOURCE, encoding="utf-8")
+
+    report = validate_workflow_file(str(path), expected_name="doc_review", root=tmp_path)
+    assert report.ok, report.render()
+    assert report.plugin_names == ("doc_review",)
+    assert report.phase_names == ("draft", "review")
+
+
+def test_validation_agrees_with_the_loader_on_a_broken_file(tmp_path: Path) -> None:
+    """Anything the loader silently skips must be a validation error."""
+    directory = tmp_path / ".agenthicc" / "workflows"
+    directory.mkdir(parents=True)
+    path = directory / "doc_review.py"
+    path.write_text("import nonexistent_module_xyz\n", encoding="utf-8")
+
+    assert load_python_workflows(path, source="project") == []
+    report = validate_workflow_file(str(path), expected_name="doc_review", root=tmp_path)
+    assert not report.ok
+    assert "ModuleNotFoundError" in report.errors[0]
+
+
+def test_validation_reimports_after_the_file_is_repaired(tmp_path: Path) -> None:
+    directory = tmp_path / ".agenthicc" / "workflows"
+    directory.mkdir(parents=True)
+    path = directory / "doc_review.py"
+
+    path.write_text(_BROKEN_SOURCE, encoding="utf-8")
+    first = validate_workflow_file(str(path), expected_name="doc_review", root=tmp_path)
+    assert not first.ok
+
+    path.write_text(_GENERATED_SOURCE, encoding="utf-8")
+    second = validate_workflow_file(str(path), expected_name="doc_review", root=tmp_path)
+    assert second.ok, second.render()
+
+
+def test_validation_does_not_leak_the_module_into_sys_modules(tmp_path: Path) -> None:
+    import sys
+
+    directory = tmp_path / ".agenthicc" / "workflows"
+    directory.mkdir(parents=True)
+    path = directory / "doc_review.py"
+    path.write_text(_GENERATED_SOURCE, encoding="utf-8")
+
+    before = set(sys.modules)
+    validate_workflow_file(str(path), expected_name="doc_review", root=tmp_path)
+    leaked = {name for name in set(sys.modules) - before if "doc_review" in name}
+    assert leaked == set()

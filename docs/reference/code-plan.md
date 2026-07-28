@@ -239,10 +239,11 @@ copying only the prompts:
    rejection loops, terminal failures, and resume behavior.
 
 The built-in `create_workflow` authoring runner follows this same structure with
-the phases `INTERPRET`, `DESIGN`, `EXECUTE`, and `SUMMARIZE`. Its execute
-handoff checks that the agent-written file exists at the exact expected path;
-the runner does not parse, validate, stage, publish, or approve generated
-source.
+the phases `DESIGN`, `GENERATE`, `VALIDATE`, and `SUMMARIZE`. Its design phase is
+gated on human approval like `code_plan`'s plan phase, its generate phase writes
+the workflow file directly, and its validate phase imports that file
+deterministically before the agent votes — a failing report overrides an
+approval and routes back to generate. It stages and publishes nothing.
 
 ## Definition metadata versus runtime behavior
 

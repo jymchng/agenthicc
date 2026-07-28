@@ -1,17 +1,30 @@
-"""Explicit state-machine runner for the built-in ``create_workflow``.
+"""CreateWorkflowRunner — explicit state-machine runner for create_workflow.
 
-The runner follows the architecture described for ``code_plan`` while keeping
-workflow authoring's concerns local:
+``create_workflow`` is the meta-workflow downstream users invoke to author their
+own custom workflows.  Its shape is deliberately the same as ``code_plan``:
 
-* the outer loop evolves :class:`CreateWorkflowState`;
-* each state has one phase method;
-* each phase method has a bounded inner loop of agent turns;
-* only a phase-local handoff tool can set the transition event; and
-* :class:`CreateWorkflowContext` captures the structured artifact from every
-  successful handoff.
+    state = CreateWorkflowState.DESIGN
+    while not state.is_terminal:
+        match state:
+            case DESIGN:    state = await self._design(ctx)
+            case GENERATE:  state = await self._generate(ctx)
+            case VALIDATE:  state = await self._validate(ctx)
+            case SUMMARIZE: state = await self._summarize(ctx)
 
-Generated Python is written by the agent through the normal workspace-guarded
-``write_file`` tool.  This runner never imports or executes that source.
+* the **outer loop** above is the only place phase state evolves;
+* each phase method is an **inner loop** that runs agent turns until that
+  phase's transition tool fires;
+* a phase advances **only** because a tool set its ``asyncio.Event`` — the
+  agent's prose is never parsed for a transition signal;
+* :class:`~agenthicc.workflows.create_workflow.state.CreateWorkflowContext`
+  captures the artefact each phase produced.
+
+The one place the runner adds judgement of its own is VALIDATE: the generated
+file is imported and checked deterministically (see
+:mod:`agenthicc.workflows.create_workflow.validation`) *before* the agent votes,
+and an ``approve_workflow`` call is re-routed back to GENERATE when that check
+failed.  A broken workflow can therefore never be accepted, however confident
+the agent is.
 """
 
 from __future__ import annotations
@@ -20,511 +33,783 @@ import asyncio
 import dataclasses
 import logging
 import uuid
-from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agenthicc.tools.base import ToolLike
-from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
-from agenthicc.workflows.create_workflow.inspection_tools import make_inspection_tools
-from agenthicc.workflows.create_workflow.phase_tools import (
-    make_design_tools,
-    make_execute_tools,
-    make_interpret_tools,
-    make_summarize_tools,
-)
 from agenthicc.workflows.create_workflow.state import (
     CreateWorkflowContext,
     CreateWorkflowState,
     PhaseArtifact,
 )
-from agenthicc.workflows.plugin import PhaseRunRecord
 
 if TYPE_CHECKING:
-    from lauren_ai._memory import ShortTermMemory
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.config import WorkflowConfig
+    from agenthicc.workflows.create_workflow.validation import ValidationReport
+    from agenthicc.workflows.plugin import WorkflowRun
 
 log = logging.getLogger(__name__)
 
-_PHASE_INDEX = {"interpret": 0, "design": 1, "execute": 2, "summarize": 3}
-_PHASE_ROLES = {
-    "interpret": "planner",
-    "design": "planner",
-    "execute": "executor",
-    "summarize": "auto",
+# Gap (lauren-ai): tools are @_tool()-decorated callables with no public ABC.
+_ToolList = list[ToolLike]
+
+#: Ordered phase names, also the payload of ``WorkflowRunStarted``.
+_PHASE_NAMES: tuple[str, ...] = ("design", "generate", "validate", "summarize")
+
+#: Zero-based status-bar position of each phase.
+_PHASE_INDEX: dict[str, int] = {name: index for index, name in enumerate(_PHASE_NAMES)}
+
+#: Class-attribute name holding each phase's static model override.
+_PHASE_MODEL_ATTR: dict[str, str] = {
+    "design": "design_model",
+    "generate": "generate_model",
+    "validate": "validate_model",
+    "summarize": "summary_model",
 }
-_MAX_ATTEMPTS = 20
-_MAX_PHASE_TURNS = 100
 
-_DANGEROUS_CAPABILITIES = frozenset(
-    {
-        ToolCapability.WRITE,
-        ToolCapability.GIT_WRITE,
-        ToolCapability.EXECUTE,
-        ToolCapability.NETWORK,
-    }
-)
-_READ_ONLY_TOOLS = frozenset(
-    {
-        "read_file",
-        "read_lines",
-        "list_directory",
-        "search_files",
-        "grep_file",
-        "grep_files",
-        "file_exists",
-        "get_file_info",
-        "checksum_file",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "git_show",
-        "git_blame",
-        "git_grep",
-    }
-)
-_NEVER_AUTHORING_TOOLS = frozenset(
-    {
-        "shell",
-        "run_bash",
-        "run_command",
-        "run_python",
-        "run_python_expr",
-        "run_tests",
-        "spawn_subagents",
-        "wait_terminal",
-        "wait_terminal_ready",
-        "stop_terminal",
-    }
+#: Conventional directory for project-local workflow plugins.
+_WORKFLOW_DIR: str = ".agenthicc/workflows"
+
+# ── system prompts ────────────────────────────────────────────────────────────
+
+_AUTHORING_GUIDE: str = (
+    "A custom workflow is a single Python file at "
+    f"{_WORKFLOW_DIR}/<name>.py that defines a WorkflowPlugin subclass:\n"
+    "  - name: lower_snake_case identifier, unique and not a builtin\n"
+    "  - description: one line shown in the workflow picker\n"
+    "  - mode_bindings: list of mode names that auto-select it ([] = manual only)\n"
+    "  - phases: ordered list of PhaseSpec objects wired with next / on_reject\n"
+    "Use describe_phasespec(), list_tool_capabilities(), list_agent_roles() and "
+    "show_example_workflow() to read the real API instead of guessing at it."
 )
 
-_PhaseToolsFactory = Callable[[asyncio.Event, dict[str, object]], list[ToolLike]]
+_DESIGN_PROMPT: str = (
+    "You are in the DESIGN phase of create_workflow. The user wants a NEW custom "
+    "workflow. Your job in this phase is to design it — do not write any files yet.\n\n"
+    "Work out, concretely: the workflow's lower_snake_case name; what it is for; the "
+    "ordered phases; each phase's objective, agent_type, mode, and max_turns; and the "
+    "transition graph (which phase follows which, and where a rejection loops back to). "
+    "Explore only what you actually need — inspect the authoring API with the inspection "
+    "tools, and read existing workflow files only if the request depends on them.\n\n"
+    "Present the design with request_design_approval(design, workflow_name). If it is not "
+    "approved, revise and present it again. Once approved, call "
+    "finalize_design(design, workflow_name).\n\n"
+    "If the request is NOT about creating a new workflow — a question, an explanation "
+    "request, or a task an existing workflow already covers — call "
+    "exit_create_workflow(suggestion) immediately instead of designing anything.\n\n"
+    + _AUTHORING_GUIDE
+)
+_DESIGN_REMINDER: str = (
+    "You have not yet finalized the design. The user's request is in your system prompt. "
+    "Return to it, complete or revise the workflow design, present it with "
+    "request_design_approval(design, workflow_name), and once approved call "
+    "finalize_design(design, workflow_name)."
+)
+
+_GENERATE_PROMPT: str = (
+    "You are in the GENERATION phase of create_workflow. The approved design is in your "
+    "system prompt. Write the complete workflow file to disk now with the write tools — "
+    "do NOT re-design and do NOT ask for approval again.\n\n"
+    "The file must import cleanly on its own: include the module docstring, "
+    "'from __future__ import annotations', the imports it uses, and the full "
+    "WorkflowPlugin subclass with every PhaseSpec from the approved design. Every "
+    "next / on_reject value must name a phase that exists in the same workflow.\n\n"
+    "When the file is completely written, call mark_generation_complete(summary, path) "
+    "with the exact path you wrote to. Do not call it before the file is written."
+)
+_GENERATE_REMINDER: str = (
+    "You have not yet called mark_generation_complete(summary, path). The approved design "
+    "and target path are in your system prompt. Finish writing the complete workflow file "
+    "and then call mark_generation_complete(summary, path)."
+)
+
+_VALIDATE_PROMPT: str = (
+    "You are in the VALIDATION phase of create_workflow. The generated file has already "
+    "been imported and checked automatically; the report is in your system prompt.\n\n"
+    "Read the report first. If it lists ANY error, call reject_workflow(reason) naming the "
+    "concrete fix — the generation phase will run again. If the report passes, read the "
+    "generated file and confirm its phases and prompts match the approved design, then "
+    "call approve_workflow(summary).\n\n"
+    "You MUST call exactly one of these two tools."
+)
+_VALIDATE_REMINDER: str = (
+    "You have not yet called approve_workflow() or reject_workflow(). The validation report "
+    "and the approved design are in your system prompt. Decide now: reject_workflow(reason) "
+    "if the report shows any error or the file does not match the design, otherwise "
+    "approve_workflow(summary)."
+)
+
+_SUMMARIZE_PROMPT: str = (
+    "You are in the SUMMARY phase of create_workflow. Write a short summary for the user: "
+    "the name of the workflow that was created, the file it lives in, its phases, and how "
+    "to run it — '/workflows reload' to pick it up in this session, then "
+    "'/workflow <name>' to select it. Do not write any more files."
+)
 
 
 class CreateWorkflowRunner(BaseWorkflowRunner):
-    """Drive interpretation, design, direct file creation, and summary."""
+    """State-machine runner for the create_workflow meta-workflow.
 
-    workflow_name = "create_workflow"
-    total_phases = 4
+    Parameters
+    ----------
+    config:
+        WorkflowConfig holding all session-scoped singletons.
+    mode_manager:
+        ModeManager for per-phase mode overrides (None = headless).
+    """
 
-    def __init__(self, config: WorkflowConfig, mode_manager: ModeManager | None = None) -> None:
-        self._cfg = config
-        self._mode_manager = mode_manager
-        transport_config = getattr(
-            getattr(config.agent_runner, "_transport", None), "_config", None
+    #: Workflow name written to ``app_state.workflow_run``.
+    workflow_name: str = "create_workflow"
+    #: Total number of phases shown in the "N/M" status-bar counter.
+    total_phases: int = 4
+
+    # Per-phase model overrides.  Empty string = use global execution.model.
+    # Override as class attributes in subclasses, or via TOML:
+    #   [workflows.create_workflow]
+    #   generate_model = "claude-opus-5"
+    design_model: str = ""
+    generate_model: str = ""
+    validate_model: str = ""
+    summary_model: str = ""
+
+    def __init__(
+        self,
+        config: WorkflowConfig,
+        mode_manager: ModeManager | None = None,
+    ) -> None:
+        self._cfg: WorkflowConfig = config
+        self._mode_manager: ModeManager | None = mode_manager
+        self._run_id: str = ""
+
+        # Gap (lauren-ai): no public model_id accessor on AgentRunnerBase.
+        _transport_cfg = getattr(getattr(config.agent_runner, "_transport", None), "_config", None)
+        self._model_id: str = (
+            getattr(_transport_cfg, "model", None) or config.cfg.execution.effective_model()
         )
-        self._model_id = (
-            getattr(transport_config, "model", None) or config.cfg.execution.effective_model()
-        )
-        self._run_id = ""
-        self._project_root = Path.cwd().resolve()
-        self._shared_memory: ShortTermMemory | None = None
+
+        # Authoring budgets (previously inert config keys).  Both are clamped to
+        # at least 1 so a hostile TOML value cannot skip a phase entirely.
+        execution = config.cfg.execution
+        self._max_attempts: int = max(1, int(execution.authoring_max_generation_attempts))
+        self._max_phase_turns: int = max(1, int(execution.authoring_max_phase_turns))
+        #: Bound on VALIDATE → GENERATE repair round-trips.
+        self._max_repair_cycles: int = self._max_attempts
+
+    # ── public entry points ───────────────────────────────────────────────────
 
     async def run(self, intent: str) -> CreateWorkflowContext:
-        """Start a new authoring run for a non-empty user intent."""
+        """Drive the full design → generate → validate → summarize state machine."""
+        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
 
-        if not isinstance(intent, str) or not intent.strip():
-            raise ValueError("create_workflow requires a non-empty user intent")
-        from lauren_ai._memory import ShortTermMemory
+        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
 
-        self._project_root = Path.cwd().resolve()
-        self._run_id = uuid.uuid4().hex
-        self._shared_memory = ShortTermMemory(
-            max_tokens=self._cfg.cfg.execution.effective_usable_budget()
+        run_id: str = uuid.uuid4().hex
+        self._run_id = run_id
+
+        ctx: CreateWorkflowContext = CreateWorkflowContext(
+            intent=intent,
+            run_id=run_id,
+            shared_memory=ShortTermMemory(
+                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
+            ),
         )
-        context = CreateWorkflowContext(
-            intent=intent.strip(),
-            run_id=self._run_id,
-            shared_memory=self._shared_memory,
-        )
-        await self._start_run(context)
-        return await self._drive(context)
 
-    async def resume(self, context: object) -> CreateWorkflowContext:
-        """Resume a non-terminal typed context from its current state."""
-
-        if not isinstance(context, CreateWorkflowContext):
-            raise TypeError("create_workflow resume requires a CreateWorkflowContext")
-        if context.state.is_terminal:
-            return context
-        from lauren_ai._memory import ShortTermMemory
-
-        self._project_root = Path.cwd().resolve()
-        self._run_id = context.run_id
-        self._shared_memory = ShortTermMemory(
-            max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-        )
-        context.shared_memory = self._shared_memory
-        await self._start_run(context, resuming=True)
-        return await self._drive(context)
-
-    async def _start_run(self, context: CreateWorkflowContext, *, resuming: bool = False) -> None:
-        """Publish initial TUI state and the durable run-start event."""
-
-        from agenthicc.kernel import Event
-        from agenthicc.workflows.plugin import WorkflowRun
-
-        current_phase = None if context.state.is_terminal else context.state.name.lower()
-        history = [self._phase_record(artifact) for artifact in context.phase_artifacts.values()]
-        workflow_run = WorkflowRun(
-            run_id=context.run_id,
+        wf_run: WorkflowRun = WorkflowRun(
+            run_id=run_id,
             workflow_name=self.workflow_name,
-            intent=context.intent,
-            current_phase=current_phase,
+            intent=intent,
+            current_phase="design",
             total_phases=self.total_phases,
-            phase_history=history,
-            status="running" if not context.state.is_terminal else self._status(context.state),
         )
-        self._cfg.app_state.workflow_run.set(workflow_run)
-        if not resuming:
+        self._cfg.app_state.workflow_run.set(wf_run)
+
+        await self._cfg.processor.emit(
+            Event.create(
+                "WorkflowRunStarted",
+                {
+                    "run_id": run_id,
+                    "workflow_name": self.workflow_name,
+                    "intent": intent,
+                    "phase_names": list(_PHASE_NAMES),
+                },
+            )
+        )
+
+        state: CreateWorkflowState = CreateWorkflowState.DESIGN
+
+        try:
+            while not state.is_terminal:
+                phase_name: str = state.name.lower()
+                wf_run = dataclasses.replace(
+                    wf_run,
+                    current_phase=phase_name,
+                    current_phase_index=_PHASE_INDEX.get(phase_name, 0),
+                )
+                self._cfg.app_state.workflow_run.set(wf_run)
+
+                await self._cfg.processor.emit(
+                    Event.create(
+                        "WorkflowPhaseStarted",
+                        {
+                            "run_id": run_id,
+                            "phase_name": phase_name,
+                            "workflow_name": self.workflow_name,
+                        },
+                    )
+                )
+
+                state = await self._dispatch(state, ctx)
+
+                next_label: str | None = state.name.lower() if not state.is_terminal else None
+                artifact = ctx.artifacts.get(phase_name)
+                await self._cfg.processor.emit(
+                    Event.create(
+                        "WorkflowPhaseCompleted",
+                        {
+                            "run_id": run_id,
+                            "phase_name": phase_name,
+                            "role": "auto",
+                            "full_text": artifact.content if artifact is not None else "",
+                            "approved": None,
+                            "structured": {},
+                            "edge_label": next_label,
+                            "metadata": {
+                                "command_outcomes": list(ctx.command_outcomes),
+                                "artifact_kind": artifact.kind if artifact is not None else "",
+                            },
+                        },
+                    )
+                )
+                self._cfg.app_state.workflow_run.set(wf_run)
+                log.info("create_workflow: %s → %s", phase_name, state.name)
+
+            final_status: str = self._final_status(state)
+            wf_run = dataclasses.replace(wf_run, status=final_status, current_phase=None)
+            self._cfg.app_state.workflow_run.set(wf_run)
+
+            if state == CreateWorkflowState.FAILED and ctx.fail_reason:
+                self._cfg.conv_store.append_event(
+                    "error", {"message": f"create_workflow failed: {ctx.fail_reason}"}
+                )
+
             await self._cfg.processor.emit(
                 Event.create(
-                    "WorkflowRunStarted",
+                    "WorkflowRunCompleted",
                     {
-                        "run_id": context.run_id,
+                        "run_id": run_id,
                         "workflow_name": self.workflow_name,
-                        "intent": context.intent,
-                        "phase_names": list(_PHASE_INDEX),
+                        "phases_run": len(wf_run.phase_history),
+                        "status": final_status,
                     },
                 )
             )
 
-    async def _drive(self, context: CreateWorkflowContext) -> CreateWorkflowContext:
-        """Run the outer state loop until COMPLETE or FAILED."""
-
-        completed_event = False
-        try:
-            while not context.state.is_terminal:
-                phase_name = context.state.name.lower()
-                previous = context.state
-                self._set_phase(context, phase_name)
-                await self._emit_phase_started(context, phase_name)
-
-                match context.state:
-                    case CreateWorkflowState.INTERPRET:
-                        context.state = await self._interpret(
-                            context, max_agent_turns=self._phase_turn_limit("interpret")
-                        )
-                    case CreateWorkflowState.DESIGN:
-                        context.state = await self._design(
-                            context, max_agent_turns=self._phase_turn_limit("design")
-                        )
-                    case CreateWorkflowState.EXECUTE:
-                        context.state = await self._execute(
-                            context, max_agent_turns=self._phase_turn_limit("execute")
-                        )
-                    case CreateWorkflowState.SUMMARIZE:
-                        context.state = await self._summarize(
-                            context, max_agent_turns=self._phase_turn_limit("summarize")
-                        )
-
-                await self._emit_phase_completed(context, phase_name, previous)
-                log.info("create_workflow: %s -> %s", previous.name, context.state.name)
-
-            status = self._status(context.state)
-            self._set_run_status(context, status)
-            await self._emit_run_completed(context, status)
-            completed_event = True
         except (asyncio.CancelledError, KeyboardInterrupt):
-            self._set_run_status(context, "failed")
+            wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+            self._cfg.app_state.workflow_run.set(wf_run)
             raise
-        except Exception as exc:  # noqa: BLE001
-            context.fail_reason = f"{type(exc).__name__}: {exc}"
-            context.state = CreateWorkflowState.FAILED
-            log.exception("create_workflow failed")
-            self._append_error(context.fail_reason)
-            self._set_run_status(context, "failed")
-        finally:
-            if not completed_event and context.state is CreateWorkflowState.FAILED:
-                try:
-                    await self._emit_run_completed(context, "failed")
-                except Exception:  # noqa: BLE001
-                    log.exception("could not emit create_workflow completion event")
-        return context
+        except Exception as exc:
+            log.error("CreateWorkflowRunner error: %s", exc, exc_info=True)
+            wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+            self._cfg.app_state.workflow_run.set(wf_run)
+            self._cfg.conv_store.append_event("error", {"message": str(exc)})
 
-    async def _interpret(
-        self,
-        context: CreateWorkflowContext,
-        *,
-        max_agent_turns: int,
-    ) -> CreateWorkflowState:
-        """Normalize the use case and choose the generated workflow name."""
+        return ctx
 
-        result, attempts, error = await self._drive_phase(
-            context,
-            phase_name="interpret",
-            text=context.intent,
-            system_prompt=self._prompt("interpret"),
-            active_agent="planner",
-            max_agent_turns=max_agent_turns,
-            tools_factory=make_interpret_tools,
-            excluded_capabilities=_DANGEROUS_CAPABILITIES,
-        )
-        if result is None:
-            return self._fail(context, f"Interpret phase exhausted: {error}")
-        workflow_name = result.get("workflow_name")
-        summary = result.get("summary")
-        if not isinstance(workflow_name, str) or not isinstance(summary, str):
-            return self._fail(context, "Interpret phase returned incomplete handoff data.")
-        context.workflow_name = workflow_name
-        context.interpreted_intent = summary
-        context.add_artifact(
-            "interpret",
-            summary,
-            data={"workflow_name": workflow_name},
-            attempts=attempts,
-        )
-        return CreateWorkflowState.DESIGN
+    async def resume(self, context: object) -> CreateWorkflowContext:
+        """Re-run authoring for the intent recorded in *context*.
 
-    async def _design(
-        self,
-        context: CreateWorkflowContext,
-        *,
-        max_agent_turns: int,
-    ) -> CreateWorkflowState:
-        """Create the complete implementation design without writing files."""
-
-        result, attempts, error = await self._drive_phase(
-            context,
-            phase_name="design",
-            text=(
-                f"Design a custom workflow for this normalized use case:\n{context.interpreted_intent}"
-            ),
-            system_prompt=self._prompt("design"),
-            active_agent="planner",
-            max_agent_turns=max_agent_turns,
-            tools_factory=make_design_tools,
-            excluded_capabilities=_DANGEROUS_CAPABILITIES,
-        )
-        if result is None:
-            return self._fail(context, f"Design phase exhausted: {error}")
-        design = result.get("design")
-        if not isinstance(design, str) or not design.strip():
-            return self._fail(context, "Design phase returned an empty design.")
-        context.design = design
-        context.add_artifact("design", design, attempts=attempts)
-        return CreateWorkflowState.EXECUTE
-
-    async def _execute(
-        self,
-        context: CreateWorkflowContext,
-        *,
-        max_agent_turns: int,
-    ) -> CreateWorkflowState:
-        """Write the generated source and require an exact-path handoff."""
-
-        if not context.workflow_name or not context.design:
-            return self._fail(
-                context, "Execute phase requires interpretation and design artifacts."
-            )
-        expected_root = self._project_root / ".agenthicc" / "workflows"
-        result, attempts, error = await self._drive_phase(
-            context,
-            phase_name="execute",
-            text=(
-                "Write the complete custom workflow source now.\n\n"
-                f"Normalized use case:\n{context.interpreted_intent}\n\n"
-                f"Design:\n{context.design}"
-            ),
-            system_prompt=self._prompt("execute"),
-            active_agent="executor",
-            max_agent_turns=max_agent_turns,
-            tools_factory=lambda event, data: make_execute_tools(
-                event,
-                data,
-                expected_root=expected_root,
-                expected_name=context.workflow_name,
-            ),
-            excluded_capabilities=frozenset(),
-            mode="Auto",
-        )
-        if result is None:
-            return self._fail(context, f"Execute phase exhausted: {error}")
-        summary = result.get("summary")
-        description = result.get("artifact_description")
-        artifact_path = result.get("artifact_path")
-        artifact_name = result.get("artifact_name")
-        if not isinstance(summary, str) or not summary:
-            return self._fail(context, "Execute phase returned incomplete artifact data.")
-        if not isinstance(description, str) or not description:
-            return self._fail(context, "Execute phase returned incomplete artifact data.")
-        if not isinstance(artifact_path, str) or not artifact_path:
-            return self._fail(context, "Execute phase returned incomplete artifact data.")
-        if not isinstance(artifact_name, str) or not artifact_name:
-            return self._fail(context, "Execute phase returned incomplete artifact data.")
-        context.execute_summary = summary
-        context.artifact_description = description
-        context.artifact_path = artifact_path
-        context.add_artifact(
-            "execute",
-            summary,
-            data={
-                "artifact_name": artifact_name,
-                "artifact_description": description,
-                "artifact_path": artifact_path,
-            },
-            attempts=attempts,
-        )
-        return CreateWorkflowState.SUMMARIZE
-
-    async def _summarize(
-        self,
-        context: CreateWorkflowContext,
-        *,
-        max_agent_turns: int,
-    ) -> CreateWorkflowState:
-        """Collect the final truthful summary through an explicit tool handoff."""
-
-        result, attempts, error = await self._drive_phase(
-            context,
-            phase_name="summarize",
-            text=(
-                f"Summarize the completed custom workflow {context.workflow_name!r} at "
-                f"{context.artifact_path}.\n{context.artifact_description}"
-            ),
-            system_prompt=self._prompt("summarize"),
-            active_agent="auto",
-            max_agent_turns=max_agent_turns,
-            tools_factory=make_summarize_tools,
-            excluded_capabilities=_DANGEROUS_CAPABILITIES,
-        )
-        if result is None:
-            return self._fail(context, f"Summarize phase exhausted: {error}")
-        summary = result.get("summary")
-        if not isinstance(summary, str) or not summary.strip():
-            return self._fail(context, "Summarize phase returned an empty summary.")
-        context.final_summary = summary
-        context.add_artifact("summarize", summary, attempts=attempts)
-        return CreateWorkflowState.COMPLETE
-
-    async def _drive_phase(
-        self,
-        context: CreateWorkflowContext,
-        *,
-        phase_name: str,
-        text: str,
-        system_prompt: str,
-        active_agent: str,
-        max_agent_turns: int,
-        tools_factory: _PhaseToolsFactory,
-        excluded_capabilities: frozenset[ToolCapability],
-        mode: str | None = None,
-    ) -> tuple[dict[str, object] | None, int, str]:
-        """Run one bounded inner handoff loop.
-
-        A successful event is the sole transition signal.  The returned data
-        is copied from the handoff closure only after the event is observed.
+        create_workflow writes its artefact straight into the workspace, so there
+        is no staged run to pick up mid-flight: a resume restarts the state
+        machine from DESIGN with the original intent, and the design phase sees
+        whatever the previous run already wrote on disk.
         """
+        from agenthicc.workflows.plugin import WorkflowContext  # noqa: PLC0415
 
-        last_error = "phase handoff was not called"
-        for attempt in range(1, self._attempt_limit() + 1):
-            context.phase_attempts[phase_name] = attempt
-            event = asyncio.Event()
-            data: dict[str, object] = {}
-            tools = self._phase_tools()
-            tools.extend(tools_factory(event, data))
-            turn_text = (
-                text
-                if attempt == 1
-                else self._phase_retry_prompt(
-                    phase_name=phase_name,
-                    original_text=text,
-                    system_prompt=system_prompt,
-                    last_error=last_error,
+        if not isinstance(context, WorkflowContext):
+            raise TypeError("workflow resume requires a WorkflowContext")
+        return await self.run(context.intent)
+
+    # ── outer-loop dispatch ───────────────────────────────────────────────────
+
+    async def _dispatch(
+        self,
+        state: CreateWorkflowState,
+        ctx: CreateWorkflowContext,
+    ) -> CreateWorkflowState:
+        """Run the phase method for *state* and return the next state."""
+        match state:
+            case CreateWorkflowState.DESIGN:
+                return await self._design(ctx)
+            case CreateWorkflowState.GENERATE:
+                return await self._generate(ctx)
+            case CreateWorkflowState.VALIDATE:
+                return await self._validate(ctx)
+            case CreateWorkflowState.SUMMARIZE:
+                return await self._summarize(ctx)
+            case _:
+                return state
+
+    @staticmethod
+    def _final_status(state: CreateWorkflowState) -> str:
+        """Map a terminal state onto the ``WorkflowRun.status`` string."""
+        if state == CreateWorkflowState.COMPLETE:
+            return "complete"
+        if state == CreateWorkflowState.EXITED:
+            return "exited"
+        return "failed"
+
+    # ── phase methods ─────────────────────────────────────────────────────────
+
+    async def _design(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
+        """Loop until finalize_design() or exit_create_workflow() fires.
+
+        Returns GENERATE, EXITED, or FAILED.
+        """
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.inspection_tools import (  # noqa: PLC0415
+            make_inspection_tools,
+        )
+        from agenthicc.workflows.create_workflow.phase_tools import (  # noqa: PLC0415
+            make_design_tools,
+        )
+
+        self._set_phase("design", _PHASE_INDEX["design"], ctx)
+        ctx.command_outcomes.clear()
+
+        system_prompt: str = _DESIGN_PROMPT + f"\n\n[USER REQUEST]\n{ctx.intent}"
+        exit_event: asyncio.Event = asyncio.Event()
+
+        for attempt in range(1, self._max_attempts + 1):
+            design_event: asyncio.Event = asyncio.Event()
+            design_data: dict[str, object] = {}
+
+            tools: _ToolList = list(self._base_tools())
+            tools.extend(make_inspection_tools())
+            tools.extend(
+                make_design_tools(
+                    self._cfg.approval_svc,
+                    design_event,
+                    design_data,
+                    exit_event=exit_event,
                 )
             )
+            tools.extend(make_questions_tool(self._cfg.approval_svc))
+
+            text: str = ctx.intent if attempt == 1 else _DESIGN_REMINDER
+
             try:
                 await self._run_turn(
-                    turn_text,
+                    text,
                     tools=tools,
-                    mode=mode,
-                    system_prompt=system_prompt + "\n\n" + context.as_system_block(),
-                    max_turns=max_agent_turns,
-                    context=context,
-                    phase_name=phase_name,
-                    active_agent=active_agent,
-                    excluded_capabilities=excluded_capabilities,
+                    mode=None,
+                    system_prompt=system_prompt,
+                    max_turns=self._max_phase_turns,
+                    ctx=ctx,
+                    phase_name="design",
+                    model_override=self._phase_model("design"),
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
-            except Exception as exc:  # noqa: BLE001
-                last_error = f"{type(exc).__name__}: {exc}"
-                log.warning("create_workflow %s attempt %d failed: %s", phase_name, attempt, exc)
-                continue
-            if event.is_set():
-                return dict(data), attempt, ""
-            candidate = data.get("last_error")
-            last_error = candidate if isinstance(candidate, str) and candidate else last_error
-            log.warning(
-                "create_workflow %s attempt %d/%d did not hand off: %s",
-                phase_name,
-                attempt,
-                self._attempt_limit(),
-                last_error,
+            except Exception as exc:
+                ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+                log.error("_design permanent error on attempt %d: %s", attempt, exc)
+                return CreateWorkflowState.FAILED
+
+            # Exit takes priority — check before design finalization.
+            if exit_event.is_set():
+                suggestion = design_data.get("suggestion", "")
+                ctx.suggestion = suggestion if isinstance(suggestion, str) else ""
+                ctx.add_artifact(
+                    PhaseArtifact(
+                        phase="design",
+                        kind="exit",
+                        content=ctx.suggestion,
+                        metadata={"attempts": attempt},
+                    )
+                )
+                return CreateWorkflowState.EXITED
+
+            if design_event.is_set() and "design" in design_data:
+                design = design_data.get("design", "")
+                name = design_data.get("workflow_name", "")
+                ctx.design = design if isinstance(design, str) else ""
+                ctx.workflow_name = name if isinstance(name, str) else ""
+                ctx.add_artifact(
+                    PhaseArtifact(
+                        phase="design",
+                        kind="design",
+                        content=ctx.design,
+                        metadata={"workflow_name": ctx.workflow_name, "attempts": attempt},
+                    )
+                )
+                return CreateWorkflowState.GENERATE
+
+        ctx.fail_reason = (
+            f"Design phase exhausted {self._max_attempts} attempts without calling "
+            "finalize_design()."
+        )
+        return CreateWorkflowState.FAILED
+
+    async def _generate(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
+        """Loop until mark_generation_complete() fires; return VALIDATE or FAILED."""
+        from agenthicc.workflows.create_workflow.phase_tools import (  # noqa: PLC0415
+            make_generation_tools,
+        )
+
+        self._set_phase("generate", _PHASE_INDEX["generate"], ctx)
+        ctx.command_outcomes.clear()
+
+        target_path: str = self._target_path(ctx.workflow_name)
+        system_prompt: str = (
+            _GENERATE_PROMPT
+            + f"\n\n[USER REQUEST]\n{ctx.intent}"
+            + f"\n\n[APPROVED DESIGN]\n{ctx.design}"
+            + f"\n\n[WORKFLOW NAME]\n{ctx.workflow_name}"
+            + f"\n\n[TARGET PATH]\n{target_path}"
+        )
+        if ctx.rejection_reason:
+            system_prompt += (
+                f"\n\n[VALIDATION REJECTED THE PREVIOUS ATTEMPT]\n{ctx.rejection_reason}"
             )
-        return None, self._attempt_limit(), last_error
+        if ctx.validation_report:
+            system_prompt += f"\n\n{ctx.validation_report}"
+
+        first_text: str = (
+            f"Write the approved {ctx.workflow_name} workflow to {target_path}."
+            if not ctx.rejection_reason
+            else (
+                f"Fix and rewrite {ctx.generated_path or target_path}. "
+                f"What must change: {ctx.rejection_reason}"
+            )
+        )
+
+        for attempt in range(1, self._max_attempts + 1):
+            ctx.command_outcomes.clear()
+            generate_event: asyncio.Event = asyncio.Event()
+            generate_data: dict[str, object] = {}
+
+            tools: _ToolList = list(self._base_tools()) + list(
+                make_generation_tools(generate_event, generate_data)
+            )
+            text: str = first_text if attempt == 1 else _GENERATE_REMINDER
+
+            try:
+                await self._run_turn(
+                    text,
+                    tools=tools,
+                    mode="Auto",
+                    system_prompt=system_prompt,
+                    max_turns=self._max_phase_turns,
+                    ctx=ctx,
+                    phase_name="generate",
+                    model_override=self._phase_model("generate"),
+                )
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+                log.error("_generate permanent error on attempt %d: %s", attempt, exc)
+                return CreateWorkflowState.FAILED
+
+            if generate_event.is_set():
+                path = generate_data.get("path", "")
+                summary = generate_data.get("summary", "")
+                ctx.generated_path = path if isinstance(path, str) else ""
+                ctx.generation_summary = summary if isinstance(summary, str) else ""
+                ctx.add_artifact(
+                    PhaseArtifact(
+                        phase="generate",
+                        kind="workflow_file",
+                        content=ctx.generation_summary,
+                        metadata={
+                            "path": ctx.generated_path,
+                            "workflow_name": ctx.workflow_name,
+                            "attempts": attempt,
+                            "repair_cycle": ctx.repair_cycles,
+                        },
+                    )
+                )
+                return CreateWorkflowState.VALIDATE
+
+        ctx.fail_reason = (
+            f"Generation phase exhausted {self._max_attempts} attempts without calling "
+            "mark_generation_complete()."
+        )
+        return CreateWorkflowState.FAILED
+
+    async def _validate(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
+        """Check the generated file, then loop until the agent votes.
+
+        Returns SUMMARIZE (approved and the deterministic check passed), GENERATE
+        (rejected, or approved against a failing check), or FAILED.
+        """
+        from agenthicc.workflows.create_workflow.phase_tools import (  # noqa: PLC0415
+            make_validation_tools,
+        )
+        from agenthicc.workflows.create_workflow.validation import (  # noqa: PLC0415
+            validate_workflow_file,
+        )
+
+        self._set_phase("validate", _PHASE_INDEX["validate"], ctx)
+        ctx.command_outcomes.clear()
+
+        report: ValidationReport = validate_workflow_file(
+            ctx.generated_path,
+            expected_name=ctx.workflow_name,
+            root=self._workspace_root(),
+        )
+        ctx.validation_report = report.render()
+        ctx.add_artifact(
+            PhaseArtifact(
+                phase="validate",
+                kind="validation_report",
+                content=ctx.validation_report,
+                metadata={
+                    "ok": report.ok,
+                    "path": report.path,
+                    "errors": list(report.errors),
+                    "warnings": list(report.warnings),
+                    "plugin_names": list(report.plugin_names),
+                    "phase_names": list(report.phase_names),
+                },
+            )
+        )
+
+        system_prompt: str = (
+            _VALIDATE_PROMPT
+            + f"\n\n[USER REQUEST]\n{ctx.intent}"
+            + f"\n\n[APPROVED DESIGN]\n{ctx.design}"
+            + f"\n\n{ctx.validation_report}"
+        )
+
+        for attempt in range(1, self._max_attempts + 1):
+            validate_event: asyncio.Event = asyncio.Event()
+            validate_data: dict[str, object] = {}
+
+            tools: _ToolList = list(self._base_tools()) + list(
+                make_validation_tools(validate_event, validate_data)
+            )
+            text: str = (
+                (
+                    f"The generated workflow is at {report.path or ctx.generated_path}. "
+                    f"Deterministic validation says: {'PASS' if report.ok else 'FAIL'}. "
+                    "Decide with approve_workflow() or reject_workflow()."
+                )
+                if attempt == 1
+                else _VALIDATE_REMINDER
+            )
+
+            try:
+                await self._run_turn(
+                    text,
+                    tools=tools,
+                    mode=None,
+                    system_prompt=system_prompt,
+                    max_turns=self._max_phase_turns,
+                    ctx=ctx,
+                    phase_name="validate",
+                    model_override=self._phase_model("validate"),
+                )
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as exc:
+                ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+                log.error("_validate permanent error on attempt %d: %s", attempt, exc)
+                return CreateWorkflowState.FAILED
+
+            if not validate_event.is_set():
+                continue
+
+            action_value = validate_data.get("action", "reject")
+            action: str = action_value if isinstance(action_value, str) else "reject"
+
+            if action == "approve" and report.ok:
+                summary = validate_data.get("summary", "")
+                ctx.validation_summary = summary if isinstance(summary, str) else ""
+                ctx.rejection_reason = ""
+                return CreateWorkflowState.SUMMARIZE
+
+            if action == "approve":
+                # Ground truth wins: the agent approved a file that does not load.
+                reason = (
+                    "Deterministic validation failed, so the approval was overridden. "
+                    + " ".join(report.errors)
+                )
+                log.warning("create_workflow: approval overridden by failing validation")
+            else:
+                raw_reason = validate_data.get("reason", "")
+                reason = raw_reason if isinstance(raw_reason, str) else ""
+                if not report.ok:
+                    reason = f"{reason} {' '.join(report.errors)}".strip()
+
+            return self._route_repair(ctx, reason)
+
+        ctx.fail_reason = (
+            f"Validation phase exhausted {self._max_attempts} attempts without calling "
+            "approve_workflow() or reject_workflow()."
+        )
+        return CreateWorkflowState.FAILED
+
+    async def _summarize(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
+        """Single turn; always returns COMPLETE."""
+        self._set_phase("summarize", _PHASE_INDEX["summarize"], ctx)
+        ctx.command_outcomes.clear()
+
+        text: str = (
+            f"Request: {ctx.intent}\n\n"
+            f"Workflow created: {ctx.workflow_name or '(unnamed)'}\n"
+            f"File: {ctx.generated_path or '(unknown)'}\n"
+            f"What was generated: {ctx.generation_summary or '(see conversation)'}\n"
+            f"Validation verdict: {ctx.validation_summary or 'approved'}"
+        )
+        try:
+            await self._run_turn(
+                text,
+                tools=self._base_tools(),
+                mode=None,
+                system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER REQUEST]\n{ctx.intent}",
+                max_turns=min(4, self._max_phase_turns),
+                ctx=ctx,
+                phase_name="summarize",
+                model_override=self._phase_model("summarize"),
+            )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            log.error("_summarize error: %s", exc)
+
+        ctx.add_artifact(
+            PhaseArtifact(
+                phase="summarize",
+                kind="summary",
+                content=ctx.validation_summary or ctx.generation_summary,
+                metadata={
+                    "workflow_name": ctx.workflow_name,
+                    "path": ctx.generated_path,
+                    "repair_cycles": ctx.repair_cycles,
+                },
+            )
+        )
+        return CreateWorkflowState.COMPLETE
+
+    # ── phase helpers ─────────────────────────────────────────────────────────
+
+    def _route_repair(self, ctx: CreateWorkflowContext, reason: str) -> CreateWorkflowState:
+        """Send the run back to GENERATE, or FAIL when the repair budget is spent."""
+        ctx.repair_cycles += 1
+        ctx.rejection_reason = reason.strip()
+        if ctx.repair_cycles > self._max_repair_cycles:
+            ctx.fail_reason = (
+                f"Validation rejected the generated workflow {ctx.repair_cycles} times "
+                f"(limit {self._max_repair_cycles}). Last reason: {ctx.rejection_reason}"
+            )
+            return CreateWorkflowState.FAILED
+        return CreateWorkflowState.GENERATE
+
+    def _workspace_root(self) -> Path:
+        """Return the directory generated workflow files must live inside."""
+        return Path.cwd()
+
+    def _target_path(self, workflow_name: str) -> str:
+        """Return the conventional project-local path for *workflow_name*."""
+        return f"{_WORKFLOW_DIR}/{workflow_name or 'my_workflow'}.py"
+
+    def _phase_model(self, phase_name: str) -> str:
+        """Return the model override for *phase_name*, or '' for the global default.
+
+        Priority: ``WorkflowParams.model_for_phase()`` (TOML/CLI) → the static
+        class attribute → empty string.
+        """
+        if self._cfg.params is not None:
+            configured = self._cfg.params.model_for_phase(phase_name, "")
+            if configured:
+                return configured
+        attr = _PHASE_MODEL_ATTR.get(phase_name, "")
+        if not attr:
+            return ""
+        value = getattr(self, attr, "")
+        return value if isinstance(value, str) else ""
+
+    def _set_phase(self, phase_name: str, phase_index: int, ctx: CreateWorkflowContext) -> None:
+        """Update all workflow TUI state for the current phase in one call."""
+        self._cfg.app_state.update_workflow_phase(
+            workflow_name=self.workflow_name,
+            phase_name=phase_name,
+            phase_index=phase_index,
+            total_phases=self.total_phases,
+            run_id=ctx.run_id,
+            intent=ctx.intent,
+            model_id=self._phase_model(phase_name) or self._model_id,
+        )
+
+    # ── turn helpers ──────────────────────────────────────────────────────────
 
     async def _run_turn(
         self,
         text: str,
         *,
-        tools: list[ToolLike],
+        tools: _ToolList,
         mode: str | None,
         system_prompt: str,
         max_turns: int,
-        context: CreateWorkflowContext,
-        phase_name: str,
-        active_agent: str,
-        excluded_capabilities: frozenset[ToolCapability],
+        ctx: CreateWorkflowContext,
+        phase_name: str = "",
+        model_override: str = "",
     ) -> None:
-        """Execute one agent turn with the phase's mode and tool boundary."""
+        """Run one agent turn, optionally switching mode for its duration.
 
-        from agenthicc.background.terminals import (
-            reset_current_terminal_wait_policy,
-            set_current_terminal_wait_policy,
-        )
-        from agenthicc.runners.agent_turn import _run_agent_turn
+        When *model_override* is non-empty a modified copy of ``exec_cfg`` is built
+        with ``model=model_override`` so the per-phase model is picked up.
+        """
+        from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
             if self._mode_manager.set_by_name(mode) is None:
-                log.warning("create_workflow: mode %r is unavailable", mode)
+                log.warning("_run_turn: mode %r not found — keeping current mode", mode)
 
-        base_exec = self._cfg.cfg.execution
-        model = self._phase_model(phase_name)
+        _base_exec = self._cfg.cfg.execution
         exec_cfg = (
-            dataclasses.replace(base_exec, model=model)
-            if model and dataclasses.is_dataclass(base_exec)
-            else base_exec
+            dataclasses.replace(_base_exec, model=model_override)
+            if model_override and dataclasses.is_dataclass(_base_exec)
+            else _base_exec
         )
-        policy_token = set_current_terminal_wait_policy(
-            self._cfg.terminal_wait_policies.get(phase_name, "foreground")
+
+        if self._cfg.approval_svc is not None and ctx.shared_memory is not None:
+            ctx.shared_memory.ensure_valid()
+
+        from agenthicc.background.terminals import (  # noqa: PLC0415
+            reset_current_terminal_wait_policy,
+            set_current_terminal_wait_policy,
         )
+
+        policy = self._cfg.terminal_wait_policies.get(phase_name, "foreground")
+        policy_token = set_current_terminal_wait_policy(policy)
         try:
             await _run_agent_turn(
                 text,
                 runner=self._cfg.agent_runner,
                 processor=self._cfg.processor,
-                session_memory=context.shared_memory,
-                max_agent_turns=max(1, max_turns),
+                session_memory=ctx.shared_memory,
+                max_agent_turns=max_turns,
                 conv_store=self._cfg.conv_store,
                 app_state=self._cfg.app_state,
                 exec_cfg=exec_cfg,
                 skills=self._cfg.skills,
-                skill_permissions=self._cfg.cfg.agents.skill_permissions_for(active_agent),
+                skill_permissions=self._cfg.cfg.agents.skill_permissions_for("auto"),
                 mention_cache=self._cfg.mention_cache,
                 project_plugin_tools=tools,
                 mcp_registry=self._cfg.mcp_registry,
-                active_agent=active_agent,
+                active_agent="auto",
                 completed_turns=self._cfg.completed_turns,
                 approval_svc=self._cfg.approval_svc,
                 output_collector=[],
-                command_outcomes=context.command_outcomes,
+                command_outcomes=ctx.command_outcomes,
                 system_prompt_suffix=system_prompt,
-                excluded_capabilities=excluded_capabilities,
-                allowed_tool_names=self._allowed_tool_names(tools, phase_name),
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
             )
@@ -533,206 +818,21 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             if mode is not None and self._mode_manager is not None:
                 self._cfg.app_state.active_mode.set(original_mode)
 
-    def _phase_tools(self) -> list[ToolLike]:
-        """Return project, MCP, memory, and bounded inspection tools."""
+    def _base_tools(self) -> _ToolList:
+        """Return capability-filtered project tools for the current mode."""
+        from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
+        from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
 
-        from agenthicc.workflows.memory_tools import make_memory_tools
-
-        tools = list(self._cfg.all_plugin_tools())
+        mode_blocked = self._cfg.app_state.active_mode().blocked_capabilities
+        all_tools: _ToolList = list(self._cfg.all_plugin_tools())
         if self._cfg.mcp_registry is not None:
-            tools.extend(self._cfg.mcp_registry.all_tools())
-        tools.extend(make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index))
-        tools.extend(make_inspection_tools())
-        return tools
+            try:
+                all_tools = all_tools + list(self._cfg.mcp_registry.all_tools())
+            except Exception:  # noqa: BLE001
+                pass
 
-    def _allowed_tool_names(self, tools: list[ToolLike], phase_name: str) -> frozenset[str]:
-        """Return the exact phase-local tool surface.
-
-        Generation deliberately exposes ``write_file`` only in EXECUTE.  Shell
-        and arbitrary execution tools remain unavailable even there because
-        authoring needs one deterministic, auditable artifact write.
-        """
-
-        names = set(_READ_ONLY_TOOLS)
-        for candidate in tools:
-            name = getattr(candidate, "__name__", getattr(candidate, "name", ""))
-            if not name or name in _NEVER_AUTHORING_TOOLS:
-                continue
-            if get_tool_capabilities(candidate).intersection(_DANGEROUS_CAPABILITIES):
-                continue
-            names.add(name)
-        if phase_name == "execute":
-            names.add("write_file")
-        return frozenset(names)
-
-    def _attempt_limit(self) -> int:
-        configured = getattr(
-            self._cfg.cfg.execution, "authoring_max_generation_attempts", _MAX_ATTEMPTS
-        )
-        try:
-            value = int(configured)
-        except (TypeError, ValueError):
-            value = _MAX_ATTEMPTS
-        return max(1, min(_MAX_ATTEMPTS, value))
-
-    def _phase_turn_limit(self, phase_name: str) -> int:
-        configured = getattr(self._cfg.cfg.execution, "authoring_max_phase_turns", 20)
-        try:
-            value = int(configured)
-        except (TypeError, ValueError):
-            value = 20
-        from agenthicc.workflows.create_workflow.definition import CreateWorkflow
-
-        phase = CreateWorkflow.get_phase(phase_name)
-        definition_limit = phase.max_turns if phase is not None and phase.max_turns > 0 else 20
-        return max(1, min(_MAX_PHASE_TURNS, value, definition_limit))
-
-    def _phase_model(self, phase_name: str) -> str:
-        if self._cfg.params is not None:
-            model = self._cfg.params.model_for_phase(phase_name, "")
-            if model:
-                return model
-        return ""
-
-    def _prompt(self, phase_name: str) -> str:
-        from agenthicc.workflows.create_workflow.definition import CreateWorkflow
-
-        phase = CreateWorkflow.get_phase(phase_name)
-        return phase.system_prompt_override if phase is not None else ""
-
-    def _set_phase(self, context: CreateWorkflowContext, phase_name: str) -> None:
-        update = getattr(self._cfg.app_state, "update_workflow_phase", None)
-        if callable(update):
-            update(
-                workflow_name=self.workflow_name,
-                phase_name=phase_name,
-                phase_index=_PHASE_INDEX[phase_name],
-                total_phases=self.total_phases,
-                run_id=context.run_id,
-                intent=context.intent,
-                model_id=self._phase_model(phase_name) or self._model_id,
-            )
-
-    async def _emit_phase_started(self, context: CreateWorkflowContext, phase_name: str) -> None:
-        from agenthicc.kernel import Event
-
-        await self._cfg.processor.emit(
-            Event.create(
-                "WorkflowPhaseStarted",
-                {
-                    "run_id": context.run_id,
-                    "workflow_name": self.workflow_name,
-                    "phase_name": phase_name,
-                },
-            )
-        )
-
-    async def _emit_phase_completed(
-        self,
-        context: CreateWorkflowContext,
-        phase_name: str,
-        previous: CreateWorkflowState,
-    ) -> None:
-        from agenthicc.kernel import Event
-
-        artifact = context.phase_artifacts.get(phase_name)
-        payload: dict[str, object] = {
-            "run_id": context.run_id,
-            "workflow_name": self.workflow_name,
-            "phase_name": phase_name,
-            "state": previous.name,
-            "next_state": context.state.name,
-            "artifact": dataclasses.asdict(artifact) if artifact is not None else {},
-        }
-        await self._cfg.processor.emit(Event.create("WorkflowPhaseCompleted", payload))
-        current = self._cfg.app_state.workflow_run()
-        if current is not None and artifact is not None:
-            self._cfg.app_state.workflow_run.set(
-                dataclasses.replace(
-                    current,
-                    phase_history=current.phase_history + [self._phase_record(artifact)],
-                )
-            )
-
-    async def _emit_run_completed(self, context: CreateWorkflowContext, status: str) -> None:
-        from agenthicc.kernel import Event
-
-        current = self._cfg.app_state.workflow_run()
-        phases_run = (
-            len(current.phase_history) if current is not None else len(context.phase_artifacts)
-        )
-        await self._cfg.processor.emit(
-            Event.create(
-                "WorkflowRunCompleted",
-                {
-                    "run_id": context.run_id,
-                    "workflow_name": self.workflow_name,
-                    "phases_run": phases_run,
-                    "status": status,
-                    "error": context.fail_reason,
-                },
-            )
-        )
-
-    def _set_run_status(self, context: CreateWorkflowContext, status: str) -> None:
-        current = self._cfg.app_state.workflow_run()
-        if current is not None:
-            self._cfg.app_state.workflow_run.set(
-                dataclasses.replace(current, status=status, current_phase=None)
-            )
-        if status == "failed" and context.fail_reason:
-            self._append_error(context.fail_reason)
-
-    def _append_error(self, message: str) -> None:
-        try:
-            self._cfg.conv_store.append_event("error", {"message": message})
-        except Exception:  # noqa: BLE001
-            log.debug("could not append create_workflow error to conversation", exc_info=True)
-
-    @staticmethod
-    def _phase_record(artifact: PhaseArtifact) -> PhaseRunRecord:
-        return PhaseRunRecord(
-            phase_name=artifact.phase_name,
-            role=_PHASE_ROLES.get(artifact.phase_name, "auto"),
-            approved=True,
-            output_summary=artifact.summary[:200],
-            iteration=artifact.attempts,
-            duration_s=0.0,
-        )
-
-    @staticmethod
-    def _phase_retry_prompt(
-        *,
-        phase_name: str,
-        original_text: str,
-        system_prompt: str,
-        last_error: str,
-    ) -> str:
-        """Build a self-contained retry instruction after a missing handoff."""
-
-        handoffs = {
-            "interpret": "complete_interpret_phase(summary, workflow_name)",
-            "design": "complete_design_phase(design)",
-            "execute": "complete_execute_phase(summary, artifact_name, artifact_description)",
-            "summarize": "complete_summarize_phase(summary)",
-        }
-        handoff = handoffs.get(phase_name, "the phase handoff tool")
-        return (
-            f"RETRY REQUIRED: {phase_name.upper()} phase did not complete.\n"
-            f"Reason: {last_error}\n\n"
-            f"Original phase task:\n{original_text}\n\n"
-            f"Phase instructions:\n{system_prompt}\n\n"
-            f"You must complete the work and call {handoff}. Do not stop with prose; "
-            "only that handoff tool can advance the phase."
-        )
-
-    def _fail(self, context: CreateWorkflowContext, reason: str) -> CreateWorkflowState:
-        context.fail_reason = reason
-        return CreateWorkflowState.FAILED
-
-    @staticmethod
-    def _status(state: CreateWorkflowState) -> str:
-        return "complete" if state is CreateWorkflowState.COMPLETE else "failed"
-
-
-__all__ = ["CreateWorkflowRunner"]
+        filtered: _ToolList = [
+            tool for tool in all_tools if not (get_tool_capabilities(tool) & mode_blocked)
+        ]
+        # Memory tools carry no capability restrictions — always available.
+        return filtered + make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index)

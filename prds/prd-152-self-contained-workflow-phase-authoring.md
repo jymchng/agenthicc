@@ -17,6 +17,13 @@ tags:
 
 # PRD-152 — Agent-Executable `create_*` Authoring
 
+> **Historical.** The `create_workflow` portion of this PRD is superseded by
+> [PRD-154](prd-154-create-workflow-architecture.md). The phase names, handoff
+> tools, and inspection tools described below no longer exist; the current
+> workflow runs `design → generate → validate → summarize` with deterministic
+> import validation. The `create_tools` and `create_commands` skill surfaces are
+> unaffected.
+
 ## 1. Summary
 
 Enhance the built-in `create_workflow` workflow so an authoring agent can

@@ -98,6 +98,15 @@ PRD-153 addresses the remaining reliability gap in agent-owned
 write-capable execute phase, with capability filtering, a successful-write
 receipt, and bounded failure recovery.
 
+PRD-154 is the current reference for `create_workflow`. It records the clean-slate
+rebuild that models the meta-workflow directly on `code_plan`: an outer loop
+evolving typed phase state, one bounded async method per phase as the inner loop,
+transitions only via tool calls, a typed context capturing each phase's artefact,
+and a `design → generate → validate → summarize` graph whose validate phase
+imports the generated file deterministically and overrides an agent approval that
+contradicts the result. It supersedes the `create_workflow` portions of PRD-147,
+PRD-152, and PRD-153.
+
 ## Existing PRDs
 
 The numbered PRDs in this directory record individual feature decisions and
