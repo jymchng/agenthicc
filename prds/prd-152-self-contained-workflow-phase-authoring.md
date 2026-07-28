@@ -33,14 +33,21 @@ This PRD has two deliberately separate workflow layers:
 
 - **Authoring workflow:** the built-in `create_workflow` workflow selected with
   `/workflow create_workflow`. Its agent receives the user's natural-language
-  intent and produces, stages, validates, reviews, and publishes a custom
-  workflow artifact.
+  intent and uses the canonical `write_file` tool to write the complete workflow
+  source directly to `.agenthicc/workflows/`. The runner only records the agent's
+  handoff metadata.
 - **Generated specialized workflow:** the published `WorkflowPlugin` that a
   later user request selects with `/workflow <generated-name>`. Its runtime
   agents execute the phase prompts created by the authoring agent.
 - **Generated tool or command extension:** the published Python module created
   by `/workflow create_tool` or `/workflow create_command`. The existing tool
   or command loader remains responsible for runtime discovery and execution.
+
+For `create_workflow`, source parsing, static validation, staging, review,
+publication approval, and a separate publish phase are deliberately absent. The
+design agent writes the complete source with `write_file`; the runner never
+copies assistant response text or publishes on the agent's behalf. The sibling extension workflows retain their existing
+parser, validator, staging, review, approval, and publish safeguards.
 
 The runner in the generated specialized workflow should only orchestrate
 phases. The phase prompts must contain the behavior that makes the workflow
@@ -64,10 +71,11 @@ static validation.
 
 The authoring agent is a code-generating agent, not a planner that hands an
 unfinished design to another agent. During the `design` phase of
-`create_workflow`, it must generate the complete Python source for the
-specialized workflow directly. After publication, a separate runtime agent
-executes the generated workflow's phase prompts. The authoring runner owns the
-artifact lifecycle; the generated runner owns only phase orchestration.
+`create_workflow`, it must generate the complete Python source and write it with
+`write_file` to `.agenthicc/workflows/<stable_name>.py`, then call
+`complete_design_phase(...)`. After explicit reload/discovery, a separate runtime
+agent executes the generated workflow's phase prompts. The authoring runner
+owns phase orchestration and reporting; the agent owns the source write.
 
 ## 2. Evidence-backed problem statement
 
@@ -112,13 +120,13 @@ on undocumented assumptions or a human rewriting the generated source.
    an existing runner, including the documented `code_plan_docs` pattern.
 6. Relax static validation so the default `WorkflowPlugin.build_runner()` is a
    valid generated-workflow contract.
-7. Preserve staged publication, approval, trust, capability, and explicit
-   activation boundaries from PRD-147.
+7. Preserve trust, capability, and explicit activation boundaries from PRD-147;
+   keep staged publication and approval for `create_tools` and `create_commands`.
 8. Prove that a later runtime agent receives and can execute the generated
    phase instructions without executing generated code during authoring or
    silently importing it into the current registry.
 9. Give `create_tools` and `create_commands` the same raw-source response
-   contract and tailored prompts for their seven authoring phases.
+   contract and tailored prompts for their six authoring phases.
 
 ## 4. Non-goals
 
@@ -132,20 +140,20 @@ on undocumented assumptions or a human rewriting the generated source.
 - Removing support for specialized runners such as `CodePlanRunner`.
 - Requiring custom runners to delegate to `super()` when they do not intend to
   reuse parent lifecycle behavior.
-- Executing or importing generated Python before explicit publication and
-  discovery activation.
+- Executing or importing generated Python before explicit discovery activation.
 
 ## 5. Product contract
 
 ### 5.1 `create_workflow` design output
 
 The `design` phase of the built-in `create_workflow` workflow must generate
-exactly one complete `WorkflowPlugin` source artifact directly as raw Python
-code. The authoring prompt must not require an XML, JSON, Markdown, or other
-special response envelope. The existing parser may continue accepting legacy
-envelopes for compatibility, but newly generated workflows use direct source.
-The agent must not return pseudocode, a plan in place of source, a partial
-class, or instructions for a later agent to finish the implementation.
+exactly one complete `WorkflowPlugin` source artifact as raw Python in the
+`content` argument of one canonical `write_file` call. The path must be
+`.agenthicc/workflows/<stable_name>.py`. The authoring prompt must not require an
+XML, JSON, Markdown, or other special response envelope. Assistant response
+text is not an artifact. The agent must not return pseudocode, a plan in place
+of source, a partial class, or instructions for a later agent to finish the
+implementation.
 
 The generated artifact is the implementation of the user's requested custom
 specialized workflow. It must encode the requested behavior in its phase graph
@@ -203,19 +211,16 @@ The existing `create_workflow` lifecycle remains the orchestration boundary:
 | Authoring phase | Required responsibility | Authoritative output |
 |---|---|---|
 | `interpret` | Preserve and normalize the user's specialized-workflow intent | Intent record |
-| `design` | Generate complete specialized-workflow Python source directly | Raw Python candidate |
-| `stage` | Store the candidate outside the discoverable workflow directory | Staged artifact and manifest |
-| `validate` | Check source safety, phase prompts, graph, and runner contract | Validation report |
-| `review` | Obtain explicit publication approval | Approval decision |
-| `publish` | Atomically publish the approved specialized workflow | Published path and hash |
+| `design` | Use `write_file` to write complete source directly to `.agenthicc/workflows/`, then call the design handoff | Agent-written path metadata |
 | `summarize` | Explain the generated workflow and activation step | Structured authoring result |
 
-The authoring runner may orchestrate these phases and call the existing
-validation/publication services. It must not replace the generated workflow's
-runtime phase behavior with hidden authoring-run logic.
+The `create_workflow` runner only orchestrates these three phases. It does not
+write, copy, publish, parse, or validate generated source and does not call the approval service. The
+sibling `create_tools` and `create_commands` workflows continue using the
+existing six-phase lifecycle and contract services.
 
-The sibling `create_tools` and `create_commands` workflows use the same
-interpret → design → stage → validate → review → publish → summarize lifecycle,
+The sibling `create_tools` and `create_commands` workflows use the
+interpret → design → stage → review → publish → summarize lifecycle,
 but each definition has prompts tailored to its artifact contract. Their
 design agents return raw Python directly with literal `ARTIFACT_NAME` and
 `ARTIFACT_DESCRIPTION` module metadata so the parser can determine the staged
@@ -296,11 +301,12 @@ literal `TOOLS` list or tuple. `create_commands` must use the canonical
 invalid exports, malformed names, and unsupported loader shapes before
 publication.
 
-### 5.8 Generation recovery and bounded retries
+### 5.8 Extension generation recovery and bounded retries
 
 A response that contains repository exploration, tool-call activity, analysis,
-or an incomplete explanation instead of source is a recoverable generation
-failure, not an immediate terminal authoring failure. The authoring runner must:
+or an incomplete explanation instead of source remains a recoverable generation
+failure for `create_tools` and `create_commands`, whose parser/validator
+contracts remain unchanged. Those extension runners must:
 
 1. convert the parser or validator result into actionable feedback naming the
    exact failure and the required correction;
@@ -316,20 +322,29 @@ blocking finding code and message. When the limit is exhausted, the structured
 result must report the final finding and number of attempts, and no partial
 artifact may be staged or published.
 
+`create_workflow` follows a different ownership rule: only a successful
+`write_file` call followed by `complete_design_phase(...)` advances design. A
+prose-only or incomplete response triggers a bounded retry; after exhaustion,
+the runner returns a structured failure and never creates a workflow file.
+No parser or validator feedback is generated for workflow source.
+
 ### 5.9 Tool-gated phases and installed API inspection
 
-The three authoring workflows share an explicit typed lifecycle state machine:
-`interpret → design → stage → validate → review → publish → summarize`. Each
-phase has its own `PhaseSpec` prompt and bounded multi-turn budget. The global
+`create_workflow` uses an explicit typed lifecycle state machine:
+`interpret → design → summarize`. Each phase has its own `PhaseSpec` prompt and
+bounded multi-turn budget. The global
 `[execution].authoring_max_phase_turns` setting defaults to 20 and is clamped
 to 1–100; a phase definition may request a lower budget.
 
-The design agent may use several turns for inspection and implementation, but
-the runner accepts the handoff only after the phase-local completion tool is
-called. `submit_generated_source` captures one complete raw Python artifact
-directly. It never asks the model to construct an XML, JSON, or Markdown
-envelope. Existing raw-text parsing remains a compatibility path for older
-transports and staged runs.
+The design agent may use several turns for inspection and implementation. It
+must use `write_file` for the complete source, wait for success, and call the
+design handoff with the same artifact name and description. The runner does not
+parse, validate, read, hash, copy, or publish the response or file. Missing
+handoff metadata produces a result without a reported artifact path; the runner
+never derives a filename from user intent or assistant prose.
+
+The sibling `create_tools` and `create_commands` workflows retain the explicit
+six-phase tool-gated lifecycle and their existing parser/validator contracts.
 
 Every design phase receives read-only
 `inspect_agenthicc_documentation(path)` and
@@ -349,16 +364,17 @@ Create a workflow that uses Cloakbrowser to parse facebook.com and summarize
 the page title, visible text, and links.
 ```
 
-The `create_workflow` authoring agent returns a complete specialized workflow
+The `create_workflow` authoring agent writes a complete specialized workflow
 source with phase prompts that explain
 how to locate and use the configured Cloakbrowser tools, what data to collect,
-how to validate the result, and what the summary phase must report. The source
-is staged, statically validated, shown for approval, and published only after
-approval. No no-op runner wrapper is required.
+how the runtime agent should verify the result, and what the summary phase must
+report. The agent writes the raw source with `write_file` directly to
+`.agenthicc/workflows/` without parsing, validation, staging, review, or
+end-user approval. No no-op runner wrapper is required.
 
-The user is reviewing a generated workflow artifact, not merely approving a
-prompt or plan. The approval preview must make the generated phase topology,
-phase instructions, capabilities, and activation path visible.
+The user receives a generated workflow artifact, not merely a prompt or plan.
+The final summary makes the generated phase topology, phase instructions,
+destination, and activation path visible.
 
 After explicit discovery:
 
@@ -403,13 +419,13 @@ repair must preserve the user's intent and return complete source again.
 
 | Concern | Canonical owner |
 |---|---|
-| `create_*` generation instructions and raw-source parsing | `workflows/authoring/runner.py` |
+| `create_*` generation instructions and phase orchestration | `workflows/authoring/runner.py` |
 | Static workflow contract validation | `workflows/authoring/artifact.py` |
 | Generated specialized-workflow phase execution | `workflows/default/runner.py` |
 | Specialized CodePlan state machine | `workflows/code_plan/runner.py` |
 | Workflow construction and discovery | `workflows/registry.py`, `workflows/loader.py` |
 | Runtime phase context and outputs | `workflows/plugin.py` |
-| Publication approval and staging | `workflows/authoring/runner.py` |
+| Agent-owned workflow write via configured filesystem tools; extension staging/approval/publication | `workflows/authoring/runner.py`, `tools/fs/agent_tools.py` |
 | Authoring lifecycle states and phase tools | `workflows/authoring/state.py`, `phase_tools.py` |
 | Installed documentation/API inspection | `workflows/authoring/inspection_tools.py`, `pyproject.toml` |
 
@@ -438,14 +454,19 @@ The workflow artifact validator must:
    `system_prompt_override`.
 
 Existing unsafe-import, unsafe-call, source-size, name, phase-reference,
-destination, staging, approval, and publication checks remain unchanged.
+destination, staging, approval, and publication checks remain unchanged for
+the sibling extension workflows. `create_workflow` intentionally bypasses them.
 
 ## 8. Security and resilience
 
 - Generated Python remains untrusted until the existing trust and explicit
-  activation flow approves it.
-- The authoring model must not write directly to `.agenthicc/workflows/`.
-- Static validation must continue to reject unsafe imports and calls.
+  activation/discovery flow loads it for runtime use.
+- The authoring model may write only through the configured, workspace-guarded
+  `write_file` tool to `.agenthicc/workflows/<stable_name>.py`; it must not use
+  shell or an unguarded filesystem API. The runner never writes on its behalf.
+- `create_workflow` intentionally performs no source parsing or static
+  validation. Existing static validation continues to protect tool and command
+  extensions and the normal trust/activation flow remains explicit.
 - Phase prompts must not instruct agents to bypass capability gates, approval,
   workspace, network, or command-lifecycle policy.
 - MCP tools may be referenced only when the runtime session exposes them; the
@@ -455,8 +476,10 @@ destination, staging, approval, and publication checks remain unchanged.
   limits.
 - Documentation inspection is read-only, rejects traversal and absolute paths,
   and source inspection is limited to public `agenthicc.*` modules.
-- A malformed or incomplete generated prompt must fail validation before
-  publication.
+- A malformed or incomplete generated prompt may be written by the agent because
+  source validation is intentionally out of scope; extension artifacts retain
+  their existing validation gate. Assistant prose without a successful agent
+  write is never copied into a file.
 
 ## 9. Implementation plan
 
@@ -470,8 +493,9 @@ destination, staging, approval, and publication checks remain unchanged.
 - Explain declarative versus custom runner selection and the conditional
   `super()` rule.
 - Preserve existing TOML, provider, safety, parser-compatibility, and activation guidance.
-- Give each sibling authoring definition tailored prompts for interpret, design,
-  stage, validate, review, publish, and summarize.
+- Give `create_workflow` tailored prompts for interpret, design, and summarize;
+  give each sibling authoring definition tailored prompts for interpret, design,
+  stage, review, publish, and summarize.
 
 ### Phase 2 — Declarative validator support
 
@@ -483,8 +507,11 @@ destination, staging, approval, and publication checks remain unchanged.
 
 ### Phase 2A — Generation recovery
 
-- Feed parse and validation findings back into the next source-generation prompt.
-- Emit visible retry notices instead of silently discarding malformed responses.
+- Keep parser/validation feedback and visible retries for `create_tools` and
+  `create_commands`.
+- For `create_workflow`, preserve every non-empty response verbatim and retry
+  only an empty response; never discard it because source parsing or validation
+  failed.
 - Add `[execution].authoring_max_generation_attempts` with a safe default and
   upper bound, and report the exhausted attempt count in the final result.
 
@@ -494,10 +521,10 @@ destination, staging, approval, and publication checks remain unchanged.
   factory.
 - Add unit coverage for a direct custom runner that does not call `super()`.
 - Retain coverage for a composing runner that does call `super()`.
-- Add rejection coverage for missing/empty/non-literal phase prompts,
+- Add rejection coverage for extension missing/empty/non-literal phase prompts,
   unresolved transitions, invalid custom factories, and unsafe source.
-- Add integration coverage for staging, approval, publication, reload, and
-  default-runner construction.
+- Add integration coverage for direct workflow writing, extension staging,
+  approval, publication, reload, and default-runner construction.
 - Add E2E coverage proving a generated multi-phase workflow's phase prompts
   reach the runtime agent and preserve the intended handoff information.
 - Add raw-source E2E coverage proving `create_tools` and `create_commands`
@@ -530,9 +557,9 @@ destination, staging, approval, and publication checks remain unchanged.
    `system_prompt_override` covering the eight required instruction areas.
 6. The prompt forbids vague phase instructions and reliance on later phases to
    infer missing behavior.
-7. A valid declarative specialized workflow containing only `WorkflowPlugin` and literal
-   `PhaseSpec` declarations passes authoring validation without importing
-   `WorkflowRunner` or overriding `build_runner()`.
+7. `create_workflow` supplies `write_file` to its design agent, and the runner
+   never invokes the artifact parser or validator or copies the assistant
+   response into a file.
 8. The inherited default `WorkflowPlugin.build_runner()` constructs the
    declarative workflow's generic runner after discovery.
 9. A custom runner that implements its lifecycle directly without `super()`
@@ -540,13 +567,15 @@ destination, staging, approval, and publication checks remain unchanged.
 10. A custom runner that intentionally delegates to a parent runner remains
    valid and the existing `code_plan_docs` example continues to work.
 11. A generated phase missing an explicit non-empty literal
-   `system_prompt_override` fails validation before publication.
+    `system_prompt_override` is not rejected by the authoring runner's source
+    validator because no such validator is invoked for `create_workflow`.
 12. The published specialized workflow can be selected in a later request and
     its runtime agent receives the generated phase instructions and handoff
     requirements.
-13. Existing unsafe-source, invalid-name, invalid-transition, staging,
-   approval, overwrite, resume, and explicit-activation behavior remains
-   intact.
+13. `create_workflow` writes directly without staging or approval, while the
+    sibling extension workflows retain unsafe-source, invalid-name,
+    invalid-transition, staging, approval, overwrite, resume, and explicit-
+    activation behavior.
 14. Unit, integration, and E2E tests cover declarative generation, direct
    custom runners, composing custom runners, prompt completeness, runtime
    prompt delivery, publication, and reload/discovery.
@@ -561,18 +590,23 @@ destination, staging, approval, and publication checks remain unchanged.
     source, requires literal artifact metadata and a loader-compatible
     `COMMAND` or `COMMANDS` export, and does not require a special response
     envelope.
-18. `CreateWorkflow`, `CreateTools`, and `CreateCommands` each define explicit,
-    artifact-appropriate prompts for all seven authoring phases.
+18. `CreateWorkflow` defines explicit prompts for `interpret`, `design`, and
+    `summarize`; `CreateTools` and `CreateCommands` retain explicit prompts for
+    their six authoring phases.
 19. Unit and E2E tests prove raw tool and command generation, metadata recovery,
     publication, loader discovery, approval, retry, resume, and reload guidance.
-20. A non-source or invalid-source response receives actionable feedback and a
-    visible retry event, then succeeds when a later attempt returns valid
-    source; repeated failures stop at the configured bounded attempt limit and
-   report that limit without publication.
-21. All three authoring workflows expose explicit typed lifecycle states and
-    phase-specific prompts with bounded multi-turn budgets.
-22. A design agent can submit complete raw source with the phase-local tool and
-    the runner validates it before staging; no envelope is required.
+20. A complete source passed to the agent's `write_file` tool is left exactly as
+    written, even when it is not parseable Python; prose-only or failed writes
+    trigger bounded retries and never create a runner-owned artifact. Extension
+    responses retain actionable parser and validator feedback.
+21. `create_workflow` exposes explicit typed `interpret`, `design`, and
+    `summarize` states with bounded multi-turn budgets; extension workflows
+    retain their six-state lifecycle.
+22. A design agent writes complete raw source with `write_file`, waits for its
+    successful result, and calls its phase-local transition tool with artifact
+    metadata. No envelope, parser, validator, staging phase, publish phase, or
+    approval request is required; omitted handoff metadata never falls back to an
+    intent-derived filename.
 23. Design agents can inspect packaged documentation and current Python API
     signatures/source through bounded read-only built-in tools.
 24. The built distribution contains the documentation tree alongside the
@@ -581,9 +615,11 @@ destination, staging, approval, and publication checks remain unchanged.
     per lifecycle phase. Agent-controlled phases own their bounded agent-turn
     loops and advance only after their phase-local completion tool is called;
     inspection-only turns retry visibly and exhaust into a structured failure
-    rather than raising an uncaught missing-transition exception. Deterministic
-    staging, approval, publication, and summary transitions remain gated by
-    their owned side effects.
+    rather than raising an uncaught missing-transition exception. The
+    `create_workflow` design handler requires the agent-owned `write_file`
+    handoff and proceeds to summary;
+    extension staging, approval, publication, and summary transitions remain
+    gated by their owned side effects.
 
 ## 11. Verification
 
@@ -613,9 +649,7 @@ The smoke path must prove the two-agent-layer journey:
   → ordinary user intent
   → create_workflow design agent generates complete specialized source
   → generated phase prompts contain executable instructions
-  → static validation
-  → approval
-  → publication
+  → agent write_file call writes complete source to .agenthicc/workflows/
   → explicit discovery
   → /workflow <generated-name>
   → runtime agent executes each generated phase
@@ -624,18 +658,19 @@ The smoke path must prove the two-agent-layer journey:
 
 ## 12. Rollout and migration
 
-1. Ship the prompt and validator changes behind the existing authoring
+1. Ship the prompt and lifecycle changes behind the existing authoring
    workflow; do not change the ordinary user workflow loader contract.
 2. Existing published workflows remain loadable, including minimal workflows
    whose phases rely on the generic runner's default role prompt.
-3. Newly generated workflows must satisfy the explicit phase-prompt contract.
-4. If a generated candidate from an older session is resumed, validate it
-   against the contract in effect when it is resumed and report actionable
-   findings rather than silently rewriting it.
-5. Do not auto-reload or auto-execute newly published artifacts.
+3. Newly generated workflows receive the explicit phase-prompt guidance, and
+   the design agent writes source through the workspace-guarded `write_file`
+   tool without parser or validator rejection.
+4. `create_workflow` has no runner-owned manifest/resume path; an interrupted
+   run is retried or inspected manually.
+5. Do not auto-reload or auto-execute newly written artifacts.
 6. Existing tool and command loaders remain unchanged; after approval, users
    explicitly run `/tools reload` or `/commands reload` to discover a generated
-   extension.
+   extension. Workflows use `/workflows reload` after their direct write.
 
 ## 13. Related implementation notes
 
@@ -656,9 +691,9 @@ discovery, tool/command loader discovery, and delivery of a generated workflow
 phase prompt to a later runtime agent.
 
 The authoring runner now mirrors the explicit phase-method pattern used by
-`CodePlanRunner`: `interpret`, `design`, `stage`, `validate`, `review`,
-`publish`, and `summarize` each have a dedicated handler and typed context.
-The `interpret`, `design`, and definition-backed `validate` handlers own their
+`CodePlanRunner`: `create_workflow` uses `interpret`, `design`, and `summarize`,
+while extension workflows use `interpret`, `design`, `stage`, `review`,
+`publish`, and `summarize`. The `interpret` and `design` handlers own their
 agent turns and phase-local tool-gated handoffs. A turn that only inspects the
 repository is treated as an incomplete continuation, not as a terminal
 exception; bounded exhaustion produces a structured authoring failure.

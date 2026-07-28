@@ -13,7 +13,6 @@ _PHASE_TRANSITION_TOOL_NAMES = {
     "interpret": "complete_interpret_phase",
     "design": "complete_design_phase",
     "stage": "complete_stage_phase",
-    "validate": "complete_validate_phase",
     "review": "request_publication_approval",
     "publish": "complete_publish_phase",
     "summarize": "complete_summarize_phase",
@@ -36,9 +35,9 @@ def make_authoring_transition_tools(
 
     The tools close over one phase invocation.  A model can inspect, reason,
     and take multiple turns, but the runner only advances when the phase's
-    phase-specific completion tool is called.  ``submit_generated_source``
-    additionally captures source without relying on a response envelope or
-    delimiter.
+    phase-specific completion tool is called.  For ``create_workflow``, the
+    design agent writes source with the canonical ``write_file`` tool before
+    calling its transition; this tool records only the agent's handoff metadata.
     """
 
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
@@ -46,7 +45,11 @@ def make_authoring_transition_tools(
     transition_tool_name = authoring_transition_tool_name(phase_name)
 
     @_tool(name=transition_tool_name)
-    async def complete_phase(summary: str) -> dict[str, object]:
+    async def complete_phase(
+        summary: str,
+        artifact_name: str = "",
+        artifact_description: str = "",
+    ) -> dict[str, object]:
         """Complete the current authoring phase and request its configured transition.
 
         Call this only after the current phase objective is complete.  The
@@ -54,6 +57,10 @@ def make_authoring_transition_tools(
 
         Args:
             summary: Concise evidence of the work completed in this phase.
+            artifact_name: For the design phase, the stable lowercase name used
+                in the path the agent wrote. Ignored by other phases.
+            artifact_description: For the design phase, a concise description
+                of the generated artifact. Ignored by other phases.
         """
 
         cleaned = summary.strip()
@@ -69,6 +76,11 @@ def make_authoring_transition_tools(
                 ),
             }
         transition_data["summary_candidate"] = cleaned
+        if phase_name == "design":
+            if artifact_name.strip():
+                transition_data["artifact_name"] = artifact_name.strip()
+            if artifact_description.strip():
+                transition_data["artifact_description"] = artifact_description.strip()
         if validator is not None:
             try:
                 failure = validator(transition_data)
@@ -95,59 +107,7 @@ def make_authoring_transition_tools(
             ),
         }
 
-    tools: list[Callable[..., object]] = [complete_phase]
-
-    if phase_name == "design":
-
-        @_tool()
-        async def submit_generated_source(
-            source: str,
-            artifact_name: str,
-            artifact_description: str,
-        ) -> dict[str, object]:
-            """Submit one complete raw Python artifact for staging.
-
-            The source is captured exactly as provided.  Do not include
-            Markdown fences, XML, JSON, commentary, or a patch.  The runner
-            still parses and statically validates it before any side effect.
-
-            Args:
-                source: Complete raw Python source for the requested artifact.
-                artifact_name: Stable project-local artifact name.
-                artifact_description: Short user-facing artifact description.
-            """
-
-            if not source.strip():
-                transition_data["last_error"] = "source must not be empty"
-                return {
-                    "ok": False,
-                    "error": "source must not be empty",
-                    "fix": "Generate the complete raw Python source and submit it again.",
-                }
-            if not artifact_name.strip() or not artifact_description.strip():
-                transition_data["last_error"] = (
-                    "artifact_name and artifact_description must not be empty"
-                )
-                return {
-                    "ok": False,
-                    "error": "artifact_name and artifact_description must not be empty",
-                    "fix": "Provide both a stable artifact name and a concise description.",
-                }
-            transition_data["source"] = source
-            transition_data["artifact_name"] = artifact_name.strip()
-            transition_data["artifact_description"] = artifact_description.strip()
-            transition_data["source_submitted"] = True
-            return {
-                "ok": True,
-                "message": (
-                    "Complete source captured. Now call "
-                    f"{transition_tool_name}(summary) to hand the artifact to staging."
-                ),
-            }
-
-        tools.append(submit_generated_source)
-
-    return tools
+    return [complete_phase]
 
 
 def make_authoring_review_tools(

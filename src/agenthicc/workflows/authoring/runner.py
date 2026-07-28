@@ -22,11 +22,9 @@ from agenthicc.workflows.authoring.artifact import (
     ValidationReport,
     WorkflowCandidate,
     parse_authoring_response,
-    parse_workflow_response,
     source_sha256,
     validate_command_candidate,
     validate_tool_candidate,
-    validate_workflow_candidate,
 )
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.authoring.phase_tools import (
@@ -50,7 +48,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_PHASES = ("interpret", "design", "stage", "validate", "review", "publish", "summarize")
+_PHASES = ("interpret", "design", "stage", "review", "publish", "summarize")
 _DEFAULT_MAX_GENERATION_ATTEMPTS = 3
 _MAX_GENERATION_ATTEMPTS = 10
 _DEFAULT_MAX_PHASE_TURNS = 20
@@ -59,11 +57,26 @@ _MAX_PHASE_ATTEMPTS = 10
 _RUN_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
+class _PhaseOutput(list[str]):
+    """Collect assistant text only until a phase transition succeeds."""
+
+    def __init__(self, transition_event: asyncio.Event) -> None:
+        super().__init__()
+        self._transition_event = transition_event
+
+    def append(self, value: str) -> None:
+        if not self._transition_event.is_set():
+            super().append(value)
+
+
 class CreateWorkflowRunner(BaseWorkflowRunner):
-    """Generate, validate, approve, and publish one executable artifact.
+    """Drive one authoring workflow to completion.
 
     The lifecycle is shared by the three built-in authoring workflows. Concrete
     subclasses only select the artifact contract, destination, and prompt.
+    ``create_workflow`` lets the design agent write its workflow with the
+    canonical filesystem tool; extension subclasses retain their parser,
+    validator, staging, and approval lifecycle.
     """
 
     workflow_name = "create_workflow"
@@ -86,7 +99,17 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         self._project_root = Path.cwd().resolve()
         self._summary_emitted = False
         self._phase_specs = {spec.name: spec for spec in (phase_specs or ())}
+        self._design_metadata: dict[str, object] = {}
         self._state = AuthoringState.INTERPRET
+
+    def _phase_names(self) -> tuple[str, ...]:
+        """Return the phase topology owned by this concrete authoring definition."""
+
+        if self._phase_specs:
+            return tuple(self._phase_specs)
+        if self.artifact_kind == "workflow":
+            return ("interpret", "design", "summarize")
+        return _PHASES
 
     def _result(
         self,
@@ -125,6 +148,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
         self._run_id = uuid.uuid4().hex
         self._summary_emitted = False
+        self._design_metadata = {}
         self._state = AuthoringState.INTERPRET
         self._shared_memory = ShortTermMemory(
             max_tokens=self._cfg.cfg.execution.effective_usable_budget()
@@ -134,7 +158,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             workflow_name=self.workflow_name,
             intent=intent,
             current_phase="interpret",
-            total_phases=len(_PHASES),
+            total_phases=len(self._phase_names()),
         )
         self._cfg.app_state.workflow_run.set(self._workflow_run)
         await self._cfg.processor.emit(
@@ -144,7 +168,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     "run_id": self._run_id,
                     "workflow_name": self.workflow_name,
                     "intent": intent,
-                    "phase_names": list(_PHASES),
+                    "phase_names": list(self._phase_names()),
                 },
             )
         )
@@ -172,10 +196,6 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     case AuthoringState.STAGE:
                         state = await self._stage(
                             ctx, max_agent_turns=self._phase_max_turns("stage")
-                        )
-                    case AuthoringState.VALIDATE:
-                        state = await self._validate(
-                            ctx, max_agent_turns=self._phase_max_turns("validate")
                         )
                     case AuthoringState.REVIEW:
                         state = await self._review(
@@ -358,7 +378,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     async def _design(
         self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
     ) -> AuthoringState:
-        """Generate and validate source, with the design handoff tool as its gate."""
+        """Capture source and complete the create_workflow direct-write path."""
 
         try:
             candidate, report, attempts, generation_text = await self._generate(
@@ -377,6 +397,38 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         ctx.report = report
         ctx.attempts = attempts
         ctx.generation_text = generation_text
+        if self.artifact_kind == "workflow":
+            if self._design_metadata.get("phase") != "design":
+                reason = (
+                    "The design agent did not complete its direct write handoff. "
+                    "No assistant response was copied into .agenthicc/workflows."
+                )
+                self._set_failure(ctx, reason)
+                ctx.set_phase_output(
+                    self._result_error(ctx, "Design did not complete."),
+                    approved=False,
+                    structured={"attempts": attempts, "agent_owned_write": True},
+                )
+                return AuthoringState.SUMMARIZE
+            ctx.artifact = self._agent_reported_workflow_artifact()
+            ctx.result = self._result(
+                run_id=self._run_id,
+                status="complete",
+                artifact=ctx.artifact,
+                approval="not-requested",
+                activation=self.activation,
+                attempts=attempts,
+            )
+            ctx.set_phase_output(
+                self._summary(ctx.result),
+                approved=True,
+                structured={
+                    **ctx.result.to_dict(),
+                    "agent_owned_write": True,
+                    "runner_wrote_artifact": False,
+                },
+            )
+            return AuthoringState.SUMMARIZE
         ctx.set_phase_output(
             generation_text or self._validation_text(report, attempts=attempts),
             approved=report.valid,
@@ -390,11 +442,17 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         """Stage valid source without making it discoverable."""
 
         if ctx.candidate is None or not ctx.report.valid:
-            ctx.set_phase_output(
-                f"No artifact staged because generation did not produce a valid {self.artifact_label}.",
-                approved=False,
+            reason = (
+                self._validation_text(ctx.report, attempts=ctx.attempts)
+                if ctx.report.findings
+                else (
+                    f"No artifact staged because generation did not produce a valid "
+                    f"{self.artifact_label}."
+                )
             )
-            return AuthoringState.VALIDATE
+            self._set_failure(ctx, reason)
+            ctx.set_phase_output(reason, approved=False)
+            return AuthoringState.SUMMARIZE
         handoff_summary = ""
         if self._phase_specs:
             data, attempts, error = await self._run_tool_gated_phase(
@@ -444,69 +502,6 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             approved=True,
             structured=ctx.artifact.to_dict(),
         )
-        return AuthoringState.VALIDATE
-
-    async def _validate(
-        self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
-    ) -> AuthoringState:
-        """Apply the static validation gate before human publication review."""
-
-        text = self._validation_text(ctx.report, attempts=ctx.attempts)
-        if ctx.candidate is None or not ctx.report.valid or ctx.artifact is None:
-            ctx.set_phase_output(text, approved=False, structured=ctx.report.to_dict())
-            self._set_failure(ctx, text)
-            return AuthoringState.SUMMARIZE
-
-        if self._phase_specs:
-            from agenthicc.workflows.authoring.inspection_tools import (
-                make_authoring_inspection_tools,
-            )
-
-            data, attempts, error = await self._run_tool_gated_phase(
-                ctx,
-                phase_name="validate",
-                text=(
-                    f"Validate the staged {self.artifact_label} at {ctx.artifact.staged_path}. "
-                    f"The deterministic validation report is: {text}"
-                ),
-                system_prompt=(
-                    "You are the validation agent in an authoring state machine. Inspect "
-                    "the staged artifact and current agenthicc API, confirm the deterministic "
-                    f"report, and call {authoring_transition_tool_name('validate')}(summary) only when it is safe "
-                    "to request publication review. Do not modify or publish the artifact."
-                    + self._phase_prompt("validate")
-                ),
-                active_agent="verifier",
-                max_agent_turns=max_agent_turns,
-                tool_builder=lambda event, values: [
-                    *self._phase_tools(),
-                    *make_authoring_inspection_tools(),
-                    *make_authoring_transition_tools(
-                        "validate",
-                        event,
-                        values,
-                        validator=lambda _data: self._validation_transition_error(ctx),
-                    ),
-                ],
-            )
-            if data is None:
-                reason = error or "Validation did not receive a valid tool-gated handoff."
-                self._set_failure(ctx, reason)
-                ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
-                return AuthoringState.SUMMARIZE
-            summary = data.get("summary")
-            ctx.set_phase_output(
-                summary if isinstance(summary, str) else text,
-                approved=True,
-                structured={
-                    **ctx.report.to_dict(),
-                    "attempts": attempts,
-                    "validation_summary": summary,
-                },
-            )
-            return AuthoringState.REVIEW
-
-        ctx.set_phase_output(text, approved=True, structured=ctx.report.to_dict())
         return AuthoringState.REVIEW
 
     async def _review(
@@ -733,7 +728,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     def _terminal_state_for_result(result: AuthoringResult) -> AuthoringState:
         """Map an authoring result to the terminal state used by ``run``."""
 
-        if result.status == "published":
+        if result.status in {"complete", "published"}:
             return AuthoringState.COMPLETE
         if result.status == "rejected":
             return AuthoringState.REJECTED
@@ -787,10 +782,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         )
 
     async def resume(self, context: object) -> AuthoringResult:
-        """Resume a staged run without regenerating or duplicating side effects.
+        """Resume an extension-authoring run without duplicating side effects.
 
-        The manifest and staged source are authoritative.  Resume revalidates
-        the source and then continues at the approval/publication boundary.
+        ``create_workflow`` deliberately has no runner-owned staged artifact:
+        its design agent writes the workflow directly with ``write_file``. A
+        direct-write run therefore cannot be resumed by this runner.
         """
 
         from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun
@@ -806,6 +802,29 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 "create_workflow resume requires AuthoringResumeContext or WorkflowContext"
             )
 
+        if self.artifact_kind == "workflow":
+            self._run_id = run_id
+            self._summary_emitted = False
+            self._workflow_run = WorkflowRun(
+                run_id=run_id,
+                workflow_name=self.workflow_name,
+                intent=intent,
+                current_phase=None,
+                total_phases=len(self._phase_names()),
+            )
+            self._cfg.app_state.workflow_run.set(self._workflow_run)
+            result = self._result(
+                run_id=run_id,
+                status="failed",
+                error=(
+                    "create_workflow has no runner-owned staged artifact to resume. "
+                    "Inspect the workflow written by the design agent or run "
+                    "/workflow create_workflow again."
+                ),
+            )
+            await self._finish_run(result, status="failed")
+            return result
+
         artifact: AuthoringArtifact | None = None
         try:
             candidate, _report, artifact, manifest_state, manifest_intent = (
@@ -818,8 +837,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 run_id=run_id,
                 workflow_name=self.workflow_name,
                 intent=intent,
-                current_phase="review",
-                total_phases=len(_PHASES),
+                current_phase="design" if self.artifact_kind == "workflow" else "review",
+                total_phases=len(self._phase_names()),
             )
             self._cfg.app_state.workflow_run.set(self._workflow_run)
             from agenthicc.kernel import Event
@@ -831,7 +850,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                         "run_id": run_id,
                         "workflow_name": self.workflow_name,
                         "intent": intent,
-                        "phase_names": list(_PHASES),
+                        "phase_names": list(self._phase_names()),
                         "resumed": True,
                     },
                 )
@@ -911,7 +930,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     workflow_name=self.workflow_name,
                     intent=intent,
                     current_phase=None,
-                    total_phases=len(_PHASES),
+                    total_phases=len(self._phase_names()),
                 )
                 self._cfg.app_state.workflow_run.set(self._workflow_run)
             await self._finish_run(result, status="failed")
@@ -921,17 +940,60 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         """Parse the model source response for this artifact kind."""
 
         if self.artifact_kind == "workflow":
-            return parse_workflow_response(text)
+            raise RuntimeError(
+                "create_workflow is agent-owned: the runner does not parse assistant output"
+            )
         return parse_authoring_response(text, self.artifact_kind)
 
     def _validate_candidate(self, candidate: WorkflowCandidate) -> ValidationReport:
         """Validate the model candidate using the selected export contract."""
 
         if self.artifact_kind == "workflow":
-            return validate_workflow_candidate(candidate)
+            raise RuntimeError(
+                "create_workflow is agent-owned: the runner does not validate workflow source"
+            )
         if self.artifact_kind == "tool":
             return validate_tool_candidate(candidate)
         return validate_command_candidate(candidate)
+
+    @staticmethod
+    def _unvalidated_report() -> ValidationReport:
+        """Describe the intentionally skipped source checks for raw workflows."""
+
+        return ValidationReport(
+            (
+                ValidationFinding(
+                    "not-run",
+                    "Source parsing and static validation were intentionally skipped.",
+                    blocking=False,
+                ),
+            )
+        )
+
+    def _agent_reported_workflow_artifact(self) -> AuthoringArtifact | None:
+        """Describe the path reported by the design agent without inspecting it.
+
+        The design agent owns the actual ``write_file`` call.  This method only
+        turns the agent-provided stable name into result metadata; it never
+        reads, hashes, parses, validates, or writes the source file.
+        """
+
+        raw_name = self._design_metadata.get("artifact_name")
+        if not isinstance(raw_name, str):
+            return None
+        name = raw_name.strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", name):
+            return None
+        path = self._project_root / ".agenthicc" / self.destination_dir / f"{name}.py"
+        return AuthoringArtifact(
+            name=name,
+            state="agent-written",
+            staged_path=str(path),
+            published_path=None,
+            sha256="",
+            validation=self._unvalidated_report(),
+            manifest_path=None,
+        )
 
     def _generation_attempt_limit(self) -> int:
         """Return the bounded source-generation attempt limit from execution config."""
@@ -985,6 +1047,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             if spec.on_reject
             else ""
         )
+        memory_boundary = (
+            "do not use memory to replace the direct source capture contract"
+            if self.artifact_kind == "workflow"
+            else "do not rely on memory to bypass the explicit transition tool or validation gates"
+        )
         return (
             f"\n\n[AUTHORING PHASE: {phase_name}]\n"
             f"{spec.system_prompt_override.strip()}\n"
@@ -998,8 +1065,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             f"moves the authoring run to {next_phase}.{rejection_route}\n"
             "MEMORY REMINDER: one shared session memory is carried across all authoring "
             "phases. Use memory_write/memory_read for important authoring decisions and "
-            "semantic_search when prior phase context is needed; do not rely on memory "
-            "to bypass the explicit transition tool or validation gates."
+            f"semantic_search when prior phase context is needed; {memory_boundary}."
         )
 
     def _generation_feedback(
@@ -1008,25 +1074,16 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         *,
         parse_error: str | None = None,
         phase_transition_required: bool = False,
-        source_submitted: bool = False,
     ) -> str:
         """Build actionable correction instructions for the next agent attempt."""
 
         if phase_transition_required:
-            if source_submitted:
-                return (
-                    "The complete source was submitted, but the design handoff was not "
-                    "completed. Do not repeat the source in assistant prose. Call "
-                    "complete_design_phase(summary=...) now, after the submitted source "
-                    "has been checked. A plain response cannot advance this phase."
-                )
             return (
-                "The design phase is tool-gated. If you generated Python in assistant "
-                "prose, do not repeat it there. Put the complete raw Python source in "
-                "submit_generated_source(source=..., artifact_name=..., "
-                "artifact_description=...), then immediately call "
-                "complete_design_phase(summary=...). The runner cannot advance from "
-                "source text, analysis, or an envelope alone."
+                "The design phase is tool-gated. Generate the complete raw Python "
+                "source directly in your assistant response, with no analysis or "
+                "envelope, then immediately call complete_design_phase(summary=...). "
+                "The runner captures and validates that response; it cannot advance "
+                "from analysis, an empty response, or a transition call without source."
             )
         if parse_error is not None:
             return (
@@ -1124,8 +1181,8 @@ agent to finish. Generate the source directly from the user's intent.
 There are two workflow layers:
 
 1. ``create_workflow`` is the authoring workflow. It interprets the user's
-   intent, asks you to generate the artifact, stages and validates it, requests
-   publication approval, and publishes it only after approval.
+   intent, asks you to generate the artifact, and gives you ownership of writing
+   the completed workflow with the canonical ``write_file`` tool.
 2. Your generated workflow is the specialized runtime workflow. Later runtime
    agents execute its phases. The generated runner should orchestrate phases;
    the generated phase prompts must contain the specialized behavior.
@@ -1217,9 +1274,9 @@ do not invent per-phase provider switching.
 
 If configuration is needed, put a clearly labeled copy-ready ``agenthicc.toml``
 template in the generated module docstring or comments. This authoring run
-publishes only the Python workflow artifact. Never include API keys or tokens,
-claim that TOML was published, silently edit configuration, install
-dependencies, or bypass explicit activation.
+writes only the Python workflow artifact through the canonical filesystem tool.
+Never include API keys or tokens, claim that TOML was written, silently edit
+configuration, install dependencies, or bypass explicit activation.
 
 SAFETY AND SOURCE CONTRACT
 
@@ -1229,7 +1286,9 @@ SAFETY AND SOURCE CONTRACT
 - Keep phase names and transitions valid and bounded.
 - Do not use eval, exec, compile, __import__, os.system, subprocess, ctypes,
   import-time side effects, or unsafe filesystem/process bypasses.
-- Do not write directly to ``.agenthicc/workflows`` during this turn.
+- Do not use shell commands or an unguarded filesystem API to write the workflow.
+  Use the configured canonical ``write_file`` tool with a path inside
+  ``.agenthicc/workflows``.
 - Do not generate extra tools, commands, tests, or files.
 - Do not expose secrets or claim a generated integration is configured when it
   is not.
@@ -1239,79 +1298,29 @@ prompt, tool/API, expected output, success criterion, and handoff. Verify the
 source, class-level workflow name and description, phase references, runner
 choice, and activation notes.
 
-Generate the source directly as code. In a normal authoring run, do not place it
-in assistant prose: put the complete raw Python source file in
-submit_generated_source(source, artifact_name, artifact_description), then call
-complete_design_phase(summary). These tool calls are mandatory for the design
-handoff; source text cannot advance the phase. Return the raw source as the
-response itself only for a legacy invocation without phase-local tools:
-start with the imports and include the full ``WorkflowPlugin`` class, phase
-specifications, prompts, and any justified custom runner. Do not wrap the code
-in XML, JSON, Markdown fences, or another special envelope. Do not add an
-explanation before or after the source.
+Write the complete raw Python source file directly with the canonical filesystem
+tool. In the normal authoring run, make exactly one complete ``write_file`` call
+with:
 
-When the phase-local authoring tools are available, "generate the source
-directly" means place the complete raw source in the
-``submit_generated_source(source, artifact_name, artifact_description)`` tool
-argument; do not print the source in assistant prose. Then immediately call
-``complete_design_phase(summary)``. These two calls are mandatory in the normal
-authoring run: source text, analysis, or a special response envelope cannot
-advance the design phase. If no phase-local tools are available for a legacy
-direct invocation, raw source text remains the accepted fallback.
+``path=".agenthicc/workflows/<stable_workflow_name>.py"``
+``content=<the complete Python source>``
+
+The content argument must contain the entire source beginning with imports and
+including the full ``WorkflowPlugin`` class, phase specifications, prompts, and
+any justified custom runner. Do not wrap the code: it must not contain prose, a
+plan, a patch, XML, JSON, Markdown fences, or another envelope. Wait for a
+successful write result,
+then immediately call
+``complete_design_phase(summary, artifact_name, artifact_description)``. If the
+write fails or is interrupted, retry the complete write before calling the
+transition. The runner never copies assistant response text, publishes files,
+parses source, statically validates source, or requests end-user approval.
+
 
 USER INTENT:
 {intent}
 {self._phase_prompt("design")}
 """
-
-    def _design_transition_validator(
-        self, transition_data: dict[str, object]
-    ) -> tuple[str, str] | None:
-        """Validate the design handoff before allowing the phase to advance."""
-
-        if transition_data.get("source_submitted") is not True:
-            return (
-                "no complete source was submitted",
-                "call submit_generated_source() with the complete raw Python file before calling complete_design_phase()",
-            )
-        source = transition_data.get("source")
-        name = transition_data.get("artifact_name")
-        description = transition_data.get("artifact_description")
-        if not isinstance(source, str) or not source.strip():
-            return (
-                "the submitted source is empty",
-                "generate the complete source directly and submit it again",
-            )
-        if not isinstance(name, str) or not name.strip():
-            return (
-                "the artifact name is missing",
-                "submit a stable lowercase artifact name with the source",
-            )
-        if not isinstance(description, str) or not description.strip():
-            return (
-                "the artifact description is missing",
-                "submit a concise artifact description with the source",
-            )
-        try:
-            candidate = self._parse_candidate(source)
-        except ValueError as exc:
-            return (
-                f"the submitted source is not parseable: {exc}",
-                "return one complete raw Python source file without prose, JSON, XML, or Markdown fences",
-            )
-        candidate = dataclasses.replace(
-            candidate,
-            name=name.strip(),
-            description=description.strip(),
-        )
-        report = self._validate_candidate(candidate)
-        if not report.valid:
-            findings = "; ".join(item.message for item in report.findings if item.blocking)
-            return (
-                f"the submitted source failed static validation: {findings}",
-                "correct every blocking finding and submit the complete corrected source again",
-            )
-        return None
 
     @staticmethod
     def _artifact_ready_transition_error(
@@ -1388,8 +1397,8 @@ USER INTENT:
         last_text = ""
         attempt_limit = self._generation_attempt_limit()
         for attempt in range(1, attempt_limit + 1):
-            output: list[str] = []
             transition_event = asyncio.Event()
+            output: list[str] = _PhaseOutput(transition_event)
             transition_data: dict[str, object] = {}
             prompt = self._generation_prompt(intent)
             if feedback:
@@ -1408,25 +1417,73 @@ USER INTENT:
                         "design",
                         transition_event,
                         transition_data,
-                        validator=self._design_transition_validator,
                     ),
                 ],
                 active_agent="planner",
                 system_prompt=(
-                    "You are generating source for a staged user extension. "
-                    f"Never write directly to .agenthicc/{self.destination_dir}."
+                    (
+                        "You are the create_workflow design agent. Write the complete "
+                        "workflow source with the canonical write_file tool inside "
+                        ".agenthicc/workflows, then complete the design handoff. The "
+                        "runner never copies assistant text into the project."
+                        if self.artifact_kind == "workflow"
+                        else (
+                            "You are generating source for a staged user extension. "
+                            f"Never write directly to .agenthicc/{self.destination_dir}."
+                        )
+                    )
                 ),
                 output=output,
                 max_agent_turns=max_agent_turns,
                 shared_memory=shared_memory,
             )
-            submitted_source = transition_data.get("source")
             last_text = (
-                submitted_source.strip()
-                if isinstance(submitted_source, str)
+                "".join(output)
+                if self.artifact_kind == "workflow"
                 else "".join(output).strip()
             )
+            if self.artifact_kind == "workflow":
+                if transition_event.is_set():
+                    self._design_metadata = dict(transition_data)
+                    return None, self._unvalidated_report(), attempt, last_text
+                last_report = ValidationReport(
+                    (
+                        ValidationFinding(
+                            "phase-transition",
+                            "The design agent must write the complete workflow with "
+                            "write_file and then call complete_design_phase().",
+                        ),
+                    )
+                )
+                feedback = (
+                    "The design handoff was not received. Use write_file to write the "
+                    "complete Python source to .agenthicc/workflows/<name>.py, wait "
+                    "for a successful result, then call "
+                    "complete_design_phase(summary, artifact_name, artifact_description). "
+                    "The runner will not copy or publish assistant response text."
+                )
+                if attempt < attempt_limit:
+                    self._emit_phase_retry("workflow design", attempt, attempt_limit, feedback)
+                continue
             if self._phase_specs and not transition_event.is_set():
+                try:
+                    fallback_candidate = self._parse_candidate(last_text)
+                except ValueError:
+                    fallback_candidate = None
+                if fallback_candidate is not None:
+                    fallback_report = self._validate_candidate(fallback_candidate)
+                    if fallback_report.valid:
+                        self._cfg.conv_store.append_event(
+                            "system",
+                            {
+                                "text": (
+                                    "Design produced a complete statically valid source artifact, "
+                                    "but omitted complete_design_phase(); advancing through the "
+                                    "validated-source fallback."
+                                )
+                            },
+                        )
+                        return fallback_candidate, fallback_report, attempt, last_text
                 parse_error = str(
                     transition_data.get("last_error")
                     or (
@@ -1441,7 +1498,6 @@ USER INTENT:
                     last_report,
                     parse_error=parse_error,
                     phase_transition_required=True,
-                    source_submitted=isinstance(submitted_source, str),
                 )
                 if attempt < attempt_limit:
                     self._cfg.conv_store.append_event(
@@ -1461,7 +1517,11 @@ USER INTENT:
             except ValueError as exc:
                 finding = ValidationFinding("response-parse", str(exc))
                 last_report = ValidationReport((finding,))
-                feedback = self._generation_feedback(last_report, parse_error=str(exc))
+                feedback = self._generation_feedback(
+                    last_report,
+                    parse_error=str(exc),
+                    phase_transition_required=bool(self._phase_specs),
+                )
                 if attempt < attempt_limit:
                     self._cfg.conv_store.append_event(
                         "system",
@@ -1496,6 +1556,10 @@ USER INTENT:
     ) -> tuple[WorkflowCandidate, ValidationReport, AuthoringArtifact, str, str]:
         """Load and revalidate one run-scoped staging manifest."""
 
+        if self.artifact_kind == "workflow":
+            raise ValueError(
+                "create_workflow has no runner-owned staged artifact; its agent writes directly"
+            )
         if not _RUN_ID_RE.fullmatch(run_id):
             raise ValueError("authoring run id is invalid")
         root = WorkspaceView(self._project_root)
@@ -1518,7 +1582,9 @@ USER INTENT:
             raise ValueError("authoring manifest belongs to a different workflow")
         if required_string("run_id") != run_id:
             raise ValueError("authoring manifest run id does not match the resume request")
-        if not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", required_string("name")):
+        if self.artifact_kind != "workflow" and not re.fullmatch(
+            r"[a-z][a-z0-9_]{1,63}", required_string("name")
+        ):
             raise ValueError("authoring manifest contains an invalid artifact name")
         name = required_string("name")
         if required_string("artifact_kind") != self.artifact_kind:
@@ -1526,7 +1592,11 @@ USER INTENT:
         description = manifest_value.get("description", "")
         if not isinstance(description, str):
             raise ValueError("authoring manifest description must be a string")
-        expected_stage = root.resolve(stage_dir / f"{name}.py")
+        expected_stage = root.resolve(
+            Path(".agenthicc") / self.destination_dir / f"{name}.py"
+            if self.artifact_kind == "workflow"
+            else stage_dir / f"{name}.py"
+        )
         staged_path = root.resolve(required_string("staged_path"))
         if staged_path != expected_stage:
             raise ValueError("authoring staged path does not match the run manifest")
@@ -1538,11 +1608,17 @@ USER INTENT:
             raise ValueError("authoring destination does not match the run manifest")
         source = staged_path.read_text(encoding="utf-8")
         digest = required_string("sha256")
-        if source_sha256(source) != digest:
+        if self.artifact_kind != "workflow" and source_sha256(source) != digest:
             raise ValueError(f"staged {self.artifact_label} changed after its last validation")
+        if self.artifact_kind == "workflow":
+            digest = source_sha256(source)
         candidate = WorkflowCandidate(name=name, code=source, description=description)
-        report = self._validate_candidate(candidate)
-        if not report.valid:
+        report = (
+            self._unvalidated_report()
+            if self.artifact_kind == "workflow"
+            else self._validate_candidate(candidate)
+        )
+        if self.artifact_kind != "workflow" and not report.valid:
             raise ValueError(self._validation_text(report))
         state = manifest_value.get("state", "staged")
         if not isinstance(state, str) or state not in {"staged", "published"}:
@@ -1576,7 +1652,7 @@ USER INTENT:
         if self._workflow_run is None:
             return
         self._state = state_for_phase(name)
-        index = _PHASES.index(name)
+        index = self._phase_names().index(name)
         self._workflow_run = dataclasses.replace(
             self._workflow_run,
             current_phase=name,
@@ -1657,8 +1733,6 @@ USER INTENT:
             else AuthoringState.FAILED
         )
 
-        # Authoring runs do not end in a normal agent response: publication is
-        # completed by the workflow runner after the approval overlay closes.
         # Emit the terminal summary as a normal transcript text event so the
         # user always gets a visible response instead of an apparently idle UI.
         if not self._summary_emitted:
@@ -1797,6 +1871,18 @@ USER INTENT:
         return message
 
     def _summary(self, result: AuthoringResult) -> str:
+        if self.artifact_kind == "workflow" and result.status == "complete":
+            if result.artifact is not None:
+                return (
+                    f"Agent wrote workflow {result.artifact.name!r} to "
+                    f"{result.artifact.staged_path}. {self._activation_message(result.artifact.name)} "
+                    "The runner did not copy, publish, parse, or validate the source."
+                )
+            return (
+                "The design agent completed its handoff, but did not report a valid "
+                "workflow filename. The runner did not copy, publish, parse, or validate "
+                "assistant output."
+            )
         if result.status == "published" and result.artifact is not None:
             return (
                 f"Created {self.artifact_label} {result.artifact.name!r} at "
@@ -1844,12 +1930,12 @@ examples.
 
 SOURCE CONTRACT
 
-- Generate the complete raw Python source directly. In a normal authoring run,
-  put it in submit_generated_source(source, artifact_name, artifact_description)
-  and then call complete_design_phase(summary); do not put the source in
-  assistant prose. Do not use XML, JSON, Markdown fences, or any other special
-  response envelope. A raw response is accepted only for a legacy invocation
-  without phase-local tools.
+- Generate the complete raw Python source directly in the assistant response.
+  Return exactly one raw source file without analysis or commentary. Do not use XML, JSON,
+  Markdown fences, or another response envelope. After the source is complete,
+  immediately call complete_design_phase(summary). The runner captures and
+  validates the response before staging it; do not write to the discoverable
+  tools directory yourself.
 - Set literal module metadata ``ARTIFACT_NAME = "lowercase_module_name"`` and
   ``ARTIFACT_DESCRIPTION = "short description"``. The authoring lifecycle uses
   these values to choose the staged and published filename when no legacy
@@ -1874,12 +1960,6 @@ capability boundary, error handling, and loader compatibility. Return the
 source directly even when the requested tool requires a configured external
 service; report that prerequisite at runtime instead of fabricating it.
 
-When phase-local authoring tools are available, place this complete raw source
-in submit_generated_source(source, artifact_name, artifact_description)
-instead of printing it in assistant prose, then call
-complete_design_phase(summary). A plain response cannot advance design.
-For a legacy direct invocation without those tools, raw source text remains the
-accepted fallback.
 
 USER INTENT:
 {intent}
@@ -1922,12 +2002,12 @@ examples.
 
 SOURCE CONTRACT
 
-- Generate the complete raw Python source directly. In a normal authoring run,
-  put it in submit_generated_source(source, artifact_name, artifact_description)
-  and then call complete_design_phase(summary); do not put the source in
-  assistant prose. Do not use XML, JSON, Markdown fences, or any other special
-  response envelope. A raw response is accepted only for a legacy invocation
-  without phase-local tools.
+- Generate the complete raw Python source directly in the assistant response.
+  Return exactly one raw source file without analysis or commentary. Do not use XML, JSON,
+  Markdown fences, or another response envelope. After the source is complete,
+  immediately call complete_design_phase(summary). The runner captures and
+  validates the response before staging it; do not write to the discoverable
+  commands directory yourself.
 - Set literal module metadata ``ARTIFACT_NAME = "lowercase_module_name"`` and
   ``ARTIFACT_DESCRIPTION = "short description"``. The authoring lifecycle uses
   these values to choose the staged and published filename when no legacy
@@ -1951,12 +2031,6 @@ policy, and loader compatibility. Return the source directly even when the
 requested command depends on a prerequisite; report that prerequisite through
 the command's normal bounded behavior.
 
-When phase-local authoring tools are available, place this complete raw source
-in submit_generated_source(source, artifact_name, artifact_description)
-instead of printing it in assistant prose, then call
-complete_design_phase(summary). A plain response cannot advance design.
-For a legacy direct invocation without those tools, raw source text remains the
-accepted fallback.
 
 USER INTENT:
 {intent}

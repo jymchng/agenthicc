@@ -17,10 +17,10 @@ if TYPE_CHECKING:
 
 
 class CreateWorkflow(WorkflowPlugin):
-    """Generate and publish one validated project-local workflow plugin."""
+    """Generate and directly write one project-local workflow plugin."""
 
     name = "create_workflow"
-    description = "Create a validated agenthicc workflow from the next user intent."
+    description = "Create an agenthicc workflow from the next user intent."
     mode_bindings: list[str] = []
     phases = [
         PhaseSpec(
@@ -62,103 +62,19 @@ class CreateWorkflow(WorkflowPlugin):
                 "self-contained prompt that specifies its objective, available tools, "
                 "inputs, outputs, verification evidence, safety boundaries, completion "
                 "signal, and next-phase handoff. Keep generated code secure, typed, "
-                "loader-compatible, and faithful to the interpreted intent. Generate the "
-                "complete raw Python source directly: no plan, pseudocode, patch, XML, "
-                "JSON, Markdown fence, or explanatory envelope, and do not write to the "
-                "discoverable workflow directory. TRANSITION: submit the complete source "
-                "with submit_generated_source(source, artifact_name, artifact_description), "
-                "then call complete_design_phase(summary) only after the source and its "
-                "metadata are complete. A successful tool handoff moves the authoring run "
-                "to STAGE; free-form text cannot advance it."
-            ),
-            next="stage",
-            max_iterations=2,
-            max_turns=20,
-        ),
-        PhaseSpec(
-            name="stage",
-            agent_type="auto",
-            system_prompt_override=(
-                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow from "
-                "the user's intent and carry it safely through authoring to publication. "
-                "You are in the STAGE phase. The DESIGN phase has supplied a complete "
-                "candidate; confirm that the candidate and metadata are ready to be stored "
-                "without changing the user's requested behavior. Staging must use the "
-                "run-scoped authoring directory, manifest, and source hash so the candidate "
-                "remains isolated, auditable, and undiscoverable. Do not publish, import, "
-                "execute, activate, or write into the discoverable workflow directory, and "
-                "do not silently repair source in this phase. TRANSITION: after confirming "
-                "the candidate is ready for isolated staging, call "
-                "complete_stage_phase(summary). The runner performs the staging side "
-                "effect and then moves to VALIDATE; a prose response alone does not advance "
-                "the authoring workflow."
-            ),
-            next="validate",
-            max_turns=20,
-        ),
-        PhaseSpec(
-            name="validate",
-            agent_type="verifier",
-            system_prompt_override=(
-                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow that is "
-                "safe, loader-compatible, and ready for an explicit publication decision. "
-                "You are in the VALIDATE phase. Inspect the immutable run-scoped staged "
-                "artifact and the current agenthicc contracts without importing or executing "
-                "generated code. Check syntax, allowed imports and calls, stable name and "
-                "description, literal non-empty phase prompts, phase references and graph "
-                "termination, agent roles, runner selection, build_runner wiring, tool and "
-                "capability boundaries, activation/reload instructions, and consistency of "
-                "the staged source, manifest, digest, and deterministic validation report. "
-                "Report every blocking finding precisely; never claim safety merely because "
-                "the source parses. Do not modify, publish, activate, or execute the staged "
-                "workflow. TRANSITION: call complete_validate_phase(summary) only when the "
-                "candidate is complete, safe, and ready for human publication review. The "
-                "runner then moves to REVIEW; if prerequisites fail, the transition tool "
-                "returns the error and fix and the agent must correct or explain it before "
-                "trying again."
-            ),
-            next="review",
-            max_turns=20,
-        ),
-        PhaseSpec(
-            name="review",
-            agent_type="human",
-            system_prompt_override=(
-                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow while "
-                "keeping publication an explicit, informed, user-controlled decision. You "
-                "are in the REVIEW phase. Present the validated staged workflow's name, "
-                "purpose, intended runtime behavior, phase topology, integrations, source "
-                "path, validation evidence, digest/manifest identity, safety implications, "
-                "destination, and the exact reload or activation action. Do not alter the "
-                "source, bypass validation, publish, or execute the future workflow. "
-                "TRANSITION: after presenting the evidence, call "
-                "request_publication_approval() exactly once to obtain the explicit "
-                "publication decision. If approved, that tool invocation moves the run to "
-                "PUBLISH; if denied, the artifact stays staged and the runner moves to "
-                "SUMMARIZE. Do not treat a prose approval or denial as a transition."
-            ),
-            next="publish",
-            on_reject="summarize",
-            max_turns=20,
-        ),
-        PhaseSpec(
-            name="publish",
-            agent_type="auto",
-            system_prompt_override=(
-                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow by "
-                "safely completing publication of exactly the artifact that passed validation "
-                "and received explicit approval. You are in the PUBLISH phase. Reconfirm "
-                "that approval is granted, the artifact is still staged, the source digest "
-                "and manifest still match, and no unapproved source replacement occurred. "
-                "Publication must be atomic, must preserve the manifest and digest, and must "
-                "write only to the intended project workflow directory. Never publish an "
-                "unvalidated, changed, unapproved, or newly generated artifact; never claim "
-                "the workflow is active before the required reload or restart. TRANSITION: "
-                "after the checks are complete, call complete_publish_phase(summary). The "
-                "runner performs publication and then moves to SUMMARIZE; the tool call is "
-                "the handoff, not a declaration that publication already happened."
+                "loader-compatible, and faithful to the interpreted intent. TRANSITION: "
+                "Use the "
+                "canonical write_file tool to write the complete Python source directly "
+                "to .agenthicc/workflows/<stable_name>.py; the tool content must be the "
+                "full source, not a plan or partial file. Wait for a successful write, "
+                "then call complete_design_phase(summary, artifact_name, "
+                "artifact_description). The runner never copies assistant response text, "
+                "parses or validates the source, stages or publishes the file, or asks "
+                "for end-user approval. A successful handoff moves the run to SUMMARIZE; "
+                "if the write or handoff fails, retry it rather than returning prose."
             ),
             next="summarize",
+            max_iterations=2,
             max_turns=20,
         ),
         PhaseSpec(
@@ -169,10 +85,10 @@ class CreateWorkflow(WorkflowPlugin):
                 "its authoring run with an accurate, actionable handoff to the user. You "
                 "are in the SUMMARIZE phase, the final phase of this authoring state machine. "
                 "Report only the authoritative structured result: workflow name, status, "
-                "artifact kind, staged or published path, manifest/digest, validation "
-                "outcome, approval state, unresolved errors, and the exact next action to "
-                "reload, discover, resume, or run the newly created workflow. Do not claim "
-                "publication, activation, or success that the result does not prove. "
+                "artifact kind, agent-written path when reported, unresolved errors, and "
+                "the exact next action to reload, discover, or run "
+                "the newly created workflow. Do not claim activation or success that the "
+                "result does not prove. "
                 "TRANSITION: after stating the complete truthful summary, call "
                 "complete_summarize_phase(summary). That tool invocation closes the final "
                 "phase and moves the runner to its terminal COMPLETE, REJECTED, or FAILED "
@@ -224,8 +140,9 @@ class CreateTools(WorkflowPlugin):
                 "decorator, a literal TOOLS export, accurate annotations, bounded "
                 "errors, and only the configured integrations the tool can actually "
                 "use. Do not return an envelope or write to the discoverable tools "
-                "directory. TRANSITION: submit the complete source with "
-                "submit_generated_source(...), then call complete_design_phase(summary)."
+                "directory. TRANSITION: return the complete source directly, then call "
+                "complete_design_phase(summary). The runner captures and validates the "
+                "response before staging it."
             ),
             next="stage",
             max_iterations=2,
@@ -240,21 +157,8 @@ class CreateTools(WorkflowPlugin):
                 "publish, import, or execute it before validation and explicit approval. "
                 "Call complete_stage_phase(summary) only when it is ready for staging."
             ),
-            next="validate",
-            max_turns=4,
-        ),
-        PhaseSpec(
-            name="validate",
-            agent_type="verifier",
-            system_prompt_override=(
-                "Validate the staged tool without importing or executing it. Check "
-                "syntax, safe imports and calls, metadata, lauren-ai decorator usage, "
-                "literal TOOLS export, callable references, annotations, capabilities, "
-                "and activation requirements. Report blocking findings precisely and "
-                "call complete_validate_phase(summary) only for a loader-compatible candidate."
-            ),
             next="review",
-            max_turns=8,
+            max_turns=4,
         ),
         PhaseSpec(
             name="review",
@@ -336,9 +240,9 @@ class CreateCommands(WorkflowPlugin):
                 "module. Include ARTIFACT_NAME, ARTIFACT_DESCRIPTION, canonical literal "
                 "Command metadata, exactly one compatible COMMAND or COMMANDS export, "
                 "and a bounded handler or menu factory. Do not return an envelope or "
-                "write to the discoverable commands directory. TRANSITION: submit the "
-                "complete source with submit_generated_source(...), then call "
-                "complete_design_phase(summary)."
+                "write to the discoverable commands directory. TRANSITION: return the "
+                "complete source directly, then call complete_design_phase(summary). "
+                "The runner captures and validates the response before staging it."
             ),
             next="stage",
             max_iterations=2,
@@ -353,22 +257,8 @@ class CreateCommands(WorkflowPlugin):
                 "publish, import, or execute it before validation and explicit approval. "
                 "Call complete_stage_phase(summary) only when it is ready for staging."
             ),
-            next="validate",
-            max_turns=4,
-        ),
-        PhaseSpec(
-            name="validate",
-            agent_type="verifier",
-            system_prompt_override=(
-                "Validate the staged command without importing or executing it. Check "
-                "syntax, safe imports and calls, metadata, Command export shape, literal "
-                "slash names and descriptions, handler or menu references, argument "
-                "contract, and activation requirements. Report blocking findings "
-                "precisely and call complete_validate_phase(summary) only for a "
-                "loader-compatible candidate."
-            ),
             next="review",
-            max_turns=8,
+            max_turns=4,
         ),
         PhaseSpec(
             name="review",

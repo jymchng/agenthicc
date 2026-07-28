@@ -73,33 +73,29 @@ source file directly. Each generated `PhaseSpec` carries a literal
 `system_prompt_override` describing its objective, tools, inputs, outputs,
 verification, completion signal, and handoff. Declarative workflows use the
 inherited generic `WorkflowRunner`; custom `run()`/`resume()` implementations
-are reserved for behavior the phase graph cannot express. Publication requires
-approval and writes atomically to `.agenthicc/workflows/<name>.py`. A denied
-request leaves the staged candidate available for inspection and does not
-replace an existing workflow. Every terminal outcome emits a final summary in
-the transcript and in the structured `AuthoringResult`.
+are reserved for behavior the phase graph cannot express. The design agent
+writes the complete source with the canonical `write_file` tool to
+`.agenthicc/workflows/<name>.py`, then calls its design handoff. The runner does
+not copy assistant text, publish, parse, or statically validate the source, and
+no staging directory or publish phase is involved. Every terminal outcome emits
+a final summary in the transcript and in the structured `AuthoringResult`.
 
-If the design agent returns analysis, tool-call activity, or incomplete output
-instead of source, authoring reports the exact parser finding, emits a visible
-retry notice, and sends correction instructions back to the agent. It retries
-up to `[execution].authoring_max_generation_attempts` complete attempts (3 by
-default, bounded to 1–10) before failing without staging or publishing a
-partial artifact.
+Assistant prose is never an artifact. If the agent does not successfully write
+the file and call its design handoff, the runner retries up to
+`[execution].authoring_max_generation_attempts` bounded attempts and then
+returns a failure without creating a `.py` file. The runner trusts the agent's
+successful filesystem-tool handoff for the reported path; it does not inspect
+the file or create a runner-owned manifest.
 
 Authoring phases are explicit state-machine nodes. The definition supplies a
-separate phase prompt and turn budget for `interpret`, `design`, `stage`,
-`validate`, `review`, `publish`, and `summarize`; the operator can cap every
-phase with `[execution].authoring_max_phase_turns` (20 by default). The built-in
-`create_workflow` definition gives all seven phases a 20-turn budget; a lower
-execution setting remains an intentional global cap. Each
-agent-controlled phase owns its agent turn and uses a phase-local completion
-tool as its handoff gate. If an inspection or other intermediate turn ends
-without that tool, the phase emits a visible retry and continues up to its
-bounded limit instead of failing with an uncaught transition error. Deterministic
-staging, validation, approval, publication, and summary steps advance only
-after their own gate succeeds. `submit_generated_source` captures the complete
-raw Python file directly, so the authoring contract does not depend on an XML,
-JSON, or Markdown response envelope.
+separate phase prompt and turn budget for `interpret`, `design`, and `summarize`;
+the operator can cap every phase with
+`[execution].authoring_max_phase_turns` (20 by default). The built-in
+`create_workflow` definition gives all three phases a 20-turn budget. The
+interpret and summarize phases use their phase-local completion tools. Design
+uses `write_file` for the complete source and then its phase-local handoff; it
+has no parser, validator, approval, staging, review, or publish gate. The agent
+owns the filesystem write.
 
 Each phase has a distinct transition tool, which makes the required handoff
 unambiguous in the model's tool catalog:
@@ -107,26 +103,24 @@ unambiguous in the model's tool catalog:
 | Phase | Required handoff |
 | --- | --- |
 | `interpret` | `complete_interpret_phase(summary)` |
-| `design` | `submit_generated_source(...)`, then `complete_design_phase(summary)` |
-| `stage` | `complete_stage_phase(summary)` |
-| `validate` | `complete_validate_phase(summary)` |
-| `review` | `request_publication_approval()` |
-| `publish` | `complete_publish_phase(summary)` |
+| `design` | `write_file(path=".agenthicc/workflows/<name>.py", content=<complete source>)`, then `complete_design_phase(summary, artifact_name, artifact_description)` |
 | `summarize` | `complete_summarize_phase(summary)` |
 
-The design phase is strict: source-looking assistant prose is not treated as a
-handoff. If the agent generates code but omits either design tool call, the
-retry instruction tells it to put the complete source in
-`submit_generated_source` and then call `complete_design_phase`. This preserves
-the source directly in structured tool input while ensuring the state machine
-cannot advance until the phase transition has actually succeeded.
+The design phase should make one complete `write_file` call, wait for its
+successful result, and then call `complete_design_phase` with the same stable
+filename metadata. A response containing only analysis or source prose does not
+advance the phase. The runner does not inspect or copy that response, ask for
+approval, or create a staging copy.
 
 Like `code_plan`, one `ShortTermMemory` is created for each authoring run and
 shared by every `create_workflow` phase. The phase tool set also includes
 `memory_write`, `memory_read`, `semantic_search`, and `publish_artifact`, so the
 authoring agent can carry decisions and relevant context across interpretation,
-design, validation, review, and publication without using memory to bypass a
-transition or validation gate.
+design, and summary without using memory to replace the direct source capture.
+
+The sibling `create_tools` and `create_commands` workflows retain their separate
+six-phase staged, statically validated, approval-gated lifecycle. Their
+parser/validator behavior is unchanged by the permissive `create_workflow` path.
 
 The design agent also receives two read-only built-ins:
 `inspect_agenthicc_documentation(path)` reads the installed documentation, and
@@ -138,7 +132,7 @@ workflows, tools, and commands aligned with the current API surface. The
 documentation tree is included in built distributions under
 `share/agenthicc/docs` and remains available from the repository checkout.
 
-Run `/workflows reload` after publication so the normal workflow registry
+Run `/workflows reload` after the agent's direct write so the normal workflow registry
 discovers the new file, then select it for a later request:
 
 ```text
@@ -146,12 +140,13 @@ discovers the new file, then select it for a later request:
 Parse the requested Facebook page and summarize the results.
 ```
 
-Use `/workflow resume [run-id]` to resume the newest staged authoring run (or a
-specific run), revalidate its manifest and source, and continue at approval
-without regenerating it. Use `/workflow reset` to return to the active mode's
-default workflow. The authoring result and `WorkflowRunCompleted` event include
-the generated name, staged/published paths, manifest, validation findings,
-approval state, and the `workflows-reload` activation instruction.
+`create_workflow` has no runner-owned staged manifest to resume. If a run is
+interrupted, inspect the file written by the agent or run the authoring workflow
+again. Use `/workflow reset` to return to the active mode's default workflow.
+The authoring result and `WorkflowRunCompleted` event include the agent-reported
+path when supplied, `approval: not-requested`, and the `workflows-reload`
+activation instruction; they do not claim a runner-computed digest or
+publication.
 
 The authoring agent is also instructed to choose the right configuration
 boundary for the generated workflow. It can:
@@ -167,8 +162,9 @@ boundary for the generated workflow. It can:
 - include a copy-ready `agenthicc.toml` template when the workflow needs
   configurable model or phase settings.
 
-The authoring run publishes the Python workflow artifact only. It never writes
-API keys or silently edits a TOML file. Copy the generated template into the
+The authoring agent writes the Python workflow artifact only through `write_file`.
+The runner never publishes it. The workflow never writes API keys or silently
+edits a TOML file. Copy the generated template into the
 project's `.agenthicc/agenthicc.toml` (or another explicitly selected config
 file), restart the session to load configuration, then run `/workflows reload`
 after changing the Python workflow. Provider selection remains session-wide;

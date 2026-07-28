@@ -162,9 +162,9 @@ The primary user journey is:
    ```
 
 3. Agenthicc runs `create_workflow` using that intent. Its phases inspect
-   the repository, design the workflow, stage a candidate, validate the
-   generated `WorkflowPlugin`, present the result for approval, and publish it
-   to `.agenthicc/workflows/` only after approval.
+   the repository, design the workflow, stage a candidate, perform deterministic
+   static checks, present the result for approval, and publish it to
+   `.agenthicc/workflows/` only after approval.
 
 4. The result identifies the generated workflow name, for example
    `cloakbrowser_parse_fb`, the artifact path, validation status, and the
@@ -254,9 +254,14 @@ prompt fragments. The shared runner owns lifecycle and result handling.
 The default phase graph is:
 
 ```text
-interpret → design → stage → validate → review → publish → summarize
-                ↑                  └── reject ──┘
+interpret → design → stage → review → publish → summarize
+                              └─ reject → summarize
 ```
+
+The runner still performs deterministic static and contract validation while
+generating, staging, resuming, and publishing. That safeguard is not an
+agent-controlled phase; a valid staged artifact proceeds directly from `stage`
+to `review`.
 
 ### Interpret
 
@@ -285,7 +290,7 @@ interpret → design → stage → validate → review → publish → summarize
 - Use `WorkspaceView` and existing file/tool capability boundaries for all
   filesystem work.
 
-### Validate
+### Deterministic validation safeguards
 
 - Check names and destinations for traversal, symlink escape, collisions, and
   unsupported paths.
@@ -297,8 +302,8 @@ interpret → design → stage → validate → review → publish → summarize
   artifacts.
 - Run bounded focused tests or generate a test plan when tests cannot safely
   run before publication.
-- Return structured findings and route failures back to `stage` or `design`
-  within a bounded retry budget.
+- Return structured findings and stop before review or publication when a
+  blocking finding remains; source-generation retries remain bounded.
 
 ### Review and publish
 

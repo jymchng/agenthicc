@@ -41,11 +41,13 @@ def _completion(content: str, n: int = 1) -> Completion:
     )
 
 
-def _tool_completion(tool_calls: list[tuple[str, dict[str, object]]], n: int) -> Completion:
+def _tool_completion(
+    tool_calls: list[tuple[str, dict[str, object]]], n: int, content: str = ""
+) -> Completion:
     return Completion(
         id=f"extension-authoring-tool-{n}",
         model="mock-model",
-        content="",
+        content=content,
         tool_calls=[
             ToolCall(tool_use_id=f"tool-{n}-{index}", name=name, input=payload)
             for index, (name, payload) in enumerate(tool_calls)
@@ -207,7 +209,6 @@ async def test_authoring_publishes_and_discovers_each_extension_kind(
         "interpret",
         "design",
         "stage",
-        "validate",
         "review",
         "publish",
         "summarize",
@@ -463,18 +464,9 @@ async def test_headless_authoring_fails_closed_without_explicit_permission(
     transport.queue_response(_completion("Interpretation handed off.", n=2))
     transport.queue_response(
         _tool_completion(
-            [
-                (
-                    "submit_generated_source",
-                    {
-                        "source": source,
-                        "artifact_name": name,
-                        "artifact_description": f"Generated {kind}.",
-                    },
-                ),
-                ("complete_design_phase", {"summary": "The source is ready for staging."}),
-            ],
+            [("complete_design_phase", {"summary": "The source is ready for staging."})],
             3,
+            content=source,
         )
     )
     transport.queue_response(_completion("Source handed off.", n=4))
@@ -485,18 +477,14 @@ async def test_headless_authoring_fails_closed_without_explicit_permission(
         )
     )
     transport.queue_response(_completion("Validation handed off.", n=6))
-    transport.queue_response(
-        _tool_completion([("complete_validate_phase", {"summary": "Validation passed."})], 7)
-    )
-    transport.queue_response(_completion("Validation agent handed off.", n=8))
-    transport.queue_response(_tool_completion([("request_publication_approval", {})], 9))
-    transport.queue_response(_completion("Review handed off.", n=10))
+    transport.queue_response(_tool_completion([("request_publication_approval", {})], 7))
+    transport.queue_response(_completion("Review handed off.", n=8))
     transport.queue_response(
         _tool_completion(
-            [("complete_summarize_phase", {"summary": "The rejected result is ready."})], 11
+            [("complete_summarize_phase", {"summary": "The rejected result is ready."})], 9
         )
     )
-    transport.queue_response(_completion("Summary handed off.", n=12))
+    transport.queue_response(_completion("Summary handed off.", n=10))
     approval = _Approval(False)
     runner, app_state = _runner(
         CreateToolRunner if kind == "tool" else CreateCommandRunner,

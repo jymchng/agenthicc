@@ -18,24 +18,27 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.asyncio
-async def test_design_tools_capture_source_and_require_completion() -> None:
+async def test_design_transition_tool_only_signals_phase_completion() -> None:
     event = asyncio.Event()
     data: dict[str, object] = {}
-    complete, submit = make_authoring_transition_tools("design", event, data)
+    (complete,) = make_authoring_transition_tools("design", event, data)
 
     assert (await complete("not yet"))["ok"] is True
     assert event.is_set()
     assert data["phase"] == "design"
 
-    event.clear()
-    result = await submit("print('source')", "example", "Example artifact")
-    assert result["ok"] is True
-    assert event.is_set() is False
-    assert data["source"] == "print('source')"
-    assert data["artifact_name"] == "example"
 
-    assert (await complete("source is ready"))["ok"] is True
-    assert event.is_set()
+@pytest.mark.asyncio
+async def test_design_transition_tool_captures_optional_artifact_metadata() -> None:
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+    (complete,) = make_authoring_transition_tools("design", event, data)
+
+    result = await complete("source is ready", "cloakbrowser_parse_fb", "Parse Facebook.")
+
+    assert result["ok"] is True
+    assert data["artifact_name"] == "cloakbrowser_parse_fb"
+    assert data["artifact_description"] == "Parse Facebook."
 
 
 @pytest.mark.asyncio
@@ -46,9 +49,7 @@ async def test_transition_tool_returns_actionable_validator_feedback() -> None:
     def reject_transition(_data: dict[str, object]) -> tuple[str, str]:
         return "the staged artifact is missing", "stage the candidate before validating it"
 
-    (complete,) = make_authoring_transition_tools(
-        "validate", event, data, validator=reject_transition
-    )
+    (complete,) = make_authoring_transition_tools("stage", event, data, validator=reject_transition)
 
     result = await complete("I checked the candidate")
 
@@ -67,7 +68,7 @@ async def test_transition_tool_returns_actionable_validator_feedback() -> None:
         ("interpret", "complete_interpret_phase"),
         ("design", "complete_design_phase"),
         ("stage", "complete_stage_phase"),
-        ("validate", "complete_validate_phase"),
+        ("review", "request_publication_approval"),
         ("publish", "complete_publish_phase"),
         ("summarize", "complete_summarize_phase"),
     ],

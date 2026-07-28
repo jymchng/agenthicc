@@ -203,15 +203,12 @@ def test_validation_accepts_direct_custom_runner_without_super_delegation() -> N
 
 @pytest.mark.parametrize("plugin", [CreateWorkflow, CreateTools, CreateCommands])
 def test_each_authoring_workflow_defines_an_explicit_prompt_for_each_phase(plugin) -> None:
-    assert [phase.name for phase in plugin.phases] == [
-        "interpret",
-        "design",
-        "stage",
-        "validate",
-        "review",
-        "publish",
-        "summarize",
-    ]
+    expected = (
+        ["interpret", "design", "summarize"]
+        if plugin is CreateWorkflow
+        else ["interpret", "design", "stage", "review", "publish", "summarize"]
+    )
+    assert [phase.name for phase in plugin.phases] == expected
     assert all(phase.system_prompt_override.strip() for phase in plugin.phases)
 
 
@@ -226,7 +223,7 @@ def test_create_workflow_prompt_teaches_runner_and_toml_contract() -> None:
     assert "Return ONLY this envelope" not in prompt
     assert "<workflow" not in prompt
     assert "system_prompt_override" in prompt
-    assert "eight" in prompt
+    assert "complete_design_phase(summary, artifact_name, artifact_description)" in prompt
     assert "super()" in prompt
     assert "inspect_agenthicc_documentation" in prompt
     assert "inspect_agenthicc_source" in prompt
@@ -266,32 +263,25 @@ def test_extension_authoring_prompts_generate_raw_source_directly(
 
 def test_builtin_authoring_definitions_have_distinct_bounded_phase_contracts() -> None:
     for definition in (CreateWorkflow, CreateTools, CreateCommands):
-        assert [phase.name for phase in definition.phases] == [
-            "interpret",
-            "design",
-            "stage",
-            "validate",
-            "review",
-            "publish",
-            "summarize",
-        ]
+        expected = (
+            ["interpret", "design", "summarize"]
+            if definition is CreateWorkflow
+            else ["interpret", "design", "stage", "review", "publish", "summarize"]
+        )
+        assert [phase.name for phase in definition.phases] == expected
         assert all(phase.system_prompt_override.strip() for phase in definition.phases)
         assert all(1 <= phase.max_turns <= 20 for phase in definition.phases)
-        assert len({phase.system_prompt_override for phase in definition.phases}) == 7
+        assert len({phase.system_prompt_override for phase in definition.phases}) == len(expected)
 
 
 def test_create_workflow_gives_every_phase_twenty_agent_turns() -> None:
-    assert [phase.max_turns for phase in CreateWorkflow.phases] == [20] * 7
+    assert [phase.max_turns for phase in CreateWorkflow.phases] == [20] * 3
 
 
 def test_create_workflow_prompts_repeat_mission_and_phase_handoffs() -> None:
     expected_handoffs = {
         "interpret": ("complete_interpret_phase(summary)", "DESIGN"),
-        "design": ("complete_design_phase(summary)", "STAGE"),
-        "stage": ("complete_stage_phase(summary)", "VALIDATE"),
-        "validate": ("complete_validate_phase(summary)", "REVIEW"),
-        "review": ("request_publication_approval()", "PUBLISH"),
-        "publish": ("complete_publish_phase(summary)", "SUMMARIZE"),
+        "design": ("complete_design_phase(summary, artifact_name, artifact_description)", "SUMMARIZE"),
         "summarize": ("complete_summarize_phase(summary)", "terminal"),
     }
 

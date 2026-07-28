@@ -29,7 +29,6 @@ class AuthoringState(Enum):
     INTERPRET = auto()
     DESIGN = auto()
     STAGE = auto()
-    VALIDATE = auto()
     REVIEW = auto()
     PUBLISH = auto()
     SUMMARIZE = auto()
@@ -45,7 +44,6 @@ class AuthoringState(Enum):
             AuthoringState.INTERPRET: "interpret",
             AuthoringState.DESIGN: "design",
             AuthoringState.STAGE: "stage",
-            AuthoringState.VALIDATE: "validate",
             AuthoringState.REVIEW: "review",
             AuthoringState.PUBLISH: "publish",
             AuthoringState.SUMMARIZE: "summarize",
@@ -107,7 +105,6 @@ _PHASE_TO_STATE: dict[str, AuthoringState] = {
     "interpret": AuthoringState.INTERPRET,
     "design": AuthoringState.DESIGN,
     "stage": AuthoringState.STAGE,
-    "validate": AuthoringState.VALIDATE,
     "review": AuthoringState.REVIEW,
     "publish": AuthoringState.PUBLISH,
     "summarize": AuthoringState.SUMMARIZE,

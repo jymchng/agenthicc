@@ -1429,8 +1429,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     async def run(self, intent: str) -> AuthoringResult
 ```
 
-Run the complete `generate → validate → review → publish → summarize`
-authoring lifecycle.
+Run the complete `interpret → design → stage → review → publish → summarize`
+authoring lifecycle. Static source validation remains a deterministic runner
+safeguard rather than a separate agent-controlled phase.
+The design response is captured directly; valid source can use the bounded
+validated-source recovery path if the model omits its handoff tool.
 
 ### CreateTools
 
@@ -1487,7 +1490,6 @@ class AuthoringState(Enum):
     INTERPRET = auto()
     DESIGN = auto()
     STAGE = auto()
-    VALIDATE = auto()
     REVIEW = auto()
     PUBLISH = auto()
     SUMMARIZE = auto()
@@ -1519,14 +1521,14 @@ def make_authoring_transition_tools(
 ) -> list[Callable[..., object]]
 
 Creates phase-local completion tools. The design phase also exposes
-submit_generated_source, which captures complete raw source directly before
-the runner parses and validates it. Each phase receives a distinct transition
+the unique phase transition tool. The design runner captures complete raw
+source from the assistant response before parsing and validating it. Each phase
+receives a distinct transition
 tool name: complete_interpret_phase, complete_design_phase,
-complete_stage_phase, complete_validate_phase, complete_publish_phase, or
-complete_summarize_phase. The review phase uses
+complete_stage_phase, complete_publish_phase, or complete_summarize_phase. The review phase uses
 request_publication_approval. A phase handoff is accepted only after its
-phase-specific transition tool is called; design additionally requires
-submit_generated_source first.
+phase-specific transition tool is called; design additionally requires a
+complete source response.
 
 The optional ``validator`` checks phase prerequisites before the transition
 event is set. Rejected handoffs return an actionable ``error`` and ``retry``
