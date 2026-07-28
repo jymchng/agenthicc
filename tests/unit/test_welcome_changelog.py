@@ -97,3 +97,13 @@ def test_welcome_renders_remote_entries() -> None:
     assert "What's new" in output
     assert "• Remote update" in output
     assert "No list" not in output
+
+
+def test_welcome_keeps_mascot_feet_below_face_when_subtitle_wraps() -> None:
+    console = Console(record=True, width=60)
+    console.print(render_welcome(changelog=[]))
+
+    lines = console.export_text().splitlines()
+    face_line = next(index for index, line in enumerate(lines) if "( ◕.◕ )" in line)
+
+    assert "> ^ <" in lines[face_line + 1]

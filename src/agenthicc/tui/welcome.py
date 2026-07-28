@@ -132,18 +132,16 @@ def _left_column(model: str, cwd: str, left_w: int = 46) -> "RenderableType":
     hero.add_column(no_wrap=True, width=9)  # mascot — widest line is 8 chars
     hero.add_column()  # title / subtitle — wraps on narrow terminals
 
-    hero.add_row(
-        Text(_MASCOT_LINES[0], style="bold bright_yellow"),
-        Text("AGENTHICC", style="bold yellow"),
-    )
-    hero.add_row(
-        Text(_MASCOT_LINES[1], style="bold bright_yellow"),
-        Text("state-driven agent operating system", style="dim"),
-    )
-    hero.add_row(
-        Text(_MASCOT_LINES[2], style="bold bright_yellow"),
-        Text(""),
-    )
+    mascot = Text("\n".join(_MASCOT_LINES), style="bold bright_yellow")
+    title = Text()
+    title.append("AGENTHICC", style="bold yellow")
+    title.append("\n")
+    title.append("state-driven agent operating system", style="dim")
+    # Keep the mascot as one multiline cell.  If the subtitle wraps while it
+    # is represented as a separate table row, Rich increases that row's height
+    # and pushes the feet below the subtitle instead of directly below the
+    # face.
+    hero.add_row(mascot, title)
 
     parts: list[RenderableType] = [
         hero,

@@ -22,6 +22,7 @@ against the current source before implementing them.
 - [PRD-151 — Reliable Command Execution and Build/Development-Server Lifecycle](prd-151-reliable-command-execution-and-build-server-lifecycle.md)
 - [PRD-152 — Agent-Executable create_* Authoring](prd-152-self-contained-workflow-phase-authoring.md)
 - [PRD-153 — Reliable Agent-Owned Workflow Authoring](prd-153-reliable-agent-owned-workflow-authoring.md)
+- [PRD-155 — Consolidated Safe, Plan, and Yolo Modes](prd-155-three-mode-operational-model.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -106,6 +107,12 @@ and a `design → generate → validate → summarize` graph whose validate phas
 imports the generated file deterministically and overrides an agent approval that
 contradicts the result. It supersedes the `create_workflow` portions of PRD-147,
 PRD-152, and PRD-153.
+
+PRD-155 is the feasibility and implementation specification for consolidating
+the user-facing mode catalogue into Safe, Plan, and Yolo. It treats Yolo as the
+current Auto mode, keeps Plan hard-blocked, moves approval semantics into Safe,
+and makes Safe the default for new sessions while defining compatibility for
+legacy Auto, Guard, and other mode names.
 
 ## Existing PRDs
 
