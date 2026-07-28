@@ -1447,6 +1447,34 @@ complete self-contained prompts, tools, inputs, outputs, verification behavior,
 safety boundaries, completion signals, handoffs, and activation notes for every
 generated phase. Use only existing agenthicc APIs and configured integrations.
 
+STATEFUL CUSTOM RUNNER DECISION
+
+Do not force complex behavior into a declarative ``PhaseSpec`` graph. If the
+requested specialized workflow has conditional branches, loops, retries,
+transformed context, parallel work, phase-specific tools, or non-standard
+completion gates, strongly recommend a custom runner modeled on
+``agenthicc.workflows.code_plan.runner.CodePlanRunner``. The design specification
+must describe the generated runner as an explicit typed state machine:
+
+- a ``State(Enum)`` containing every non-terminal and terminal state;
+- a typed ``@dataclass`` ``Context`` carrying the intent, run id, shared memory,
+  phase outputs, errors, and any workflow-specific data;
+- one bounded async Python function for each non-terminal state, returning the
+  next ``State`` after handling success, retry, rejection, and failure;
+- ``run(intent)`` initializing the context and driving
+  ``while not state.is_terminal`` with a ``match state`` dispatch to those
+  functions; and
+- ``resume(context)`` restoring the typed context and using the same dispatch
+  path rather than duplicating the state transitions.
+
+The specification must identify the state-to-state transitions, retry limits,
+terminal outcomes, phase events, and handoff data. Use ``BaseWorkflowRunner``
+for an independent lifecycle. Use ``CodePlanRunner`` and its public
+``run_phase()`` only when intentionally composing with the existing CodePlan
+state machine; changing ``CodePlan.phases`` alone does not change that runner.
+Do not add a custom runner merely as boilerplate when a declarative graph is
+actually sufficient.
+
 When the specification is complete, call ``complete_design_phase(summary)``.
 That phase transition is the only accepted design handoff and moves the run to
 the EXECUTE phase. The execute agent will generate and write the source; the
@@ -1508,10 +1536,15 @@ Do not add ``run()``, ``resume()``, or ``build_runner()`` merely as boilerplate.
 Use a custom runner only when the intent requires runtime orchestration that a
 literal PhaseSpec graph cannot express, such as context transformation,
 post-processing, or intentionally extending a specialized runner. A custom
-runner may implement ``run()`` and ``resume()`` directly. It may delegate to
-``super()`` only when it intentionally reuses parent lifecycle behavior, such
-as the existing ``code_plan_docs`` composition. Never require or generate a
-no-op wrapper solely to satisfy validation.
+runner should model non-trivial behavior as an explicit typed state machine,
+following ``code_plan``: define a ``State(Enum)`` with terminal states, a typed
+``@dataclass`` context, one bounded async function per non-terminal state, and
+an explicit ``run()`` loop using ``while not state.is_terminal`` plus
+``match/case`` dispatch. ``resume()`` must restore the context and reuse the
+same state functions. It may delegate to ``super()`` only when it intentionally
+reuses parent lifecycle behavior, such as the existing ``code_plan_docs``
+composition. Never require or generate a no-op wrapper solely to satisfy
+validation.
 
 Do not claim that changing ``CodePlan.phases`` changes the specialized
 ``CodePlanRunner`` state machine. If the request truly extends ``code_plan``,
@@ -1583,7 +1616,7 @@ SAFETY AND SOURCE CONTRACT
 Before returning, verify that every user requirement maps to a phase objective,
 prompt, tool/API, expected output, success criterion, and handoff. Verify the
 source, class-level workflow name and description, phase references, runner
-choice, and activation notes.
+choice, custom state/context/functions when applicable, and activation notes.
 
 Write the complete raw Python source file directly with the canonical filesystem
 tool. In the normal authoring run, make exactly one complete ``write_file`` call

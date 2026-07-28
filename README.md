@@ -104,9 +104,12 @@ boundaries.
 
 To create a specialized workflow, select `/workflow create_workflow` and enter
 the intent in the next input. The authoring agent generates complete Python
-source directly, gives every phase its own runtime prompt, stages and validates
-the artifact, and publishes it only after approval. Reload workflows and run
-the generated `/workflow <name>` after publication.
+source directly, gives every phase its own runtime prompt, and writes the
+workflow to `.agenthicc/workflows/<name>.py`. For non-trivial behavior it is
+guided to create a `code_plan`-style custom runner with typed states, context,
+per-state functions, explicit `match` transitions, and resumable execution;
+simple workflows can use declarative `PhaseSpec` values. Run `/workflows reload`
+and then `/workflow <name>` after authoring.
 
 The same authoring lifecycle is available through `/workflow create_tool` and
 `/workflow create_command`; these generate raw Python extension modules and

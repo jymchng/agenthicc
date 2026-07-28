@@ -226,6 +226,13 @@ def test_create_workflow_prompt_teaches_runner_and_toml_contract() -> None:
     assert "<workflow" not in prompt
     assert "inspect_agenthicc_documentation" in prompt
     assert "inspect_agenthicc_source" in prompt
+    assert "State(Enum)" in prompt
+    assert "@dataclass" in prompt
+    assert "while not state.is_terminal" in prompt
+    assert "match state" in prompt
+    assert "resume(context)" in prompt
+    assert "CodePlanRunner" in prompt
+    assert "run_phase()" in prompt
 
 
 @pytest.mark.parametrize(
@@ -300,6 +307,20 @@ def test_create_workflow_design_is_read_only_and_execute_owns_write() -> None:
     assert execute.agent_type == "executor"
     assert "write_file" in execute.system_prompt_override
     assert "complete_execute_phase" in execute.system_prompt_override
+
+
+def test_create_workflow_phase_prompts_encourage_code_plan_style_custom_runners() -> None:
+    design = next(phase for phase in CreateWorkflow.phases if phase.name == "design")
+    execute = next(phase for phase in CreateWorkflow.phases if phase.name == "execute")
+
+    for prompt in (design.system_prompt_override, execute.system_prompt_override):
+        lowered = prompt.lower()
+        assert "code_plan" in lowered
+        assert "state enum" in lowered
+        assert "dataclass" in lowered
+        assert "run()" in prompt
+        assert "resume()" in prompt
+        assert "match/case" in lowered
 
 
 def test_execute_tools_restore_canonical_write_file() -> None:

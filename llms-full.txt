@@ -1423,6 +1423,12 @@ The runner never copies assistant prose, parses, validates, stages, publishes,
 or requests approval for workflow source. Run `/workflows reload` or restart
 the session for the normal registry to discover the generated plugin. There is
 no runner-owned staged manifest to resume for `create_workflow`.
+For a non-trivial generated workflow, the authoring prompt encourages a
+`code_plan`-style custom runner: typed enum states and dataclass context, one
+bounded async function per non-terminal state, an explicit
+`while not state.is_terminal`/`match` driver, and `resume()` through the same
+dispatch path. Declarative `PhaseSpec` graphs remain appropriate for simple
+workflows; `CodePlanRunner.run_phase()` is reserved for intentional composition.
 
 ### CreateWorkflowRunner
 

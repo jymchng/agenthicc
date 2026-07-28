@@ -53,13 +53,18 @@ The runner in the generated specialized workflow should only orchestrate
 phases. The phase prompts must contain the behavior that makes the workflow
 specialized; a generic runner must not be expected to infer that behavior.
 
-The generic `WorkflowRunner` remains the preferred execution path. A generated
-workflow does not need a custom `run()` or `resume()` method when its behavior
-is expressible as a declarative `PhaseSpec` graph. Custom runners remain
-available for genuine orchestration, context transformation, post-processing,
-or extensions of a specialized runner. A custom runner may implement its
-lifecycle directly; delegation to `super()` is required only when the custom
-runner intentionally reuses the parent runner's lifecycle, as in the existing
+The generic `WorkflowRunner` remains the preferred execution path for genuinely
+simple declarative behavior. When the requested specialized workflow has
+conditional branches, loops, retries, transformed context, parallel work,
+phase-specific tools, or non-standard completion gates, the authoring agent is
+encouraged to generate a custom stateful runner modeled on `code_plan`. Such a
+runner defines a typed `State(Enum)` with terminal states, a typed
+`@dataclass` context, one bounded async function per non-terminal state, a
+`run()` driver using `while not state.is_terminal` and `match/case`, and a
+`resume()` path that restores the context and reuses the same state functions.
+Custom runners remain optional for behavior that is fully expressible as a
+declarative `PhaseSpec` graph. Delegation to `super()` is required only when
+the custom runner intentionally reuses a parent lifecycle, as in the existing
 `code_plan_docs` composite workflow.
 
 The authoring validator must accept a declarative `WorkflowPlugin` that uses
@@ -166,11 +171,12 @@ The generated source must choose one of these execution designs:
    Define one `WorkflowPlugin` with a literal `PhaseSpec` graph and rely on the
    inherited `WorkflowPlugin.build_runner()`.
 
-2. **Custom workflow runner — exceptional**
+2. **Custom stateful workflow runner — recommended for non-trivial control flow**
 
-   Define a supported `BaseWorkflowRunner` subclass, implement the required
-   lifecycle directly or intentionally extend an existing runner, and wire it
-   through `WorkflowPlugin.build_runner()`.
+   Define a supported `BaseWorkflowRunner` subclass (or intentionally extend
+   `CodePlanRunner`), define the typed state/context and per-state functions,
+   drive transitions explicitly from `run()`, restore them from `resume()`,
+   and wire the runner through `WorkflowPlugin.build_runner()`.
 
 The model must not create a custom runner merely to add boilerplate. It must
 not claim that changing `CodePlan.phases` changes the specialized
@@ -401,12 +407,15 @@ workflow name or description alone.
 
 ### 6.3 Intentional custom runner authoring
 
-When the user explicitly requests behavior that the declarative runner cannot
-provide, the authoring agent generates a custom runner and explains the custom
-responsibility in its source. A runner that extends `CodePlanRunner` may call
-`super().run()` when it wants the complete CodePlan state machine, then use
-the public `run_phase()` API for extra work. A runner with an independent
-lifecycle may implement `run()` and `resume()` directly.
+When the intent needs behavior that a declarative runner cannot provide, the
+authoring agent generates a custom runner and explains the custom responsibility
+in its source. Its state machine follows the `CodePlanRunner` shape: each state
+has a dedicated bounded function and returns the next state explicitly, while
+the driver owns the `while`/`match` dispatch and terminal outcomes. A runner
+that extends `CodePlanRunner` may call `super().run()` when it wants the
+complete CodePlan state machine, then use the public `run_phase()` API for extra
+work. An independent runner may implement `run()` and `resume()` directly;
+there is no universal `super()` requirement.
 
 ### 6.4 Validation failure and repair
 
@@ -492,6 +501,9 @@ the sibling extension workflows. `create_workflow` intentionally bypasses them.
 - Add the eight-point self-contained phase-prompt checklist.
 - Explain declarative versus custom runner selection and the conditional
   `super()` rule.
+- Encourage the `code_plan` state-machine pattern for non-trivial generated
+  workflows: typed enum states, typed context, one bounded function per state,
+  explicit `while`/`match` dispatch, and context-restoring `resume()`.
 - Preserve existing TOML, provider, safety, parser-compatibility, and activation guidance.
 - Give `create_workflow` tailored prompts for interpret, design, and summarize;
   give each sibling authoring definition tailored prompts for interpret, design,

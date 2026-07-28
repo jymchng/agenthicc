@@ -105,7 +105,9 @@ and remain separate from durable agent-session records.
 Authoring extensions use typed phase states, tool-gated phase handoffs, and
 read-only packaged documentation/API inspection. `create_workflow` separates
 read-only design from execute-owned writing across four phases; sibling tool
-and command extensions retain staged approval:
+and command extensions retain staged approval. Non-trivial generated workflows
+are encouraged to use a code_plan-style custom state machine with typed state,
+typed context, per-state functions, explicit match-based dispatch, and resume:
 
 | AuthoringState | agenthicc.workflows.authoring.state | Typed create_* lifecycle state |
 | AuthoringContext | agenthicc.workflows.authoring.state | Typed data shared by authoring phase handlers |
