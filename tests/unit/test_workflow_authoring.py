@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch, sentinel
 
 import pytest
 
@@ -314,6 +315,87 @@ def test_runtime_phase_prompt_adds_mission_and_next_state_reminder() -> None:
         assert "create one new specialized agenthicc workflow" in prompt
         expected_next = phase.next.upper() if phase.next else "TERMINAL"
         assert f"moves the authoring run to {expected_next}" in prompt
+
+
+def test_create_workflow_phase_tools_include_memory_tools() -> None:
+    runner = object.__new__(CreateWorkflowRunner)
+    runner._cfg = MagicMock()
+    runner._cfg.all_plugin_tools.return_value = []
+    runner._cfg.memory_router = None
+    runner._cfg.semantic_index = None
+
+    names = {getattr(tool, "__name__", "") for tool in runner._phase_tools()}
+
+    assert {"memory_write", "memory_read", "semantic_search", "publish_artifact"} <= names
+
+
+@pytest.mark.asyncio
+async def test_authoring_turn_uses_context_shared_memory() -> None:
+    runner = object.__new__(CreateWorkflowRunner)
+    runner._cfg = MagicMock()
+    runner._cfg.approval_svc = None
+    runner._cfg.cfg.execution.max_agent_turns = 200
+    runner._cfg.cfg.agents.skill_permissions_for.return_value = frozenset()
+    runner._cfg.terminal_wait_policies = {}
+    runner._shared_memory = sentinel.fallback_memory
+    captured: dict[str, object] = {}
+
+    async def fake_agent_turn(*_args: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    with patch("agenthicc.runners.agent_turn._run_agent_turn", new=fake_agent_turn):
+        await runner._run_authoring_turn(
+            "continue authoring",
+            phase_name="interpret",
+            tools=[],
+            active_agent="planner",
+            system_prompt="system",
+            max_agent_turns=20,
+            shared_memory=sentinel.context_memory,
+        )
+
+    assert captured["session_memory"] is sentinel.context_memory
+
+
+@pytest.mark.asyncio
+async def test_tool_gated_phase_forwards_context_memory() -> None:
+    runner = object.__new__(CreateWorkflowRunner)
+    runner._phase_attempt_limit = lambda _phase_name: 1
+    captured: dict[str, object] = {}
+
+    async def fake_authoring_turn(*_args: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+        tools = kwargs["tools"]
+        assert isinstance(tools, list)
+        await tools[0]()  # type: ignore[operator]
+
+    runner._run_authoring_turn = fake_authoring_turn
+
+    def build_transition_tool(event, _data):
+        async def complete() -> None:
+            event.set()
+
+        return [complete]
+
+    from agenthicc.workflows.authoring.state import AuthoringContext
+
+    context = AuthoringContext(
+        intent="Create a workflow",
+        run_id="run",
+        shared_memory=sentinel.context_memory,
+    )
+    result = await runner._run_tool_gated_phase(
+        context,
+        phase_name="interpret",
+        text="interpret",
+        system_prompt="system",
+        active_agent="planner",
+        tool_builder=build_transition_tool,
+        max_agent_turns=20,
+    )
+
+    assert result[0] is not None
+    assert captured["shared_memory"] is sentinel.context_memory
 
 
 def test_validation_accepts_phase_name_as_positional_argument() -> None:

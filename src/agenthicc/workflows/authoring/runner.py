@@ -236,6 +236,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     async def _run_tool_gated_phase(
         self,
+        ctx: AuthoringContext,
         *,
         phase_name: str,
         text: str,
@@ -271,6 +272,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     active_agent=active_agent,
                     system_prompt=system_prompt,
                     max_agent_turns=max_agent_turns,
+                    shared_memory=ctx.shared_memory,
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
@@ -314,6 +316,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         )
 
         data, attempts, error = await self._run_tool_gated_phase(
+            ctx,
             phase_name="interpret",
             text=ctx.intent,
             system_prompt=(
@@ -326,7 +329,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             active_agent="planner",
             max_agent_turns=max_agent_turns,
             tool_builder=lambda event, values: [
-                *self._cfg.all_plugin_tools(),
+                *self._phase_tools(),
                 *make_authoring_inspection_tools(),
                 *make_authoring_transition_tools("interpret", event, values),
             ],
@@ -359,6 +362,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             candidate, report, attempts, generation_text = await self._generate(
                 ctx.interpreted_intent or ctx.intent,
                 max_agent_turns=max_agent_turns,
+                shared_memory=ctx.shared_memory,
             )
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
@@ -392,6 +396,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         handoff_summary = ""
         if self._phase_specs:
             data, attempts, error = await self._run_tool_gated_phase(
+                ctx,
                 phase_name="stage",
                 text=(
                     f"The {self.artifact_label} passed design validation. Confirm that it "
@@ -408,7 +413,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 active_agent="auto",
                 max_agent_turns=max_agent_turns,
                 tool_builder=lambda event, values: [
-                    *self._cfg.all_plugin_tools(),
+                    *self._phase_tools(),
                     *make_authoring_transition_tools(
                         "stage",
                         event,
@@ -456,6 +461,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             )
 
             data, attempts, error = await self._run_tool_gated_phase(
+                ctx,
                 phase_name="validate",
                 text=(
                     f"Validate the staged {self.artifact_label} at {ctx.artifact.staged_path}. "
@@ -471,7 +477,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 active_agent="verifier",
                 max_agent_turns=max_agent_turns,
                 tool_builder=lambda event, values: [
-                    *self._cfg.all_plugin_tools(),
+                    *self._phase_tools(),
                     *make_authoring_inspection_tools(),
                     *make_authoring_transition_tools(
                         "validate",
@@ -515,6 +521,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
         if self._phase_specs:
             data, attempts, error = await self._run_tool_gated_phase(
+                ctx,
                 phase_name="review",
                 text=(
                     f"Review the staged {self.artifact_label} at {ctx.artifact.staged_path}. "
@@ -531,7 +538,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 active_agent="reviewer",
                 max_agent_turns=max_agent_turns,
                 tool_builder=lambda event, values: [
-                    *self._cfg.all_plugin_tools(),
+                    *self._phase_tools(),
                     *make_authoring_review_tools(
                         lambda: self._request_publication_approval(artifact, candidate),
                         event,
@@ -608,6 +615,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             return AuthoringState.SUMMARIZE
         if self._phase_specs:
             data, attempts, error = await self._run_tool_gated_phase(
+                ctx,
                 phase_name="publish",
                 text=(
                     f"The staged {self.artifact_label} passed review. Confirm that it is "
@@ -623,7 +631,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 active_agent="auto",
                 max_agent_turns=max_agent_turns,
                 tool_builder=lambda event, values: [
-                    *self._cfg.all_plugin_tools(),
+                    *self._phase_tools(),
                     *make_authoring_transition_tools(
                         "publish",
                         event,
@@ -672,6 +680,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             raise RuntimeError("authoring summary result was not created")
         if self._phase_specs:
             data, attempts, error = await self._run_tool_gated_phase(
+                ctx,
                 phase_name="summarize",
                 text=(
                     f"Summarize the authoring result: {ctx.result.to_dict()}. Call "
@@ -689,7 +698,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 active_agent="auto",
                 max_agent_turns=max_agent_turns,
                 tool_builder=lambda event, values: [
-                    *self._cfg.all_plugin_tools(),
+                    *self._phase_tools(),
                     *make_authoring_transition_tools(
                         "summarize",
                         event,
@@ -983,7 +992,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             "ULTIMATE PURPOSE REMINDER: create one new specialized agenthicc workflow "
             "from the user's intent. TRANSITION REMINDER: invoke the phase-local "
             f"transition tool only after completing this phase; a successful handoff "
-            f"moves the authoring run to {next_phase}.{rejection_route}"
+            f"moves the authoring run to {next_phase}.{rejection_route}\n"
+            "MEMORY REMINDER: one shared session memory is carried across all authoring "
+            "phases. Use memory_write/memory_read for important authoring decisions and "
+            "semantic_search when prior phase context is needed; do not rely on memory "
+            "to bypass the explicit transition tool or validation gates."
         )
 
     def _generation_feedback(
@@ -1025,18 +1038,22 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         system_prompt: str,
         output: list[str] | None = None,
         max_agent_turns: int | None = None,
+        shared_memory: ShortTermMemory | None = None,
     ) -> None:
         """Run one bounded tool-capable turn for an authoring phase."""
 
         from agenthicc.runners.agent_turn import _run_agent_turn
 
-        if self._shared_memory is None:
+        memory = shared_memory if shared_memory is not None else self._shared_memory
+        if memory is None:
             raise RuntimeError("authoring shared memory is not initialized")
+        if self._cfg.approval_svc is not None:
+            memory.ensure_valid()
         await _run_agent_turn(
             text,
             runner=self._cfg.agent_runner,
             processor=self._cfg.processor,
-            session_memory=self._shared_memory,
+            session_memory=memory,
             max_agent_turns=max(
                 1,
                 min(
@@ -1062,6 +1079,16 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             memory_router=self._cfg.memory_router,
             semantic_index=self._cfg.semantic_index,
         )
+
+    def _phase_tools(self) -> list[ToolLike]:
+        """Return project tools plus shared-memory tools for every phase."""
+
+        from agenthicc.workflows.memory_tools import make_memory_tools
+
+        return [
+            *self._cfg.all_plugin_tools(),
+            *make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index),
+        ]
 
     def _generation_prompt(self, intent: str) -> str:
         """Return the direct source-generation contract for ``create_workflow``."""
@@ -1316,7 +1343,11 @@ USER INTENT:
         return self._validation_transition_error(ctx)
 
     async def _generate(
-        self, intent: str, *, max_agent_turns: int | None = None
+        self,
+        intent: str,
+        *,
+        max_agent_turns: int | None = None,
+        shared_memory: ShortTermMemory | None = None,
     ) -> tuple[WorkflowCandidate | None, ValidationReport, int, str]:
         from agenthicc.workflows.authoring.inspection_tools import (
             make_authoring_inspection_tools,
@@ -1342,7 +1373,7 @@ USER INTENT:
                 prompt,
                 phase_name="design",
                 tools=[
-                    *self._cfg.all_plugin_tools(),
+                    *self._phase_tools(),
                     *make_authoring_inspection_tools(),
                     *make_authoring_transition_tools(
                         "design",
@@ -1358,6 +1389,7 @@ USER INTENT:
                 ),
                 output=output,
                 max_agent_turns=max_agent_turns,
+                shared_memory=shared_memory,
             )
             submitted_source = transition_data.get("source")
             last_text = (

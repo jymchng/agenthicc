@@ -101,6 +101,13 @@ after their own gate succeeds. `submit_generated_source` captures the complete
 raw Python file directly, so the authoring contract does not depend on an XML,
 JSON, or Markdown response envelope.
 
+Like `code_plan`, one `ShortTermMemory` is created for each authoring run and
+shared by every `create_workflow` phase. The phase tool set also includes
+`memory_write`, `memory_read`, `semantic_search`, and `publish_artifact`, so the
+authoring agent can carry decisions and relevant context across interpretation,
+design, validation, review, and publication without using memory to bypass a
+transition or validation gate.
+
 The design agent also receives two read-only built-ins:
 `inspect_agenthicc_documentation(path)` reads the installed documentation, and
 `inspect_agenthicc_source(module, symbol)` uses Python's `inspect` API against
