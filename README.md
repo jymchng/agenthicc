@@ -102,6 +102,12 @@ settings. Review the [user-defined tools guide](./docs/guides/tools.md) before
 adding executable project plugins; it documents the current sandbox and trust
 boundaries.
 
+To create a specialized workflow, select `/workflow create_workflow` and enter
+the intent in the next input. The authoring agent generates complete Python
+source directly, gives every phase its own runtime prompt, stages and validates
+the artifact, and publishes it only after approval. Reload workflows and run
+the generated `/workflow <name>` after publication.
+
 For a non-interactive process, use headless mode. It prints a ready record and
 one JSON line for each non-empty input line:
 

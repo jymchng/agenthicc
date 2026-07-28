@@ -43,28 +43,32 @@ def _completion(content: str, n: int = 1) -> Completion:
 
 def _source(name: str = "cloakbrowser_parse_fb") -> str:
     return f"""\
-from agenthicc.workflows.default.runner import WorkflowRunner
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
-
-
-class CloakbrowserParseFacebookRunner(WorkflowRunner):
-    async def run(self, intent: str) -> WorkflowContext:
-        return await super().run(intent)
-
-    async def resume(self, context: object) -> object:
-        return await super().resume(context)
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 
 
 class CloakbrowserParseFacebook(WorkflowPlugin):
     name = "{name}"
     description = "Parse Facebook with the Cloakbrowser MCP tools."
     phases = [
-        PhaseSpec(name="parse", agent_type="auto"),
+        PhaseSpec(
+            name="parse",
+            agent_type="executor",
+            system_prompt_override=(
+                "Use the configured Cloakbrowser MCP tools to parse the runtime "
+                "Facebook URL. Return the title, visible text, links, and evidence; "
+                "report missing tools instead of inventing them."
+            ),
+            next="summarize",
+        ),
+        PhaseSpec(
+            name="summarize",
+            agent_type="verifier",
+            system_prompt_override=(
+                "Review the parse output, verify required fields and evidence, then "
+                "return the final concise summary with unresolved issues."
+            ),
+        ),
     ]
-
-    @classmethod
-    def build_runner(cls, config, mode_manager):
-        return CloakbrowserParseFacebookRunner(cls, config, mode_manager)
 """
 
 
@@ -145,7 +149,7 @@ async def test_create_workflow_publishes_and_is_discoverable_after_restart(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(_source()), n=1))
+    transport.queue_response(_completion(_source(), n=1))
     runner, app_state = _runner(tmp_path, processor, transport, _Approval(True))
     conversation_events = []
     app_state.conversation.on_event(conversation_events.append)
@@ -201,7 +205,14 @@ async def test_create_workflow_publishes_and_is_discoverable_after_restart(
     assert generated.name == "cloakbrowser_parse_fb"
     generated_runner = generated.build_runner(runner._cfg, None)
     assert isinstance(generated_runner, WorkflowRunner)
-    assert type(generated_runner) is not WorkflowRunner
+    assert type(generated_runner) is WorkflowRunner
+
+    transport.queue_response(_completion("The page was parsed.", n=2))
+    transport.queue_response(_completion("The parse evidence is complete.", n=3))
+    await generated_runner.run("Parse the requested Facebook page.")
+    await processor.drain()
+    assert transport.calls[-2].system is not None
+    assert "Use the configured Cloakbrowser MCP tools" in transport.calls[-2].system
 
 
 async def test_create_workflow_does_not_publish_when_approval_is_denied(
@@ -209,7 +220,7 @@ async def test_create_workflow_does_not_publish_when_approval_is_denied(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(_source()), n=1))
+    transport.queue_response(_completion(_source(), n=1))
     approval = _Approval(False)
     runner, app_state = _runner(tmp_path, processor, transport, approval)
 
@@ -229,11 +240,9 @@ async def test_create_workflow_retries_after_invalid_source(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    invalid = _source().replace(
-        'PhaseSpec(name="parse", agent_type="auto")', 'PhaseSpec(name="parse", next="missing")'
-    )
-    transport.queue_response(_completion(_envelope(invalid), n=1))
-    transport.queue_response(_completion(_envelope(_source()), n=2))
+    invalid = _source().replace('next="summarize",', 'next="missing",')
+    transport.queue_response(_completion(invalid, n=1))
+    transport.queue_response(_completion(_source(), n=2))
     runner, _app_state = _runner(tmp_path, processor, transport, _Approval(True))
 
     result = await runner.run("Create a parser workflow and repair any validation errors.")
@@ -268,7 +277,7 @@ async def test_create_workflow_resume_publishes_staged_candidate_without_regener
 ) -> None:
     monkeypatch.chdir(tmp_path)
     first_transport = MockTransport()
-    first_transport.queue_response(_completion(_envelope(_source()), n=1))
+    first_transport.queue_response(_completion(_source(), n=1))
     first_runner, _app_state = _runner(tmp_path, processor, first_transport, _Approval(False))
 
     staged = await first_runner.run("Create a resumable parser workflow.")
@@ -295,7 +304,7 @@ async def test_create_workflow_resume_revalidates_changed_staged_source(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(_source()), n=1))
+    transport.queue_response(_completion(_source(), n=1))
     runner, _app_state = _runner(tmp_path, processor, transport, _Approval(False))
 
     staged = await runner.run("Create a parser workflow and pause for review.")
@@ -317,7 +326,7 @@ async def test_create_workflow_cancellation_leaves_resumable_staged_manifest(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(_source()), n=1))
+    transport.queue_response(_completion(_source(), n=1))
     approval = _BlockingApproval()
     runner, app_state = _runner(tmp_path, processor, transport, approval)
 
@@ -349,7 +358,7 @@ async def test_create_workflow_requires_explicit_approval_to_replace_existing_ar
     original = "# existing user workflow\n"
     destination.write_text(original, encoding="utf-8")
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(_source()), n=1))
+    transport.queue_response(_completion(_source(), n=1))
     approval = _Approval(False)
     runner, _app_state = _runner(tmp_path, processor, transport, approval)
 
@@ -369,7 +378,7 @@ async def test_headless_style_execution_emits_structured_authoring_result(
     """The existing headless execution seam can run the builtin authoring plugin."""
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(_source()), n=1))
+    transport.queue_response(_completion(_source(), n=1))
     approval = _Approval(True)
     runner, app_state = _runner(tmp_path, processor, transport, approval)
     registry = WorkflowRegistry()

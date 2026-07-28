@@ -37,13 +37,70 @@ class ExampleWorkflow(WorkflowPlugin):
     name = "example_workflow"
     description = "A test workflow."
     phases = [
-        PhaseSpec(name="parse", next="summarize"),
-        PhaseSpec(name="summarize"),
+        PhaseSpec(
+            name="parse",
+            system_prompt_override="Parse the runtime task and return verified data.",
+            next="summarize",
+        ),
+        PhaseSpec(
+            name="summarize",
+            system_prompt_override="Summarize the verified parse output and report gaps.",
+        ),
     ]
 
     @classmethod
     def build_runner(cls, config, mode_manager):
         return ExampleWorkflowRunner(cls, config, mode_manager)
+"""
+
+
+_DECLARATIVE_SOURCE = """\
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+
+class ExampleWorkflow(WorkflowPlugin):
+    name = "example_workflow"
+    description = "A declarative test workflow."
+    phases = [
+        PhaseSpec(
+            name="parse",
+            system_prompt_override="Parse the runtime task and return verified data.",
+            next="summarize",
+        ),
+        PhaseSpec(
+            name="summarize",
+            system_prompt_override="Summarize the verified parse output and report gaps.",
+        ),
+    ]
+"""
+
+
+_DIRECT_CUSTOM_SOURCE = """\
+from agenthicc.workflows.base_runner import BaseWorkflowRunner
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+
+class DirectRunner(BaseWorkflowRunner):
+    async def run(self, intent: str) -> object:
+        return intent
+
+    async def resume(self, context: object) -> object:
+        return context
+
+
+class ExampleWorkflow(WorkflowPlugin):
+    name = "example_workflow"
+    description = "A direct custom test workflow."
+    phases = [
+        PhaseSpec(
+            name="run",
+            system_prompt_override="Execute the runtime task and return verified output.",
+        ),
+    ]
+
+    @classmethod
+    def build_runner(cls, config, mode_manager):
+        return DirectRunner()
 """
 
 
@@ -68,7 +125,7 @@ def test_parse_plain_python_recovers_class_level_name() -> None:
     assert validate_workflow_candidate(candidate).valid is True
 
 
-def test_validation_requires_a_custom_context_preserving_runner() -> None:
+def test_validation_requires_a_declared_custom_runner_when_factory_is_present() -> None:
     source = _VALID_SOURCE.replace(
         "class ExampleWorkflowRunner(WorkflowRunner):",
         "class ExampleWorkflowRunner:",
@@ -79,27 +136,82 @@ def test_validation_requires_a_custom_context_preserving_runner() -> None:
     assert "runner-class" in {item.code for item in report.findings}
 
 
+def test_validation_accepts_declarative_workflow_with_inherited_runner() -> None:
+    report = validate_workflow_candidate(WorkflowCandidate("example_workflow", _DECLARATIVE_SOURCE))
+
+    assert report.valid is True
+
+
+def test_validation_accepts_direct_custom_runner_without_super_delegation() -> None:
+    report = validate_workflow_candidate(
+        WorkflowCandidate("example_workflow", _DIRECT_CUSTOM_SOURCE)
+    )
+
+    assert report.valid is True
+
+
+def test_create_workflow_defines_an_explicit_prompt_for_each_phase() -> None:
+    assert [phase.name for phase in CreateWorkflow.phases] == [
+        "interpret",
+        "design",
+        "stage",
+        "validate",
+        "review",
+        "publish",
+        "summarize",
+    ]
+    assert all(phase.system_prompt_override.strip() for phase in CreateWorkflow.phases)
+
+
 def test_create_workflow_prompt_teaches_runner_and_toml_contract() -> None:
     runner = object.__new__(CreateWorkflowRunner)
 
     prompt = runner._generation_prompt("Create a configurable release workflow.")
 
-    assert "custom WorkflowRunner or CodePlanRunner" in prompt
+    assert "generate the source directly" in prompt.lower()
+    assert "complete raw Python source file" in prompt
+    assert "Do not wrap the code" in prompt
+    assert "Return ONLY this envelope" not in prompt
+    assert "<workflow" not in prompt
+    assert "system_prompt_override" in prompt
+    assert "eight" in prompt
+    assert "super()" in prompt
+    assert "inherited" in prompt
     assert "WorkflowParams" in prompt
     assert "build_params(source)" in prompt
     assert "[workflows.<name>]" in prompt
     assert "provider switching" in prompt
-    assert "copy-ready agenthicc.toml template" in prompt
+    assert "copy-ready" in prompt
+    assert "agenthicc.toml" in prompt
     assert "Never include API keys" in prompt
 
 
 def test_validation_accepts_phase_name_as_positional_argument() -> None:
     source = _VALID_SOURCE.replace(
-        'PhaseSpec(name="parse", next="summarize")',
-        'PhaseSpec("parse", next="summarize")',
+        'PhaseSpec(\n            name="parse",',
+        'PhaseSpec("parse",',
     )
 
     assert validate_workflow_candidate(WorkflowCandidate("example_workflow", source)).valid is True
+
+
+@pytest.mark.parametrize(
+    "phase_prompt",
+    [
+        'system_prompt_override=""',
+        "system_prompt_override=build_prompt()",
+    ],
+)
+def test_validation_rejects_missing_or_non_literal_phase_prompt(phase_prompt: str) -> None:
+    source = _DECLARATIVE_SOURCE.replace(
+        'system_prompt_override="Parse the runtime task and return verified data."',
+        phase_prompt,
+    )
+
+    report = validate_workflow_candidate(WorkflowCandidate("example_workflow", source))
+
+    assert report.valid is False
+    assert "phase-prompt" in {item.code for item in report.findings}
 
 
 @pytest.mark.parametrize(
@@ -108,8 +220,8 @@ def test_validation_accepts_phase_name_as_positional_argument() -> None:
         (WorkflowCandidate("bad-name", _VALID_SOURCE), "workflow-name"),
         (
             _VALID_SOURCE.replace(
-                'PhaseSpec(name="parse", next="summarize")',
-                'PhaseSpec(name="parse", next="missing")',
+                'next="summarize",',
+                'next="missing",',
             ),
             "phase-reference",
         ),

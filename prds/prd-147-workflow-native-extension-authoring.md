@@ -402,9 +402,12 @@ publish executable artifacts.
 15. Every authoring terminal path emits a visible final summary after approval,
     rejection, failure, cancellation, or resume; the structured result carries
     the same summary.
-16. Generated workflows define a custom `WorkflowRunner` with explicit
-    `run()`/`resume()` delegation and a `WorkflowPlugin.build_runner()` factory,
-    preserving context and state transitions.
+16. Generated workflows encode their executable behavior in explicit,
+    self-contained `PhaseSpec.system_prompt_override` prompts and use the
+    inherited generic runner when declarative phases are sufficient. A custom
+    `WorkflowPlugin.build_runner()` runner is required only for behavior the
+    generic graph cannot express; direct lifecycle methods and intentional
+    `super()` composition both preserve the selected runner contract.
 17. `/tools` and `/workflows` open read-only registry overlays with selectable
     detail views, matching `/commands` and `/skills`.
 18. `/tools reload` and `/workflows reload` refresh their live registries
@@ -435,8 +438,8 @@ publish executable artifacts.
 - Their existing `TOOLS`, `COMMAND`, and `COMMANDS` loader contracts are
   statically validated and their reload/restart requirements are reported.
 - All authoring results emit a terminal transcript summary, and generated
-  workflow candidates are required to preserve runner context through a custom
-  `WorkflowRunner`.
+  workflow candidates carry their runtime behavior in phase prompts while
+  preserving the generic runner and custom-runner contracts.
 - `/tools` and `/workflows` expose the effective session registries through the
   existing overlay interaction pattern.
 - `/tools reload` and `/workflows reload` provide explicit activation without

@@ -345,33 +345,31 @@ Activate with ``/workflow my_workflow`` in the TUI.
 
 ## Custom runners and typed TOML configuration
 
-Use the generic ``WorkflowRunner`` when the declared ``PhaseSpec`` graph fully
-describes the behavior. Write a custom ``WorkflowRunner`` subclass when the
-workflow needs custom orchestration, context transformation, post-processing,
-or a composite ``code_plan`` flow. Override
-``WorkflowPlugin.build_runner(config, mode_manager)`` so the registry actually
-constructs the custom runner. Preserve resumability:
+Use the generic ``WorkflowRunner`` and inherited
+``WorkflowPlugin.build_runner()`` when the declared ``PhaseSpec`` graph fully
+describes the behavior. Every phase should include a literal
+``system_prompt_override`` that states its objective, required tools, inputs,
+outputs, verification, completion signal, and handoff. Write a custom runner
+only when the workflow needs orchestration, context transformation,
+post-processing, or a composite ``code_plan`` flow that the phase graph cannot
+express. Override ``WorkflowPlugin.build_runner(config, mode_manager)`` so the
+registry constructs that custom runner. A direct custom lifecycle is valid;
+call ``super()`` only when intentionally composing the parent runner.
 
 ```python
-from agenthicc.workflows.default.runner import WorkflowRunner
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
-
-class MyRunner(WorkflowRunner):
-    async def run(self, intent: str) -> WorkflowContext:
-        context = await super().run(intent)
-        # Add workflow-specific orchestration here.
-        return context
-
-    async def resume(self, context: object) -> object:
-        return await super().resume(context)
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 
 class MyWorkflow(WorkflowPlugin):
     name = "my_workflow"
-    phases = [PhaseSpec(name="step1")]
-
-    @classmethod
-    def build_runner(cls, config, mode_manager):
-        return MyRunner(cls, config, mode_manager)
+    phases = [
+        PhaseSpec(
+            name="step1",
+            system_prompt_override=(
+                "Use the runtime task and configured tools to perform step 1. "
+                "Return verified output and state what the next phase needs."
+            ),
+        )
+    ]
 ```
 
 For values that should be changed without editing Python, use a typed

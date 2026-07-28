@@ -195,58 +195,48 @@ def _class_method(node: ast.ClassDef, name: str) -> ast.FunctionDef | ast.AsyncF
     return None
 
 
-def _has_call_to(node: ast.AST, owner: str, method: str) -> bool:
-    """Return whether an AST subtree calls ``owner.method(...)``."""
-
-    for item in ast.walk(node):
-        if not isinstance(item, ast.Call) or not isinstance(item.func, ast.Attribute):
-            continue
-        value = item.func.value
-        if isinstance(value, ast.Name) and value.id == owner:
-            return item.func.attr == method
-        if (
-            owner == "super"
-            and isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id == "super"
-        ):
-            return item.func.attr == method
-    return False
-
-
 def _validate_custom_runner(
     tree: ast.Module,
     plugin: ast.ClassDef,
     findings: list[ValidationFinding],
 ) -> None:
-    """Require generated workflows to own an explicit runner/context boundary."""
+    """Validate an explicitly selected runner without forcing a wrapper.
 
-    has_runner_import = any(
-        isinstance(node, ast.ImportFrom)
-        and node.module == "agenthicc.workflows.default.runner"
-        and any(alias.name == "WorkflowRunner" for alias in node.names)
-        for node in tree.body
-    )
-    if not has_runner_import:
-        findings.append(
-            ValidationFinding(
-                "runner-import",
-                "Workflow source must import WorkflowRunner from "
-                "agenthicc.workflows.default.runner.",
-            )
-        )
+    A declarative plugin inherits ``WorkflowPlugin.build_runner`` and therefore
+    has no runner class or factory in its generated source.  Custom runners are
+    validated only when the source declares a runner-shaped class or overrides
+    ``build_runner``.  ``super()`` delegation is intentionally not inspected:
+    an independent runner owns its own lifecycle, while a composing runner may
+    choose to delegate to its parent.
+    """
 
+    supported_bases = {"BaseWorkflowRunner", "WorkflowRunner", "CodePlanRunner"}
     runner_classes = [
         node
         for node in tree.body
         if isinstance(node, ast.ClassDef)
-        and "WorkflowRunner" in {_func_name(base) for base in node.bases}
+        and bool({_func_name(base) for base in node.bases} & supported_bases)
     ]
+    factory = _class_method(plugin, "build_runner")
+
+    if factory is None and not runner_classes:
+        # The inherited WorkflowPlugin.build_runner() is the valid declarative
+        # runner contract.
+        return
+
+    if factory is None:
+        findings.append(
+            ValidationFinding(
+                "runner-factory",
+                "Custom workflow runner must be wired through build_runner().",
+            )
+        )
+        return
     if not runner_classes:
         findings.append(
             ValidationFinding(
                 "runner-class",
-                "Workflow source must define a custom WorkflowRunner subclass.",
+                "build_runner() must construct a declared custom runner subclass.",
             )
         )
         return
@@ -257,39 +247,34 @@ def _validate_custom_runner(
                 "Workflow source must define exactly one custom WorkflowRunner subclass.",
             )
         )
+        return
 
     runner = runner_classes[0]
-    run_method = _class_method(runner, "run")
-    resume_method = _class_method(runner, "resume")
-    if not isinstance(run_method, ast.AsyncFunctionDef) or not isinstance(
-        resume_method, ast.AsyncFunctionDef
-    ):
-        findings.append(
-            ValidationFinding(
-                "runner-methods",
-                "Custom WorkflowRunner must override async run() and async resume().",
+    bases = {_func_name(base) for base in runner.bases}
+    for method_name in ("run", "resume"):
+        method = _class_method(runner, method_name)
+        if method is not None and not isinstance(method, ast.AsyncFunctionDef):
+            findings.append(
+                ValidationFinding(
+                    "runner-methods",
+                    f"Custom runner {method_name}() must be async when overridden.",
+                )
             )
-        )
-    elif not (
-        _has_call_to(run_method, "super", "run") and _has_call_to(resume_method, "super", "resume")
-    ):
-        findings.append(
-            ValidationFinding(
-                "runner-context",
-                "Custom runner run()/resume() must preserve WorkflowRunner context "
-                "by delegating to super().",
+    if "BaseWorkflowRunner" in bases:
+        missing = [
+            method_name
+            for method_name in ("run", "resume")
+            if _class_method(runner, method_name) is None
+        ]
+        if missing:
+            findings.append(
+                ValidationFinding(
+                    "runner-methods",
+                    "A direct BaseWorkflowRunner subclass must implement async "
+                    f"{', '.join(missing)}().",
+                )
             )
-        )
 
-    factory = _class_method(plugin, "build_runner")
-    if factory is None:
-        findings.append(
-            ValidationFinding(
-                "runner-factory",
-                "WorkflowPlugin must override build_runner() to return its custom runner.",
-            )
-        )
-        return
     runner_name = runner.name
     if not any(
         isinstance(item, ast.Call)
@@ -355,6 +340,7 @@ def _phase_specs(node: ast.ClassDef) -> tuple[list[dict[str, object]], list[Vali
                 "on_reject",
                 "terminal_wait_policy",
                 "command_lifecycle",
+                "system_prompt_override",
             }:
                 values[keyword.arg] = (
                     _extract_literal_string(keyword.value)
@@ -378,6 +364,14 @@ def _phase_specs(node: ast.ClassDef) -> tuple[list[dict[str, object]], list[Vali
                 ValidationFinding("phase-name-missing", "Every PhaseSpec needs a name.")
             )
             continue
+        phase_prompt = values.get("system_prompt_override")
+        if not isinstance(phase_prompt, str) or not phase_prompt.strip():
+            findings.append(
+                ValidationFinding(
+                    "phase-prompt",
+                    f"Phase {phase_name!r} must define a non-empty literal system_prompt_override.",
+                )
+            )
         policy = values.get("terminal_wait_policy", "foreground")
         if policy not in {"foreground", "background"}:
             findings.append(
@@ -454,13 +448,11 @@ def _candidate_from_source(name: str, code: str, description: str) -> WorkflowCa
 
 
 def parse_authoring_response(text: str, artifact_kind: str) -> WorkflowCandidate:
-    """Parse one strict authoring envelope without importing its source.
+    """Parse one authoring response without importing its source.
 
-    Accepted forms are a JSON object containing ``name`` and ``code``, or a
-    ``<workflow>``, ``<tool>``, or ``<command>`` block containing a Python
-    fenced code block. A plain Python response remains a compatibility
-    fallback; contract validation will reject it when a module name cannot be
-    recovered from the envelope.
+    Raw Python source is the preferred workflow response. Legacy JSON objects
+    and ``<workflow>``, ``<tool>``, or ``<command>`` blocks remain accepted so
+    previously staged or scripted authoring runs can still be resumed.
     """
 
     if artifact_kind not in {"workflow", "tool", "command"}:
@@ -520,7 +512,7 @@ def parse_authoring_response(text: str, artifact_kind: str) -> WorkflowCandidate
 
 
 def parse_workflow_response(text: str) -> WorkflowCandidate:
-    """Parse the strict workflow envelope returned by the authoring agent."""
+    """Parse raw workflow source, with legacy envelope compatibility."""
 
     return parse_authoring_response(text, "workflow")
 

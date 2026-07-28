@@ -143,12 +143,15 @@ runner, make the execute model configurable through TOML, and include the
 copy-ready configuration template in the module documentation.
 ```
 
-The design phase is instructed to use `build_runner()` for custom orchestration
-and typed `WorkflowParams`/`build_params()` for `[workflows.<name>]` values. It
-stages and validates the Python source before approval, then publishes only
-`.agenthicc/workflows/<name>.py`. The generated TOML is a template for the
-user to copy into `.agenthicc/agenthicc.toml`; the authoring workflow does not
-silently modify configuration files or publish secrets.
+The design phase generates the complete Python source directly. It gives every
+phase a literal `system_prompt_override` so the runtime agent knows the
+objective, tools, inputs, outputs, verification, completion signal, and
+handoff. It uses the inherited generic runner when the phase graph is enough;
+`build_runner()` and a custom runner are reserved for genuine orchestration.
+The source is staged and validated before approval, then only
+`.agenthicc/workflows/<name>.py` is published. The generated TOML is a template
+for the user to copy into `.agenthicc/agenthicc.toml`; the authoring workflow
+does not silently modify configuration files or publish secrets.
 
 ## 4. Choose a provider
 

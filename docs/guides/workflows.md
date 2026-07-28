@@ -65,10 +65,12 @@ Create a workflow that uses Cloakbrowser to parse facebook.com.
 ```
 
 The first line selects the workflow; the next ordinary input supplies its
-intent. The authoring run generates one `WorkflowPlugin` plus a customized
-`WorkflowRunner` with explicit `run()`/`resume()` context handling, validates
-its syntax, phase references, imports, and runner contract without importing
-it, then stages the source under `.agenthicc/authoring/`. Publication requires
+intent. The authoring agent generates one complete Python `WorkflowPlugin`
+source file directly. Each generated `PhaseSpec` carries a literal
+`system_prompt_override` describing its objective, tools, inputs, outputs,
+verification, completion signal, and handoff. Declarative workflows use the
+inherited generic `WorkflowRunner`; custom `run()`/`resume()` implementations
+are reserved for behavior the phase graph cannot express. Publication requires
 approval and writes atomically to `.agenthicc/workflows/<name>.py`. A denied
 request leaves the staged candidate available for inspection and does not
 replace an existing workflow. Every terminal outcome emits a final summary in
@@ -92,9 +94,12 @@ approval state, and the `workflows-reload` activation instruction.
 The authoring agent is also instructed to choose the right configuration
 boundary for the generated workflow. It can:
 
-- define a custom `WorkflowRunner` or `CodePlanRunner` and wire it through
-  `WorkflowPlugin.build_runner()` when declarative `PhaseSpec` values are not
-  enough;
+- rely on the inherited `WorkflowPlugin.build_runner()` when declarative
+  `PhaseSpec` values are enough;
+- define a custom `WorkflowRunner`, `BaseWorkflowRunner`, or `CodePlanRunner`
+  and wire it through `WorkflowPlugin.build_runner()` only when the phase graph
+  cannot express the required orchestration. Direct lifecycle methods are
+  valid; `super()` is needed only for intentional composition;
 - define typed `WorkflowParams`, `get_phase_models()`, and `build_params()` for
   values supplied by `[workflows.<name>]` in TOML; and
 - include a copy-ready `agenthicc.toml` template when the workflow needs

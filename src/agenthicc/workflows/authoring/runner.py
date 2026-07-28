@@ -369,7 +369,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             return result
 
     def _parse_candidate(self, text: str) -> WorkflowCandidate:
-        """Parse the model envelope for this artifact kind."""
+        """Parse the model source response for this artifact kind."""
 
         if self.artifact_kind == "workflow":
             return parse_workflow_response(text)
@@ -385,72 +385,135 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         return validate_command_candidate(candidate)
 
     def _generation_prompt(self, intent: str) -> str:
-        """Return the contract-specific design prompt."""
+        """Return the direct source-generation contract for ``create_workflow``."""
 
-        return (
-            "You are the design phase of agenthicc's create_workflow workflow.\n\n"
-            "Create exactly one complete Python WorkflowPlugin for the user's intent. "
-            "Inspect relevant repository modules and read "
-            "docs/guides/custom-workflows-and-config.md and docs/guides/workflows.md "
-            "when they are available. Use existing agenthicc APIs and preserve the "
-            "ownership boundaries documented there.\n\n"
-            "Choose the simplest valid execution design. Use PhaseSpec for the phase "
-            "graph, roles, capabilities, transitions, retries, and static turn limits. "
-            "When the workflow needs custom orchestration, context transformation, "
-            "post-processing, or a composite code_plan flow, define a custom "
-            "WorkflowRunner or CodePlanRunner subclass. The generated workflow must "
-            "define a customized runner with async run() and resume() methods; those "
-            "methods must delegate to super().run() and super().resume() so the "
-            "WorkflowContext, shared memory, phase history, and state transitions are "
-            "preserved. WorkflowPlugin.build_runner() must construct that runner. "
-            "Never claim that changing CodePlan.phases alone changes CodePlanRunner's "
-            "specialized state machine.\n\n"
-            "When the user asks for configurable behavior, implement it as typed "
-            "WorkflowParams rather than reading arbitrary globals. Define a dataclass "
-            "subclass, override get_phase_models() for per-phase model choices, and "
-            "override WorkflowPlugin.build_params(source) to parse the merged "
-            "[workflows.<name>] TOML table. A parameter only has an effect when the "
-            "selected runner consumes it. Use empty model values for global-model "
-            "fallbacks. The provider, credentials, and base_url are session-wide via "
-            "[execution]; do not invent PhaseSpec.provider or promise per-phase "
-            "provider switching.\n\n"
-            "If configuration is needed, include a clearly labeled, copy-ready "
-            "agenthicc.toml template in the generated module docstring or comments, "
-            "for example:\n"
-            "[execution]\n"
-            'provider = "anthropic"\n'
-            'model = "claude-sonnet-4-5"\n'
-            "\n"
-            "[workflows.example]\n"
-            'plan_model = ""\n'
-            'execute_model = "claude-haiku-4-5"\n'
-            "Never include API keys, tokens, or claims that a TOML file was "
-            "published: this authoring run publishes the Python workflow artifact "
-            "only. Custom project or user TOML files may be selected with --config "
-            "or extends. Tell the user the exact TOML path to update and how to "
-            "activate it.\n\n"
-            "Return ONLY this envelope, with no explanation outside it:\n"
-            '<workflow name="lowercase_name" description="short description">\n'
-            "```python\n"
-            "from agenthicc.workflows.default.runner import WorkflowRunner\n"
-            "from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin\n"
-            "\n"
-            "class ExampleWorkflowRunner(WorkflowRunner):\n"
-            "    async def run(self, intent: str) -> WorkflowContext:\n"
-            "        return await super().run(intent)\n"
-            "\n"
-            "    async def resume(self, context: object) -> object:\n"
-            "        return await super().resume(context)\n"
-            "\n"
-            "class ExampleWorkflow(WorkflowPlugin):\n"
-            "    @classmethod\n"
-            "    def build_runner(cls, config, mode_manager):\n"
-            "        return ExampleWorkflowRunner(cls, config, mode_manager)\n"
-            "...complete source...\n"
-            "```\n"
-            "</workflow>\n\n"
-            f"USER INTENT:\n{intent}\n"
-        )
+        return f"""You are the implementation agent in the design phase of the built-in
+agenthicc ``create_workflow`` workflow.
+
+Your output is the complete Python source for one custom specialized workflow.
+Do not return a plan, pseudocode, a runner skeleton, or advice for another
+agent to finish. Generate the source directly from the user's intent.
+
+There are two workflow layers:
+
+1. ``create_workflow`` is the authoring workflow. It interprets the user's
+   intent, asks you to generate the artifact, stages and validates it, requests
+   publication approval, and publishes it only after approval.
+2. Your generated workflow is the specialized runtime workflow. Later runtime
+   agents execute its phases. The generated runner should orchestrate phases;
+   the generated phase prompts must contain the specialized behavior.
+
+Inspect the repository before generating source. Read these current contracts
+when available:
+
+- ``agenthicc.workflows.plugin``
+- ``agenthicc.workflows.default.runner``
+- ``agenthicc.workflows.base_runner``
+- ``agenthicc.workflows.code_plan.definition`` and ``phase_tools``
+- ``docs/guides/workflows.md``
+- ``docs/guides/custom-workflows-and-config.md``
+- ``docs/guides/command-execution.md`` when commands or services are involved
+
+Use only existing agenthicc APIs and preserve the repository's ownership,
+capability, approval, workspace, network, and activation boundaries.
+
+ARCHITECTURE CHOICE
+
+Prefer a declarative workflow:
+
+- define one ``WorkflowPlugin``;
+- define a literal ``PhaseSpec`` list; and
+- rely on the inherited ``WorkflowPlugin.build_runner()``.
+
+Do not add ``run()``, ``resume()``, or ``build_runner()`` merely as boilerplate.
+
+Use a custom runner only when the intent requires runtime orchestration that a
+literal PhaseSpec graph cannot express, such as context transformation,
+post-processing, or intentionally extending a specialized runner. A custom
+runner may implement ``run()`` and ``resume()`` directly. It may delegate to
+``super()`` only when it intentionally reuses parent lifecycle behavior, such
+as the existing ``code_plan_docs`` composition. Never require or generate a
+no-op wrapper solely to satisfy validation.
+
+Do not claim that changing ``CodePlan.phases`` changes the specialized
+``CodePlanRunner`` state machine. If the request truly extends ``code_plan``,
+use the documented ``CodePlanRunner``/``run_phase()`` composition pattern and
+wire it through ``build_runner()``.
+
+PHASE INSTRUCTIONS
+
+Every generated ``PhaseSpec`` must contain a non-empty literal
+``system_prompt_override``. This is the runtime instruction that the later
+agent follows. Write the implementation instructions into the generated Python
+source; do not leave them only in this response. Cover all eight instruction
+areas below for every phase, omitting an area only when it genuinely does not
+apply and stating the applicable boundary explicitly.
+
+Each phase prompt must be self-contained and explicitly state, as applicable:
+
+1. the phase's exact objective;
+2. the specialized workflow behavior and required output;
+3. the exact files, APIs, tools, MCP services, or commands to use;
+4. what inputs and outputs it receives from earlier phases;
+5. the exact code or artifacts it must create or modify;
+6. how it verifies success and handles failure;
+7. which completion, approval, or review signal it must call; and
+8. what structured information it must hand off to the next phase.
+
+The generic runner supplies the runtime user's task and WorkflowContext. The
+phase prompt must explicitly explain how the agent uses that task and which
+prior phase outputs it consumes. Do not rely on the phase name, workflow
+description, undocumented conventions, or a later phase to infer behavior.
+Do not use vague instructions such as "continue the implementation", "handle
+the task", or "do the appropriate work".
+
+Use the smallest phase graph that fully implements the intent. Use explicit
+roles, capabilities, transitions, bounded retries, mode overrides, command
+lifecycle settings, readiness gates, and completion/approval tools when needed.
+Do not invent tool names or MCP integrations; if a requested integration is
+not configured, instruct the runtime agent to report that prerequisite clearly.
+
+CONFIGURATION
+
+When configurable behavior is requested, use a typed ``WorkflowParams``
+dataclass, ``get_phase_models()``, and ``build_params(source)`` for the merged
+``[workflows.<name>]`` table. A parameter has an effect only if the selected
+runner consumes it. Provider, credentials, and ``base_url`` are session-wide;
+do not invent per-phase provider switching.
+
+If configuration is needed, put a clearly labeled copy-ready ``agenthicc.toml``
+template in the generated module docstring or comments. This authoring run
+publishes only the Python workflow artifact. Never include API keys or tokens,
+claim that TOML was published, silently edit configuration, install
+dependencies, or bypass explicit activation.
+
+SAFETY AND SOURCE CONTRACT
+
+- Generate exactly one complete Python workflow source file.
+- Define exactly one top-level ``WorkflowPlugin`` subclass.
+- Use a literal list or tuple of ``PhaseSpec`` calls.
+- Keep phase names and transitions valid and bounded.
+- Do not use eval, exec, compile, __import__, os.system, subprocess, ctypes,
+  import-time side effects, or unsafe filesystem/process bypasses.
+- Do not write directly to ``.agenthicc/workflows`` during this turn.
+- Do not generate extra tools, commands, tests, or files.
+- Do not expose secrets or claim a generated integration is configured when it
+  is not.
+
+Before returning, verify that every user requirement maps to a phase objective,
+prompt, tool/API, expected output, success criterion, and handoff. Verify the
+source, class-level workflow name and description, phase references, runner
+choice, and activation notes.
+
+Generate the source directly as code. Return ONLY the complete raw Python source file:
+start with the imports and include the full ``WorkflowPlugin`` class, phase
+specifications, prompts, and any justified custom runner. Do not wrap the code
+in XML, JSON, Markdown fences, or another special envelope. Do not add an
+explanation before or after the source.
+
+USER INTENT:
+{intent}
+"""
 
     async def _generate(
         self, intent: str
