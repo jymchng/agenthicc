@@ -1,5 +1,5 @@
 ---
-title: "PRD-152: Agent-Executable create_workflow Authoring"
+title: "PRD-152: Agent-Executable create_* Authoring"
 status: Implemented
 version: 1.1.0
 created: 2026-07-28
@@ -15,7 +15,7 @@ tags:
   - validation
 ---
 
-# PRD-152 — Agent-Executable `create_workflow` Authoring
+# PRD-152 — Agent-Executable `create_*` Authoring
 
 ## 1. Summary
 
@@ -23,6 +23,11 @@ Enhance the built-in `create_workflow` workflow so an authoring agent can
 generate a complete custom specialized workflow that other runtime agents can
 follow and execute. The generated workflow must contain its actual runtime
 implementation instructions in each `PhaseSpec.system_prompt_override`.
+
+Apply the same direct-source, phase-guided authoring contract to the sibling
+`create_tools` and `create_commands` workflows. Their agents generate complete
+loader-compatible Python extension modules directly, with explicit artifact
+metadata and their canonical `TOOLS`, `COMMAND`, or `COMMANDS` exports.
 
 This PRD has two deliberately separate workflow layers:
 
@@ -33,6 +38,9 @@ This PRD has two deliberately separate workflow layers:
 - **Generated specialized workflow:** the published `WorkflowPlugin` that a
   later user request selects with `/workflow <generated-name>`. Its runtime
   agents execute the phase prompts created by the authoring agent.
+- **Generated tool or command extension:** the published Python module created
+  by `/workflow create_tool` or `/workflow create_command`. The existing tool
+  or command loader remains responsible for runtime discovery and execution.
 
 The runner in the generated specialized workflow should only orchestrate
 phases. The phase prompts must contain the behavior that makes the workflow
@@ -109,6 +117,8 @@ on undocumented assumptions or a human rewriting the generated source.
 8. Prove that a later runtime agent receives and can execute the generated
    phase instructions without executing generated code during authoring or
    silently importing it into the current registry.
+9. Give `create_tools` and `create_commands` the same raw-source response
+   contract and tailored prompts for their seven authoring phases.
 
 ## 4. Non-goals
 
@@ -204,6 +214,14 @@ The authoring runner may orchestrate these phases and call the existing
 validation/publication services. It must not replace the generated workflow's
 runtime phase behavior with hidden authoring-run logic.
 
+The sibling `create_tools` and `create_commands` workflows use the same
+interpret → design → stage → validate → review → publish → summarize lifecycle,
+but each definition has prompts tailored to its artifact contract. Their
+design agents return raw Python directly with literal `ARTIFACT_NAME` and
+`ARTIFACT_DESCRIPTION` module metadata so the parser can determine the staged
+filename without an envelope. Tool candidates must export `TOOLS`; command
+candidates must export exactly one compatible `COMMAND` or `COMMANDS` value.
+
 ### 5.4 Phase graph and tools
 
 Generated workflows must continue to use existing `PhaseSpec` fields for:
@@ -256,6 +274,27 @@ promise per-phase provider switching.
 Configuration templates remain comments or module documentation. The
 authoring run publishes only the Python workflow artifact and never writes
 secrets or silently edits TOML files.
+
+### 5.7 Sibling tool and command authoring
+
+The design phases of `create_tools` and `create_commands` must generate one
+complete raw Python module directly. They must not request or require an XML,
+JSON, Markdown, or other special response envelope. Legacy envelopes remain
+accepted by the parser for compatibility with already staged or scripted runs.
+
+Every direct-source tool or command candidate must contain literal:
+
+```python
+ARTIFACT_NAME = "lowercase_module_name"
+ARTIFACT_DESCRIPTION = "short description"
+```
+
+`create_tools` must use the existing lauren-ai `@tool` convention and a
+literal `TOOLS` list or tuple. `create_commands` must use the canonical
+`Command`/`CommandContext` contract and export a literal `COMMAND` or
+`COMMANDS` value. Static validators continue to reject unsafe imports, calls,
+invalid exports, malformed names, and unsupported loader shapes before
+publication.
 
 ## 6. User journeys
 
@@ -321,7 +360,7 @@ repair must preserve the user's intent and return complete source again.
 
 | Concern | Canonical owner |
 |---|---|
-| `create_workflow` generation instructions and raw-source parsing | `workflows/authoring/runner.py` |
+| `create_*` generation instructions and raw-source parsing | `workflows/authoring/runner.py` |
 | Static workflow contract validation | `workflows/authoring/artifact.py` |
 | Generated specialized-workflow phase execution | `workflows/default/runner.py` |
 | Specialized CodePlan state machine | `workflows/code_plan/runner.py` |
@@ -330,8 +369,9 @@ repair must preserve the user's intent and return complete source again.
 | Publication approval and staging | `workflows/authoring/runner.py` |
 
 The implementation must not add a second prompt renderer or runner registry.
-`CreateWorkflowRunner._generation_prompt` is the source of truth for the
-authoring agent's generation contract, and each generated
+`CreateWorkflowRunner._generation_prompt`, `CreateToolRunner._generation_prompt`,
+and `CreateCommandRunner._generation_prompt` are the source of truth for the
+authoring agents' generation contracts, and each generated
 `PhaseSpec.system_prompt_override` is the source of truth for the specialized
 workflow's runtime instructions. The generic runner may continue to add the
 runtime `WorkflowContext` and user task block, but each generated phase
@@ -376,12 +416,15 @@ destination, staging, approval, and publication checks remain unchanged.
 ### Phase 1 — Prompt contract
 
 - Replace the unconditional wrapper-runner instructions in
-  `CreateWorkflowRunner._generation_prompt`.
+  `CreateWorkflowRunner._generation_prompt` and the envelope-only prompts in
+  `CreateToolRunner` and `CreateCommandRunner`.
 - Instruct the authoring agent to generate complete source directly.
 - Add the eight-point self-contained phase-prompt checklist.
 - Explain declarative versus custom runner selection and the conditional
   `super()` rule.
 - Preserve existing TOML, provider, safety, parser-compatibility, and activation guidance.
+- Give each sibling authoring definition tailored prompts for interpret, design,
+  stage, validate, review, publish, and summarize.
 
 ### Phase 2 — Declarative validator support
 
@@ -403,11 +446,16 @@ destination, staging, approval, and publication checks remain unchanged.
   default-runner construction.
 - Add E2E coverage proving a generated multi-phase workflow's phase prompts
   reach the runtime agent and preserve the intended handoff information.
+- Add raw-source E2E coverage proving `create_tools` and `create_commands`
+  recover artifact metadata, publish loader-compatible modules, and report
+  their distinct reload actions.
 
 ### Phase 4 — Documentation and migration
 
 - Update `docs/guides/workflows.md` and
   `docs/guides/custom-workflows-and-config.md`.
+- Update `docs/guides/tools.md` and `docs/guides/commands.md` with the sibling
+  authoring journeys.
 - Update the generated workflow authoring guidance in `skills/bootstrap.py`.
 - Amend PRD-147 acceptance criterion 16 and its implementation notes to use
   the conditional runner contract.
@@ -452,6 +500,17 @@ destination, staging, approval, and publication checks remain unchanged.
     generated specialized-workflow execution, the default runner path, custom runner
    exceptions, conditional `super()` delegation, and self-contained phase
    prompts.
+16. `/workflow create_tool` tells its design agent to return raw Python source,
+    requires literal artifact metadata and a loader-compatible `TOOLS` export,
+    and does not require a special response envelope.
+17. `/workflow create_command` tells its design agent to return raw Python
+    source, requires literal artifact metadata and a loader-compatible
+    `COMMAND` or `COMMANDS` export, and does not require a special response
+    envelope.
+18. `CreateWorkflow`, `CreateTools`, and `CreateCommands` each define explicit,
+    artifact-appropriate prompts for all seven authoring phases.
+19. Unit and E2E tests prove raw tool and command generation, metadata recovery,
+    publication, loader discovery, approval, retry, resume, and reload guidance.
 
 ## 11. Verification
 
@@ -461,6 +520,7 @@ Focused checks:
 uv run pytest tests/unit/test_workflow_authoring.py -q
 uv run pytest tests/integration/test_workflow_runner_integration.py -q
 uv run pytest tests/e2e/test_create_workflow_e2e.py -q
+uv run pytest tests/e2e/test_extension_authoring_e2e.py -q
 uv run ruff check src/ tests/ scripts/
 uv run ruff format --check src/ tests/ scripts/
 uv run mypy src/agenthicc
@@ -500,6 +560,9 @@ The smoke path must prove the two-agent-layer journey:
    against the contract in effect when it is resumed and report actionable
    findings rather than silently rewriting it.
 5. Do not auto-reload or auto-execute newly published artifacts.
+6. Existing tool and command loaders remain unchanged; after approval, users
+   explicitly run `/tools reload` or `/commands reload` to discover a generated
+   extension.
 
 ## 13. Related implementation notes
 
@@ -512,14 +575,16 @@ declarative workflows.
 ## 14. Implementation evidence
 
 Implemented in the current authoring runner, artifact validator, built-in
-`create_workflow` definition, generated workflow guidance, and regression
-fixtures. The direct-source path is covered by the authoring unit tests and
-`tests/e2e/test_create_workflow_e2e.py`, including default runner discovery and
-delivery of a generated phase prompt to a later runtime agent.
+`create_*` definitions, generated extension guidance, and regression fixtures.
+The direct-source paths are covered by the authoring unit tests,
+`tests/e2e/test_create_workflow_e2e.py`, and
+`tests/e2e/test_extension_authoring_e2e.py`, including default runner
+discovery, tool/command loader discovery, and delivery of a generated workflow
+phase prompt to a later runtime agent.
 
 Verification completed:
 
 ```text
-2424 passed, 15 skipped — uv run pytest tests/ -q
+2430 passed, 15 skipped — uv run pytest tests/ -q
 ruff check, ruff format --check, mypy, and type_audit — passed
 ```

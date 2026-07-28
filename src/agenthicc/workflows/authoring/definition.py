@@ -124,7 +124,89 @@ class CreateTools(WorkflowPlugin):
     name = "create_tools"
     description = "Create a validated lauren-ai tool plugin from the next user intent."
     mode_bindings: list[str] = []
-    phases = CreateWorkflow.phases
+    phases = [
+        PhaseSpec(
+            name="interpret",
+            agent_type="planner",
+            system_prompt_override=(
+                "Normalize the user's request into one tool intent. Identify the "
+                "callable purpose, inputs, outputs, external services, filesystem or "
+                "network needs, capabilities, error cases, and measurable success "
+                "criteria. Preserve the user's meaning and hand off a concise tool "
+                "contract to design."
+            ),
+            next="design",
+        ),
+        PhaseSpec(
+            name="design",
+            agent_type="planner",
+            system_prompt_override=(
+                "Generate the complete raw Python source for the requested lauren-ai "
+                "tool module. Include ARTIFACT_NAME, ARTIFACT_DESCRIPTION, the @tool "
+                "decorator, a literal TOOLS export, accurate annotations, bounded "
+                "errors, and only the configured integrations the tool can actually "
+                "use. Do not return an envelope or write to the discoverable tools "
+                "directory."
+            ),
+            next="stage",
+            max_iterations=2,
+        ),
+        PhaseSpec(
+            name="stage",
+            agent_type="auto",
+            system_prompt_override=(
+                "Store the generated tool source in the run-scoped authoring staging "
+                "area with its manifest and hash. Keep it undiscoverable and do not "
+                "publish, import, or execute it before validation and explicit approval."
+            ),
+            next="validate",
+        ),
+        PhaseSpec(
+            name="validate",
+            agent_type="verifier",
+            system_prompt_override=(
+                "Validate the staged tool without importing or executing it. Check "
+                "syntax, safe imports and calls, metadata, lauren-ai decorator usage, "
+                "literal TOOLS export, callable references, annotations, capabilities, "
+                "and activation requirements. Report blocking findings precisely and "
+                "pass only a loader-compatible candidate to review."
+            ),
+            next="review",
+        ),
+        PhaseSpec(
+            name="review",
+            agent_type="human",
+            system_prompt_override=(
+                "Present the validated staged tool, its callable behavior, capability "
+                "and integration requirements, source path, validation findings, and "
+                "activation implications for explicit publication approval. If denied, "
+                "preserve the staged artifact and explain how it can be resumed."
+            ),
+            next="publish",
+            on_reject="summarize",
+        ),
+        PhaseSpec(
+            name="publish",
+            agent_type="auto",
+            system_prompt_override=(
+                "After explicit approval, atomically publish the validated tool to the "
+                "project tools directory, preserve its manifest and digest, and report "
+                "the exact /tools reload action. Never publish an unvalidated or "
+                "unapproved tool."
+            ),
+            next="summarize",
+        ),
+        PhaseSpec(
+            name="summarize",
+            agent_type="auto",
+            system_prompt_override=(
+                "Summarize the tool-authoring outcome with the artifact name, status, "
+                "staged or published path, validation result, approval state, required "
+                "reload action, and any unresolved prerequisite. Never claim the tool "
+                "is active before reload."
+            ),
+        ),
+    ]
 
     @classmethod
     def build_runner(
@@ -143,7 +225,88 @@ class CreateCommands(WorkflowPlugin):
     name = "create_commands"
     description = "Create a validated slash-command plugin from the next user intent."
     mode_bindings: list[str] = []
-    phases = CreateWorkflow.phases
+    phases = [
+        PhaseSpec(
+            name="interpret",
+            agent_type="planner",
+            system_prompt_override=(
+                "Normalize the user's request into one slash-command intent. Identify "
+                "the canonical command name, arguments, aliases, output, context "
+                "callbacks, busy-state behavior, capabilities, and measurable success "
+                "criteria. Preserve the user's meaning and hand off a concise command "
+                "contract to design."
+            ),
+            next="design",
+        ),
+        PhaseSpec(
+            name="design",
+            agent_type="planner",
+            system_prompt_override=(
+                "Generate the complete raw Python source for the requested slash-command "
+                "module. Include ARTIFACT_NAME, ARTIFACT_DESCRIPTION, canonical literal "
+                "Command metadata, exactly one compatible COMMAND or COMMANDS export, "
+                "and a bounded handler or menu factory. Do not return an envelope or "
+                "write to the discoverable commands directory."
+            ),
+            next="stage",
+            max_iterations=2,
+        ),
+        PhaseSpec(
+            name="stage",
+            agent_type="auto",
+            system_prompt_override=(
+                "Store the generated command source in the run-scoped authoring staging "
+                "area with its manifest and hash. Keep it undiscoverable and do not "
+                "publish, import, or execute it before validation and explicit approval."
+            ),
+            next="validate",
+        ),
+        PhaseSpec(
+            name="validate",
+            agent_type="verifier",
+            system_prompt_override=(
+                "Validate the staged command without importing or executing it. Check "
+                "syntax, safe imports and calls, metadata, Command export shape, literal "
+                "slash names and descriptions, handler or menu references, argument "
+                "contract, and activation requirements. Report blocking findings "
+                "precisely and pass only a loader-compatible candidate to review."
+            ),
+            next="review",
+        ),
+        PhaseSpec(
+            name="review",
+            agent_type="human",
+            system_prompt_override=(
+                "Present the validated staged command, invocation syntax, argument and "
+                "busy-state behavior, source path, validation findings, and activation "
+                "implications for explicit publication approval. If denied, preserve the "
+                "staged artifact and explain how it can be resumed."
+            ),
+            next="publish",
+            on_reject="summarize",
+        ),
+        PhaseSpec(
+            name="publish",
+            agent_type="auto",
+            system_prompt_override=(
+                "After explicit approval, atomically publish the validated command to "
+                "the project commands directory, preserve its manifest and digest, and "
+                "report the exact /commands reload action. Never publish an unvalidated "
+                "or unapproved command."
+            ),
+            next="summarize",
+        ),
+        PhaseSpec(
+            name="summarize",
+            agent_type="auto",
+            system_prompt_override=(
+                "Summarize the command-authoring outcome with the artifact name, status, "
+                "staged or published path, validation result, approval state, canonical "
+                "invocation, required reload action, and unresolved errors. Never claim "
+                "the command is active before reload."
+            ),
+        ),
+    ]
 
     @classmethod
     def build_runner(

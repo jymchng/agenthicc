@@ -175,6 +175,25 @@ def _class_attribute(node: ast.ClassDef, name: str) -> str | None:
     return None
 
 
+def _module_attribute(tree: ast.Module, name: str) -> str | None:
+    """Return a literal string from one top-level module assignment."""
+
+    for statement in tree.body:
+        targets: list[ast.expr] = []
+        value: ast.expr | None
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            value = statement.value
+        else:
+            continue
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            return _extract_literal_string(value) if value is not None else None
+    return None
+
+
 def _func_name(node: ast.expr) -> str:
     if isinstance(node, ast.Name):
         return node.id
@@ -444,6 +463,10 @@ def _candidate_from_source(name: str, code: str, description: str) -> WorkflowCa
                 if class_name:
                     name = class_name
                     break
+    if not name:
+        name = _module_attribute(tree, "ARTIFACT_NAME") or ""
+    if not description:
+        description = _module_attribute(tree, "ARTIFACT_DESCRIPTION") or ""
     return WorkflowCandidate(name=name, code=code, description=description)
 
 

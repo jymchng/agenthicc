@@ -108,6 +108,10 @@ source directly, gives every phase its own runtime prompt, stages and validates
 the artifact, and publishes it only after approval. Reload workflows and run
 the generated `/workflow <name>` after publication.
 
+The same authoring lifecycle is available through `/workflow create_tool` and
+`/workflow create_command`; these generate raw Python extension modules and
+require `/tools reload` or `/commands reload` after publication.
+
 For a non-interactive process, use headless mode. It prints a ready record and
 one JSON line for each non-empty input line:
 

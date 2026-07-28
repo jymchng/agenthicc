@@ -48,6 +48,24 @@ Restart `uv run agenthicc`, type `/greet`, and submit it. `/hello` resolves to
 the same command. The command appears in the trigger picker after typing `/`,
 and `/commands` shows its name, group, source, and description.
 
+## Author a command with `create_command`
+
+For an agent-generated command, select the built-in authoring workflow and
+enter the intent in the next input:
+
+```text
+/workflow create_command
+Create a /cloak-status command that reports the configured Cloakbrowser
+endpoint status without executing arbitrary shell text.
+```
+
+The authoring agent generates the complete raw Python module directly,
+including `ARTIFACT_NAME`, `ARTIFACT_DESCRIPTION`, and a literal `COMMAND` or
+`COMMANDS` export. Its interpret, design, stage, validate, review, publish, and
+summarize phases have explicit prompts and preserve staging, static validation,
+approval, and activation boundaries. It publishes only after approval. Run
+`/commands reload` before invoking the generated command.
+
 For the normal interactive TUI, export `COMMANDS` as a list or tuple when a
 module contains multiple commands. A singular `COMMAND` export is also
 supported by the same command-specific loader. Both forms are discovered at

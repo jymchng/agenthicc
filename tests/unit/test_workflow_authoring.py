@@ -8,13 +8,18 @@ import pytest
 
 from agenthicc.workflows.authoring.artifact import (
     WorkflowCandidate,
+    parse_authoring_response,
     parse_workflow_response,
     validate_command_candidate,
     validate_tool_candidate,
     validate_workflow_candidate,
 )
 from agenthicc.workflows.authoring.definition import CreateCommands, CreateTools, CreateWorkflow
-from agenthicc.workflows.authoring.runner import CreateWorkflowRunner
+from agenthicc.workflows.authoring.runner import (
+    CreateCommandRunner,
+    CreateToolRunner,
+    CreateWorkflowRunner,
+)
 from agenthicc.workflows.registry import build_workflow_registry
 
 pytestmark = pytest.mark.unit
@@ -125,6 +130,51 @@ def test_parse_plain_python_recovers_class_level_name() -> None:
     assert validate_workflow_candidate(candidate).valid is True
 
 
+def test_parse_plain_tool_source_recovers_artifact_metadata() -> None:
+    source = """\
+from lauren_ai import tool
+
+ARTIFACT_NAME = "project_status"
+ARTIFACT_DESCRIPTION = "Return project status."
+
+
+@tool(name="project_status", description="Return project status.")
+async def project_status() -> dict[str, str]:
+    return {"status": "ready"}
+
+
+TOOLS = [project_status]
+"""
+
+    candidate = parse_authoring_response(source, "tool")
+
+    assert candidate.name == "project_status"
+    assert candidate.description == "Return project status."
+    assert validate_tool_candidate(candidate).valid is True
+
+
+def test_parse_plain_command_source_recovers_artifact_metadata() -> None:
+    source = """\
+from agenthicc.commands import Command, CommandContext
+
+ARTIFACT_NAME = "project_status_commands"
+ARTIFACT_DESCRIPTION = "Create project status commands."
+
+
+def handle_status(ctx: CommandContext) -> bool:
+    return True
+
+
+COMMAND = Command("/project-status", "Show project status.", handler=handle_status)
+"""
+
+    candidate = parse_authoring_response(source, "command")
+
+    assert candidate.name == "project_status_commands"
+    assert candidate.description == "Create project status commands."
+    assert validate_command_candidate(candidate).valid is True
+
+
 def test_validation_requires_a_declared_custom_runner_when_factory_is_present() -> None:
     source = _VALID_SOURCE.replace(
         "class ExampleWorkflowRunner(WorkflowRunner):",
@@ -150,8 +200,9 @@ def test_validation_accepts_direct_custom_runner_without_super_delegation() -> N
     assert report.valid is True
 
 
-def test_create_workflow_defines_an_explicit_prompt_for_each_phase() -> None:
-    assert [phase.name for phase in CreateWorkflow.phases] == [
+@pytest.mark.parametrize("plugin", [CreateWorkflow, CreateTools, CreateCommands])
+def test_each_authoring_workflow_defines_an_explicit_prompt_for_each_phase(plugin) -> None:
+    assert [phase.name for phase in plugin.phases] == [
         "interpret",
         "design",
         "stage",
@@ -160,7 +211,7 @@ def test_create_workflow_defines_an_explicit_prompt_for_each_phase() -> None:
         "publish",
         "summarize",
     ]
-    assert all(phase.system_prompt_override.strip() for phase in CreateWorkflow.phases)
+    assert all(phase.system_prompt_override.strip() for phase in plugin.phases)
 
 
 def test_create_workflow_prompt_teaches_runner_and_toml_contract() -> None:
@@ -184,6 +235,28 @@ def test_create_workflow_prompt_teaches_runner_and_toml_contract() -> None:
     assert "copy-ready" in prompt
     assert "agenthicc.toml" in prompt
     assert "Never include API keys" in prompt
+
+
+@pytest.mark.parametrize(
+    ("runner_type", "intent", "required_text"),
+    [
+        (CreateToolRunner, "Create a tool that checks the service.", "ARTIFACT_NAME"),
+        (CreateCommandRunner, "Create a command that reports status.", "COMMAND"),
+    ],
+)
+def test_extension_authoring_prompts_generate_raw_source_directly(
+    runner_type, intent: str, required_text: str
+) -> None:
+    runner = object.__new__(runner_type)
+
+    prompt = runner._generation_prompt(intent)
+
+    assert "complete raw Python source" in prompt
+    assert "Do not use XML, JSON" in prompt
+    assert "Return ONLY this envelope" not in prompt
+    assert "ARTIFACT_DESCRIPTION" in prompt
+    assert required_text in prompt
+    assert intent in prompt
 
 
 def test_validation_accepts_phase_name_as_positional_argument() -> None:

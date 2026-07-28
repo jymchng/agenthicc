@@ -44,6 +44,24 @@ loaded project tool. The tool name, description, annotations, and docstring
 are used to build the schema shown to lauren-ai. `@tool()` must include the
 parentheses.
 
+## Author a tool with `create_tool`
+
+For an agent-generated tool, select the built-in authoring workflow and enter
+the intent in the next input:
+
+```text
+/workflow create_tool
+Create a tool that checks the configured Cloakbrowser endpoint and returns a
+bounded recoverable status object.
+```
+
+The authoring agent generates the complete raw Python module directly, including
+`ARTIFACT_NAME`, `ARTIFACT_DESCRIPTION`, the `@tool` decorator, and a literal
+`TOOLS` export. Its interpret, design, stage, validate, review, publish, and
+summarize phases have explicit prompts and preserve the existing staging,
+validation, approval, and activation boundaries. It publishes only after
+approval. Run `/tools reload` before using the generated tool.
+
 Use `/tools` in the interactive session to inspect the effective tool catalog,
 or `/tools reload` to rescan project and user-global tool plugins without
 restarting. The listing includes a `Source` column with `builtin` or `plugin`;

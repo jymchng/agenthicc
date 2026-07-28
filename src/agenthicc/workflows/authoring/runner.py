@@ -875,27 +875,51 @@ class CreateToolRunner(CreateWorkflowRunner):
     activation = "tools-reload"
 
     def _generation_prompt(self, intent: str) -> str:
-        return (
-            "You are the design phase of agenthicc's create_tools workflow.\n\n"
-            "Create exactly one project tool module for the user's intent. Inspect the "
-            "existing tool guides, lauren-ai tool conventions, and relevant tests. The "
-            "module must use Lauren's @tool decorator and export every public callable "
-            "through a literal TOOLS list. Keep filesystem, network, approval, and output "
-            "behavior inside existing agenthicc boundaries.\n\n"
-            "Return ONLY this envelope, with no explanation outside it:\n"
-            '<tool name="lowercase_module_name" description="short description">\n'
-            "```python\n"
-            "from lauren_ai import tool\n"
-            "\n"
-            '@tool(name="tool_name", description="...")\n'
-            "async def tool_name(...) -> dict[str, object]:\n"
-            "    ...\n"
-            "\n"
-            "TOOLS = [tool_name]\n"
-            "```\n"
-            "</tool>\n\n"
-            f"USER INTENT:\n{intent}\n"
-        )
+        return f"""You are the implementation agent in the design phase of the built-in
+agenthicc ``create_tools`` workflow.
+
+Generate the complete Python source for exactly one project-local lauren-ai
+tool module from the user's intent. Do not return a plan, pseudocode, a tool
+skeleton, or advice for another agent. Write the implementation directly.
+
+Inspect the current tool guides, lauren-ai decorator and context conventions,
+capability metadata, HTTP helpers, relevant loaders, and tests before choosing
+an implementation. Use only existing agenthicc APIs. Keep filesystem,
+network, approval, dependency, and output behavior inside the repository's
+existing ownership and security boundaries.
+
+SOURCE CONTRACT
+
+- Return only the complete raw Python source file. Do not use XML, JSON,
+  Markdown fences, or any other special response envelope, and do not add
+  explanation before or after the code.
+- Set literal module metadata ``ARTIFACT_NAME = "lowercase_module_name"`` and
+  ``ARTIFACT_DESCRIPTION = "short description"``. The authoring lifecycle uses
+  these values to choose the staged and published filename when no legacy
+  envelope supplies metadata.
+- Import Lauren's ``@tool`` decorator and export every public callable through
+  one literal ``TOOLS`` list or tuple. Use accurate annotations and bounded,
+  structured return values.
+- Use ``ToolContext`` only when the tool needs runtime metadata or guarded
+  resources. Use ``WorkspaceView`` for filesystem paths, the existing network
+  guard and ``agenthicc_http_client()`` for HTTP, and capability decorators
+  that match the operation. Do not invent integrations or claim unavailable
+  MCP services are configured.
+- Handle malformed input, timeouts, transient network errors, missing
+  prerequisites, and repeated calls with explicit, recoverable results where
+  the contract permits. Do not log credentials or unbounded remote content.
+- Keep imports side-effect free. Do not install packages, edit configuration,
+  write directly to ``.agenthicc/tools``, execute shell text, or create extra
+  files, commands, workflows, tests, or dependencies during this turn.
+
+Before returning, verify the metadata, decorator, TOOLS export, annotations,
+capability boundary, error handling, and loader compatibility. Return the
+source directly even when the requested tool requires a configured external
+service; report that prerequisite at runtime instead of fabricating it.
+
+USER INTENT:
+{intent}
+"""
 
     def _activation_message(self, name: str) -> str:
         return "Run /tools reload, then ask the agent to use the generated tool."
@@ -911,27 +935,50 @@ class CreateCommandRunner(CreateWorkflowRunner):
     activation = "commands-reload"
 
     def _generation_prompt(self, intent: str) -> str:
-        return (
-            "You are the design phase of agenthicc's create_commands workflow.\n\n"
-            "Create exactly one project command module for the user's intent. Inspect "
-            "agenthicc.commands.Command, the command plugin loader, dispatcher, and tests. "
-            "Export COMMAND for one command or COMMANDS for multiple commands, with a "
-            "small validated handler or menu factory. Do not execute shell text or bypass "
-            "existing capability and approval boundaries.\n\n"
-            "Return ONLY this envelope, with no explanation outside it:\n"
-            '<command name="lowercase_module_name" description="short description">\n'
-            "```python\n"
-            "from agenthicc.commands import Command, CommandContext\n"
-            "\n"
-            "def handle_command(ctx: CommandContext) -> bool:\n"
-            '    ctx.console.print("...")\n'
-            "    return True\n"
-            "\n"
-            'COMMAND = Command("/example", "...", handler=handle_command)\n'
-            "```\n"
-            "</command>\n\n"
-            f"USER INTENT:\n{intent}\n"
-        )
+        return f"""You are the implementation agent in the design phase of the built-in
+agenthicc ``create_commands`` workflow.
+
+Generate the complete Python source for exactly one project-local slash-command
+module from the user's intent. Do not return a plan, pseudocode, a command
+skeleton, or advice for another agent. Write the implementation directly.
+
+Inspect the current ``agenthicc.commands.Command`` and ``CommandContext``
+contracts, command plugin loader, dispatcher, picker behavior, busy policies,
+relevant guides, and tests before choosing an implementation. Use only existing
+agenthicc APIs and preserve command ownership, capability, approval, and busy
+state boundaries.
+
+SOURCE CONTRACT
+
+- Return only the complete raw Python source file. Do not use XML, JSON,
+  Markdown fences, or any other special response envelope, and do not add
+  explanation before or after the code.
+- Set literal module metadata ``ARTIFACT_NAME = "lowercase_module_name"`` and
+  ``ARTIFACT_DESCRIPTION = "short description"``. The authoring lifecycle uses
+  these values to choose the staged and published filename when no legacy
+  envelope supplies metadata.
+- Import ``Command`` and ``CommandContext`` from the canonical command module.
+  Export exactly one literal ``COMMAND`` or ``COMMANDS`` value containing
+  validated ``Command`` objects. Use a synchronous handler returning ``bool``
+  or a menu factory with the documented context contract; do not export both
+  forms for one command unless the existing contract explicitly requires it.
+- Parse arguments from ``ctx.args`` and use context-owned console, registry,
+  and callbacks. Give every command a slash-prefixed literal name, literal
+  description, intentional group, aliases, and argument hint when applicable.
+- Do not execute arbitrary shell text, make import-time network requests,
+  install dependencies, edit configuration, write directly to
+  ``.agenthicc/commands``, or create extra files, tools, workflows, or tests.
+  Keep command behavior bounded, explicit, and safe while a run is active.
+
+Before returning, verify the metadata, command export shape, literal command
+names and descriptions, handler or menu contract, argument behavior, busy
+policy, and loader compatibility. Return the source directly even when the
+requested command depends on a prerequisite; report that prerequisite through
+the command's normal bounded behavior.
+
+USER INTENT:
+{intent}
+"""
 
     def _activation_message(self, name: str) -> str:
         return "Run /commands reload, then invoke the generated slash command."

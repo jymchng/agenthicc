@@ -45,6 +45,9 @@ def _tool_source() -> str:
     return '''\
 from lauren_ai import tool
 
+ARTIFACT_NAME = "project_status"
+ARTIFACT_DESCRIPTION = "Generated project status tool."
+
 
 @tool(name="project_status", description="Return project status.")
 async def project_status(topic: str = "project") -> dict[str, object]:
@@ -60,6 +63,9 @@ def _command_source() -> str:
     return """\
 from agenthicc.commands import Command, CommandContext
 
+ARTIFACT_NAME = "project_status_commands"
+ARTIFACT_DESCRIPTION = "Generated project status commands."
+
 
 def handle_project_status(ctx: CommandContext) -> bool:
     ctx.console.print("project ready")
@@ -72,16 +78,6 @@ COMMAND = Command(
     handler=handle_project_status,
 )
 """
-
-
-def _envelope(kind: str, name: str, source: str) -> str:
-    return (
-        f'<{kind} name="{name}" description="Generated extension.">\n'
-        "```python\n"
-        f"{source}"
-        "```\n"
-        f"</{kind}>"
-    )
 
 
 class _Approval:
@@ -158,7 +154,7 @@ async def test_authoring_publishes_and_discovers_each_extension_kind(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(kind, name, source)))
+    transport.queue_response(_completion(source))
     approval = _Approval(True)
     runner, app_state = _runner(runner_type, processor, transport, approval)
     conversation_events = []
@@ -181,6 +177,12 @@ async def test_authoring_publishes_and_discovers_each_extension_kind(
     destination = tmp_path / ".agenthicc" / destination_kind / f"{name}.py"
     assert Path(result.artifact.published_path) == destination
     assert destination.exists()
+    generation_prompt = str(transport.calls[0].messages)
+    assert "complete raw Python source" in generation_prompt
+    assert "Return ONLY this envelope" not in generation_prompt
+    assert "ARTIFACT_NAME" in generation_prompt
+    assert ("@tool" in generation_prompt) is (kind == "tool")
+    assert ("COMMAND" in generation_prompt) is (kind == "command")
     assert not {
         module_name
         for module_name in sys.modules
@@ -230,7 +232,7 @@ async def test_authoring_denial_preserves_staged_source_and_never_publishes(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(kind, name, source)))
+    transport.queue_response(_completion(source))
     approval = _Approval(False)
     runner, _app_state = _runner(runner_type, processor, transport, approval)
 
@@ -264,8 +266,8 @@ async def test_authoring_retries_contract_validation_before_publication(
     monkeypatch.chdir(tmp_path)
     invalid = "TOOLS = [missing]" if kind == "tool" else "COMMANDS = ['not a command']"
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(kind, name, invalid), 1))
-    transport.queue_response(_completion(_envelope(kind, name, source), 2))
+    transport.queue_response(_completion(invalid, 1))
+    transport.queue_response(_completion(source, 2))
     runner, _app_state = _runner(runner_type, processor, transport, _Approval(True))
 
     result = await runner.run(f"Repair and create a {kind} extension.")
@@ -299,7 +301,7 @@ async def test_authoring_requires_approval_to_replace_existing_extension(
     original = "# preserve this existing extension\n"
     destination.write_text(original, encoding="utf-8")
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(kind, name, source)))
+    transport.queue_response(_completion(source))
     approval = _Approval(False)
     runner, _app_state = _runner(runner_type, processor, transport, approval)
 
@@ -363,7 +365,7 @@ async def test_authoring_resume_reuses_staged_candidate_without_model_call(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     first_transport = MockTransport()
-    first_transport.queue_response(_completion(_envelope(kind, name, source)))
+    first_transport.queue_response(_completion(source))
     first_runner, _app_state = _runner(runner_type, processor, first_transport, _Approval(False))
     staged = await first_runner.run(f"Create a resumable {kind} extension.")
     assert staged.status == "rejected"
@@ -390,9 +392,7 @@ async def test_command_resume_rejects_changed_staged_source(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(
-        _completion(_envelope("command", "project_status_commands", _command_source()))
-    )
+    transport.queue_response(_completion(_command_source()))
     runner, _app_state = _runner(CreateCommandRunner, processor, transport, _Approval(False))
     staged = await runner.run("Create a command and pause for review.")
     assert staged.artifact is not None
@@ -437,7 +437,7 @@ async def test_headless_authoring_fails_closed_without_explicit_permission(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion(_envelope(kind, name, source)))
+    transport.queue_response(_completion(source))
     approval = _Approval(False)
     runner, app_state = _runner(
         CreateToolRunner if kind == "tool" else CreateCommandRunner,

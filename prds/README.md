@@ -20,7 +20,7 @@ against the current source before implementing them.
 - [PRD-149 — Background Terminals and Responsive Wait Control](prd-149-background-terminals-and-responsive-wait-control.md)
 - [PRD-150 — Client-Neutral Session Service and Multi-Client Event Projection](prd-150-client-neutral-session-service-and-event-projection.md)
 - [PRD-151 — Reliable Command Execution and Build/Development-Server Lifecycle](prd-151-reliable-command-execution-and-build-server-lifecycle.md)
-- [PRD-152 — Agent-Executable create_workflow Authoring](prd-152-self-contained-workflow-phase-authoring.md)
+- [PRD-152 — Agent-Executable create_* Authoring](prd-152-self-contained-workflow-phase-authoring.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -85,10 +85,12 @@ seconds-based deadlines, cancellation cleanup, explicit service/readiness mode,
 and workflow completion gates so `next build` failures are visible and
 `npm run dev` is manageable through PRD-149's owned terminals.
 
-PRD-152 proposes a declarative-first workflow-authoring contract. Generated
-phase prompts contain the runtime implementation instructions, the inherited
-generic runner is valid without wrapper boilerplate, and custom runner
-`super()` delegation is conditional on intentional composition.
+PRD-152 implements a direct-source authoring contract for `create_workflow`,
+`create_tools`, and `create_commands`. Generated workflow phase prompts contain
+runtime implementation instructions, tool and command modules carry explicit
+artifact metadata, the inherited generic runner is valid without wrapper
+boilerplate, and custom runner `super()` delegation is conditional on
+intentional composition.
 
 ## Existing PRDs
 
