@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class CreateWorkflow(WorkflowPlugin):
-    """Generate and directly write one project-local workflow plugin."""
+    """Design, execute, and directly write one project-local workflow plugin."""
 
     name = "create_workflow"
     description = "Create an agenthicc workflow from the next user intent."
@@ -52,8 +52,9 @@ class CreateWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "ULTIMATE PURPOSE: create one new specialized agenthicc workflow from "
                 "the interpreted user intent. You are the DESIGN phase of that authoring "
-                "run: generate the complete implementation of the future workflow, rather "
-                "than answering the runtime request yourself. Inspect the current plugin, "
+                "run: produce the complete implementation specification for the future "
+                "workflow, rather than answering the runtime request yourself or writing "
+                "source code. Inspect the current plugin, "
                 "PhaseSpec, runner, tool, capability, workspace, MCP, approval, and "
                 "activation contracts before deciding how to implement it. Prefer one "
                 "declarative WorkflowPlugin with literal PhaseSpec values and the inherited "
@@ -62,19 +63,44 @@ class CreateWorkflow(WorkflowPlugin):
                 "self-contained prompt that specifies its objective, available tools, "
                 "inputs, outputs, verification evidence, safety boundaries, completion "
                 "signal, and next-phase handoff. Keep generated code secure, typed, "
-                "loader-compatible, and faithful to the interpreted intent. TRANSITION: "
-                "Use the "
-                "canonical write_file tool to write the complete Python source directly "
-                "to .agenthicc/workflows/<stable_name>.py; the tool content must be the "
-                "full source, not a plan or partial file. Wait for a successful write, "
-                "then call complete_design_phase(summary, artifact_name, "
-                "artifact_description). The runner never copies assistant response text, "
-                "parses or validates the source, stages or publishes the file, or asks "
-                "for end-user approval. A successful handoff moves the run to SUMMARIZE; "
-                "if the write or handoff fails, retry it rather than returning prose."
+                "loader-compatible, and faithful to the interpreted intent. Do not "
+                "generate the final Python source, call write_file, call batch_write, "
+                "execute shell commands, or modify the workspace in this phase. "
+                "TRANSITION: when the implementation specification is complete, call "
+                "complete_design_phase(summary). Include the stable workflow name, "
+                "phase graph, complete per-phase prompts, APIs/tools/MCP services, "
+                "inputs, outputs, verification behavior, safety constraints, and "
+                "activation notes in that summary. A successful handoff moves the run "
+                "to EXECUTE; a prose response alone does not advance the workflow."
+            ),
+            next="execute",
+            max_iterations=20,
+            max_turns=20,
+        ),
+        PhaseSpec(
+            name="execute",
+            agent_type="executor",
+            system_prompt_override=(
+                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow from "
+                "the interpreted user intent. You are the EXECUTE phase of that authoring "
+                "run. Consume the design specification from the previous phase and "
+                "implement the complete workflow source directly. Inspect only the "
+                "current contracts still needed to resolve implementation details. Prefer "
+                "one declarative WorkflowPlugin with literal PhaseSpec values and the "
+                "inherited runner; introduce a custom runner only when the specification "
+                "cannot be expressed by a phase graph. Generate exactly one complete "
+                "Python workflow source file. TRANSITION: use the canonical write_file tool with "
+                "path .agenthicc/workflows/<stable_name>.py, wait for its successful "
+                "result, and then call complete_execute_phase(summary, artifact_name, "
+                "artifact_description). Do not use batch_write, shell redirection, an "
+                "unguarded filesystem API, or a response envelope. The runner never "
+                "copies assistant response text, parses or validates the source, stages "
+                "or publishes the file, or asks for end-user approval. A successful "
+                "handoff moves the run to SUMMARIZE; if the write or handoff fails, "
+                "retry it rather than returning prose."
             ),
             next="summarize",
-            max_iterations=2,
+            max_iterations=20,
             max_turns=20,
         ),
         PhaseSpec(

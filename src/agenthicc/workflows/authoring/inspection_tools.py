@@ -120,20 +120,22 @@ def make_authoring_inspection_tools() -> list[Callable[..., object]]:
         """Inspect the current installed Python API surface with ``inspect``.
 
         Only ``agenthicc`` modules are importable.  With no symbol, the tool
-        returns public names and module source; with a symbol, it returns the
-        symbol's signature, docstring, and source.  Use this before generating
+        returns module names and module source; with a symbol, it returns the
+        symbol's signature, docstring, and source. Public and private Python
+        identifiers are inspectable. Use this before generating
         code so the artifact targets the installed API rather than stale memory.
 
         Args:
             module: Dotted module name beginning with ``agenthicc``.
-            symbol: Optional public class, function, or constant in the module.
+            symbol: Optional public or private class, function, or constant in
+                the module.
             max_chars: Maximum source/doc text returned, bounded by the tool.
         """
 
         if not _module_is_allowed(module):
             return {"ok": False, "error": "only agenthicc.* modules may be inspected"}
-        if symbol and (not symbol.isidentifier() or symbol.startswith("_")):
-            return {"ok": False, "error": "symbol must be a public Python identifier"}
+        if symbol and not symbol.isidentifier():
+            return {"ok": False, "error": "symbol must be a Python identifier"}
         limit = _limit(max_chars)
         try:
             imported = importlib.import_module(module)
@@ -164,7 +166,8 @@ def make_authoring_inspection_tools() -> list[Callable[..., object]]:
             signature = str(inspect.signature(target)) if callable(target) else ""
         except (TypeError, ValueError):
             signature = ""
-        public_names = sorted(name for name in dir(imported) if not name.startswith("_"))
+        all_names = sorted(dir(imported))
+        public_names = [name for name in all_names if not name.startswith("_")]
         return {
             "ok": True,
             "module": module,
@@ -174,6 +177,7 @@ def make_authoring_inspection_tools() -> list[Callable[..., object]]:
             "source": source[:limit],
             "source_truncated": len(source) > limit,
             "public_names": public_names[:500],
+            "names": all_names[:500],
         }
 
     return [inspect_agenthicc_documentation, inspect_agenthicc_source]

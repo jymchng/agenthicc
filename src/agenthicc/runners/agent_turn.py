@@ -564,6 +564,7 @@ class AgentTurnRunner:
         from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
         from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE  # noqa: PLC0415
         from agenthicc.runners.tool_populator import populate_agent_tools  # noqa: PLC0415
+        from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
 
         ctx = self._ctx
 
@@ -574,6 +575,16 @@ class AgentTurnRunner:
             agent_name=ctx.active_agent or "default",
             project_plugin_tools=project_tools,
         )
+        excluded_capabilities = ctx.excluded_capabilities
+        visible_tools = [
+            tool
+            for tool in registry.tools
+            if not (get_tool_capabilities(tool) & excluded_capabilities)
+        ]
+        visible_names = {
+            getattr(tool, "__name__", getattr(tool, "name", "")) for tool in visible_tools
+        }
+        excluded_names = [name for name in registry.names if name not in visible_names]
 
         # System prompt
         cfg_base = getattr(ctx.exec_cfg, "base_system_prompt", None) or ""
@@ -582,17 +593,21 @@ class AgentTurnRunner:
             effective_base
             + (f"\n\n{ctx.system_prompt_suffix}" if ctx.system_prompt_suffix else "")
             + (self._skill_suffix or "")
-            + (f"\n\n{registry.describe()}" if registry.describe() else "")
+            + (
+                f"\n\n{registry.describe(excluded_names=excluded_names)}"
+                if registry.describe(excluded_names=excluded_names)
+                else ""
+            )
         )
 
         @agent_decorator(model=self._model_id, system=system)
-        @use_tools(*registry.tools)
+        @use_tools(*visible_tools)
         class _AgenthiccAgent:  # type: ignore[type-var]  # lauren-ai decorator cannot infer dynamic class
             pass
 
         agent_instance = _AgenthiccAgent()
         # Populate meta.tools from the registered tool classes.
-        populate_agent_tools(agent_instance, registry.tools)
+        populate_agent_tools(agent_instance, visible_tools)
 
         # Global hooks
         hooks: list[object] = [
@@ -633,7 +648,7 @@ class AgentTurnRunner:
             spawn_tool = make_spawn_subagents_tool(
                 parent_runner=ctx.runner,
                 parent_model=self._model_id,
-                all_tools=list(registry.tools),
+                all_tools=list(visible_tools),
                 app_state=ctx.app_state,
                 processor=ctx.processor,
                 conv_store=ctx.conv_store,
@@ -641,7 +656,9 @@ class AgentTurnRunner:
                 retry_config=_subagent_retry,
             )
             registry.register(spawn_tool, source="builtin")
-            populate_agent_tools(agent_instance, registry.tools)
+            if not (get_tool_capabilities(spawn_tool) & excluded_capabilities):
+                visible_tools.append(spawn_tool)
+                populate_agent_tools(agent_instance, visible_tools)
 
         return agent_instance, active_runner
 
@@ -925,6 +942,7 @@ async def _run_agent_turn(
     approval_svc: ApprovalService | None = None,
     output_collector: list[str] | None = None,
     system_prompt_suffix: str = "",
+    excluded_capabilities: frozenset[str] = frozenset(),
     memory_router: MemoryRouter | None = None,
     semantic_index: SemanticIndex | None = None,
     skill_permissions: SkillPermissionSet | None = None,
@@ -956,6 +974,7 @@ async def _run_agent_turn(
         approval_svc=approval_svc,
         output_collector=output_collector,
         system_prompt_suffix=system_prompt_suffix,
+        excluded_capabilities=excluded_capabilities,
         memory_router=memory_router,
         semantic_index=semantic_index,
         retry_deadline_monotonic=retry_deadline_monotonic,

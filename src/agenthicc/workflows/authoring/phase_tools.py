@@ -12,6 +12,7 @@ TransitionValidator = Callable[[dict[str, object]], tuple[str, str] | None]
 _PHASE_TRANSITION_TOOL_NAMES = {
     "interpret": "complete_interpret_phase",
     "design": "complete_design_phase",
+    "execute": "complete_execute_phase",
     "stage": "complete_stage_phase",
     "review": "request_publication_approval",
     "publish": "complete_publish_phase",
@@ -36,8 +37,9 @@ def make_authoring_transition_tools(
     The tools close over one phase invocation.  A model can inspect, reason,
     and take multiple turns, but the runner only advances when the phase's
     phase-specific completion tool is called.  For ``create_workflow``, the
-    design agent writes source with the canonical ``write_file`` tool before
-    calling its transition; this tool records only the agent's handoff metadata.
+    execute agent writes source with the canonical ``write_file`` tool before
+    calling its transition; the design transition only hands off an
+    implementation specification.
     """
 
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
@@ -57,9 +59,9 @@ def make_authoring_transition_tools(
 
         Args:
             summary: Concise evidence of the work completed in this phase.
-            artifact_name: For the design phase, the stable lowercase name used
-                in the path the agent wrote. Ignored by other phases.
-            artifact_description: For the design phase, a concise description
+            artifact_name: For the execute phase, the stable lowercase name
+                used in the path the agent wrote. Ignored by other phases.
+            artifact_description: For the execute phase, a concise description
                 of the generated artifact. Ignored by other phases.
         """
 
@@ -76,7 +78,7 @@ def make_authoring_transition_tools(
                 ),
             }
         transition_data["summary_candidate"] = cleaned
-        if phase_name == "design":
+        if phase_name == "execute":
             if artifact_name.strip():
                 transition_data["artifact_name"] = artifact_name.strip()
             if artifact_description.strip():

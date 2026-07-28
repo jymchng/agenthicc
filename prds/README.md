@@ -21,6 +21,7 @@ against the current source before implementing them.
 - [PRD-150 — Client-Neutral Session Service and Multi-Client Event Projection](prd-150-client-neutral-session-service-and-event-projection.md)
 - [PRD-151 — Reliable Command Execution and Build/Development-Server Lifecycle](prd-151-reliable-command-execution-and-build-server-lifecycle.md)
 - [PRD-152 — Agent-Executable create_* Authoring](prd-152-self-contained-workflow-phase-authoring.md)
+- [PRD-153 — Reliable Agent-Owned Workflow Authoring](prd-153-reliable-agent-owned-workflow-authoring.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -91,6 +92,11 @@ runtime implementation instructions, tool and command modules carry explicit
 artifact metadata, the inherited generic runner is valid without wrapper
 boilerplate, and custom runner `super()` delegation is conditional on
 intentional composition.
+
+PRD-153 addresses the remaining reliability gap in agent-owned
+`create_workflow` authoring by separating the read-only design handoff from the
+write-capable execute phase, with capability filtering, a successful-write
+receipt, and bounded failure recovery.
 
 ## Existing PRDs
 

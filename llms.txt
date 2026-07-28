@@ -102,12 +102,14 @@ and remain separate from durable agent-session records.
 
 ## Invariants
 
-Authoring extensions use typed phase states, tool-gated design handoff, and
-read-only packaged documentation/API inspection:
+Authoring extensions use typed phase states, tool-gated phase handoffs, and
+read-only packaged documentation/API inspection. `create_workflow` separates
+read-only design from execute-owned writing across four phases; sibling tool
+and command extensions retain staged approval:
 
 | AuthoringState | agenthicc.workflows.authoring.state | Typed create_* lifecycle state |
 | AuthoringContext | agenthicc.workflows.authoring.state | Typed data shared by authoring phase handlers |
-| make_authoring_transition_tools | agenthicc.workflows.authoring.phase_tools | Tool-gated phase handoff for direct assistant-source authoring |
+| make_authoring_transition_tools | agenthicc.workflows.authoring.phase_tools | Tool-gated handoff; workflow execute records the agent-owned `write_file` result |
 | make_authoring_review_tools | agenthicc.workflows.authoring.phase_tools | Approval-gated review transition with actionable denial feedback |
 | make_authoring_inspection_tools | agenthicc.workflows.authoring.inspection_tools | Read-only packaged docs and current API inspection |
 

@@ -188,7 +188,7 @@ class ToolRegistry:
             return frozenset({pattern})
         return frozenset()
 
-    def describe(self) -> str:
+    def describe(self, excluded_names: Sequence[str] = ()) -> str:
         """Grouped Markdown summary for the agent system prompt (PRD-125).
 
         Produces labelled sections for each registered ``ToolGroup`` (sorted
@@ -199,6 +199,8 @@ class ToolRegistry:
         if not self._by_name:
             return ""
 
+        excluded = set(excluded_names)
+
         lines: list[str] = []
         seen: set[str] = set()
 
@@ -207,6 +209,7 @@ class ToolRegistry:
                 getattr(t, "__name__", "")
                 for t in grp.tools
                 if getattr(t, "__name__", "") in self._by_name
+                and getattr(t, "__name__", "") not in excluded
             ]
             if not group_names:
                 continue
@@ -219,7 +222,7 @@ class ToolRegistry:
             lines.append("")
             seen.update(group_names)
 
-        ungrouped = [n for n in self._by_name if n not in seen]
+        ungrouped = [n for n in self._by_name if n not in seen and n not in excluded]
         if ungrouped:
             lines.append("### Additional Tools")
             for name in ungrouped:

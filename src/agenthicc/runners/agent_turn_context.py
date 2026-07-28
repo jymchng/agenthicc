@@ -8,7 +8,7 @@ reads from this context; call sites construct it and pass it to the runner.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from lauren_ai import IdempotencyLedger
@@ -47,6 +47,7 @@ class AgentTurnOptions(TypedDict):
     output_collector: "list[str] | None"
     command_outcomes: "list[dict[str, object]] | None"
     system_prompt_suffix: str
+    excluded_capabilities: NotRequired[frozenset[str]]
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,9 @@ class AgentTurnContext:
     # ── output capture ────────────────────────────────────────────────────────
     output_collector: "list[str] | None" = None
     system_prompt_suffix: str = ""
+    #: Capability tags excluded from this turn's tool surface. Unannotated
+    #: phase-control tools remain available.
+    excluded_capabilities: frozenset[str] = frozenset()
 
     # ── transport retry (PRD-126) ─────────────────────────────────────────────
     #: Absolute ``time.monotonic()`` deadline for retry scheduling.  When a turn

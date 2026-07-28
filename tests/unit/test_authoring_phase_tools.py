@@ -29,10 +29,10 @@ async def test_design_transition_tool_only_signals_phase_completion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_design_transition_tool_captures_optional_artifact_metadata() -> None:
+async def test_execute_transition_tool_captures_artifact_metadata() -> None:
     event = asyncio.Event()
     data: dict[str, object] = {}
-    (complete,) = make_authoring_transition_tools("design", event, data)
+    (complete,) = make_authoring_transition_tools("execute", event, data)
 
     result = await complete("source is ready", "cloakbrowser_parse_fb", "Parse Facebook.")
 
@@ -67,6 +67,7 @@ async def test_transition_tool_returns_actionable_validator_feedback() -> None:
     [
         ("interpret", "complete_interpret_phase"),
         ("design", "complete_design_phase"),
+        ("execute", "complete_execute_phase"),
         ("stage", "complete_stage_phase"),
         ("review", "request_publication_approval"),
         ("publish", "complete_publish_phase"),
@@ -126,5 +127,10 @@ async def test_inspection_tools_read_docs_and_current_source() -> None:
     assert "class PhaseSpec" in str(source_result["source"])
     assert "max_turns" in str(source_result["source"])
 
+    private_result = await source("agenthicc.workflows.plugin", "_parse_output_schema", 2_000)
+    assert private_result["ok"] is True
+    assert "def _parse_output_schema" in str(private_result["source"])
+
     assert (await docs("../README.md"))["ok"] is False
     assert (await source("os", "path"))["ok"] is False
+    assert (await source("agenthicc.workflows.plugin", "not-a-symbol"))["ok"] is False

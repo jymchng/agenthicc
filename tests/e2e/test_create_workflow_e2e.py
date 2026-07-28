@@ -153,6 +153,18 @@ def _queue_agent_write(
         _tool_completion(
             [
                 (
+                    "complete_design_phase",
+                    {"summary": "The implementation specification is complete."},
+                )
+            ],
+            first,
+        )
+    )
+    transport.queue_response(_completion("Design handoff is complete.", n=first + 1))
+    transport.queue_response(
+        _tool_completion(
+            [
+                (
                     "write_file",
                     {
                         "path": f".agenthicc/workflows/{name}.py",
@@ -160,14 +172,14 @@ def _queue_agent_write(
                     },
                 )
             ],
-            first,
+            first + 2,
         )
     )
     transport.queue_response(
         _tool_completion(
             [
                 (
-                    "complete_design_phase",
+                    "complete_execute_phase",
                     {
                         "summary": "The complete source was written by write_file.",
                         "artifact_name": name,
@@ -175,10 +187,10 @@ def _queue_agent_write(
                     },
                 )
             ],
-            first + 1,
+            first + 3,
         )
     )
-    transport.queue_response(_completion("The design handoff is complete.", n=first + 2))
+    transport.queue_response(_completion("The execute handoff is complete.", n=first + 4))
 
 
 def _queue_full_journey(transport: MockTransport, source: str) -> None:
@@ -191,10 +203,10 @@ def _queue_full_journey(transport: MockTransport, source: str) -> None:
     _queue_agent_write(transport, source, first=3)
     transport.queue_response(
         _tool_completion(
-            [("complete_summarize_phase", {"summary": "The agent-written path is ready."})], 6
+            [("complete_summarize_phase", {"summary": "The agent-written path is ready."})], 8
         )
     )
-    transport.queue_response(_completion("Summary handed off.", n=7))
+    transport.queue_response(_completion("Summary handed off.", n=9))
 
 
 async def test_create_workflow_agent_writes_exact_source_and_runner_only_reports(
@@ -241,7 +253,7 @@ async def test_create_workflow_agent_writes_exact_source_and_runner_only_reports
     assert "runner did not copy, publish, parse, or validate" in result.summary
 
 
-async def test_create_workflow_has_only_three_phases_and_uses_agent_write(
+async def test_create_workflow_has_design_execute_and_agent_write(
     tmp_path: Path, processor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -265,6 +277,7 @@ async def test_create_workflow_has_only_three_phases_and_uses_agent_write(
     assert [record.phase_name for record in app_state.workflow_run().phase_history] == [
         "interpret",
         "design",
+        "execute",
         "summarize",
     ]
     assert (tmp_path / ".agenthicc" / "workflows" / "cloakbrowser_parse_fb.py").exists()
@@ -276,19 +289,26 @@ async def test_create_workflow_prose_without_agent_write_is_not_an_artifact(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     transport = MockTransport()
-    transport.queue_response(_completion("Let me inspect the contracts first.", n=1))
+    transport.queue_response(
+        _tool_completion(
+            [("complete_interpret_phase", {"summary": "The workflow intent is explicit."})],
+            1,
+        )
+    )
+    transport.queue_response(_completion("Interpretation handed off.", n=2))
+    transport.queue_response(_completion("Let me inspect the contracts first.", n=3))
     runner, _app_state = _runner(tmp_path, processor, transport, _Approval(True))
-    runner._cfg.cfg.execution.authoring_max_generation_attempts = 1
+    runner._phase_specs = {phase.name: phase for phase in CreateWorkflow.phases}
 
     result = await runner.run("Create a parser workflow.")
     await processor.drain()
 
     assert result.status == "failed", result.to_dict()
-    assert result.attempts == 1
+    assert result.attempts == 20
     assert result.artifact is None
     assert not list((tmp_path / ".agenthicc").glob("workflows/*.py"))
     assert not (tmp_path / ".agenthicc" / "authoring").exists()
-    assert "did not complete its direct write handoff" in (result.error or "")
+    assert "transition tool was not called successfully" in (result.error or "")
 
 
 async def test_create_workflow_does_not_resume_runner_owned_source(
@@ -309,7 +329,7 @@ async def test_create_workflow_does_not_resume_runner_owned_source(
     assert transport.calls == []
 
 
-async def test_headless_style_execution_reports_three_phase_agent_owned_run(
+async def test_headless_style_execution_reports_four_phase_agent_owned_run(
     tmp_path: Path, processor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The headless adapter uses the same direct-write workflow contract."""
@@ -351,7 +371,7 @@ async def test_headless_style_execution_reports_three_phase_agent_owned_run(
     await processor.drain()
 
     assert result.status == "complete"
-    assert result.phases == ("interpret", "design", "summarize")
+    assert result.phases == ("interpret", "design", "execute", "summarize")
     completed = [
         event for event in processor.event_log if event.event_type == "WorkflowRunCompleted"
     ]

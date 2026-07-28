@@ -1413,14 +1413,16 @@ dangerous-permissions flag.
 ### CreateWorkflow
 
 Built-in `WorkflowPlugin` selected by `/workflow create_workflow`. The next
-ordinary input is treated as the authoring intent. Its custom runner generates
-one workflow source candidate, validates it statically, stages it under
-`.agenthicc/authoring/<run_id>/`, requests publication approval, and atomically
-publishes approved source under `.agenthicc/workflows/`. Run `/workflows reload`
-or restart the session for the normal registry to discover the generated
-plugin. `/workflow resume`
-continues the newest staged run after manifest/hash revalidation without
-regenerating the source.
+ordinary input is treated as the authoring intent. Its four phases are
+`interpret → design → execute → summarize`. Design is read-only and calls
+`complete_design_phase(summary)` with the implementation specification. During
+execute, the write-capable agent writes the complete source with the canonical
+`write_file` tool to `.agenthicc/workflows/<stable_name>.py`, then calls
+`complete_execute_phase(...)`.
+The runner never copies assistant prose, parses, validates, stages, publishes,
+or requests approval for workflow source. Run `/workflows reload` or restart
+the session for the normal registry to discover the generated plugin. There is
+no runner-owned staged manifest to resume for `create_workflow`.
 
 ### CreateWorkflowRunner
 
@@ -1429,11 +1431,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     async def run(self, intent: str) -> AuthoringResult
 ```
 
-Run the complete `interpret → design → stage → review → publish → summarize`
-authoring lifecycle. Static source validation remains a deterministic runner
-safeguard rather than a separate agent-controlled phase.
-The design response is captured directly; valid source can use the bounded
-validated-source recovery path if the model omits its handoff tool.
+Run the `interpret → design → execute → summarize` lifecycle for
+`create_workflow`. Design advances only after its phase-local specification
+handoff. Execute advances only after the agent's `write_file` call and its
+phase-local handoff. Assistant response text alone is never an artifact; a
+missing write or handoff is retried within the bounded generation budget and
+then reported as a failure without a runner-created file.
 
 ### CreateTools
 
@@ -1446,7 +1449,7 @@ shared authoring runner lifecycle. Tool candidates must import Lauren's
 `agenthicc.commands.Command` and export `COMMAND` or `COMMANDS`, publishing to
 `.agenthicc/commands/<module>.py`.
 
-Workflow publication reports `workflows-reload`; tool publication reports
+Workflow agent-owned writing reports `workflows-reload`; tool publication reports
 `tools-reload`; command publication reports `commands-reload`. Generated source
 is staged and statically validated before approval, and is not imported during
 the authoring run.
@@ -1489,6 +1492,7 @@ resume logic.
 class AuthoringState(Enum):
     INTERPRET = auto()
     DESIGN = auto()
+    EXECUTE = auto()
     STAGE = auto()
     REVIEW = auto()
     PUBLISH = auto()
@@ -1498,7 +1502,9 @@ class AuthoringState(Enum):
     FAILED = auto()
 
 Explicit typed lifecycle state shared by the three built-in authoring
-workflows. Terminal states are COMPLETE, REJECTED, and FAILED.
+workflows. `create_workflow` uses INTERPRET, DESIGN, EXECUTE, and SUMMARIZE; the
+extension workflows additionally use STAGE, REVIEW, and PUBLISH. Terminal
+states are COMPLETE, REJECTED, and FAILED.
 
 ### AuthoringContext
 
@@ -1508,7 +1514,7 @@ class AuthoringContext: ...
 ```
 
 Mutable typed data carried across the explicit authoring phase handlers,
-including the interpreted intent, candidate, validation report, staged artifact,
+    including the interpreted intent, candidate, validation report, staged artifact,
 result, and phase completion payload.
 
 ### make_authoring_transition_tools
@@ -1520,15 +1526,15 @@ def make_authoring_transition_tools(
     validator: Callable[[dict[str, object]], tuple[str, str] | None] | None = None,
 ) -> list[Callable[..., object]]
 
-Creates phase-local completion tools. The design phase also exposes
-the unique phase transition tool. The design runner captures complete raw
-source from the assistant response before parsing and validating it. Each phase
-receives a distinct transition
+Creates phase-local completion tools. Design and execute each expose a unique
+phase transition tool. For `create_workflow`, the execute agent writes source
+with `write_file` before this tool records the handoff; the runner does not
+capture or promote assistant response text. Each phase receives a distinct transition
 tool name: complete_interpret_phase, complete_design_phase,
-complete_stage_phase, complete_publish_phase, or complete_summarize_phase. The review phase uses
+complete_execute_phase, complete_stage_phase, complete_publish_phase, or complete_summarize_phase. The review phase uses
 request_publication_approval. A phase handoff is accepted only after its
-phase-specific transition tool is called; design additionally requires a
-complete source response.
+phase-specific transition tool is called; workflow execute additionally requires
+the agent-owned filesystem write.
 
 The optional ``validator`` checks phase prerequisites before the transition
 event is set. Rejected handoffs return an actionable ``error`` and ``retry``
@@ -1552,8 +1558,9 @@ def make_authoring_inspection_tools() -> list[Callable[..., object]]
 
 Creates bounded read-only inspect_agenthicc_documentation and
 inspect_agenthicc_source tools. Documentation paths are relative to the
-installed documentation tree; source inspection is limited to public
-agenthicc.* modules and uses Python's inspect API.
+installed documentation tree; source inspection is limited to agenthicc.*
+modules, while both public and private Python identifiers are inspectable with
+Python's inspect API.
 
 ### AuthoringResult
 
@@ -1581,8 +1588,9 @@ payload.
 
 ### AuthoringArtifact
 
-Contains the generated artifact name, staged/published paths, manifest path,
-publication state, source SHA-256 digest, and static `ValidationReport`.
+Contains the generated artifact name, agent-reported or staged/published paths,
+manifest path when an extension owns one, publication state, source SHA-256
+digest when computed by an extension, and a `ValidationReport`.
 
 ### AuthoringResumeContext
 
@@ -1604,6 +1612,8 @@ def validate_workflow_candidate(candidate: WorkflowCandidate) -> ValidationRepor
 
 Parse complete raw workflow source (while retaining legacy envelope
 compatibility) and validate it without importing or executing generated Python.
+These remain compatibility utilities; the `create_workflow` runner does not
+call them because source ownership belongs to the execute agent.
 
 ### parse_authoring_response
 
@@ -1972,7 +1982,8 @@ PROVIDER_API_KEY_ENVVAR: dict[str, str]
 
 ### ExecutionSettings (updated)
 
-Authoring settings include authoring_max_generation_attempts (default 3) and
+Authoring settings include authoring_max_generation_attempts (default 20,
+clamped to 1–20) and
 authoring_max_phase_turns (default 20); both bound the shared create_* lifecycle.
 
 ```python

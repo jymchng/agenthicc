@@ -204,7 +204,7 @@ def test_validation_accepts_direct_custom_runner_without_super_delegation() -> N
 @pytest.mark.parametrize("plugin", [CreateWorkflow, CreateTools, CreateCommands])
 def test_each_authoring_workflow_defines_an_explicit_prompt_for_each_phase(plugin) -> None:
     expected = (
-        ["interpret", "design", "summarize"]
+        ["interpret", "design", "execute", "summarize"]
         if plugin is CreateWorkflow
         else ["interpret", "design", "stage", "review", "publish", "summarize"]
     )
@@ -217,24 +217,15 @@ def test_create_workflow_prompt_teaches_runner_and_toml_contract() -> None:
 
     prompt = runner._generation_prompt("Create a configurable release workflow.")
 
-    assert "generate the source directly" in prompt.lower()
-    assert "complete raw Python source file" in prompt
-    assert "Do not wrap the code" in prompt
+    assert "implementation specification" in prompt.lower()
+    assert "complete_design_phase(summary)" in prompt
+    assert "write_file" in prompt
+    assert "Do not" in prompt
+    assert "complete raw Python source file" not in prompt
     assert "Return ONLY this envelope" not in prompt
     assert "<workflow" not in prompt
-    assert "system_prompt_override" in prompt
-    assert "complete_design_phase(summary, artifact_name, artifact_description)" in prompt
-    assert "super()" in prompt
     assert "inspect_agenthicc_documentation" in prompt
     assert "inspect_agenthicc_source" in prompt
-    assert "inherited" in prompt
-    assert "WorkflowParams" in prompt
-    assert "build_params(source)" in prompt
-    assert "[workflows.<name>]" in prompt
-    assert "provider switching" in prompt
-    assert "copy-ready" in prompt
-    assert "agenthicc.toml" in prompt
-    assert "Never include API keys" in prompt
 
 
 @pytest.mark.parametrize(
@@ -264,7 +255,7 @@ def test_extension_authoring_prompts_generate_raw_source_directly(
 def test_builtin_authoring_definitions_have_distinct_bounded_phase_contracts() -> None:
     for definition in (CreateWorkflow, CreateTools, CreateCommands):
         expected = (
-            ["interpret", "design", "summarize"]
+            ["interpret", "design", "execute", "summarize"]
             if definition is CreateWorkflow
             else ["interpret", "design", "stage", "review", "publish", "summarize"]
         )
@@ -275,13 +266,17 @@ def test_builtin_authoring_definitions_have_distinct_bounded_phase_contracts() -
 
 
 def test_create_workflow_gives_every_phase_twenty_agent_turns() -> None:
-    assert [phase.max_turns for phase in CreateWorkflow.phases] == [20] * 3
+    assert [phase.max_turns for phase in CreateWorkflow.phases] == [20] * 4
 
 
 def test_create_workflow_prompts_repeat_mission_and_phase_handoffs() -> None:
     expected_handoffs = {
         "interpret": ("complete_interpret_phase(summary)", "DESIGN"),
-        "design": ("complete_design_phase(summary, artifact_name, artifact_description)", "SUMMARIZE"),
+        "design": ("complete_design_phase(summary)", "EXECUTE"),
+        "execute": (
+            "complete_execute_phase(summary, artifact_name, artifact_description)",
+            "SUMMARIZE",
+        ),
         "summarize": ("complete_summarize_phase(summary)", "terminal"),
     }
 
@@ -293,6 +288,50 @@ def test_create_workflow_prompts_repeat_mission_and_phase_handoffs() -> None:
         tool, next_phase = expected_handoffs[phase.name]
         assert tool in prompt
         assert next_phase in prompt
+
+
+def test_create_workflow_design_is_read_only_and_execute_owns_write() -> None:
+    design = next(phase for phase in CreateWorkflow.phases if phase.name == "design")
+    execute = next(phase for phase in CreateWorkflow.phases if phase.name == "execute")
+
+    assert design.agent_type == "planner"
+    assert "write_file" in design.system_prompt_override
+    assert "Do not" in design.system_prompt_override
+    assert execute.agent_type == "executor"
+    assert "write_file" in execute.system_prompt_override
+    assert "complete_execute_phase" in execute.system_prompt_override
+
+
+def test_execute_tools_restore_canonical_write_file() -> None:
+    from agenthicc.tools.fs.agent_tools import write_file
+
+    runner = object.__new__(CreateWorkflowRunner)
+    runner._phase_tools = lambda: [write_file]  # type: ignore[method-assign]
+
+    tools = runner._phase_execute_tools()
+
+    assert tools == [write_file]
+
+
+def test_execute_handoff_accepts_existing_exact_file_without_receipt(tmp_path: Path) -> None:
+    runner = object.__new__(CreateWorkflowRunner)
+    runner._project_root = tmp_path.resolve()
+    runner.destination_dir = "workflows"
+    path = tmp_path / ".agenthicc" / "workflows" / "make_nextjs.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("agent-owned source", encoding="utf-8")
+
+    transition_data = {
+        "artifact_name": "make_nextjs",
+        "artifact_description": "A generated workflow.",
+    }
+
+    assert runner._execute_transition_error(transition_data) is None
+    assert transition_data["write_receipt"] == {
+        "ok": True,
+        "path": str(path.resolve()),
+        "verified_by": "exact_path_exists",
+    }
 
 
 def test_runtime_phase_prompt_adds_mission_and_next_state_reminder() -> None:

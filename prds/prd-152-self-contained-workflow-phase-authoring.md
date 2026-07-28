@@ -314,7 +314,7 @@ contracts remain unchanged. Those extension runners must:
    correction feedback, explicitly requiring complete source-only output;
 3. emit a visible system event that an attempt failed and is being retried; and
 4. stop only after `[execution].authoring_max_generation_attempts` complete
-   attempts, defaulting to 3 and clamping the effective value to 1–10.
+   attempts, defaulting to 20 and clamping the effective value to 1–20.
 
 Parse failures must explain that the previous response was not source and may
 have contained tool activity or prose. Validation failures must include each

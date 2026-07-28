@@ -28,6 +28,7 @@ class AuthoringState(Enum):
 
     INTERPRET = auto()
     DESIGN = auto()
+    EXECUTE = auto()
     STAGE = auto()
     REVIEW = auto()
     PUBLISH = auto()
@@ -43,6 +44,7 @@ class AuthoringState(Enum):
         names = {
             AuthoringState.INTERPRET: "interpret",
             AuthoringState.DESIGN: "design",
+            AuthoringState.EXECUTE: "execute",
             AuthoringState.STAGE: "stage",
             AuthoringState.REVIEW: "review",
             AuthoringState.PUBLISH: "publish",
@@ -69,6 +71,7 @@ class AuthoringContext:
     run_id: str
     shared_memory: "ShortTermMemory | None" = None
     interpreted_intent: str = ""
+    design_summary: str = ""
     candidate: WorkflowCandidate | None = None
     report: ValidationReport = dataclasses.field(default_factory=ValidationReport)
     attempts: int = 0
@@ -104,6 +107,7 @@ class AuthoringContext:
 _PHASE_TO_STATE: dict[str, AuthoringState] = {
     "interpret": AuthoringState.INTERPRET,
     "design": AuthoringState.DESIGN,
+    "execute": AuthoringState.EXECUTE,
     "stage": AuthoringState.STAGE,
     "review": AuthoringState.REVIEW,
     "publish": AuthoringState.PUBLISH,

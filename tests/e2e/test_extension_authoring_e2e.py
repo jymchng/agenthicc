@@ -350,6 +350,7 @@ async def test_authoring_malformed_model_output_fails_without_partial_publicatio
     transport.queue_response(_completion("still not an authoring envelope", 2))
     transport.queue_response(_completion("still not an authoring envelope", 3))
     runner, _app_state = _runner(runner_type, processor, transport, _Approval(True))
+    runner._cfg.cfg.execution.authoring_max_generation_attempts = 3
 
     result = await runner.run(f"Create a malformed {kind} extension.")
     await processor.drain()

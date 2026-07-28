@@ -122,7 +122,7 @@ class TestLoadConfig:
         assert config.execution.max_concurrent_intents == 8
         assert config.execution.max_parallel_tasks == 4
         assert config.execution.agent_pool_size == 16
-        assert config.execution.authoring_max_generation_attempts == 3
+        assert config.execution.authoring_max_generation_attempts == 20
         assert config.execution.authoring_max_phase_turns == 20
         assert config.security.sandbox_mode is True
         assert config.security.allowed_paths == ["/workspace"]

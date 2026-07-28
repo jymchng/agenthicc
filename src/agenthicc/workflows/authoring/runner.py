@@ -49,11 +49,11 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _PHASES = ("interpret", "design", "stage", "review", "publish", "summarize")
-_DEFAULT_MAX_GENERATION_ATTEMPTS = 3
-_MAX_GENERATION_ATTEMPTS = 10
+_DEFAULT_MAX_GENERATION_ATTEMPTS = 20
+_MAX_GENERATION_ATTEMPTS = 20
 _DEFAULT_MAX_PHASE_TURNS = 20
 _MAX_PHASE_TURNS = 100
-_MAX_PHASE_ATTEMPTS = 10
+_MAX_PHASE_ATTEMPTS = 20
 _RUN_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -74,7 +74,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     The lifecycle is shared by the three built-in authoring workflows. Concrete
     subclasses only select the artifact contract, destination, and prompt.
-    ``create_workflow`` lets the design agent write its workflow with the
+    ``create_workflow`` lets the execute agent write its workflow with the
     canonical filesystem tool; extension subclasses retain their parser,
     validator, staging, and approval lifecycle.
     """
@@ -108,7 +108,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         if self._phase_specs:
             return tuple(self._phase_specs)
         if self.artifact_kind == "workflow":
-            return ("interpret", "design", "summarize")
+            return ("interpret", "design", "execute", "summarize")
         return _PHASES
 
     def _result(
@@ -193,6 +193,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                         state = await self._design(
                             ctx, max_agent_turns=self._phase_max_turns("design")
                         )
+                    case AuthoringState.EXECUTE:
+                        state = await self._execute(
+                            ctx, max_agent_turns=self._phase_max_turns("execute")
+                        )
                     case AuthoringState.STAGE:
                         state = await self._stage(
                             ctx, max_agent_turns=self._phase_max_turns("stage")
@@ -265,6 +269,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         active_agent: str,
         tool_builder: Callable[[asyncio.Event, dict[str, object]], list[ToolLike]],
         max_agent_turns: int | None = None,
+        carry_data: dict[str, object] | None = None,
+        excluded_capabilities: frozenset[str] = frozenset(),
     ) -> tuple[dict[str, object] | None, int, str | None]:
         """Run one code-plan-style phase until its transition tool succeeds.
 
@@ -279,7 +285,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         last_error = ""
         for attempt in range(1, limit + 1):
             transition_event = asyncio.Event()
-            transition_data: dict[str, object] = {}
+            transition_data: dict[str, object] = dict(carry_data or {})
             try:
                 await self._run_authoring_turn(
                     text
@@ -295,11 +301,17 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     system_prompt=system_prompt,
                     max_agent_turns=max_agent_turns,
                     shared_memory=ctx.shared_memory,
+                    excluded_capabilities=excluded_capabilities,
                 )
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as exc:  # noqa: BLE001
                 return None, attempt, f"{type(exc).__name__}: {exc}"
+
+            if carry_data is not None:
+                for key in ("write_receipt", "artifact_name", "artifact_description"):
+                    if key in transition_data:
+                        carry_data[key] = transition_data[key]
 
             if transition_event.is_set():
                 return transition_data, attempt, None
@@ -317,6 +329,99 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 f"{phase_name.title()} phase exhausted {limit} attempts. Last transition feedback: "
                 f"{last_error or 'the transition tool was not invoked.'}"
             ),
+        )
+
+    def _phase_agent(self, phase_name: str, default: str) -> str:
+        """Resolve the role declared by a phase, with a safe fallback."""
+
+        spec = self._phase_specs.get(phase_name)
+        return spec.agent_type if spec is not None and spec.agent_type else default
+
+    def _phase_read_tools(self) -> list[ToolLike]:
+        """Return authoring tools without the workflow write tool."""
+
+        return [
+            tool
+            for tool in self._phase_tools()
+            if getattr(tool, "__name__", getattr(tool, "name", "")) != "write_file"
+        ]
+
+    def _phase_execute_tools(self) -> list[ToolLike]:
+        """Return execute tools with the canonical filesystem writer exposed.
+
+        The design phase removes every ``write_file`` entry so it cannot mutate
+        the workspace.  Execute must add the real filesystem tool back, rather
+        than a runner-owned proxy: the model sees the same schema and
+        capability metadata as a normal agent turn, and the side effect remains
+        entirely owned by the agent tool call.  The execute transition verifies
+        the exact declared path when a provider does not preserve the tool
+        receipt in the following turn.
+        """
+
+        from agenthicc.tools.fs.agent_tools import write_file
+
+        return [*self._phase_read_tools(), write_file]
+
+    def _execute_transition_error(
+        self, transition_data: dict[str, object]
+    ) -> tuple[str, str] | None:
+        """Require a successful write or an existing exact workflow file.
+
+        The file may already exist when the provider returns after the tool
+        side effect but the tool receipt is not preserved in the following
+        transition call.  Existence is checked only at the exact declared path;
+        the runner does not read or validate the source.
+        """
+
+        raw_name = transition_data.get("artifact_name")
+        if not isinstance(raw_name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", raw_name):
+            return (
+                "artifact_name must be a valid lowercase workflow name",
+                "provide the stable filename stem used by the successful write_file path",
+            )
+        description = transition_data.get("artifact_description")
+        if not isinstance(description, str) or not description.strip():
+            return (
+                "artifact_description is missing",
+                "provide a concise description of the workflow in complete_execute_phase()",
+            )
+        expected_root = (self._project_root / ".agenthicc" / self.destination_dir).resolve()
+        expected_path = expected_root / f"{raw_name}.py"
+
+        receipt = transition_data.get("write_receipt")
+        if isinstance(receipt, dict) and receipt.get("ok") is True:
+            raw_path = receipt.get("path")
+            if isinstance(raw_path, str):
+                try:
+                    resolved_path = Path(raw_path).resolve()
+                except OSError:
+                    resolved_path = None
+                if resolved_path == expected_path and expected_root in resolved_path.parents:
+                    return None
+
+        try:
+            exists = expected_path.is_file()
+        except OSError:
+            exists = False
+        if exists:
+            transition_data["write_receipt"] = {
+                "ok": True,
+                "path": str(expected_path),
+                "verified_by": "exact_path_exists",
+            }
+            return None
+
+        if not isinstance(receipt, dict) or receipt.get("ok") is not True:
+            return (
+                "the execute agent has not completed a successful write_file call and the "
+                "declared workflow file does not exist",
+                "call write_file with the complete source, or ensure the exact declared "
+                "workflow path exists, then retry complete_execute_phase()",
+            )
+        return (
+            "the write_file path does not match the declared workflow artifact and the "
+            "declared file does not exist",
+            f"write exactly to .agenthicc/{self.destination_dir}/{raw_name}.py",
         )
 
     async def _interpret(
@@ -358,6 +463,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         )
         if data is None:
             reason = error or "Interpretation did not produce a tool-gated handoff."
+            ctx.attempts = attempts
             self._set_failure(ctx, reason)
             ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
             return AuthoringState.SUMMARIZE
@@ -378,7 +484,68 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     async def _design(
         self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
     ) -> AuthoringState:
-        """Capture source and complete the create_workflow direct-write path."""
+        """Produce the workflow implementation specification.
+
+        ``create_workflow`` deliberately keeps design read-only.  The execute
+        phase owns the agent-written source file and its handoff.
+        """
+
+        if self.artifact_kind == "workflow":
+            from agenthicc.workflows.authoring.inspection_tools import (
+                make_authoring_inspection_tools,
+            )
+            from agenthicc.tools.capabilities import ToolCapability
+
+            data, attempts, error = await self._run_tool_gated_phase(
+                ctx,
+                phase_name="design",
+                text=(
+                    "Create the complete implementation specification for this workflow. "
+                    "Do not generate source or modify files."
+                ),
+                system_prompt=(
+                    "You are the read-only design agent in the create_workflow authoring "
+                    "state machine. Produce the complete implementation specification, "
+                    "then call complete_design_phase(summary). Never call write_file, "
+                    "batch_write, shell, or another mutating tool." + self._phase_prompt("design")
+                ),
+                active_agent=self._phase_agent("design", "planner"),
+                max_agent_turns=max_agent_turns,
+                tool_builder=lambda event, values: [
+                    *self._phase_read_tools(),
+                    *make_authoring_inspection_tools(),
+                    *make_authoring_transition_tools("design", event, values),
+                ],
+                excluded_capabilities=frozenset(
+                    {
+                        ToolCapability.WRITE,
+                        ToolCapability.GIT_WRITE,
+                        ToolCapability.EXECUTE,
+                        ToolCapability.NETWORK,
+                    }
+                ),
+            )
+            if data is None:
+                reason = error or "Design did not produce a tool-gated handoff."
+                ctx.attempts = attempts
+                self._set_failure(ctx, reason)
+                ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
+                return AuthoringState.SUMMARIZE
+
+            summary = data.get("summary")
+            if not isinstance(summary, str) or not summary.strip():
+                reason = "Design completed without an implementation specification."
+                self._set_failure(ctx, reason)
+                ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
+                return AuthoringState.SUMMARIZE
+            ctx.design_summary = summary.strip()
+            ctx.attempts = attempts
+            ctx.set_phase_output(
+                ctx.design_summary,
+                approved=True,
+                structured={"design": ctx.design_summary, "attempts": attempts},
+            )
+            return AuthoringState.EXECUTE
 
         try:
             candidate, report, attempts, generation_text = await self._generate(
@@ -435,6 +602,87 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             structured={"attempts": attempts, "validation": report.to_dict()},
         )
         return AuthoringState.STAGE
+
+    async def _execute(
+        self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
+    ) -> AuthoringState:
+        """Have the execute agent write and hand off the workflow source."""
+
+        if self.artifact_kind != "workflow":
+            raise RuntimeError("execute is only valid for create_workflow")
+
+        from agenthicc.workflows.authoring.inspection_tools import (
+            make_authoring_inspection_tools,
+        )
+
+        persistent_data: dict[str, object] = {}
+        data, attempts, error = await self._run_tool_gated_phase(
+            ctx,
+            phase_name="execute",
+            text=(
+                "Implement the workflow from this design specification. Write the complete "
+                "source with write_file, then complete the execute handoff.\n\n"
+                f"DESIGN SPECIFICATION:\n{ctx.design_summary}"
+            ),
+            system_prompt=(
+                "You are the write-capable execute agent in the create_workflow authoring "
+                "state machine. Consume the design specification, generate the complete "
+                "workflow source, call write_file exactly for the project workflow path, "
+                "wait for success, then call complete_execute_phase(summary, "
+                "artifact_name, artifact_description). Do not stop at prose."
+                + self._phase_prompt("execute")
+            ),
+            active_agent=self._phase_agent("execute", "executor"),
+            max_agent_turns=max_agent_turns,
+            carry_data=persistent_data,
+            tool_builder=lambda event, values: [
+                *self._phase_execute_tools(),
+                *make_authoring_inspection_tools(),
+                *make_authoring_transition_tools(
+                    "execute",
+                    event,
+                    values,
+                    validator=self._execute_transition_error,
+                ),
+            ],
+        )
+        if data is None:
+            reason = error or "Execute did not produce a successful write handoff."
+            ctx.attempts = attempts
+            self._set_failure(ctx, reason)
+            ctx.set_phase_output(
+                self._result_error(ctx, "Execute did not complete."),
+                approved=False,
+                structured={
+                    "attempts": attempts,
+                    "agent_owned_write": True,
+                    "write_receipt": persistent_data.get("write_receipt"),
+                },
+            )
+            return AuthoringState.SUMMARIZE
+
+        self._design_metadata = dict(data)
+        ctx.attempts = attempts
+        ctx.artifact = self._agent_reported_workflow_artifact()
+        ctx.result = self._result(
+            run_id=self._run_id,
+            status="complete",
+            artifact=ctx.artifact,
+            approval="not-requested",
+            activation=self.activation,
+            attempts=attempts,
+        )
+        ctx.set_phase_output(
+            self._summary(ctx.result),
+            approved=True,
+            structured={
+                **ctx.result.to_dict(),
+                "agent_owned_write": True,
+                "runner_wrote_artifact": False,
+                "write_receipt": data.get("write_receipt"),
+            },
+        )
+        return AuthoringState.SUMMARIZE
 
     async def _stage(
         self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
@@ -818,7 +1066,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 status="failed",
                 error=(
                     "create_workflow has no runner-owned staged artifact to resume. "
-                    "Inspect the workflow written by the design agent or run "
+                    "Inspect the workflow written by the execute agent or run "
                     "/workflow create_workflow again."
                 ),
             )
@@ -971,9 +1219,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         )
 
     def _agent_reported_workflow_artifact(self) -> AuthoringArtifact | None:
-        """Describe the path reported by the design agent without inspecting it.
+        """Describe the path reported by the execute agent without inspecting it.
 
-        The design agent owns the actual ``write_file`` call.  This method only
+        The execute agent owns the actual ``write_file`` call.  This method only
         turns the agent-provided stable name into result metadata; it never
         reads, hashes, parses, validates, or writes the source file.
         """
@@ -1117,6 +1365,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         output: list[str] | None = None,
         max_agent_turns: int | None = None,
         shared_memory: ShortTermMemory | None = None,
+        excluded_capabilities: frozenset[str] = frozenset(),
     ) -> None:
         """Run one bounded tool-capable turn for an authoring phase."""
 
@@ -1154,6 +1403,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             approval_svc=self._cfg.approval_svc,
             output_collector=output if output is not None else [],
             system_prompt_suffix=system_prompt,
+            excluded_capabilities=excluded_capabilities,
             memory_router=self._cfg.memory_router,
             semantic_index=self._cfg.semantic_index,
         )
@@ -1163,13 +1413,50 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
         from agenthicc.workflows.memory_tools import make_memory_tools
 
-        return [
+        tools = [
             *self._cfg.all_plugin_tools(),
             *make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index),
         ]
+        if self.artifact_kind == "workflow":
+            from agenthicc.tools.fs.agent_tools import write_file
+
+            if write_file not in tools:
+                tools.append(write_file)
+        return tools
 
     def _generation_prompt(self, intent: str) -> str:
         """Return the direct source-generation contract for ``create_workflow``."""
+
+        if self.artifact_kind == "workflow":
+            return f"""You are the read-only DESIGN agent in the built-in
+agenthicc ``create_workflow`` workflow.
+
+Produce the complete implementation specification for one custom specialized
+workflow from the user's intent. Do not generate Python source, call
+``write_file``, call ``batch_write``, execute shell commands, or modify the
+workspace. Inspect only the current contracts needed to make the specification
+accurate.
+
+Use the built-in ``inspect_agenthicc_documentation(path)`` and
+``inspect_agenthicc_source(module, symbol)`` tools when current API details are
+needed. Failed optional reads are recoverable and must not become a reason to
+avoid the design handoff.
+
+The specification must name the workflow, define its phase graph, and provide
+complete self-contained prompts, tools, inputs, outputs, verification behavior,
+safety boundaries, completion signals, handoffs, and activation notes for every
+generated phase. Use only existing agenthicc APIs and configured integrations.
+
+When the specification is complete, call ``complete_design_phase(summary)``.
+That phase transition is the only accepted design handoff and moves the run to
+the EXECUTE phase. The execute agent will generate and write the source; the
+runner never copies assistant response text, parses, validates, stages, or
+publishes the workflow.
+
+USER INTENT:
+{intent}
+{self._phase_prompt("design")}
+"""
 
         return f"""You are the implementation agent in the design phase of the built-in
 agenthicc ``create_workflow`` workflow.
@@ -1421,16 +1708,14 @@ USER INTENT:
                 ],
                 active_agent="planner",
                 system_prompt=(
-                    (
-                        "You are the create_workflow design agent. Write the complete "
-                        "workflow source with the canonical write_file tool inside "
-                        ".agenthicc/workflows, then complete the design handoff. The "
-                        "runner never copies assistant text into the project."
-                        if self.artifact_kind == "workflow"
-                        else (
-                            "You are generating source for a staged user extension. "
-                            f"Never write directly to .agenthicc/{self.destination_dir}."
-                        )
+                    "You are the create_workflow design agent. Write the complete "
+                    "workflow source with the canonical write_file tool inside "
+                    ".agenthicc/workflows, then complete the design handoff. The "
+                    "runner never copies assistant text into the project."
+                    if self.artifact_kind == "workflow"
+                    else (
+                        "You are generating source for a staged user extension. "
+                        f"Never write directly to .agenthicc/{self.destination_dir}."
                     )
                 ),
                 output=output,
@@ -1438,9 +1723,7 @@ USER INTENT:
                 shared_memory=shared_memory,
             )
             last_text = (
-                "".join(output)
-                if self.artifact_kind == "workflow"
-                else "".join(output).strip()
+                "".join(output) if self.artifact_kind == "workflow" else "".join(output).strip()
             )
             if self.artifact_kind == "workflow":
                 if transition_event.is_set():
@@ -1879,7 +2162,7 @@ USER INTENT:
                     "The runner did not copy, publish, parse, or validate the source."
                 )
             return (
-                "The design agent completed its handoff, but did not report a valid "
+                "The execute agent completed its handoff, but did not report a valid "
                 "workflow filename. The runner did not copy, publish, parse, or validate "
                 "assistant output."
             )

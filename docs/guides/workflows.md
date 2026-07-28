@@ -68,33 +68,38 @@ Create a workflow that uses Cloakbrowser to parse facebook.com.
 ```
 
 The first line selects the workflow; the next ordinary input supplies its
-intent. The authoring agent generates one complete Python `WorkflowPlugin`
+intent. The authoring state machine separates specification from execution:
+the read-only `design` agent hands off an implementation specification, then a
+write-capable `execute` agent generates one complete Python `WorkflowPlugin`
 source file directly. Each generated `PhaseSpec` carries a literal
 `system_prompt_override` describing its objective, tools, inputs, outputs,
 verification, completion signal, and handoff. Declarative workflows use the
 inherited generic `WorkflowRunner`; custom `run()`/`resume()` implementations
-are reserved for behavior the phase graph cannot express. The design agent
+are reserved for behavior the phase graph cannot express. The execute agent
 writes the complete source with the canonical `write_file` tool to
-`.agenthicc/workflows/<name>.py`, then calls its design handoff. The runner does
+`.agenthicc/workflows/<name>.py`, then calls its execute handoff. The runner does
 not copy assistant text, publish, parse, or statically validate the source, and
 no staging directory or publish phase is involved. Every terminal outcome emits
 a final summary in the transcript and in the structured `AuthoringResult`.
 
 Assistant prose is never an artifact. If the agent does not successfully write
-the file and call its design handoff, the runner retries up to
-`[execution].authoring_max_generation_attempts` bounded attempts and then
+the file and call its execute handoff, the runner retries up to
+`[execution].authoring_max_generation_attempts` bounded attempts (20 by default,
+clamped to 1–20) and then
 returns a failure without creating a `.py` file. The runner trusts the agent's
 successful filesystem-tool handoff for the reported path; it does not inspect
 the file or create a runner-owned manifest.
 
 Authoring phases are explicit state-machine nodes. The definition supplies a
-separate phase prompt and turn budget for `interpret`, `design`, and `summarize`;
+separate phase prompt and turn budget for `interpret`, `design`, `execute`, and
+`summarize`;
 the operator can cap every phase with
 `[execution].authoring_max_phase_turns` (20 by default). The built-in
-`create_workflow` definition gives all three phases a 20-turn budget. The
-interpret and summarize phases use their phase-local completion tools. Design
-uses `write_file` for the complete source and then its phase-local handoff; it
-has no parser, validator, approval, staging, review, or publish gate. The agent
+`create_workflow` definition gives all four phases a 20-turn budget. Interpret,
+design, execute, and summarize use their phase-local completion tools. Design
+is read-only and only hands off the implementation specification. Execute uses
+`write_file` for the complete source and then its phase-local handoff; it has no
+parser, validator, approval, staging, review, or publish gate. The execute agent
 owns the filesystem write.
 
 Each phase has a distinct transition tool, which makes the required handoff
@@ -103,29 +108,40 @@ unambiguous in the model's tool catalog:
 | Phase | Required handoff |
 | --- | --- |
 | `interpret` | `complete_interpret_phase(summary)` |
-| `design` | `write_file(path=".agenthicc/workflows/<name>.py", content=<complete source>)`, then `complete_design_phase(summary, artifact_name, artifact_description)` |
+| `design` | `complete_design_phase(summary)` |
+| `execute` | `write_file(path=".agenthicc/workflows/<name>.py", content=<complete source>)`, then `complete_execute_phase(summary, artifact_name, artifact_description)` |
 | `summarize` | `complete_summarize_phase(summary)` |
 
-The design phase should make one complete `write_file` call, wait for its
-successful result, and then call `complete_design_phase` with the same stable
-filename metadata. A response containing only analysis or source prose does not
-advance the phase. The runner does not inspect or copy that response, ask for
+The design phase must not call a mutating filesystem tool. It produces the
+implementation specification and calls `complete_design_phase`. The execute
+phase makes one complete `write_file` call, waits for its successful result, and
+then calls `complete_execute_phase` with matching stable filename metadata. A
+response containing only analysis or source prose does not advance either
+phase. The runner does not inspect or copy assistant responses, ask for
 approval, or create a staging copy.
+
+The authoring runner supplies the workspace-guarded canonical `write_file` tool
+to `create_workflow` even when no project tool plugin exports it. Other
+authoring workflows keep their existing tool and command capability boundaries.
 
 Like `code_plan`, one `ShortTermMemory` is created for each authoring run and
 shared by every `create_workflow` phase. The phase tool set also includes
 `memory_write`, `memory_read`, `semantic_search`, and `publish_artifact`, so the
 authoring agent can carry decisions and relevant context across interpretation,
-design, and summary without using memory to replace the direct source capture.
+design, execute, and summary. Design excludes write, execute, network, and git
+write capabilities; execute receives the write-capable tool surface subject to
+the active runtime mode.
 
 The sibling `create_tools` and `create_commands` workflows retain their separate
 six-phase staged, statically validated, approval-gated lifecycle. Their
 parser/validator behavior is unchanged by the permissive `create_workflow` path.
 
-The design agent also receives two read-only built-ins:
+The design and execute agents receive two read-only built-ins:
 `inspect_agenthicc_documentation(path)` reads the installed documentation, and
 `inspect_agenthicc_source(module, symbol)` uses Python's `inspect` API against
-the installed `agenthicc` package. The TUI preserves complete module and path
+the installed `agenthicc` package. Both public and private Python identifiers
+are valid symbols, so helpers such as `_parse_output_schema` can be inspected.
+The TUI preserves complete module and path
 arguments in the tool-call preview, so a displayed inspection target matches
 the value actually sent to the tool. These tools are intended to keep generated
 workflows, tools, and commands aligned with the current API surface. The

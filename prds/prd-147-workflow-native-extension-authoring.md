@@ -30,11 +30,14 @@ workflow is `/workflow create_workflow` followed by the user's intent in
 the input panel.
 
 The existing `/workflow NAME` command remains the workflow selector: it sets
-the workflow for the next ordinary user request. The workflow then produces a
-staged, validated artifact and a structured result describing what was
-generated, what was checked, whether approval is required, and how the
-extension can be activated. The dollar-prefixed triggers may remain as
-one-shot convenience adapters, but they are not a second implementation path.
+the workflow for the next ordinary user request. `create_workflow` is the
+exception to the sibling extension lifecycle: its read-only design agent hands
+off an implementation specification, then its execute agent writes the
+complete source with `write_file` into `.agenthicc/workflows/`, while the
+runner only reports the agent's handoff and never publishes assistant prose.
+`create_tools` and `create_commands` continue to produce staged, validated
+artifacts with approval. The dollar-prefixed triggers may remain as one-shot
+convenience adapters, but they are not a second implementation path.
 
 The primary result of `create_workflow` is a project-local
 `.agenthicc/workflows/<name>.py` implementing an `agenthicc`
@@ -47,8 +50,10 @@ Implementation status: Phases 1 and 2 are implemented in
 workflow authoring name; `create_tools`/`create_commands` are the canonical
 tool and command names, with singular `create_tool`/`create_command` selector
 aliases. The shared runner and focused E2E coverage exercise both loader
-contracts. Centralized trust hardening and durable staged-run retention remain
-follow-up work, so this PRD stays `In progress`.
+contracts. PRD-152 defined the direct-write contract; PRD-153 refines it into
+the four-phase `interpret → design → execute → summarize` lifecycle.
+Centralized trust hardening and durable staged-run retention remain follow-up
+work, so this PRD stays `In progress`.
 
 ## 2. Evidence-backed problem statement
 
@@ -161,14 +166,14 @@ The primary user journey is:
    Create a workflow that uses Cloakbrowser to parse facebook.com.
    ```
 
-3. Agenthicc runs `create_workflow` using that intent. Its phases inspect
-   the repository, design the workflow, stage a candidate, perform deterministic
-   static checks, present the result for approval, and publish it to
-   `.agenthicc/workflows/` only after approval.
+3. Agenthicc runs `create_workflow` using that intent. Its three phases inspect
+   the repository, have the design agent write the complete workflow with
+   `write_file`, and summarize the handoff. The runner performs no source
+   parsing, validation, staging, publication, or end-user approval.
 
 4. The result identifies the generated workflow name, for example
-   `cloakbrowser_parse_fb`, the artifact path, validation status, and the
-   activation instruction.
+   `cloakbrowser_parse_fb`, the agent-reported path, and the activation
+   instruction. It does not claim a runner-computed digest or publication.
 
 5. After the session performs the required discovery cycle, the user selects
    and runs the generated workflow in a later turn:
@@ -211,24 +216,25 @@ Every authoring workflow returns a JSON-safe result with at least:
 ```json
 {
   "workflow": "create_workflow",
-  "status": "published",
+  "status": "complete",
   "run_id": "...",
   "artifact_kind": "workflow",
   "artifacts": [
     {
       "path": ".agenthicc/workflows/research.py",
-      "state": "published",
-      "validation": "passed"
+      "state": "agent-written",
+      "validation": "not-run"
     }
   ],
-  "approval": "approved",
-  "activation": "restart-session"
+  "approval": "not-requested",
+  "activation": "workflows-reload"
 }
 ```
 
-Possible status values are `staged`, `awaiting_approval`, `published`,
-`rejected`, `cancelled`, and `failed`. A failed or rejected run must retain a
-bounded explanation and must not claim that an artifact was published.
+Possible status values include `complete`, `staged`, `awaiting_approval`,
+`published`, `rejected`, `cancelled`, and `failed`. A failed or rejected run
+must retain a bounded explanation and must not claim that an artifact was
+published.
 
 ### 6.3 Activation
 
@@ -251,17 +257,23 @@ definitions under a canonical `workflows/authoring/` package. Each definition
 selects the artifact kind, contract checks, destination, and domain-specific
 prompt fragments. The shared runner owns lifecycle and result handling.
 
-The default phase graph is:
+The `create_workflow` phase graph is:
+
+```text
+interpret → design → execute → summarize
+```
+
+The execute agent owns the filesystem write through `write_file`; design only
+hands off its implementation specification. The runner
+does not parse, validate, stage, publish, or approve workflow source. The
+`create_tools` and `create_commands` siblings retain the six-phase graph:
 
 ```text
 interpret → design → stage → review → publish → summarize
                               └─ reject → summarize
 ```
 
-The runner still performs deterministic static and contract validation while
-generating, staging, resuming, and publishing. That safeguard is not an
-agent-controlled phase; a valid staged artifact proceeds directly from `stage`
-to `review`.
+Their runner continues to perform deterministic contract validation.
 
 ### Interpret
 
@@ -338,7 +350,7 @@ conversion/reinstall path.
 ### 8.2 Artifact and persistence model
 
 Add an authoring result/context type that composes with `WorkflowContext` and
-contains:
+contains (for extension workflows):
 
 - request and artifact kind;
 - staging directory and manifest path;
@@ -347,25 +359,28 @@ contains:
 - approval/rejection state;
 - retry count and activation instruction.
 
-Use the existing workflow/session persistence mechanisms for resume. Staged
-files are content-addressed or hash-checked so resume never blindly repeats a
-side effect or publishes a changed candidate without revalidation.
+Use the existing workflow/session persistence mechanisms for resume for tool
+and command extensions. `create_workflow` has no runner-owned staged manifest;
+its agent-written path is reported from the design handoff and the source is
+not read or hashed by the runner.
 
 ### 8.3 Trust and capability boundary
 
 The generated agent phases receive only the capabilities needed for the
 selected artifact kind. They must not receive unrestricted shell, network, or
-dependency-install privileges by default. Publication is an approval-gated
-filesystem side effect.
+dependency-install privileges by default. The workflow design agent writes
+through the workspace-guarded `write_file` tool; tool and command publication
+remains an approval-gated filesystem side effect.
 
 Generated Python remains untrusted until the repository's centralized plugin
 trust contract is applied. PRD-138 P0.4 is a prerequisite for claiming a
 complete trust story; until that contract is wired into workflow discovery,
 the authoring workflow must not auto-reload or auto-import generated files.
 
-Headless execution follows the existing fail-closed approval behavior. A
-headless run without explicit permission may stage and validate but cannot
-publish executable artifacts.
+Headless execution follows the existing fail-closed approval behavior for
+approval-gated extensions. A `create_workflow` headless run can use its
+configured `write_file` tool but still does not auto-reload or auto-execute the
+generated plugin.
 
 ## 9. Acceptance criteria
 
@@ -374,13 +389,14 @@ publish executable artifacts.
 2. `/workflow create_workflow` selects the authoring workflow without
    consuming the next input-panel message.
 3. A successful mocked/integration `create_workflow` run receives the next
-   ordinary user message as its exact intent and produces a staged
-   candidate that contains a valid `WorkflowPlugin`, phase graph, and requested
-   behavior, then publishes it only after approval.
+   ordinary user message as its exact intent and has its design agent write a
+   complete `WorkflowPlugin` source file with `write_file`; the runner does not
+   parse, validate, stage, publish, or request approval.
 4. `$create-workflow instructions`, if retained, delegates to the same
    `create_workflow` runner and result contract.
-5. The result includes artifact paths, validation findings, approval state,
-   hashes, run status, and the correct activation instruction.
+5. The result includes the agent-reported artifact path when supplied,
+   approval state, run status, and the correct activation instruction without
+   claiming runner-owned validation or hashes.
 6. A generated workflow such as `cloakbrowser_parse_fb` is discovered by the
    existing workflow loader on the next explicit discovery cycle and is not
    imported during publication.
@@ -388,19 +404,21 @@ publish executable artifacts.
    `COMMAND`/`COMMANDS` through their existing loaders.
 8. Invalid names, traversal, symlink escapes, unsupported destinations,
    malformed Python, invalid exports, unresolved workflow transitions, and
-   blocking test failures prevent publication with actionable results.
-9. Existing artifacts are never overwritten without an explicit approval, and
-   a rejected, cancelled, or failed run leaves no discoverable partial file.
-10. Resume reuses the staged candidate and manifest, revalidates changed
-   content, and does not duplicate generated side effects.
-11. Headless authoring fails closed for publication unless the documented
-    explicit permission flag is supplied.
+   blocking test failures remain guarded for extensions; `create_workflow`
+   does not source-validate and reports missing write/handoff completion.
+9. Existing tool and command artifacts are never overwritten without explicit
+   approval. A failed `create_workflow` run never copies assistant prose into a
+   discoverable file.
+10. Extension resume reuses its staged candidate and manifest; `create_workflow`
+    has no runner-owned resume artifact.
+11. Headless extension authoring fails closed for publication unless the
+    documented explicit permission flag is supplied.
 12. Legacy ordinary skills continue to use the existing skill-body execution
     path, and existing user-authored `create-*` skills are not overwritten by
     bootstrap.
-13. Focused unit, integration, and headless tests cover success, malformed
-    output, approval denial, overwrite denial, resume, activation reporting,
-    and loader contract validation.
+13. Focused unit, integration, and headless tests cover agent-owned workflow
+    writes, prose-only failure, approval denial, overwrite denial, extension
+    resume, activation reporting, and loader contract validation.
 14. README, workflow, tool, command, security, and CLI documentation describe
     the new workflow names, `$` adapters, artifact lifecycle, and activation
     boundaries.
@@ -434,7 +452,8 @@ publish executable artifacts.
 - The shared authoring runner and `create_workflow` definition are implemented.
 - `/workflow create_workflow`, the input-panel intent handoff, and the
   `workflows run` path use the authoring runner.
-- Publication is approval-gated and discovery is verified after restart.
+- The design agent writes through `write_file`; discovery is explicit via
+  `/workflows reload` and no runner publication step exists.
 
 ### Phase 2 — sibling authoring workflows (implemented)
 
@@ -472,8 +491,8 @@ uv run pytest tests/ -q
 ```
 
 The authoring smoke test must prove the complete path: trigger or CLI command
-→ workflow phases → staged artifact → validation → approval → publication →
-explicit loader discovery → structured result.
+→ interpret/design/summarize phases → agent `write_file` call → no runner
+publication/parsing/validation → explicit loader discovery → structured result.
 
 ## 12. Risks and mitigations
 
