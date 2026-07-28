@@ -82,7 +82,7 @@ plugin.
 | `handler` | Synchronous `CommandContext → bool` function. |
 | `menu_factory` | Optional `CommandContext → MenuWidget` factory. |
 | `source_id` | Ownership label used by `/commands` and source cleanup. |
-| `completions_factory` | Stored metadata for argument completions; not currently consumed by the TUI picker. |
+| `completions_factory` | Optional argument completion provider consumed by the TUI picker after the command name and a space. |
 | `busy_policy` | Policy used when submitted during an active run; defaults to `queue`. |
 | `busy_policy_resolver` | Pure argument-aware policy selector; failures fail closed to `queue`. |
 

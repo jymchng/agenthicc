@@ -1679,12 +1679,15 @@ async def _run_tui_session(
 
     terminal_context_token = set_current_terminal_manager(ctx.terminal_manager)
     try:
-        from agenthicc.tui.welcome import print_welcome  # noqa: PLC0415
+        from agenthicc.tui.welcome import fetch_changelog, print_welcome  # noqa: PLC0415
+
+        changelog = await fetch_changelog()
 
         print_welcome(
             ctx.console,
             model=ctx.model_label,
             cwd=os.getcwd(),
+            changelog=changelog,
         )
         await session.run()
     finally:

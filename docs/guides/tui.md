@@ -4,6 +4,10 @@ The current interactive UI is a Rich Live workspace. It is not the older
 prompt-toolkit `build_app()`/`TranscriptModel` design referenced by historical
 docs.
 
+The startup welcome panel keeps its `What's new` heading even when the remote
+changelog cannot be reached. In that case it displays `No list`; on success it
+renders the entries from `https://agenthicc.dev/changelog.json`.
+
 ## Runtime components
 
 | Component | Location | Responsibility |

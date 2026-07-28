@@ -6,7 +6,9 @@ so the panel lands in the normal scroll buffer.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from rich import box
@@ -22,18 +24,102 @@ if TYPE_CHECKING:
 
 # ── brand ─────────────────────────────────────────────────────────────────────
 
+CHANGELOG_URL = "https://agenthicc.dev/changelog.json"
+_CHANGELOG_TIMEOUT_S = 5.0
+_CHANGELOG_LIST_KEYS = (
+    "items",
+    "entries",
+    "changes",
+    "changelog",
+    "releases",
+    "whats_new",
+    "updates",
+)
+_CHANGELOG_TEXT_KEYS = ("title", "text", "message", "description", "name")
+
 _MASCOT_LINES = (
     r" /\_/\ ",
     r"( ◕.◕ )",
     r" > ^ < ",
 )
 
-_CHANGELOG = [
-    "Bug fixes and reliability improvements",
-    "Added fallbackModel setting",
-    "Added glob pattern support in deny rules",
-    "/release-notes for more",
-]
+
+async def fetch_changelog(url: str = CHANGELOG_URL) -> list[str]:
+    """Fetch and normalize the remote changelog for the welcome panel.
+
+    The welcome screen is non-essential startup UI.  Any transport, HTTP,
+    JSON, or schema error therefore degrades to an empty list instead of
+    delaying or failing session startup.
+
+    Accepted payloads are either a JSON list or an object containing a list
+    under one of ``items``, ``entries``, ``changes``, ``changelog``,
+    ``releases``, or ``whats_new``.  List entries may be strings or objects
+    with a useful text field such as ``title``, ``text``, ``message``, or
+    ``description``.
+    """
+    try:
+        from agenthicc.tools.http import agenthicc_http_client  # noqa: PLC0415
+
+        async with asyncio.timeout(_CHANGELOG_TIMEOUT_S):
+            async with agenthicc_http_client(
+                timeout=_CHANGELOG_TIMEOUT_S,
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                payload = response.json()
+        return _normalize_changelog(payload)
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _normalize_changelog(payload: object) -> list[str]:
+    """Convert supported changelog JSON payloads into display lines."""
+    if isinstance(payload, dict):
+        for key in _CHANGELOG_LIST_KEYS:
+            entries = payload.get(key)
+            if isinstance(entries, list):
+                return _normalize_changelog_entries(entries)
+        return []
+    if isinstance(payload, list):
+        return _normalize_changelog_entries(payload)
+    return []
+
+
+def _normalize_changelog_entries(entries: list[object]) -> list[str]:
+    """Recursively normalize strings and nested release/change objects."""
+    result: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            text = entry.strip()
+        elif isinstance(entry, dict):
+            nested = next(
+                (
+                    value
+                    for key in _CHANGELOG_LIST_KEYS
+                    if isinstance(value := entry.get(key), list)
+                ),
+                None,
+            )
+            if nested is not None:
+                result.extend(_normalize_changelog_entries(nested))
+                continue
+            text = next(
+                (
+                    value.strip()
+                    for key in _CHANGELOG_TEXT_KEYS
+                    if isinstance(value := entry.get(key), str) and value.strip()
+                ),
+                "",
+            )
+        elif isinstance(entry, list):
+            result.extend(_normalize_changelog_entries(entry))
+            continue
+        else:
+            text = ""
+        if text:
+            result.append(text)
+    return result
 
 
 # ── left column ───────────────────────────────────────────────────────────────
@@ -89,7 +175,7 @@ def _left_column(model: str, cwd: str, left_w: int = 46) -> "RenderableType":
 # ── right column ──────────────────────────────────────────────────────────────
 
 
-def _right_column() -> "RenderableType":
+def _right_column(changelog: Sequence[str] = ()) -> "RenderableType":
     parts: list[RenderableType] = [
         Text("Tips for getting started", style="bold yellow"),
         Text(""),
@@ -107,11 +193,14 @@ def _right_column() -> "RenderableType":
         Text(""),
     ]
 
-    for entry in _CHANGELOG:
-        line = Text()
-        line.append("• ", style="yellow")
-        line.append(entry, style="dim")
-        parts.append(line)
+    if changelog:
+        for entry in changelog:
+            line = Text()
+            line.append("• ", style="yellow")
+            line.append(entry, style="dim")
+            parts.append(line)
+    else:
+        parts.append(Text("No list", style="dim"))
 
     return Group(*parts)
 
@@ -119,7 +208,11 @@ def _right_column() -> "RenderableType":
 # ── public API ────────────────────────────────────────────────────────────────
 
 
-def render_welcome(model: str = "", cwd: str = "") -> Align:
+def render_welcome(
+    model: str = "",
+    cwd: str = "",
+    changelog: Sequence[str] = (),
+) -> Align:
     """Return a Rich renderable for the startup welcome screen."""
     # Compute column widths from the live terminal size.
     # Panel overhead = border(2) + padding(3+3) = 8 cols.
@@ -132,7 +225,7 @@ def render_welcome(model: str = "", cwd: str = "") -> Align:
     body = Table.grid(padding=(0, 4, 0, 0))
     body.add_column(width=left_w)  # left — exact computed width
     body.add_column()  # right — takes remainder
-    body.add_row(_left_column(model, cwd, left_w), _right_column())
+    body.add_row(_left_column(model, cwd, left_w), _right_column(changelog))
 
     panel = Panel(
         body,
@@ -144,6 +237,11 @@ def render_welcome(model: str = "", cwd: str = "") -> Align:
     return Align.center(panel)
 
 
-def print_welcome(console: "Console", model: str = "", cwd: str = "") -> None:
+def print_welcome(
+    console: "Console",
+    model: str = "",
+    cwd: str = "",
+    changelog: Sequence[str] = (),
+) -> None:
     """Print the welcome panel to *console* (call before the Live block starts)."""
-    console.print(render_welcome(model=model, cwd=cwd))
+    console.print(render_welcome(model=model, cwd=cwd, changelog=changelog))
