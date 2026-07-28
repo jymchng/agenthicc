@@ -113,9 +113,25 @@ the agent's vote), and summarize:
 | CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, approved design, generated path, per-phase `PhaseArtifact`s, shared memory |
 | make_*_tools | agenthicc.workflows.create_workflow.phase_tools | Phase transition handoffs; rejected transitions return actionable `error`, `fix`, and `message` fields |
 | validate_workflow_file | agenthicc.workflows.create_workflow.validation | Imports the generated file like the loader does; a failing report overrides an agent approval |
-| make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only authoring-surface inspection read live from `PhaseSpec`, `ToolCapability`, `PhaseRole` |
+| make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only authoring-surface inspection read live from `PhaseSpec`, `ToolCapability`, `PhaseRole`; `show_example_workflow()` defaults to the custom-runner shape |
+
+A generated workflow is expected to ship its own state-machine runner in the same
+file (typed state enum, typed context, one bounded async method per state,
+`while not state.is_terminal` + `match` driver, `resume()`, phase tool factories,
+`build_runner()`). `CodePlanRunner.run_phase(..., tools=...)` is the public helper
+for running one tool-gated phase. Validation warns when a multi-phase workflow
+inherits the declarative runner.
+
+Every session also carries five read-only self-inspection tools so the agent reads
+the current API instead of remembering it:
+
+| list_agenthicc_docs / read_agenthicc_doc / search_agenthicc_docs | agenthicc.tools.introspect | The `docs/` tree plus `llms.txt`, `llms-full.txt`, `README.md`; bounded windows and capped searches |
+| inspect_agenthicc_source / search_agenthicc_source | agenthicc.tools.introspect | Any `agenthicc` module or symbol, resolved by path + `ast` with no imports; private names included |
 
 - Start `EventProcessor.run()` before `emit()` and await `drain()` before reading.
+- `[execution].max_output_tokens` (default 16384) caps one LLM round-trip. It must
+  exceed the largest single tool call: lauren-ai's 4096 default silently truncates
+  a `write_file` carrying a whole file, discarding the tool call entirely.
 - `root_reducer` is pure and kernel `AppState` is frozen.
 - Use `WorkspaceView` for filesystem paths and the shared HTTP client for tools.
 - Child capability scopes can only restrict their parent.

@@ -107,14 +107,57 @@ an `error`, a human-readable `message`, and a concrete `fix` naming the tool to
 call again. Invalid workflow names, empty designs, empty summaries, missing
 paths, and approval-service errors all take that path and keep the phase active.
 
+### The generated workflow ships its own runner
+
+`create_workflow` asks for a workflow that contains its own state-machine runner,
+not just a declarative `PhaseSpec` graph. That is the shape of `code_plan` and
+`create_workflow` themselves, and it is the only shape that can express retries,
+conditional routing, loops, accumulated context, or phase-local transition tools.
+
+The design phase must state, and the generate phase must write:
+
+1. a typed `State(Enum)` with every non-terminal and terminal state, and an
+   `is_terminal` property;
+2. a typed `@dataclass` context carrying the intent, each phase's output, and the
+   failure reason;
+3. one bounded async method per non-terminal state, returning the next state;
+4. `run(intent)` building the context and driving
+   `while not state.is_terminal` + `match state`;
+5. `resume(context)` re-entering the same dispatch path;
+6. phase tool factories whose `@tool()` closures set an `asyncio.Event`, checked
+   after the turn returns — never parsing the agent's prose;
+7. `build_runner()` on the plugin returning that runner.
+
+`describe_runner_pattern()` returns this checklist to the agent, and
+`show_example_workflow()` returns a complete working runner to adapt (pass
+`"declarative"` for the runner-less fallback). The generated runner subclasses
+`CodePlanRunner` for the session wiring and its public
+`run_phase(intent=, text=, system_prompt=, mode=, max_turns=, shared_memory=, tools=)`
+helper — `tools` is how a custom phase injects its own transition tools — and never
+calls `super().run()`, which would execute code_plan's own phases. Validation
+warns when a multi-phase workflow inherits `build_runner()` instead, and errors
+when the runner it ships is abstract or missing `run`/`resume`.
+
+A purely declarative graph is still correct when every phase really is one
+unconditional agent turn.
+
 ### Generation writes the file directly
 
 `generate` runs with `mode_override="Auto"` so the write tools are available. The
-agent writes one complete Python `WorkflowPlugin` source file to
-`.agenthicc/workflows/<name>.py` and then calls
-`mark_generation_complete(summary, path)` with the exact path it wrote. The
-runner never copies assistant text into a file, never stages a copy, and never
+agent writes the complete Python source to `.agenthicc/workflows/<name>.py` and
+then calls `mark_generation_complete(summary, path)` with the exact path it wrote.
+The runner never copies assistant text into a file, never stages a copy, and never
 publishes: the file the agent wrote is the artifact.
+
+A workflow with its own runner is a few hundred lines, which does not fit in one
+tool call under a small completion ceiling — the truncated call is discarded and
+nothing reaches disk. The generate prompt therefore instructs a chunked write:
+`write_file` for the first chunk, `append_file` for each following chunk of
+roughly 60–80 lines split between top-level definitions, then `read_file` to
+confirm the whole file landed. The retry reminder tells the agent to resume from
+what is already on disk rather than start over. See
+`[execution].max_output_tokens` in the
+[configuration guide](configuration.md#execution) for the ceiling itself.
 
 ### Validation is deterministic first, agent second
 
@@ -167,7 +210,7 @@ project tool set filtered by the active mode's blocked capabilities. The built-i
 tool registry supplies the workspace-guarded canonical `write_file` tool even when
 no project tool plugin exports it, so `generate` can always write its file.
 
-The design phase additionally receives four read-only inspection tools whose
+The design phase additionally receives five read-only inspection tools whose
 content is read live from the running code, so the guidance cannot drift from the
 API:
 
@@ -176,9 +219,13 @@ API:
 | `describe_phasespec()` | every `PhaseSpec` field with its type, default, and purpose |
 | `list_tool_capabilities()` | every `ToolCapability` value with a description |
 | `list_agent_roles()` | every `PhaseRole` usable as `agent_type` |
-| `show_example_workflow()` | a complete, known-valid workflow file to adapt |
+| `describe_runner_pattern()` | the custom-runner checklist and when a runner is required |
+| `show_example_workflow(style)` | a complete workflow file to adapt — `"runner"` (default) or `"declarative"` |
 
-`design` also gets `ask_user` for clarifying questions.
+`design` also gets `ask_user` for clarifying questions. Every phase can additionally
+read the installed agenthicc source and documentation with the session-wide
+`inspect_agenthicc_source`, `search_agenthicc_source`, `read_agenthicc_doc`, and
+`search_agenthicc_docs` tools — see the [tools guide](tools.md).
 
 ### Activate the generated workflow
 

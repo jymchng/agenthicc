@@ -118,12 +118,23 @@ authoring.
 Project tools and slash commands are authored separately through the
 `/create-tools` and `/create-commands` skills; they are not workflow selectors.
 
-Design turns inspect the real authoring API with the built-in
-`describe_phasespec`, `list_tool_capabilities`, `list_agent_roles`, and
-`show_example_workflow` tools, which read from the running code rather than from
-prose. Each authoring phase has its own prompt and bounded multi-turn budget;
-tune the caps with `[execution].authoring_max_phase_turns` and
+The generated workflow is expected to ship its own state-machine runner — typed
+state enum, typed context, one bounded method per state, an explicit
+`while not state.is_terminal` / `match` driver, `resume()`, and transitions that
+only ever happen on a tool call. Design turns inspect the real authoring API with
+the built-in `describe_phasespec`, `list_tool_capabilities`, `list_agent_roles`,
+`describe_runner_pattern`, and `show_example_workflow` tools, which read from the
+running code rather than from prose. Each authoring phase has its own prompt and
+bounded multi-turn budget; tune the caps with
+`[execution].authoring_max_phase_turns` and
 `[execution].authoring_max_generation_attempts`.
+
+Every session also carries five read-only tools for reading agenthicc itself —
+`list_agenthicc_docs`, `read_agenthicc_doc`, `search_agenthicc_docs`,
+`inspect_agenthicc_source`, and `search_agenthicc_source`. They serve the `docs/`
+tree plus `llms.txt`, `llms-full.txt`, and `README.md`, and resolve any
+`agenthicc` module or symbol (including private names) by parsing the file rather
+than importing it. All five are read-only, so they stay available in Plan mode.
 
 For a non-interactive process, use headless mode. It prints a ready record and
 one JSON line for each non-empty input line:

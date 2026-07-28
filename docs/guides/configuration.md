@@ -62,8 +62,9 @@ the code rather than hard-coding them in support material.
 | `max_parallel_tasks` | 4 | Workflow parallelism setting |
 | `agent_pool_size` | 16 | Legacy/domain capacity setting still present in kernel settings |
 | `max_agent_turns` | 200 | Agent-loop iteration cap |
-| `authoring_max_generation_attempts` | 20 | Maximum complete source-generation attempts for `create_*` authoring; clamped to 1–20 |
-| `authoring_max_phase_turns` | 20 | Maximum agent sub-turns in one `create_*` phase; phase definitions may request less, and the value is clamped to 1–100 |
+| `authoring_max_generation_attempts` | 20 | Maximum complete source-generation attempts for `create_*` authoring |
+| `authoring_max_phase_turns` | 20 | Maximum agent sub-turns in one `create_*` phase; phase definitions may request less |
+| `max_output_tokens` | 16384 | Completion-token ceiling for one LLM round-trip |
 | `auto_compact` | true | Enable proactive model-aware conversation compaction |
 | `context_windows` | `{}` | Model id → context window under `[memory.context_windows]` |
 | `prompt_cache` | true | Enable provider prompt-cache integration where supported |
@@ -75,7 +76,24 @@ the code rather than hard-coding them in support material.
 
 The live usable context budget is derived from the resolved model window and
 reservations; it is not a second independent `session_memory_max_tokens`
-setting in the current configuration model.
+setting in the current configuration model. `max_output_tokens` is one of those
+reservations, so raising it shrinks the live window by the same amount.
+
+`max_output_tokens` must be larger than the biggest single tool call a turn can
+make. lauren-ai's own default is 4096, which is not enough for a `write_file`
+carrying a whole source file: the provider truncates the completion mid-argument,
+the partial tool call is discarded, the sub-turn produces nothing at all, and the
+calling phase retries with no visible cause. agenthicc therefore defaults to
+16384 and passes the value through explicitly. When a response is truncated the
+session now prints a notice naming the ceiling and the setting.
+
+```toml
+[execution]
+max_output_tokens = 32768   # raise for a model that supports a larger completion
+```
+
+For very large files, prefer a chunked write — `write_file` for the first chunk,
+`append_file` for the rest — rather than relying on a high ceiling.
 
 For project workflow definitions and per-phase model overrides, see the
 [custom workflows and TOML configuration guide](custom-workflows-and-config.md).

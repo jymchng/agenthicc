@@ -76,8 +76,8 @@ phase. `request_design_approval(design, workflow_name)` raises a
 `kind="plan_review"` approval request; the response is recorded in a gate that
 `finalize_design(design, workflow_name)` checks. A later denial closes the gate
 again, so an unapproved design cannot be handed off. `approval_svc=None`
-auto-approves for headless runs and tests. The phase also receives the four
-read-only inspection tools and `ask_user`.
+auto-approves for headless runs and tests. The phase also receives the five
+read-only authoring-surface inspection tools and `ask_user`.
 
 **GENERATE** runs with `mode="Auto"` so the write tools are available (the same
 mechanism `code_plan`'s execute phase uses; the original mode is restored in a
@@ -113,7 +113,25 @@ workflow name are warnings.
 Importing agent-written code is the same trust model the workflow loader already
 uses; the containment check against `root` is what keeps it inside the workspace.
 
-## 5. Budgets
+## 5. The generated workflow ships its own runner
+
+The authoring prompts, the declarative phase prompts, and the inspection tools all
+require the generated workflow to contain its own state-machine runner rather than
+a bare `PhaseSpec` graph — the same shape as `code_plan` and this workflow.
+`describe_runner_pattern()` returns the checklist (state enum with `is_terminal`,
+typed context, one bounded async method per state, `while not state.is_terminal` +
+`match` driver, `resume()`, event-setting phase tool factories, `build_runner()`),
+and `show_example_workflow()` returns a complete working runner by default;
+`show_example_workflow("declarative")` is the opt-in runner-less fallback.
+
+To make that shape expressible through public API, `CodePlanRunner.run_phase()`
+gained a `tools` parameter: a custom runner drives its own state machine and passes
+each phase's transition tools into the one turn it runs, then checks its own
+`asyncio.Event`. `validate_workflow_file` warns when a multi-phase workflow
+inherits `build_runner()`, and errors when the runner it ships is abstract or
+missing `run`/`resume`.
+
+## 6. Budgets
 
 Two previously inert configuration keys now drive the loops:
 
@@ -123,7 +141,17 @@ Two previously inert configuration keys now drive the loops:
 
 Both are clamped to at least 1 so a hostile TOML value cannot skip a phase.
 
-## 6. Declarative metadata versus runtime behaviour
+A third setting is what makes generation work at all:
+`execution.max_output_tokens` (default 16384) is the completion ceiling for one
+LLM round-trip, passed through to lauren-ai's `AgentConfig.max_tokens_per_turn`.
+lauren-ai defaults it to 4096, which silently truncated the `write_file` call
+carrying the workflow source: the partial tool call was discarded, the sub-turn
+produced nothing, and GENERATE retried until the budget was spent with no visible
+cause. Alongside the higher ceiling, a `max_tokens` stop reason now emits a system
+notice, and the generate prompt instructs a chunked `write_file` + `append_file`
+write so a large file lands regardless of the ceiling.
+
+## 7. Declarative metadata versus runtime behaviour
 
 `create_workflow/definition.py` exposes the workflow to the registry and the TUI
 through `PhaseSpec` values: phase names and order, per-phase prompts, the
@@ -133,7 +161,7 @@ through `PhaseSpec` values: phase names and order, per-phase prompts, the
 — `_PHASE_INDEX` and `total_phases` are asserted against `CreateWorkflow.phases`
 in the unit tests so the two cannot drift.
 
-## 7. Public surface
+## 8. Public surface
 
 `agenthicc.workflows.create_workflow` exports `CreateWorkflowState`,
 `CreateWorkflowContext`, `PhaseArtifact`, `CreateWorkflowRunner`,
@@ -142,7 +170,7 @@ in the unit tests so the two cannot drift.
 `make_generation_tools`, `make_validation_tools`, and `make_inspection_tools`.
 All are documented in `llms-full.txt`.
 
-## 8. Test coverage
+## 9. Test coverage
 
 | Layer | File | Focus |
 |---|---|---|

@@ -9,6 +9,39 @@ This guide describes the current runtime, including the places where a
 configuration field or helper exists but is not yet connected to the normal
 TUI tool-loading path.
 
+## Built-in self-inspection tools
+
+Before adding a tool, know that every session already carries five read-only
+tools for reading agenthicc's *own* documentation and source. They exist because
+prose in a system prompt goes stale as soon as the code changes; these read the
+installed artefact instead.
+
+| Tool | Purpose |
+| --- | --- |
+| `list_agenthicc_docs(section="")` | Index of every document: path, title, line count, size |
+| `read_agenthicc_doc(path, start_line=1, max_lines=400)` | One bounded window; page with the returned `next_start_line` |
+| `search_agenthicc_docs(query, max_results=40, section="")` | Matching lines with document path and line number |
+| `inspect_agenthicc_source(target, include_source=True)` | Source, signature, docstring, and member outline of any `agenthicc` module or symbol |
+| `search_agenthicc_source(query, max_results=40, module="")` | Matching lines in the package source |
+
+The documentation surface is the `docs/` tree plus `llms.txt`, `llms-full.txt`,
+and `README.md`. It resolves from a source checkout's `docs/`, from
+`<prefix>/share/agenthicc/docs` in an installed distribution, or from
+`AGENTHICC_DOCS_DIR`; a directory counts only when it contains `index.md`.
+
+`inspect_agenthicc_source` accepts a module (`agenthicc.kernel.reducer`), a symbol
+(`agenthicc.workflows.plugin:PhaseSpec`), a method
+(`agenthicc.workflows.plugin:WorkflowPlugin.build_runner`), or the all-dots form,
+including private names. It resolves the module to a file path and parses it with
+`ast` — **nothing is imported** — so a module with an unavailable optional
+dependency is still inspectable and no import side effect can fire. Pass
+`include_source=False` for a cheap outline of a large module first.
+
+Both roots are enforced: a documentation path that traverses out of the tree, and
+a source target outside the `agenthicc` package, are refused before any read. All
+five are tagged `READ` (the searches also `SEARCH`), so they remain available in
+`Plan`, `Ask`, and `Safe` mode.
+
 ## The shortest working path
 
 Create `.agenthicc/tools/project_status.py`:
