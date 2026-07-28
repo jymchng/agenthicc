@@ -10,11 +10,24 @@ from lauren_ai._signals import ToolCallComplete
 from agenthicc.runners.agent_turn import (
     AgentTurnRunner,
     _ToolOutputCaptureHook,
+    _fmt_args,
     _tool_output_preview,
 )
 from agenthicc.tools.hooks import AfterToolHookDecision, ToolCallContext
 
 pytestmark = pytest.mark.unit
+
+
+def test_tool_argument_preview_keeps_inspection_module_names() -> None:
+    rendered = _fmt_args(
+        {
+            "module": "agenthicc.workflows.code_plan.definition",
+            "max_chars": 10_000,
+        }
+    )
+
+    assert "agenthicc.workflows.code_plan.definition" in rendered
+    assert "max_chars=10000" in rendered
 
 
 def test_tool_output_preview_prefers_file_content_and_counts_omitted_lines() -> None:

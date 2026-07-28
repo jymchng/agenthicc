@@ -179,7 +179,18 @@ def _fmt_args(args: dict[str, object]) -> str:
         return ""
     if len(items) == 1:
         return f"[dim]({_e(repr(items[0][1])[:60])})[/dim]"
-    return "[dim](" + ", ".join(f"{_e(k)}={_e(repr(v)[:25])}" for k, v in items[:3]) + ")[/dim]"
+
+    def format_item(key: str, value: object) -> str:
+        # Module and path arguments are identifiers users need to verify. A
+        # silent 25-character cut makes a valid module look invalid in the TUI
+        # even though the complete value is sent to the tool executor.
+        limit = 80 if key in {"module", "path", "symbol"} else 25
+        rendered = repr(value)
+        if len(rendered) > limit:
+            rendered = rendered[: limit - 1] + "…"
+        return f"{_e(key)}={_e(rendered)}"
+
+    return "[dim](" + ", ".join(format_item(k, v) for k, v in items[:3]) + ")[/dim]"
 
 
 def _tool_output_preview(result: object) -> tuple[list[str], int]:

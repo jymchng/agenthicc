@@ -86,16 +86,22 @@ partial artifact.
 Authoring phases are explicit state-machine nodes. The definition supplies a
 separate phase prompt and turn budget for `interpret`, `design`, `stage`,
 `validate`, `review`, `publish`, and `summarize`; the operator can cap every
-phase with `[execution].authoring_max_phase_turns` (20 by default). During
-design, the agent can take several tool-call turns and must use the
-phase-local completion tool to hand off. `submit_generated_source` captures
-the complete raw Python file directly, so the authoring contract does not
-depend on an XML, JSON, or Markdown response envelope.
+phase with `[execution].authoring_max_phase_turns` (20 by default). Each
+agent-controlled phase owns its agent turn and uses a phase-local completion
+tool as its handoff gate. If an inspection or other intermediate turn ends
+without that tool, the phase emits a visible retry and continues up to its
+bounded limit instead of failing with an uncaught transition error. Deterministic
+staging, validation, approval, publication, and summary steps advance only
+after their own gate succeeds. `submit_generated_source` captures the complete
+raw Python file directly, so the authoring contract does not depend on an XML,
+JSON, or Markdown response envelope.
 
 The design agent also receives two read-only built-ins:
 `inspect_agenthicc_documentation(path)` reads the installed documentation, and
 `inspect_agenthicc_source(module, symbol)` uses Python's `inspect` API against
-the installed `agenthicc` package. These tools are intended to keep generated
+the installed `agenthicc` package. The TUI preserves complete module and path
+arguments in the tool-call preview, so a displayed inspection target matches
+the value actually sent to the tool. These tools are intended to keep generated
 workflows, tools, and commands aligned with the current API surface. The
 documentation tree is included in built distributions under
 `share/agenthicc/docs` and remains available from the repository checkout.

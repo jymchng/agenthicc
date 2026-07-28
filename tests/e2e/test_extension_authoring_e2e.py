@@ -478,6 +478,13 @@ async def test_headless_authoring_fails_closed_without_explicit_permission(
         )
     )
     transport.queue_response(_completion("Source handed off.", n=4))
+    transport.queue_response(
+        _tool_completion(
+            [("complete_authoring_phase", {"summary": "The staged source is valid."})],
+            5,
+        )
+    )
+    transport.queue_response(_completion("Validation handed off.", n=6))
     approval = _Approval(False)
     runner, app_state = _runner(
         CreateToolRunner if kind == "tool" else CreateCommandRunner,

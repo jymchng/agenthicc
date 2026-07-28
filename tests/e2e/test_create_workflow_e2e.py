@@ -23,8 +23,10 @@ from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.authoring.artifact import AuthoringResumeContext
 from agenthicc.workflows.authoring.definition import CreateWorkflow
 from agenthicc.workflows.authoring.runner import CreateWorkflowRunner
+from agenthicc.workflows.authoring.state import AuthoringContext, AuthoringState
 from agenthicc.workflows.default.runner import WorkflowRunner
 from agenthicc.workflows.config import WorkflowConfig
+from agenthicc.workflows.plugin import PhaseSpec
 from agenthicc.workflows.registry import WorkflowRegistry, build_workflow_registry
 
 pytestmark = pytest.mark.e2e
@@ -452,11 +454,26 @@ async def test_headless_style_execution_emits_structured_authoring_result(
     transport = MockTransport()
     transport.queue_response(
         _tool_completion(
-            [("complete_authoring_phase", {"summary": "The parser intent is explicit."})],
+            [
+                (
+                    "inspect_agenthicc_source",
+                    {
+                        "module": "agenthicc.workflows.code_plan.definition",
+                        "max_chars": 12_000,
+                    },
+                )
+            ],
             1,
         )
     )
-    transport.queue_response(_completion("Interpretation handed off.", n=2))
+    transport.queue_response(_completion("I inspected the current workflow API.", n=2))
+    transport.queue_response(
+        _tool_completion(
+            [("complete_authoring_phase", {"summary": "The parser intent is explicit."})],
+            3,
+        )
+    )
+    transport.queue_response(_completion("Interpretation handed off.", n=4))
     transport.queue_response(
         _tool_completion(
             [
@@ -470,10 +487,17 @@ async def test_headless_style_execution_emits_structured_authoring_result(
                 ),
                 ("complete_authoring_phase", {"summary": "The source is ready for staging."}),
             ],
-            3,
+            5,
         )
     )
-    transport.queue_response(_completion("Source handed off.", n=4))
+    transport.queue_response(_completion("Source handed off.", n=6))
+    transport.queue_response(
+        _tool_completion(
+            [("complete_authoring_phase", {"summary": "The staged source is valid."})],
+            7,
+        )
+    )
+    transport.queue_response(_completion("Validation handed off.", n=8))
     approval = _Approval(True)
     runner, app_state = _runner(tmp_path, processor, transport, approval)
     registry = WorkflowRegistry()
@@ -511,3 +535,37 @@ async def test_headless_style_execution_emits_structured_authoring_result(
         .payload["result"]["artifact"]["published_path"]
         .endswith("cloakbrowser_parse_fb.py")
     )
+
+
+async def test_interpretation_exhaustion_is_structured_without_missing_tool_exception(
+    tmp_path: Path, processor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An inspection-only agent turn retries instead of raising a transition ValueError."""
+
+    monkeypatch.chdir(tmp_path)
+    runner, _app_state = _runner(tmp_path, processor, MockTransport(), _Approval(True))
+    runner._phase_specs = {
+        "interpret": PhaseSpec(
+            name="interpret",
+            agent_type="planner",
+            max_iterations=2,
+            system_prompt_override="Interpret the authoring intent.",
+        )
+    }
+    runner._run_id = "a" * 32
+    calls = 0
+
+    async def inspection_only_turn(*args, **kwargs) -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(runner, "_run_authoring_turn", inspection_only_turn)
+    context = AuthoringContext(intent="Create a parser workflow.", run_id=runner._run_id)
+
+    state = await runner._interpret(context)
+
+    assert state is AuthoringState.SUMMARIZE
+    assert calls == 2
+    assert context.result is not None
+    assert context.result.status == "failed"
+    assert "without a tool-gated transition" in (context.result.error or "")

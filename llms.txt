@@ -106,6 +106,7 @@ Authoring extensions use typed phase states, tool-gated design handoff, and
 read-only packaged documentation/API inspection:
 
 | AuthoringState | agenthicc.workflows.authoring.state | Typed create_* lifecycle state |
+| AuthoringContext | agenthicc.workflows.authoring.state | Typed data shared by authoring phase handlers |
 | make_authoring_transition_tools | agenthicc.workflows.authoring.phase_tools | Tool-gated phase handoff and direct source submission |
 | make_authoring_inspection_tools | agenthicc.workflows.authoring.inspection_tools | Read-only packaged docs and current API inspection |
 

@@ -1498,6 +1498,17 @@ class AuthoringState(Enum):
 Explicit typed lifecycle state shared by the three built-in authoring
 workflows. Terminal states are COMPLETE, REJECTED, and FAILED.
 
+### AuthoringContext
+
+```python
+@dataclass
+class AuthoringContext: ...
+```
+
+Mutable typed data carried across the explicit authoring phase handlers,
+including the interpreted intent, candidate, validation report, staged artifact,
+result, and phase completion payload.
+
 ### make_authoring_transition_tools
 
 def make_authoring_transition_tools(

@@ -8,7 +8,19 @@ from free-form transcript text.
 
 from __future__ import annotations
 
+import dataclasses
 from enum import Enum, auto
+from typing import TYPE_CHECKING
+
+from agenthicc.workflows.authoring.artifact import (
+    AuthoringArtifact,
+    AuthoringResult,
+    ValidationReport,
+    WorkflowCandidate,
+)
+
+if TYPE_CHECKING:
+    from lauren_ai._memory import ShortTermMemory
 
 
 class AuthoringState(Enum):
@@ -49,6 +61,45 @@ class AuthoringState(Enum):
             AuthoringState.REJECTED,
             AuthoringState.FAILED,
         }
+
+
+@dataclasses.dataclass
+class AuthoringContext:
+    """Mutable data carried by the explicit authoring state machine."""
+
+    intent: str
+    run_id: str
+    shared_memory: "ShortTermMemory | None" = None
+    interpreted_intent: str = ""
+    candidate: WorkflowCandidate | None = None
+    report: ValidationReport = dataclasses.field(default_factory=ValidationReport)
+    attempts: int = 0
+    generation_text: str = ""
+    artifact: AuthoringArtifact | None = None
+    result: AuthoringResult | None = None
+    phase_text: str = ""
+    phase_approved: bool | None = None
+    phase_structured: dict[str, object] = dataclasses.field(default_factory=dict)
+
+    def set_phase_output(
+        self,
+        text: str,
+        *,
+        approved: bool | None = None,
+        structured: dict[str, object] | None = None,
+    ) -> None:
+        """Set the transcript/effect payload emitted when the current phase ends."""
+
+        self.phase_text = text
+        self.phase_approved = approved
+        self.phase_structured = structured or {}
+
+    def clear_phase_output(self) -> None:
+        """Clear the previous phase's completion payload before a new phase."""
+
+        self.phase_text = ""
+        self.phase_approved = None
+        self.phase_structured = {}
 
 
 _PHASE_TO_STATE: dict[str, AuthoringState] = {

@@ -577,6 +577,13 @@ destination, staging, approval, and publication checks remain unchanged.
     signatures/source through bounded read-only built-in tools.
 24. The built distribution contains the documentation tree alongside the
     installable agenthicc source package.
+25. The authoring runner uses an explicit typed state machine with one handler
+    per lifecycle phase. Agent-controlled phases own their bounded agent-turn
+    loops and advance only after their phase-local completion tool is called;
+    inspection-only turns retry visibly and exhaust into a structured failure
+    rather than raising an uncaught missing-transition exception. Deterministic
+    staging, approval, publication, and summary transitions remain gated by
+    their owned side effects.
 
 ## 11. Verification
 
@@ -648,10 +655,18 @@ The direct-source paths are covered by the authoring unit tests,
 discovery, tool/command loader discovery, and delivery of a generated workflow
 phase prompt to a later runtime agent.
 
+The authoring runner now mirrors the explicit phase-method pattern used by
+`CodePlanRunner`: `interpret`, `design`, `stage`, `validate`, `review`,
+`publish`, and `summarize` each have a dedicated handler and typed context.
+The `interpret`, `design`, and definition-backed `validate` handlers own their
+agent turns and phase-local tool-gated handoffs. A turn that only inspects the
+repository is treated as an incomplete continuation, not as a terminal
+exception; bounded exhaustion produces a structured authoring failure.
+
 Verification completed:
 
 ```text
-2437 passed, 15 skipped — uv run pytest tests/ -q
+2439 passed, 15 skipped — uv run pytest tests/ -q
 ruff check, ruff format --check, mypy, type_audit, and nox llms_check — passed
 uv build --wheel --out-dir /tmp/agenthicc-build — passed; wheel contains
 share/agenthicc/docs alongside the installable source package
