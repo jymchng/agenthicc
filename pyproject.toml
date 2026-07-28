@@ -38,7 +38,16 @@ where = ["src"]
 # distributions.  The runtime inspection tools read this tree through the
 # distribution metadata, while source checkouts continue to use ``docs/``.
 [tool.setuptools.data-files]
-"share/agenthicc/docs" = ["docs/index.md", "docs/contributing.md", "docs/tui-architecture.md"]
+"share/agenthicc/docs" = [
+    "docs/index.md",
+    "docs/contributing.md",
+    "docs/tui-architecture.md",
+    # LLM-facing API documentation and the README are part of the inspectable
+    # doc surface; in a checkout they resolve from the repository root instead.
+    "llms.txt",
+    "llms-full.txt",
+    "README.md",
+]
 "share/agenthicc/docs/guides" = ["docs/guides/*.md"]
 "share/agenthicc/docs/reference" = ["docs/reference/*.md", "docs/reference/*.json"]
 

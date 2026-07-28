@@ -53,6 +53,7 @@ pytestmark = pytest.mark.unit
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+#: A declarative-only workflow: valid, but flagged for shipping no runner.
 _GOOD_SOURCE = '''\
 """demo workflow."""
 
@@ -69,6 +70,41 @@ class Demo(WorkflowPlugin):
         PhaseSpec(name="one", next="two"),
         PhaseSpec(name="two", on_reject="one"),
     ]
+'''
+
+#: The recommended shape: the workflow ships its own state-machine runner.
+_RUNNER_SOURCE = '''\
+"""demo workflow with its own runner."""
+
+from __future__ import annotations
+
+from agenthicc.workflows.base_runner import BaseWorkflowRunner
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+
+class DemoRunner(BaseWorkflowRunner):
+    def __init__(self, config, mode_manager=None):
+        self._cfg = config
+
+    async def run(self, intent: str) -> str:
+        return intent
+
+    async def resume(self, context: object) -> str:
+        return ""
+
+
+class Demo(WorkflowPlugin):
+    name = "demo"
+    description = "A demo workflow."
+    mode_bindings = []
+    phases = [
+        PhaseSpec(name="one", next="two"),
+        PhaseSpec(name="two", on_reject="one"),
+    ]
+
+    @classmethod
+    def build_runner(cls, config, mode_manager):
+        return DemoRunner(config, mode_manager)
 '''
 
 
@@ -424,12 +460,13 @@ async def test_validation_tools_reject_empty_payload(tool_name: str) -> None:
 # ── inspection_tools ──────────────────────────────────────────────────────────
 
 
-def test_inspection_tools_are_the_documented_four() -> None:
+def test_inspection_tools_are_the_documented_set() -> None:
     tools = make_inspection_tools()
     assert [getattr(tool, "__name__", "") for tool in tools] == [
         "describe_phasespec",
         "list_tool_capabilities",
         "list_agent_roles",
+        "describe_runner_pattern",
         "show_example_workflow",
     ]
 
@@ -469,15 +506,76 @@ async def test_list_agent_roles_covers_every_phase_role() -> None:
     assert set(result["agent_types"]) == expected  # type: ignore[arg-type]
 
 
-async def test_show_example_workflow_returns_importable_source(tmp_path: Path) -> None:
+async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
+    tmp_path: Path,
+) -> None:
     result = await _call(make_inspection_tools(), "show_example_workflow")
     assert isinstance(result, dict)
-    assert result["path"] == ".agenthicc/workflows/doc_review.py"
+    assert result["style"] == "runner"
+    assert result["path"] == ".agenthicc/workflows/release_check.py"
     source = result["source"]
     assert isinstance(source, str)
+
+    # The example is the shape the prompts demand: enum state, dataclass context,
+    # per-state methods, an explicit driver, resume, and build_runner.
+    for required in (
+        "class ReleaseState(Enum)",
+        "def is_terminal",
+        "@dataclasses.dataclass",
+        "class ReleaseContext",
+        "class ReleaseCheckRunner(CodePlanRunner)",
+        "while not state.is_terminal",
+        "match state:",
+        "async def resume(",
+        "asyncio.Event",
+        "def build_runner(",
+        "run_phase(",
+    ):
+        assert required in source, required
+
+    path = _write(tmp_path, "release_check.py", source)
+    report = validate_workflow_file(str(path), expected_name="release_check", root=tmp_path)
+    assert report.ok, report.render()
+    assert report.warnings == (), report.render()
+    assert report.phase_names == ("plan", "verify", "report")
+
+
+async def test_show_example_workflow_declarative_style_is_opt_in(tmp_path: Path) -> None:
+    result = await _call(make_inspection_tools(), "show_example_workflow", "declarative")
+    assert isinstance(result, dict)
+    assert result["style"] == "declarative"
+    assert result["path"] == ".agenthicc/workflows/doc_review.py"
+    assert "show_example_workflow('runner')" in str(result["note"])
+    source = result["source"]
+    assert isinstance(source, str)
+    assert "BaseWorkflowRunner" not in source
+
     path = _write(tmp_path, "doc_review.py", source)
     report = validate_workflow_file(str(path), expected_name="doc_review", root=tmp_path)
     assert report.ok, report.render()
+    # Valid, but flagged: two phases with no runner of its own.
+    assert any("ships no runner" in warn for warn in report.warnings)
+
+
+async def test_describe_runner_pattern_lists_every_required_element() -> None:
+    result = await _call(make_inspection_tools(), "describe_runner_pattern")
+    assert isinstance(result, dict)
+    elements = " ".join(str(item) for item in result["required_elements"])  # type: ignore[union-attr]
+    for required in (
+        "State(Enum)",
+        "dataclass",
+        "is_terminal",
+        "match state",
+        "resume",
+        "asyncio.Event",
+    ):
+        assert required in elements, required
+    assert result["when_required"]
+    assert "run_phase(" in str(result["turn_api"])
+    assert "CodePlanRunner" in " ".join(
+        str(item)
+        for item in result["reference_implementations"]  # type: ignore[union-attr]
+    )
 
 
 # ── validation: path handling ─────────────────────────────────────────────────
@@ -583,13 +681,95 @@ def test_validation_ignores_plugins_with_empty_names(tmp_path: Path) -> None:
 
 
 def test_validation_accepts_a_correct_file(tmp_path: Path) -> None:
-    path = _write(tmp_path, "demo.py", _GOOD_SOURCE)
+    path = _write(tmp_path, "demo.py", _RUNNER_SOURCE)
     report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
     assert report.ok
     assert report.errors == ()
     assert report.warnings == ()
     assert report.plugin_names == ("demo",)
     assert report.phase_names == ("one", "two")
+
+
+# ── validation: the workflow's own runner ─────────────────────────────────────
+
+
+def test_validation_warns_when_a_multi_phase_workflow_ships_no_runner(tmp_path: Path) -> None:
+    path = _write(tmp_path, "demo.py", _GOOD_SOURCE)
+    report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
+    assert report.ok, report.render()
+    assert any("ships no runner" in warn for warn in report.warnings)
+    assert any("2 phases" in warn for warn in report.warnings)
+
+
+def test_validation_stays_quiet_for_a_single_phase_workflow(tmp_path: Path) -> None:
+    source = _GOOD_SOURCE.replace(
+        '        PhaseSpec(name="one", next="two"),\n        PhaseSpec(name="two", on_reject="one"),\n',
+        '        PhaseSpec(name="one"),\n',
+    )
+    path = _write(tmp_path, "demo.py", source)
+    report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
+    assert report.ok, report.render()
+    assert not any("ships no runner" in warn for warn in report.warnings)
+
+
+def test_validation_warns_when_build_runner_returns_a_foreign_runner(tmp_path: Path) -> None:
+    source = _GOOD_SOURCE + (
+        "\n    @classmethod\n"
+        "    def build_runner(cls, config, mode_manager):\n"
+        "        raise NotImplementedError\n"
+    )
+    path = _write(tmp_path, "demo.py", source)
+    report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
+    assert report.ok, report.render()
+    assert any("defines no BaseWorkflowRunner subclass" in warn for warn in report.warnings)
+
+
+def test_validation_rejects_an_abstract_runner(tmp_path: Path) -> None:
+    source = _RUNNER_SOURCE.replace(
+        '    async def resume(self, context: object) -> str:\n        return ""\n', ""
+    )
+    path = _write(tmp_path, "demo.py", source)
+    report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
+    assert not report.ok
+    assert any("is abstract" in err and "resume" in err for err in report.errors)
+
+
+def test_validation_accepts_a_runner_that_extends_code_plan(tmp_path: Path) -> None:
+    source = '''\
+"""demo workflow reusing the code_plan turn helper."""
+
+from __future__ import annotations
+
+from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+
+class DemoRunner(CodePlanRunner):
+    workflow_name = "demo"
+    total_phases = 1
+
+    async def run(self, intent: str) -> str:
+        await self.run_phase(intent=intent, text=intent, system_prompt="Do it.")
+        return intent
+
+    async def resume(self, context: object) -> str:
+        return ""
+
+
+class Demo(WorkflowPlugin):
+    name = "demo"
+    description = "A demo workflow."
+    mode_bindings = []
+    phases = [PhaseSpec(name="one", next="two"), PhaseSpec(name="two")]
+
+    @classmethod
+    def build_runner(cls, config, mode_manager):
+        return DemoRunner(config, mode_manager)
+'''
+    path = _write(tmp_path, "demo.py", source)
+    report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
+    assert report.ok, report.render()
+    assert report.warnings == (), report.render()
 
 
 # ── validation: plugin contract ───────────────────────────────────────────────
@@ -1124,12 +1304,110 @@ async def test_design_injects_inspection_and_question_tools() -> None:
         "describe_phasespec",
         "list_tool_capabilities",
         "list_agent_roles",
+        "describe_runner_pattern",
         "show_example_workflow",
         "request_design_approval",
         "finalize_design",
         "exit_create_workflow",
         "ask_user",
     } <= set(captured)
+
+
+async def test_design_prompt_requires_the_workflow_to_ship_its_own_runner() -> None:
+    runner = _runner()
+    prompts: list[str] = []
+
+    async def turn(_text: str, **kwargs: object) -> None:
+        prompt = kwargs["system_prompt"]
+        assert isinstance(prompt, str)
+        prompts.append(prompt)
+        await _design_turn(_text, **kwargs)
+
+    runner._run_turn = turn  # type: ignore[method-assign]
+    await runner._design(_ctx())
+    prompt = prompts[0]
+    assert "state enum" in prompt
+    assert "context dataclass" in prompt
+    assert "describe_runner_pattern()" in prompt
+    assert "while not state.is_terminal" in prompt
+    assert "match state" in prompt
+    assert "resume(context)" in prompt
+    assert "run_phase(" in prompt
+    assert "build_runner()" in prompt
+
+
+async def test_generate_prompt_requires_writing_the_runner_not_a_stub() -> None:
+    runner = _runner()
+    ctx = _ctx()
+    ctx.design = "the design"
+    ctx.workflow_name = "demo"
+    prompts: list[str] = []
+
+    async def turn(_text: str, **kwargs: object) -> None:
+        prompt = kwargs["system_prompt"]
+        assert isinstance(prompt, str)
+        prompts.append(prompt)
+        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo.py")
+
+    runner._run_turn = turn  # type: ignore[method-assign]
+    await runner._generate(ctx)
+    prompt = prompts[0]
+    assert "SAME file" in prompt
+    assert "state enum" in prompt
+    assert "build_runner()" in prompt
+    assert "stub" in prompt
+    assert "show_example_workflow()" in prompt
+
+
+async def test_generate_prompt_tells_the_agent_to_write_in_chunks() -> None:
+    """A whole runner in one tool call can exceed the response limit and vanish."""
+    runner = _runner()
+    ctx = _ctx()
+    ctx.design = "the design"
+    ctx.workflow_name = "demo"
+    prompts: list[str] = []
+
+    async def turn(_text: str, **kwargs: object) -> None:
+        prompt = kwargs["system_prompt"]
+        assert isinstance(prompt, str)
+        prompts.append(prompt)
+        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo.py")
+
+    runner._run_turn = turn  # type: ignore[method-assign]
+    await runner._generate(ctx)
+    prompt = prompts[0]
+    assert "WRITE THE FILE IN CHUNKS" in prompt
+    assert "write_file(path, content)" in prompt
+    assert "append_file(path, content)" in prompt
+    assert "read_file(path)" in prompt
+    assert "response limit" in prompt
+    assert "Never re-write the file from the start after appending" in prompt
+
+
+async def test_generate_reminder_tells_the_agent_to_resume_not_restart() -> None:
+    runner = _runner(max_attempts=2)
+    ctx = _ctx()
+    ctx.design = "the design"
+    ctx.workflow_name = "demo"
+    texts: list[str] = []
+
+    async def turn(text: str, **_kwargs: object) -> None:
+        texts.append(text)
+
+    runner._run_turn = turn  # type: ignore[method-assign]
+    await runner._generate(ctx)
+    reminder = texts[1]
+    assert "response was too long and was discarded" in reminder
+    assert "append_file(path, content)" in reminder
+    assert "Do not start the file over" in reminder
+
+
+def test_definition_phase_prompts_name_the_runner_requirement() -> None:
+    phases = {phase.name: phase for phase in CreateWorkflow.phases}
+    assert "state-machine runner" in phases["design"].system_prompt_override
+    assert "describe_runner_pattern()" in phases["design"].system_prompt_override
+    assert "build_runner()" in phases["generate"].system_prompt_override
+    assert "No stubs" in phases["generate"].system_prompt_override
 
 
 async def test_design_prompt_carries_the_intent_and_authoring_guide() -> None:

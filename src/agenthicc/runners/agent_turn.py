@@ -713,6 +713,14 @@ class AgentTurnRunner:
         # lauren-ai's hard pre-send guard via AgentConfig.context_window
         # (PRD-133 D/E) so a request can never exceed the window.
         _auto_compact = bool(getattr(ctx.exec_cfg, "auto_compact", True))
+        # Completion ceiling for one round-trip.  lauren-ai defaults this to 4096,
+        # which silently truncates a single large tool call (e.g. write_file with a
+        # whole source file): the partial call is discarded, the turn yields nothing,
+        # and the calling phase retries forever.  ExecutionSettings.max_output_tokens
+        # is the configurable ceiling and is what effective_usable_budget() reserves.
+        _max_output = int(getattr(ctx.exec_cfg, "max_output_tokens", 0) or 0) or int(
+            _AgentConfig().max_tokens_per_turn
+        )
         if ctx.exec_cfg is not None:
             _window = ctx.exec_cfg.effective_context_window()
             _window_tokens = ctx.exec_cfg.effective_usable_budget()
@@ -720,9 +728,7 @@ class AgentTurnRunner:
             from agenthicc.config import _context_window_for  # noqa: PLC0415
 
             _window = _context_window_for(self._model_id)
-            _window_tokens = max(
-                1, _window - _AgentConfig().max_tokens_per_turn - max(4_000, _window // 25)
-            )
+            _window_tokens = max(1, _window - _max_output - max(4_000, _window // 25))
 
         # PRD-129 Phase 1/3: one idempotency ledger per turn, created OUTSIDE the
         # retry loop so it survives across attempts.  When a transient failure
@@ -761,6 +767,7 @@ class AgentTurnRunner:
             local_turn: list[str] = []
             config_kwargs = _AgentConfig(
                 max_turns=ctx.max_agent_turns,
+                max_tokens_per_turn=_max_output,
                 parallel_tool_calls=True,
                 memory_window_tokens=_window_tokens,
                 summarize_at=0.8 if _auto_compact else None,
@@ -797,6 +804,22 @@ class AgentTurnRunner:
                     ctx.conv_store.add_tokens(u.input_tokens, u.output_tokens, cst)
 
                 if chunk.stop_reason is not None:
+                    # A max_tokens stop means the completion was cut off. If it was
+                    # cut mid-tool-call the partial call is discarded and the
+                    # sub-turn produces nothing at all, which otherwise looks like
+                    # the model doing nothing. Say so, and name the setting to raise.
+                    if str(chunk.stop_reason) == "max_tokens" and ctx.conv_store:
+                        ctx.conv_store.append_event(
+                            "system",
+                            {
+                                "text": (
+                                    f"⚠ Response hit the {_max_output}-token output limit and was "
+                                    "truncated. A tool call cut off this way is discarded. Raise "
+                                    "[execution].max_output_tokens, or write large files in "
+                                    "chunks with write_file then append_file."
+                                )
+                            },
+                        )
                     turn_text = "".join(local_turn).strip()
                     local_turn = []
                     if turn_text and ctx.conv_store:

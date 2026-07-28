@@ -43,10 +43,308 @@ _PHASESPEC_PURPOSE: dict[str, str] = {
     "require_readiness": "Require a successful service-readiness result before transition.",
 }
 
-# A canonical, known-valid example the agent can copy and adapt.  Kept minimal so
-# it always parses cleanly through the workflow loader.
-_EXAMPLE_WORKFLOW = '''\
-"""doc_review — draft a document, then review it (example custom workflow)."""
+# The recommended shape: a workflow that ships its own state-machine runner.
+# Known-valid — it parses and loads cleanly through the workflow loader.
+_RUNNER_EXAMPLE = '''\
+"""release_check — plan, verify, then report (example custom-runner workflow).
+
+The runner below is the shape to copy: a typed state enum, a typed context, one
+bounded async method per non-terminal state, an explicit
+``while not state.is_terminal`` / ``match`` driver, and transitions that happen
+only because a phase tool was called.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import logging
+from collections.abc import Callable
+from enum import Enum, auto
+from typing import TYPE_CHECKING
+
+from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
+
+if TYPE_CHECKING:
+    from agenthicc.tui.runtime.mode_manager import ModeManager
+    from agenthicc.workflows.config import WorkflowConfig
+
+log = logging.getLogger(__name__)
+
+#: Bounded retries per phase — never loop forever waiting for a tool call.
+_MAX_ATTEMPTS = 5
+
+
+class ReleaseState(Enum):
+    """Every state this workflow can be in."""
+
+    PLAN = auto()
+    VERIFY = auto()
+    REPORT = auto()
+    COMPLETE = auto()  # terminal
+    FAILED = auto()  # terminal
+
+    @property
+    def is_terminal(self) -> bool:
+        """True when no further phase should run."""
+        return self in (ReleaseState.COMPLETE, ReleaseState.FAILED)
+
+
+@dataclasses.dataclass
+class ReleaseContext:
+    """Data carried across every phase of one run."""
+
+    intent: str
+    plan: str = ""
+    verdict: str = ""
+    blocker: str = ""
+    fail_reason: str = ""
+    artifacts: dict[str, str] = dataclasses.field(default_factory=dict)
+
+
+def _make_plan_tools(
+    event: asyncio.Event,
+    data: dict[str, str],
+) -> list[Callable[..., object]]:
+    """Return the only tool that can end the plan phase."""
+    from lauren_ai._tools import tool
+
+    @tool()
+    async def submit_release_plan(plan: str) -> dict[str, object]:
+        """Record the ordered release checks and advance to the verify phase.
+
+        Args:
+            plan: The checks to run before release, in order.
+        """
+        if not plan.strip():
+            return {
+                "ok": False,
+                "error": "The plan was rejected: it must not be empty.",
+                "fix": "Call submit_release_plan(plan) with the ordered checks.",
+            }
+        data["plan"] = plan.strip()
+        event.set()
+        return {"ok": True, "message": "Plan recorded. The verify phase starts next."}
+
+    return [submit_release_plan]
+
+
+def _make_verify_tools(
+    event: asyncio.Event,
+    data: dict[str, str],
+) -> list[Callable[..., object]]:
+    """Return the pass/block decision tools for the verify phase."""
+    from lauren_ai._tools import tool
+
+    @tool()
+    async def release_passed(summary: str) -> dict[str, object]:
+        """Signal that every check passed.
+
+        Args:
+            summary: What was verified.
+        """
+        data["action"] = "pass"
+        data["summary"] = summary.strip()
+        event.set()
+        return {"ok": True}
+
+    @tool()
+    async def release_blocked(blocker: str) -> dict[str, object]:
+        """Signal that a check failed and the release is blocked.
+
+        Args:
+            blocker: The concrete failure that must be fixed.
+        """
+        data["action"] = "block"
+        data["blocker"] = blocker.strip()
+        event.set()
+        return {"ok": True}
+
+    return [release_passed, release_blocked]
+
+
+class ReleaseCheckRunner(CodePlanRunner):
+    """State-machine runner for release_check.
+
+    Subclasses ``CodePlanRunner`` purely to inherit its session wiring and the
+    public ``run_phase()`` helper. ``super().run()`` is never called, so none of
+    code_plan's own phases execute — this runner owns the whole flow.
+    """
+
+    workflow_name = "release_check"
+    total_phases = 3
+
+    async def run(self, intent: str) -> ReleaseContext:
+        """Drive plan → verify → report."""
+        from lauren_ai._memory import ShortTermMemory
+
+        ctx = ReleaseContext(intent=intent)
+        memory = ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+        state = ReleaseState.PLAN
+
+        while not state.is_terminal:
+            match state:
+                case ReleaseState.PLAN:
+                    state = await self._plan(ctx, memory)
+                case ReleaseState.VERIFY:
+                    state = await self._verify(ctx, memory)
+                case ReleaseState.REPORT:
+                    state = await self._report(ctx, memory)
+            log.info("release_check → %s", state.name)
+
+        return ctx
+
+    async def resume(self, context: object) -> ReleaseContext:
+        """Restart the state machine from the recorded intent."""
+        intent = getattr(context, "intent", "")
+        if not isinstance(intent, str) or not intent:
+            raise TypeError("release_check resume requires a context with an intent")
+        return await self.run(intent)
+
+    async def _plan(self, ctx: ReleaseContext, memory: object) -> ReleaseState:
+        """Loop until submit_release_plan fires; return VERIFY or FAILED."""
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            event: asyncio.Event = asyncio.Event()
+            data: dict[str, str] = {}
+            await self.run_phase(
+                intent=ctx.intent,
+                text=ctx.intent if attempt == 1 else "Call submit_release_plan(plan) now.",
+                system_prompt=(
+                    "You are in the PLAN phase of release_check. List the checks that must "
+                    "pass before this release, then call submit_release_plan(plan). Do not "
+                    "run the checks yet."
+                ),
+                max_turns=10,
+                shared_memory=memory,
+                tools=_make_plan_tools(event, data),
+            )
+            if event.is_set():
+                ctx.plan = data["plan"]
+                ctx.artifacts["plan"] = ctx.plan
+                return ReleaseState.VERIFY
+
+        ctx.fail_reason = "plan phase never called submit_release_plan()"
+        return ReleaseState.FAILED
+
+    async def _verify(self, ctx: ReleaseContext, memory: object) -> ReleaseState:
+        """Loop until a verdict tool fires; return REPORT or FAILED."""
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            event: asyncio.Event = asyncio.Event()
+            data: dict[str, str] = {}
+            await self.run_phase(
+                intent=ctx.intent,
+                text=(
+                    f"Run these checks:\\n{ctx.plan}"
+                    if attempt == 1
+                    else "Call release_passed(summary) or release_blocked(blocker) now."
+                ),
+                system_prompt=(
+                    "You are in the VERIFY phase of release_check. Run the planned checks "
+                    "with the shell tools, then call release_passed(summary) or "
+                    "release_blocked(blocker). You MUST call one of them."
+                ),
+                mode="Auto",  # unlock write / execute tools for this phase
+                max_turns=20,
+                shared_memory=memory,
+                tools=_make_verify_tools(event, data),
+            )
+            if event.is_set():
+                if data.get("action") == "pass":
+                    ctx.verdict = data.get("summary", "")
+                else:
+                    ctx.blocker = data.get("blocker", "")
+                ctx.artifacts["verify"] = ctx.verdict or ctx.blocker
+                return ReleaseState.REPORT
+
+        ctx.fail_reason = "verify phase never reported a verdict"
+        return ReleaseState.FAILED
+
+    async def _report(self, ctx: ReleaseContext, memory: object) -> ReleaseState:
+        """Single turn; always returns COMPLETE."""
+        await self.run_phase(
+            intent=ctx.intent,
+            text=f"Plan:\\n{ctx.plan}\\n\\nResult: {ctx.verdict or ctx.blocker}",
+            system_prompt=(
+                "You are in the REPORT phase of release_check. Summarise what was checked "
+                "and whether the release is clear to ship."
+            ),
+            max_turns=4,
+            shared_memory=memory,
+        )
+        return ReleaseState.COMPLETE
+
+
+@dataclasses.dataclass
+class ReleaseCheckParams(WorkflowParams):
+    """Per-phase model overrides read from [workflows.release_check]."""
+
+    plan_model: str = ""
+    verify_model: str = ""
+    report_model: str = ""
+
+    def get_phase_models(self) -> dict[str, str]:
+        """Map phase name to configured model override."""
+        return {
+            "plan": self.plan_model,
+            "verify": self.verify_model,
+            "report": self.report_model,
+        }
+
+
+class ReleaseCheckWorkflow(WorkflowPlugin):
+    """Plan the release checks, run them, then report."""
+
+    name = "release_check"
+    description = "Plan release checks, run them, then report."
+    mode_bindings = []  # manual only — invoke with /workflow release_check
+    # Declarative metadata for the registry and the TUI phase counter; the runner
+    # above is what actually executes, and it follows exactly this graph.
+    phases = [
+        PhaseSpec(
+            name="plan",
+            max_turns=10,
+            next="verify",
+            system_prompt_override="You are in the PLAN phase of release_check.",
+        ),
+        PhaseSpec(
+            name="verify",
+            max_turns=20,
+            next="report",
+            mode_override="Auto",
+            system_prompt_override="You are in the VERIFY phase of release_check.",
+        ),
+        PhaseSpec(
+            name="report",
+            max_turns=4,
+            output_schema="free_text",
+            system_prompt_override="You are in the REPORT phase of release_check.",
+        ),
+    ]
+
+    @classmethod
+    def build_runner(
+        cls,
+        config: WorkflowConfig,
+        mode_manager: ModeManager | None,
+    ) -> ReleaseCheckRunner:
+        """Return this workflow's own state-machine runner."""
+        return ReleaseCheckRunner(config, mode_manager)
+
+    @classmethod
+    def build_params(cls, source: dict[str, object]) -> WorkflowParams:
+        """Build typed params from [workflows.release_check]."""
+        return ReleaseCheckParams(
+            plan_model=str(source.get("plan_model", "") or ""),
+            verify_model=str(source.get("verify_model", "") or ""),
+            report_model=str(source.get("report_model", "") or ""),
+        )
+'''
+
+# The fallback shape: a purely declarative graph, correct only when no phase
+# needs conditional routing, retries, or its own transition tools.
+_DECLARATIVE_EXAMPLE = '''\
+"""doc_review — draft a document, then review it (declarative example)."""
 
 from __future__ import annotations
 
@@ -163,19 +461,99 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         return {"agent_types": roles}
 
     @_tool()
-    async def show_example_workflow() -> dict[str, object]:
+    async def show_example_workflow(style: str = "runner") -> dict[str, object]:
         """Return a complete, known-valid example workflow file to adapt.
 
-        The example defines a two-phase workflow (draft → review) that parses
-        cleanly through the workflow loader.  Copy its structure — module
-        docstring, imports, WorkflowPlugin subclass, PhaseSpec list — and adapt
-        the phases to the approved design.
+        Default style="runner" returns the shape you should almost always copy: a
+        workflow that ships its OWN state-machine runner — typed state enum, typed
+        dataclass context, one bounded async method per state, an explicit
+        `while not state.is_terminal` / `match` driver, `resume()`, per-phase
+        transition tools passed to `run_phase(..., tools=...)`, and
+        `build_runner()` returning it. That is how `code_plan` and
+        `create_workflow` themselves are built.
+
+        style="declarative" returns the fallback: a bare PhaseSpec graph with no
+        runner. Only correct when every phase is one unconditional agent turn.
+
+        Read the real implementations for more depth with
+        inspect_agenthicc_source('agenthicc.workflows.code_plan.runner:CodePlanRunner').
+
+        Args:
+            style: "runner" (recommended, default) or "declarative".
         """
-        return {"path": ".agenthicc/workflows/doc_review.py", "source": _EXAMPLE_WORKFLOW}
+        if style.strip().lower() == "declarative":
+            return {
+                "style": "declarative",
+                "path": ".agenthicc/workflows/doc_review.py",
+                "source": _DECLARATIVE_EXAMPLE,
+                "note": (
+                    "No runner: every phase is one unconditional agent turn. If any phase "
+                    "needs a retry, a branch, a loop, or its own transition tool, use "
+                    "show_example_workflow('runner') instead."
+                ),
+            }
+        return {
+            "style": "runner",
+            "path": ".agenthicc/workflows/release_check.py",
+            "source": _RUNNER_EXAMPLE,
+            "note": (
+                "Recommended. The runner owns the control flow and every transition is a "
+                "tool call. Subclassing CodePlanRunner provides the session wiring and the "
+                "public run_phase() helper; super().run() is never called, so none of "
+                "code_plan's phases execute."
+            ),
+        }
+
+    @_tool()
+    async def describe_runner_pattern() -> dict[str, object]:
+        """Return the checklist a generated custom workflow runner must satisfy.
+
+        Use this while designing so the design states each element explicitly, and
+        again while generating so nothing is missed. A workflow whose phases need
+        retries, conditional routing, loops, accumulated context, or phase-local
+        transition tools MUST ship a runner — a bare PhaseSpec graph cannot
+        express any of those.
+        """
+        return {
+            "when_required": [
+                "any phase that must retry until a specific tool is called",
+                "any conditional or looping transition (approve → next, reject → back)",
+                "context accumulated across phases and injected into later prompts",
+                "phase-local tools that do not belong in the session tool set",
+                "a human approval gate that blocks the handoff",
+                "bounded failure handling with an explicit terminal state",
+            ],
+            "required_elements": [
+                "a typed State(Enum) with every non-terminal and terminal state, "
+                "and an is_terminal property",
+                "a typed @dataclass context carrying the intent, per-phase outputs, "
+                "and failure reason",
+                "one bounded async method per non-terminal state, returning the next state",
+                "run(intent): build the context, then "
+                "'while not state.is_terminal' + 'match state' dispatch",
+                "resume(context): restore and re-enter the same dispatch path",
+                "phase tool factories that set an asyncio.Event; the state method checks "
+                "the event after the turn returns and never parses the agent's prose",
+                "build_runner() on the plugin returning the runner class",
+            ],
+            "turn_api": (
+                "Subclass CodePlanRunner and call the public "
+                "run_phase(intent=, text=, system_prompt=, mode=, max_turns=, "
+                "shared_memory=, tools=) once per phase. Pass one ShortTermMemory "
+                "created in run() to every call so phases share context. Never call "
+                "super().run() — that would execute code_plan's own phases."
+            ),
+            "reference_implementations": [
+                "agenthicc.workflows.code_plan.runner:CodePlanRunner",
+                "agenthicc.workflows.create_workflow.runner:CreateWorkflowRunner",
+            ],
+            "example": "show_example_workflow('runner')",
+        }
 
     return [
         describe_phasespec,
         list_tool_capabilities,
         list_agent_roles,
+        describe_runner_pattern,
         show_example_workflow,
     ]

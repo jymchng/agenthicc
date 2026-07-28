@@ -89,11 +89,14 @@ class CreateWorkflow(WorkflowPlugin):
             mode_override=None,
             system_prompt_override=(
                 "You are in the DESIGN phase of create_workflow. Design the new workflow — "
-                "its lower_snake_case name, its phases, and the transition graph — without "
-                "writing any files. Inspect the authoring API with describe_phasespec(), "
-                "list_tool_capabilities(), list_agent_roles() and show_example_workflow(). "
-                "Present the design with request_design_approval(design, workflow_name) and "
-                "call finalize_design(design, workflow_name) once it is approved. If the "
+                "its lower_snake_case name, its phases, the transition graph, AND its own "
+                "state-machine runner (state enum, context dataclass, one method per state, "
+                "the transition tool ending each phase) — without writing any files. "
+                "Inspect the authoring API with describe_phasespec(), "
+                "list_tool_capabilities(), list_agent_roles(), describe_runner_pattern() "
+                "and show_example_workflow(). Present the design with "
+                "request_design_approval(design, workflow_name) and call "
+                "finalize_design(design, workflow_name) once it is approved. If the "
                 "request is not about creating a new workflow, call "
                 "exit_create_workflow(suggestion) instead."
             ),
@@ -110,8 +113,11 @@ class CreateWorkflow(WorkflowPlugin):
                 "You are in the GENERATION phase of create_workflow. You already designed "
                 "the workflow — do NOT re-design. Write the complete WorkflowPlugin source "
                 "to .agenthicc/workflows/<name>.py with the write tools: module docstring, "
-                "imports, the plugin class, and every approved PhaseSpec. When the file is "
-                "fully written, call mark_generation_complete(summary, path)."
+                "imports, the plugin class, every approved PhaseSpec, and the approved "
+                "state-machine runner in the same file — state enum, context dataclass, one "
+                "async method per state, the while/match driver in run(), resume(), the "
+                "phase tool factories, and build_runner() returning it. No stubs or TODOs. "
+                "When the file is fully written, call mark_generation_complete(summary, path)."
             ),
         ),
         PhaseSpec(

@@ -120,14 +120,22 @@ class TestResolutionOrder:
 
 class TestUsableBudget:
     def test_usable_is_under_window(self) -> None:
+        # The completion reservation is execution.max_output_tokens, not a constant.
         e = _exec("m", m=200_000)
-        assert e.effective_usable_budget() == 200_000 - 4096 - max(4000, 200_000 // 25)
+        reserved = e.max_output_tokens
+        assert e.effective_usable_budget() == 200_000 - reserved - max(4000, 200_000 // 25)
         assert 0 < e.effective_usable_budget() < 200_000
 
     def test_scales_to_large_window(self) -> None:
         e = _exec("big", big=10_000_000)
         # reserve scales (window // 25); always leaves head-room.
-        assert e.effective_usable_budget() == 10_000_000 - 4096 - 400_000
+        assert e.effective_usable_budget() == 10_000_000 - e.max_output_tokens - 400_000
+
+    def test_tracks_the_configured_output_ceiling(self) -> None:
+        e = _exec("m", m=200_000)
+        before = e.effective_usable_budget()
+        e.max_output_tokens += 10_000
+        assert e.effective_usable_budget() == before - 10_000
 
     def test_never_negative_for_tiny_window(self) -> None:
         e = _exec("tiny", tiny=1_000)

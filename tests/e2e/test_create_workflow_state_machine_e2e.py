@@ -265,6 +265,85 @@ async def test_e2e_generated_workflow_is_immediately_loadable(
     assert built is not None
 
 
+async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
+    app_state, processor, tmp_path, monkeypatch
+):
+    """The shape create_workflow now demands is authored, loaded, and executed.
+
+    The generated file is the runner example the design phase hands the agent, so
+    this asserts the encouraged shape actually works end to end: the loader
+    discovers it, `build_runner()` returns its own runner, and that runner's
+    typed state machine drives its phases to a terminal state.
+    """
+    monkeypatch.chdir(tmp_path)
+    from agenthicc.workflows.create_workflow.inspection_tools import _RUNNER_EXAMPLE
+
+    target = ".agenthicc/workflows/release_check.py"
+    mock = _script(
+        (
+            "request_design_approval",
+            {"design": "plan → verify → report, with a runner", "workflow_name": "release_check"},
+        ),
+        (
+            "finalize_design",
+            {"design": "plan → verify → report, with a runner", "workflow_name": "release_check"},
+        ),
+        "Design finalized.",
+        ("write_file", {"path": target, "content": _RUNNER_EXAMPLE}),
+        ("mark_generation_complete", {"summary": "wrote release_check", "path": target}),
+        "File written.",
+        ("approve_workflow", {"summary": "imports, and the runner matches the design"}),
+        "Approved.",
+        "Created release_check with its own state-machine runner.",
+    )
+    wf_runner = _runner(app_state, processor, mock)
+
+    ctx = await wf_runner.run("create a release_check workflow with its own runner")
+    await processor.drain()
+
+    assert app_state.workflow_run().status == "complete"
+    assert ctx.artifacts["validate"].metadata["ok"] is True
+    assert ctx.artifacts["validate"].metadata["warnings"] == []
+
+    source = (tmp_path / target).read_text(encoding="utf-8")
+    assert "class ReleaseState(Enum)" in source
+    assert "while not state.is_terminal" in source
+    assert "match state:" in source
+
+    # The registry discovers it and build_runner() returns the file's own runner.
+    registry = build_workflow_registry(
+        project_dir=tmp_path / ".agenthicc",
+        user_dir=tmp_path / "absent",
+    )
+    plugin_cls = registry.get("release_check")
+    assert plugin_cls is not None
+    generated_runner = plugin_cls.build_runner(wf_runner._cfg, None)
+    assert type(generated_runner).__name__ == "ReleaseCheckRunner"
+    assert type(generated_runner).__module__ != CreateWorkflowRunner.__module__
+
+    # And that runner's own state machine really runs, transitioning only on tool calls.
+    seen: list[str] = []
+
+    async def drive(_text: str, **kwargs: object) -> None:
+        by_name = {getattr(t, "__name__", ""): t for t in kwargs["tools"]}  # type: ignore[union-attr]
+        if "submit_release_plan" in by_name:
+            seen.append("plan")
+            await by_name["submit_release_plan"]("run the test suite")
+        elif "release_passed" in by_name:
+            seen.append("verify")
+            await by_name["release_passed"]("all green")
+        else:
+            seen.append("report")
+
+    generated_runner._run_turn = drive  # type: ignore[attr-defined]
+    result = await generated_runner.run("check the release")
+
+    assert seen == ["plan", "verify", "report"]
+    assert getattr(result, "plan", "") == "run the test suite"
+    assert getattr(result, "verdict", "") == "all green"
+    assert getattr(result, "fail_reason", "") == ""
+
+
 async def test_e2e_emits_the_full_workflow_event_lifecycle(
     app_state, processor, tmp_path, monkeypatch
 ):

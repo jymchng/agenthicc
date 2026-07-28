@@ -1644,12 +1644,106 @@ block injected into the validating agent's system prompt.
 def make_inspection_tools() -> list[ToolLike]
 ```
 
-Creates the four read-only authoring-surface tools injected into the design
+Creates the five read-only authoring-surface tools injected into the design
 phase: `describe_phasespec` (every `PhaseSpec` field, type, default, and purpose,
 read live from the dataclass), `list_tool_capabilities` (every `ToolCapability`),
-`list_agent_roles` (every `PhaseRole`), and `show_example_workflow` (a complete,
-known-valid workflow file to adapt). They take no session state and cause no
-side effects.
+`list_agent_roles` (every `PhaseRole`), `describe_runner_pattern` (the checklist a
+generated custom runner must satisfy, and when one is required), and
+`show_example_workflow(style="runner" | "declarative")` — defaulting to a
+complete, known-valid workflow that ships its own state-machine runner. They take
+no session state and cause no side effects.
+
+A generated workflow is expected to ship its own runner; `validate_workflow_file`
+warns when a multi-phase workflow inherits `build_runner()`, and errors when the
+runner it does ship is abstract or missing `run`/`resume`.
+
+---
+
+## agenthicc self-inspection — `agenthicc.tools.introspect`
+
+Five built-in read-only tools (the `introspect` `ToolGroup`, present in every
+session) let the agent read agenthicc's *current* documentation and source instead
+of relying on remembered prose:
+
+| Tool | Purpose |
+|---|---|
+| `list_agenthicc_docs(section="")` | Index of every document: path, title, lines, bytes |
+| `read_agenthicc_doc(path, start_line=1, max_lines=400)` | One bounded window of a document; page with `next_start_line` |
+| `search_agenthicc_docs(query, max_results=40, section="")` | Matching lines with document path and line number |
+| `inspect_agenthicc_source(target, include_source=True)` | Source, signature, docstring, and member outline of any `agenthicc` module or symbol |
+| `search_agenthicc_source(query, max_results=40, module="")` | Matching lines in the package source |
+
+All five are tagged `READ` (the two searches also `SEARCH`), so they stay available
+in capability-restricted modes such as `Plan`.
+
+### docs_root
+
+```python
+def docs_root() -> Path | None
+def extra_doc_names() -> tuple[str, ...]
+def docs_unavailable_result() -> dict[str, object]
+```
+
+Resolve the documentation tree: `AGENTHICC_DOCS_DIR`, then a source checkout's
+`docs/`, then `<prefix>/share/agenthicc/docs` for an installed distribution. A
+candidate counts only when it contains `index.md`; `None` means no tree is
+available. `llms.txt`, `llms-full.txt`, and `README.md` are served alongside the
+tree (from the repository root in a checkout, from inside the packaged tree in a
+wheel).
+
+### list_docs, find_doc, read_doc, search_docs
+
+```python
+def list_docs(section: str = "") -> list[DocEntry]
+def find_doc(path: str) -> Path | None
+def read_doc(path: str, start_line: int = 1, max_lines: int = 400) -> dict[str, object]
+def search_docs(query: str, max_results: int = 40, section: str = "") -> dict[str, object]
+```
+
+`find_doc` refuses traversal, absolute paths, escaping symlinks, unsupported
+suffixes, and anything outside the documentation root. `read_doc` clamps the
+window to `MAX_DOC_LINES` and reports `truncated` plus `next_start_line`.
+`search_docs` treats the query as a regular expression when it compiles and as a
+case-insensitive substring otherwise, capped at `MAX_SEARCH_RESULTS`.
+
+### resolve_source, search_source
+
+```python
+def resolve_source(target: str, *, include_source: bool = True) -> dict[str, object]
+def search_source(query: str, max_results: int = 40, module: str = "") -> dict[str, object]
+```
+
+`resolve_source` accepts `agenthicc.kernel.reducer`,
+`agenthicc.workflows.plugin:PhaseSpec`,
+`agenthicc.workflows.plugin:WorkflowPlugin.build_runner`, or the all-dots form.
+It resolves the module to a file path by walking the package directory and parses
+it with `ast` — **nothing is imported**, so modules with unavailable optional
+dependencies stay inspectable and private names are reachable. Targets outside the
+`agenthicc` package are refused. Returns the module, symbol, package-relative
+path, kind, line range, signature, docstring, bounded source, and a member outline
+for a module or class.
+
+### DocEntry, SearchHit, SourceLocation
+
+```python
+@dataclass(frozen=True)
+class DocEntry:
+    path: str; title: str; lines: int; bytes: int
+
+@dataclass(frozen=True)
+class SearchHit:
+    path: str; line: int; text: str
+
+@dataclass(frozen=True)
+class SourceLocation:
+    module: str; symbol: str; path: str; kind: str
+    lineno: int; end_lineno: int
+    signature: str = ""; docstring: str = ""; source: str = ""
+    truncated: bool = False
+    members: tuple[dict[str, object], ...] = ()
+```
+
+Each has an `as_dict()` returning the JSON-serializable shape the tools emit.
 
 ## Config — `agenthicc.config`
 
@@ -1990,9 +2084,18 @@ PROVIDER_API_KEY_ENVVAR: dict[str, str]
 
 ### ExecutionSettings (updated)
 
-Authoring settings include authoring_max_generation_attempts (default 20,
-clamped to 1–20) and
+Authoring settings include authoring_max_generation_attempts (default 20) and
 authoring_max_phase_turns (default 20); both bound the shared create_* lifecycle.
+
+`max_output_tokens` (default 16384) is the completion ceiling for one LLM
+round-trip. It is passed to lauren-ai as `AgentConfig.max_tokens_per_turn` and is
+the amount `effective_usable_budget()` reserves from the context window, so
+raising it shrinks the live window by the same amount. It must exceed the largest
+single tool call a phase can make: lauren-ai's own 4096 default silently truncates
+a `write_file` carrying a whole source file — the partial tool call is discarded,
+the sub-turn produces nothing, and the calling phase retries with no visible
+cause. A `max_tokens` stop reason now emits a system notice naming the ceiling,
+the setting, and the chunked `write_file` + `append_file` workaround.
 
 ```python
 @dataclass
@@ -2000,6 +2103,7 @@ class ExecutionSettings:
     max_concurrent_intents: int = 8
     max_parallel_tasks: int = 4
     agent_pool_size: int = 16
+    max_output_tokens: int = 16_384  # completion ceiling per LLM round-trip
     provider: str = "anthropic"     # which LLM provider to use
     model: str = ""                 # empty → PROVIDER_DEFAULT_MODELS[provider]
     api_key: str = ""               # empty → PROVIDER_API_KEY_ENVVAR[provider]
@@ -2020,6 +2124,9 @@ class ExecutionSettings:
 ```
 
 ```toml
+[execution]
+max_output_tokens = 16384   # raise for models that support a larger completion
+
 # [memory.context_windows] — one knob per model (PRD-136)
 [memory.context_windows]
 default            = 1_000_000

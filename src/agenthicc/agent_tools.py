@@ -2,10 +2,11 @@
 
 Tools are organised by domain and implemented in their respective sub-packages:
 
-  tools/fs/agent_tools.py      — 24 filesystem tools
-  tools/git/agent_tools.py     — 11 git tools
-  tools/exec/agent_tools.py    — 10 shell/exec tools
-  tools/outlook/agent_tools.py — 9 Outlook/calendar tools (Win32 or Graph API)
+  tools/fs/agent_tools.py         — 24 filesystem tools
+  tools/git/agent_tools.py        — 11 git tools
+  tools/exec/agent_tools.py       — 10 shell/exec tools
+  tools/outlook/agent_tools.py    — 9 Outlook/calendar tools (Win32 or Graph API)
+  tools/introspect/agent_tools.py — 5 agenthicc docs/source self-inspection tools
 
 This module re-exports all individual tools, the combined AGENT_TOOLS list,
 and the BUILTIN_GROUPS list used by ToolRegistry for structured system-prompt
@@ -78,6 +79,16 @@ from agenthicc.tools.outlook.agent_tools import (
     send_email,
 )
 
+# ── agenthicc self-inspection ─────────────────────────────────────────────────
+from agenthicc.tools.introspect.agent_tools import (
+    INTROSPECT_AGENT_TOOLS,
+    inspect_agenthicc_source,
+    list_agenthicc_docs,
+    read_agenthicc_doc,
+    search_agenthicc_docs,
+    search_agenthicc_source,
+)
+
 from agenthicc.plugins.registry import ToolGroup
 from agenthicc.plugins.registry import PluginTool
 from typing import cast
@@ -131,26 +142,35 @@ __all__ = [
     "reply_email",
     "search_emails",
     "send_email",
+    # agenthicc self-inspection
+    "list_agenthicc_docs",
+    "read_agenthicc_doc",
+    "search_agenthicc_docs",
+    "inspect_agenthicc_source",
+    "search_agenthicc_source",
     # aggregates
     "FS_AGENT_TOOLS",
     "GIT_AGENT_TOOLS",
     "EXEC_AGENT_TOOLS",
     "OUTLOOK_AGENT_TOOLS",
+    "INTROSPECT_AGENT_TOOLS",
     "AGENT_TOOLS",
     # namespace groups (PRD-125)
     "FS_GROUP",
     "GIT_GROUP",
     "EXEC_GROUP",
     "OUTLOOK_GROUP",
+    "INTROSPECT_GROUP",
     "BUILTIN_GROUPS",
 ]
 
-#: All agent tools — filesystem + git + exec + outlook.
+#: All agent tools — filesystem + git + exec + outlook + self-inspection.
 AGENT_TOOLS = [
     *FS_AGENT_TOOLS,
     *GIT_AGENT_TOOLS,
     *EXEC_AGENT_TOOLS,
     *OUTLOOK_AGENT_TOOLS,
+    *INTROSPECT_AGENT_TOOLS,
 ]
 
 # ── Tool groups for structured system-prompt sections (PRD-125) ───────────────
@@ -187,5 +207,24 @@ OUTLOOK_GROUP = ToolGroup(
     priority=1,
 )
 
+# Rendered last (priority 0): a supporting capability rather than a primary one,
+# but the authoritative answer whenever a question is about agenthicc itself.
+INTROSPECT_GROUP = ToolGroup(
+    name="introspect",
+    label="agenthicc Docs & Source",
+    description=(
+        "Read agenthicc's own documentation and source code — the current API, "
+        "not remembered prose. Use these before guessing how agenthicc works."
+    ),
+    tools=cast(list[PluginTool], list(INTROSPECT_AGENT_TOOLS)),
+    priority=0,
+)
+
 #: Ordered list of built-in ToolGroups used by ToolRegistry (PRD-125).
-BUILTIN_GROUPS: list[ToolGroup] = [FS_GROUP, GIT_GROUP, EXEC_GROUP, OUTLOOK_GROUP]
+BUILTIN_GROUPS: list[ToolGroup] = [
+    FS_GROUP,
+    GIT_GROUP,
+    EXEC_GROUP,
+    OUTLOOK_GROUP,
+    INTROSPECT_GROUP,
+]

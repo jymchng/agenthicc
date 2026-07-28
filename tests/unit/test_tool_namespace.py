@@ -10,8 +10,10 @@ from agenthicc.agent_tools import (
     BUILTIN_GROUPS,
     FS_GROUP,
     GIT_GROUP,
+    INTROSPECT_GROUP,
     FS_AGENT_TOOLS,
     GIT_AGENT_TOOLS,
+    INTROSPECT_AGENT_TOOLS,
 )
 from agenthicc.subagents.pool import _expand_allowed
 
@@ -38,18 +40,21 @@ class TestToolGroup:
 
 
 class TestBuiltinGroups:
-    def test_four_builtin_groups(self) -> None:
-        assert len(BUILTIN_GROUPS) == 4
+    def test_five_builtin_groups(self) -> None:
+        assert len(BUILTIN_GROUPS) == 5
 
     def test_group_names(self) -> None:
         names = {g.name for g in BUILTIN_GROUPS}
-        assert names == {"fs", "git", "exec", "outlook"}
+        assert names == {"fs", "git", "exec", "outlook", "introspect"}
 
     def test_fs_group_has_24_tools(self) -> None:
         assert len(FS_GROUP.tools) == len(FS_AGENT_TOOLS)
 
     def test_git_group_has_11_tools(self) -> None:
         assert len(GIT_GROUP.tools) == len(GIT_AGENT_TOOLS)
+
+    def test_introspect_group_has_the_self_inspection_tools(self) -> None:
+        assert len(INTROSPECT_GROUP.tools) == len(INTROSPECT_AGENT_TOOLS) == 5
 
     def test_priorities_are_distinct(self) -> None:
         priorities = [g.priority for g in BUILTIN_GROUPS]
@@ -250,17 +255,18 @@ class TestDescribe:
 class TestBuildRegistry:
     def test_build_registry_populates_groups(self) -> None:
         reg = build_registry()
-        assert len(reg._groups) == 4
+        assert len(reg._groups) == 5
 
     def test_build_registry_populates_tool_groups(self) -> None:
         reg = build_registry()
         assert reg._tool_groups.get("read_file") == "fs"
         assert reg._tool_groups.get("git_status") == "git"
         assert reg._tool_groups.get("run_bash") == "exec"
+        assert reg._tool_groups.get("inspect_agenthicc_source") == "introspect"
 
-    def test_build_registry_total_50_tools(self) -> None:
+    def test_build_registry_total_tool_count(self) -> None:
         reg = build_registry()
-        assert len(reg.tools) == 54
+        assert len(reg.tools) == 59
 
 
 # ── _expand_allowed glob helper ───────────────────────────────────────────────

@@ -581,12 +581,19 @@ class CodePlanRunner(BaseWorkflowRunner):
         mode: str | None = None,
         max_turns: int = 10,
         shared_memory: "ShortTermMemory | None" = None,
+        tools: _ToolList | None = None,
     ) -> None:
         """Execute one additional agent phase using this runner's tool set.
 
-        This is the **stable public surface** for composite workflow authors.
-        It delegates to the private ``_run_turn()`` + ``_base_tools()`` so
-        that internal implementation details remain free to change.
+        This is the **stable public surface** for custom and composite workflow
+        runners.  It delegates to the private ``_run_turn()`` + ``_base_tools()``
+        so that internal implementation details remain free to change.
+
+        A custom runner drives its own state machine and calls this once per
+        phase, passing that phase's transition tools through *tools*; after the
+        call it checks whether its own ``asyncio.Event`` was set.  That keeps the
+        "transitions only via tool calls" rule available to workflow authors
+        without exposing any private turn machinery.
 
         Parameters
         ----------
@@ -607,6 +614,10 @@ class CodePlanRunner(BaseWorkflowRunner):
             ``ShortTermMemory`` instance to use.  Pass ``ctx.shared_memory``
             to carry the full prior conversation context into this phase.
             ``None`` creates an isolated memory for this phase only.
+        tools:
+            Extra phase-local tools appended to the session tool set — normally
+            the ``@tool()`` closures that end this phase.  ``None`` uses the
+            session tools alone.
         """
         from lauren_ai._memory import ShortTermMemory as _STM  # noqa: PLC0415
         from agenthicc.workflows.code_plan.state import CodePlanContext  # noqa: PLC0415
@@ -618,10 +629,13 @@ class CodePlanRunner(BaseWorkflowRunner):
             run_id=self._run_id or "extension",
             shared_memory=_sm,
         )
+        phase_tools: _ToolList = list(self._base_tools())
+        if tools:
+            phase_tools.extend(tools)
         # PRD-126: composite-workflow phases get transport retry too.
         await self._run_turn(
             text,
-            tools=self._base_tools(),
+            tools=phase_tools,
             mode=mode,
             system_prompt=system_prompt,
             max_turns=max_turns,

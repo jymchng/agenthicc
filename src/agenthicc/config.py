@@ -88,7 +88,8 @@ SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "litellm")
 # PRD-136: live-window budget = context_window − completion reservation − head-room.
 # Mirrors lauren-ai's AgentConfig.usable_context_budget so the live window (what
 # the session memory trims to + compaction defends) agrees with the hard guard.
-_MAX_OUTPUT_TOKENS: int = 4_096
+# The completion reservation is ExecutionSettings.max_output_tokens, so raising the
+# output cap automatically shrinks the live window by the same amount.
 _CONTEXT_RESERVE_MIN: int = 4_000
 _DEFAULT_CONTEXT_WINDOW: int = 200_000
 
@@ -269,6 +270,21 @@ class ExecutionSettings:
 
     authoring_max_phase_turns: int = 20
     """Maximum agent sub-turns allowed in one ``create_*`` phase by default."""
+
+    max_output_tokens: int = 16_384
+    """Completion-token ceiling for a single LLM round-trip.
+
+    This is the model's output budget per sub-turn, passed to lauren-ai as
+    ``AgentConfig.max_tokens_per_turn``, and the amount reserved from the context
+    window by :meth:`effective_usable_budget`.
+
+    It must be large enough for the biggest single tool call a phase can make.
+    lauren-ai defaults to 4096, which silently truncates a ``write_file`` call
+    carrying a whole source file: the partial tool call is discarded, the turn
+    produces nothing, and the phase retries forever. 16384 fits a substantial
+    file; raise it further for a model that supports it, and prefer chunked
+    ``write_file`` + ``append_file`` writes for anything larger.
+    """
     turn_timeout_s: float = 0.0  # per-turn watchdog; 0 = no limit
     # Conversation compaction.  auto_compact gates the proactive LLM compaction
     # ladder in lauren-ai's runner (PRD-135): when True, summarisation fires each
@@ -358,7 +374,8 @@ class ExecutionSettings:
         """
         window = self.effective_context_window()
         reserve = max(_CONTEXT_RESERVE_MIN, window // 25)
-        return max(1, window - _MAX_OUTPUT_TOKENS - reserve)
+        completion = max(1, self.max_output_tokens)
+        return max(1, window - completion - reserve)
 
 
 @dataclass
@@ -921,6 +938,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_agent_turns=_as_int(ex.get("max_agent_turns"), 200),
         authoring_max_generation_attempts=_as_int(ex.get("authoring_max_generation_attempts"), 20),
         authoring_max_phase_turns=_as_int(ex.get("authoring_max_phase_turns"), 20),
+        max_output_tokens=_as_int(ex.get("max_output_tokens"), 16_384),
         auto_compact=_as_bool(ex.get("auto_compact"), True),
         context_windows=_context_windows,
         prompt_cache=_as_bool(ex.get("prompt_cache"), True),

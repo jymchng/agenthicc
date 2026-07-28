@@ -83,12 +83,16 @@ def _fail(path: str, *errors: str) -> ValidationReport:
     return ValidationReport(path=path, ok=False, errors=tuple(errors))
 
 
-def _import_plugins(path: Path) -> tuple[list[type[WorkflowPlugin]], str]:
-    """Import *path* and return ``(plugin_classes, error_message)``.
+def _import_plugins(
+    path: Path,
+) -> tuple[list[type[WorkflowPlugin]], dict[str, object], str]:
+    """Import *path* and return ``(plugin_classes, module_namespace, error_message)``.
 
     Mirrors :func:`agenthicc.workflows.loader.load_python_workflows` but returns
     the failure text instead of swallowing it, so the agent sees the real
-    ``ImportError`` / ``NameError`` / ``ValueError`` raised by its own file.
+    ``ImportError`` / ``NameError`` / ``ValueError`` raised by its own file.  The
+    namespace is returned so runner checks can look at every class the file
+    defined — the module itself is removed from ``sys.modules`` again.
     """
     import inspect  # noqa: PLC0415
 
@@ -98,9 +102,9 @@ def _import_plugins(path: Path) -> tuple[list[type[WorkflowPlugin]], str]:
     try:
         spec = importlib.util.spec_from_file_location(module_name, path)
     except (OSError, ValueError) as exc:
-        return [], f"{type(exc).__name__}: {exc}"
+        return [], {}, f"{type(exc).__name__}: {exc}"
     if spec is None or spec.loader is None:
-        return [], f"Python could not build an import spec for {path}."
+        return [], {}, f"Python could not build an import spec for {path}."
 
     module = importlib.util.module_from_spec(spec)
     # Registered before exec_module so decorators can resolve the module during
@@ -109,7 +113,7 @@ def _import_plugins(path: Path) -> tuple[list[type[WorkflowPlugin]], str]:
     try:
         spec.loader.exec_module(module)
     except (Exception, SystemExit) as exc:  # noqa: BLE001 — generated code, any failure
-        return [], f"{type(exc).__name__}: {exc}"
+        return [], {}, f"{type(exc).__name__}: {exc}"
     finally:
         sys.modules.pop(module_name, None)
 
@@ -118,7 +122,7 @@ def _import_plugins(path: Path) -> tuple[list[type[WorkflowPlugin]], str]:
         for _name, obj in inspect.getmembers(module, inspect.isclass)
         if obj is not _Plugin and issubclass(obj, _Plugin) and getattr(obj, "name", "") != ""
     ]
-    return found, ""
+    return found, dict(vars(module)), ""
 
 
 def _check_phases(
@@ -135,8 +139,7 @@ def _check_phases(
         return ()
 
     if not phases:
-        own_runner = getattr(plugin.build_runner, "__func__", None)
-        overrides_runner = own_runner is not None and own_runner is not _default_build_runner_func()
+        overrides_runner = _has_custom_runner(plugin)
         message = (
             f"{plugin.__name__}.phases is empty, so the workflow has nothing to run."
             if not overrides_runner
@@ -222,6 +225,65 @@ def _default_build_runner_func() -> object:
     return WorkflowPlugin.build_runner.__func__  # type: ignore[attr-defined]
 
 
+def _has_custom_runner(plugin: type[WorkflowPlugin]) -> bool:
+    """True when *plugin* overrides ``build_runner`` with its own implementation."""
+    own = getattr(plugin.build_runner, "__func__", None)
+    return own is not None and own is not _default_build_runner_func()
+
+
+def _check_runner(
+    plugin: type[WorkflowPlugin],
+    namespace: dict[str, object],
+    errors: list[str],
+    warnings: list[str],
+    phase_count: int,
+) -> None:
+    """Check the workflow's own runner, the shape create_workflow asks for.
+
+    A generated workflow is expected to ship a state-machine runner: it is the
+    only shape that expresses retries, branches, loops, accumulated context, and
+    phase-local transition tools. Shipping none is a warning rather than an error,
+    because a single-phase unconditional workflow legitimately needs no runner —
+    but the runner it *does* ship must be usable.
+    """
+    from agenthicc.workflows.base_runner import BaseWorkflowRunner  # noqa: PLC0415
+
+    if not _has_custom_runner(plugin):
+        if phase_count > 1:
+            warnings.append(
+                f"{plugin.__name__} ships no runner: build_runner() is inherited, so the "
+                "generic declarative runner drives its "
+                f"{phase_count} phases. Retries, conditional routing, accumulated context, "
+                "and phase-local transition tools cannot be expressed that way. Add a "
+                "state-machine runner unless every phase really is one unconditional turn."
+            )
+        return
+
+    runners = [
+        obj
+        for obj in namespace.values()
+        if isinstance(obj, type)
+        and obj is not BaseWorkflowRunner
+        and issubclass(obj, BaseWorkflowRunner)
+        and obj.__module__ == plugin.__module__
+    ]
+    if not runners:
+        warnings.append(
+            f"{plugin.__name__}.build_runner() is overridden but the file defines no "
+            "BaseWorkflowRunner subclass of its own; it must return a runner that lives in "
+            "this workflow file."
+        )
+        return
+
+    for runner in runners:
+        for method in ("run", "resume"):
+            if not callable(getattr(runner, method, None)):
+                errors.append(f"{runner.__name__} does not implement {method}().")
+        if getattr(runner, "__abstractmethods__", frozenset()):
+            missing = ", ".join(sorted(runner.__abstractmethods__))
+            errors.append(f"{runner.__name__} is abstract — {missing} still needs implementing.")
+
+
 def validate_workflow_file(
     path: str,
     *,
@@ -301,7 +363,7 @@ def validate_workflow_file(
             "Fix the source and rewrite the file.",
         )
 
-    plugins, import_error = _import_plugins(resolved)
+    plugins, namespace, import_error = _import_plugins(resolved)
     if import_error:
         return _fail(
             shown,
@@ -370,6 +432,7 @@ def validate_workflow_file(
             errors.append(f"{plugin.__name__}.build_runner is not callable.")
 
     phase_names = _check_phases(target, errors, warnings)
+    _check_runner(target, namespace, errors, warnings, len(phase_names))
 
     return ValidationReport(
         path=shown,
