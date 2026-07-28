@@ -109,10 +109,10 @@ workflows are encouraged to use a code_plan-style custom state machine with
 typed state, typed context, per-state functions, explicit match-based dispatch,
 and resume:
 
-| CreateWorkflowState | agenthicc.workflows.authoring.state | Interpret/design/execute/summarize state machine with terminal states |
-| CreateWorkflowContext | agenthicc.workflows.authoring.state | Typed intent, phase artifacts, write evidence, and summaries |
-| make_*_tools | agenthicc.workflows.authoring.phase_tools | Phase-local handoffs; rejected transitions return actionable `error`, `fix`, and `message` fields |
-| make_inspection_tools | agenthicc.workflows.authoring.inspection_tools | Read-only packaged docs and current API inspection, including private symbols |
+| CreateWorkflowState | agenthicc.workflows.create_workflow.state | Interpret/design/execute/summarize state machine with terminal states |
+| CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, phase artifacts, write evidence, and summaries |
+| make_*_tools | agenthicc.workflows.create_workflow.phase_tools | Phase-local handoffs; rejected transitions return actionable `error`, `fix`, and `message` fields |
+| make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only current documentation and API inspection, including private symbols |
 
 - Start `EventProcessor.run()` before `emit()` and await `drain()` before reading.
 - `root_reducer` is pure and kernel `AppState` is frozen.

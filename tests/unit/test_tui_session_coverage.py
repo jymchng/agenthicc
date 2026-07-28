@@ -111,7 +111,7 @@ def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.Monk
     assert session._handle_workflow_command("") is True
     assert session._workflow_override is None
     assert session._handle_workflow_command("missing") is True
-    from agenthicc.workflows.authoring.definition import CreateWorkflow
+    from agenthicc.workflows.create_workflow.definition import CreateWorkflow
 
     ctx.workflow_registry.register(CreateWorkflow)
     assert session.route("/workflow create_workflow") is True

@@ -79,17 +79,18 @@ are reserved for behavior the phase graph cannot express. The execute agent
 writes the complete source with the canonical `write_file` tool to
 `.agenthicc/workflows/<name>.py`, then calls its execute handoff. The runner does
 not copy assistant text, publish, parse, or statically validate the source, and
-no staging directory or publish phase is involved. Every terminal outcome emits
-a final summary in the transcript and in the typed `CreateWorkflowContext`.
+no staging directory or publish phase is involved. A successful terminal
+outcome emits a final summary in the transcript and in the typed
+`CreateWorkflowContext`; failed runs retain their failure reason.
 
 Assistant prose is never an artifact. If the agent does not successfully write
 the file and call its execute handoff, the runner retries up to
 `[execution].authoring_max_generation_attempts` bounded attempts (20 by default,
 clamped to 1–20) and then
-returns a failure without creating a `.py` file. The runner trusts the agent's
-successful filesystem-tool handoff for the reported path and checks only that
-the exact file exists; it does not parse or validate the file or create a
-runner-owned manifest.
+returns a failure without creating a `.py` file. The runner derives the
+expected path from the interpreted name and checks only that the exact file
+exists; it does not parse or validate the file or create a runner-owned
+manifest.
 
 Authoring phases are explicit state-machine nodes. The definition supplies a
 separate phase prompt and turn budget for `interpret`, `design`, `execute`, and
@@ -108,8 +109,8 @@ unambiguous in the model's tool catalog:
 
 | Phase | Required handoff |
 | --- | --- |
-| `interpret` | `complete_interpret_phase(summary)` |
-| `design` | `complete_design_phase(summary)` |
+| `interpret` | `complete_interpret_phase(summary, workflow_name)` |
+| `design` | `complete_design_phase(design)` |
 | `execute` | `write_file(path=".agenthicc/workflows/<name>.py", content=<complete source>)`, then `complete_execute_phase(summary, artifact_name, artifact_description)` |
 | `summarize` | `complete_summarize_phase(summary)` |
 
@@ -130,9 +131,10 @@ response containing only analysis or source prose does not advance either
 phase. The runner does not inspect or copy assistant responses, ask for
 approval, or create a staging copy.
 
-The authoring runner supplies the workspace-guarded canonical `write_file` tool
-to `create_workflow` even when no project tool plugin exports it. Other
-authoring workflows keep their existing tool and command capability boundaries.
+The normal built-in tool registry supplies the workspace-guarded canonical
+`write_file` tool to `create_workflow` even when no project tool plugin exports
+it. Other workflow and command plugin surfaces retain their own ownership
+boundaries.
 
 Like `code_plan`, one `ShortTermMemory` is created for each authoring run and
 shared by every `create_workflow` phase. The phase tool set also includes
@@ -142,11 +144,12 @@ and summary. Design excludes write, execute, network, and git-write
 capabilities. Execute receives the canonical `write_file` tool plus safe
 read-only tools; shell and command-execution tools are not exposed.
 
-The design and execute agents receive two read-only built-ins:
-`inspect_agenthicc_documentation(path)` reads the installed documentation, and
-`inspect_agenthicc_source(module, symbol)` uses Python's `inspect` API against
-the installed `agenthicc` package. Both public and private Python identifiers
-are valid symbols, so helpers such as `_parse_output_schema` can be inspected.
+The authoring phases receive two bounded read-only inspection tools:
+`inspect_agenthicc_documentation(path)` reads current packaged or checkout
+documentation, and `inspect_agenthicc_source(module, symbol)` uses Python's
+`inspect` API against the current `agenthicc` package. Both public and private
+Python identifiers are valid symbols, so helpers such as `_parse_output_schema`
+can be inspected.
 The TUI preserves complete module and path
 arguments in the tool-call preview, so a displayed inspection target matches
 the value actually sent to the tool. These tools are intended to keep generated

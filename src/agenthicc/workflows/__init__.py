@@ -25,7 +25,7 @@ from agenthicc.workflows.code_plan import (
     CodePlanState,
     CodePlanContext,
 )
-from agenthicc.workflows.authoring import (
+from agenthicc.workflows.create_workflow import (
     CreateWorkflow,
     CreateWorkflowContext,
     CreateWorkflowParams,

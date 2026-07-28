@@ -1408,14 +1408,14 @@ dangerous-permissions flag.
 
 ---
 
-## Workflow authoring — `agenthicc.workflows.authoring`
+## Workflow authoring — `agenthicc.workflows.create_workflow`
 
 ### CreateWorkflow
 
 Built-in `WorkflowPlugin` selected by `/workflow create_workflow`. The next
 ordinary input is treated as the authoring intent. Its four phases are
 `interpret → design → execute → summarize`. Design is read-only and calls
-`complete_design_phase(summary)` with the implementation specification. During
+`complete_design_phase(design)` with the implementation specification. During
 execute, the write-capable agent writes the complete source with the canonical
 `write_file` tool to `.agenthicc/workflows/<stable_name>.py`, then calls
 `complete_execute_phase(...)`.
