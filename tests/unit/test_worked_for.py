@@ -130,6 +130,30 @@ class TestTurnCompleteRenderer:
         out = self._render(0.5)
         assert "Worked for" not in out
 
+    def test_total_activity_duration_is_rendered(self) -> None:
+        from io import StringIO  # noqa: PLC0415
+        from rich.console import Console  # noqa: PLC0415
+        from unittest.mock import MagicMock  # noqa: PLC0415
+        from agenthicc.tui.conversation_store import ConversationEvent  # noqa: PLC0415
+        from agenthicc.tui.workspace.appender import _render_activity_complete  # noqa: PLC0415
+
+        buf = StringIO()
+        console = Console(file=buf, highlight=False, markup=False, no_color=True)
+        stub = MagicMock()
+        stub._console = console
+        _render_activity_complete(
+            stub,
+            ConversationEvent(
+                event_id="activity",
+                kind="activity_complete",
+                payload={"elapsed_s": 65.0},
+            ),
+        )
+
+        out = buf.getvalue()
+        assert "Total wall clock time since last IDLE: 1 min 5 seconds" in out
+        assert out.endswith("\n\n")
+
     def test_blank_line_always_appended(self) -> None:
         assert self._render(5.0).endswith("\n\n")
         assert self._render(0.3).endswith("\n")

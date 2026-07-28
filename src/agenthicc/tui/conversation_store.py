@@ -266,11 +266,15 @@ class ConversationStore:
             return 0.0
         self._advance_activity_clock(time.monotonic())
         elapsed = self.activity_elapsed_s()
+        # Publish the final wall-clock value before resetting the reactive
+        # clock.  The scroll renderer uses this event to report the complete
+        # user-intent duration after the last per-turn "Worked for" line.
+        self.agent_state.set(AgentState.IDLE)
+        self.append_event("activity_complete", {"elapsed_s": elapsed})
         self._activity_active = False
         self._activity_external_scope = False
         self._activity_start_time = 0.0
         self.activity_elapsed_s.set(0.0)
-        self.agent_state.set(AgentState.IDLE)
         return elapsed
 
     def set_display_paused(self, paused: bool) -> None:

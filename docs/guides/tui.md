@@ -95,7 +95,10 @@ it continues across internal LLM turns and workflow phases and ends only when
 the activity returns to IDLE. Resize redraws do not derive a new timestamp
 directly; the cached activity clock is refreshed by the shared tick. The older
 per-turn active-work clock remains available for turn-level telemetry and
-waiting-modal behavior.
+waiting-modal behavior. When the activity returns to IDLE, the scroll buffer
+prints a final `✾ Total wall clock time since last IDLE: …` line after the per-turn
+`✾ Worked for …` line; the latter is separated from following output by a blank
+line.
 
 The Windows backend uses `ReadConsoleInputW` so Shift+Tab preserves its
 modifier. POSIX raw mode is a no-op for non-TTY file descriptors and restores

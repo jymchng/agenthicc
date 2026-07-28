@@ -250,6 +250,28 @@ class TestElapsedSProperty:
         conv.tick()
         assert conv.activity_elapsed_s() == pytest.approx(0.0)
 
+    def test_activity_completion_emits_total_duration_before_reset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+
+        now = 100.0
+        monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
+        conv = ConversationStore()
+        events = []
+        conv.on_event(events.append)
+
+        conv.begin_activity()
+        now = 107.5
+        total = conv.end_activity()
+
+        completion = [event for event in events if event.kind == "activity_complete"]
+        assert total == pytest.approx(7.5)
+        assert len(completion) == 1
+        assert completion[0].payload["elapsed_s"] == pytest.approx(7.5)
+        assert conv.agent_state() == AgentState.IDLE
+        assert conv.activity_elapsed_s() == 0.0
+
     def test_status_renders_total_activity_across_internal_turns(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

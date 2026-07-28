@@ -481,6 +481,19 @@ def _render_turn_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     self._console.print()
 
 
+@register_renderer("activity_complete")
+def _render_activity_complete(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """Render the total wall-clock duration for the completed user intent."""
+
+    elapsed = _number(ev.payload, "elapsed_s")
+    self._console.print(
+        f"[dim]✾ Total wall clock time since last IDLE: {_fmt_worked(elapsed)}[/dim]",
+        markup=True,
+        highlight=False,
+    )
+    self._console.print()
+
+
 @register_renderer("mention_chips")
 def _render_mention_chips(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     from rich.markup import escape as _e  # noqa: PLC0415
