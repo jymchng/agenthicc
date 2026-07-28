@@ -7,7 +7,10 @@ import asyncio
 import pytest
 
 from agenthicc.workflows.authoring.inspection_tools import make_authoring_inspection_tools
-from agenthicc.workflows.authoring.phase_tools import make_authoring_transition_tools
+from agenthicc.workflows.authoring.phase_tools import (
+    make_authoring_review_tools,
+    make_authoring_transition_tools,
+)
 from agenthicc.workflows.authoring.state import AuthoringState, state_for_phase
 
 pytestmark = pytest.mark.unit
@@ -31,6 +34,48 @@ async def test_design_tools_capture_source_and_require_completion() -> None:
     assert data["artifact_name"] == "example"
 
     assert (await complete("source is ready"))["ok"] is True
+    assert event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_transition_tool_returns_actionable_validator_feedback() -> None:
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+
+    def reject_transition(_data: dict[str, object]) -> tuple[str, str]:
+        return "the staged artifact is missing", "stage the candidate before validating it"
+
+    (complete,) = make_authoring_transition_tools(
+        "validate", event, data, validator=reject_transition
+    )
+
+    result = await complete("I checked the candidate")
+
+    assert result["ok"] is False
+    assert "staged artifact is missing" in str(result["error"])
+    assert "stage the candidate" in str(result["error"])
+    assert result["fix"] == "stage the candidate before validating it"
+    assert result["retry"] is True
+    assert not event.is_set()
+    assert "last_error" in data
+
+
+@pytest.mark.asyncio
+async def test_review_tool_reports_denial_and_signals_runner() -> None:
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+
+    async def deny() -> bool:
+        return False
+
+    (request_approval,) = make_authoring_review_tools(deny, event, data)
+
+    result = await request_approval()
+
+    assert result["ok"] is False
+    assert result["rejected"] is True
+    assert "Do not publish" in str(result["fix"])
+    assert data == {"approval_decided": True, "approved": False}
     assert event.is_set()
 
 

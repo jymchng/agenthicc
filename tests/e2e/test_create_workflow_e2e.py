@@ -498,6 +498,22 @@ async def test_headless_style_execution_emits_structured_authoring_result(
         )
     )
     transport.queue_response(_completion("Validation handed off.", n=8))
+    transport.queue_response(
+        _tool_completion([("complete_authoring_phase", {"summary": "Validation passed."})], 9)
+    )
+    transport.queue_response(_completion("Validation agent handed off.", n=10))
+    transport.queue_response(_tool_completion([("request_publication_approval", {})], 11))
+    transport.queue_response(_completion("Review handed off.", n=12))
+    transport.queue_response(
+        _tool_completion([("complete_authoring_phase", {"summary": "Publication is ready."})], 13)
+    )
+    transport.queue_response(_completion("Publication handed off.", n=14))
+    transport.queue_response(
+        _tool_completion(
+            [("complete_authoring_phase", {"summary": "The workflow was published."})], 15
+        )
+    )
+    transport.queue_response(_completion("Summary handed off.", n=16))
     approval = _Approval(True)
     runner, app_state = _runner(tmp_path, processor, transport, approval)
     registry = WorkflowRegistry()
@@ -568,4 +584,4 @@ async def test_interpretation_exhaustion_is_structured_without_missing_tool_exce
     assert calls == 2
     assert context.result is not None
     assert context.result.status == "failed"
-    assert "without a tool-gated transition" in (context.result.error or "")
+    assert "transition tool was not called successfully" in (context.result.error or "")

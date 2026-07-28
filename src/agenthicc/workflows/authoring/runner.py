@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,10 @@ from agenthicc.workflows.authoring.artifact import (
     validate_workflow_candidate,
 )
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
+from agenthicc.workflows.authoring.phase_tools import (
+    make_authoring_review_tools,
+    make_authoring_transition_tools,
+)
 from agenthicc.workflows.authoring.state import (
     AuthoringContext,
     AuthoringState,
@@ -142,8 +147,6 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 },
             )
         )
-        await self._start_phase("interpret")
-
         ctx = AuthoringContext(
             intent=intent, run_id=self._run_id, shared_memory=self._shared_memory
         )
@@ -158,19 +161,33 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
                 match state:
                     case AuthoringState.INTERPRET:
-                        state = await self._interpret(ctx)
+                        state = await self._interpret(
+                            ctx, max_agent_turns=self._phase_max_turns("interpret")
+                        )
                     case AuthoringState.DESIGN:
-                        state = await self._design(ctx)
+                        state = await self._design(
+                            ctx, max_agent_turns=self._phase_max_turns("design")
+                        )
                     case AuthoringState.STAGE:
-                        state = await self._stage_phase(ctx)
+                        state = await self._stage(
+                            ctx, max_agent_turns=self._phase_max_turns("stage")
+                        )
                     case AuthoringState.VALIDATE:
-                        state = await self._validate_phase(ctx)
+                        state = await self._validate(
+                            ctx, max_agent_turns=self._phase_max_turns("validate")
+                        )
                     case AuthoringState.REVIEW:
-                        state = await self._review_phase(ctx)
+                        state = await self._review(
+                            ctx, max_agent_turns=self._phase_max_turns("review")
+                        )
                     case AuthoringState.PUBLISH:
-                        state = await self._publish_phase(ctx)
+                        state = await self._publish(
+                            ctx, max_agent_turns=self._phase_max_turns("publish")
+                        )
                     case AuthoringState.SUMMARIZE:
-                        state = await self._summarize_phase(ctx)
+                        state = await self._summarize(
+                            ctx, max_agent_turns=self._phase_max_turns("summarize")
+                        )
 
                 next_label = state.name.lower() if not state.is_terminal else None
                 await self._complete_phase(
@@ -217,7 +234,70 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             await self._finish_run(result, status="failed")
             return result
 
-    async def _interpret(self, ctx: AuthoringContext) -> AuthoringState:
+    async def _run_tool_gated_phase(
+        self,
+        *,
+        phase_name: str,
+        text: str,
+        system_prompt: str,
+        active_agent: str,
+        tool_builder: Callable[[asyncio.Event, dict[str, object]], list[ToolLike]],
+        max_agent_turns: int | None = None,
+    ) -> tuple[dict[str, object] | None, int, str | None]:
+        """Run one code-plan-style phase until its transition tool succeeds.
+
+        A phase transition is not inferred from assistant text.  Each attempt
+        receives a fresh event/data pair, and a rejected transition remains in
+        the agent conversation as a structured error so the next turn can fix
+        the exact prerequisite instead of blindly repeating the handoff.
+        """
+
+        limit = self._phase_attempt_limit(phase_name)
+        last_error = ""
+        for attempt in range(1, limit + 1):
+            transition_event = asyncio.Event()
+            transition_data: dict[str, object] = {}
+            try:
+                await self._run_authoring_turn(
+                    text
+                    if attempt == 1
+                    else (
+                        f"Continue the {phase_name} phase. The previous transition was not "
+                        f"accepted: {last_error} Fix the reported issue, then invoke the "
+                        "phase transition tool again. Do not stop at a prose response."
+                    ),
+                    phase_name=phase_name,
+                    tools=tool_builder(transition_event, transition_data),
+                    active_agent=active_agent,
+                    system_prompt=system_prompt,
+                    max_agent_turns=max_agent_turns,
+                )
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as exc:  # noqa: BLE001
+                return None, attempt, f"{type(exc).__name__}: {exc}"
+
+            if transition_event.is_set():
+                return transition_data, attempt, None
+
+            last_error = str(
+                transition_data.get("last_error")
+                or f"the {phase_name} transition tool was not called successfully"
+            )
+            self._emit_phase_retry(phase_name, attempt, limit, last_error)
+
+        return (
+            None,
+            limit,
+            (
+                f"{phase_name.title()} phase exhausted {limit} attempts. Last transition feedback: "
+                f"{last_error or 'the transition tool was not invoked.'}"
+            ),
+        )
+
+    async def _interpret(
+        self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
+    ) -> AuthoringState:
         """Interpret intent, continuing until the agent calls its handoff tool."""
 
         if not self._phase_specs:
@@ -232,78 +312,53 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         from agenthicc.workflows.authoring.inspection_tools import (
             make_authoring_inspection_tools,
         )
-        from agenthicc.workflows.authoring.phase_tools import make_authoring_transition_tools
 
-        reminder = (
-            "You inspected the authoring contracts but did not complete the interpretation "
-            "phase. Continue from the current context, refine the intent, and call "
-            "complete_authoring_phase(summary) now. Do not generate source yet."
-        )
-        for attempt in range(1, self._phase_attempt_limit("interpret") + 1):
-            transition_event = asyncio.Event()
-            transition_data: dict[str, object] = {}
-            tools: list[ToolLike] = [
+        data, attempts, error = await self._run_tool_gated_phase(
+            phase_name="interpret",
+            text=ctx.intent,
+            system_prompt=(
+                "You are in the interpretation phase of an authoring state machine. "
+                "Inspect only the current contracts needed for this artifact, normalize "
+                "the user's intent, and call complete_authoring_phase(summary) when the "
+                "design handoff is precise. Do not generate source yet."
+                + self._phase_prompt("interpret")
+            ),
+            active_agent="planner",
+            max_agent_turns=max_agent_turns,
+            tool_builder=lambda event, values: [
                 *self._cfg.all_plugin_tools(),
                 *make_authoring_inspection_tools(),
-                *make_authoring_transition_tools("interpret", transition_event, transition_data),
-            ]
-            try:
-                await self._run_authoring_turn(
-                    ctx.intent if attempt == 1 else reminder,
-                    phase_name="interpret",
-                    tools=tools,
-                    active_agent="planner",
-                    system_prompt=(
-                        "You are in the interpretation phase of an authoring state machine. "
-                        "Inspect only the current contracts needed for this artifact, "
-                        "normalize the user's intent, and call "
-                        "complete_authoring_phase(summary) when the design handoff is "
-                        "precise." + self._phase_prompt("interpret")
-                    ),
-                )
-            except (asyncio.CancelledError, KeyboardInterrupt):
-                raise
-            except Exception as exc:  # noqa: BLE001
-                self._set_failure(ctx, f"{type(exc).__name__}: {exc}")
-                ctx.set_phase_output(
-                    self._result_error(ctx, "Interpretation failed."), approved=False
-                )
-                return AuthoringState.SUMMARIZE
-
-            if transition_event.is_set():
-                summary = transition_data.get("summary")
-                ctx.interpreted_intent = summary if isinstance(summary, str) else ctx.intent
-                ctx.set_phase_output(
-                    ctx.interpreted_intent,
-                    approved=True,
-                    structured={
-                        "intent": ctx.intent,
-                        "interpretation": ctx.interpreted_intent,
-                        "attempts": attempt,
-                    },
-                )
-                return AuthoringState.DESIGN
-            self._emit_phase_retry(
-                "interpret",
-                attempt,
-                self._phase_attempt_limit("interpret"),
-                "The agent did not call complete_authoring_phase().",
-            )
-
-        reason = (
-            f"Interpretation phase exhausted {self._phase_attempt_limit('interpret')} "
-            "attempts without a tool-gated transition."
+                *make_authoring_transition_tools("interpret", event, values),
+            ],
         )
-        self._set_failure(ctx, reason)
-        ctx.set_phase_output(reason, approved=False)
-        return AuthoringState.SUMMARIZE
+        if data is None:
+            reason = error or "Interpretation did not produce a tool-gated handoff."
+            self._set_failure(ctx, reason)
+            ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
+            return AuthoringState.SUMMARIZE
 
-    async def _design(self, ctx: AuthoringContext) -> AuthoringState:
+        summary = data.get("summary")
+        ctx.interpreted_intent = summary if isinstance(summary, str) else ctx.intent
+        ctx.set_phase_output(
+            ctx.interpreted_intent,
+            approved=True,
+            structured={
+                "intent": ctx.intent,
+                "interpretation": ctx.interpreted_intent,
+                "attempts": attempts,
+            },
+        )
+        return AuthoringState.DESIGN
+
+    async def _design(
+        self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
+    ) -> AuthoringState:
         """Generate and validate source, with the design handoff tool as its gate."""
 
         try:
             candidate, report, attempts, generation_text = await self._generate(
-                ctx.interpreted_intent or ctx.intent
+                ctx.interpreted_intent or ctx.intent,
+                max_agent_turns=max_agent_turns,
             )
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
@@ -323,7 +378,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         )
         return AuthoringState.STAGE
 
-    async def _stage_phase(self, ctx: AuthoringContext) -> AuthoringState:
+    async def _stage(
+        self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
+    ) -> AuthoringState:
         """Stage valid source without making it discoverable."""
 
         if ctx.candidate is None or not ctx.report.valid:
@@ -332,8 +389,43 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 approved=False,
             )
             return AuthoringState.VALIDATE
+        handoff_summary = ""
+        if self._phase_specs:
+            data, attempts, error = await self._run_tool_gated_phase(
+                phase_name="stage",
+                text=(
+                    f"The {self.artifact_label} passed design validation. Confirm that it "
+                    "is ready to be stored in the run-scoped staging area, then call "
+                    "complete_authoring_phase(summary). Do not publish or execute it."
+                ),
+                system_prompt=(
+                    "You are in the staging phase. Confirm the candidate is ready for "
+                    "isolated run-scoped staging. Call complete_authoring_phase(summary) "
+                    "only after checking the handoff requirements; do not write to the "
+                    "discoverable extension directory, publish, or execute generated code."
+                    + self._phase_prompt("stage")
+                ),
+                active_agent="auto",
+                max_agent_turns=max_agent_turns,
+                tool_builder=lambda event, values: [
+                    *self._cfg.all_plugin_tools(),
+                    *make_authoring_transition_tools(
+                        "stage",
+                        event,
+                        values,
+                        validator=lambda _data: self._artifact_ready_transition_error(ctx),
+                    ),
+                ],
+            )
+            if data is None:
+                reason = error or "Staging did not receive a valid tool-gated handoff."
+                self._set_failure(ctx, reason)
+                ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
+                return AuthoringState.SUMMARIZE
+            summary = data.get("summary")
+            handoff_summary = summary if isinstance(summary, str) else ""
         try:
-            ctx.artifact = await self._stage(ctx.candidate, ctx.report, ctx.intent)
+            ctx.artifact = await self._stage_artifact(ctx.candidate, ctx.report, ctx.intent)
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except Exception as exc:  # noqa: BLE001
@@ -341,13 +433,15 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             ctx.set_phase_output(self._result_error(ctx, "Staging failed."), approved=False)
             return AuthoringState.SUMMARIZE
         ctx.set_phase_output(
-            f"Staged {ctx.artifact.staged_path}.",
+            handoff_summary or f"Staged {ctx.artifact.staged_path}.",
             approved=True,
             structured=ctx.artifact.to_dict(),
         )
         return AuthoringState.VALIDATE
 
-    async def _validate_phase(self, ctx: AuthoringContext) -> AuthoringState:
+    async def _validate(
+        self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
+    ) -> AuthoringState:
         """Apply the static validation gate before human publication review."""
 
         text = self._validation_text(ctx.report, attempts=ctx.attempts)
@@ -360,90 +454,120 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             from agenthicc.workflows.authoring.inspection_tools import (
                 make_authoring_inspection_tools,
             )
-            from agenthicc.workflows.authoring.phase_tools import (
-                make_authoring_transition_tools,
-            )
 
-            reminder = (
-                "The staged artifact is ready, but the validation phase has not been "
-                "completed. Re-check the deterministic findings and call "
-                "complete_authoring_phase(summary) with the verification result."
+            data, attempts, error = await self._run_tool_gated_phase(
+                phase_name="validate",
+                text=(
+                    f"Validate the staged {self.artifact_label} at {ctx.artifact.staged_path}. "
+                    f"The deterministic validation report is: {text}"
+                ),
+                system_prompt=(
+                    "You are the validation agent in an authoring state machine. Inspect "
+                    "the staged artifact and current agenthicc API, confirm the deterministic "
+                    "report, and call complete_authoring_phase(summary) only when it is safe "
+                    "to request publication review. Do not modify or publish the artifact."
+                    + self._phase_prompt("validate")
+                ),
+                active_agent="verifier",
+                max_agent_turns=max_agent_turns,
+                tool_builder=lambda event, values: [
+                    *self._cfg.all_plugin_tools(),
+                    *make_authoring_inspection_tools(),
+                    *make_authoring_transition_tools(
+                        "validate",
+                        event,
+                        values,
+                        validator=lambda _data: self._validation_transition_error(ctx),
+                    ),
+                ],
             )
-            for attempt in range(1, self._phase_attempt_limit("validate") + 1):
-                transition_event = asyncio.Event()
-                transition_data: dict[str, object] = {}
-                try:
-                    await self._run_authoring_turn(
-                        (
-                            f"Validate the staged {self.artifact_label} at "
-                            f"{ctx.artifact.staged_path}. The static validation report is: "
-                            f"{text}"
-                            if attempt == 1
-                            else reminder
-                        ),
-                        phase_name="validate",
-                        tools=[
-                            *self._cfg.all_plugin_tools(),
-                            *make_authoring_inspection_tools(),
-                            *make_authoring_transition_tools(
-                                "validate", transition_event, transition_data
-                            ),
-                        ],
-                        active_agent="verifier",
-                        system_prompt=(
-                            "You are the validation agent in an authoring state machine. "
-                            "Inspect the staged artifact and the current agenthicc API, "
-                            "confirm the deterministic report, and call "
-                            "complete_authoring_phase(summary) only when it is safe to "
-                            "request publication review. Do not modify or publish the "
-                            "artifact." + self._phase_prompt("validate")
-                        ),
-                    )
-                except (asyncio.CancelledError, KeyboardInterrupt):
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    self._set_failure(ctx, f"{type(exc).__name__}: {exc}")
-                    ctx.set_phase_output(
-                        self._result_error(ctx, "Validation failed."), approved=False
-                    )
-                    return AuthoringState.SUMMARIZE
-
-                if transition_event.is_set():
-                    summary = transition_data.get("summary")
-                    ctx.set_phase_output(
-                        summary if isinstance(summary, str) else text,
-                        approved=True,
-                        structured={
-                            **ctx.report.to_dict(),
-                            "attempts": attempt,
-                            "validation_summary": summary,
-                        },
-                    )
-                    return AuthoringState.REVIEW
-                self._emit_phase_retry(
-                    "validate",
-                    attempt,
-                    self._phase_attempt_limit("validate"),
-                    "The agent did not call complete_authoring_phase().",
-                )
-            reason = (
-                f"Validation phase exhausted {self._phase_attempt_limit('validate')} "
-                "attempts without a tool-gated transition."
+            if data is None:
+                reason = error or "Validation did not receive a valid tool-gated handoff."
+                self._set_failure(ctx, reason)
+                ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
+                return AuthoringState.SUMMARIZE
+            summary = data.get("summary")
+            ctx.set_phase_output(
+                summary if isinstance(summary, str) else text,
+                approved=True,
+                structured={
+                    **ctx.report.to_dict(),
+                    "attempts": attempts,
+                    "validation_summary": summary,
+                },
             )
-            self._set_failure(ctx, reason)
-            ctx.set_phase_output(reason, approved=False, structured=ctx.report.to_dict())
-            return AuthoringState.SUMMARIZE
+            return AuthoringState.REVIEW
 
         ctx.set_phase_output(text, approved=True, structured=ctx.report.to_dict())
         return AuthoringState.REVIEW
 
-    async def _review_phase(self, ctx: AuthoringContext) -> AuthoringState:
+    async def _review(
+        self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
+    ) -> AuthoringState:
         """Request explicit publication approval and route through its result."""
 
         if ctx.artifact is None or ctx.candidate is None:
             self._set_failure(ctx, "Cannot review an unstaged authoring artifact.")
             ctx.set_phase_output(self._result_error(ctx, "Review unavailable."), approved=False)
             return AuthoringState.SUMMARIZE
+        artifact = ctx.artifact
+        candidate = ctx.candidate
+
+        if self._phase_specs:
+            data, attempts, error = await self._run_tool_gated_phase(
+                phase_name="review",
+                text=(
+                    f"Review the staged {self.artifact_label} at {ctx.artifact.staged_path}. "
+                    "Present its behavior and validation evidence, then call "
+                    "request_publication_approval() exactly once."
+                ),
+                system_prompt=(
+                    "You are the human-approval review phase. Inspect the staged artifact, "
+                    "summarize its behavior and validation evidence, and call "
+                    "request_publication_approval() to obtain the explicit publication "
+                    "decision. Do not publish or modify the artifact."
+                    + self._phase_prompt("review")
+                ),
+                active_agent="reviewer",
+                max_agent_turns=max_agent_turns,
+                tool_builder=lambda event, values: [
+                    *self._cfg.all_plugin_tools(),
+                    *make_authoring_review_tools(
+                        lambda: self._request_publication_approval(artifact, candidate),
+                        event,
+                        values,
+                    ),
+                ],
+            )
+            if data is None:
+                reason = error or "Review did not receive a publication decision."
+                self._set_failure(ctx, reason)
+                ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
+                return AuthoringState.SUMMARIZE
+            approved = data.get("approved") is True
+            if not approved:
+                ctx.result = self._result(
+                    run_id=self._run_id,
+                    status="rejected",
+                    artifact=dataclasses.replace(ctx.artifact, state="staged"),
+                    approval="denied",
+                    error="Publication approval was denied; the candidate remains staged.",
+                    attempts=ctx.attempts,
+                )
+                ctx.set_phase_output(
+                    ctx.result.error or "Publication approval was denied.",
+                    approved=False,
+                    structured={"attempts": attempts, "approved": False},
+                )
+                return AuthoringState.SUMMARIZE
+            ctx.approval_granted = True
+            ctx.set_phase_output(
+                "Publication approved.",
+                approved=True,
+                structured={"attempts": attempts, "approved": True},
+            )
+            return AuthoringState.PUBLISH
+
         try:
             approved = await self._request_publication_approval(ctx.artifact, ctx.candidate)
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -467,10 +591,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 self._result_error(ctx, "Publication approval was denied."), approved=False
             )
             return AuthoringState.SUMMARIZE
+        ctx.approval_granted = True
         ctx.set_phase_output("Publication approved.", approved=True)
         return AuthoringState.PUBLISH
 
-    async def _publish_phase(self, ctx: AuthoringContext) -> AuthoringState:
+    async def _publish(
+        self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
+    ) -> AuthoringState:
         """Atomically publish the already-approved artifact."""
 
         if ctx.artifact is None or ctx.candidate is None:
@@ -479,8 +606,39 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 self._result_error(ctx, "Publication unavailable."), approved=False
             )
             return AuthoringState.SUMMARIZE
+        if self._phase_specs:
+            data, attempts, error = await self._run_tool_gated_phase(
+                phase_name="publish",
+                text=(
+                    f"The staged {self.artifact_label} passed review. Confirm that it is "
+                    "approved and ready for atomic publication, then call "
+                    "complete_authoring_phase(summary)."
+                ),
+                system_prompt=(
+                    "You are in the publication phase. Confirm the staged artifact is the "
+                    "same validated artifact that received explicit approval, then call "
+                    "complete_authoring_phase(summary). Do not alter the source or claim "
+                    "publication before the runner completes it." + self._phase_prompt("publish")
+                ),
+                active_agent="auto",
+                max_agent_turns=max_agent_turns,
+                tool_builder=lambda event, values: [
+                    *self._cfg.all_plugin_tools(),
+                    *make_authoring_transition_tools(
+                        "publish",
+                        event,
+                        values,
+                        validator=lambda _data: self._publish_transition_error(ctx),
+                    ),
+                ],
+            )
+            if data is None:
+                reason = error or "Publication did not receive a valid tool-gated handoff."
+                self._set_failure(ctx, reason)
+                ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
+                return AuthoringState.SUMMARIZE
         try:
-            published = self._publish(ctx.artifact, ctx.candidate)
+            published = self._publish_artifact(ctx.artifact, ctx.candidate)
         except (asyncio.CancelledError, KeyboardInterrupt):
             raise
         except Exception as exc:  # noqa: BLE001
@@ -503,23 +661,83 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         )
         return AuthoringState.SUMMARIZE
 
-    async def _summarize_phase(self, ctx: AuthoringContext) -> AuthoringState:
+    async def _summarize(
+        self, ctx: AuthoringContext, *, max_agent_turns: int | None = None
+    ) -> AuthoringState:
         """Emit the terminal authoring summary and select the terminal state."""
 
         if ctx.result is None:
             self._set_failure(ctx, "Authoring summary was reached without a result.")
         if ctx.result is None:
             raise RuntimeError("authoring summary result was not created")
+        if self._phase_specs:
+            data, attempts, error = await self._run_tool_gated_phase(
+                phase_name="summarize",
+                text=(
+                    f"Summarize the authoring result: {ctx.result.to_dict()}. Call "
+                    "complete_authoring_phase(summary) with the exact status, artifact "
+                    "location, validation/approval outcome, and required activation step."
+                ),
+                system_prompt=(
+                    "You are in the summary phase. Report only the authoritative authoring "
+                    "result supplied in the phase context. Call "
+                    "complete_authoring_phase(summary) after including status, artifact "
+                    "path, validation and approval outcome, and the next activation action. "
+                    "Never claim publication or activation that the result does not show."
+                    + self._phase_prompt("summarize")
+                ),
+                active_agent="auto",
+                max_agent_turns=max_agent_turns,
+                tool_builder=lambda event, values: [
+                    *self._cfg.all_plugin_tools(),
+                    *make_authoring_transition_tools(
+                        "summarize",
+                        event,
+                        values,
+                        validator=lambda _data: self._summary_transition_error(ctx),
+                    ),
+                ],
+            )
+            if data is None:
+                reason = error or "Summary did not receive a valid tool-gated handoff."
+                ctx.set_phase_output(reason, approved=False, structured={"attempts": attempts})
+                return self._terminal_state_for_result(ctx.result)
+            summary = data.get("summary")
+            ctx.set_phase_output(
+                summary
+                if isinstance(summary, str)
+                else ctx.result.summary or self._summary(ctx.result),
+                approved=ctx.result.status == "published",
+                structured={**ctx.result.to_dict(), "attempts": attempts, "agent_summary": summary},
+            )
+            return self._terminal_state_for_result(ctx.result)
         ctx.set_phase_output(
             ctx.result.summary or self._summary(ctx.result),
             approved=ctx.result.status == "published",
             structured=ctx.result.to_dict(),
         )
-        if ctx.result.status == "published":
+        return self._terminal_state_for_result(ctx.result)
+
+    @staticmethod
+    def _terminal_state_for_result(result: AuthoringResult) -> AuthoringState:
+        """Map an authoring result to the terminal state used by ``run``."""
+
+        if result.status == "published":
             return AuthoringState.COMPLETE
-        if ctx.result.status == "rejected":
+        if result.status == "rejected":
             return AuthoringState.REJECTED
         return AuthoringState.FAILED
+
+    @staticmethod
+    def _summary_transition_error(
+        ctx: AuthoringContext,
+    ) -> tuple[str, str] | None:
+        if ctx.result is None:
+            return (
+                "the authoring result is missing",
+                "finish the preceding phase and summarize only its structured result",
+            )
+        return None
 
     def _set_failure(self, ctx: AuthoringContext, error: str) -> None:
         """Create a structured failure that the summarize phase can report."""
@@ -638,7 +856,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
             await self._complete_phase("review", "Publication approved.", approved=True)
             await self._start_phase("publish")
-            published = self._publish(artifact, candidate)
+            published = self._publish_artifact(artifact, candidate)
             result = self._result(
                 run_id=run_id,
                 status="published",
@@ -796,6 +1014,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         active_agent: str,
         system_prompt: str,
         output: list[str] | None = None,
+        max_agent_turns: int | None = None,
     ) -> None:
         """Run one bounded tool-capable turn for an authoring phase."""
 
@@ -810,7 +1029,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             session_memory=self._shared_memory,
             max_agent_turns=max(
                 1,
-                min(self._phase_max_turns(phase_name), self._cfg.cfg.execution.max_agent_turns),
+                min(
+                    max_agent_turns
+                    if max_agent_turns is not None
+                    else self._phase_max_turns(phase_name),
+                    self._cfg.cfg.execution.max_agent_turns,
+                ),
             ),
             conv_store=self._cfg.conv_store,
             app_state=self._cfg.app_state,
@@ -974,8 +1198,115 @@ USER INTENT:
 {self._phase_prompt("design")}
 """
 
+    def _design_transition_validator(
+        self, transition_data: dict[str, object]
+    ) -> tuple[str, str] | None:
+        """Validate the design handoff before allowing the phase to advance."""
+
+        if transition_data.get("source_submitted") is not True:
+            return (
+                "no complete source was submitted",
+                "call submit_generated_source() with the complete raw Python file before completing design",
+            )
+        source = transition_data.get("source")
+        name = transition_data.get("artifact_name")
+        description = transition_data.get("artifact_description")
+        if not isinstance(source, str) or not source.strip():
+            return (
+                "the submitted source is empty",
+                "generate the complete source directly and submit it again",
+            )
+        if not isinstance(name, str) or not name.strip():
+            return (
+                "the artifact name is missing",
+                "submit a stable lowercase artifact name with the source",
+            )
+        if not isinstance(description, str) or not description.strip():
+            return (
+                "the artifact description is missing",
+                "submit a concise artifact description with the source",
+            )
+        try:
+            candidate = self._parse_candidate(source)
+        except ValueError as exc:
+            return (
+                f"the submitted source is not parseable: {exc}",
+                "return one complete raw Python source file without prose, JSON, XML, or Markdown fences",
+            )
+        candidate = dataclasses.replace(
+            candidate,
+            name=name.strip(),
+            description=description.strip(),
+        )
+        report = self._validate_candidate(candidate)
+        if not report.valid:
+            findings = "; ".join(item.message for item in report.findings if item.blocking)
+            return (
+                f"the submitted source failed static validation: {findings}",
+                "correct every blocking finding and submit the complete corrected source again",
+            )
+        return None
+
+    @staticmethod
+    def _artifact_ready_transition_error(
+        ctx: AuthoringContext,
+    ) -> tuple[str, str] | None:
+        """Return actionable feedback when a phase lacks its artifact handoff."""
+
+        if ctx.candidate is None:
+            return "no candidate exists", "return to design and generate the source"
+        if not ctx.report.valid:
+            return (
+                "the candidate has blocking validation findings",
+                "repair the design candidate before requesting staging",
+            )
+        return None
+
+    def _validation_transition_error(self, ctx: AuthoringContext) -> tuple[str, str] | None:
+        """Ensure validation hands off the same immutable staged artifact."""
+
+        failure = self._artifact_ready_transition_error(ctx)
+        if failure is not None:
+            return failure
+        if ctx.artifact is None:
+            return "the staged artifact is missing", "return to staging and create the manifest"
+        staged = Path(ctx.artifact.staged_path)
+        if not staged.is_file():
+            return (
+                "the staged source file is missing",
+                "do not publish; return to staging and recreate the run-scoped artifact",
+            )
+        try:
+            current_digest = source_sha256(staged.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError) as exc:
+            return (
+                f"the staged source could not be read: {exc}",
+                "keep the artifact unchanged and retry validation after restoring the staged file",
+            )
+        if current_digest != ctx.artifact.sha256:
+            return (
+                "the staged source changed after design validation",
+                "discard this handoff and regenerate or restage the unchanged candidate",
+            )
+        return None
+
+    def _publish_transition_error(self, ctx: AuthoringContext) -> tuple[str, str] | None:
+        """Ensure publication cannot advance without an explicit approval gate."""
+
+        if not ctx.approval_granted:
+            return (
+                "explicit publication approval is missing",
+                "complete the review phase and call request_publication_approval()",
+            )
+        if ctx.artifact is None or ctx.artifact.state != "staged":
+            return (
+                "the candidate is not in the staged state",
+                "use the existing staged manifest and do not regenerate or publish manually",
+            )
+        return self._validation_transition_error(ctx)
+
     async def _generate(
-        self, intent: str
+        self, intent: str, *, max_agent_turns: int | None = None
     ) -> tuple[WorkflowCandidate | None, ValidationReport, int, str]:
         from agenthicc.workflows.authoring.inspection_tools import (
             make_authoring_inspection_tools,
@@ -1007,6 +1338,7 @@ USER INTENT:
                         "design",
                         transition_event,
                         transition_data,
+                        validator=self._design_transition_validator,
                     ),
                 ],
                 active_agent="planner",
@@ -1015,6 +1347,7 @@ USER INTENT:
                     f"Never write directly to .agenthicc/{self.destination_dir}."
                 ),
                 output=output,
+                max_agent_turns=max_agent_turns,
             )
             submitted_source = transition_data.get("source")
             last_text = (
@@ -1023,9 +1356,12 @@ USER INTENT:
                 else "".join(output).strip()
             )
             if self._phase_specs and not transition_event.is_set():
-                parse_error = (
-                    "the design agent did not call complete_authoring_phase(); "
-                    "a phase cannot advance from free-form text"
+                parse_error = str(
+                    transition_data.get("last_error")
+                    or (
+                        "the design agent did not call complete_authoring_phase(); "
+                        "a phase cannot advance from free-form text"
+                    )
                 )
                 last_report = ValidationReport(
                     (ValidationFinding("phase-transition", parse_error),)
@@ -1277,7 +1613,7 @@ USER INTENT:
             )
         )
 
-    async def _stage(
+    async def _stage_artifact(
         self,
         candidate: WorkflowCandidate,
         report: ValidationReport,
@@ -1342,7 +1678,7 @@ USER INTENT:
         response = await self._cfg.approval_svc.request_approval(request)
         return response.allowed
 
-    def _publish(
+    def _publish_artifact(
         self,
         artifact: AuthoringArtifact,
         candidate: WorkflowCandidate,

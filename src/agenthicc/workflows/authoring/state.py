@@ -76,6 +76,7 @@ class AuthoringContext:
     attempts: int = 0
     generation_text: str = ""
     artifact: AuthoringArtifact | None = None
+    approval_granted: bool = False
     result: AuthoringResult | None = None
     phase_text: str = ""
     phase_approved: bool | None = None

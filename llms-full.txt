@@ -1515,12 +1515,29 @@ def make_authoring_transition_tools(
     phase_name: str,
     transition_event: asyncio.Event,
     transition_data: dict[str, object],
+    validator: Callable[[dict[str, object]], tuple[str, str] | None] | None = None,
 ) -> list[Callable[..., object]]
 
 Creates phase-local completion tools. The design phase also exposes
 submit_generated_source, which captures complete raw source directly before
 the runner parses and validates it. A phase handoff is accepted only after
 complete_authoring_phase is called.
+
+The optional ``validator`` checks phase prerequisites before the transition
+event is set. Rejected handoffs return an actionable ``error`` and ``retry``
+flag, and preserve ``last_error`` for the next bounded agent attempt.
+
+### make_authoring_review_tools
+
+def make_authoring_review_tools(
+    request_approval: Callable[[], Awaitable[bool]],
+    transition_event: asyncio.Event,
+    transition_data: dict[str, object],
+) -> list[Callable[..., object]]
+
+Creates the review-phase ``request_publication_approval`` tool. The tool records
+the approval decision, signals the runner, and returns a fix-oriented result
+when publication is denied or approval cannot be requested.
 
 ### make_authoring_inspection_tools
 

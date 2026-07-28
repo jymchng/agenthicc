@@ -485,6 +485,18 @@ async def test_headless_authoring_fails_closed_without_explicit_permission(
         )
     )
     transport.queue_response(_completion("Validation handed off.", n=6))
+    transport.queue_response(
+        _tool_completion([("complete_authoring_phase", {"summary": "Validation passed."})], 7)
+    )
+    transport.queue_response(_completion("Validation agent handed off.", n=8))
+    transport.queue_response(_tool_completion([("request_publication_approval", {})], 9))
+    transport.queue_response(_completion("Review handed off.", n=10))
+    transport.queue_response(
+        _tool_completion(
+            [("complete_authoring_phase", {"summary": "The rejected result is ready."})], 11
+        )
+    )
+    transport.queue_response(_completion("Summary handed off.", n=12))
     approval = _Approval(False)
     runner, app_state = _runner(
         CreateToolRunner if kind == "tool" else CreateCommandRunner,

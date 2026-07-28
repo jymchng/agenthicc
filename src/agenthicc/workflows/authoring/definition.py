@@ -58,7 +58,8 @@ class CreateWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "Store the generated workflow source in the run-scoped authoring "
                 "staging area with its manifest and hash. Keep it undiscoverable and "
-                "do not publish or execute it before validation and explicit approval."
+                "do not publish or execute it before validation and explicit approval. "
+                "Call complete_authoring_phase(summary) only when it is ready for staging."
             ),
             next="validate",
             max_turns=4,
@@ -70,8 +71,8 @@ class CreateWorkflow(WorkflowPlugin):
                 "Validate the staged workflow without importing or executing it. Check "
                 "syntax, safe imports and calls, name and phase references, literal "
                 "non-empty phase prompts, runner selection, factory wiring, and "
-                "activation requirements. Report blocking findings precisely and pass "
-                "only a complete safe candidate to review."
+                "activation requirements. Report blocking findings precisely and call "
+                "complete_authoring_phase(summary) only for a complete safe candidate."
             ),
             next="review",
             max_turns=8,
@@ -82,8 +83,9 @@ class CreateWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "Present the validated staged workflow, its intended behavior, source "
                 "path, validation findings, and activation implications for explicit "
-                "publication approval. If approval is denied, preserve the staged "
-                "artifact and explain how it can be corrected or resumed."
+                "publication approval. Call request_publication_approval() for the "
+                "decision. If approval is denied, preserve the staged artifact and "
+                "explain how it can be corrected or resumed."
             ),
             next="publish",
             on_reject="summarize",
@@ -95,8 +97,9 @@ class CreateWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "After explicit approval, atomically publish the validated staged "
                 "workflow to the project workflow directory, preserve its manifest "
-                "and digest, and report the exact reload or activation action. Never "
-                "publish an unvalidated or unapproved artifact."
+                "and digest, and report the exact reload or activation action. Call "
+                "complete_authoring_phase(summary) before publication. Never publish "
+                "an unvalidated or unapproved artifact."
             ),
             next="summarize",
             max_turns=4,
@@ -108,7 +111,8 @@ class CreateWorkflow(WorkflowPlugin):
                 "Summarize the authoring outcome with the workflow name, status, "
                 "staged or published path, validation result, approval state, and "
                 "the exact next action needed to discover and run the specialized "
-                "workflow. Mention unresolved errors without claiming success."
+                "workflow. Call complete_authoring_phase(summary) after stating the "
+                "authoritative result. Mention unresolved errors without claiming success."
             ),
             max_turns=4,
         ),
@@ -166,7 +170,8 @@ class CreateTools(WorkflowPlugin):
             system_prompt_override=(
                 "Store the generated tool source in the run-scoped authoring staging "
                 "area with its manifest and hash. Keep it undiscoverable and do not "
-                "publish, import, or execute it before validation and explicit approval."
+                "publish, import, or execute it before validation and explicit approval. "
+                "Call complete_authoring_phase(summary) only when it is ready for staging."
             ),
             next="validate",
             max_turns=4,
@@ -179,7 +184,7 @@ class CreateTools(WorkflowPlugin):
                 "syntax, safe imports and calls, metadata, lauren-ai decorator usage, "
                 "literal TOOLS export, callable references, annotations, capabilities, "
                 "and activation requirements. Report blocking findings precisely and "
-                "pass only a loader-compatible candidate to review."
+                "call complete_authoring_phase(summary) only for a loader-compatible candidate."
             ),
             next="review",
             max_turns=8,
@@ -191,6 +196,7 @@ class CreateTools(WorkflowPlugin):
                 "Present the validated staged tool, its callable behavior, capability "
                 "and integration requirements, source path, validation findings, and "
                 "activation implications for explicit publication approval. If denied, "
+                "call request_publication_approval() for the decision. If denied, "
                 "preserve the staged artifact and explain how it can be resumed."
             ),
             next="publish",
@@ -203,8 +209,8 @@ class CreateTools(WorkflowPlugin):
             system_prompt_override=(
                 "After explicit approval, atomically publish the validated tool to the "
                 "project tools directory, preserve its manifest and digest, and report "
-                "the exact /tools reload action. Never publish an unvalidated or "
-                "unapproved tool."
+                "the exact /tools reload action. Call complete_authoring_phase(summary) "
+                "before publication. Never publish an unvalidated or unapproved tool."
             ),
             next="summarize",
             max_turns=4,
@@ -216,7 +222,8 @@ class CreateTools(WorkflowPlugin):
                 "Summarize the tool-authoring outcome with the artifact name, status, "
                 "staged or published path, validation result, approval state, required "
                 "reload action, and any unresolved prerequisite. Never claim the tool "
-                "is active before reload."
+                "is active before reload. Call complete_authoring_phase(summary) after "
+                "stating the authoritative result."
             ),
             max_turns=4,
         ),
@@ -273,7 +280,8 @@ class CreateCommands(WorkflowPlugin):
             system_prompt_override=(
                 "Store the generated command source in the run-scoped authoring staging "
                 "area with its manifest and hash. Keep it undiscoverable and do not "
-                "publish, import, or execute it before validation and explicit approval."
+                "publish, import, or execute it before validation and explicit approval. "
+                "Call complete_authoring_phase(summary) only when it is ready for staging."
             ),
             next="validate",
             max_turns=4,
@@ -286,7 +294,8 @@ class CreateCommands(WorkflowPlugin):
                 "syntax, safe imports and calls, metadata, Command export shape, literal "
                 "slash names and descriptions, handler or menu references, argument "
                 "contract, and activation requirements. Report blocking findings "
-                "precisely and pass only a loader-compatible candidate to review."
+                "precisely and call complete_authoring_phase(summary) only for a "
+                "loader-compatible candidate."
             ),
             next="review",
             max_turns=8,
@@ -298,7 +307,8 @@ class CreateCommands(WorkflowPlugin):
                 "Present the validated staged command, invocation syntax, argument and "
                 "busy-state behavior, source path, validation findings, and activation "
                 "implications for explicit publication approval. If denied, preserve the "
-                "staged artifact and explain how it can be resumed."
+                "staged artifact and explain how it can be resumed. Call "
+                "request_publication_approval() for the decision."
             ),
             next="publish",
             on_reject="summarize",
@@ -311,7 +321,8 @@ class CreateCommands(WorkflowPlugin):
                 "After explicit approval, atomically publish the validated command to "
                 "the project commands directory, preserve its manifest and digest, and "
                 "report the exact /commands reload action. Never publish an unvalidated "
-                "or unapproved command."
+                "or unapproved command. Call complete_authoring_phase(summary) before "
+                "publication."
             ),
             next="summarize",
             max_turns=4,
@@ -323,7 +334,8 @@ class CreateCommands(WorkflowPlugin):
                 "Summarize the command-authoring outcome with the artifact name, status, "
                 "staged or published path, validation result, approval state, canonical "
                 "invocation, required reload action, and unresolved errors. Never claim "
-                "the command is active before reload."
+                "the command is active before reload. Call complete_authoring_phase(summary) "
+                "after stating the authoritative result."
             ),
             max_turns=4,
         ),

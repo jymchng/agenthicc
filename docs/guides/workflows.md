@@ -26,6 +26,9 @@ The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
 Workflow selection is influenced by the active mode, registry mappings, and the
 session-local `/workflow` override.
 
+For the state machine, phase-local transition tools, retry boundaries, and
+extension pattern, see the [`code_plan` structure reference](../reference/code-plan.md).
+
 ## Command lifecycle gates
 
 Declare command intent in a phase when a build or development server is part
