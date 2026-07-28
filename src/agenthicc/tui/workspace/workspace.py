@@ -256,10 +256,12 @@ class Workspace:
 
         Rich's ``LiveRender`` uses its last measured shape to move the cursor
         above the live block.  A terminal resize can change both wrapping and
-        the number of visible rows, so that shape no longer describes the
-        bytes currently on screen.  Restoring with the old shape clears the
-        old block; clearing the cached shape makes the next refresh start at
-        the restored cursor instead of moving by stale geometry again.
+        the number of visible rows, so that shape must be cleared before the
+        next refresh.  ``position_cursor`` clears the existing block while
+        keeping the cursor on its first row.  ``restore_cursor`` is not
+        appropriate here: it assumes the cursor is already on the line below
+        the block, which is true during shutdown but false after a Live refresh.
+        Using it during a resize erases the last scroll-buffer row as well.
 
         ``_live_render`` and ``_shape`` are Rich internals, but they are the
         state that owns this exact cursor bookkeeping.  Keep the compatibility
@@ -270,7 +272,7 @@ class Workspace:
             return
         try:
             live_render = self._live._live_render
-            self._console.control(live_render.restore_cursor())
+            self._console.control(live_render.position_cursor())
             live_render._shape = None
         except (AttributeError, OSError):
             # A non-interactive console or a future Rich implementation without
