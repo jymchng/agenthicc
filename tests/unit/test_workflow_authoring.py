@@ -279,6 +279,43 @@ def test_builtin_authoring_definitions_have_distinct_bounded_phase_contracts() -
         assert len({phase.system_prompt_override for phase in definition.phases}) == 7
 
 
+def test_create_workflow_gives_every_phase_twenty_agent_turns() -> None:
+    assert [phase.max_turns for phase in CreateWorkflow.phases] == [20] * 7
+
+
+def test_create_workflow_prompts_repeat_mission_and_phase_handoffs() -> None:
+    expected_handoffs = {
+        "interpret": ("complete_authoring_phase(summary)", "DESIGN"),
+        "design": ("submit_generated_source", "STAGE"),
+        "stage": ("complete_authoring_phase(summary)", "VALIDATE"),
+        "validate": ("complete_authoring_phase(summary)", "REVIEW"),
+        "review": ("request_publication_approval()", "PUBLISH"),
+        "publish": ("complete_authoring_phase(summary)", "SUMMARIZE"),
+        "summarize": ("complete_authoring_phase(summary)", "terminal"),
+    }
+
+    for phase in CreateWorkflow.phases:
+        prompt = phase.system_prompt_override
+        assert "ULTIMATE PURPOSE:" in prompt
+        assert "create one new specialized agenthicc workflow" in prompt
+        assert "TRANSITION:" in prompt
+        tool, next_phase = expected_handoffs[phase.name]
+        assert tool in prompt
+        assert next_phase in prompt
+
+
+def test_runtime_phase_prompt_adds_mission_and_next_state_reminder() -> None:
+    runner = object.__new__(CreateWorkflowRunner)
+    runner._phase_specs = {phase.name: phase for phase in CreateWorkflow.phases}
+
+    for phase in CreateWorkflow.phases:
+        prompt = runner._phase_prompt(phase.name)
+        assert "ULTIMATE PURPOSE REMINDER" in prompt
+        assert "create one new specialized agenthicc workflow" in prompt
+        expected_next = phase.next.upper() if phase.next else "TERMINAL"
+        assert f"moves the authoring run to {expected_next}" in prompt
+
+
 def test_validation_accepts_phase_name_as_positional_argument() -> None:
     source = _VALID_SOURCE.replace(
         'PhaseSpec(\n            name="parse",',

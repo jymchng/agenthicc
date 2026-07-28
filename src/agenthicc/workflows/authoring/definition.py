@@ -27,26 +27,49 @@ class CreateWorkflow(WorkflowPlugin):
             name="interpret",
             agent_type="planner",
             system_prompt_override=(
-                "Normalize the user's request into one specialized workflow intent. "
-                "Identify the workflow purpose, runtime inputs, required integrations, "
-                "expected outputs, safety constraints, and measurable success criteria. "
-                "Preserve the user's meaning and hand off a concise intent record to "
-                "the design phase."
+                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow from "
+                "the user's request. You are authoring that new workflow, not executing "
+                "the runtime task it will later perform. In this INTERPRET phase, study "
+                "only the current contracts needed to understand the request and turn it "
+                "into one precise workflow intent. Identify the workflow's purpose, stable "
+                "name, runtime inputs, expected outputs, required MCP/tools or services, "
+                "phase responsibilities, verification evidence, safety and capability "
+                "constraints, activation requirements, and measurable success criteria. "
+                "Preserve the user's meaning; resolve ambiguity conservatively and do not "
+                "invent integrations that are not available. Do not generate Python source, "
+                "publish anything, or execute the future workflow in this phase. "
+                "TRANSITION: when the intent is precise enough for source generation, call "
+                "complete_authoring_phase(summary) with the normalized intent and evidence. "
+                "That tool invocation is the only accepted handoff and moves the run to "
+                "the DESIGN phase; a prose response alone does not advance the workflow."
             ),
             next="design",
-            max_turns=8,
+            max_turns=20,
         ),
         PhaseSpec(
             name="design",
             agent_type="planner",
             system_prompt_override=(
-                "Generate the complete Python source for the specialized workflow "
-                "described by the interpreted intent. Choose a declarative PhaseSpec "
-                "graph unless custom orchestration is genuinely required. Give every "
-                "generated phase a self-contained system_prompt_override that states "
-                "its objective, tools, inputs, outputs, verification, completion "
-                "signal, and next-phase handoff. Return raw source only and do not "
-                "write to the discoverable workflow directory."
+                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow from "
+                "the interpreted user intent. You are the DESIGN phase of that authoring "
+                "run: generate the complete implementation of the future workflow, rather "
+                "than answering the runtime request yourself. Inspect the current plugin, "
+                "PhaseSpec, runner, tool, capability, workspace, MCP, approval, and "
+                "activation contracts before deciding how to implement it. Prefer one "
+                "declarative WorkflowPlugin with literal PhaseSpec values and the inherited "
+                "runner; introduce a custom runner only when the requested orchestration "
+                "cannot be expressed by a phase graph. Give every generated phase a "
+                "self-contained prompt that specifies its objective, available tools, "
+                "inputs, outputs, verification evidence, safety boundaries, completion "
+                "signal, and next-phase handoff. Keep generated code secure, typed, "
+                "loader-compatible, and faithful to the interpreted intent. Generate the "
+                "complete raw Python source directly: no plan, pseudocode, patch, XML, "
+                "JSON, Markdown fence, or explanatory envelope, and do not write to the "
+                "discoverable workflow directory. TRANSITION: submit the complete source "
+                "with submit_generated_source(source, artifact_name, artifact_description), "
+                "then call complete_authoring_phase(summary) only after the source and its "
+                "metadata are complete. A successful tool handoff moves the authoring run "
+                "to STAGE; free-form text cannot advance it."
             ),
             next="stage",
             max_iterations=2,
@@ -56,65 +79,107 @@ class CreateWorkflow(WorkflowPlugin):
             name="stage",
             agent_type="auto",
             system_prompt_override=(
-                "Store the generated workflow source in the run-scoped authoring "
-                "staging area with its manifest and hash. Keep it undiscoverable and "
-                "do not publish or execute it before validation and explicit approval. "
-                "Call complete_authoring_phase(summary) only when it is ready for staging."
+                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow from "
+                "the user's intent and carry it safely through authoring to publication. "
+                "You are in the STAGE phase. The DESIGN phase has supplied a complete "
+                "candidate; confirm that the candidate and metadata are ready to be stored "
+                "without changing the user's requested behavior. Staging must use the "
+                "run-scoped authoring directory, manifest, and source hash so the candidate "
+                "remains isolated, auditable, and undiscoverable. Do not publish, import, "
+                "execute, activate, or write into the discoverable workflow directory, and "
+                "do not silently repair source in this phase. TRANSITION: after confirming "
+                "the candidate is ready for isolated staging, call "
+                "complete_authoring_phase(summary). The runner performs the staging side "
+                "effect and then moves to VALIDATE; a prose response alone does not advance "
+                "the authoring workflow."
             ),
             next="validate",
-            max_turns=4,
+            max_turns=20,
         ),
         PhaseSpec(
             name="validate",
             agent_type="verifier",
             system_prompt_override=(
-                "Validate the staged workflow without importing or executing it. Check "
-                "syntax, safe imports and calls, name and phase references, literal "
-                "non-empty phase prompts, runner selection, factory wiring, and "
-                "activation requirements. Report blocking findings precisely and call "
-                "complete_authoring_phase(summary) only for a complete safe candidate."
+                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow that is "
+                "safe, loader-compatible, and ready for an explicit publication decision. "
+                "You are in the VALIDATE phase. Inspect the immutable run-scoped staged "
+                "artifact and the current agenthicc contracts without importing or executing "
+                "generated code. Check syntax, allowed imports and calls, stable name and "
+                "description, literal non-empty phase prompts, phase references and graph "
+                "termination, agent roles, runner selection, build_runner wiring, tool and "
+                "capability boundaries, activation/reload instructions, and consistency of "
+                "the staged source, manifest, digest, and deterministic validation report. "
+                "Report every blocking finding precisely; never claim safety merely because "
+                "the source parses. Do not modify, publish, activate, or execute the staged "
+                "workflow. TRANSITION: call complete_authoring_phase(summary) only when the "
+                "candidate is complete, safe, and ready for human publication review. The "
+                "runner then moves to REVIEW; if prerequisites fail, the transition tool "
+                "returns the error and fix and the agent must correct or explain it before "
+                "trying again."
             ),
             next="review",
-            max_turns=8,
+            max_turns=20,
         ),
         PhaseSpec(
             name="review",
             agent_type="human",
             system_prompt_override=(
-                "Present the validated staged workflow, its intended behavior, source "
-                "path, validation findings, and activation implications for explicit "
-                "publication approval. Call request_publication_approval() for the "
-                "decision. If approval is denied, preserve the staged artifact and "
-                "explain how it can be corrected or resumed."
+                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow while "
+                "keeping publication an explicit, informed, user-controlled decision. You "
+                "are in the REVIEW phase. Present the validated staged workflow's name, "
+                "purpose, intended runtime behavior, phase topology, integrations, source "
+                "path, validation evidence, digest/manifest identity, safety implications, "
+                "destination, and the exact reload or activation action. Do not alter the "
+                "source, bypass validation, publish, or execute the future workflow. "
+                "TRANSITION: after presenting the evidence, call "
+                "request_publication_approval() exactly once to obtain the explicit "
+                "publication decision. If approved, that tool invocation moves the run to "
+                "PUBLISH; if denied, the artifact stays staged and the runner moves to "
+                "SUMMARIZE. Do not treat a prose approval or denial as a transition."
             ),
             next="publish",
             on_reject="summarize",
-            max_turns=4,
+            max_turns=20,
         ),
         PhaseSpec(
             name="publish",
             agent_type="auto",
             system_prompt_override=(
-                "After explicit approval, atomically publish the validated staged "
-                "workflow to the project workflow directory, preserve its manifest "
-                "and digest, and report the exact reload or activation action. Call "
-                "complete_authoring_phase(summary) before publication. Never publish "
-                "an unvalidated or unapproved artifact."
+                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow by "
+                "safely completing publication of exactly the artifact that passed validation "
+                "and received explicit approval. You are in the PUBLISH phase. Reconfirm "
+                "that approval is granted, the artifact is still staged, the source digest "
+                "and manifest still match, and no unapproved source replacement occurred. "
+                "Publication must be atomic, must preserve the manifest and digest, and must "
+                "write only to the intended project workflow directory. Never publish an "
+                "unvalidated, changed, unapproved, or newly generated artifact; never claim "
+                "the workflow is active before the required reload or restart. TRANSITION: "
+                "after the checks are complete, call complete_authoring_phase(summary). The "
+                "runner performs publication and then moves to SUMMARIZE; the tool call is "
+                "the handoff, not a declaration that publication already happened."
             ),
             next="summarize",
-            max_turns=4,
+            max_turns=20,
         ),
         PhaseSpec(
             name="summarize",
             agent_type="auto",
             system_prompt_override=(
-                "Summarize the authoring outcome with the workflow name, status, "
-                "staged or published path, validation result, approval state, and "
-                "the exact next action needed to discover and run the specialized "
-                "workflow. Call complete_authoring_phase(summary) after stating the "
-                "authoritative result. Mention unresolved errors without claiming success."
+                "ULTIMATE PURPOSE: create one new specialized agenthicc workflow and finish "
+                "its authoring run with an accurate, actionable handoff to the user. You "
+                "are in the SUMMARIZE phase, the final phase of this authoring state machine. "
+                "Report only the authoritative structured result: workflow name, status, "
+                "artifact kind, staged or published path, manifest/digest, validation "
+                "outcome, approval state, unresolved errors, and the exact next action to "
+                "reload, discover, resume, or run the newly created workflow. Do not claim "
+                "publication, activation, or success that the result does not prove. "
+                "TRANSITION: after stating the complete truthful summary, call "
+                "complete_authoring_phase(summary). That tool invocation closes the final "
+                "phase and moves the runner to its terminal COMPLETE, REJECTED, or FAILED "
+                "state; there is no later authoring phase, so do not continue with extra "
+                "implementation or runtime execution."
             ),
-            max_turns=4,
+            max_turns=20,
         ),
     ]
 

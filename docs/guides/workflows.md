@@ -89,7 +89,9 @@ partial artifact.
 Authoring phases are explicit state-machine nodes. The definition supplies a
 separate phase prompt and turn budget for `interpret`, `design`, `stage`,
 `validate`, `review`, `publish`, and `summarize`; the operator can cap every
-phase with `[execution].authoring_max_phase_turns` (20 by default). Each
+phase with `[execution].authoring_max_phase_turns` (20 by default). The built-in
+`create_workflow` definition gives all seven phases a 20-turn budget; a lower
+execution setting remains an intentional global cap. Each
 agent-controlled phase owns its agent turn and uses a phase-local completion
 tool as its handoff gate. If an inspection or other intermediate turn ends
 without that tool, the phase emits a visible retry and continues up to its

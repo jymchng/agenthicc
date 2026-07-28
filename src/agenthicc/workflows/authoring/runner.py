@@ -968,12 +968,22 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         spec = phase_specs.get(phase_name)
         if spec is None or not spec.system_prompt_override.strip():
             return ""
+        next_phase = spec.next.upper() if spec.next else "TERMINAL"
+        rejection_route = (
+            f" If rejected, the runner routes to {spec.on_reject.upper()}."
+            if spec.on_reject
+            else ""
+        )
         return (
             f"\n\n[AUTHORING PHASE: {phase_name}]\n"
             f"{spec.system_prompt_override.strip()}\n"
             "The phase may use multiple agent turns. Do not advance by merely "
             "writing a conversational answer; use the phase transition tool when "
-            "the objective is complete."
+            "the objective is complete.\n"
+            "ULTIMATE PURPOSE REMINDER: create one new specialized agenthicc workflow "
+            "from the user's intent. TRANSITION REMINDER: invoke the phase-local "
+            f"transition tool only after completing this phase; a successful handoff "
+            f"moves the authoring run to {next_phase}.{rejection_route}"
         )
 
     def _generation_feedback(
