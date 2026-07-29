@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -18,6 +20,8 @@ from agenthicc.runners.workflow_handle import WorkflowRunHandle
 from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.config import WorkflowConfig
 from agenthicc.workflows.default.runner import WorkflowRunner
+from agenthicc.workflows.create_workflow.inspection_tools import make_inspection_tools
+from agenthicc.workflows.create_workflow.validation import validate_workflow_file
 from agenthicc.workflows.plugin import PhaseOutput, PhaseSpec, WorkflowPlugin
 
 pytestmark = pytest.mark.integration
@@ -169,4 +173,75 @@ async def test_resume_reuses_checkpoint_context_and_current_phase(
     await runner.resume(restored.context)
     assert seen == ["execute"]
     assert runner._shared_memory is conversation.memory
+    conversation.close()
+
+
+async def test_generated_runner_example_is_checkpointable_after_reload(
+    tmp_path: Path,
+    processor: EventProcessor,
+) -> None:
+    """The public authoring template survives validation and process-style restore."""
+    inspection = make_inspection_tools()
+    show_example = next(
+        tool for tool in inspection if getattr(tool, "__name__", "") == "show_example_workflow"
+    )
+    assert callable(show_example)
+    result = await show_example()
+    source = result["source"]
+    assert isinstance(source, str)
+
+    workflow_path = tmp_path / ".agenthicc" / "workflows" / "release_check.py"
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text(source, encoding="utf-8")
+    report = validate_workflow_file(
+        str(workflow_path), expected_name="release_check", root=tmp_path
+    )
+    assert report.ok, report.render()
+
+    spec = importlib.util.spec_from_file_location("generated_release_check", workflow_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    plugin = module.ReleaseCheckWorkflow
+    memory = object()
+    context = module.ReleaseContext(
+        intent="check the release",
+        run_id="generated-run",
+        plan="run tests",
+        state=module.ReleaseState.VERIFY,
+        phase_iteration=3,
+        shared_memory=memory,
+    )
+
+    conversation = SessionConversation.open(
+        "generated-session",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    store = WorkflowCheckpointStore("generated-session", root=tmp_path / "checkpoints")
+    handle = WorkflowRunHandle.create(
+        run_id="generated-run",
+        workflow=plugin,
+        conversation=conversation,
+        intent=context.intent,
+        checkpoint_store=store,
+    )
+    handle.attach_context(context)
+    handle.request_pause()
+    handle.mark_paused()
+    checkpoint = handle.save_checkpoint(reason="escape")
+
+    restored = WorkflowRunHandle.from_checkpoint(
+        checkpoint,
+        workflow=plugin,
+        conversation=conversation,
+        checkpoint_store=store,
+    )
+    assert restored.context.state is module.ReleaseState.VERIFY
+    assert restored.context.phase_iteration == 3
+    assert restored.context.shared_memory is conversation.memory
     conversation.close()

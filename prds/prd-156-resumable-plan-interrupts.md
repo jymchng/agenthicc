@@ -1,7 +1,7 @@
 ---
 title: "PRD-156: Resumable Plan-Mode Interrupts and Workflow Continuation"
 status: Implemented
-version: 0.4.0
+version: 0.5.0
 created: 2026-07-29
 study_date: 2026-07-29
 scope: Preserve and resume workflow state when Esc interrupts Plan-mode thinking
@@ -618,7 +618,7 @@ acceptable only if it preserves the same responsibilities.
 | `workflows/checkpoint.py` | Serializable snapshots and runner codec protocol | Define JSON-compatible `WorkflowCheckpoint`, `WorkflowContextSnapshot`, schema validation, plugin fingerprint validation, and the adapter interface for generic, `code_plan`, `create_workflow`, and custom runners. |
 | `memory/journal.py` / `memory/journaled.py` | Durable provider-message history | Reuse the session-scoped journal and expose an observable journal cursor. Preserve append/reset semantics and represent an interrupted turn as aborted, never naturally completed. |
 | `runners/workflow_checkpoint_store.py` | Atomic checkpoint persistence | Write and validate revisions using temp-file + flush/fsync + atomic replace. Keep the previous valid revision until the new revision is accepted. |
-| `workflows/plugin.py` | Workflow checkpoint hooks | Expose optional context codecs; the framework fingerprint covers the declared phase topology and fail-closed support is explicit when no codec exists. |
+| `workflows/plugin.py` | Workflow checkpoint hooks | Expose paired context codecs for plugin-owned custom runners; built-in contexts use framework codecs, while missing codecs fail closed and generated custom runners are rejected during authoring validation. |
 | `runners/tui_session.py` | Session ownership and input routing | Create the handle before starting a workflow, route Esc as pause, retain the handle after pause, and route the next ordinary message to continuation instead of `run_turn()`. |
 | `runners/agent_turn.py` | One-turn abort and memory hygiene | Accept the pause boundary, stop the current stream, remove or reconcile incomplete provider messages, and leave the shared memory valid for the next phase/continuation. |
 | `workflows/default/runner.py` | Generic phase restoration | Consume injected session memory; never replace it in `run()`, `resume()`, or phase execution. Export/import declarative phase state. |
@@ -932,13 +932,15 @@ advance a phase.
 
 ### Existing plugins
 
-- `WorkflowPlugin` exposes optional `checkpoint_context_to_payload()` and
-  `checkpoint_context_from_payload()` hooks for custom typed contexts. The
-  framework computes a fingerprint from the plugin name and phase topology.
+- `WorkflowPlugin` exposes paired `checkpoint_context_to_payload()` and
+  `checkpoint_context_from_payload()` hooks for plugin-owned custom typed
+  contexts. The framework computes a fingerprint from the plugin name and phase
+  topology. `create_workflow` requires both hooks for generated custom runners
+  and rejects the file during deterministic validation when either is missing.
 - Generic declarative workflows use the built-in codec.
-- Specialized runners without a codec remain runnable, but Esc reports that
-  the current workflow cannot be paused safely and preserves the existing
-  terminal-cancellation path.
+- Specialized legacy/manual runners without a codec remain runnable, but Esc
+  reports that the current workflow cannot be paused safely and preserves the
+  existing terminal-cancellation path.
 - `create_workflow` must update its `/workflow resume` message to reflect its
   actual checkpoint capability once implemented.
 

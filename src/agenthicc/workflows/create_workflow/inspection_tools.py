@@ -59,6 +59,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import uuid
 from collections.abc import Callable
 from enum import Enum, auto
 from typing import TYPE_CHECKING
@@ -67,6 +68,7 @@ from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
+    from lauren_ai._memory import ShortTermMemory
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.config import WorkflowConfig
 
@@ -101,6 +103,12 @@ class ReleaseContext:
     blocker: str = ""
     fail_reason: str = ""
     artifacts: dict[str, str] = dataclasses.field(default_factory=dict)
+    run_id: str = ""
+    state: ReleaseState = ReleaseState.PLAN
+    phase_iteration: int = 0
+    # Session memory is injected by the session and deliberately excluded from
+    # the checkpoint payload. The restore hook reattaches the supplied object.
+    shared_memory: ShortTermMemory | None = dataclasses.field(default=None, repr=False)
 
 
 def _make_plan_tools(
@@ -179,11 +187,31 @@ class ReleaseCheckRunner(CodePlanRunner):
         """Drive plan → verify → report."""
         from lauren_ai._memory import ShortTermMemory
 
-        ctx = ReleaseContext(intent=intent)
-        memory = ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
-        state = ReleaseState.PLAN
+        handle = self._cfg.workflow_handle
+        run_id = handle.run_id if handle is not None else uuid.uuid4().hex
+        memory = (
+            self._cfg.session_memory
+            if self._cfg.session_memory is not None
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+        )
+        ctx = ReleaseContext(
+            intent=intent,
+            run_id=run_id,
+            state=ReleaseState.PLAN,
+            shared_memory=memory,
+        )
+        if handle is not None:
+            handle.attach_context(ctx)
+        state = ctx.state
 
         while not state.is_terminal:
+            ctx.state = state
+            ctx.phase_iteration += 1
+            if handle is not None:
+                handle.attach_context(ctx)
+                handle.update_phase(
+                    state.name.lower(), self._phase_index(state), ctx.phase_iteration
+                )
             match state:
                 case ReleaseState.PLAN:
                     state = await self._plan(ctx, memory)
@@ -193,14 +221,56 @@ class ReleaseCheckRunner(CodePlanRunner):
                     state = await self._report(ctx, memory)
             log.info("release_check → %s", state.name)
 
+        ctx.state = state
+        if handle is not None:
+            handle.attach_context(ctx)
         return ctx
 
     async def resume(self, context: object) -> ReleaseContext:
-        """Restart the state machine from the recorded intent."""
-        intent = getattr(context, "intent", "")
-        if not isinstance(intent, str) or not intent:
-            raise TypeError("release_check resume requires a context with an intent")
-        return await self.run(intent)
+        """Resume the saved state with the session's existing conversation."""
+        from lauren_ai._memory import ShortTermMemory
+
+        if not isinstance(context, ReleaseContext):
+            raise TypeError("release_check resume requires ReleaseContext")
+        memory = (
+            self._cfg.session_memory
+            if self._cfg.session_memory is not None
+            else context.shared_memory
+        )
+        if memory is None:
+            memory = ShortTermMemory(
+                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
+            )
+        context.shared_memory = memory
+        handle = self._cfg.workflow_handle
+        if handle is not None:
+            handle.attach_context(context)
+        state = context.state
+        while not state.is_terminal:
+            context.state = state
+            context.phase_iteration += 1
+            if handle is not None:
+                handle.attach_context(context)
+                handle.update_phase(
+                    state.name.lower(), self._phase_index(state), context.phase_iteration
+                )
+            match state:
+                case ReleaseState.PLAN:
+                    state = await self._plan(context, memory)
+                case ReleaseState.VERIFY:
+                    state = await self._verify(context, memory)
+                case ReleaseState.REPORT:
+                    state = await self._report(context, memory)
+        context.state = state
+        if handle is not None:
+            handle.attach_context(context)
+        return context
+
+    @staticmethod
+    def _phase_index(state: ReleaseState) -> int:
+        return {ReleaseState.PLAN: 0, ReleaseState.VERIFY: 1, ReleaseState.REPORT: 2}.get(
+            state, 0
+        )
 
     async def _plan(self, ctx: ReleaseContext, memory: object) -> ReleaseState:
         """Loop until submit_release_plan fires; return VERIFY or FAILED."""
@@ -321,6 +391,54 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
             system_prompt_override="You are in the REPORT phase of release_check.",
         ),
     ]
+
+    @classmethod
+    def checkpoint_context_to_payload(cls, context: object) -> dict[str, object]:
+        """Encode resumable state without duplicating provider memory."""
+        if not isinstance(context, ReleaseContext):
+            raise TypeError("release_check checkpoint requires ReleaseContext")
+        return {
+            "intent": context.intent,
+            "run_id": context.run_id,
+            "plan": context.plan,
+            "verdict": context.verdict,
+            "blocker": context.blocker,
+            "fail_reason": context.fail_reason,
+            "artifacts": context.artifacts,
+            "state": context.state.name,
+            "phase_iteration": context.phase_iteration,
+        }
+
+    @classmethod
+    def checkpoint_context_from_payload(
+        cls,
+        payload: dict[str, object],
+        memory: object | None = None,
+    ) -> ReleaseContext:
+        """Restore state and attach the already-open session memory."""
+        raw_state = str(payload.get("state", ReleaseState.PLAN.name))
+        try:
+            state = ReleaseState[raw_state]
+        except KeyError as exc:
+            raise ValueError(f"unknown release_check state: {raw_state}") from exc
+        raw_artifacts = payload.get("artifacts", {})
+        artifacts = (
+            {str(key): str(value) for key, value in raw_artifacts.items()}
+            if isinstance(raw_artifacts, dict)
+            else {}
+        )
+        return ReleaseContext(
+            intent=str(payload.get("intent", "")),
+            run_id=str(payload.get("run_id", "")),
+            plan=str(payload.get("plan", "")),
+            verdict=str(payload.get("verdict", "")),
+            blocker=str(payload.get("blocker", "")),
+            fail_reason=str(payload.get("fail_reason", "")),
+            artifacts=artifacts,
+            state=state,
+            phase_iteration=int(payload.get("phase_iteration", 0)),
+            shared_memory=memory,
+        )
 
     @classmethod
     def build_runner(
@@ -475,8 +593,8 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         workflow that ships its OWN state-machine runner — typed state enum, typed
         dataclass context, one bounded async method per state, an explicit
         `while not state.is_terminal` / `match` driver, `resume()`, per-phase
-        transition tools passed to `run_phase(..., tools=...)`, and
-        `build_runner()` returning it. That is how `code_plan` and
+        transition tools passed to `run_phase(..., tools=...)`, checkpoint codec
+        hooks, and `build_runner()` returning it. That is how `code_plan` and
         `create_workflow` themselves are built.
 
         style="declarative" returns the fallback: a bare PhaseSpec graph with no
@@ -534,12 +652,15 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "required_elements": [
                 "a typed State(Enum) with every non-terminal and terminal state, "
                 "and an is_terminal property",
-                "a typed @dataclass context carrying the intent, per-phase outputs, "
-                "and failure reason",
+                "a typed @dataclass context carrying the intent, run id, current state, "
+                "phase iteration, per-phase outputs, and failure reason",
                 "one bounded async method per non-terminal state, returning the next state",
                 "run(intent): build the context, then "
                 "'while not state.is_terminal' + 'match state' dispatch",
                 "resume(context): restore and re-enter the same dispatch path",
+                "checkpoint_context_to_payload(context) and "
+                "checkpoint_context_from_payload(payload, memory=None) on the plugin; "
+                "omit session memory from JSON and reattach the supplied memory on restore",
                 "phase tool factories that set an asyncio.Event; the state method checks "
                 "the event after the turn returns and never parses the agent's prose",
                 "build_runner() on the plugin returning the runner class",
@@ -547,9 +668,12 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "turn_api": (
                 "Subclass CodePlanRunner and call the public "
                 "run_phase(intent=, text=, system_prompt=, mode=, max_turns=, "
-                "shared_memory=, tools=) once per phase. Pass one ShortTermMemory "
-                "created in run() to every call so phases share context. Never call "
-                "super().run() — that would execute code_plan's own phases."
+                "shared_memory=, tools=) once per phase. Use the injected "
+                "WorkflowConfig.session_memory for every call (with a local fallback only "
+                "when no session memory exists), and pass one object to every phase. "
+                "Attach the typed context to config.workflow_handle and update its phase "
+                "cursor. Never call super().run() — that would execute code_plan's own "
+                "phases."
             ),
             "reference_implementations": [
                 "agenthicc.workflows.code_plan.runner:CodePlanRunner",

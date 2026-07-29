@@ -356,10 +356,13 @@ class WorkflowPlugin(abc.ABC):
     def checkpoint_context_to_payload(cls, context: object) -> dict[str, object] | None:
         """Encode a custom runner context for PRD-156 checkpoints.
 
-        Built-in runners are encoded by the framework.  A downstream runner
-        with its own context may override this hook and return JSON-compatible
-        fields; returning ``None`` leaves the workflow runnable but makes Esc
-        fail closed because its state cannot be safely resumed.
+        Built-in runners are encoded by the framework. A downstream runner with
+        its own context must override this hook and return bounded,
+        JSON-compatible fields. The session memory, locks, events, clients, and
+        other live resources must not be included; the paired restore hook
+        receives the already-open session memory. The inherited ``None`` is
+        intentionally a fail-closed default for unsupported third-party
+        contexts, not a declaration that the workflow is resumable.
         """
         return None
 
@@ -374,6 +377,7 @@ class WorkflowPlugin(abc.ABC):
 
         ``memory`` is the already-open session conversation and must be
         attached by the custom codec rather than reconstructed independently.
+        Downstream custom runners must override both codec hooks together.
         """
         return None
 

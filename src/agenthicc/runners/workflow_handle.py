@@ -167,6 +167,8 @@ class WorkflowRunHandle:
         expected = workflow_fingerprint(workflow)
         if checkpoint.plugin_fingerprint != expected:
             raise ValueError("workflow plugin fingerprint does not match checkpoint")
+        if checkpoint.conversation_id != conversation.conversation_id:
+            raise ValueError("workflow checkpoint belongs to a different session conversation")
         if conversation.cursor < checkpoint.conversation_cursor:
             raise ValueError("session conversation is older than the workflow checkpoint")
         handle = cls(

@@ -267,8 +267,9 @@ active mode's default workflow.
 ### Checkpointing a custom runner
 
 The framework codecs cover `WorkflowContext`, `CodePlanContext`, and
-`CreateWorkflowContext`. A custom plugin with a different context must opt in
-explicitly:
+`CreateWorkflowContext`. A plugin with a custom runner/context must opt in
+explicitly; `create_workflow` rejects a generated custom runner that omits
+either hook:
 
 ```python
 class MyWorkflow(WorkflowPlugin):
@@ -287,9 +288,10 @@ class MyWorkflow(WorkflowPlugin):
 
 The payload must be bounded JSON-compatible data and must attach the supplied
 session memory rather than creating another conversation. If the hook is not
-implemented, the workflow remains runnable, but an Esc pause fails closed and
-requires `/workflow reset`; it is never silently restarted from its first
-phase.
+implemented on a custom runner, deterministic authoring validation fails. A
+legacy or manually installed plugin may still be runnable, but an Esc pause
+fails closed and requires `/workflow reset`; it is never silently restarted
+from its first phase.
 
 Per-phase models come from `[workflows.create_workflow]`:
 
@@ -323,13 +325,19 @@ rather than hiding control flow in one generic phase prompt. The generated sourc
 should contain:
 
 1. a typed `State(Enum)` with all non-terminal and terminal states;
-2. a typed `@dataclass` context carrying the user intent, run id, shared memory,
-   phase outputs, failures, and workflow-specific data;
+2. a typed `@dataclass` context carrying the user intent, run id, current state,
+   phase iteration, shared memory, phase outputs, failures, and workflow-specific
+   data;
 3. one bounded asynchronous function for each non-terminal state;
 4. a `run(intent)` driver that initializes the context and advances it with
    `while not state.is_terminal` and `match state` dispatch; and
 5. a `resume(context)` implementation that uses the same state functions and
-   transitions.
+   transitions; and
+6. `checkpoint_context_to_payload()` and
+   `checkpoint_context_from_payload(payload, memory=None)` methods on the
+   plugin. They must serialize the state and resumable artefacts, exclude live
+   resources such as session memory/events/locks, and reattach the supplied
+   session memory during restore.
 
 Each state function should return the next state explicitly after handling its
 success, retry, rejection, and failure paths. It should update phase events and

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -24,6 +26,8 @@ from agenthicc.workflows.create_workflow import (
     CreateWorkflowState,
     PhaseArtifact,
 )
+from agenthicc.workflows.create_workflow.inspection_tools import make_inspection_tools
+from agenthicc.workflows.create_workflow.validation import validate_workflow_file
 
 pytestmark = pytest.mark.e2e
 
@@ -159,3 +163,80 @@ async def test_session_history_survives_workflow_switching(
     assert store.load("code-plan-run").conversation_id == "e2e-session"  # type: ignore[union-attr]
     assert store.load("author-run").conversation_id == "e2e-session"  # type: ignore[union-attr]
     conversation.close()
+
+
+async def test_generated_workflow_checkpoint_survives_session_restart(
+    tmp_path: Path,
+    processor: EventProcessor,
+) -> None:
+    """A generated custom workflow restores its typed state after reopening the journal."""
+    inspection = make_inspection_tools()
+    show_example = next(
+        tool for tool in inspection if getattr(tool, "__name__", "") == "show_example_workflow"
+    )
+    result = await show_example()
+    source = result["source"]
+    assert isinstance(source, str)
+
+    workflow_path = tmp_path / ".agenthicc" / "workflows" / "release_check.py"
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text(source, encoding="utf-8")
+    report = validate_workflow_file(
+        str(workflow_path), expected_name="release_check", root=tmp_path
+    )
+    assert report.ok, report.render()
+
+    spec = importlib.util.spec_from_file_location("e2e_generated_release_check", workflow_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    journal_path = tmp_path / "restart-conversation.jsonl"
+    conversation = SessionConversation.open(
+        "restart-session",
+        max_tokens=10_000,
+        journal_path=journal_path,
+    )
+    conversation.memory.add_user("Earlier direct request")
+    store = WorkflowCheckpointStore("restart-session", root=tmp_path / "checkpoints")
+    context = module.ReleaseContext(
+        intent="check the release",
+        run_id="restart-run",
+        plan="run tests",
+        state=module.ReleaseState.VERIFY,
+        phase_iteration=2,
+        shared_memory=conversation.memory,
+    )
+    handle = WorkflowRunHandle.create(
+        run_id="restart-run",
+        workflow=module.ReleaseCheckWorkflow,
+        conversation=conversation,
+        intent=context.intent,
+        checkpoint_store=store,
+    )
+    handle.attach_context(context)
+    handle.request_pause()
+    handle.mark_paused()
+    checkpoint = handle.save_checkpoint(reason="escape")
+    conversation.close()
+
+    reopened = SessionConversation.open(
+        "restart-session",
+        max_tokens=10_000,
+        journal_path=journal_path,
+    )
+    restored = WorkflowRunHandle.from_checkpoint(
+        checkpoint,
+        workflow=module.ReleaseCheckWorkflow,
+        conversation=reopened,
+        checkpoint_store=store,
+    )
+    assert restored.context.state is module.ReleaseState.VERIFY
+    assert restored.context.phase_iteration == 2
+    assert restored.context.shared_memory is reopened.memory
+    assert reopened.messages[0]["content"] == "Earlier direct request"
+    reopened.close()

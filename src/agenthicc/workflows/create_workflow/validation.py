@@ -231,6 +231,56 @@ def _has_custom_runner(plugin: type[WorkflowPlugin]) -> bool:
     return own is not None and own is not _default_build_runner_func()
 
 
+def _overrides_plugin_method(plugin: type[WorkflowPlugin], method_name: str) -> bool:
+    """Return whether *plugin* supplies a concrete method for a framework hook.
+
+    Looking through the MRO (rather than only at ``plugin.__dict__``) permits a
+    downstream project to share a checkpoint codec through its own small base
+    class while still distinguishing it from the no-op hooks inherited from
+    :class:`WorkflowPlugin`.
+    """
+    from agenthicc.workflows.plugin import WorkflowPlugin  # noqa: PLC0415
+
+    for base in plugin.__mro__:
+        if base is WorkflowPlugin:
+            return False
+        if method_name in base.__dict__:
+            return callable(getattr(plugin, method_name, None))
+    return False
+
+
+def _check_checkpoint_contract(
+    plugin: type[WorkflowPlugin],
+    errors: list[str],
+) -> None:
+    """Require codecs for a plugin-owned runner and its custom context.
+
+    The generic declarative runner serializes the framework's
+    ``WorkflowContext`` automatically. A plugin-owned state machine, however,
+    can carry arbitrary state and therefore must explicitly define how that
+    state is persisted and restored. This check makes generated workflows
+    checkpoint-aware by construction instead of allowing them to discover the
+    limitation only after a user presses Esc.
+    """
+    if not _has_custom_runner(plugin):
+        return
+    missing = [
+        method
+        for method in (
+            "checkpoint_context_to_payload",
+            "checkpoint_context_from_payload",
+        )
+        if not _overrides_plugin_method(plugin, method)
+    ]
+    if missing:
+        errors.append(
+            f"{plugin.__name__} defines a custom runner but is missing checkpoint codec "
+            f"method(s): {', '.join(f'{name}()' for name in missing)}. Custom runner "
+            "contexts must be JSON-serializable, omit session memory, and reattach the "
+            "memory argument during restore so Esc pause/resume cannot restart at phase one."
+        )
+
+
 def _check_runner(
     plugin: type[WorkflowPlugin],
     namespace: dict[str, object],
@@ -282,6 +332,8 @@ def _check_runner(
         if getattr(runner, "__abstractmethods__", frozenset()):
             missing = ", ".join(sorted(runner.__abstractmethods__))
             errors.append(f"{runner.__name__} is abstract — {missing} still needs implementing.")
+
+    _check_checkpoint_contract(plugin, errors)
 
 
 def validate_workflow_file(

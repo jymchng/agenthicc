@@ -234,6 +234,29 @@ def test_custom_checkpoint_hooks_are_used_and_share_session_memory(tmp_path: Pat
     conversation.close()
 
 
+def test_custom_context_without_codec_fails_closed(tmp_path: Path) -> None:
+    class UnsupportedContext:
+        pass
+
+    class UnsupportedPlugin(WorkflowPlugin):
+        name = "unsupported_checkpoint"
+        phases = [PhaseSpec(name="work")]
+
+    conversation = _conversation(tmp_path, session_id="unsupported-session")
+    store = WorkflowCheckpointStore("unsupported-session", root=tmp_path / "unsupported")
+    handle = WorkflowRunHandle.create(
+        run_id="unsupported-run",
+        workflow=UnsupportedPlugin,
+        conversation=conversation,
+        intent="unsupported",
+        checkpoint_store=store,
+    )
+    handle.attach_context(UnsupportedContext())
+    with pytest.raises(CheckpointValidationError, match="no checkpoint codec"):
+        handle.save_checkpoint(reason="escape")
+    conversation.close()
+
+
 def test_checkpoint_rejects_memory_older_than_cursor(tmp_path: Path) -> None:
     class Plugin(WorkflowPlugin):
         name = "cursor_plugin"
@@ -264,6 +287,75 @@ def test_checkpoint_rejects_memory_older_than_cursor(tmp_path: Path) -> None:
             conversation=conversation,
             checkpoint_store=store,
         )
+    conversation.close()
+
+
+def test_checkpoint_cannot_attach_to_a_different_session_conversation(tmp_path: Path) -> None:
+    class Plugin(WorkflowPlugin):
+        name = "session_bound_plugin"
+        phases = [PhaseSpec(name="work")]
+
+    conversation = _conversation(tmp_path, session_id="actual-session")
+    store = WorkflowCheckpointStore("actual-session", root=tmp_path / "session-bound")
+    checkpoint = WorkflowCheckpoint(
+        run_id="foreign-run",
+        workflow_name=Plugin.name,
+        conversation_id="different-session",
+        intent="foreign",
+        status="paused",
+        current_phase="work",
+        phase_index=0,
+        phase_iteration=1,
+        conversation_cursor=0,
+        context={"kind": "WorkflowContext", "fields": {}},
+        plugin_fingerprint=workflow_fingerprint(Plugin),
+    )
+    with pytest.raises(ValueError, match="different session"):
+        WorkflowRunHandle.from_checkpoint(
+            checkpoint,
+            workflow=Plugin,
+            conversation=conversation,
+            checkpoint_store=store,
+        )
+    conversation.close()
+
+
+def test_session_owner_closes_a_custom_runner_that_returns_normally(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from agenthicc.runners.tui_session import TUISession
+    from agenthicc.tui.conversation_store import AppState
+
+    class Plugin(WorkflowPlugin):
+        name = "returned_runner"
+        phases = [PhaseSpec(name="work")]
+
+    conversation = _conversation(tmp_path, session_id="returned-session")
+    store = WorkflowCheckpointStore("returned-session", root=tmp_path / "returned")
+    handle = WorkflowRunHandle.create(
+        run_id="returned-run",
+        workflow=Plugin,
+        conversation=conversation,
+        intent="return normally",
+        checkpoint_store=store,
+    )
+    handle.attach_context(
+        CodePlanContext(
+            intent="return normally",
+            run_id="returned-run",
+            state=CodePlanState.COMPLETE,
+        )
+    )
+    tui = object.__new__(TUISession)
+    tui._ctx = SimpleNamespace(app_state=AppState.create())
+    tui._workflow_handle = handle
+
+    tui._finalize_returned_workflow()
+
+    assert handle.lifecycle == "complete"
+    checkpoint = store.load("returned-run")
+    assert checkpoint is not None
+    assert checkpoint.status == "complete"
     conversation.close()
 
 

@@ -13,6 +13,8 @@ Covers, in order:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -71,6 +73,7 @@ class Demo(WorkflowPlugin):
         PhaseSpec(name="one", next="two"),
         PhaseSpec(name="two", on_reject="one"),
     ]
+
 '''
 
 #: The recommended shape: the workflow ships its own state-machine runner.
@@ -106,6 +109,14 @@ class Demo(WorkflowPlugin):
     @classmethod
     def build_runner(cls, config, mode_manager):
         return DemoRunner(config, mode_manager)
+
+    @classmethod
+    def checkpoint_context_to_payload(cls, context):
+        return {"context": str(context)}
+
+    @classmethod
+    def checkpoint_context_from_payload(cls, payload, memory=None):
+        return payload.get("context", "")
 '''
 
 
@@ -557,6 +568,8 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
         "asyncio.Event",
         "def build_runner(",
         "run_phase(",
+        "checkpoint_context_to_payload",
+        "checkpoint_context_from_payload",
     ):
         assert required in source, required
 
@@ -565,6 +578,31 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
     assert report.ok, report.render()
     assert report.warnings == (), report.render()
     assert report.phase_names == ("plan", "verify", "report")
+
+    spec = importlib.util.spec_from_file_location("generated_release_check", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+    memory = object()
+    context = module.ReleaseContext(  # type: ignore[attr-defined]
+        intent="release it",
+        run_id="generated-run",
+        state=module.ReleaseState.VERIFY,  # type: ignore[attr-defined]
+        phase_iteration=4,
+        artifacts={"plan": "checks"},
+        shared_memory=memory,
+    )
+    payload = module.ReleaseCheckWorkflow.checkpoint_context_to_payload(context)  # type: ignore[attr-defined]
+    restored = module.ReleaseCheckWorkflow.checkpoint_context_from_payload(payload, memory)  # type: ignore[attr-defined]
+    assert restored.state is module.ReleaseState.VERIFY  # type: ignore[attr-defined]
+    assert restored.phase_iteration == 4
+    assert restored.artifacts == {"plan": "checks"}
+    assert restored.shared_memory is memory
+    assert "shared_memory" not in payload
 
 
 async def test_show_example_workflow_declarative_style_is_opt_in(tmp_path: Path) -> None:
@@ -717,6 +755,28 @@ def test_validation_accepts_a_correct_file(tmp_path: Path) -> None:
     assert report.phase_names == ("one", "two")
 
 
+def test_validation_rejects_a_custom_runner_without_checkpoint_codecs(tmp_path: Path) -> None:
+    source = _RUNNER_SOURCE.split("    @classmethod\n    def checkpoint_context_to_payload", 1)[0]
+    path = _write(tmp_path, "demo.py", source)
+    report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
+    assert not report.ok
+    assert any("checkpoint codec" in error for error in report.errors)
+    assert any("checkpoint_context_to_payload()" in error for error in report.errors)
+    assert any("checkpoint_context_from_payload()" in error for error in report.errors)
+
+
+def test_validation_rejects_a_custom_runner_with_only_one_codec(tmp_path: Path) -> None:
+    source = _RUNNER_SOURCE.replace(
+        "    @classmethod\n    def checkpoint_context_from_payload(cls, payload, memory=None):\n"
+        '        return payload.get("context", "")\n',
+        "",
+    )
+    path = _write(tmp_path, "demo.py", source)
+    report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
+    assert not report.ok
+    assert any("checkpoint_context_from_payload()" in error for error in report.errors)
+
+
 # ── validation: the workflow's own runner ─────────────────────────────────────
 
 
@@ -792,6 +852,14 @@ class Demo(WorkflowPlugin):
     @classmethod
     def build_runner(cls, config, mode_manager):
         return DemoRunner(config, mode_manager)
+
+    @classmethod
+    def checkpoint_context_to_payload(cls, context):
+        return {"intent": getattr(context, "intent", "")}
+
+    @classmethod
+    def checkpoint_context_from_payload(cls, payload, memory=None):
+        return payload
 '''
     path = _write(tmp_path, "demo.py", source)
     report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
@@ -1361,6 +1429,8 @@ async def test_design_prompt_requires_the_workflow_to_ship_its_own_runner() -> N
     assert "resume(context)" in prompt
     assert "run_phase(" in prompt
     assert "build_runner()" in prompt
+    assert "checkpoint payload fields" in prompt
+    assert "memory reattachment" in prompt
 
 
 async def test_generate_prompt_requires_writing_the_runner_not_a_stub() -> None:
@@ -1382,6 +1452,9 @@ async def test_generate_prompt_requires_writing_the_runner_not_a_stub() -> None:
     assert "SAME file" in prompt
     assert "state enum" in prompt
     assert "build_runner()" in prompt
+    assert "checkpoint_context_to_payload" in prompt
+    assert "checkpoint_context_from_payload" in prompt
+    assert "session_memory" in prompt
     assert "stub" in prompt
     assert "show_example_workflow()" in prompt
 

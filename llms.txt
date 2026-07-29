@@ -150,8 +150,9 @@ the current API instead of remembering it:
 - Child capability scopes can only restrict their parent.
 - Durable tool results must be replay-safe across a transport retry or resume.
 - Direct turns and workflows in one session reuse one `conversation_id` and one
-  journal-backed provider memory; custom contexts opt into checkpoint hooks or
-  fail closed on Esc.
+  journal-backed provider memory; custom runner contexts must provide paired
+  checkpoint codecs (generated workflows are rejected without them), while
+  legacy unsupported plugins fail closed on Esc.
 
 The repository does not currently contain `agenthicc.api`, `tui.app`,
 `tui.transcript`, or `tui.events`; those are historical or unresolved product

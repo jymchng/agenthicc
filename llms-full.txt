@@ -1604,10 +1604,13 @@ used by registry, display, and configuration surfaces and is not currently the
 sole executable source of truth.
 
 `checkpoint_context_to_payload(context)` and
-`checkpoint_context_from_payload(payload, memory=None)` are optional hooks for
-custom runner contexts. Built-in contexts are encoded by the framework. A
-custom context without these hooks remains runnable but cannot be safely paused
-and resumed; the runtime fails closed instead of restarting it.
+`checkpoint_context_from_payload(payload, memory=None)` are required hooks for
+plugin-owned custom runner contexts. Built-in contexts are encoded by the
+framework. `create_workflow` deterministically rejects a generated custom
+runner that omits either hook. Legacy/manual plugins without the hooks may
+remain runnable, but Esc pause fails closed instead of restarting them.
+The restore hook must attach the supplied session memory and must not construct
+a second conversation.
 
 `SessionConversation` owns the stable session `conversation_id` and the single
 journal-backed provider memory shared by direct turns and workflow phases.

@@ -8,7 +8,7 @@ import sys
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -700,6 +700,31 @@ class TUISession:
 
     def _set_pending_replay(self, session_id: str) -> None:
         self._pending_replay_id = session_id
+
+    def _finalize_returned_workflow(self) -> None:
+        """Close a custom workflow handle whose runner returned normally.
+
+        Built-in runners explicitly mark their handle terminal. Downstream
+        runners are allowed to focus on their own state machine, so the session
+        owner supplies this final lifecycle boundary as a safety net. A normal
+        return cannot leave a run looking active; otherwise the next request
+        could accidentally reuse its run id and overwrite its checkpoint.
+        """
+        handle = self._workflow_handle
+        if handle is None or handle.lifecycle in {"complete", "failed", "discarded"}:
+            return
+        workflow_run = self._ctx.app_state.workflow_run()
+        status = getattr(workflow_run, "status", None)
+        terminal: Literal["complete", "failed"] = "failed" if status == "failed" else "complete"
+        handle.mark_terminal(
+            terminal,
+            error="workflow returned unsuccessfully" if status == "failed" else "",
+        )
+        if handle.checkpoint_supported:
+            try:
+                handle.save_checkpoint(reason=terminal)
+            except Exception:  # noqa: BLE001 — lifecycle cleanup must not mask the result
+                handle.checkpoint_supported = False
 
     def _restore_paused_workflow(self) -> None:
         """Rehydrate the newest paused workflow checkpoint for this session."""
@@ -1475,6 +1500,7 @@ class TUISession:
                 # Plugin owns runner construction — no name-based branching.
                 _wf_runner = _plugin_cls.build_runner(_wf_config, ctx.mode_manager)
                 await _wf_runner.run(text)
+                self._finalize_returned_workflow()
                 # PRD-155: workflow-bound runs return to Safe after success.
                 _wf_result = ctx.app_state.workflow_run()
                 if (
@@ -1881,6 +1907,7 @@ class TUISession:
             )
             runner = wf_defn.build_runner(_wf_config, ctx.mode_manager)
             await runner.resume(context)
+            self._finalize_returned_workflow()
             # PRD-155: completed workflow-bound runs return to Safe.
             _wf_result = ctx.app_state.workflow_run()
             if (
