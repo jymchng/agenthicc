@@ -8,6 +8,10 @@ The startup welcome panel keeps its `What's new` heading even when the remote
 changelog cannot be reached. In that case it displays `No list`; on success it
 renders the entries from `https://agenthicc.dev/changelog.json`.
 
+Completed LLM responses end with a blank line in the scroll buffer, keeping
+the response visually separated from the next tool, user message, or system
+event.
+
 ## Runtime components
 
 | Component | Location | Responsibility |

@@ -188,6 +188,21 @@ class TestSummaryLine:
         _flush(appender, [_ev("text", text="first response.")])
         assert appender._group_count == 0
 
+    def test_llm_response_has_trailing_blank_line(self):
+        appender, console = _make_appender()
+
+        _flush(appender, [_ev("text", text="LLM response.")])
+
+        assert console.print.call_args_list[-1].args == ()
+        assert console.print.call_args_list[-1].kwargs == {}
+
+    def test_empty_text_does_not_emit_spurious_blank_line(self):
+        appender, console = _make_appender()
+
+        _flush(appender, [_ev("text", text="   ")])
+
+        assert console.print.call_args_list == []
+
     def test_second_group_independent(self):
         appender, console = _make_appender()
         # first group: 7 tools → summary on text

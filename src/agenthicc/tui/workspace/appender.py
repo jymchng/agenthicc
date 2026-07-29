@@ -387,6 +387,10 @@ def _render_text(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
         from rich.markdown import Markdown  # noqa: PLC0415
 
         self._console.print(Markdown(text), end="")
+        # Keep each LLM response visually separated from the next event.
+        # Markdown is printed with ``end=""`` so Rich controls its rendering;
+        # this explicit empty print adds the trailing blank line consistently.
+        self._console.print()
 
 
 @register_renderer("thinking_step")
