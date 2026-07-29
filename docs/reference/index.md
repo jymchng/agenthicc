@@ -5,6 +5,7 @@
 | CLI | `src/agenthicc/cli/` | [CLI](cli.md) |
 | Kernel | `src/agenthicc/kernel/` | [Kernel](kernel.md) |
 | Storage | `memory/`, `tui/runtime/`, `runners/` | [Storage](storage.md) |
+| Repository state | Current checkout and roadmap evidence | [Repository state](repository-state.md) |
 | Configuration | `src/agenthicc/config.py` | [Configuration guide](../guides/configuration.md) |
 | Project bootstrap | `src/agenthicc/project_bootstrap.py` | [Project bootstrap guide](../guides/project-bootstrap.md) |
 | Workflows | `src/agenthicc/workflows/` | [Workflows guide](../guides/workflows.md); [`code_plan` structure](code-plan.md); [custom workflows and TOML](../guides/custom-workflows-and-config.md) |

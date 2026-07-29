@@ -5,8 +5,28 @@
 > prioritized repository roadmap is [PRD-138](https://github.com/agenthicc/agenthicc/blob/main/prds/prd-138-repository-improvement-roadmap.md).
 
 **Package:** `src/agenthicc/workflows/`
-**Scope:** Full audit of all 17 source files
+**Scope:** Original audit of 17 source files; current package contains 21 Python files
 **Findings:** 9 architectural issues · 10 code quality issues · 9 bugs · 5 integration gaps
+
+## Current status audit — 2026-07-29
+
+The findings below originated from an earlier package review. The current
+branch has fixed some of them, so the prose under each heading must be read
+with the status table below rather than as an unqualified bug list.
+
+| Finding | Current status | Evidence |
+|---|---|---|
+| A1 / D3 — specialized runners versus `PhaseSpec` metadata | Open | `CodePlan.phases` is declared in `code_plan/definition.py`, while `CodePlanRunner` owns prompts and retry constants in `code_plan/runner.py`; the execute mode is now deliberately selected at runtime by plan approval |
+| A2 — duplicate tool filtering | Open | `default/runner.py::_filter_tools()` and `code_plan/runner.py::_base_tools()` remain separate implementations |
+| A7 / C4 — parallel failure handling | Resolved in current generic runner | `default/runner.py` records a gate error, marks the workflow failed, and returns after `asyncio.gather(..., return_exceptions=True)` |
+| C1 — specialized code-plan phase history | Open | `CodePlanRunner.run()` emits `phases_run` from `wf_run.phase_history`, but its direct state loop does not append phase records |
+| C2 — code-plan resume context | Open | `CodePlanRunner.resume()` restores `plan` and `execute_mode`, but not `execute_summary` or `review_summary` from completed outputs |
+| C3 / C7 — generic headless finalization and question tools | Needs targeted revalidation | Generic phase tools are injected conditionally on an approval service, and `make_questions_tool()` is only injected by the specialized code-plan runner |
+| C5 / C6 — unexpected resume sets and rejection graph traversal | Open | `CodePlanRunner.resume()` uses a fixed set map; generic `_find_resume_phase()` follows `_determine_transition()`, including rejection edges |
+
+When implementing a finding, update this table and add a regression test. Do
+not copy a historical code line or line number without checking the current
+branch first.
 
 Findings are ranked within each section: **Critical** → **High** → **Medium** → **Low**.
 

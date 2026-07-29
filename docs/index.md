@@ -46,6 +46,9 @@ capability-gated tools.
 - [Kernel](reference/kernel.md) — events, reducers, processor, persistence.
 - [Storage](reference/storage.md) — session, journal, memory, cache, and
   cassette files.
+- [Current repository state](reference/repository-state.md) — evidence-backed
+  architecture boundaries, supported surfaces, and remaining documentation or
+  release-gate risks.
 - [PRD-138 roadmap](https://github.com/agenthicc/agenthicc/blob/main/prds/prd-138-repository-improvement-roadmap.md) — the
   evidence-backed improvement backlog.
 - [`llms-full.txt`](https://github.com/agenthicc/agenthicc/blob/main/llms-full.txt) — public symbol reference for AI tools.

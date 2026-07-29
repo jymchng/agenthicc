@@ -35,9 +35,11 @@ improvement backlog is [`PRD-138`](prds/prd-138-repository-improvement-roadmap.m
 | Memory and durability | `memory/`, `tools/fs/file_cache.py`, `tui/runtime/session_log.py` |
 
 There is currently no `src/agenthicc/api/`, `tui/app.py`, `tui/transcript.py`,
-`tui/events.py`, `tools/hooks.py`, or `tools/executor.py`. Do not use those
-historical paths in new work; update stale references as part of documentation
-or migration work.
+or `tui/events.py`. The compatibility modules `tools/hooks.py` and
+`tools/executor.py` are present and adapt lauren-ai's canonical hook/executor
+contracts; they do not define a separate runtime. Do not use the absent API or
+historical TUI paths in new work; update stale references as part of
+documentation or migration work.
 
 ## Environment and commands
 

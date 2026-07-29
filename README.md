@@ -274,7 +274,8 @@ Workspace + input             Event → root_reducer → frozen kernel AppState
 The kernel `AppState` and the reactive TUI `AppState` are different types with
 different responsibilities. The session runner currently owns the bridge
 between them. This boundary is documented in the [architecture guide](./docs/guides/architecture.md)
-and is a P0 design item in PRD-138.
+and is a P0 design item in PRD-138. For the full evidence-backed checkout
+audit, see the [current repository state reference](./docs/reference/repository-state.md).
 
 ## Configuration example
 

@@ -72,6 +72,8 @@ of PRD-138 P0.5.
 
 ## Coverage and flake control
 
-The `coverage` Nox session targets 85%. Use coverage to identify untested
-boundaries, not as a substitute for failure-mode tests. Avoid live network,
-real credentials, and nondeterministic wall-clock assertions.
+The `coverage` Nox session currently enforces a 65% floor. Treat that as the
+release gate actually implemented by `noxfile.py`, not as a measure of feature
+completeness. Use coverage to identify untested boundaries, not as a substitute
+for failure-mode tests. Avoid live network, real credentials, and
+nondeterministic wall-clock assertions.

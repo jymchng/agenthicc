@@ -1,9 +1,13 @@
 # Hooks and lifecycle extension status
 
-Some historical Agenthicc documents describe a `LifecycleHook`/`HookRunner`
-framework with before/after/error stages. Those modules are not present in the
-current source tree. The current runtime instead uses explicit services and
-boundaries:
+The repository exposes a small compatibility layer in
+`src/agenthicc/tools/hooks.py` and `src/agenthicc/tools/executor.py`, but it is
+not a second tool-runtime implementation. `LifecycleHook`, `HookRegistry`, and
+`HookRunner` adapt configuration and tests to lauren-ai's canonical
+`ToolHook`/decision types; dispatch, ordering, approval signals, and provider
+result semantics remain owned by lauren-ai's executor.
+
+The runtime's primary policy boundaries are:
 
 - capability metadata and mode filters before tool selection;
 - `PermissionChecker` and `ToolCapabilityGate` for authorization;
@@ -13,7 +17,8 @@ boundaries:
 - workflow phase transition callbacks and output parsing.
 
 The kernel still has a `HookRegistered` event/state shape for compatibility,
-but it should not be documented as a working runtime hook executor.
+but it is not the source of runtime hook registration. Use the adapter module
+only when a lauren-ai hook needs Agenthicc configuration or test integration.
 
 ## What to use today
 
@@ -53,6 +58,6 @@ If lifecycle hooks are reintroduced, first specify:
 6. event/audit representation and replay semantics;
 7. a stable public API and tests.
 
-Until that design is approved, do not add `tools/hooks.py`-style documentation
-or new imports based on the historical PRD examples. Track the decision and
-implementation in PRD-138 P2.4.
+Until a broader lifecycle contract is approved, do not expand these adapters
+into a second hook engine or import the historical PRD examples as if they
+were current APIs. Track any new lifecycle semantics in PRD-138 P2.4.

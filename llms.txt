@@ -149,6 +149,8 @@ the current API instead of remembering it:
 - Durable tool results must be replay-safe across a transport retry or resume.
 
 The repository does not currently contain `agenthicc.api`, `tui.app`,
-`tui.transcript`, `tui.events`, or the historical lifecycle-hook executor. Do
-not generate code against those paths. The documented improvement plan is
+`tui.transcript`, or `tui.events`; those are historical or unresolved product
+surfaces. `agenthicc.tools.hooks` and `agenthicc.tools.executor` do exist, but
+they are compatibility adapters over lauren-ai's canonical hook and executor
+contracts, not a separate lifecycle engine. The documented improvement plan is
 `prds/prd-138-repository-improvement-roadmap.md`.

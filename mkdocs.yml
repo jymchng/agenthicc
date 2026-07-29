@@ -68,23 +68,29 @@ nav:
       - Quickstart: guides/quickstart.md
       - Architecture: guides/architecture.md
       - Configuration: guides/configuration.md
+      - Project bootstrap: guides/project-bootstrap.md
       - TUI: guides/tui.md
       - Background sessions: guides/background-sessions.md
       - Workflows: guides/workflows.md
       - Custom workflows and TOML configuration: guides/custom-workflows-and-config.md
+      - Command execution: guides/command-execution.md
+      - Client-neutral sessions: guides/session-service.md
       - User-defined commands: guides/commands.md
       - User-defined tools: guides/tools.md
       - Extensions: guides/plugins.md
       - Memory: guides/memory.md
       - Security: guides/security.md
       - Testing: guides/testing.md
-      - Historical hook status: guides/hooks.md
+      - Type safety: guides/type-safety.md
+      - Hooks and lifecycle status: guides/hooks.md
   - Reference:
       - CLI: reference/cli.md
       - Kernel: reference/kernel.md
       - Storage: reference/storage.md
+      - Code-plan structure: reference/code-plan.md
       - Reference index: reference/index.md
       - API status: reference/api.md
+      - Current repository state: reference/repository-state.md
       - Workflow review: reference/workflow-review.md
   - Compatibility:
       - TUI architecture pointer: tui-architecture.md

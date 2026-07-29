@@ -46,3 +46,9 @@ uv run nox -s llms_check
 Build docs with `mkdocs build` once the documentation dependency is installed.
 The repository's docs workflow currently depends on that external tool; adding
 it to project metadata is PRD-138 P0.5 work.
+
+`nox -s llms_check` currently checks that the public kernel exports have
+`###` headings in `llms-full.txt`; it does not generate the file or validate
+every prose section. When adding or changing a public tool, workflow, TUI, or
+session-service symbol, update the relevant reference section manually and
+verify the import path against `src/agenthicc/`.

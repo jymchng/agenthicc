@@ -27,10 +27,12 @@ Do not import one as a replacement for the other. When a feature crosses the
 boundary, document and test the bridge in `runners/tui_session.py` or the
 relevant runner context.
 
-The repository does not currently contain `agenthicc.api`, `tui.app`,
-`tui.transcript`, or the old lifecycle-hook executor modules. Do not add code or
-docs against those paths without first resolving the product decision in
-PRD-138.
+The repository does not currently contain `agenthicc.api`, `tui.app`, or the
+old `tui.transcript` module. `tools/hooks.py` and `tools/executor.py` are
+present compatibility adapters over lauren-ai's canonical hook and executor
+contracts; they are not a separate lifecycle runtime. Do not add code or docs
+against the absent API or historical TUI paths without first resolving the
+product decision in PRD-138.
 
 ## Environment
 

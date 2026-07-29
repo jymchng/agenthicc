@@ -1,8 +1,14 @@
-# agenthicc — complete API reference
+# agenthicc — AI-facing API and architecture reference
 
-> Auto-generated from source. One `### SymbolName` section per public symbol.
-> Covers all symbols exported from `agenthicc.kernel`, `agenthicc.tools`,
-> `agenthicc.memory`, `agenthicc.tui`, `agenthicc.api`, and `agenthicc.config`.
+> Maintained reference for the current checkout. The Nox `llms_check` session
+> verifies public kernel headings; it does not generate this file or prove that
+> every prose section is current. Verify imports against `src/agenthicc/`.
+
+The current product has no `agenthicc.api` package and no prompt-toolkit
+`TranscriptModel`/`tui.app` surface. The supported TUI is the Rich Live
+workspace under `agenthicc.tui.workspace`, with reactive presentation state in
+`agenthicc.tui.conversation_store`. Historical sections are labeled below so
+agents do not copy them into new code.
 
 ---
 
@@ -708,6 +714,52 @@ class UnknownModeError(ValueError): ...
 
 Actionable selection error carrying the rejected name and canonical choices.
 
+## Approval boundary — `agenthicc.tools.approval`
+
+### ApprovalRequest
+
+```python
+@dataclass(frozen=True)
+class ApprovalRequest:
+    tool_name: str
+    tool_use_id: str
+    tool_input: dict[str, object]
+    capabilities: frozenset[str]
+    event: asyncio.Event
+    kind: str = "tool"
+    mode_options: tuple[str, ...] = ()
+```
+
+An approval request is the session-owned handoff from an agent-side wait to a
+TUI or headless approval service. `kind="plan_review"` selects the plan review
+overlay. `mode_options` is used by code-plan approval to advertise the
+canonical `Safe` and `Yolo` execution choices; ordinary tool and legacy plan
+review requests leave it empty.
+
+### ApprovalResponse
+
+```python
+@dataclass(frozen=True)
+class ApprovalResponse:
+    allowed: bool
+    remember: bool = False
+    remember_all: bool = False
+    message: str = ""
+    mode: str | None = None
+```
+
+`mode` carries the selected plan execution mode back to the planner. Missing
+or invalid values are normalized to the fail-closed `Safe` mode by the
+code-plan phase tools.
+
+### ApprovalService
+
+`ApprovalService.request_approval()` suspends on the request event while the
+TUI owns the overlay. `respond()` is synchronous and wakes the pending agent
+turn. Capability memories apply only to capability-bearing tool approvals; an
+empty-capability plan review is never silently auto-approved by remembered
+permissions.
+
 ## Shared boundary types — `agenthicc.types`
 
 ### JsonScalar
@@ -1174,7 +1226,46 @@ Read a named artifact from the project tier. Returns `None` if not found.
 
 ---
 
-## TUI — `agenthicc.tui`
+## Current TUI — `agenthicc.tui.workspace` and reactive state
+
+### Workspace
+
+```python
+class Workspace:
+    def __init__(self, app_state: AppState, console: Console, max_live_tool_calls: int = 5) -> None: ...
+    def start(self) -> None: ...
+    def stop(self) -> None: ...
+```
+
+The Rich Live root owns one terminal block for the application lifetime. It
+renders status, composer, footer, overlays, and the scroll-buffer bridge. Start
+it once before the input loop and stop it once during session teardown; do not
+start or stop Live per agent turn.
+
+### ConversationStore and reactive TUI AppState
+
+`tui.conversation_store` owns ephemeral turns, token/cost signals, input state,
+active mode, workflow progress, overlays, approvals, and notifications. This
+`AppState` is intentionally distinct from `kernel.AppState`; it is not the
+durable domain model and must not replace event reduction.
+
+### UnifiedInputSession
+
+`tui.input.unified_session.UnifiedInputSession` owns one raw-terminal lifetime
+and dispatches keys through declared IDLE/STREAMING capability lists. POSIX and
+Windows decoding stay behind `tui.terminal.backend.get_backend()` and the
+canonical `tui.cbreak_reader.Key` values.
+
+The current overlay host maps approval request kinds to overlay classes in
+`runners.tui_session.TUISession`; `PlanApprovalOverlay` is the current plan
+review surface. See `docs/guides/tui.md` for rendering and resize contracts.
+
+## Historical TUI API — not in the current checkout
+
+The following prompt-toolkit symbols describe an older implementation. They are
+retained only as migration context and must not be imported by new code. Use
+`docs/guides/tui.md` and `docs/guides/architecture.md` for the current Rich
+workspace, input capability, overlay, and reactive-state contracts.
 
 ### TranscriptModel
 
@@ -1492,6 +1583,42 @@ Headless approval is fail-closed unless the CLI context explicitly enables the
 dangerous-permissions flag.
 
 ---
+
+## Workflow execution — `agenthicc.workflows`
+
+### PhaseSpec
+
+Declarative phase metadata for generic `WorkflowRunner` execution. It carries
+the phase name, role, turn budget, capability ceiling, next/rejection edges,
+model override, command lifecycle policy, and optional explicit completion or
+review gates. Validate `parallel_with`, retry, and resume behavior before
+shipping a custom workflow.
+
+### WorkflowPlugin
+
+The plugin contract names a workflow, exposes `PhaseSpec` values, and provides
+`build_runner()`/typed parameter construction. The inherited runner executes a
+declarative graph. Built-in `code_plan` and `create_workflow` override the
+runner with specialized typed state machines; their phase metadata is still
+used by registry, display, and configuration surfaces and is not currently the
+sole executable source of truth.
+
+### CodePlanRunner
+
+The specialized `code_plan` runner evolves `CodePlanState` through
+`plan → execute → review → summarize` in an explicit outer loop. Each phase
+has a bounded inner agent-turn loop and transitions only when its phase tool
+sets the handoff event. `CodePlanContext` carries the approved plan, selected
+execute mode, summaries, rejection/failure reasons, command outcomes, and
+shared short-term memory.
+
+### CreateWorkflowRunner
+
+The specialized `create_workflow` runner uses typed authoring state and phase
+artifacts for `design → generate → validate → summarize`. It writes generated
+workflow source directly to `.agenthicc/workflows/`, validates the exact file
+that the loader will import, and exposes read-only inspection tools to the
+authoring agent.
 
 ## Plan approval modes — `agenthicc.tools.approval`
 
@@ -1896,7 +2023,13 @@ matches. Raises `Rejection` when the action is `"deny"`.
 
 ---
 
-## API — `agenthicc.api`
+## Historical REST/WebSocket API — not in the current checkout
+
+`src/agenthicc/api/` does not exist and the following `create_app` contract is
+not importable. The supported non-interactive boundary is
+`agenthicc --headless`; the supported client-neutral service is
+`agenthicc.session_service`, with an explicit loopback HTTP/SSE adapter. See
+`docs/reference/api.md` and `docs/guides/session-service.md`.
 
 ### create_app
 
@@ -1922,7 +2055,14 @@ header. WebSocket closes with code 1008 on auth failure.
 
 ---
 
-## Plugin System (PRD-13)
+## Historical plugin lifecycle contract — superseded by current loaders
+
+The following PRD-13 entry-point and hook registry contract is historical. The
+current source uses separate loaders and registries for tools, commands,
+agents, workflows, skills, modes, MCP, and project trust. See
+`docs/guides/plugins.md` and `docs/guides/hooks.md` before adding an extension.
+
+## Historical Plugin System (PRD-13)
 
 ### AgenthiccPlugin
 

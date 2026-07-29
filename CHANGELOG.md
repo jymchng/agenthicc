@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   improvements and implementation/documentation drift.
 - Marked the historical REST API and prompt-toolkit TUI references as planned
   or compatibility material until their source packages exist again.
+- Added an evidence-backed current repository-state reference, refreshed
+  PRD-138's baseline, reconciled the hook/executor adapter documentation, and
+  added orphaned guides and references to the MkDocs navigation.
 
 ### Added — Configurable session memory budget
 

@@ -1,6 +1,6 @@
 # PRD-138 — Repository Improvement Roadmap
 
-**Status:** Proposed  
+**Status:** Active — current-state audit refreshed 2026-07-29
 **Date:** 2026-07-22  
 **Scope:** Repository quality, runtime architecture, user experience, security,
 packaging, testing, and documentation  
@@ -40,6 +40,30 @@ The baseline was inspected on 2026-07-22.
 | Packaging | `pyproject.toml` version `0.1.0`, only `cloud` and `dev` extras | README claims `tui` and `api` extras that are not declared |
 | Documentation | `README.md`, `CLAUDE.md`, `AGENTS.md`, `docs/`, `knowledge/`, `prds/` | Rich but duplicated; several files refer to absent modules or endpoints |
 | Roadmap | 137 existing PRD files plus this PRD | A master index and lifecycle state for PRDs are missing |
+
+### Current-state revalidation — 2026-07-29
+
+The current checkout is `4052c66`. It contains 208 Python source files, 195
+Python test files, 29 maintained Markdown documents, and 156 PRD or research
+Markdown files. The full local test command currently reports 2,754 passed and
+15 skipped tests.
+
+Several baseline statements are now historical rather than current:
+
+| Baseline statement | Current evidence | Status |
+|---|---|---|
+| `tools/hooks.py` and `tools/executor.py` are absent | Both modules exist and are covered by unit/integration tests | Resolved; they are compatibility adapters over lauren-ai, not a second runtime |
+| The current TUI is the Rich workspace | `tui/workspace/`, `conversation_store.py`, and `tui/input/` are present | Confirmed |
+| A REST/WebSocket `agenthicc.api` exists | `src/agenthicc/api/` is still absent; `session_service/` provides the supported client-neutral and loopback HTTP/SSE path | Open product decision in P0.2 |
+| `scripts/check_llms.py` is the LLM documentation gate | The check is embedded in `noxfile.py` as `llms_check` | Documentation/tooling drift remains in P0.5 |
+| The repository has one authoritative workflow definition | Specialized `CodePlanRunner` and `CreateWorkflowRunner` retain executable state machines alongside phase metadata | Open architecture item; see `docs/reference/workflow-review.md` |
+
+The maintained documentation now labels absent API and historical TUI paths as
+such, documents the kernel/reactive-state boundary, and describes the
+`tools/hooks.py`/`tools/executor.py` adapter boundary. The detailed evidence
+record is [`docs/reference/repository-state.md`](../docs/reference/repository-state.md).
+This section supersedes the 2026-07-22 counts but does not close roadmap items
+whose acceptance criteria still require code, packaging, or CI changes.
 
 ## 3. Findings that motivate the roadmap
 
