@@ -367,7 +367,14 @@ Session artifacts live below `~/.agenthicc/sessions/`:
 - `<session-id>/conversation.jsonl` — rendered conversation events;
 - `<session-id>/conversation-journal.jsonl` — durable conversation-memory
   transitions used for crash recovery and tool replay;
+- `<session-id>/workflows/<run-id>/checkpoint.json` — atomic, bounded workflow
+  context checkpoints used by `/workflow resume` after an Esc pause;
 - optional cassette files — recorded transport and approval interactions.
+
+Direct chat, Plan mode, `code_plan`, and `create_workflow` share the session's
+stable conversation ID and journal-backed provider memory. Workflow phase state
+is checkpointed separately, while the reactive conversation store remains a UI
+projection.
 
 Export a portable, redacted support artifact with:
 

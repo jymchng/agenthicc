@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
-from typing import TypeVar, cast
+from typing import Literal, TypeVar, cast
 
 
 def _new_id() -> str:
@@ -30,7 +30,8 @@ class SendMessageCommand(Command):
 
 @dataclass(frozen=True)
 class InterruptAgentCommand(Command):
-    pass
+    source: Literal["keyboard", "escape", "ctrl_c"] = "keyboard"
+    disposition: Literal["cancel", "pause"] = "cancel"
 
 
 C = TypeVar("C", bound=Command)

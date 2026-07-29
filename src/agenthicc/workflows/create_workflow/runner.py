@@ -266,16 +266,28 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         from agenthicc.kernel import Event  # noqa: PLC0415
         from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
 
-        run_id: str = uuid.uuid4().hex
+        session_memory = (
+            self._cfg.session_memory
+            if self._cfg.session_memory is not None
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+        )
+        handle = self._cfg.workflow_handle
+        run_id: str = handle.run_id if handle is not None else uuid.uuid4().hex
         self._run_id = run_id
 
         ctx: CreateWorkflowContext = CreateWorkflowContext(
             intent=intent,
             run_id=run_id,
-            shared_memory=ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            ),
+            shared_memory=session_memory,
         )
+        if handle is not None:
+            handle.attach_context(ctx)
+            from agenthicc.workflows.checkpoint import CheckpointValidationError  # noqa: PLC0415
+
+            try:
+                handle.save_checkpoint(reason="started")
+            except CheckpointValidationError:
+                handle.checkpoint_supported = False
 
         wf_run: WorkflowRun = WorkflowRun(
             run_id=run_id,
@@ -302,6 +314,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
         try:
             while not state.is_terminal:
+                ctx.state = state
                 phase_name: str = state.name.lower()
                 wf_run = dataclasses.replace(
                     wf_run,
@@ -322,6 +335,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 )
 
                 state = await self._dispatch(state, ctx)
+                ctx.state = state
 
                 next_label: str | None = state.name.lower() if not state.is_terminal else None
                 artifact = ctx.artifacts.get(phase_name)
@@ -368,7 +382,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             )
 
         except (asyncio.CancelledError, KeyboardInterrupt):
-            wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+            if handle is not None and handle.is_pause_requested():
+                wf_run = dataclasses.replace(wf_run, status="paused")
+                handle.attach_context(ctx)
+            else:
+                wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+                if handle is not None:
+                    handle.mark_terminal("failed", error="cancelled")
             self._cfg.app_state.workflow_run.set(wf_run)
             raise
         except Exception as exc:
@@ -377,21 +397,112 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             self._cfg.app_state.workflow_run.set(wf_run)
             self._cfg.conv_store.append_event("error", {"message": str(exc)})
 
+        if handle is not None:
+            if wf_run.status in {"complete", "exited"}:
+                handle.mark_terminal("complete")
+                if handle.checkpoint_supported:
+                    handle.save_checkpoint(reason=wf_run.status)
+            elif wf_run.status == "failed":
+                handle.mark_terminal("failed", error=ctx.fail_reason)
+                if handle.checkpoint_supported:
+                    handle.save_checkpoint(reason="failed")
         return ctx
 
     async def resume(self, context: object) -> CreateWorkflowContext:
-        """Re-run authoring for the intent recorded in *context*.
-
-        create_workflow writes its artefact straight into the workspace, so there
-        is no staged run to pick up mid-flight: a resume restarts the state
-        machine from DESIGN with the original intent, and the design phase sees
-        whatever the previous run already wrote on disk.
-        """
+        """Resume a typed checkpoint context or a legacy generic context."""
+        from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
         from agenthicc.workflows.plugin import WorkflowContext  # noqa: PLC0415
 
-        if not isinstance(context, WorkflowContext):
+        handle = self._cfg.workflow_handle
+        session_memory = (
+            self._cfg.session_memory
+            if self._cfg.session_memory is not None
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+        )
+        if isinstance(context, CreateWorkflowContext):
+            ctx = context
+            ctx.shared_memory = session_memory
+            state = ctx.state
+        elif isinstance(context, WorkflowContext):
+            # Generic contexts predate typed checkpoints and have no durable
+            # state. Keep their documented restart semantics; typed
+            # CreateWorkflowContext resumes from its exact outer-loop state.
+            return await self.run(context.intent)
+        else:
             raise TypeError("workflow resume requires a WorkflowContext")
-        return await self.run(context.intent)
+
+        self._run_id = ctx.run_id
+        if handle is not None:
+            handle.attach_context(ctx)
+        # Re-enter the same outer dispatch loop.  The typed state is the durable
+        # continuation point; a legacy context has no state and therefore starts
+        # at DESIGN for backwards compatibility.
+        from agenthicc.kernel import Event  # noqa: PLC0415
+        from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
+
+        wf_run = WorkflowRun(
+            run_id=ctx.run_id,
+            workflow_name=self.workflow_name,
+            intent=ctx.intent,
+            current_phase=state.name.lower() if not state.is_terminal else None,
+            total_phases=self.total_phases,
+        )
+        self._cfg.app_state.workflow_run.set(wf_run)
+        try:
+            while not state.is_terminal:
+                ctx.state = state
+                phase_name = state.name.lower()
+                wf_run = dataclasses.replace(
+                    wf_run,
+                    current_phase=phase_name,
+                    current_phase_index=_PHASE_INDEX.get(phase_name, 0),
+                )
+                self._cfg.app_state.workflow_run.set(wf_run)
+                await self._cfg.processor.emit(
+                    Event.create(
+                        "WorkflowPhaseStarted",
+                        {
+                            "run_id": ctx.run_id,
+                            "phase_name": phase_name,
+                            "workflow_name": self.workflow_name,
+                        },
+                    )
+                )
+                state = await self._dispatch(state, ctx)
+                ctx.state = state
+
+            final_status = self._final_status(state)
+            wf_run = dataclasses.replace(wf_run, status=final_status, current_phase=None)
+            self._cfg.app_state.workflow_run.set(wf_run)
+            await self._cfg.processor.emit(
+                Event.create(
+                    "WorkflowRunCompleted",
+                    {
+                        "run_id": ctx.run_id,
+                        "workflow_name": self.workflow_name,
+                        "phases_run": len(wf_run.phase_history),
+                        "status": final_status,
+                    },
+                )
+            )
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            if handle is not None and handle.is_pause_requested():
+                wf_run = dataclasses.replace(wf_run, status="paused")
+                handle.attach_context(ctx)
+            else:
+                wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+                if handle is not None:
+                    handle.mark_terminal("failed", error="cancelled")
+            self._cfg.app_state.workflow_run.set(wf_run)
+            raise
+        if handle is not None:
+            if final_status in {"complete", "exited"}:
+                handle.mark_terminal("complete")
+            else:
+                handle.mark_terminal("failed", error=ctx.fail_reason)
+            if handle.checkpoint_supported:
+                handle.save_checkpoint(reason=final_status)
+        return ctx
 
     # ── outer-loop dispatch ───────────────────────────────────────────────────
 
@@ -796,6 +907,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     def _set_phase(self, phase_name: str, phase_index: int, ctx: CreateWorkflowContext) -> None:
         """Update all workflow TUI state for the current phase in one call."""
+        ctx.state = CreateWorkflowState[phase_name.upper()]
+        ctx.phase_iteration += 1
+        handle = self._cfg.workflow_handle
+        if handle is not None:
+            handle.attach_context(ctx)
+            handle.update_phase(phase_name, phase_index, ctx.phase_iteration)
         self._cfg.app_state.update_workflow_phase(
             workflow_name=self.workflow_name,
             phase_name=phase_name,
@@ -857,6 +974,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 runner=self._cfg.agent_runner,
                 processor=self._cfg.processor,
                 session_memory=ctx.shared_memory,
+                conversation_id=self._cfg.conversation_id,
                 max_agent_turns=max_turns,
                 conv_store=self._cfg.conv_store,
                 app_state=self._cfg.app_state,

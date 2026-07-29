@@ -128,7 +128,7 @@ def fold_resume_state(path: Path) -> IncompleteTurn | None:
                     (tid, entry.get("user_message", ""), int(entry.get("base_count", 0)))
                 )
                 records.setdefault(tid, [])
-            elif kind == "turn_completed":
+            elif kind in {"turn_completed", "turn_aborted", "turn_recovered"}:
                 completed.add(entry["turn_id"])
             elif kind == "tool_recorded":
                 records.setdefault(entry["turn_id"], []).append((entry["key"], entry.get("result")))
@@ -199,6 +199,26 @@ class ConversationJournal:
         """Mark a turn as durably complete (it will not be resumed)."""
         self._write({"seq": self._seq, "kind": "turn_completed", "turn_id": turn_id})
 
+    def turn_aborted(self, turn_id: str, *, reason: str = "cancelled") -> None:
+        """Mark a turn as intentionally aborted before natural completion.
+
+        The memory owner rolls back any incomplete message tail before this
+        marker is written.  The marker closes lifecycle bookkeeping without
+        pretending that the provider produced a completed assistant turn.
+        """
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "turn_aborted",
+                "turn_id": turn_id,
+                "reason": reason,
+            }
+        )
+
+    def turn_recovered(self, turn_id: str) -> None:
+        """Mark a crash-interrupted turn as recovered and re-driven."""
+        self._write({"seq": self._seq, "kind": "turn_recovered", "turn_id": turn_id})
+
     def tool_recorded(self, turn_id: str, key: str, result: object) -> None:
         """Durably record one executed tool result for idempotent replay."""
         self._write(
@@ -218,6 +238,11 @@ class ConversationJournal:
     def resume_state(self) -> IncompleteTurn | None:
         """Return the incomplete turn to resume, or ``None``."""
         return fold_resume_state(self._path)
+
+    @property
+    def cursor(self) -> int:
+        """Return the next journal sequence number for checkpoint cursors."""
+        return self._seq
 
     @property
     def path(self) -> Path:

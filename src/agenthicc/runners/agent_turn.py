@@ -742,6 +742,9 @@ class AgentTurnRunner:
         if ctx.session_memory is not None:
             ctx.session_memory.ensure_valid()
 
+        turn_base_count = len(ctx.session_memory._messages) if ctx.session_memory is not None else 0
+        turn_completed = False
+
         # PRD-135: auto-compaction is driven *inside* the run loop by lauren-ai's
         # exact-count compaction ladder (rung 1 — proactive LLM summarisation —
         # then the hard pre-send guard).  It fires at ``summarize_at`` of the live
@@ -822,6 +825,7 @@ class AgentTurnRunner:
             stream = await active_runner.run_stream(
                 agent_instance,
                 agent_text,
+                conversation_id=ctx.conversation_id or None,
                 memory=ctx.session_memory,
                 idempotency_ledger=turn_ledger,
                 config_override=config_kwargs,
@@ -876,7 +880,12 @@ class AgentTurnRunner:
 
         try:
             await self._stream_with_retry(_stream_once)
+            turn_completed = True
         except (asyncio.CancelledError, KeyboardInterrupt):
+            if ctx.session_memory is not None:
+                rollback = getattr(ctx.session_memory, "rollback_to", None)
+                if callable(rollback):
+                    rollback(turn_base_count)
             if ctx.conv_store:
                 ctx.conv_store.close_turn()
             raise  # must propagate so task.cancel() terminates the workflow runner
@@ -900,12 +909,16 @@ class AgentTurnRunner:
                 # close_turn() is idempotent — safe even when CancelledError path
                 # already called it above.
                 ctx.conv_store.close_turn()
-            # PRD-129 Phase 3: mark the turn durably complete.  This runs for
-            # success, handled errors, and cancellation — only a hard process
-            # death (SIGKILL) skips it, leaving the turn flagged for resume.
+            # PRD-129/156: only a natural provider run is completed.  Explicit
+            # cancellation closes with an abort marker after rolling back the
+            # incomplete message tail, while a hard process death leaves the
+            # turn_started marker open for crash recovery.
             if _journal is not None:
                 try:
-                    _journal.turn_completed(self._intent_id)
+                    if turn_completed:
+                        _journal.turn_completed(self._intent_id)
+                    else:
+                        _journal.turn_aborted(self._intent_id, reason="cancelled-or-failed")
                 except OSError:
                     pass
 
@@ -1012,6 +1025,7 @@ async def _run_agent_turn(
     runner: AgentRunnerBase,
     processor: EventProcessor,
     session_memory: ShortTermMemory | None = None,
+    conversation_id: str = "",
     max_agent_turns: int = 200,
     conv_store: ConversationStore | None = None,
     app_state: AppState | None = None,
@@ -1045,6 +1059,7 @@ async def _run_agent_turn(
         runner=runner,
         processor=processor,
         session_memory=session_memory,
+        conversation_id=conversation_id,
         max_agent_turns=max_agent_turns,
         conv_store=conv_store,
         app_state=app_state,

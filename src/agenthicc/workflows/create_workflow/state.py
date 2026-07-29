@@ -105,6 +105,8 @@ class CreateWorkflowContext:
     artifacts: dict[str, PhaseArtifact] = dataclasses.field(default_factory=dict)
     command_outcomes: list[dict[str, object]] = dataclasses.field(default_factory=list)
     shared_memory: ShortTermMemory | None = None  # shared across all phases
+    state: CreateWorkflowState = CreateWorkflowState.DESIGN
+    phase_iteration: int = 0
 
     def add_artifact(self, artifact: PhaseArtifact) -> None:
         """Record *artifact*, keyed by its phase (latest write for a phase wins)."""

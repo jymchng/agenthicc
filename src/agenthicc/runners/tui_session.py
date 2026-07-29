@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.workflows.plugin import WorkflowPlugin
+    from agenthicc.runners.workflow_handle import WorkflowRunHandle
     from agenthicc.tools.base import ToolLike
 
 
@@ -460,13 +461,13 @@ async def _build_session_context(
     # append-only journal, and on resume (session_id == resume_id) the journal
     # is folded straight back into memory.  This supersedes the old SQLite
     # memory-snapshot durability (which only checkpointed at turn boundaries).
-    from agenthicc.memory.journal import ConversationJournal, journal_path_for  # noqa: PLC0415
-    from agenthicc.memory.journaled import JournaledShortTermMemory  # noqa: PLC0415
+    from agenthicc.runners.session_conversation import SessionConversation  # noqa: PLC0415
 
-    _conversation_journal = ConversationJournal(journal_path_for(session_id))
-    session_memory = JournaledShortTermMemory(
-        _conversation_journal, max_tokens=cfg.execution.effective_usable_budget()
+    session_conversation = SessionConversation.open(
+        session_id,
+        max_tokens=cfg.execution.effective_usable_budget(),
     )
+    session_memory = session_conversation.memory
 
     # PRD-132 L1: install the durable, freshness-validated workspace file cache so
     # read_file resolves unchanged files from a per-project store instead of disk.
@@ -596,9 +597,11 @@ async def _build_session_context(
         console.print(Rule(f"[dim]resumed session {session_id[:12]}[/dim]"))
         from agenthicc.runners.run_coordinator import RunCoordinator  # noqa: PLC0415
 
-        _incomplete = RunCoordinator.detect_incomplete_turn(_conversation_journal)
+        _incomplete = RunCoordinator.detect_incomplete_turn(session_conversation.journal)
         if _incomplete is not None:
-            pending_resume = RunCoordinator.build_resume_plan(_conversation_journal, _incomplete)
+            pending_resume = RunCoordinator.build_resume_plan(
+                session_conversation.journal, _incomplete
+            )
 
     return SessionContext(
         processor=processor,
@@ -613,6 +616,7 @@ async def _build_session_context(
         trigger_registry=trigger_registry,
         agent_runner=cast("AgentRunnerBase", agent_runner),
         session_memory=session_memory,
+        session_conversation=session_conversation,
         mention_cache=mention_cache,
         skills=skills,
         project_plugins=project_plugins,
@@ -655,6 +659,7 @@ class TUISession:
         self._turn_count: int = 0
         self._pending_replay_id: str | None = None
         self._workflow_override: str | None = None  # PRD-114: /workflow command
+        self._workflow_handle: WorkflowRunHandle | None = None
         terminal_manager = getattr(ctx, "terminal_manager", None)
         if terminal_manager is not None:
             self._terminal_unsub = terminal_manager.changed.subscribe(self._sync_terminal_status)
@@ -680,8 +685,11 @@ class TUISession:
             agents_registry=ctx.agents_registry,
             memory_router=ctx.memory_router,
             semantic_index=ctx.semantic_index,
+            session_memory=ctx.session_memory,
+            conversation_id=ctx.session_id,
             next_queued_message=self._next_queued_message,
         )
+        self._restore_paused_workflow()
         self._sync_terminal_status()
 
     # ── internal helpers ──────────────────────────────────────────────────────
@@ -692,6 +700,50 @@ class TUISession:
 
     def _set_pending_replay(self, session_id: str) -> None:
         self._pending_replay_id = session_id
+
+    def _restore_paused_workflow(self) -> None:
+        """Rehydrate the newest paused workflow checkpoint for this session."""
+        conversation = getattr(self._ctx, "session_conversation", None)
+        if conversation is None:
+            return
+        from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore  # noqa: PLC0415
+        from agenthicc.runners.workflow_handle import WorkflowRunHandle  # noqa: PLC0415
+
+        store = WorkflowCheckpointStore(self._ctx.session_id)
+        candidates = []
+        for run_id in store.list_run_ids():
+            try:
+                checkpoint = store.load(run_id)
+            except Exception as exc:  # noqa: BLE001
+                self._ctx.app_state.conversation.notify_transient(
+                    f"⚠ Ignoring invalid workflow checkpoint {run_id}: {exc}"
+                )
+                continue
+            if checkpoint is not None and checkpoint.status in {"paused", "pausing"}:
+                candidates.append(checkpoint)
+        if not candidates:
+            return
+        checkpoint = max(candidates, key=lambda item: item.created_at)
+        definition = self._ctx.workflow_registry.get(checkpoint.workflow_name)
+        if definition is None:
+            self._ctx.app_state.conversation.notify_transient(
+                f"⚠ Cannot resume '{checkpoint.workflow_name}': workflow is not loaded"
+            )
+            return
+        try:
+            self._workflow_handle = WorkflowRunHandle.from_checkpoint(
+                checkpoint,
+                workflow=definition,
+                conversation=conversation,
+                checkpoint_store=store,
+            )
+            self._ctx.app_state.conversation.notification.set(
+                f"Workflow '{checkpoint.workflow_name}' is paused. Use /workflow resume or send a message to continue."
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._ctx.app_state.conversation.notify_transient(
+                f"⚠ Cannot restore workflow '{checkpoint.workflow_name}': {exc}"
+            )
 
     def _publish_session_event(
         self,
@@ -1141,6 +1193,33 @@ class TUISession:
             run_id = name.partition(" ")[2].strip() or None
             return self._handle_workflow_resume(run_id)
         if not name or name == "reset":
+            handle = self._workflow_handle
+            if handle is not None and handle.lifecycle in {"paused", "pausing"}:
+                handle.mark_terminal("discarded", error="reset by user")
+                if handle.checkpoint_supported:
+                    try:
+                        handle.save_checkpoint(reason="reset")
+                    except Exception as exc:  # noqa: BLE001
+                        conv.notify_transient(f"⚠ Could not persist workflow reset: {exc}")
+                        return True
+                    from agenthicc.kernel import Event  # noqa: PLC0415
+
+                    asyncio.create_task(
+                        self._ctx.processor.emit(
+                            Event.create(
+                                "WorkflowRunDiscarded",
+                                {
+                                    "run_id": handle.run_id,
+                                    "workflow_name": handle.workflow_name,
+                                },
+                            )
+                        )
+                    )
+                self._workflow_handle = None
+                conv.notify_transient("↩ Paused workflow discarded; workflow reset to mode default")
+                self._workflow_override = None
+                conv.workflow_override.set(None)
+                return True
             self._workflow_override = None
             conv.workflow_override.set(None)
             conv.notify_transient("↩ Workflow reset to mode default")
@@ -1150,21 +1229,44 @@ class TUISession:
             available = ", ".join(self._ctx.workflow_registry.names()) or "none"
             conv.notify_transient(f"⚠ Unknown workflow: {name!r}  (available: {available})")
             return True
+        if (
+            self._workflow_handle is not None
+            and self._workflow_handle.lifecycle in {"paused", "pausing"}
+            and self._workflow_handle.workflow_name != name
+        ):
+            conv.notify_transient(
+                f"⚠ '{self._workflow_handle.workflow_name}' is paused. Resume or reset it before switching workflows."
+            )
+            return True
         self._workflow_override = name
         conv.workflow_override.set(name)
         conv.notify_transient(f"⚡ Workflow → {name}")
         return True
 
     def _handle_workflow_resume(self, run_id: str | None) -> bool:
-        """Explain that direct workflow authoring has no staged run to resume."""
+        """Resume the paused workflow attached to this session."""
         conv = self._ctx.app_state.conversation
         if self._agent_task is not None and not self._agent_task.done():
             conv.notify_transient("⚠ Cannot resume a workflow while another run is active")
             return True
-        conv.notify_transient(
-            "⚠ create_workflow writes directly to .agenthicc/workflows; there is no staged run to resume. "
-            "Run /workflow create_workflow again."
+        handle = self._workflow_handle
+        if run_id is not None and (handle is None or handle.run_id != run_id):
+            conv.notify_transient(f"⚠ No paused workflow with run id {run_id!r}")
+            return True
+        if handle is None or handle.lifecycle not in {"paused", "pausing"}:
+            conv.notify_transient(
+                "⚠ No paused workflow is available to resume; create_workflow writes directly to the workspace."
+            )
+            return True
+        definition = self._ctx.workflow_registry.get(handle.workflow_name)
+        if definition is None or handle.context is None:
+            conv.notify_transient(f"⚠ Workflow '{handle.workflow_name}' is not available to resume")
+            return True
+        self._agent_task = asyncio.create_task(
+            self._resume_workflow_task(definition, handle.context),
+            name=f"resume-workflow-{handle.run_id}",
         )
+        conv.notify_transient(f"↻ Resuming workflow '{handle.workflow_name}'…")
         return True
 
     async def _handle_compact_command(self) -> None:
@@ -1233,6 +1335,38 @@ class TUISession:
             )
         return True  # never forward slash commands to the agent
 
+    def _start_workflow_continuation(self, text: str) -> bool:
+        """Start a paused workflow with one ordinary user continuation."""
+        handle = self._workflow_handle
+        if handle is None or handle.lifecycle not in {"paused", "pausing"}:
+            return False
+        if not handle.checkpoint_supported:
+            self._ctx.app_state.conversation.notify_transient(
+                "⚠ This workflow does not support safe checkpoints; use /workflow reset or retry after fixing its context codec."
+            )
+            self._msg_queue.insert(0, text)
+            return True
+        definition = self._ctx.workflow_registry.get(handle.workflow_name)
+        if definition is None or handle.context is None:
+            self._ctx.app_state.conversation.notify_transient(
+                f"⚠ Workflow '{handle.workflow_name}' is not available to resume"
+            )
+            return True
+        turn_id = f"turn_{uuid.uuid4().hex}"
+        self._publish_session_event(
+            "turn_queued", {"text": text, "client_id": "tui"}, turn_id=turn_id
+        )
+        self._agent_task = asyncio.create_task(
+            self._resume_workflow_task(
+                definition,
+                handle.context,
+                continuation=text,
+                turn_id=turn_id,
+            ),
+            name=f"resume-workflow-{handle.run_id}",
+        )
+        return True
+
     def advance(self) -> None:
         """Drain _msg_queue: dispatch slash commands, start next agent task."""
         notice_kept = False
@@ -1256,9 +1390,13 @@ class TUISession:
                 notice_kept = True
                 continue
             if self.route(msg):
+                if self._agent_task is not None and not self._agent_task.done():
+                    return
                 continue
             self._ctx.app_state.conversation.notification.set(None)
             self._ctx.app_state.conversation.append_event("user_message", {"text": msg})
+            if self._start_workflow_continuation(msg):
+                return
             turn_id = f"turn_{uuid.uuid4().hex}"
             self._publish_session_event(
                 "turn_queued", {"text": msg, "client_id": "tui"}, turn_id=turn_id
@@ -1307,10 +1445,27 @@ class TUISession:
                 # PRD-116: build per-workflow params from merged TOML/CLI/env config.
                 _wf_params = _plugin_cls.build_params(ctx.cfg.workflows.get(_plugin_cls.name, {}))
                 _phase_specs = getattr(_plugin_cls, "phases", ())
+                if (
+                    self._workflow_handle is None
+                    or self._workflow_handle.workflow_name != _plugin_cls.name
+                ):
+                    from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore  # noqa: PLC0415
+                    from agenthicc.runners.workflow_handle import WorkflowRunHandle  # noqa: PLC0415
+
+                    session_conversation = getattr(ctx, "session_conversation", None)
+                    if session_conversation is not None:
+                        self._workflow_handle = WorkflowRunHandle.create(
+                            run_id=uuid.uuid4().hex,
+                            workflow=_plugin_cls,
+                            conversation=session_conversation,
+                            intent=text,
+                            checkpoint_store=WorkflowCheckpointStore(ctx.session_id),
+                        )
                 _wf_config = _dc.replace(
                     self._wf_config_base,
                     completed_turns=self._turn_count,
                     params=_wf_params,
+                    workflow_handle=self._workflow_handle,
                     terminal_wait_policies={
                         phase.name: phase.terminal_wait_policy
                         for phase in _phase_specs
@@ -1331,6 +1486,12 @@ class TUISession:
                     ctx.app_state.conversation.notification.set(
                         "✓ Workflow complete — switched to Safe mode"
                     )
+                if self._workflow_handle is not None and self._workflow_handle.lifecycle in {
+                    "complete",
+                    "failed",
+                    "discarded",
+                }:
+                    self._workflow_handle = None
             else:
                 # PRD-126: direct (non-workflow) turns are retried at the
                 # _run_agent_turn boundary inside AgentTurnRunner itself, so no
@@ -1340,6 +1501,7 @@ class TUISession:
                     ctx.agent_runner,
                     ctx.processor,
                     session_memory=ctx.session_memory,
+                    conversation_id=ctx.session_id,
                     max_agent_turns=ctx.cfg.execution.max_agent_turns,
                     conv_store=ctx.app_state.conversation,
                     app_state=ctx.app_state,
@@ -1397,13 +1559,30 @@ class TUISession:
         conv = self._ctx.app_state.conversation
         turn_failed = False
         turn_cancelled = False
+        workflow_paused = False
+        conversation = getattr(self._ctx, "session_conversation", None)
+        owner_id = turn_id or f"activity_{uuid.uuid4().hex}"
+        acquired = False
         conv.begin_activity()
         if turn_id is not None:
             self._publish_session_event("turn_started", turn_id=turn_id)
         try:
+            if conversation is not None:
+                await conversation.acquire(owner_id)
+                acquired = True
             await self.run_turn(text, resume=resume)
         except asyncio.CancelledError:
             turn_cancelled = True
+            handle = self._workflow_handle
+            if handle is not None and handle.is_pause_requested():
+                workflow_paused = True
+                await self._finalize_workflow_pause(handle)
+            elif handle is not None and handle.lifecycle in {"running", "resuming", "pausing"}:
+                handle.mark_terminal("failed", error="cancelled")
+                try:
+                    handle.save_checkpoint(reason="cancelled")
+                except Exception:  # noqa: BLE001
+                    pass
             # close_turn() is idempotent — inner layers may have already called it.
             conv.close_turn()
             self._input_session.set_mode(InputMode.IDLE)
@@ -1415,17 +1594,64 @@ class TUISession:
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             conv.end_activity()
+            if acquired and conversation is not None:
+                conversation.release(owner_id)
             if turn_id is not None:
-                self._publish_session_event(
-                    "turn_cancelled"
+                turn_event = (
+                    "turn_paused"
+                    if workflow_paused
+                    else "turn_cancelled"
                     if turn_cancelled
                     else "turn_failed"
                     if turn_failed
-                    else "turn_completed",
+                    else "turn_completed"
+                )
+                self._publish_session_event(
+                    turn_event,
                     turn_id=turn_id,
                 )
             self._agent_task = None
             self.advance()
+
+    async def _finalize_workflow_pause(self, handle: "WorkflowRunHandle") -> None:
+        """Persist a paused workflow only after the runner has unwound."""
+        from agenthicc.kernel import Event  # noqa: PLC0415
+
+        conv = self._ctx.app_state.conversation
+        try:
+            # Save while PAUSING first so an unsupported custom context fails
+            # closed without falsely advertising a resumable PAUSED state.
+            handle.save_checkpoint(reason="escape")
+            handle.mark_paused(reason="escape")
+            checkpoint = handle.save_checkpoint(reason="escape")
+            await self._ctx.processor.emit(
+                Event.create(
+                    "WorkflowRunPaused",
+                    {
+                        "run_id": handle.run_id,
+                        "workflow_name": handle.workflow_name,
+                        "phase_name": handle.current_phase,
+                        "conversation_cursor": checkpoint.conversation_cursor,
+                    },
+                )
+            )
+            await self._ctx.processor.emit(
+                Event.create(
+                    "WorkflowCheckpointSaved",
+                    {
+                        "run_id": handle.run_id,
+                        "workflow_name": handle.workflow_name,
+                        "revision": checkpoint.revision,
+                        "reason": "escape",
+                    },
+                )
+            )
+            conv.notify_transient(
+                f"⏸ Workflow '{handle.workflow_name}' paused at {handle.current_phase or 'current phase'}. "
+                "Send a message or use /workflow resume to continue."
+            )
+        except Exception as exc:  # noqa: BLE001
+            conv.notify_transient(f"⚠ Workflow pause could not be checkpointed: {exc}")
 
     async def handle_send(self, cmd: "SendMessageCommand") -> None:
         """Route user message: slash → command dispatcher, text → agent."""
@@ -1450,6 +1676,11 @@ class TUISession:
             self._msg_queue.append(text)
             self._notify_queued(text)
             return
+
+        if isinstance(self, TUISession) and not text.startswith(("/", "$")):
+            if self._start_workflow_continuation(text):
+                self._ctx.app_state.conversation.append_event("user_message", {"text": text})
+                return
 
         if self.route(text):
             if self._pending_skill_body:
@@ -1477,7 +1708,17 @@ class TUISession:
         self._agent_task = asyncio.create_task(task, name="agent-turn")
 
     def handle_interrupt(self, cmd: "InterruptAgentCommand") -> None:
-        """Cancel the current agent task if one is running."""
+        """Cancel, or cooperatively pause, the current agent task."""
+        handle = self._workflow_handle
+        if (
+            getattr(cmd, "disposition", "cancel") == "pause"
+            and handle is not None
+            and handle.lifecycle in {"running", "resuming"}
+        ):
+            handle.request_pause()
+            self._ctx.app_state.conversation.notify_transient(
+                f"⏸ Pausing workflow '{handle.workflow_name}'…"
+            )
         self._cancel_active_task()
 
     # ── workflow resume (PRD-94) ──────────────────────────────────────────────
@@ -1567,22 +1808,71 @@ class TUISession:
             name="resume-turn",
         )
 
-    async def _resume_workflow_task(self, wf_defn: type[WorkflowPlugin], context: object) -> None:
-        """Resume a WorkflowRunner with error handling matching agent_task_body."""
+    async def _resume_workflow_task(
+        self,
+        wf_defn: type[WorkflowPlugin],
+        context: object,
+        *,
+        continuation: str | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        """Resume a WorkflowRunner with the session conversation still attached."""
         from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
 
         ctx = self._ctx
+        handle = self._workflow_handle
+        conversation = getattr(ctx, "session_conversation", None)
+        owner_id = turn_id or (
+            handle.run_id if handle is not None else f"resume_{uuid.uuid4().hex}"
+        )
+        acquired = False
         self._input_session.set_mode(InputMode.STREAMING)
-        ctx.approval_svc.reset_turn_memory()
+        if ctx.approval_svc is not None:
+            ctx.approval_svc.reset_turn_memory()
         ctx.app_state.conversation.begin_activity()
+        if turn_id is not None:
+            self._publish_session_event("turn_started", turn_id=turn_id)
         try:
             import dataclasses as _dc  # noqa: PLC0415
+
+            if conversation is not None:
+                await conversation.acquire(owner_id)
+                acquired = True
+            if handle is not None:
+                handle.mark_resuming()
+                from agenthicc.kernel import Event  # noqa: PLC0415
+
+                await self._ctx.processor.emit(
+                    Event.create(
+                        "WorkflowRunResumed",
+                        {
+                            "run_id": handle.run_id,
+                            "workflow_name": handle.workflow_name,
+                        },
+                    )
+                )
+            if ctx.session_memory is not None:
+                continuation_text = (
+                    "[WORKFLOW RESUME]\n"
+                    f"Workflow: {wf_defn.name}\n"
+                    f"Current phase: {getattr(handle, 'current_phase', None) or 'current'}\n"
+                    "The prior agent turn was interrupted safely; preserve completed work "
+                    "and continue from the saved phase.\n"
+                    f"Original intent: {getattr(handle, 'original_intent', '')}\n"
+                    + (f"User continuation: {continuation}" if continuation else "Continue.")
+                )
+                if handle is not None and continuation:
+                    handle.append_continuation(continuation)
+                ctx.session_memory.add_user(continuation_text)
 
             _wf_params = wf_defn.build_params(ctx.cfg.workflows.get(wf_defn.name, {}))
             _phase_specs = getattr(wf_defn, "phases", ())
             _wf_config = _dc.replace(
                 self._wf_config_base,
                 params=_wf_params,
+                workflow_handle=handle,
+                session_memory=ctx.session_memory,
+                conversation_id=ctx.session_id,
                 terminal_wait_policies={
                     phase.name: phase.terminal_wait_policy
                     for phase in _phase_specs
@@ -1603,15 +1893,42 @@ class TUISession:
                     "✓ Workflow resumed and complete — switched to Safe mode"
                 )
         except asyncio.CancelledError:
+            if handle is not None and handle.is_pause_requested():
+                await self._finalize_workflow_pause(handle)
+            elif handle is not None and handle.lifecycle in {"resuming", "running", "pausing"}:
+                handle.mark_terminal("failed", error="cancelled")
+                try:
+                    handle.save_checkpoint(reason="cancelled")
+                except Exception:  # noqa: BLE001
+                    pass
             ctx.app_state.conversation.close_turn()
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:
             conv = ctx.app_state.conversation
             conv.close_turn(error=_fmt_exc(exc) if conv.is_turn_active else None)
+            if handle is not None and handle.lifecycle not in {"complete", "failed", "discarded"}:
+                handle.mark_terminal("failed", error=_fmt_exc(exc))
+                try:
+                    handle.save_checkpoint(reason="failed")
+                except Exception:  # noqa: BLE001
+                    pass
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             ctx.app_state.conversation.end_activity()
+            if acquired and conversation is not None:
+                conversation.release(owner_id)
+            if turn_id is not None:
+                self._publish_session_event(
+                    "turn_paused"
+                    if handle is not None and handle.lifecycle == "paused"
+                    else "turn_failed"
+                    if handle is not None and handle.lifecycle == "failed"
+                    else "turn_completed",
+                    turn_id=turn_id,
+                )
             self._agent_task = None
+            if handle is not None and handle.lifecycle in {"complete", "failed", "discarded"}:
+                self._workflow_handle = None
             self.advance()
 
     # ── main loop ─────────────────────────────────────────────────────────────

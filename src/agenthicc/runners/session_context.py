@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from rich.console import Console
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
+    from agenthicc.runners.session_conversation import SessionConversation
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
@@ -73,6 +74,7 @@ class SessionContext:
 
     # ── ui ────────────────────────────────────────────────────────────────────
     console: "Console"
+    session_conversation: "SessionConversation | None" = None
 
     # ── memory (PRD-101) ──────────────────────────────────────────────────────
     memory_router: "MemoryRouter | None" = None

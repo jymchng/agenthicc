@@ -143,7 +143,12 @@ class InterruptCapability:
         session._buf.clear()
         session._paste.condensed = False
         session._push()
-        await session._bus.dispatch_async(InterruptAgentCommand())
+        await session._bus.dispatch_async(
+            InterruptAgentCommand(
+                source="escape" if key == Key.ESC else "ctrl_c",
+                disposition="pause" if key == Key.ESC else "cancel",
+            )
+        )
         return _CONSUMED
 
 

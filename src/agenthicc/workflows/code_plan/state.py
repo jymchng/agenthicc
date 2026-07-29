@@ -52,3 +52,5 @@ class CodePlanContext:
     fail_reason: str = ""  # set on FAILED
     command_outcomes: list[dict[str, object]] = dataclasses.field(default_factory=list)
     shared_memory: ShortTermMemory | None = None  # shared across all phases
+    state: CodePlanState = CodePlanState.PLAN
+    phase_iteration: int = 0

@@ -79,13 +79,24 @@ class WorkflowRunner(BaseWorkflowRunner):
         from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
         from agenthicc.kernel import Event  # noqa: PLC0415
 
-        self._shared_memory = ShortTermMemory(
-            max_tokens=self._cfg.cfg.execution.effective_usable_budget()
+        self._shared_memory = (
+            self._cfg.session_memory
+            if self._cfg.session_memory is not None
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         )
-        run_id = uuid.uuid4().hex
+        handle = self._cfg.workflow_handle
+        run_id = handle.run_id if handle is not None else uuid.uuid4().hex
         self._run_id = run_id
 
         context = WorkflowContext(intent=intent, run_id=run_id, workflow_name=self._plugin.name)
+        if handle is not None:
+            handle.attach_context(context)
+            from agenthicc.workflows.checkpoint import CheckpointValidationError  # noqa: PLC0415
+
+            try:
+                handle.save_checkpoint(reason="started")
+            except CheckpointValidationError:
+                handle.checkpoint_supported = False
         first_phase = self._plugin.first_phase()
         wf_run = WorkflowRun(
             run_id=run_id,
@@ -110,6 +121,17 @@ class WorkflowRunner(BaseWorkflowRunner):
 
         start_phase = first_phase.name if first_phase is not None else None
         await self._run_phase_loop(intent, context, wf_run, run_id, start_phase)
+        handle = self._cfg.workflow_handle
+        if handle is not None:
+            live_run = self._cfg.app_state.workflow_run()
+            if live_run is not None and live_run.status == "complete":
+                handle.mark_terminal("complete")
+                if handle.checkpoint_supported:
+                    handle.save_checkpoint(reason="complete")
+            elif live_run is not None and live_run.status == "failed":
+                handle.mark_terminal("failed", error="workflow failed")
+                if handle.checkpoint_supported:
+                    handle.save_checkpoint(reason="failed")
         return context
 
     async def resume(self, context: object) -> None:
@@ -126,9 +148,14 @@ class WorkflowRunner(BaseWorkflowRunner):
 
         run_id = context.run_id
         self._run_id = run_id
-        self._shared_memory = ShortTermMemory(
-            max_tokens=self._cfg.cfg.execution.effective_usable_budget()
+        self._shared_memory = (
+            self._cfg.session_memory
+            if self._cfg.session_memory is not None
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         )
+        handle = self._cfg.workflow_handle
+        if handle is not None:
+            handle.attach_context(context)
 
         phase_history = [
             PhaseRunRecord(
@@ -155,9 +182,28 @@ class WorkflowRunner(BaseWorkflowRunner):
         if start_phase is None:
             wf_run = dataclasses.replace(wf_run, status="complete", current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
+            if handle is not None:
+                handle.mark_terminal("complete")
+                handle.save_checkpoint(reason="complete")
             return
 
-        await self._run_phase_loop(context.intent, context, wf_run, run_id, start_phase)
+        try:
+            await self._run_phase_loop(context.intent, context, wf_run, run_id, start_phase)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            if handle is not None and handle.is_pause_requested():
+                handle.attach_context(context)
+            elif handle is not None:
+                handle.mark_terminal("failed", error="cancelled")
+            raise
+        if handle is not None:
+            live_run = self._cfg.app_state.workflow_run()
+            status = live_run.status if live_run is not None else "failed"
+            if status == "complete":
+                handle.mark_terminal("complete")
+            elif status == "failed":
+                handle.mark_terminal("failed", error="workflow failed")
+            if handle.checkpoint_supported:
+                handle.save_checkpoint(reason=status)
 
     # ── phase loop ────────────────────────────────────────────────────────────
 
@@ -245,6 +291,12 @@ class WorkflowRunner(BaseWorkflowRunner):
                     current_phase_index=phase_idx,
                 )
                 self._cfg.app_state.workflow_run.set(wf_run)
+                context.current_phase = phase_name
+                context.phase_iteration = iteration_counts[phase_name]
+                handle = self._cfg.workflow_handle
+                if handle is not None:
+                    handle.attach_context(context)
+                    handle.update_phase(phase_name, phase_idx, context.phase_iteration)
 
                 if spec.parallel_with:
                     peer_specs = [spec]
@@ -382,7 +434,13 @@ class WorkflowRunner(BaseWorkflowRunner):
             )
 
         except (asyncio.CancelledError, KeyboardInterrupt):
-            wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+            handle = self._cfg.workflow_handle
+            if handle is not None and handle.is_pause_requested():
+                wf_run = dataclasses.replace(wf_run, status="paused")
+            else:
+                wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+                if handle is not None:
+                    handle.mark_terminal("failed", error="cancelled")
             self._cfg.app_state.workflow_run.set(wf_run)
             raise
         except Exception as exc:
@@ -397,6 +455,12 @@ class WorkflowRunner(BaseWorkflowRunner):
 
     def _find_resume_phase(self, context: WorkflowContext) -> str | None:
         """Walk the phase-transition graph to find the first incomplete phase."""
+        if (
+            context.current_phase is not None
+            and context.current_phase not in context.phase_outputs
+            and self._plugin.get_phase(context.current_phase)
+        ):
+            return context.current_phase
         completed = set(context.phase_outputs.keys())
         first_phase = self._plugin.first_phase()
         phase_name = first_phase.name if first_phase is not None else None
@@ -515,6 +579,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             "runner": self._cfg.agent_runner,
             "processor": self._cfg.processor,
             "session_memory": self._shared_memory,
+            "conversation_id": self._cfg.conversation_id,
             "max_agent_turns": spec.max_turns,
             "conv_store": self._cfg.conv_store,
             "app_state": self._cfg.app_state,

@@ -247,8 +247,47 @@ def _workflow_run_completed(state: AppState, event: Event) -> tuple[AppState, li
     if wf is None:
         return state, []
     status_str = _payload_str(event.payload, "status", default="complete")
-    new_status = NodeStatus.complete if status_str == "complete" else NodeStatus.failed
+    if status_str == "complete" or status_str == "exited":
+        new_status = NodeStatus.complete
+    elif status_str == "paused":
+        new_status = NodeStatus.paused
+    elif status_str == "discarded":
+        new_status = NodeStatus.discarded
+    else:
+        new_status = NodeStatus.failed
     return state.with_workflow(replace(wf, status=new_status)), []
+
+
+def _workflow_run_paused(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    """Mark a live workflow paused without losing its run identity."""
+    run_id = _payload_str(event.payload, "run_id")
+    wf = state.workflows.get(run_id)
+    if wf is None:
+        return state, []
+    return state.with_workflow(replace(wf, status=NodeStatus.paused)), []
+
+
+def _workflow_run_resumed(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    """Return a paused workflow to running state."""
+    run_id = _payload_str(event.payload, "run_id")
+    wf = state.workflows.get(run_id)
+    if wf is None:
+        return state, []
+    return state.with_workflow(replace(wf, status=NodeStatus.running)), []
+
+
+def _workflow_run_discarded(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    """Record an explicit user reset as a terminal discarded run."""
+    run_id = _payload_str(event.payload, "run_id")
+    wf = state.workflows.get(run_id)
+    if wf is None:
+        return state, []
+    return state.with_workflow(replace(wf, status=NodeStatus.discarded)), []
+
+
+def _workflow_checkpoint_saved(state: AppState, event: Event) -> tuple[AppState, list[Effect]]:
+    """Checkpoint notifications do not mutate the kernel projection."""
+    return state, []
 
 
 # ── Tasks ────────────────────────────────────────────────────────────────
@@ -350,6 +389,10 @@ _HANDLERS: dict[str, ReducerFn] = {
     "WorkflowRunStarted": _workflow_run_started,
     "WorkflowPhaseCompleted": _workflow_phase_completed,
     "WorkflowRunCompleted": _workflow_run_completed,
+    "WorkflowRunPaused": _workflow_run_paused,
+    "WorkflowRunResumed": _workflow_run_resumed,
+    "WorkflowRunDiscarded": _workflow_run_discarded,
+    "WorkflowCheckpointSaved": _workflow_checkpoint_saved,
     "TaskCreated": _task_created,
     "TaskAssigned": _task_assigned,
     "ToolRegistered": _tool_registered,

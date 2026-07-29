@@ -243,6 +243,8 @@ class WorkflowContext:
     run_id: str
     workflow_name: str
     phase_outputs: dict[str, PhaseOutput] = field(default_factory=dict)
+    current_phase: str | None = None
+    phase_iteration: int = 0
 
     def as_system_block(self) -> str:
         if not self.phase_outputs:
@@ -349,6 +351,31 @@ class WorkflowPlugin(abc.ABC):
         Override to return a specialised ``WorkflowParams`` subclass.
         """
         return WorkflowParams()
+
+    @classmethod
+    def checkpoint_context_to_payload(cls, context: object) -> dict[str, object] | None:
+        """Encode a custom runner context for PRD-156 checkpoints.
+
+        Built-in runners are encoded by the framework.  A downstream runner
+        with its own context may override this hook and return JSON-compatible
+        fields; returning ``None`` leaves the workflow runnable but makes Esc
+        fail closed because its state cannot be safely resumed.
+        """
+        return None
+
+    @classmethod
+    def checkpoint_context_from_payload(
+        cls,
+        payload: dict[str, object],
+        memory: object | None = None,
+    ) -> object | None:
+        """Restore a custom context produced by
+        :meth:`checkpoint_context_to_payload`.
+
+        ``memory`` is the already-open session conversation and must be
+        attached by the custom codec rather than reconstructed independently.
+        """
+        return None
 
 
 # ── WorkflowEntry — registry provenance record (PRD-116) ─────────────────────

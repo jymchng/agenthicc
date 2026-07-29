@@ -227,6 +227,7 @@ async def _run_direct_turn(session: object, request: WorkerRequest) -> None:
         agent_runner,
         getattr(session, "processor"),
         session_memory=getattr(session, "session_memory"),
+        conversation_id=str(getattr(session, "session_id", "")),
         max_agent_turns=cfg.execution.max_agent_turns,
         conv_store=app_state.conversation,
         app_state=app_state,

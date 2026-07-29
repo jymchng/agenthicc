@@ -57,6 +57,8 @@ The primary entry point is `agenthicc.__main__:main`.
 | `ToolMetadata` / `ToolErrorKind` | `agenthicc.tools` | Generated catalog metadata and stable error taxonomy |
 | `SearchWebTool` / `FetchPageTool` | `agenthicc.skills.web_search` | Native lauren-ai tools for Brave search and visible page-text extraction |
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
+| `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
+| `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints |
 | `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
 | `execute_workflow` | `agenthicc.runners.headless` | Execute a registered workflow in a session |
 | `run_headless_workflow` | `agenthicc.runners.headless` | Build, run, and close one headless workflow session |
@@ -147,6 +149,9 @@ the current API instead of remembering it:
 - Use `WorkspaceView` for filesystem paths and the shared HTTP client for tools.
 - Child capability scopes can only restrict their parent.
 - Durable tool results must be replay-safe across a transport retry or resume.
+- Direct turns and workflows in one session reuse one `conversation_id` and one
+  journal-backed provider memory; custom contexts opt into checkpoint hooks or
+  fail closed on Esc.
 
 The repository does not currently contain `agenthicc.api`, `tui.app`,
 `tui.transcript`, or `tui.events`; those are historical or unresolved product

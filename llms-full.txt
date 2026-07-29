@@ -1603,6 +1603,17 @@ runner with specialized typed state machines; their phase metadata is still
 used by registry, display, and configuration surfaces and is not currently the
 sole executable source of truth.
 
+`checkpoint_context_to_payload(context)` and
+`checkpoint_context_from_payload(payload, memory=None)` are optional hooks for
+custom runner contexts. Built-in contexts are encoded by the framework. A
+custom context without these hooks remains runnable but cannot be safely paused
+and resumed; the runtime fails closed instead of restarting it.
+
+`SessionConversation` owns the stable session `conversation_id` and the single
+journal-backed provider memory shared by direct turns and workflow phases.
+`WorkflowRunHandle` owns workflow-specific context, lifecycle, phase cursor, and
+checkpoint identity without duplicating provider messages.
+
 ### CodePlanRunner
 
 The specialized `code_plan` runner evolves `CodePlanState` through
@@ -1688,8 +1699,9 @@ that ends without a tool call is retried and then reported as a failure.
 Retry budgets come from `execution.authoring_max_generation_attempts` (inner-loop
 attempts per phase, and the ceiling on `validate → generate` repair cycles) and
 `execution.authoring_max_phase_turns` (sub-turns per agent turn); both are
-clamped to at least 1. `resume()` raises `TypeError` for anything that is not a
-`WorkflowContext`.
+clamped to at least 1. `resume()` accepts a typed `CreateWorkflowContext`
+checkpoint for in-place continuation; a legacy generic `WorkflowContext`
+retains its restart contract, and unrelated objects raise `TypeError`.
 
 `_validate` calls `validate_workflow_file` before the agent votes and **overrides
 an `approve_workflow` call when the report failed**, routing back to generate, so

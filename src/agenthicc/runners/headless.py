@@ -89,6 +89,8 @@ async def execute_workflow(
     path as the TUI.
     """
     from agenthicc.workflows.config import WorkflowConfig  # noqa: PLC0415
+    from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore  # noqa: PLC0415
+    from agenthicc.runners.workflow_handle import WorkflowRunHandle  # noqa: PLC0415
 
     workflow_cls = session.workflow_registry.get(workflow_name)
     if workflow_cls is None:
@@ -101,6 +103,16 @@ async def execute_workflow(
     if not intent.strip():
         raise ValueError("Workflow intent must not be empty")
 
+    workflow_handle = None
+    session_conversation = getattr(session, "session_conversation", None)
+    if session_conversation is not None:
+        workflow_handle = WorkflowRunHandle.create(
+            run_id=uuid.uuid4().hex,
+            workflow=workflow_cls,
+            conversation=session_conversation,
+            intent=intent,
+            checkpoint_store=WorkflowCheckpointStore(session.session_id),
+        )
     workflow_config = WorkflowConfig(
         conv_store=session.app_state.conversation,
         app_state=session.app_state,
@@ -116,6 +128,9 @@ async def execute_workflow(
         memory_router=session.memory_router,
         semantic_index=session.semantic_index,
         completed_turns=completed_turns,
+        session_memory=session.session_memory,
+        conversation_id=session.session_id,
+        workflow_handle=workflow_handle,
         params=workflow_cls.build_params(session.cfg.workflows.get(workflow_name, {})),
         terminal_wait_policies={
             phase.name: phase.terminal_wait_policy for phase in workflow_cls.phases

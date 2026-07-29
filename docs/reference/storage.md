@@ -13,6 +13,7 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>/metadata.json` | `tui.runtime.session_log` | cwd, model, timestamps | Session discovery/index |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
 | `<id>/conversation-journal.jsonl` | `ConversationJournal` | Messages, resets, turn markers, tool records | Rebuild memory and resume interrupted turns |
+| `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase, plugin fingerprint, and journal cursor | Rehydrate an acknowledged paused workflow |
 | `<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
 
 The session runner currently places the kernel log beside the session directory
@@ -38,6 +39,12 @@ Service exports contain only the policy-filtered snapshot and durable event
 projection. Project roots, workflow/agent fields, credentials, and private
 payload keys are filtered before delivery; a support export can still contain
 user prompts and tool results and must be reviewed before sharing.
+
+Workflow checkpoints deliberately do not duplicate provider messages. They store
+typed workflow state plus the cursor into the session journal. Writes use a
+flushed temporary file followed by an atomic replacement, and checkpoint files
+are kept under the session directory with restrictive permissions. Corrupt,
+oversized, stale, or plugin-mismatched checkpoints fail closed.
 
 ## Project and global stores
 

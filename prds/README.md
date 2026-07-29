@@ -23,6 +23,7 @@ against the current source before implementing them.
 - [PRD-152 — Agent-Executable create_* Authoring](prd-152-self-contained-workflow-phase-authoring.md)
 - [PRD-153 — Reliable Agent-Owned Workflow Authoring](prd-153-reliable-agent-owned-workflow-authoring.md)
 - [PRD-155 — Consolidated Safe, Plan, and Yolo Modes](prd-155-three-mode-operational-model.md)
+- [PRD-156 — Resumable Plan-Mode Interrupts and Workflow Continuation](prd-156-resumable-plan-interrupts.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -114,6 +115,11 @@ mode, keeps Plan hard-blocked, moves approval semantics into Safe, and makes
 Safe the default for new sessions while defining compatibility for legacy Auto,
 Guard, and other mode names. Its implementation record and verification plan
 are authoritative for the current source tree.
+
+PRD-156 proposes the workflow-specific continuation contract for Esc during
+Plan-mode thinking. It preserves the active run in a durable checkpoint,
+attaches queued follow-up input to the same run, and makes reset explicit so a
+paused workflow can never silently restart from its first phase.
 
 ## Existing PRDs
 

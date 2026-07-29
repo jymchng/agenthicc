@@ -21,6 +21,8 @@ if TYPE_CHECKING:
     from agenthicc.agents.registry import AgentsRegistry
     from agenthicc.config import AgenthiccConfig
     from agenthicc.workflows.plugin import WorkflowParams
+    from lauren_ai._memory import ShortTermMemory
+    from agenthicc.runners.workflow_handle import WorkflowRunHandle
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,12 @@ class WorkflowConfig:
     """Phase-name to terminal policy map (PRD-149)."""
     next_queued_message: Callable[[], str | None] | None = None
     """Claim ordinary TUI input at a completed tool boundary, when present."""
+    session_memory: "ShortTermMemory | None" = None
+    """The session-wide provider conversation shared by direct/workflow turns."""
+    conversation_id: str = ""
+    """Stable session conversation identifier passed to lauren-ai."""
+    workflow_handle: "WorkflowRunHandle | None" = None
+    """Active workflow lifecycle handle, when this config runs a workflow."""
 
     def all_plugin_tools(self) -> list["ToolLike"]:
         """Return project tools while accepting legacy list-based configs."""

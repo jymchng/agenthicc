@@ -33,6 +33,7 @@ class AgentTurnOptions(TypedDict):
     runner: "AgentRunnerBase"
     processor: "EventProcessor"
     session_memory: "ShortTermMemory | None"
+    conversation_id: NotRequired[str]
     max_agent_turns: int
     conv_store: "ConversationStore | None"
     app_state: "AppState | None"
@@ -67,6 +68,7 @@ class AgentTurnContext:
 
     # ── memory ────────────────────────────────────────────────────────────────
     session_memory: "ShortTermMemory | None" = None
+    conversation_id: str = ""
     max_agent_turns: int = 200
 
     # ── observability ─────────────────────────────────────────────────────────

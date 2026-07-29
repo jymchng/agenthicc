@@ -36,9 +36,11 @@ class IntentStatus(str, Enum):
 class NodeStatus(str, Enum):
     pending = "pending"
     running = "running"
+    paused = "paused"
     complete = "complete"
     failed = "failed"
     skipped = "skipped"
+    discarded = "discarded"
 
 
 class AgentStatus(str, Enum):

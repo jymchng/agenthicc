@@ -5,6 +5,13 @@ phases. A phase chooses an agent role, prompt context, capability ceiling, and
 transition rules; the runner supplies the session's tools, memory, approvals,
 and model configuration.
 
+All direct turns and workflows in one interactive session use one
+`SessionConversation`: its stable `conversation_id` is the session ID and its
+journal-backed provider memory is reused across phase turns. The reactive
+`ConversationStore` is only the display projection. Workflow phase state stays
+in a typed workflow context and is checkpointed separately when the runner
+supports resumable state.
+
 There are two supported authoring levels:
 
 - A `WorkflowPlugin` with `PhaseSpec` values uses the generic
@@ -215,8 +222,9 @@ transcript.
 
 ### Shared context and tools
 
-Like `code_plan`, one `ShortTermMemory` is created per authoring run and shared by
-all four phases, so the generating agent already has the design in context. Every
+The session's `ShortTermMemory` is shared by all four phases, so the generating
+agent already has the design in context and can also see prior direct or
+workflow conversation subject to compaction. Every
 phase also receives `memory_write`, `memory_read`, and `semantic_search`, and the
 project tool set filtered by the active mode's blocked capabilities. The built-in
 tool registry supplies the workspace-guarded canonical `write_file` tool even when
@@ -249,10 +257,39 @@ the new file, then select it for a later request:
 Parse the requested Facebook page and summarize the results.
 ```
 
-`create_workflow` has no runner-owned staged manifest to resume: `resume()`
-restarts the state machine from `design` with the original intent, and the design
-phase can read whatever the interrupted run already wrote. Use `/workflow reset`
-to return to the active mode's default workflow.
+The active session keeps the conversation ID and provider memory while the
+generated workflow is selected. Built-in and generic workflow contexts can be
+checkpointed; `create_workflow` resumes its typed outer-loop state rather than
+silently restarting DESIGN. Use `/workflow resume` to continue a paused run,
+or `/workflow reset` to write a terminal discarded record and return to the
+active mode's default workflow.
+
+### Checkpointing a custom runner
+
+The framework codecs cover `WorkflowContext`, `CodePlanContext`, and
+`CreateWorkflowContext`. A custom plugin with a different context must opt in
+explicitly:
+
+```python
+class MyWorkflow(WorkflowPlugin):
+    @classmethod
+    def checkpoint_context_to_payload(cls, context):
+        return {"state": context.state.name, "result": context.result}
+
+    @classmethod
+    def checkpoint_context_from_payload(cls, payload, memory=None):
+        return MyContext(
+            state=MyState[payload["state"]],
+            result=payload["result"],
+            shared_memory=memory,
+        )
+```
+
+The payload must be bounded JSON-compatible data and must attach the supplied
+session memory rather than creating another conversation. If the hook is not
+implemented, the workflow remains runnable, but an Esc pause fails closed and
+requires `/workflow reset`; it is never silently restarted from its first
+phase.
 
 Per-phase models come from `[workflows.create_workflow]`:
 

@@ -159,16 +159,28 @@ class CodePlanRunner(BaseWorkflowRunner):
         from agenthicc.kernel import Event  # noqa: PLC0415
         from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
 
-        run_id: str = uuid.uuid4().hex
+        session_memory = (
+            self._cfg.session_memory
+            if self._cfg.session_memory is not None
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+        )
+        handle = self._cfg.workflow_handle
+        run_id: str = handle.run_id if handle is not None else uuid.uuid4().hex
         self._run_id = run_id
 
         ctx: CodePlanContext = CodePlanContext(
             intent=intent,
             run_id=run_id,
-            shared_memory=ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            ),
+            shared_memory=session_memory,
         )
+        if handle is not None:
+            handle.attach_context(ctx)
+            from agenthicc.workflows.checkpoint import CheckpointValidationError  # noqa: PLC0415
+
+            try:
+                handle.save_checkpoint(reason="started")
+            except CheckpointValidationError:
+                handle.checkpoint_supported = False
 
         wf_run: WorkflowRun = WorkflowRun(
             run_id=run_id,
@@ -223,6 +235,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                         state = await self._review(ctx)
                     case CodePlanState.SUMMARIZE:
                         state = await self._summarize(ctx)
+                ctx.state = state
 
                 next_label: str | None = state.name.lower() if not state.is_terminal else None
                 await self._cfg.processor.emit(
@@ -274,7 +287,13 @@ class CodePlanRunner(BaseWorkflowRunner):
             )
 
         except (asyncio.CancelledError, KeyboardInterrupt):
-            wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+            if handle is not None and handle.is_pause_requested():
+                wf_run = dataclasses.replace(wf_run, status="paused")
+                handle.attach_context(ctx)
+            else:
+                wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+                if handle is not None:
+                    handle.mark_terminal("failed", error="cancelled")
             self._cfg.app_state.workflow_run.set(wf_run)
             raise
         except Exception as exc:
@@ -283,68 +302,98 @@ class CodePlanRunner(BaseWorkflowRunner):
             self._cfg.app_state.workflow_run.set(wf_run)
             self._cfg.conv_store.append_event("error", {"message": str(exc)})
 
+        if handle is not None:
+            if wf_run.status in {"complete", "exited"}:
+                handle.mark_terminal("complete")
+                if handle.checkpoint_supported:
+                    handle.save_checkpoint(reason=wf_run.status)
+            elif wf_run.status == "failed":
+                handle.mark_terminal("failed", error=ctx.fail_reason)
+                if handle.checkpoint_supported:
+                    handle.save_checkpoint(reason="failed")
         return ctx  # PRD-114: subclasses receive typed context via super().run()
 
     async def resume(self, context: object) -> None:
-        """Resume from a WorkflowContext (legacy --resume path)."""
+        """Resume a typed checkpoint context or the legacy generic context."""
         from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
         from agenthicc.workflows.plugin import WorkflowContext, WorkflowRun  # noqa: PLC0415
 
-        if not isinstance(context, WorkflowContext):
+        handle = self._cfg.workflow_handle
+        session_memory = (
+            self._cfg.session_memory
+            if self._cfg.session_memory is not None
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+        )
+        if isinstance(context, CodePlanContext):
+            ctx = context
+            ctx.shared_memory = session_memory
+            completed: set[str] = set()
+            state = ctx.state
+        elif isinstance(context, WorkflowContext):
+            completed = set(context.phase_outputs.keys())
+            if not completed:
+                # Preserve the historical generic-context contract.  Durable
+                # PRD-156 checkpoints use CodePlanContext and resume in place;
+                # an old caller that only supplied WorkflowContext has no typed
+                # state to rehydrate and therefore starts a fresh run.
+                await self.run(context.intent)
+                return
+            ctx = CodePlanContext(
+                intent=context.intent,
+                run_id=context.run_id,
+                shared_memory=session_memory,
+            )
+            if "plan" in completed:
+                plan_output = context.phase_outputs.get("plan")
+                if plan_output is not None:
+                    ctx.plan = plan_output.full_text
+                    raw_mode = plan_output.metadata.get("execute_mode")
+                    if isinstance(raw_mode, str) and raw_mode in {"Safe", "Yolo"}:
+                        ctx.execute_mode = raw_mode
+            resume_map: dict[frozenset[str], CodePlanState] = {
+                frozenset(): CodePlanState.PLAN,
+                frozenset({"plan"}): CodePlanState.EXECUTE,
+                frozenset({"plan", "execute"}): CodePlanState.REVIEW,
+                frozenset({"plan", "execute", "review"}): CodePlanState.SUMMARIZE,
+            }
+            state = resume_map.get(frozenset(completed), CodePlanState.PLAN)
+        else:
             raise TypeError("workflow resume requires a WorkflowContext")
-
-        completed: set[str] = (
-            set(context.phase_outputs.keys()) if hasattr(context, "phase_outputs") else set()
-        )
-
-        ctx: CodePlanContext = CodePlanContext(
-            intent=context.intent,
-            run_id=context.run_id,
-            shared_memory=ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            ),
-        )
-
-        if "plan" in completed:
-            plan_output = context.phase_outputs.get("plan")
-            if plan_output is not None:
-                ctx.plan = plan_output.full_text
-                raw_mode = plan_output.metadata.get("execute_mode")
-                if isinstance(raw_mode, str) and raw_mode in {"Safe", "Yolo"}:
-                    ctx.execute_mode = raw_mode
-
-        resume_map: dict[frozenset[str], CodePlanState] = {
-            frozenset(): CodePlanState.PLAN,
-            frozenset({"plan"}): CodePlanState.EXECUTE,
-            frozenset({"plan", "execute"}): CodePlanState.REVIEW,
-            frozenset({"plan", "execute", "review"}): CodePlanState.SUMMARIZE,
-        }
-        state: CodePlanState = resume_map.get(frozenset(completed), CodePlanState.PLAN)
-
-        if not completed:
-            await self.run(context.intent)
-            return
-
-        self._run_id = context.run_id
+        self._run_id = ctx.run_id
+        if handle is not None:
+            handle.attach_context(ctx)
         wf_run: WorkflowRun = WorkflowRun(
-            run_id=context.run_id,
+            run_id=ctx.run_id,
             workflow_name=self.workflow_name,
-            intent=context.intent,
+            intent=ctx.intent,
             current_phase=state.name.lower(),
             total_phases=self.total_phases,
         )
         self._cfg.app_state.workflow_run.set(wf_run)
 
-        while not state.is_terminal:
-            match state:
-                case CodePlanState.PLAN:
-                    state = await self._plan(ctx)
-                case CodePlanState.EXECUTE:
-                    state = await self._execute(ctx)
-                case CodePlanState.REVIEW:
-                    state = await self._review(ctx)
-                case CodePlanState.SUMMARIZE:
-                    state = await self._summarize(ctx)
+        try:
+            while not state.is_terminal:
+                ctx.state = state
+                match state:
+                    case CodePlanState.PLAN:
+                        state = await self._plan(ctx)
+                    case CodePlanState.EXECUTE:
+                        state = await self._execute(ctx)
+                    case CodePlanState.REVIEW:
+                        state = await self._review(ctx)
+                    case CodePlanState.SUMMARIZE:
+                        state = await self._summarize(ctx)
+                ctx.state = state
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            if handle is not None and handle.is_pause_requested():
+                handle.attach_context(ctx)
+                wf_run = dataclasses.replace(wf_run, status="paused")
+            else:
+                wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+                if handle is not None:
+                    handle.mark_terminal("failed", error="cancelled")
+            self._cfg.app_state.workflow_run.set(wf_run)
+            raise
 
         if state == CodePlanState.COMPLETE:
             final: str = "complete"
@@ -354,6 +403,13 @@ class CodePlanRunner(BaseWorkflowRunner):
             final = "failed"
         wf_run = dataclasses.replace(wf_run, status=final, current_phase=None)
         self._cfg.app_state.workflow_run.set(wf_run)
+        if handle is not None:
+            if final in {"complete", "exited"}:
+                handle.mark_terminal("complete")
+            else:
+                handle.mark_terminal("failed", error=ctx.fail_reason)
+            if handle.checkpoint_supported:
+                handle.save_checkpoint(reason=final)
 
     # ── phase methods ─────────────────────────────────────────────────────────
 
@@ -633,7 +689,11 @@ class CodePlanRunner(BaseWorkflowRunner):
         from agenthicc.workflows.code_plan.state import CodePlanContext  # noqa: PLC0415
 
         # Build a minimal CodePlanContext so the turn has a shared_memory.
-        _sm = shared_memory or _STM(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+        _sm = (
+            shared_memory
+            if shared_memory is not None
+            else _STM(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+        )
         _ctx = CodePlanContext(
             intent=intent,
             run_id=self._run_id or "extension",
@@ -670,6 +730,17 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     def _set_phase(self, phase_name: str, phase_index: int, ctx: CodePlanContext) -> None:
         """Update all workflow TUI state for the current phase in one call."""
+        try:
+            ctx.state = CodePlanState[phase_name.upper()]
+        except KeyError:
+            # Composite runners may reuse this helper for an extension phase;
+            # leave the typed code_plan state unchanged in that case.
+            pass
+        ctx.phase_iteration += 1
+        handle = self._cfg.workflow_handle
+        if handle is not None:
+            handle.attach_context(ctx)
+            handle.update_phase(phase_name, phase_index, ctx.phase_iteration)
         self._cfg.app_state.update_workflow_phase(
             workflow_name=self.workflow_name,
             phase_name=phase_name,
@@ -733,6 +804,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 runner=self._cfg.agent_runner,
                 processor=self._cfg.processor,
                 session_memory=ctx.shared_memory,
+                conversation_id=self._cfg.conversation_id,
                 max_agent_turns=max_turns,
                 conv_store=self._cfg.conv_store,
                 app_state=self._cfg.app_state,
