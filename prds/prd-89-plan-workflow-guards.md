@@ -1,5 +1,10 @@
 # PRD-89 — Plan Workflow Guards: Approval Enforcement and Mode Reset
 
+Status: Superseded in part by [PRD-155 — Consolidated Safe, Plan, and Yolo
+Modes](prd-155-three-mode-operational-model.md). The approval-gate portions
+remain historical; the old Auto reset behavior is replaced by canonical mode
+restoration and Safe reset rules.
+
 ## Background
 
 Two bugs were observed after implementing the code_plan workflow (PRD-87/88):

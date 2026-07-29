@@ -22,6 +22,7 @@ __all__ = [
     "CAPABILITIES_KEY",
     "ToolCapability",
     "get_tool_capabilities",
+    "classify_tool_capabilities",
     "tool_read",
     "tool_write",
     "tool_execute",
@@ -33,6 +34,7 @@ __all__ = [
     "tool_network_read",
     "tool_network_write",
     "tool_network_search",
+    "tool_control",
 ]
 
 #: Metadata key used by ToolCapabilityGate to look up capabilities.
@@ -53,6 +55,8 @@ class ToolCapability(str, Enum):
     GIT_WRITE = "git_write"  # modifies git state (add, commit, checkout, stash)
     NETWORK = "network"  # makes outbound network calls (email, REST API, etc.)
     SEARCH = "search"  # searches content without state changes
+    CONTROL = "control"  # advances an internal workflow/session state machine
+    UNDECLARED = "undeclared"  # internal fail-closed marker for missing metadata
 
 
 # ── Single-capability decorators ──────────────────────────────────────────────
@@ -83,14 +87,16 @@ tool_network_search = set_metadata(
     CAPABILITIES_KEY,
     frozenset({ToolCapability.NETWORK, ToolCapability.SEARCH}),
 )
+tool_control = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.CONTROL}))
 
 
 def get_tool_capabilities(tool: object) -> frozenset[ToolCapability]:
     """Return the ToolCapability frozenset stored on a @tool()-decorated function.
 
     Reads from __lauren_ai_tool_metadata__[CAPABILITIES_KEY], written by
-    set_metadata(CAPABILITIES_KEY, ...).  Returns an empty frozenset for
-    unannotated tools (open-by-default semantics).
+    set_metadata(CAPABILITIES_KEY, ...).  An empty frozenset means that the
+    tool has no declared capability; the runtime gates classify that case as
+    ``ToolCapability.UNDECLARED`` and fail closed in Safe/Plan.
     """
     meta_dict: object = getattr(tool, _TOOL_METADATA, None) or {}
     if not isinstance(meta_dict, dict):
@@ -101,3 +107,33 @@ def get_tool_capabilities(tool: object) -> frozenset[ToolCapability]:
     ):
         return frozenset(capabilities)
     return frozenset()
+
+
+def classify_tool_capabilities(raw: object) -> frozenset[str]:
+    """Normalize executor metadata with a conservative unknown-value policy.
+
+    Tool decorators normally provide ``ToolCapability`` members.  The executor
+    and a few integration boundaries also carry serialized string values, so
+    valid strings are accepted.  Missing, empty, malformed, or unknown values
+    become ``UNDECLARED``; a mixed valid/invalid declaration retains the valid
+    values and adds that marker.  This keeps Safe approval and Plan blocking
+    fail-closed for plugin and MCP metadata that cannot be trusted.
+    """
+    if not isinstance(raw, (set, frozenset)) or not raw:
+        return frozenset({ToolCapability.UNDECLARED})
+
+    known = {cap.value for cap in ToolCapability}
+    values: set[str] = set()
+    malformed = False
+    for item in raw:
+        if isinstance(item, ToolCapability):
+            values.add(item.value)
+        elif isinstance(item, str) and item in known:
+            values.add(item)
+        else:
+            malformed = True
+    if not values:
+        return frozenset({ToolCapability.UNDECLARED})
+    if malformed:
+        values.add(ToolCapability.UNDECLARED)
+    return frozenset(values)

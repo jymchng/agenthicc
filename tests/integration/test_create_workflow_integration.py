@@ -76,7 +76,7 @@ class DocReview(WorkflowPlugin):
             name="draft",
             max_turns=20,
             next="review",
-            mode_override="Auto",
+            mode_override="Yolo",
             system_prompt_override="You are in the DRAFT phase. Write the document.",
         ),
         PhaseSpec(
@@ -312,7 +312,7 @@ async def test_generated_workflow_is_discovered_by_the_real_registry(
     assert entry.plugin_cls.phase_names() == ["draft", "review"]
     first = entry.plugin_cls.first_phase()
     assert first is not None
-    assert first.mode_override == "Auto"
+    assert first.mode_override == "Yolo"
 
 
 async def test_generated_workflow_loads_through_load_python_workflows(

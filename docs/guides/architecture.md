@@ -101,9 +101,12 @@ behaves. Consolidating or formalizing this boundary is PRD-138 P0.3.
 7. Completion, rejection, error, or interruption determines the next phase or
    resume plan.
 
-The built-in modes are Auto, Plan, Ask, Review, Safe, and Debug. The built-in
-agent roles include planner, executor, reviewer, explorer, verifier, human,
-and auto.
+The canonical selectable modes are Safe, Plan, and Yolo, in that cycle order.
+Safe asks for approval before side effects, Plan hard-blocks side effects, and
+Yolo preserves the unrestricted Auto behavior. Auto, Guard, Ask, and Review are
+non-displayed compatibility aliases; Replay is internal-only and Debug is not
+silently granted any permissions. The built-in agent roles include planner,
+executor, reviewer, explorer, verifier, human, and auto.
 
 ## Tool and security path
 

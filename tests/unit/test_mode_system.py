@@ -1,12 +1,12 @@
 """Unit tests for the core Mode system: Mode, ModeRegistry, ModeManager.
 
 Covers:
-- Mode.badge ANSI colour codes for all six supported colours
+- Mode.badge ANSI colour codes for the supported colours
 - ModeRegistry.register, get, all_modes basic operations
 - ModeRegistry.next_after cycling and wrapping
 - ModeRegistry.register replaces by name while preserving cycle order
 - ModeRegistry.unregister_source removes only matching source_id entries
-- ModeManager default is Auto (or first mode when Auto absent)
+- ModeManager default is Safe (or first mode when Safe absent)
 - ModeManager.cycle() advances through modes and wraps back
 - ModeManager.set() switches to a named mode; returns None for unknown names
 - ModeManager.apply_to_agent() prepends system_patch to the system prompt
@@ -307,13 +307,13 @@ def test_unregister_source_removes_only_own_source():
 # ---------------------------------------------------------------------------
 
 
-def test_manager_default_is_auto():
+def test_manager_default_is_safe():
     from agenthicc.modes.builtin import build_default_registry
 
     reg = build_default_registry()
     mgr = ModeManager(reg)
     assert mgr.active is not None
-    assert mgr.active.name == "Auto"
+    assert mgr.active.name == "Safe"
 
 
 def test_manager_default_is_first_when_auto_absent():
@@ -361,15 +361,15 @@ def test_manager_cycle_wraps_back():
     assert result.name == "Auto"
 
 
-def test_manager_cycle_six_modes_full_loop():
+def test_manager_cycle_three_builtin_modes_full_loop():
     from agenthicc.modes.builtin import build_default_registry
 
     reg = build_default_registry()
-    mgr = ModeManager(reg, default_name="Auto")
+    mgr = ModeManager(reg, default_name="Safe")
     names = []
-    for _ in range(6):
+    for _ in range(4):
         names.append(mgr.cycle().name)
-    assert names == ["Plan", "Safe", "Auto", "Plan", "Safe", "Auto"]
+    assert names == ["Plan", "Yolo", "Safe", "Plan"]
 
 
 def test_manager_cycle_raises_on_empty_registry():

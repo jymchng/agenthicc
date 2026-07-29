@@ -108,11 +108,12 @@ imports the generated file deterministically and overrides an agent approval tha
 contradicts the result. It supersedes the `create_workflow` portions of PRD-147,
 PRD-152, and PRD-153.
 
-PRD-155 is the feasibility and implementation specification for consolidating
-the user-facing mode catalogue into Safe, Plan, and Yolo. It treats Yolo as the
-current Auto mode, keeps Plan hard-blocked, moves approval semantics into Safe,
-and makes Safe the default for new sessions while defining compatibility for
-legacy Auto, Guard, and other mode names.
+PRD-155 is the implemented specification for consolidating the user-facing
+mode catalogue into Safe, Plan, and Yolo. It treats Yolo as the current Auto
+mode, keeps Plan hard-blocked, moves approval semantics into Safe, and makes
+Safe the default for new sessions while defining compatibility for legacy Auto,
+Guard, and other mode names. Its implementation record and verification plan
+are authoritative for the current source tree.
 
 ## Existing PRDs
 

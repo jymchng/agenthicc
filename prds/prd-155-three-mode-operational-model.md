@@ -1,7 +1,7 @@
 ---
 title: "PRD-155: Three-Mode Operational Model"
-status: Proposed
-version: 0.1.0
+status: Implemented
+version: 1.0.0
 created: 2026-07-28
 scope: Consolidate interactive execution modes into Safe, Plan, and Yolo
 related_prds:
@@ -20,7 +20,7 @@ related_prds:
 
 ## Executive summary
 
-This PRD evaluates replacing the user-facing mode catalogue with three
+This PRD specified and now records the implementation of replacing the user-facing mode catalogue with three
 operational modes:
 
 | Mode | Intended operation |
@@ -29,8 +29,8 @@ operational modes:
 | **Plan** | Read-only planning and analysis; side effects are hard-blocked |
 | **Yolo** | Unrestricted operation; this is the current `Auto` mode |
 
-The change is feasible, with medium-to-high implementation risk. It is not a
-label-only rename. The current runtime has two mode models, the current `Safe`
+The change was not a label-only rename. The original runtime had two mode
+models, the original `Safe`
 mode hard-blocks tools instead of asking for approval, `Guard` currently owns
 approval semantics, workflow phases refer to mode names, and several callers
 assume that `Auto` is the reset/default mode.
@@ -41,13 +41,39 @@ restrictions, rename Auto to Yolo at the product boundary, and make Safe the
 default for new interactive sessions. Compatibility aliases should be accepted
 at migration boundaries but should not create additional user-visible modes.
 
-This document is a feasibility and implementation specification. It does not
-change runtime behaviour by itself.
+The implementation is complete in the current runtime. The canonical registry
+is `agenthicc.tui.runtime.mode_manager.ModeRegistry`; the legacy
+`agenthicc.modes` package is retained only as a compatibility adapter for
+downstream imports and mode plugins. Verification evidence is recorded below.
+
+## Implementation record
+
+The resolved choices are:
+
+- missing, empty, malformed, and unknown capability metadata is classified as
+  `UNDECLARED`; Safe requests approval and Plan blocks it;
+- `Review` aliases Plan, while `Debug` is rejected rather than granted Yolo
+  permissions;
+- mode-bound workflow completion returns to Safe; temporary phase overrides
+  restore the exact canonical pre-phase mode in `finally` paths;
+- Safe is the default for both interactive and headless session construction;
+  headless approval fails closed unless the explicit dangerous-permissions flag
+  is supplied, and that flag cannot bypass Plan;
+- legacy persisted names are resolved through aliases and rewritten in
+  canonical form on resume.
+
+The implementation adds the canonical Safe → Plan → Yolo registry and internal
+Replay state, capability/approval enforcement, lifecycle restoration, workflow
+override migration, persistence migration, command/UI updates, and dedicated
+unit, integration, and E2E policy coverage. The repository verification matrix
+is listed in §11.
 
 ## 1. Evidence from the current repository
 
-The assessment was made against the current source tree rather than historical
-PRD examples.
+The assessment was made against the source tree before the implementation
+recorded in this document, rather than historical PRD examples. The tables in
+§1 intentionally preserve the migration evidence and are not the post-change
+runtime contract.
 
 ### 1.1 Two mode representations exist
 
@@ -470,27 +496,25 @@ uv run pytest tests/ -q
 The implementation should also run the type-audit and `llms_check` gates if
 public exports or type contracts change, as required by `AGENTS.md`.
 
-## 12. Feasibility decision and open decisions
+## 12. Decision record
 
-### Decision
+### Implementation decision
 
-Proceed with implementation. The change fits the existing capability gate,
+The implementation fits the existing capability gate,
 approval service, runtime mode manager, workflow override, and headless
 approval boundaries. The work should be treated as a cross-cutting migration,
 not a small UI change.
 
-### Decisions required before coding
+### Resolved decisions
 
-1. Select the unknown-tool policy. Conservative Safe approval is recommended.
-2. Confirm whether `Review` aliases Plan or is removed with a migration error.
-3. Confirm whether `Debug` is removed, folded into Yolo, or retained as an
-   internal diagnostics profile. Silent permission expansion is not acceptable.
-4. Confirm whether a mode-bound workflow returns to Safe or restores the mode
-   selected before invocation. This PRD recommends Safe for the default
-   posture, but the rule must be uniform and explicit.
-5. Confirm whether user-configured default mode is in scope. If it is, Safe
-   must remain the fallback and invalid values must fail closed.
-6. Choose the compatibility-window duration and persisted-state version.
+1. Conservative Safe approval for unknown tools is implemented.
+2. `Review` aliases Plan; `Debug` is rejected with an actionable error.
+3. Mode-bound workflow completion returns to Safe; temporary phase overrides
+   restore the exact prior mode.
+4. No user-configured default-mode setting is exposed; Safe is the fixed
+   fallback for interactive and headless construction.
+5. Persisted mode metadata is migrated idempotently by rewriting aliases to
+   canonical names; unknown values fail resume rather than falling back.
 
 ## 13. Related documentation
 

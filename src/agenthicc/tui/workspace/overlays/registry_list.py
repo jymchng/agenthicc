@@ -319,6 +319,8 @@ class WorkflowListOverlay(_RegistryListOverlay):
         on_select: Callable[[str], None] | None = None,
     ) -> None:
         rows: list[_ListRow] = []
+        from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+
         for workflow in sorted(workflows, key=lambda item: item.name):
             entry = registry.get_entry(workflow.name) if registry is not None else None
             source = entry.source if entry is not None else "registered"
@@ -333,7 +335,11 @@ class WorkflowListOverlay(_RegistryListOverlay):
                         ("Source", source),
                         ("Phases", ", ".join(phases) or "(none)"),
                         ("Runner", runner_kind),
-                        ("Modes", ", ".join(workflow.mode_bindings) or "(none)"),
+                        (
+                            "Modes",
+                            ", ".join(canonical_mode_name(mode) for mode in workflow.mode_bindings)
+                            or "(none)",
+                        ),
                     ),
                     selection=f"/workflow {workflow.name}",
                 )

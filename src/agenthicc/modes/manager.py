@@ -26,19 +26,19 @@ class ModeManager:
     default_name:
         Name of the mode to activate initially.  Falls back to the first
         registered mode if *default_name* is not found.  Defaults to
-        ``"Auto"``.
+        ``"Safe"``.
 
     Examples
     --------
-    >>> from agenthicc.modes.builtins import build_default_registry
+    >>> from agenthicc.modes.builtin import build_default_registry
     >>> manager = ModeManager(build_default_registry())
     >>> manager.active_name
-    'Auto'
-    >>> manager.cycle().name in ['Plan', 'Ask', 'Review', 'Safe', 'Debug']
+    'Safe'
+    >>> manager.cycle().name in ['Plan', 'Yolo']
     True
     """
 
-    def __init__(self, registry: ModeRegistry, default_name: str = "Auto") -> None:
+    def __init__(self, registry: ModeRegistry, default_name: str = "Safe") -> None:
         self._registry = registry
         default = registry.get(default_name) or (
             registry.all_modes()[0] if registry.all_modes() else None
@@ -55,9 +55,14 @@ class ModeManager:
         return self._active
 
     @property
+    def registry(self) -> ModeRegistry:
+        """Return the compatibility registry through a public boundary."""
+        return self._registry
+
+    @property
     def active_name(self) -> str:
-        """The name of the active mode; ``"Auto"`` when nothing is active."""
-        return self._active.name if self._active is not None else "Auto"
+        """The name of the active mode; ``"Safe"`` when nothing is active."""
+        return self._active.name if self._active is not None else "Safe"
 
     # ------------------------------------------------------------------
     # State transitions

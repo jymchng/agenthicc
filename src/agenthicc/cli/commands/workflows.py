@@ -34,6 +34,8 @@ def _() -> None: ...
 
 
 def _workflow_payload(plugin_cls: type[object], source: str) -> _WorkflowPayload:
+    from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+
     phases = getattr(plugin_cls, "phases", [])
     phase_payload: list[_PhasePayload] = []
     for phase in phases:
@@ -50,7 +52,9 @@ def _workflow_payload(plugin_cls: type[object], source: str) -> _WorkflowPayload
         "name": str(getattr(plugin_cls, "name", "")),
         "description": str(getattr(plugin_cls, "description", "")),
         "source": source,
-        "mode_bindings": list(getattr(plugin_cls, "mode_bindings", [])),
+        "mode_bindings": [
+            canonical_mode_name(str(mode)) for mode in getattr(plugin_cls, "mode_bindings", [])
+        ],
         "phases": phase_payload,
     }
 

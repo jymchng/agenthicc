@@ -20,6 +20,9 @@ The primary entry point is `agenthicc.__main__:main`.
 - `tools/` provides class-based tools, filesystem/git/exec integrations, MCP,
   capability metadata, approvals, path and network guards, and shared HTTP
   safety helpers.
+- `tui.runtime.mode_manager` is the canonical mode registry: selectable modes
+  cycle `Safe → Plan → Yolo`; `Auto`, `Guard`, `Ask`, and `Review` are
+  non-displayed compatibility aliases, and `Replay` is internal-only.
 - `memory/` provides session/project/global tiers, semantic search, compaction,
   conversation journaling, and durable idempotent tool replay support.
 - `session_service/` provides client-neutral snapshots, typed commands,
@@ -59,6 +62,8 @@ The primary entry point is `agenthicc.__main__:main`.
 | `run_headless_workflow` | `agenthicc.runners.headless` | Build, run, and close one headless workflow session |
 | `Workspace` | `agenthicc.tui.workspace` | Rich Live UI root |
 | `UnifiedInputSession` | `agenthicc.tui.input` | Lifetime input/raw-mode loop |
+| `ModeManager` / `ModeRegistry` / `RuntimeMode` | `agenthicc.tui.runtime` | Canonical Safe/Plan/Yolo selection, aliases, lifecycle state, and capability policy |
+| `ToolCapability` / `classify_tool_capabilities` | `agenthicc.tools.capabilities` | Capability taxonomy and fail-closed metadata classification |
 | `export_session` | `agenthicc.tui.runtime.session_export` | Redacted portable session export |
 | `inspect_session` | `agenthicc.tui.runtime.session_export` | Redacted durable session health and usage summary |
 | `SessionService` / `SessionSnapshot` / `SessionCommand` | `agenthicc.session_service` | Client-neutral session coordination and policy-filtered read model |
@@ -105,7 +110,7 @@ and remain separate from durable agent-session records.
 `create_workflow` is modelled on `code_plan`: typed phase state evolved by an
 outer loop, one bounded async method per phase as the inner loop, transitions
 only via tool calls, and a typed context capturing each phase's artefact. Its
-four phases are design (human-approved, read-only), generate (`Auto` mode, writes
+four phases are design (human-approved, read-only), generate (`Yolo` mode, writes
 `.agenthicc/workflows/<name>.py`), validate (deterministic import-and-check, then
 the agent's vote), and summarize:
 

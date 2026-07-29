@@ -334,7 +334,7 @@ from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 class MyWorkflow(WorkflowPlugin):
     name          = "my_workflow"
     description   = "What this workflow does."
-    mode_bindings = ["Auto"]   # mode that auto-triggers it; [] = manual only
+    mode_bindings = ["Yolo"]   # mode that auto-triggers it; [] = manual only
     phases        = [
         PhaseSpec(name="step1", agent_type="auto", max_turns=20),
         PhaseSpec(name="step2", agent_type="auto", max_turns=10, next=None),
@@ -433,7 +433,7 @@ the user which config file to update and when to restart the session.
 | ``next`` | Next phase name; ``None`` ends the workflow |
 | ``on_reject`` | Phase to jump to when ``approved=False`` |
 | ``max_turns`` | LLM sub-turns limit |
-| ``mode_override`` | E.g. ``"Auto"`` to unlock write tools for one phase |
+| ``mode_override`` | E.g. ``"Yolo"`` to unlock write tools for one phase |
 | ``system_prompt_override`` | Replaces the role's default system prompt entirely |
 | ``output_schema`` | ``"plan"``, ``"review_result"``, or ``"free_text"`` |
 | ``max_iterations`` | Retry ceiling per phase; ``-1`` = unlimited |
@@ -458,7 +458,7 @@ class MyExtendedRunner(CodePlanRunner):
             intent=intent,
             text=f"[PLAN]\\n{ctx.plan}\\n\\nDo extra work here.",
             system_prompt="You are doing extra post-implementation work.",
-            mode="Auto",
+            mode="Yolo",
             max_turns=10,
             shared_memory=ctx.shared_memory,
         )
@@ -479,7 +479,7 @@ class MyExtendedWorkflow(CodePlan):
 | ``intent`` | ``str`` | Original user intent |
 | ``text`` | ``str`` | User-turn text for this phase |
 | ``system_prompt`` | ``str`` | Full system prompt for this phase |
-| ``mode`` | ``str \\| None`` | Mode override (e.g. ``"Auto"``); restored after |
+| ``mode`` | ``str \\| None`` | Mode override (e.g. ``"Yolo"``); restored after |
 | ``max_turns`` | ``int`` | LLM sub-turn limit (default 10) |
 | ``shared_memory`` | ``ShortTermMemory \\| None`` | Pass ``ctx.shared_memory`` to carry full context |
 
@@ -489,7 +489,7 @@ class MyExtendedWorkflow(CodePlan):
 ```python
 phases = [
     PhaseSpec(name="plan", agent_type="planner", output_schema="plan", next="execute"),
-    PhaseSpec(name="execute", agent_type="executor", mode_override="Auto"),
+    PhaseSpec(name="execute", agent_type="executor", mode_override="Yolo"),
 ]
 ```
 

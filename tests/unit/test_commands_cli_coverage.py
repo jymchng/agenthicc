@@ -35,8 +35,9 @@ pytestmark = pytest.mark.unit
 
 def _command_context(tmp_path: Path) -> CommandContext:
     modes = ModeRegistry()
-    modes.register(RuntimeMode("Auto", badge="A", description="automatic"))
+    modes.register(RuntimeMode("Safe", badge="S", description="approval-gated"))
     modes.register(RuntimeMode("Plan", badge="P", description="planning"))
+    modes.register(RuntimeMode("Yolo", badge="Y", description="unrestricted"))
     return CommandContext(
         text="",
         args="",

@@ -67,9 +67,9 @@ def _script(*steps):
 def app_state():
     state = TUIAppState.create()
     registry = build_default_registry()
-    auto = registry.get("Auto")
-    if auto is not None:
-        state.active_mode.set(auto)
+    yolo = registry.get("Yolo")
+    if yolo is not None:
+        state.active_mode.set(yolo)
     return state
 
 

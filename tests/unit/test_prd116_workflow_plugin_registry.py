@@ -247,7 +247,7 @@ def test_registry_mode_default_map() -> None:
     reg.register(B)
     dm = reg.mode_default_map()
     assert dm["Plan"] == "a"  # first-registered wins
-    assert dm["Auto"] == "b"
+    assert dm["Yolo"] == "b"
 
 
 @pytest.mark.unit

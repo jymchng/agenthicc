@@ -67,7 +67,8 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         default=False,
         help=(
             "Disable ALL tool approval prompts for this session. "
-            "Overrides Guard mode and all per-mode approval requirements. "
+            "Overrides Safe mode approval requirements. Plan mode hard blocks "
+            "side effects even with this flag. "
             "Intentionally not settable in agenthicc.toml."
         ),
     )

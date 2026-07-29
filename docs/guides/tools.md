@@ -40,7 +40,15 @@ dependency is still inspectable and no import side effect can fire. Pass
 Both roots are enforced: a documentation path that traverses out of the tree, and
 a source target outside the `agenthicc` package, are refused before any read. All
 five are tagged `READ` (the searches also `SEARCH`), so they remain available in
-`Plan`, `Ask`, and `Safe` mode.
+Safe and Plan mode.
+
+Every callable tool must declare capability metadata when it can do so. Safe
+allows `READ`, `SEARCH`, and `GIT_READ` directly; `WRITE`, `GIT_WRITE`,
+`EXECUTE`, `NETWORK`, and missing or malformed metadata require approval. Plan
+hard-blocks the latter capabilities and unannotated tools before approval.
+Yolo is the unrestricted mode. These are executor gates, not merely prompt
+instructions, so project, MCP, dynamic, and built-in tools follow the same
+policy.
 
 ## The shortest working path
 

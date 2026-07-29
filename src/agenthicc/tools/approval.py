@@ -1,6 +1,6 @@
 """Tool approval system — soft-block requiring explicit human confirmation (PRD-78).
 
-Flow for a side-effecting tool in Guard mode:
+Flow for a side-effecting or unclassified tool in Safe mode:
 
 1. ToolCapabilityGate runs first — if blocked, returns abort() and this module
    never fires.
@@ -71,7 +71,7 @@ class ApprovalService:
     async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
         """Agent-side: suspend until the user responds."""
         # Fast path — capability already blanket-approved in this session/turn.
-        # Guard: empty capabilities must never match (frozenset() <= frozenset()
+        # Important: empty capabilities must never match (frozenset() <= frozenset()
         # is True in Python, which would silently auto-approve plan reviews and
         # any other non-capability request before the overlay is shown).
         if req.capabilities and req.capabilities <= self._remembered_all:
@@ -136,7 +136,10 @@ class ApprovalGate:
 
     async def before_tool_call(self, ctx: ToolCallContext) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
-        from agenthicc.tools.capabilities import CAPABILITIES_KEY  # noqa: PLC0415
+        from agenthicc.tools.capabilities import (  # noqa: PLC0415
+            CAPABILITIES_KEY,
+            classify_tool_capabilities,
+        )
 
         # PRD-79: --dangerously-skip-permissions bypasses all approval prompts.
         if getattr(self._app_state, "cli_flags", None) is not None:
@@ -149,11 +152,7 @@ class ApprovalGate:
             return BeforeToolHookDecision.proceed()
 
         raw_caps = ctx.get_metadata(CAPABILITIES_KEY)
-        tool_caps: frozenset[str] = (
-            frozenset(item for item in raw_caps if isinstance(item, str))
-            if isinstance(raw_caps, (set, frozenset))
-            else frozenset()
-        )
+        tool_caps = classify_tool_capabilities(raw_caps)
         needs_approval = tool_caps & required
         if not needs_approval:
             return BeforeToolHookDecision.proceed()

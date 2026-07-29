@@ -67,10 +67,12 @@ def make_planner_tools(
     # NOTE: no ``from __future__ import annotations`` in this scope —
     # @tool() reads real annotations at decoration time.
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
 
     # Shared approval gate — updated by request_plan_approval, read by finalize_plan.
     approval_state: dict[str, bool] = {"granted": False}
 
+    @tool_control
     @_tool()
     async def request_plan_approval(plan: str) -> dict[str, object]:
         """Request human review of the proposed plan via the Plan Approval overlay.
@@ -105,7 +107,7 @@ def make_planner_tools(
             tool_name="Plan Review",
             tool_use_id=uuid.uuid4().hex,
             tool_input={"plan": plan},
-            capabilities=frozenset(),  # no caps → passes ToolCapabilityGate
+            capabilities=frozenset(),  # human approval request; no tool side effect
             event=asyncio.Event(),
             kind="plan_review",  # → PlanApprovalOverlay in tui_session.py
         )
@@ -140,6 +142,7 @@ def make_planner_tools(
             feedback=feedback,
         )
 
+    @tool_control
     @_tool()
     async def finalize_plan(plan: str) -> dict[str, object]:
         """Finalize the approved plan and signal transition to execution.
@@ -181,6 +184,7 @@ def make_planner_tools(
     if exit_event is not None:
         _exit_event = exit_event
 
+        @tool_control
         @_tool()
         async def exit_code_plan() -> dict[str, object]:
             """Exit the code_plan workflow immediately without producing a plan.
@@ -221,7 +225,9 @@ def make_executor_tools(
     returns approved=False, which retries the execute phase via on_reject="execute".
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
 
+    @tool_control
     @_tool()
     async def mark_execute_complete(summary: str) -> dict[str, object]:
         """Signal that all implementation tasks are finished.
@@ -269,7 +275,9 @@ def make_reviewer_tools(
       review_data  — {"action": "approve"|"reject", "summary": str, "reason": str}.
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
 
+    @tool_control
     @_tool()
     async def approve_review(summary: str) -> dict[str, object]:
         """Signal that the implementation passes review and is ready to summarize.
@@ -298,6 +306,7 @@ def make_reviewer_tools(
             ),
         }
 
+    @tool_control
     @_tool()
     async def reject_review(reason: str) -> dict[str, object]:
         """Signal that the implementation has issues that must be fixed.
@@ -361,7 +370,9 @@ def make_questions_tool(
     approval_svc=None → returns {"cancelled": True} immediately (headless/tests).
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
 
+    @tool_control
     @_tool()
     async def ask_user(questions: list[_QuestionInput]) -> dict[str, object]:
         """Present the user with a set of questions and collect their answers.
@@ -421,7 +432,7 @@ def make_questions_tool(
             tool_name="Questions",
             tool_use_id=_uuid.uuid4().hex,
             tool_input={"questions": questions},
-            capabilities=frozenset(),
+            capabilities=frozenset(),  # human question; no tool side effect
             event=_asyncio.Event(),
             kind="questions",
         )

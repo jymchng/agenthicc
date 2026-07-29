@@ -22,6 +22,7 @@ import pytest
 from agenthicc.config import AgenthiccConfig
 from agenthicc.tools.capabilities import ToolCapability
 from agenthicc.tui.conversation_store import AppState
+from agenthicc.tui.runtime.mode_manager import ModeManager
 from agenthicc.workflows.config import WorkflowConfig
 from agenthicc.workflows.create_workflow.definition import CreateWorkflow, CreateWorkflowParams
 from agenthicc.workflows.create_workflow.inspection_tools import make_inspection_tools
@@ -224,6 +225,32 @@ def test_context_defaults_are_empty() -> None:
     assert ctx.artifacts == {}
     assert ctx.command_outcomes == []
     assert ctx.shared_memory is None
+
+
+@pytest.mark.asyncio
+async def test_yolo_generation_override_restores_prior_mode_on_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    manager = ModeManager(app_state=runner._cfg.app_state)
+    runner._mode_manager = manager
+
+    async def cancelled_turn(*_args: object, **_kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", cancelled_turn)
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_turn(
+            "generate",
+            tools=[],
+            mode="Yolo",
+            system_prompt="write the workflow",
+            max_turns=1,
+            ctx=_ctx(),
+        )
+
+    assert manager.active_name == "Safe"
+    assert runner._cfg.app_state.active_mode().name == "Safe"
 
 
 # ── phase_tools: name validation ──────────────────────────────────────────────
@@ -981,7 +1008,7 @@ def test_plugin_phase_graph_matches_the_runner_state_machine() -> None:
     assert phases["design"].next == "generate"
     assert phases["design"].require_plan_finalization is True
     assert phases["generate"].next == "validate"
-    assert phases["generate"].mode_override == "Auto"
+    assert phases["generate"].mode_override == "Yolo"
     assert phases["generate"].require_explicit_completion is True
     assert phases["validate"].next == "summarize"
     assert phases["validate"].on_reject == "generate"
@@ -1457,7 +1484,7 @@ async def test_generate_transitions_to_validate_and_records_the_artifact() -> No
     assert artifact.metadata["path"] == "x/demo.py"
 
 
-async def test_generate_runs_in_auto_mode_with_the_design_in_the_prompt() -> None:
+async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt() -> None:
     runner = _runner()
     ctx = _ctx()
     ctx.design = "phases: draft then review"
@@ -1471,7 +1498,7 @@ async def test_generate_runs_in_auto_mode_with_the_design_in_the_prompt() -> Non
 
     runner._run_turn = turn  # type: ignore[method-assign]
     await runner._generate(ctx)
-    assert seen["mode"] == "Auto"
+    assert seen["mode"] == "Yolo"
     prompt = seen["system_prompt"]
     assert isinstance(prompt, str)
     assert "phases: draft then review" in prompt

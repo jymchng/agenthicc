@@ -811,7 +811,8 @@ def _result_error_kind(error: str) -> ToolErrorKind:
     """Classify a structured ``{"ok": false}`` result without rethrowing it."""
     lowered = error.lower()
     if any(
-        token in lowered for token in ("permission", "denied", "forbidden", "outside workspace")
+        token in lowered
+        for token in ("permission", "denied", "forbidden", "outside workspace", "blocked in")
     ):
         return ToolErrorKind.denied
     if "timeout" in lowered or "timed out" in lowered:

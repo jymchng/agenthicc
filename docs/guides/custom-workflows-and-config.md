@@ -66,7 +66,7 @@ def _string(source: Mapping[str, object], key: str) -> str:
 class ReleaseReview(WorkflowPlugin):
     name = "release_review"
     description = "Plan a release, implement the work, and verify the result."
-    mode_bindings = ["Auto", "Plan"]
+    mode_bindings = ["Yolo", "Plan"]
     phases = [
         PhaseSpec(name="plan", agent_type="planner", max_turns=12, next="execute"),
         PhaseSpec(name="execute", agent_type="executor", max_turns=40, next="verify"),

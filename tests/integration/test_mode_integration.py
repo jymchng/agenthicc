@@ -1,238 +1,100 @@
-"""Integration tests for the agenthicc Mode system.
-
-Exercises ModeManager, ModeRegistry, discover_mode_plugins, and the optional
-_cmd_mode built-in command together as a full pipeline.  No real LLM calls are
-made; all tests are self-contained.
-"""
+"""Integration coverage for canonical mode identity, aliases, and commands."""
 
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from agenthicc.modes import (
-    ModeManager,
-    build_default_registry,
-    discover_mode_plugins,
-)
+import pytest
+
+from agenthicc.commands.builtins import _cmd_mode
+from agenthicc.commands.command import CommandContext
+from agenthicc.modes import discover_mode_plugins
+from agenthicc.tui.conversation_store import AppState
+from agenthicc.tui.runtime.mode_manager import ModeManager
 
 pytestmark = pytest.mark.integration
 
 
-# ---------------------------------------------------------------------------
-# 1. test_mode_cycle_all_builtin
-# ---------------------------------------------------------------------------
-
-
-def test_mode_cycle_all_builtin():
-    """Cycling 6 times visits all six built-in modes; 7th continues from Auto."""
-    registry = build_default_registry()
-    manager = ModeManager(registry)
-
-    # Start at Auto (default).
-    assert manager.active_name == "Auto"
-
-    # Cycle order: Auto→Plan→Ask→Review→Safe→Debug→Auto (wraps)
-    # 6 cycles from Auto visit: Plan, Ask, Review, Safe, Debug, Auto.
-    visited: set[str] = set()
-    for _ in range(6):
-        mode = manager.cycle()
-        visited.add(mode.name)
-
-    assert visited == {
-        "Auto",
-        "Plan",
-        "Safe",
-    }
-
-    # The 6th cycle wrapped back to Auto; the 7th continues from Auto → Plan.
-    seventh = manager.cycle()
-    assert seventh.name == "Plan"
-
-
-# ---------------------------------------------------------------------------
-# 2. test_apply_to_agent_plan_mode
-# ---------------------------------------------------------------------------
-
-
-def test_apply_to_agent_plan_mode():
-    """Plan mode blocks write/exec tools and prepends the PLAN system patch."""
-    registry = build_default_registry()
-    manager = ModeManager(registry)
-    manager.set("Plan")
-
-    tools = ["write_file", "read_file", "run_bash", "git_status"]
-    system, filtered_tools = manager.apply_to_agent("base", tools)
-
-    assert "write_file" not in filtered_tools
-    assert "read_file" in filtered_tools
-    assert "git_status" in filtered_tools
-    assert "run_bash" not in filtered_tools
-
-    plan_mode = registry.get("Plan")
-    assert plan_mode is not None
-    assert "PLAN" in system
-    assert system.startswith(plan_mode.system_patch[:20])
-
-
-# ---------------------------------------------------------------------------
-# 4. test_mode_plugin_discovered_and_registered
-# ---------------------------------------------------------------------------
-
-
-def test_mode_plugin_discovered_and_registered(tmp_path: Path):
-    """A .agenthicc/modes/mymode.py exporting MODE is discovered and registerable."""
-    modes_dir = tmp_path / ".agenthicc" / "modes"
-    modes_dir.mkdir(parents=True)
-
-    plugin_file = modes_dir / "mymode.py"
-    plugin_file.write_text(
-        "from agenthicc.modes import Mode\nMODE = Mode('Custom', 'CUST', 'Custom mode')\n"
-    )
-
-    plugin_set = discover_mode_plugins(project_dir=tmp_path)
-
-    assert not plugin_set.failed, f"Unexpected failures: {plugin_set.failed}"
-
-    registry = build_default_registry()
-    for mode in plugin_set.all_modes:
-        registry.register(mode)
-
-    assert registry.get("Custom") is not None
-
-
-# ---------------------------------------------------------------------------
-# 5. test_mode_plugin_bad_syntax_skipped
-# ---------------------------------------------------------------------------
-
-
-def test_mode_plugin_bad_syntax_skipped(tmp_path: Path):
-    """A plugin file with a syntax error is recorded as failed; no valid modes."""
-    modes_dir = tmp_path / ".agenthicc" / "modes"
-    modes_dir.mkdir(parents=True)
-
-    bad_file = modes_dir / "bad.py"
-    bad_file.write_text("this is not valid python !!!\ndef broken(\n")
-
-    plugin_set = discover_mode_plugins(project_dir=tmp_path)
-
-    assert len(plugin_set.failed) > 0, "Expected at least one failure"
-    failed_names = {r.path.name for r in plugin_set.failed}
-    assert "bad.py" in failed_names
-
-    # No successfully loaded modes from the bad file.
-    assert all(m.name != "bad" for m in plugin_set.all_modes)
-
-
-# ---------------------------------------------------------------------------
-# 6. test_mode_switch_affects_apply
-# ---------------------------------------------------------------------------
-
-
-def test_mode_switch_affects_apply():
-    """Switching from Safe to Auto changes which tools are exposed."""
-    registry = build_default_registry()
-    manager = ModeManager(registry)
-
-    manager.set("Safe")
-    tools = ["write_file", "run_bash", "git_commit", "read_file"]
-    _, safe_tools = manager.apply_to_agent("base", tools)
-
-    # Safe mode blocks write/exec/git-commit.
-    assert "write_file" not in safe_tools
-    assert "run_bash" not in safe_tools
-    assert "git_commit" not in safe_tools
-    # read_file is in the safe allowlist.
-    assert "read_file" in safe_tools
-
-    manager.set("Auto")
-    _, auto_tools = manager.apply_to_agent("base", tools)
-
-    # Auto mode has no filter — all tools returned.
-    assert set(auto_tools) == set(tools)
-
-
-# ---------------------------------------------------------------------------
-# 7. test_manager_set_returns_none_unknown
-# ---------------------------------------------------------------------------
-
-
-def test_manager_set_returns_none_unknown():
-    """ModeManager.set() with an unknown name returns None; active stays Auto."""
-    registry = build_default_registry()
-    manager = ModeManager(registry)
-
-    assert manager.active_name == "Auto"
-
-    result = manager.set("DoesNotExist")
-    assert result is None
-    assert manager.active_name == "Auto"
-
-
-# ---------------------------------------------------------------------------
-# 8. test_cmd_mode_lists_modes
-# ---------------------------------------------------------------------------
-
-
-def test_cmd_mode_lists_modes():
-    """_cmd_mode with no args calls console.print at least once."""
-    try:
-        from agenthicc.commands.builtins import _cmd_mode  # type: ignore[attr-defined]
-    except (ImportError, AttributeError):
-        pytest.skip("_cmd_mode not yet implemented in builtins")
-
-    from agenthicc.commands.command import CommandContext
-
-    registry = build_default_registry()
-    manager = ModeManager(registry)
-
-    console = MagicMock()
-
-    ctx = CommandContext(
-        text="/mode",
-        args="",
+def _command_context(manager: ModeManager, args: str, console: MagicMock) -> CommandContext:
+    return CommandContext(
+        text=f"/mode {args}".strip(),
+        args=args,
         model=MagicMock(),
         console=console,
         config=MagicMock(),
-        session_id="",
+        session_id="mode-integration",
         mode_manager=manager,
     )
 
-    _cmd_mode(ctx)
 
-    assert console.print.called, "console.print should have been called"
+def test_runtime_manager_starts_safe_and_cycles_only_selectable_modes() -> None:
+    app = AppState.create()
+    manager = ModeManager(app_state=app)
+
+    assert manager.active_name == "Safe"
+    assert app.active_mode().name == "Safe"
+    assert [manager.cycle().name for _ in range(4)] == ["Plan", "Yolo", "Safe", "Plan"]
+    assert [mode.name for mode in manager.registry.all()] == ["Safe", "Plan", "Yolo"]
 
 
-# ---------------------------------------------------------------------------
-# 9. test_cmd_mode_switches
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("input_name", "canonical"),
+    [("Auto", "Yolo"), ("Guard", "Safe"), ("Ask", "Safe"), ("Review", "Plan")],
+)
+def test_runtime_manager_migrates_legacy_aliases(input_name: str, canonical: str) -> None:
+    manager = ModeManager()
+
+    selected = manager.set_by_name(input_name)
+
+    assert selected is not None
+    assert selected.name == canonical
+    assert manager.active_name == canonical
 
 
-def test_cmd_mode_switches():
-    """_cmd_mode with args='Plan' activates Plan mode on the manager."""
-    try:
-        from agenthicc.commands.builtins import _cmd_mode  # type: ignore[attr-defined]
-    except (ImportError, AttributeError):
-        pytest.skip("_cmd_mode not yet implemented in builtins")
-
-    from agenthicc.commands.command import CommandContext
-
-    registry = build_default_registry()
-    manager = ModeManager(registry)
-
+def test_runtime_manager_rejects_debug_and_reports_canonical_choices() -> None:
+    manager = ModeManager()
     console = MagicMock()
 
-    ctx = CommandContext(
-        text="/mode Plan",
-        args="Plan",
-        model=MagicMock(),
-        console=console,
-        config=MagicMock(),
-        session_id="",
-        mode_manager=manager,
+    _cmd_mode(_command_context(manager, "Debug", console))
+
+    assert manager.active_name == "Safe"
+    output = " ".join(str(call.args[0]) for call in console.print.call_args_list)
+    assert "Safe" in output and "Plan" in output and "Yolo" in output
+    assert "Debug" not in manager.registry.selectable_names()
+
+
+def test_mode_command_lists_only_the_three_user_modes() -> None:
+    manager = ModeManager()
+    console = MagicMock()
+
+    _cmd_mode(_command_context(manager, "", console))
+
+    table = console.print.call_args_list[0].args[0]
+    assert [cell for cell in table.columns[0]._cells] == ["Safe", "Plan", "Yolo"]
+    assert "Replay" not in table.columns[0]._cells
+
+
+def test_legacy_mode_plugin_is_discoverable_but_does_not_replace_policy(
+    tmp_path: Path,
+) -> None:
+    modes_dir = tmp_path / ".agenthicc" / "modes"
+    modes_dir.mkdir(parents=True)
+    (modes_dir / "custom.py").write_text(
+        "from agenthicc.modes import Mode\nMODE = Mode('Custom', 'CUSTOM', 'Custom mode')\n",
+        encoding="utf-8",
     )
 
-    _cmd_mode(ctx)
+    plugins = discover_mode_plugins(project_dir=tmp_path)
 
-    assert manager.active_name == "Plan"
+    assert not plugins.failed
+    assert [mode.name for mode in plugins.all_modes] == ["Custom"]
+
+
+def test_mode_command_accepts_auto_alias_as_yolo() -> None:
+    manager = ModeManager()
+    console = MagicMock()
+
+    _cmd_mode(_command_context(manager, "Auto", console))
+
+    assert manager.active_name == "Yolo"

@@ -623,6 +623,91 @@ one of `unknown`, `denied`, `approval_required`, `timeout`, `network`,
 
 ---
 
+### ToolCapability and classify_tool_capabilities
+
+```python
+class ToolCapability(str, Enum):
+    READ = "read"
+    WRITE = "write"
+    EXECUTE = "execute"
+    GIT_READ = "git_read"
+    GIT_WRITE = "git_write"
+    NETWORK = "network"
+    SEARCH = "search"
+    CONTROL = "control"
+    UNDECLARED = "undeclared"
+
+def classify_tool_capabilities(raw: object) -> frozenset[str]: ...
+```
+
+Capability metadata classification is fail-closed: missing, empty, malformed,
+or unknown values produce `UNDECLARED`. Safe approval and Plan blocking use the
+same classifier. `tool_control` marks internal workflow transition tools.
+
+## Runtime modes — `agenthicc.tui.runtime`
+
+### RuntimeMode
+
+```python
+@dataclass(frozen=True)
+class RuntimeMode:
+    name: str
+    badge: str = "⏵⏵"
+    color: str = "white"
+    description: str = ""
+    system_prompt_suffix: str = ""
+    blocked_capabilities: frozenset[str] = frozenset()
+    approval_required: frozenset[str] = frozenset()
+    default_workflow: str | None = None
+    workflows: tuple[str, ...] = ()
+```
+
+Canonical immutable runtime mode state. The selectable built-ins are Safe,
+Plan, and Yolo in that order. Replay is internal-only.
+
+### ModeRegistry
+
+```python
+class ModeRegistry:
+    def all(self, *, include_internal: bool = False) -> list[RuntimeMode]: ...
+    def get(self, name: str, *, include_internal: bool = True) -> RuntimeMode | None: ...
+    def resolve(self, name: str) -> RuntimeMode: ...
+    def selectable_names(self) -> tuple[str, ...]: ...
+```
+
+The canonical registry resolves case-insensitive aliases (`Auto`→`Yolo`,
+`Guard`/`Ask`→`Safe`, `Review`→`Plan`) without listing aliases in cycling or
+the `/mode` picker. Unknown names raise `UnknownModeError` through `resolve()`.
+
+### ModeManager
+
+```python
+class ModeManager:
+    def cycle(self) -> RuntimeMode: ...
+    def set_by_name(self, name: str) -> RuntimeMode | None: ...
+    def set_internal_by_name(self, name: str) -> RuntimeMode | None: ...
+    def restore(self, mode: RuntimeMode) -> RuntimeMode: ...
+```
+
+Session-owned selection and lifecycle synchronization. New sessions start in
+Safe. Workflow phase overrides use `set_by_name()` and restore the exact prior
+mode in a `finally` path; Replay uses the separate internal setter.
+
+### build_default_registry / build_safe_mode / canonical_mode_name
+
+`build_default_registry()` constructs Safe, Plan, Yolo, and internal Replay;
+`build_safe_mode()` supplies the same fail-closed Safe approval policy to
+`AppState` before session wiring; `canonical_mode_name()` normalizes legacy
+aliases for workflow and command display.
+
+### UnknownModeError
+
+```python
+class UnknownModeError(ValueError): ...
+```
+
+Actionable selection error carrying the rejected name and canonical choices.
+
 ## Shared boundary types — `agenthicc.types`
 
 ### JsonScalar
@@ -1421,7 +1506,7 @@ only because a phase tool was called.
 Design is read-only and human-gated: `request_design_approval(design,
 workflow_name)` raises the plan-review overlay and `finalize_design(design,
 workflow_name)` refuses until it returned `approved=True`. Generate runs with
-`mode_override="Auto"` so the write tools are available and the agent writes the
+`mode_override="Yolo"` so the write tools are available and the agent writes the
 plugin source to `.agenthicc/workflows/<name>.py`. Validate imports that file
 deterministically before the agent votes, and routes `on_reject` back to
 generate. `mode_bindings` is empty, so the workflow is manual-only.

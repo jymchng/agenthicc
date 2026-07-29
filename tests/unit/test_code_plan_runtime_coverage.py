@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -9,6 +10,7 @@ import pytest
 
 from agenthicc.config import AgenthiccConfig
 from agenthicc.tui.conversation_store import AppState
+from agenthicc.tui.runtime.mode_manager import ModeManager
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.config import WorkflowConfig
@@ -159,6 +161,30 @@ async def test_resume_type_validation_and_extension_phase(monkeypatch: pytest.Mo
         shared_memory=MagicMock(),
     )
     assert captured
+
+
+@pytest.mark.asyncio
+async def test_yolo_phase_override_restores_safe_after_cancellation(monkeypatch) -> None:
+    runner = _runner()
+    manager = ModeManager(app_state=runner._cfg.app_state)
+    runner._mode_manager = manager
+
+    async def cancelled_turn(*_args: object, **_kwargs: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", cancelled_turn)
+    with pytest.raises(asyncio.CancelledError):
+        await runner._run_turn(
+            "write",
+            tools=[],
+            mode="Yolo",
+            system_prompt="system",
+            max_turns=1,
+            ctx=CodePlanContext("intent", "run", shared_memory=MagicMock()),
+        )
+
+    assert manager.active_name == "Safe"
+    assert runner._cfg.app_state.active_mode().name == "Safe"
 
 
 @pytest.mark.asyncio

@@ -96,11 +96,13 @@ Then launch the terminal workspace and enter a natural-language request:
 ```
 
 The default session discovers built-in and project-local workflows, agents,
-tools, skills, modes, and MCP servers. Writes, command execution, and network
-access are subject to mode restrictions, capability metadata, and approval
-settings. Review the [user-defined tools guide](./docs/guides/tools.md) before
-adding executable project plugins; it documents the current sandbox and trust
-boundaries.
+tools, skills, modes, and MCP servers. New sessions start in Safe mode. Reads
+run directly; writes, command execution, git changes, network access, and
+unannotated tools ask for approval. Plan hard-blocks side effects, while Yolo
+is the unrestricted mode formerly named Auto. Access is enforced by mode
+restrictions, capability metadata, and approval settings. Review the
+[user-defined tools guide](./docs/guides/tools.md) before adding executable
+project plugins; it documents the current sandbox and trust boundaries.
 
 To create a specialized workflow, select `/workflow create_workflow` and enter
 the intent in the next input. It runs `design → generate → validate → summarize`

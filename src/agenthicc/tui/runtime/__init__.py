@@ -12,7 +12,19 @@ from agenthicc.tui.runtime.commands import (
     SendMessageCommand,
     InterruptAgentCommand,
 )
-from agenthicc.tui.runtime.mode_manager import ModeManager, ModeRegistry, RuntimeMode
+from agenthicc.tui.runtime.mode_manager import (
+    DEFAULT_MODE_NAME,
+    INTERNAL_MODE_NAMES,
+    MODE_ALIASES,
+    SELECTABLE_MODE_NAMES,
+    ModeManager,
+    ModeRegistry,
+    RuntimeMode,
+    UnknownModeError,
+    build_safe_mode,
+    build_default_registry,
+    canonical_mode_name,
+)
 
 __all__ = [
     "CommandBus",
@@ -22,4 +34,12 @@ __all__ = [
     "ModeManager",
     "ModeRegistry",
     "RuntimeMode",
+    "UnknownModeError",
+    "DEFAULT_MODE_NAME",
+    "SELECTABLE_MODE_NAMES",
+    "INTERNAL_MODE_NAMES",
+    "MODE_ALIASES",
+    "build_default_registry",
+    "build_safe_mode",
+    "canonical_mode_name",
 ]

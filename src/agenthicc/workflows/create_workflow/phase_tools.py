@@ -71,10 +71,12 @@ def make_design_tools(
     ``approval_svc=None`` → ``request_design_approval`` auto-approves (headless/tests).
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
 
     # Shared gate — written by request_design_approval, read by finalize_design.
     approval_state: dict[str, bool] = {"granted": False}
 
+    @tool_control
     @_tool()
     async def request_design_approval(design: str, workflow_name: str) -> dict[str, object]:
         """Present the proposed workflow design to the user for approval.
@@ -122,7 +124,7 @@ def make_design_tools(
             tool_name="Workflow Design Review",
             tool_use_id=uuid.uuid4().hex,
             tool_input={"plan": design, "workflow_name": workflow_name},
-            capabilities=frozenset(),  # no caps → passes ToolCapabilityGate
+            capabilities=frozenset(),  # human approval request; no tool side effect
             event=asyncio.Event(),
             kind="plan_review",  # → PlanApprovalOverlay in tui_session.py
         )
@@ -155,6 +157,7 @@ def make_design_tools(
             feedback=feedback,
         )
 
+    @tool_control
     @_tool()
     async def finalize_design(design: str, workflow_name: str) -> dict[str, object]:
         """Finalize the approved design and hand off to the generation phase.
@@ -205,6 +208,7 @@ def make_design_tools(
     if exit_event is not None:
         _exit_event = exit_event
 
+        @tool_control
         @_tool()
         async def exit_create_workflow(suggestion: str) -> dict[str, object]:
             """Exit the create_workflow workflow without authoring anything.
@@ -241,7 +245,9 @@ def make_generation_tools(
     firing, the generate phase retries.
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
 
+    @tool_control
     @_tool()
     async def mark_generation_complete(summary: str, path: str) -> dict[str, object]:
         """Signal that the workflow file has been fully written to disk.
@@ -295,7 +301,9 @@ def make_validation_tools(
     a broken workflow can never be accepted.
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
 
+    @tool_control
     @_tool()
     async def approve_workflow(summary: str) -> dict[str, object]:
         """Signal that the generated workflow is correct and ready to finish.
@@ -324,6 +332,7 @@ def make_validation_tools(
             ),
         }
 
+    @tool_control
     @_tool()
     async def reject_workflow(reason: str) -> dict[str, object]:
         """Signal that the generated workflow has problems that must be fixed.

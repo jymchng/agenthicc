@@ -18,17 +18,18 @@ class ModeRegistry:
     Examples
     --------
     >>> reg = ModeRegistry()
-    >>> reg.register(Mode(name="Auto", label="AUTO", description="Automatic"))
+    >>> reg.register(Mode(name="Safe", label="SAFE", description="Approval-gated"))
     >>> reg.register(Mode(name="Plan", label="PLAN", description="Planning only"))
     >>> len(reg)
     2
-    >>> reg.next_after("Auto").name
+    >>> reg.next_after("Safe").name
     'Plan'
     """
 
-    def __init__(self) -> None:
+    def __init__(self, aliases: dict[str, str] | None = None) -> None:
         self._modes: list[Mode] = []
         self._by_name: dict[str, Mode] = {}
+        self._aliases = {alias.casefold(): target for alias, target in (aliases or {}).items()}
 
     # ------------------------------------------------------------------
     # Mutation helpers
@@ -67,11 +68,22 @@ class ModeRegistry:
 
     def get(self, name: str) -> Mode | None:
         """Return the :class:`Mode` with the given *name*, or ``None``."""
-        return self._by_name.get(name)
+        direct = self._by_name.get(name)
+        if direct is None:
+            key = name.casefold()
+            direct = next((mode for mode in self._modes if mode.name.casefold() == key), None)
+        if direct is not None:
+            return direct
+        target = self._aliases.get(name.casefold())
+        return self._by_name.get(target) if target is not None else None
 
     def all_modes(self) -> list[Mode]:
         """Return a snapshot list of all registered modes in insertion order."""
         return list(self._modes)
+
+    def all(self) -> list[Mode]:
+        """Return modes through the canonical runtime registry query name."""
+        return self.all_modes()
 
     def next_after(self, current_name: str) -> Mode:
         """Return the mode that follows *current_name* in registration order.
@@ -86,9 +98,11 @@ class ModeRegistry:
         """
         if not self._modes:
             raise ValueError("ModeRegistry is empty; cannot cycle modes.")
+        canonical = self.get(current_name)
+        current = canonical.name if canonical is not None else current_name
         names = [m.name for m in self._modes]
         try:
-            idx = names.index(current_name)
+            idx = names.index(current)
             return self._modes[(idx + 1) % len(self._modes)]
         except ValueError:
             return self._modes[0]

@@ -7,7 +7,7 @@ ToolFilter             — type alias for mode tool-filter callables
 ModeHook               — type alias for pre/post hook callables
 ModeRegistry           — ordered registry with cycling and source-based removal
 ModeManager            — stateful wrapper that tracks the current mode and applies it
-BUILTIN_MODES          — list of the 6 built-in Mode instances
+BUILTIN_MODES          — list of the Safe, Plan, and Yolo Mode instances
 build_default_registry — factory returning a ModeRegistry with all built-in modes
 ModeLoadResult         — result of loading a single mode plugin file
 ModePluginSet          — aggregated results from a full plugin discovery scan

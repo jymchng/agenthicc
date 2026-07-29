@@ -659,16 +659,10 @@ def _cmd_mode(ctx: CommandContext) -> bool:
             table.add_column("Mode")
             table.add_column("Label")
             table.add_column("Description")
-            try:
-                modes = mode_manager._registry.all()
-                for m in modes:
-                    marker = " < active" if m.name == mode_manager.active_name else ""
-                    table.add_row(m.name, m.badge, m.description + marker)
-            except AttributeError:
-                legacy_modes = mode_manager._registry.all_modes()  # type: ignore[attr-defined]
-                for m in legacy_modes:
-                    marker = " < active" if m.name == mode_manager.active_name else ""
-                    table.add_row(m.name, m.label, m.description + marker)
+            modes = mode_manager.registry.all()
+            for m in modes:
+                marker = " < active" if m.name == mode_manager.active_name else ""
+                table.add_row(m.name, m.badge, m.description + marker)
             ctx.console.print(table)
         except Exception:  # noqa: BLE001
             ctx.console.print(f"  Active mode: {mode_manager.active_name}")
@@ -681,7 +675,11 @@ def _cmd_mode(ctx: CommandContext) -> bool:
         if new_mode:
             ctx.console.print(f"  {new_mode.badge} [dim]Switched to {new_mode.name} mode.[/dim]")
         else:
-            ctx.console.print(f"  [red]Unknown mode: {args!r}[/red]")
+            try:
+                choices = ", ".join(mode_manager.registry.selectable_names())
+            except AttributeError:
+                choices = "Safe, Plan, Yolo"
+            ctx.console.print(f"  [red]Unknown mode: {args!r}. Choose one of: {choices}.[/red]")
     return True
 
 
@@ -881,7 +879,7 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/mode",
         description="Show or switch operational mode",
-        argument_hint="[Auto|Plan|Ask|Review|Safe|Debug]",
+        argument_hint="[Safe|Plan|Yolo]",
         group="Built-in",
         handler=_cmd_mode,
     ),

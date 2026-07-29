@@ -260,6 +260,9 @@ class WorkflowRunner(BaseWorkflowRunner):
                     for ps, output in zip(peer_specs, outputs):
                         if isinstance(output, BaseException):
                             log.error("Parallel phase %r failed: %s", ps.name, output)
+                            parallel_gate_error = (
+                                f"Phase {ps.name!r} failed: {type(output).__name__}: {output}"
+                            )
                         else:
                             gate_error = self._command_gate_error(ps, output)
                             if gate_error is not None:
@@ -483,13 +486,12 @@ class WorkflowRunner(BaseWorkflowRunner):
 
         _original_mode = self._cfg.app_state.active_mode()
         if spec.mode_override and self._mode_manager is not None:
-            _override = self._mode_manager.set_by_name(spec.mode_override)
-            if _override is None:
-                log.warning(
-                    "Phase %r: mode_override %r not found — using current mode",
-                    spec.name,
-                    spec.mode_override,
-                )
+            # Workflow declarations are a configuration boundary.  An unknown
+            # or internal-only mode must not silently run under the caller's
+            # current policy; resolve first so the error includes canonical
+            # choices and aliases are migrated to their canonical identity.
+            override_name = self._mode_manager.resolve_name(spec.mode_override)
+            self._mode_manager.set_by_name(override_name)
 
         # PRD-111: per-phase model override from WorkflowParams.
         # Empty model_for_phase() falls back to the global model_id.
@@ -642,7 +644,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             )
         finally:
             if spec.mode_override and self._mode_manager is not None:
-                self._cfg.app_state.active_mode.set(_original_mode)
+                self._mode_manager.restore(_original_mode)
 
         # Phase-specific flags are checked first — they must take priority over
         # the generic event-presence checks below, because plan_event / execute_event

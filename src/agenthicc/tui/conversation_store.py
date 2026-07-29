@@ -20,6 +20,7 @@ from agenthicc.reactive import Signal, Computed
 if TYPE_CHECKING:
     import asyncio as _asyncio
     from agenthicc.tools.approval import ApprovalRequest
+    from agenthicc.tui.runtime.mode_manager import RuntimeMode
     from agenthicc.workflows.plugin import WorkflowRun
     from agenthicc.subagents.pool import SubagentPoolState
 
@@ -579,14 +580,12 @@ class AppState:
     """Root state container — single instance for the application lifetime."""
 
     def __init__(self) -> None:
-        from agenthicc.tui.runtime.mode_manager import RuntimeMode  # noqa: PLC0415
+        from agenthicc.tui.runtime.mode_manager import build_safe_mode  # noqa: PLC0415
         from agenthicc.cli.context import CLIFlags  # noqa: PLC0415
 
         self.conversation = ConversationStore()
         self.input = InputState()
-        self.active_mode: Signal[RuntimeMode] = Signal(
-            RuntimeMode(name="Auto", badge="⏵⏵", description="Automatic")
-        )
+        self.active_mode: Signal[RuntimeMode] = Signal(build_safe_mode())
         self.overlay: Signal[str] = Signal("")  # active overlay name
         self.modal_open: Signal[bool] = Signal(False)
         # PRD-78: non-None when an agent tool is paused waiting for approval.

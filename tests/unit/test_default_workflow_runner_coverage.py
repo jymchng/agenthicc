@@ -27,8 +27,9 @@ def _runner_config() -> tuple[WorkflowConfig, AppState, list[object], ModeManage
     cfg = AgenthiccConfig()
     processor = SimpleNamespace(emit=emit)
     modes = ModeRegistry()
-    modes.register(RuntimeMode("Auto", badge="A"))
+    modes.register(RuntimeMode("Safe", badge="S"))
     modes.register(RuntimeMode("Plan", badge="P", blocked_capabilities=frozenset()))
+    modes.register(RuntimeMode("Yolo", badge="Y"))
     mode = ModeManager(modes, app)
     config = WorkflowConfig(
         conv_store=app.conversation,
@@ -96,12 +97,12 @@ async def test_workflow_runner_run_resume_parallel_and_phase_helpers(
     assert set(parallel_context.phase_outputs) == {"a", "b"}
 
     monkeypatch.setattr(default, "_run_agent_turn", run_turn, raising=False)
-    error = await runner._run_phase(
-        PhaseSpec(name="error", agent_type="auto", mode_override="missing"),
-        "intent",
-        context,
-    )
-    assert error.approved is None
+    with pytest.raises(ValueError, match="Unknown mode 'missing'. Choose one of: Safe, Plan, Yolo"):
+        await runner._run_phase(
+            PhaseSpec(name="error", agent_type="auto", mode_override="missing"),
+            "intent",
+            context,
+        )
 
 
 @pytest.mark.asyncio

@@ -135,13 +135,13 @@ async def test_run_phase_calls_run_turn() -> None:
                 intent="my intent",
                 text="do the thing",
                 system_prompt="you are a helper",
-                mode="Auto",
+                mode="Yolo",
                 max_turns=5,
             )
 
     assert len(called_with) == 1
     assert called_with[0]["text"] == "do the thing"
-    assert called_with[0]["mode"] == "Auto"
+    assert called_with[0]["mode"] == "Yolo"
     assert called_with[0]["system_prompt"] == "you are a helper"
     assert called_with[0]["max_turns"] == 5
 

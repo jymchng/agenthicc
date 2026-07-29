@@ -74,18 +74,26 @@ class WorkflowRegistry:
 
     def mode_default_map(self) -> dict[str, str]:
         """Return ``{mode_name: workflow_name}`` for the first binding per mode."""
+        from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+
         result: dict[str, str] = {}
         for entry in self._entries.values():
             for mode_name in entry.plugin_cls.mode_bindings:
-                result.setdefault(mode_name, entry.plugin_cls.name)
+                canonical = canonical_mode_name(mode_name)
+                result.setdefault(canonical, entry.plugin_cls.name)
         return result
 
     def mode_available_map(self) -> dict[str, list[str]]:
         """Return ``{mode_name: [workflow_name, …]}`` for all bindings per mode."""
+        from agenthicc.tui.runtime.mode_manager import canonical_mode_name  # noqa: PLC0415
+
         result: dict[str, list[str]] = {}
         for entry in self._entries.values():
             for mode_name in entry.plugin_cls.mode_bindings:
-                result.setdefault(mode_name, []).append(entry.plugin_cls.name)
+                canonical = canonical_mode_name(mode_name)
+                workflows = result.setdefault(canonical, [])
+                if entry.plugin_cls.name not in workflows:
+                    workflows.append(entry.plugin_cls.name)
         return result
 
 

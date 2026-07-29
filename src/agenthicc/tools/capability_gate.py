@@ -3,8 +3,9 @@
 Registered as a global ToolHook on AgentRunnerBase so it fires for every tool
 call regardless of which @tool()-decorated function is invoked.
 
-Tools without @set_metadata("capabilities", ...) have no declared capabilities
-and pass through the gate unconditionally (open-by-default).
+Tools without @set_metadata("capabilities", ...) are classified as
+``ToolCapability.UNDECLARED``.  They require approval in Safe and are blocked
+in Plan; Yolo remains unrestricted.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
     from agenthicc.tools.context import ToolCallContext
 
-from agenthicc.tools.capabilities import CAPABILITIES_KEY
+from agenthicc.tools.capabilities import CAPABILITIES_KEY, classify_tool_capabilities
 
 __all__ = ["ToolCapabilityGate"]
 
@@ -45,21 +46,22 @@ class ToolCapabilityGate:
             return BeforeToolHookDecision.proceed()
 
         raw_caps = ctx.get_metadata(CAPABILITIES_KEY)
-        tool_caps: frozenset[str] = (
-            frozenset(item for item in raw_caps if isinstance(item, str))
-            if isinstance(raw_caps, (set, frozenset))
-            else frozenset()
-        )
+        tool_caps = classify_tool_capabilities(raw_caps)
         denied = tool_caps & blocked
         if denied:
             caps_str = ", ".join(sorted(denied))
+            reason = (
+                "has no declared capability metadata"
+                if "undeclared" in denied
+                else f"requires {caps_str} capability"
+            )
             return BeforeToolHookDecision.abort(
                 {
                     "ok": False,
                     "error": (
-                        f"Tool '{ctx.tool_name}' requires {caps_str} capability, "
+                        f"Tool '{ctx.tool_name}' {reason}, "
                         f"which is blocked in {mode.name} mode. "
-                        f"Switch to Auto or Debug mode to use this tool."
+                        f"Switch to Yolo mode or annotate it as read-only."
                     ),
                 }
             )

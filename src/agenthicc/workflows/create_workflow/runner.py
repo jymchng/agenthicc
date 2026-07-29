@@ -561,7 +561,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 await self._run_turn(
                     text,
                     tools=tools,
-                    mode="Auto",
+                    mode="Yolo",
                     system_prompt=system_prompt,
                     max_turns=self._max_phase_turns,
                     ctx=ctx,
@@ -829,8 +829,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
-            if self._mode_manager.set_by_name(mode) is None:
-                log.warning("_run_turn: mode %r not found — keeping current mode", mode)
+            # A phase override is executable configuration: never fall back to
+            # the caller's mode when the declaration is unknown or internal.
+            override_name = self._mode_manager.resolve_name(mode)
+            self._mode_manager.set_by_name(override_name)
 
         _base_exec = self._cfg.cfg.execution
         exec_cfg = (
@@ -876,7 +878,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         finally:
             reset_current_terminal_wait_policy(policy_token)
             if mode is not None and self._mode_manager is not None:
-                self._cfg.app_state.active_mode.set(original_mode)
+                self._mode_manager.restore(original_mode)
 
     def _base_tools(self) -> _ToolList:
         """Return capability-filtered project tools for the current mode."""

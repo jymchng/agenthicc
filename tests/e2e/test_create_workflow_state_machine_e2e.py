@@ -51,7 +51,7 @@ class DocReview(WorkflowPlugin):
             name="draft",
             max_turns=20,
             next="review",
-            mode_override="Auto",
+            mode_override="Yolo",
             system_prompt_override="You are in the DRAFT phase. Write the document.",
         ),
         PhaseSpec(

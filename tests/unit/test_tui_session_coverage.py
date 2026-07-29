@@ -48,7 +48,7 @@ def _make_session() -> tuple[object, SimpleNamespace, _Workspace, _Input]:
 
     app = AppState.create()
     modes = ModeRegistry()
-    modes.register(RuntimeMode("Auto", default_workflow=None))
+    modes.register(RuntimeMode("Safe", default_workflow=None))
     modes.register(RuntimeMode("Plan", default_workflow="demo"))
     modes.register(RuntimeMode("Replay"))
     mode_manager = ModeManager(modes, app)
@@ -382,6 +382,8 @@ async def test_tui_agent_body_workflow_resume_and_replay_edges(
     ctx.workflow_registry.register(Demo)  # type: ignore[arg-type]
     await session.run_turn("workflow")
     assert session._turn_count == 1
+    assert ctx.mode_manager.active_name == "Safe"
+    assert "switched to Safe mode" in (ctx.app_state.conversation.notification() or "")
 
     session._ctx.app_state.conversation.append_event("turn_start", {"turn_id": "t"})
     await session.agent_task_body("done")
@@ -485,6 +487,9 @@ async def test_build_session_context_fresh_and_resume_paths(
     session_root = tmp_path / "sessions"
     monkeypatch.setattr(tui_session, "_SESSIONS_DIR", session_root)
     monkeypatch.setattr("agenthicc.tui.runtime.session_log._SESSIONS_DIR", session_root)
+    monkeypatch.setattr(
+        "agenthicc.tui.runtime.session_log._SESSION_INDEX", session_root / "index.json"
+    )
     monkeypatch.setattr(memory_journal, "_SESSIONS_DIR", session_root)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tui_session, "_build_agent_runner", lambda *args, **kwargs: None)
@@ -509,12 +514,23 @@ async def test_build_session_context_fresh_and_resume_paths(
         None, [], record_cassette_dir=tmp_path / "cassettes", headless=True
     )
     assert fresh.session_id and fresh.agent_runner is None
+    assert fresh.mode_manager.active_name == "Safe"
+    assert fresh.app_state.active_mode().name == "Safe"
+    assert fresh.mode_manager.set_by_name("Yolo") is not None
     session_id = fresh.session_id
     fresh.session_log.close()
     fresh.session_memory.close()
 
+    from agenthicc.tui.runtime.session_log import update_session_mode
+
+    update_session_mode(session_id, "Auto")
+
     resumed = await _build_session_context(session_id, [], headless=True)
     assert resumed.session_id == session_id
     assert resumed.pending_resume is None
+    assert resumed.mode_manager.active_name == "Yolo"
+    from agenthicc.tui.runtime.session_log import load_session_mode
+
+    assert load_session_mode(session_id) == "Yolo"
     resumed.session_log.close()
     resumed.session_memory.close()

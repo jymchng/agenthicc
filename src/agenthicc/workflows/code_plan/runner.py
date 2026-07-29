@@ -448,7 +448,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 await self._run_turn(
                     text,
                     tools=tools,
-                    mode="Auto",
+                    mode="Yolo",
                     system_prompt=system_prompt,
                     max_turns=40,
                     ctx=ctx,
@@ -606,7 +606,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         system_prompt:
             Full system-prompt for this phase.  Replaces any role default.
         mode:
-            Optional mode name (e.g. ``"Auto"``) to switch for this phase.
+            Optional mode name (e.g. ``"Yolo"``) to switch for this phase.
             Restored automatically on exit.
         max_turns:
             Maximum LLM sub-turns (tool-call → response cycles).
@@ -694,8 +694,10 @@ class CodePlanRunner(BaseWorkflowRunner):
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
-            if self._mode_manager.set_by_name(mode) is None:
-                log.warning("_run_turn: mode %r not found — keeping current mode", mode)
+            # A phase override is executable configuration: never fall back to
+            # the caller's mode when the declaration is unknown or internal.
+            override_name = self._mode_manager.resolve_name(mode)
+            self._mode_manager.set_by_name(override_name)
 
         # Build exec_cfg — replace model when a per-phase override is requested.
         _base_exec = self._cfg.cfg.execution
@@ -742,7 +744,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         finally:
             reset_current_terminal_wait_policy(policy_token)
             if mode is not None and self._mode_manager is not None:
-                self._cfg.app_state.active_mode.set(original_mode)
+                self._mode_manager.restore(original_mode)
 
     @staticmethod
     def _command_gate_error(outcomes: list[dict[str, object]]) -> str | None:

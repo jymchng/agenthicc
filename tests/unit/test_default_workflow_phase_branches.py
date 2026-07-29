@@ -25,8 +25,9 @@ def _config():
         return None
 
     modes = ModeRegistry()
-    modes.register(RuntimeMode("Auto", badge="A"))
+    modes.register(RuntimeMode("Safe", badge="S"))
     modes.register(RuntimeMode("Plan", badge="P"))
+    modes.register(RuntimeMode("Yolo", badge="Y"))
     mode = ModeManager(modes, app)
     cfg = AgenthiccConfig()
 
@@ -251,7 +252,9 @@ async def test_workflow_loop_unknown_parallel_cancel_and_human_paths(
 
     parallel._run_phase = parallel_run  # type: ignore[method-assign]
     await parallel.run("parallel")
-    assert app.workflow_run().status == "complete"
+    # A failed parallel branch must fail the workflow rather than silently
+    # advancing with only the successful peer's artefacts.
+    assert app.workflow_run().status == "failed"
 
     cancelled = WorkflowRunner(Branches, config, mode)
 

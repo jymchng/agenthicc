@@ -54,14 +54,20 @@ block with its unified diff.
 
 ## Modes
 
-The built-in mode cycle is Auto → Plan → Ask → Review → Safe → Debug. Modes
-change system instructions, available workflows, tool filters, approvals, and
-display metadata. Plan, Ask, Review, and Safe restrict actions; Debug exposes
-diagnostic information.
+The selectable mode cycle is **Safe → Plan → Yolo → Safe**. Safe is the default:
+read, search, and git-read tools run directly, while writes, git changes,
+commands, network access, and unannotated tools require approval. Plan is
+read-only and hard-blocks those capabilities. Yolo preserves the former Auto
+behaviour: tools run without per-action approval.
+
+`Auto` (Yolo), `Guard` and `Ask` (Safe), and `Review` (Plan) remain accepted as
+non-displayed compatibility aliases. `Debug` is not an alias and is rejected.
+Replay remains an internal state used during session replay and is not
+selectable through `/mode` or cycling.
 
 Press Shift+Tab to cycle modes when the input backend is interactive. Workflow
 availability is derived from the workflow registry. `/mode [name]` performs an
-explicit switch.
+explicit switch and reports the canonical choices for an unknown name.
 
 ## Input and triggers
 

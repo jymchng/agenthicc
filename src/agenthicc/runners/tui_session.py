@@ -36,7 +36,7 @@ def _make_session_tools(
     memory_router: MemoryRouter | None = None,
     semantic_index: SemanticIndex | None = None,
 ) -> list[ToolLike]:
-    """Tools injected into every interactive agent turn (Auto mode + plan phase)."""
+    """Tools injected into every interactive agent turn (Yolo mode + plan phase)."""
     from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
     from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
 
@@ -124,6 +124,8 @@ def _reset_terminal_on_exit() -> None:
 from agenthicc.tui.runtime.session_log import (  # noqa: E402
     create_session_id,
     register_session,
+    update_session_mode,
+    load_session_mode,
     touch_session,
     find_latest_session_for_cwd,
     SessionEventLog,
@@ -352,7 +354,30 @@ async def _build_session_context(
         default_map=workflow_registry.mode_default_map(),
         available_map=workflow_registry.mode_available_map(),
     )
-    mode_manager.set_by_name("Auto")
+    # Safe is the default posture for every new session. Resume migrates legacy
+    # names (Auto/Guard/etc.) through the canonical registry before the callback
+    # is installed, so the persisted value is never overwritten prematurely.
+    mode_manager.set_by_name("Safe")
+    persisted_mode: str | None = None
+    if resume_id:
+        persisted_mode = load_session_mode(resume_id)
+        if persisted_mode is not None and mode_manager.set_by_name(persisted_mode) is None:
+            raise ValueError(
+                f"Cannot resume session {resume_id!r}: unknown persisted mode "
+                f"{persisted_mode!r}. Choose one of: "
+                f"{', '.join(mode_manager.registry.selectable_names())}."
+            )
+
+    def _persist_mode(mode: object) -> None:
+        name = getattr(mode, "name", "")
+        if isinstance(name, str) and not mode_manager.registry.is_internal(name):
+            update_session_mode(session_id, name)
+
+    mode_manager.set_change_callback(_persist_mode)
+    if resume_id and persisted_mode is not None:
+        # Persist the canonical spelling after a successful alias migration;
+        # future resumes never need to carry the legacy identity forward.
+        update_session_mode(session_id, mode_manager.active_name)
 
     # ── skills / plugins ─────────────────────────────────────────────────────
     from agenthicc.skills.bootstrap import bootstrap_default_skills  # noqa: PLC0415
@@ -1271,16 +1296,16 @@ class TUISession:
                 # Plugin owns runner construction — no name-based branching.
                 _wf_runner = _plugin_cls.build_runner(_wf_config, ctx.mode_manager)
                 await _wf_runner.run(text)
-                # PRD-89: exit workflow-bound mode after successful completion
+                # PRD-155: workflow-bound runs return to Safe after success.
                 _wf_result = ctx.app_state.workflow_run()
                 if (
                     _wf_result is not None
                     and getattr(_wf_result, "status", None) == "complete"
                     and ctx.app_state.active_mode().default_workflow is not None
                 ):
-                    ctx.mode_manager.set_by_name("Auto")
+                    ctx.mode_manager.set_by_name("Safe")
                     ctx.app_state.conversation.notification.set(
-                        "✓ Workflow complete — switched to Auto mode"
+                        "✓ Workflow complete — switched to Safe mode"
                     )
             else:
                 # PRD-126: direct (non-workflow) turns are retried at the
@@ -1441,7 +1466,7 @@ class TUISession:
 
         # Enter Replay mode — blocks all tool capabilities during replay.
         prior_mode = ctx.app_state.active_mode()
-        ctx.mode_manager.set_by_name("Replay")
+        ctx.mode_manager.set_internal_by_name("Replay")
         self._input_session.set_mode(InputMode.STREAMING)
 
         try:
@@ -1457,7 +1482,7 @@ class TUISession:
         except Exception as exc:
             ctx.app_state.conversation.notification.set(f"⏮ Replay error: {exc}")
         finally:
-            ctx.app_state.active_mode.set(prior_mode)
+            ctx.mode_manager.restore(prior_mode)
             self._input_session.set_mode(InputMode.IDLE)
             self._agent_task = None
             self.advance()
@@ -1541,16 +1566,16 @@ class TUISession:
             )
             runner = wf_defn.build_runner(_wf_config, ctx.mode_manager)
             await runner.resume(context)
-            # PRD-89: exit workflow-bound mode after completion
+            # PRD-155: completed workflow-bound runs return to Safe.
             _wf_result = ctx.app_state.workflow_run()
             if (
                 _wf_result is not None
                 and getattr(_wf_result, "status", None) == "complete"
                 and ctx.app_state.active_mode().default_workflow is not None
             ):
-                ctx.mode_manager.set_by_name("Auto")
+                ctx.mode_manager.set_by_name("Safe")
                 ctx.app_state.conversation.notification.set(
-                    "✓ Workflow resumed and complete — switched to Auto mode"
+                    "✓ Workflow resumed and complete — switched to Safe mode"
                 )
         except asyncio.CancelledError:
             ctx.app_state.conversation.close_turn()

@@ -90,7 +90,7 @@ exactly:
 | Phase | Mode | Required handoff | On success | On rejection |
 | --- | --- | --- | --- | --- |
 | `design` | read-only | `request_design_approval(design, workflow_name)` then `finalize_design(design, workflow_name)` | `generate` | retry `design` |
-| `generate` | `Auto` | write the file, then `mark_generation_complete(summary, path)` | `validate` | — |
+| `generate` | `Yolo` | write the file, then `mark_generation_complete(summary, path)` | `validate` | — |
 | `validate` | read-only | `approve_workflow(summary)` or `reject_workflow(reason)` | `summarize` | `generate` |
 | `summarize` | read-only | — (single turn) | complete | — |
 
@@ -148,7 +148,7 @@ unconditional agent turn.
 
 ### Generation writes the file directly
 
-`generate` runs with `mode_override="Auto"` so the write tools are available. The
+`generate` runs with `mode_override="Yolo"` so the write tools are available. The
 agent writes the complete Python source to `.agenthicc/workflows/<name>.py` and
 then calls `mark_generation_complete(summary, path)` with the exact path it wrote.
 The runner never copies assistant text into a file, never stages a copy, and never
@@ -385,7 +385,7 @@ from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
 class ResearchWorkflow(WorkflowPlugin):
     name = "research"
     description = "Inspect a project and report findings."
-    mode_bindings = ["Auto", "Plan"]
+    mode_bindings = ["Yolo", "Plan"]
     phases = [
         PhaseSpec(
             name="research",
@@ -478,7 +478,7 @@ class DocumentationRunner(CodePlanRunner):
                     "Review and update the project documentation."
                 ),
                 system_prompt="You are the documentation update phase.",
-                mode="Auto",
+                mode="Yolo",
                 max_turns=12,
                 shared_memory=ctx.shared_memory,
             )

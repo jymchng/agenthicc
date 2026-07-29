@@ -24,7 +24,7 @@ _PHASESPEC_PURPOSE: dict[str, str] = {
         "auto, planner, executor, reviewer, explorer, verifier, human, custom."
     ),
     "system_prompt_override": "Replaces the role's default system prompt entirely for this phase.",
-    "mode_override": "RuntimeMode to activate for this phase, e.g. 'Auto' to unlock write tools.",
+    "mode_override": "RuntimeMode to activate for this phase, e.g. 'Yolo' to unlock write tools.",
     "allowed_capabilities": "Optional capability allowlist for this phase (None = role default).",
     "allowed_capabilities_override": "Explicit per-phase capability override; wins over the field and role default.",
     "max_turns": "Maximum LLM sub-turns (tool-call → response cycles) within one phase run.",
@@ -244,7 +244,7 @@ class ReleaseCheckRunner(CodePlanRunner):
                     "with the shell tools, then call release_passed(summary) or "
                     "release_blocked(blocker). You MUST call one of them."
                 ),
-                mode="Auto",  # unlock write / execute tools for this phase
+                mode="Yolo",  # unlock write / execute tools for this phase
                 max_turns=20,
                 shared_memory=memory,
                 tools=_make_verify_tools(event, data),
@@ -311,7 +311,7 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
             name="verify",
             max_turns=20,
             next="report",
-            mode_override="Auto",
+            mode_override="Yolo",
             system_prompt_override="You are in the VERIFY phase of release_check.",
         ),
         PhaseSpec(
@@ -361,7 +361,7 @@ class DocReviewWorkflow(WorkflowPlugin):
             agent_type="auto",
             max_turns=20,
             next="review",
-            mode_override="Auto",  # unlock write tools for this phase
+            mode_override="Yolo",  # unlock write tools for this phase
             system_prompt_override=(
                 "You are in the DRAFT phase. Write the requested document to disk "
                 "using the write tools, then briefly state what you wrote and where."
@@ -388,7 +388,9 @@ def make_inspection_tools() -> list[Callable[..., object]]:
     ``[describe_phasespec, list_tool_capabilities, list_agent_roles, show_example_workflow]``
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_read  # noqa: PLC0415
 
+    @tool_read
     @_tool()
     async def describe_phasespec() -> dict[str, object]:
         """Describe every PhaseSpec field: name, type, default, and purpose.
@@ -419,6 +421,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             )
         return {"phasespec_fields": fields}
 
+    @tool_read
     @_tool()
     async def list_tool_capabilities() -> dict[str, object]:
         """List the tool capabilities a phase can allow or a mode can block.
@@ -437,6 +440,8 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "git_write": "Modifies git state (add, commit, checkout, stash).",
             "network": "Makes outbound network calls.",
             "search": "Searches content without state changes.",
+            "control": "Advances an internal workflow or session state machine.",
+            "undeclared": "No capability metadata was declared; Safe requires approval and Plan blocks it.",
         }
         caps = [
             {"value": cap.value, "description": descriptions.get(cap.value, "")}
@@ -444,6 +449,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         ]
         return {"capabilities": caps}
 
+    @tool_read
     @_tool()
     async def list_agent_roles() -> dict[str, object]:
         """List the agent_type values a phase may use.
@@ -460,6 +466,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         ]
         return {"agent_types": roles}
 
+    @tool_read
     @_tool()
     async def show_example_workflow(style: str = "runner") -> dict[str, object]:
         """Return a complete, known-valid example workflow file to adapt.
@@ -504,6 +511,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             ),
         }
 
+    @tool_read
     @_tool()
     async def describe_runner_pattern() -> dict[str, object]:
         """Return the checklist a generated custom workflow runner must satisfy.

@@ -98,7 +98,7 @@ class PhaseSpec:
     """When non-empty, replaces the registry's system prompt for this phase entirely."""
 
     mode_override: str | None = None
-    """RuntimeMode name to activate for the duration of this phase (e.g. 'Auto' to allow writes)."""
+    """RuntimeMode name to activate for this phase (e.g. 'Yolo' to allow writes)."""
 
     allowed_capabilities: frozenset[ToolCapability] | None = None
     """frozenset[ToolCapability] | None — tool capability allowlist for this phase.

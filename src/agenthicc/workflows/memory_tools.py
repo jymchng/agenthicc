@@ -31,7 +31,9 @@ def make_memory_tools(
     rather than raising, so callers never need to guard.
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_read, tool_search, tool_write  # noqa: PLC0415
 
+    @tool_write
     @_tool()
     async def memory_write(
         key: str,
@@ -62,6 +64,7 @@ def make_memory_tools(
         ttl = ttl_seconds if ttl_seconds > 0 else None
         return await memory_router.write(key, value, tier=scope, namespace=namespace, ttl=ttl)
 
+    @tool_read
     @_tool()
     async def memory_read(
         key: str,
@@ -82,6 +85,7 @@ def make_memory_tools(
             return {"found": False, "value": None, "error": "memory_not_available"}
         return await memory_router.read(key, tier=scope, namespace=namespace)
 
+    @tool_search
     @_tool()
     async def semantic_search(
         query: str,
@@ -104,6 +108,7 @@ def make_memory_tools(
         hits = await semantic_index.search(query, top_k=top_k)
         return {"results": [{"doc_id": doc_id, "score": round(score, 4)} for doc_id, score in hits]}
 
+    @tool_write
     @_tool()
     async def publish_artifact(
         content: str,

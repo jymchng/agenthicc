@@ -84,7 +84,6 @@ class TestWorkflowRegistry:
         m = registry.mode_default_map()
         # first-registered wins for Plan
         assert m["Plan"] == "wf_a"
-        assert m["Review"] == "wf_b"
 
     def test_mode_available_map(self):
         registry = WorkflowRegistry()
@@ -92,7 +91,7 @@ class TestWorkflowRegistry:
         registry.register(_make_plugin("wf_b", mode_bindings=("Plan", "Review")))
         m = registry.mode_available_map()
         assert set(m["Plan"]) == {"wf_a", "wf_b"}
-        assert m["Review"] == ["wf_b"]
+        assert m["Plan"] == ["wf_a", "wf_b"]
 
 
 # ── TestBuildWorkflowRegistry ─────────────────────────────────────────────────

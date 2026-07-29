@@ -33,7 +33,7 @@ class Mode:
     Attributes
     ----------
     name:
-        Unique machine-readable identifier (e.g. ``"Auto"``).
+        Unique machine-readable identifier (e.g. ``"Safe"``).
     label:
         Short human-readable label shown in the TUI badge (e.g. ``"AUTO"``).
     description:

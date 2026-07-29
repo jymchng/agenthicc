@@ -58,6 +58,7 @@ def register_session(session_id: str, cwd: str, model: str) -> None:
     index[session_id] = {
         "cwd": cwd,
         "model": model,
+        "mode": "Safe",
         "created_at": time.time(),
         "last_active": time.time(),
     }
@@ -65,6 +66,33 @@ def register_session(session_id: str, cwd: str, model: str) -> None:
     session_dir = _SESSIONS_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "metadata.json").write_text(json.dumps(index[session_id], indent=2))
+
+
+def update_session_mode(session_id: str, mode: str) -> None:
+    """Persist the canonical active mode without recording transient internals."""
+    index = _load_index()
+    metadata = index.get(session_id)
+    if metadata is None:
+        return
+    metadata["mode"] = mode
+    metadata["last_active"] = time.time()
+    _save_index(index)
+    session_dir = _SESSIONS_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+
+
+def load_session_mode(session_id: str) -> str | None:
+    """Read a persisted mode name, returning ``None`` for old/corrupt metadata."""
+    path = _SESSIONS_DIR / session_id / "metadata.json"
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    mode = value.get("mode") if isinstance(value, dict) else None
+    return mode if isinstance(mode, str) and mode.strip() else None
 
 
 def touch_session(session_id: str) -> None:

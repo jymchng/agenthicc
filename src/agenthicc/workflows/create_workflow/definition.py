@@ -68,7 +68,7 @@ class CreateWorkflow(WorkflowPlugin):
     agent runs all four phases sharing a single ``ShortTermMemory``, so the phase
     that writes the file already has the approved design in context.
 
-    Design is read-only and gated on human approval.  Generation runs in ``Auto``
+    Design is read-only and gated on human approval. Generation runs in ``Yolo``
     mode so the write tools are available.  Validation imports the generated file
     deterministically before the agent votes, and a rejection loops back to
     generation.
@@ -108,7 +108,7 @@ class CreateWorkflow(WorkflowPlugin):
             next="validate",
             max_iterations=20,
             require_explicit_completion=True,
-            mode_override="Auto",
+            mode_override="Yolo",
             system_prompt_override=(
                 "You are in the GENERATION phase of create_workflow. You already designed "
                 "the workflow — do NOT re-design. Write the complete WorkflowPlugin source "
