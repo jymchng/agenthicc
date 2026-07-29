@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _make_tools(approved: bool = True, feedback: str = ""):
+def _make_tools(approved: bool = True, feedback: str = "", mode: str | None = None):
     """Return (request_plan_approval, finalize_plan, plan_event, plan_data)."""
     from agenthicc.workflows.code_plan.phase_tools import make_planner_tools
 
@@ -20,6 +20,7 @@ def _make_tools(approved: bool = True, feedback: str = ""):
     response = MagicMock()
     response.allowed = approved
     response.message = feedback
+    response.mode = mode
     approval_svc.request_approval = AsyncMock(return_value=response)
 
     plan_event = asyncio.Event()
@@ -65,6 +66,27 @@ class TestApprovalGate:
         assert fp_result["ok"] is True
         assert plan_event.is_set()
         assert plan_data["plan"] == "My plan"
+        assert plan_data["execute_mode"] == "Safe"
+
+    async def test_approval_request_advertises_modes_and_persists_yolo(self):
+        rpa, fp, _, plan_data, approval_svc = _make_tools(mode="Yolo")
+
+        rpa_result = await rpa(plan="My plan")
+        request = approval_svc.request_approval.await_args.args[0]
+        assert request.mode_options == ("Safe", "Yolo")
+        assert rpa_result["execute_mode"] == "Yolo"
+
+        finalize_result = await fp(plan="My plan")
+        assert finalize_result["ok"] is True
+        assert plan_data["execute_mode"] == "Yolo"
+
+    async def test_invalid_approval_mode_fails_closed_to_safe(self):
+        rpa, fp, _, plan_data, _ = _make_tools(mode="Plan")
+
+        result = await rpa(plan="My plan")
+        assert result["execute_mode"] == "Safe"
+        assert (await fp(plan="My plan"))["ok"] is True
+        assert plan_data["execute_mode"] == "Safe"
 
     async def test_approval_state_resets_on_each_request(self):
         """A rejection followed by approval followed by finalize succeeds."""

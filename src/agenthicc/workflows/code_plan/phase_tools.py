@@ -28,6 +28,17 @@ if TYPE_CHECKING:
 _QuestionInput = dict[str, str | list[str]]
 
 
+def _normalize_execute_mode(value: object) -> str:
+    """Return the only two modes permitted by the plan approval handoff."""
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized == "yolo":
+            return "Yolo"
+        if normalized == "safe":
+            return "Safe"
+    return "Safe"
+
+
 def _transition_failure(
     error: str,
     fix: str,
@@ -70,7 +81,7 @@ def make_planner_tools(
     from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
 
     # Shared approval gate — updated by request_plan_approval, read by finalize_plan.
-    approval_state: dict[str, bool] = {"granted": False}
+    approval_state: dict[str, object] = {"granted": False, "execute_mode": "Safe"}
 
     @tool_control
     @_tool()
@@ -95,9 +106,11 @@ def make_planner_tools(
 
         if approval_svc is None:
             approval_state["granted"] = True
+            approval_state["execute_mode"] = "Safe"
             return {
                 "ok": True,
                 "approved": True,
+                "execute_mode": "Safe",
                 "feedback": "The plan is approved. Call finalize_plan() now to hand off to the execution phase.",
             }
 
@@ -110,6 +123,7 @@ def make_planner_tools(
             capabilities=frozenset(),  # human approval request; no tool side effect
             event=asyncio.Event(),
             kind="plan_review",  # → PlanApprovalOverlay in tui_session.py
+            mode_options=("Safe", "Yolo"),
         )
         try:
             response = await approval_svc.request_approval(req)
@@ -120,8 +134,12 @@ def make_planner_tools(
                 "Resolve the approval-service error, then call request_plan_approval(plan) again.",
                 approved=False,
             )
-        # Always update the gate so each rejection correctly resets it.
+        # Always update the gate so each rejection correctly resets it. Older
+        # approval adapters do not return a mode; Safe is the fail-closed
+        # default for those responses and for headless approval.
+        selected_mode = _normalize_execute_mode(getattr(response, "mode", None))
         approval_state["granted"] = response.allowed
+        approval_state["execute_mode"] = selected_mode if response.allowed else "Safe"
         feedback = response.message or ""
         if response.allowed:
             suffix = (
@@ -132,6 +150,7 @@ def make_planner_tools(
             return {
                 "ok": True,
                 "approved": True,
+                "execute_mode": selected_mode,
                 "feedback": feedback,
             }
         return _transition_failure(
@@ -161,12 +180,13 @@ def make_planner_tools(
                 "The planning transition was rejected: finalized plan must be non-empty.",
                 "Provide the complete approved plan, then call finalize_plan(plan) again.",
             )
-        if not approval_state["granted"]:
+        if approval_state.get("granted") is not True:
             return _transition_failure(
                 "The plan has not been approved, so the phase cannot advance.",
                 "Call request_plan_approval(plan) first and call finalize_plan(plan) only after it returns approved=True.",
             )
         plan_data["plan"] = plan.strip()
+        plan_data["execute_mode"] = approval_state.get("execute_mode", "Safe")
         plan_event.set()
         return {
             "ok": True,

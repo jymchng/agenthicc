@@ -1,13 +1,15 @@
-"""PlanApprovalOverlay — three-option plan review overlay with text prompt (PRD-86).
+"""PlanApprovalOverlay — plan review overlay with execution-mode choices.
 
 Shown when a workflow's human_review phase calls ApprovalService with
 kind="plan_review".  The user sees the plan content from the prior phase and
 can approve, reject with typed feedback, or approve with typed instructions.
 
 State machine:
-    SELECTING  — ↑↓ navigate, Enter select, Esc deny
-        ↓ Enter on option 1 or 2
-    PROMPTING  — type feedback/instructions, Enter submit, Esc back
+    SELECTING       — ↑↓ navigate, Enter select, Esc deny
+        ↓ Enter on a prompted option
+    PROMPTING       — type feedback/instructions, Enter submit, Esc back
+        ↓ Enter on "Approve — add instructions" for a mode choice
+    MODE_SELECTING  — choose Safe or YOLO for the execute phase
 
 Height-stability contract
 -------------------------
@@ -41,7 +43,8 @@ if TYPE_CHECKING:
 _BORDER = "─"
 _PLAN_VISIBLE_LINES = 20  # plan lines shown in the viewport at once
 
-# (label, allowed, needs_prompt)
+# (label, allowed, needs_prompt, execute_mode)
+_OptionSpec = tuple[str, bool, bool, str | None]
 _OPTIONS: list[tuple[str, bool, bool]] = [
     ("Approve", True, False),
     ("Reject — add feedback", False, True),
@@ -52,10 +55,11 @@ _OPTIONS: list[tuple[str, bool, bool]] = [
 class _State(Enum):
     SELECTING = auto()
     PROMPTING = auto()
+    MODE_SELECTING = auto()
 
 
 class PlanApprovalOverlay(PromptOverlay):
-    """Plan review overlay: shows plan content and 3 selectable options."""
+    """Plan review overlay with optional Safe/YOLO execution choices."""
 
     name = "plan_approval"
 
@@ -72,6 +76,8 @@ class PlanApprovalOverlay(PromptOverlay):
         self._state = _State.SELECTING
         self._selected = 0
         self._pending_option = 0  # option index carried into PROMPTING
+        self._pending_message = ""
+        self._mode_selected = 0
         self._plan_scroll = 0  # index of first visible rendered line
 
         # Pre-rendered line cache — rebuilt on mount and on terminal width change.
@@ -86,6 +92,8 @@ class PlanApprovalOverlay(PromptOverlay):
         super().on_mount()
         self._state = _State.SELECTING
         self._selected = 0
+        self._pending_message = ""
+        self._mode_selected = 0
         self._plan_scroll = 0
         self._rendered_lines = []  # force rebuild on first render
         self._render_width = 0
@@ -97,12 +105,55 @@ class PlanApprovalOverlay(PromptOverlay):
     def render(self) -> RenderableType:
         if self._state == _State.PROMPTING:
             return self._render_prompting()
+        if self._state == _State.MODE_SELECTING:
+            return self._render_mode_selecting()
         return self._render_selecting()
 
     def handle_key(self, key: Key, ch: str) -> bool:
         if self._state == _State.PROMPTING:
             return self._handle_prompting(key, ch)
+        if self._state == _State.MODE_SELECTING:
+            return self._handle_mode_selecting(key, ch)
         return self._handle_selecting(key, ch)
+
+    def _option_specs(self) -> list[_OptionSpec]:
+        """Return the options for this request.
+
+        Legacy plan-review requests (including create_workflow's design
+        review) retain their original three-option contract.  Code-plan
+        requests opt into explicit execution-mode choices through
+        ``ApprovalRequest.mode_options``.
+        """
+        if not self._req.mode_options:
+            return [(label, allowed, prompt, None) for label, allowed, prompt in _OPTIONS]
+        return [
+            ("Approve - Safe", True, False, "Safe"),
+            ("Approve - YOLO", True, False, "Yolo"),
+            ("Reject — add feedback", False, True, None),
+            ("Approve — add instructions", True, True, None),
+        ]
+
+    def _mode_values(self) -> list[str]:
+        """Return supported, canonical modes advertised by the request."""
+        values: list[str] = []
+        for value in self._req.mode_options:
+            canonical = {"safe": "Safe", "yolo": "Yolo"}.get(value.casefold())
+            if canonical is not None and canonical not in values:
+                values.append(canonical)
+        return values or ["Safe", "Yolo"]
+
+    def _respond(
+        self,
+        *,
+        allowed: bool,
+        message: str = "",
+        mode: str | None = None,
+    ) -> None:
+        """Respond while preserving the old call shape for legacy overlays."""
+        if mode is None:
+            self._service.respond(allowed=allowed, message=message)
+        else:
+            self._service.respond(allowed=allowed, message=message, mode=mode)
 
     # ── pre-rendering ──────────────────────────────────────────────────────────
 
@@ -198,7 +249,7 @@ class PlanApprovalOverlay(PromptOverlay):
         lines.append(Text(_BORDER * border_w, style="dim"))
 
         # ── options ───────────────────────────────────────────────────────────
-        for idx, (label, _, _) in enumerate(_OPTIONS):
+        for idx, (label, _, _, _) in enumerate(self._option_specs()):
             selected = idx == self._selected
             indicator = "▶" if selected else " "
             style = "reverse" if selected else ""
@@ -217,7 +268,7 @@ class PlanApprovalOverlay(PromptOverlay):
     def _handle_selecting(self, key: Key, ch: str) -> bool:
         total = len(self._rendered_lines)
 
-        n = len(_OPTIONS)
+        n = len(self._option_specs())
         match key:
             case Key.UP:
                 self._selected = (self._selected - 1) % n
@@ -238,13 +289,14 @@ class PlanApprovalOverlay(PromptOverlay):
         return True
 
     def _execute_option(self, idx: int) -> None:
-        label, allowed, needs_prompt = _OPTIONS[idx]
+        _, allowed, needs_prompt, mode = self._option_specs()[idx]
         if not needs_prompt:
-            # Option 0 — Approve immediately
-            self._service.respond(allowed=allowed, message="")
+            self._respond(allowed=allowed, message="", mode=mode)
             self._close()
         else:
-            # Options 1 & 2 — enter PROMPTING state
+            # Prompted options enter PROMPTING.  For a mode-aware request,
+            # approving with instructions continues to MODE_SELECTING after
+            # the text is entered.
             self._pending_option = idx
             self._buf.clear()
             self._state = _State.PROMPTING
@@ -257,7 +309,7 @@ class PlanApprovalOverlay(PromptOverlay):
         from rich.markup import escape as _e  # noqa: PLC0415
 
         cols = shutil.get_terminal_size((80, 24)).columns
-        label = _OPTIONS[self._pending_option][0]
+        label = self._option_specs()[self._pending_option][0]
         lines: list[RenderableType] = []
 
         lines.append(
@@ -273,13 +325,70 @@ class PlanApprovalOverlay(PromptOverlay):
     def _handle_prompting(self, key: Key, ch: str) -> bool:
         match key:
             case Key.ENTER:
-                label, allowed, _ = _OPTIONS[self._pending_option]
-                self._service.respond(allowed=allowed, message=self._prompt_text)
-                self._close()
+                _, allowed, _, mode = self._option_specs()[self._pending_option]
+                if allowed and mode is None and self._req.mode_options:
+                    self._pending_message = self._prompt_text
+                    self._mode_selected = 0
+                    self._buf.clear()
+                    self._state = _State.MODE_SELECTING
+                else:
+                    self._respond(allowed=allowed, message=self._prompt_text, mode=mode)
+                    self._close()
             case Key.ESC:
                 # Back to SELECTING without submitting
                 self._buf.clear()
                 self._state = _State.SELECTING
             case _:
                 self._handle_prompt_key(key, ch)
+        return True
+
+    # ── MODE_SELECTING ──────────────────────────────────────────────────────
+
+    def _render_mode_selecting(self) -> RenderableType:
+        from rich.console import Group  # noqa: PLC0415
+        from rich.markup import escape as _e  # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
+
+        cols = shutil.get_terminal_size((80, 24)).columns
+        modes = self._mode_values()
+        label = self._option_specs()[self._pending_option][0]
+        lines: list[RenderableType] = [
+            Text.from_markup(f"[bold cyan]  📋 Plan Review[/bold cyan][dim] › {_e(label)}[/dim]"),
+            Text(_BORDER * min(cols, 66), style="dim"),
+            Text("  Choose the execute mode:", style="bold"),
+        ]
+        for idx, mode in enumerate(modes):
+            selected = idx == self._mode_selected
+            lines.append(
+                Text(f"  {'▶' if selected else ' '} {mode}", style="reverse" if selected else "")
+            )
+        lines.extend(
+            [
+                Text(_BORDER * min(cols, 66), style="dim"),
+                Text("  ↑↓ modes  Enter select  Esc back", style="dim"),
+            ]
+        )
+        return Group(*lines)
+
+    def _handle_mode_selecting(self, key: Key, ch: str) -> bool:
+        modes = self._mode_values()
+        match key:
+            case Key.UP:
+                self._mode_selected = (self._mode_selected - 1) % len(modes)
+            case Key.DOWN:
+                self._mode_selected = (self._mode_selected + 1) % len(modes)
+            case Key.ENTER:
+                self._respond(
+                    allowed=True,
+                    message=self._pending_message,
+                    mode=modes[self._mode_selected],
+                )
+                self._close()
+            case Key.ESC:
+                self._buf.clear()
+                for char in self._pending_message:
+                    self._buf.insert(char)
+                self._state = _State.PROMPTING
+            case _:
+                pass
         return True

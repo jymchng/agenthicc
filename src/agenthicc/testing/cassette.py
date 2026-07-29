@@ -82,9 +82,11 @@ class ApprovalEntry:
     message: str
     remember: bool
     remember_all: bool
+    mode: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> ApprovalEntry:
+        raw_mode = d.get("mode")
         return cls(
             index=_integer(d.get("index")),
             kind=str(d.get("kind", "tool")),
@@ -93,6 +95,7 @@ class ApprovalEntry:
             message=str(d.get("message", "")),
             remember=bool(d.get("remember", False)),
             remember_all=bool(d.get("remember_all", False)),
+            mode=raw_mode if isinstance(raw_mode, str) else None,
         )
 
 

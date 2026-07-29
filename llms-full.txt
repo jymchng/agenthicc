@@ -1493,6 +1493,17 @@ dangerous-permissions flag.
 
 ---
 
+## Plan approval modes — `agenthicc.tools.approval`
+
+`ApprovalRequest.mode_options` advertises canonical execution modes to a
+plan-review overlay. The built-in `code_plan` planner sets it to
+`("Safe", "Yolo")`, so the overlay presents `Approve - Safe` and
+`Approve - YOLO`. `ApprovalResponse.mode` carries the selected mode back to
+the planner; the code-plan context stores it as `execute_mode` and applies it
+to every execute-phase turn. Missing or invalid mode values fail closed to
+`Safe`. Legacy plan-review requests omit `mode_options` and retain the
+original approval choices.
+
 ## Workflow authoring — `agenthicc.workflows.create_workflow`
 
 ### CreateWorkflow

@@ -81,7 +81,10 @@ class CodePlan(WorkflowPlugin):
             max_iterations=10,
             require_explicit_completion=True,
             require_successful_commands=True,
-            mode_override="Yolo",
+            # The plan-review handoff chooses Safe or Yolo at runtime.  Keeping
+            # this unset prevents the static definition from overriding that
+            # decision when the plugin metadata is inspected by generic code.
+            mode_override=None,
             system_prompt_override=(
                 "You are in the EXECUTION phase. You already explored and planned "
                 "in the previous phase — do NOT re-explore. Implement the approved "

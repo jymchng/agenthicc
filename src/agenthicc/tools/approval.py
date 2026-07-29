@@ -41,6 +41,8 @@ class ApprovalRequest:
     capabilities: frozenset[str]  # capability values that triggered the approval
     event: asyncio.Event = field(compare=False, hash=False)
     kind: str = "tool"  # "tool" | "plan_review" — controls which overlay is shown
+    mode_options: tuple[str, ...] = ()
+    """Canonical execution modes offered by a plan-review overlay, if any."""
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class ApprovalResponse:
     remember: bool = False  # allow all remaining calls of this capability this turn
     remember_all: bool = False  # allow all remaining calls of this capability this session
     message: str = ""  # user-typed feedback / instructions (plan_review only)
+    mode: str | None = None  # selected execution mode for a plan-review handoff
 
 
 class ApprovalService:
@@ -106,6 +109,7 @@ class ApprovalService:
         remember: bool = False,
         remember_all: bool = False,
         message: str = "",
+        mode: str | None = None,
     ) -> None:
         """TUI-side (sync): called from ApprovalOverlay / PlanApprovalOverlay."""
         self._response = ApprovalResponse(
@@ -113,6 +117,7 @@ class ApprovalService:
             remember=remember,
             remember_all=remember_all,
             message=message,
+            mode=mode,
         )
         pending = self._app_state.pending_approval()
         if pending is not None:

@@ -26,6 +26,13 @@ The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
 Workflow selection is influenced by the active mode, registry mappings, and the
 session-local `/workflow` override.
 
+When `code_plan` reaches its human plan review, the overlay offers
+`Approve - Safe` and `Approve - YOLO`. The selected mode is carried into the
+execute phase and is preserved in phase metadata for resume; Safe retains
+per-action approval prompts, while Yolo runs the approved execution without
+those prompts. Design reviews for `create_workflow` keep their existing
+feedback/instructions options.
+
 In the interactive input panel, type `/workflow` and press Space to switch the
 command picker to live workflow-name completion. The suggestions come from the
 current built-in, user, and project workflow registry; selecting one inserts the

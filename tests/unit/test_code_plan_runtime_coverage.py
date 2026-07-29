@@ -131,6 +131,22 @@ async def test_individual_phase_success_rejection_exit_and_summary_error() -> No
     assert await runner._summarize(ctx) is CodePlanState.COMPLETE
 
 
+@pytest.mark.asyncio
+async def test_execute_uses_mode_selected_during_plan_approval() -> None:
+    runner = _runner()
+    seen_modes: list[object] = []
+
+    async def execute_turn(_text: str, **kwargs: object) -> None:
+        seen_modes.append(kwargs["mode"])
+        await _complete_tools(kwargs["tools"])  # type: ignore[arg-type]
+
+    runner._run_turn = execute_turn  # type: ignore[method-assign]
+    ctx = CodePlanContext("intent", "run", plan="plan", execute_mode="Yolo")
+
+    assert await runner._execute(ctx) is CodePlanState.REVIEW
+    assert seen_modes == ["Yolo"]
+
+
 def test_base_tools_filters_blocked_capabilities_and_phase_model() -> None:
     runner = _runner()
     runner.plan_model = "planner-model"
@@ -215,3 +231,32 @@ async def test_run_and_resume_failure_and_completed_phase_paths() -> None:
     runner.run = AsyncMock(return_value=CodePlanContext("intent", "empty"))  # type: ignore[method-assign]
     await runner.resume(empty)
     runner.run.assert_awaited_once_with("intent")
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_execute_mode_from_plan_metadata() -> None:
+    runner = _runner()
+    context = WorkflowContext("intent", "resume-mode", runner.workflow_name)
+    context.add_output(
+        PhaseOutput(
+            "plan",
+            "planner",
+            "saved plan",
+            metadata={"execute_mode": "Yolo"},
+        )
+    )
+
+    seen: list[str] = []
+
+    async def execute(ctx: CodePlanContext) -> CodePlanState:
+        seen.append(ctx.execute_mode)
+        return CodePlanState.REVIEW
+
+    async def review(_ctx: CodePlanContext) -> CodePlanState:
+        return CodePlanState.COMPLETE
+
+    runner._execute = execute  # type: ignore[method-assign]
+    runner._review = review  # type: ignore[method-assign]
+    await runner.resume(context)
+
+    assert seen == ["Yolo"]

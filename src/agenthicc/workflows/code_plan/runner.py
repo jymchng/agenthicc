@@ -238,6 +238,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                             "edge_label": next_label,
                             "metadata": {
                                 "command_outcomes": list(ctx.command_outcomes),
+                                "execute_mode": ctx.execute_mode,
                             },
                         },
                     )
@@ -308,6 +309,9 @@ class CodePlanRunner(BaseWorkflowRunner):
             plan_output = context.phase_outputs.get("plan")
             if plan_output is not None:
                 ctx.plan = plan_output.full_text
+                raw_mode = plan_output.metadata.get("execute_mode")
+                if isinstance(raw_mode, str) and raw_mode in {"Safe", "Yolo"}:
+                    ctx.execute_mode = raw_mode
 
         resume_map: dict[frozenset[str], CodePlanState] = {
             frozenset(): CodePlanState.PLAN,
@@ -410,6 +414,12 @@ class CodePlanRunner(BaseWorkflowRunner):
                 plan = plan_data["plan"]
                 if isinstance(plan, str):
                     ctx.plan = plan
+                execute_mode = plan_data.get("execute_mode", "Safe")
+                ctx.execute_mode = (
+                    execute_mode
+                    if isinstance(execute_mode, str) and execute_mode in {"Safe", "Yolo"}
+                    else "Safe"
+                )
                 return CodePlanState.EXECUTE
 
         ctx.fail_reason = (
@@ -448,7 +458,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 await self._run_turn(
                     text,
                     tools=tools,
-                    mode="Yolo",
+                    mode=ctx.execute_mode,
                     system_prompt=system_prompt,
                     max_turns=40,
                     ctx=ctx,

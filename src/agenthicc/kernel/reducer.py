@@ -233,6 +233,7 @@ def _workflow_phase_completed(state: AppState, event: Event) -> tuple[AppState, 
             "full_text": _payload_str(event.payload, "full_text", default=""),
             "approved": event.payload.get("approved"),
             "structured": _payload_mapping(event.payload, "structured"),
+            "metadata": _payload_mapping(event.payload, "metadata"),
         },
     )
     new_wf = replace(wf, nodes={**wf.nodes, node.node_id: node})

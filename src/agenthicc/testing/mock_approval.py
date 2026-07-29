@@ -49,6 +49,7 @@ class MockApprovalService:
                 message=entry.message,
                 remember=entry.remember,
                 remember_all=entry.remember_all,
+                mode=entry.mode,
             )
         # Queue exhausted — auto-approve so replay completes gracefully.
         self._consumed += 1

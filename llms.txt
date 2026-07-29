@@ -114,6 +114,12 @@ four phases are design (human-approved, read-only), generate (`Yolo` mode, write
 `.agenthicc/workflows/<name>.py`), validate (deterministic import-and-check, then
 the agent's vote), and summarize:
 
+`code_plan` plan approval presents explicit `Approve - Safe` and
+`Approve - YOLO` choices. The selected mode is carried into the execute phase
+and restored from phase metadata on resume; missing or invalid selections use
+the fail-closed `Safe` default. `create_workflow` design approval remains on
+the legacy plan-review option set.
+
 | CreateWorkflowState | agenthicc.workflows.create_workflow.state | Design/generate/validate/summarize state machine with COMPLETE, EXITED, FAILED terminals |
 | CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, approved design, generated path, per-phase `PhaseArtifact`s, shared memory |
 | make_*_tools | agenthicc.workflows.create_workflow.phase_tools | Phase transition handoffs; rejected transitions return actionable `error`, `fix`, and `message` fields |

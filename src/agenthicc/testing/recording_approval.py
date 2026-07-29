@@ -10,6 +10,7 @@ response is returned, appends one line to ``approvals_path``::
       "tool_name": "request_plan_approval",
       "allowed": true,
       "message": "approved",
+      "mode": "Yolo",
       "remember": false,
       "remember_all": false
     }
@@ -54,12 +55,14 @@ class RecordingApprovalService:
         remember: bool = False,
         remember_all: bool = False,
         message: str = "",
+        mode: str | None = None,
     ) -> None:
         self._inner.respond(
             allowed,
             remember=remember,
             remember_all=remember_all,
             message=message,
+            mode=mode,
         )
 
     def reset_turn_memory(self) -> None:
@@ -77,6 +80,7 @@ class RecordingApprovalService:
             "tool_name": req.tool_name,
             "allowed": response.allowed,
             "message": response.message,
+            "mode": response.mode,
             "remember": response.remember,
             "remember_all": response.remember_all,
         }

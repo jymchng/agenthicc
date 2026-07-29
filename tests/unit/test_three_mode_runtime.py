@@ -206,13 +206,13 @@ def test_legacy_plugin_adapter_preserves_custom_binding_and_rejects_debug(
     assert registry.get("Debug") is None
 
 
-def test_write_capable_builtin_phases_declare_yolo_and_not_auto() -> None:
+def test_write_capable_builtin_phases_do_not_override_runtime_mode() -> None:
     from agenthicc.workflows.code_plan.definition import CodePlan
     from agenthicc.workflows.create_workflow.definition import CreateWorkflow
 
     code_plan = {phase.name: phase.mode_override for phase in CodePlan.phases}
     create_workflow = {phase.name: phase.mode_override for phase in CreateWorkflow.phases}
 
-    assert code_plan["execute"] == "Yolo"
+    assert code_plan["execute"] is None
     assert create_workflow["generate"] == "Yolo"
     assert "Auto" not in {value for value in (*code_plan.values(), *create_workflow.values())}

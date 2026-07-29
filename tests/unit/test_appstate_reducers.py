@@ -452,6 +452,7 @@ class TestWorkflowRunReducers:
                     "full_text": "plan text",
                     "approved": True,
                     "structured": {},
+                    "metadata": {"execute_mode": "Yolo"},
                 },
             ),
         )
@@ -474,6 +475,7 @@ class TestWorkflowRunReducers:
         assert wf.status == NodeStatus.complete
         assert set(wf.nodes.keys()) == {"plan", "execute"}
         assert wf.nodes["plan"].result["full_text"] == "plan text"
+        assert wf.nodes["plan"].result["metadata"]["execute_mode"] == "Yolo"
         assert wf.nodes["execute"].result["role"] == "executor"
 
 

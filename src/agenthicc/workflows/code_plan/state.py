@@ -45,6 +45,7 @@ class CodePlanContext:
     intent: str
     run_id: str
     plan: str = ""  # set after PLAN phase
+    execute_mode: str = "Safe"  # selected by plan approval; fail-closed default
     execute_summary: str = ""  # set after EXECUTE phase
     review_summary: str = ""  # set after REVIEW phase (approve)
     rejection_reason: str = ""  # set when REVIEW rejects

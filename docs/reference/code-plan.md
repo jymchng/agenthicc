@@ -40,6 +40,7 @@ The complete phase-state contract is:
 | `intent` | Original user request, retained in every phase prompt |
 | `run_id` | Durable identity for the workflow run |
 | `plan` | Approved plan written by `finalize_plan()` |
+| `execute_mode` | `Safe` or `Yolo`, selected by plan approval and applied to `EXECUTE` |
 | `execute_summary` | Implementation evidence written by `mark_execute_complete()` |
 | `review_summary` | Verification evidence written by `approve_review()` |
 | `rejection_reason` | Required corrections written by `reject_review()` |
@@ -184,6 +185,14 @@ the agent to call `request_plan_approval()` first. A successful finalization
 stores the plan and moves the runner to `EXECUTE`. `exit_code_plan()` is an
 optional clean exit for questions or other intents that do not require a code
 plan.
+
+For interactive code-plan approval, the plan-review overlay presents two
+explicit choices: `Approve - Safe` and `Approve - YOLO`. The selected mode is
+stored with the finalized plan and passed to every execution turn; Safe keeps
+per-action approval gates enabled, while Yolo permits the approved executor to
+run without those prompts. The choice is also included in the phase metadata
+used by the resume path. Other plan-review requests, such as
+`create_workflow`'s design review, retain the original approval options.
 
 ### Execution
 

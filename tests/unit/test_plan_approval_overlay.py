@@ -17,7 +17,10 @@ pytestmark = pytest.mark.unit
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _make_req(plan: str = "Step 1\nStep 2\nStep 3") -> ApprovalRequest:
+def _make_req(
+    plan: str = "Step 1\nStep 2\nStep 3",
+    mode_options: tuple[str, ...] = (),
+) -> ApprovalRequest:
     return ApprovalRequest(
         tool_name="Review: plan",
         tool_use_id="abc",
@@ -25,11 +28,23 @@ def _make_req(plan: str = "Step 1\nStep 2\nStep 3") -> ApprovalRequest:
         capabilities=frozenset(),
         event=asyncio.Event(),
         kind="plan_review",
+        mode_options=mode_options,
     )
 
 
 def _make_overlay(plan: str = "Step 1\nStep 2") -> tuple[PlanApprovalOverlay, MagicMock, MagicMock]:
     req = _make_req(plan)
+    service = MagicMock()
+    close_fn = MagicMock()
+    ov = PlanApprovalOverlay(req, service, close_fn)
+    ov.on_mount()
+    return ov, service, close_fn
+
+
+def _make_mode_overlay(
+    plan: str = "Step 1\nStep 2",
+) -> tuple[PlanApprovalOverlay, MagicMock, MagicMock]:
+    req = _make_req(plan, mode_options=("Safe", "Yolo"))
     service = MagicMock()
     close_fn = MagicMock()
     ov = PlanApprovalOverlay(req, service, close_fn)
@@ -333,3 +348,63 @@ class TestPlanApprovalPrompting:
         ov, service, close_fn = self._enter_prompting(1)
         ov.handle_key(Key.ENTER, "")
         service.respond.assert_called_once_with(allowed=False, message="")
+
+
+class TestPlanApprovalExecutionModes:
+    def test_render_splits_approve_into_safe_and_yolo(self):
+        ov, _, _ = _make_mode_overlay()
+        result = ov.render()
+        combined = " ".join(r.plain if hasattr(r, "plain") else str(r) for r in result.renderables)
+        assert "Approve - Safe" in combined
+        assert "Approve - YOLO" in combined
+
+    def test_safe_approval_returns_safe_mode(self):
+        ov, service, close_fn = _make_mode_overlay()
+        ov.handle_key(Key.ENTER, "")
+        service.respond.assert_called_once_with(allowed=True, message="", mode="Safe")
+        close_fn.assert_called_once()
+
+    def test_yolo_approval_returns_yolo_mode(self):
+        ov, service, close_fn = _make_mode_overlay()
+        ov.handle_key(Key.DOWN, "")
+        ov.handle_key(Key.ENTER, "")
+        service.respond.assert_called_once_with(allowed=True, message="", mode="Yolo")
+        close_fn.assert_called_once()
+
+    def test_instructions_prompt_then_mode_selection(self):
+        from agenthicc.tui.workspace.overlays.plan_approval import _State
+
+        ov, service, close_fn = _make_mode_overlay()
+        # Dynamic mode-aware options put instructions at index 3.
+        ov._selected = 3
+        ov.handle_key(Key.ENTER, "")
+        for ch in "also add tests":
+            ov.handle_key(Key.CHAR, ch)
+        ov.handle_key(Key.ENTER, "")
+        assert ov._state == _State.MODE_SELECTING
+        service.respond.assert_not_called()
+        close_fn.assert_not_called()
+
+        ov.handle_key(Key.DOWN, "")
+        ov.handle_key(Key.ENTER, "")
+        service.respond.assert_called_once_with(
+            allowed=True,
+            message="also add tests",
+            mode="Yolo",
+        )
+        close_fn.assert_called_once()
+
+    def test_esc_from_mode_selection_restores_prompt(self):
+        from agenthicc.tui.workspace.overlays.plan_approval import _State
+
+        ov, service, close_fn = _make_mode_overlay()
+        ov._selected = 3
+        ov.handle_key(Key.ENTER, "")
+        for ch in "keep this":
+            ov.handle_key(Key.CHAR, ch)
+        ov.handle_key(Key.ENTER, "")
+        ov.handle_key(Key.ESC, "")
+        assert ov._state == _State.PROMPTING
+        assert ov._prompt_text == "keep this"
+        service.respond.assert_not_called()
+        close_fn.assert_not_called()
