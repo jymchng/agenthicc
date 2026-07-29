@@ -874,6 +874,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 system_prompt_suffix=system_prompt,
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
+                next_queued_message=self._cfg.next_queued_message,
             )
         finally:
             reset_current_terminal_wait_policy(policy_token)

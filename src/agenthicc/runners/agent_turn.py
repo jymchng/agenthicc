@@ -151,9 +151,12 @@ def _is_permanent_error(exc: BaseException) -> bool:
 
 
 if TYPE_CHECKING:
+    from lauren_ai import AgentContext
+    from lauren_ai._tools import ToolResult
     from collections.abc import Awaitable, Callable
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._memory import ShortTermMemory
+    from lauren_ai._transport import ToolCall
     from lauren_ai import IdempotencyLedger
     from lauren_ai._signals import ToolCallStarted, ToolCallComplete
     from agenthicc.config import ExecutionSettings
@@ -639,7 +642,49 @@ class AgentTurnRunner:
 
                 hooks.append(ApprovalGate(ctx.app_state, ctx.approval_svc))
 
-        active_runner = _RunnerBase(
+        runner_class: type[AgentRunnerBase] = _RunnerBase
+        next_queued_message = ctx.next_queued_message
+        if next_queued_message is not None:
+            claim_queued_message = next_queued_message
+
+            class _QueuedInputRunner(_RunnerBase):
+                """Commit tool results before injecting the next queued input.
+
+                Lauren-ai's stream loop normally commits the returned tool
+                results immediately after ``_execute_tools`` returns. This
+                override performs that same commit before adding a queued user
+                message, preserving the valid
+                ``assistant(tool_use) -> tool_result -> user`` sequence.
+                """
+
+                async def _execute_tools(
+                    self,
+                    tool_calls: list[ToolCall],
+                    *,
+                    ctx: "AgentContext",
+                    agent: object,
+                    model: str,
+                    run_sinks: tuple[object, ...] = (),
+                ) -> list[ToolResult]:
+                    results = await super()._execute_tools(
+                        tool_calls,
+                        ctx=ctx,
+                        agent=agent,
+                        model=model,
+                        run_sinks=run_sinks,
+                    )
+                    if not results or ctx.turn >= ctx.config.max_turns - 1:
+                        return results
+                    queued = claim_queued_message()
+                    if queued is None:
+                        return results
+                    ctx.memory.add_tool_results(results)
+                    ctx.memory.add_user(queued)
+                    return []
+
+            runner_class = _QueuedInputRunner
+
+        active_runner = runner_class(
             transport=ctx.runner._transport,
             signals=getattr(ctx.runner, "_signals", None),
             global_hooks=hooks or None,
@@ -989,6 +1034,7 @@ async def _run_agent_turn(
     resume_turn_id: str | None = None,
     resume_ledger: IdempotencyLedger | None = None,
     command_outcomes: list[dict[str, object]] | None = None,
+    next_queued_message: Callable[[], str | None] | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -1021,5 +1067,6 @@ async def _run_agent_turn(
         resume_turn_id=resume_turn_id,
         resume_ledger=resume_ledger,
         command_outcomes=command_outcomes,
+        next_queued_message=next_queued_message,
     )
     await AgentTurnRunner(ctx).run()

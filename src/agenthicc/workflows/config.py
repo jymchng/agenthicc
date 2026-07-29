@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -49,6 +50,8 @@ class WorkflowConfig:
     """Per-workflow tunable parameters (phase model overrides, etc.) — PRD-111."""
     terminal_wait_policies: dict[str, str] = field(default_factory=dict)
     """Phase-name to terminal policy map (PRD-149)."""
+    next_queued_message: Callable[[], str | None] | None = None
+    """Claim ordinary TUI input at a completed tool boundary, when present."""
 
     def all_plugin_tools(self) -> list["ToolLike"]:
         """Return project tools while accepting legacy list-based configs."""

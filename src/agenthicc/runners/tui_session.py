@@ -680,6 +680,7 @@ class TUISession:
             agents_registry=ctx.agents_registry,
             memory_router=ctx.memory_router,
             semantic_index=ctx.semantic_index,
+            next_queued_message=self._next_queued_message,
         )
         self._sync_terminal_status()
 
@@ -875,6 +876,29 @@ class TUISession:
         label = text[:40] + ("…" if len(text) > 40 else "")
         position = len(self._msg_queue)
         self._ctx.app_state.conversation.notification.set(f"⌛ Queued #{position}: {label}")
+
+    def _next_queued_message(self) -> str | None:
+        """Claim the next plain-text message at a completed tool boundary.
+
+        The active agent loop owns the shared memory, so a queued message can
+        be appended safely only after its tool results have been committed and
+        before the loop's next model request. Slash commands and skills stay at
+        the head of the FIFO until the turn is idle, where ``advance()`` can
+        route them locally instead of sending their command spelling to the
+        model.
+        """
+        if not self._msg_queue:
+            return None
+        text = self._msg_queue[0].strip()
+        if not text or text.startswith(("/", "$")):
+            return None
+        self._msg_queue.pop(0)
+        self._ctx.app_state.conversation.append_event("user_message", {"text": text})
+        if self._msg_queue:
+            self._notify_queued(self._msg_queue[0])
+        else:
+            self._ctx.app_state.conversation.notification.set(None)
+        return text
 
     def _notify_busy_rejected(self, text: str, reason: str) -> None:
         command = text.split(None, 1)[0] if text.split(None, 1) else text
@@ -1340,6 +1364,7 @@ class TUISession:
                     retry_deadline_monotonic=_deadline,
                     resume_turn_id=getattr(resume, "turn_id", None),
                     resume_ledger=getattr(resume, "ledger", None),
+                    next_queued_message=self._next_queued_message,
                 )
 
         try:

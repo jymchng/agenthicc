@@ -86,6 +86,12 @@ plugin.
 | `busy_policy` | Policy used when submitted during an active run; defaults to `queue`. |
 | `busy_policy_resolver` | Pure argument-aware policy selector; failures fail closed to `queue`. |
 
+Ordinary text that is queued during an active agent run is fed into the same
+conversation as soon as the current tool batch completes, before the next
+model request. This keeps follow-up input responsive without starting a second
+agent against the same memory. Queued slash commands and skills remain FIFO
+gated until the run is idle so they can be routed locally.
+
 A command should normally set exactly one of `handler` or `menu_factory`.
 When both are set, the menu factory wins for every invocation, including when
 arguments are present. A handler should return `True` after it handles the

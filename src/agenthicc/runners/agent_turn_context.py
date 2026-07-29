@@ -7,6 +7,7 @@ reads from this context; call sites construct it and pass it to the runner.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
@@ -46,6 +47,7 @@ class AgentTurnOptions(TypedDict):
     approval_svc: "ApprovalService | None"
     output_collector: "list[str] | None"
     command_outcomes: "list[dict[str, object]] | None"
+    next_queued_message: NotRequired[Callable[[], str | None] | None]
     system_prompt_suffix: str
     excluded_capabilities: NotRequired[frozenset[str]]
     allowed_tool_names: NotRequired[frozenset[str] | None]
@@ -116,3 +118,9 @@ class AgentTurnContext:
 
     #: Structured outcomes from command tools used during this turn.
     command_outcomes: "list[dict[str, object]] | None" = None
+
+    #: Claim one ordinary message queued during this turn after a tool batch
+    #: finishes. The returned message is appended to the shared agent memory
+    #: before the next model call; slash commands remain FIFO-gated until the
+    #: outer turn is idle and can route them locally.
+    next_queued_message: "Callable[[], str | None] | None" = None

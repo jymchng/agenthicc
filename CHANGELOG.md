@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — queued input during tool execution
+
+- Ordinary messages queued while the agent is running are now delivered after
+  the current tool batch completes, before the next model request. Queued slash
+  commands and skills retain FIFO local routing when the run becomes idle.
+
 ### Documentation — repository map and improvement roadmap
 
 - Rewrote the README, contributor/agent guidance, and MkDocs landing page to

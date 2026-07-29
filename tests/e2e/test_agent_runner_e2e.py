@@ -194,6 +194,54 @@ async def test_tool_only_communication_spawns_agent_in_appstate(kernel):
     await asyncio.gather(proc_task, return_exceptions=True)
 
 
+async def test_queued_message_is_sent_after_tool_results_before_next_model_call(kernel):
+    """A queued follow-up becomes the next user message after a tool batch."""
+    proc_task = asyncio.create_task(kernel.run())
+    calls: list[str] = []
+
+    @tool()
+    async def inspect_item(item: str) -> dict:
+        """Inspect an item before answering the user."""
+        calls.append(item)
+        return {"item": item, "status": "ready"}
+
+    mock = MockTransport()
+    mock.queue_tool_use("inspect_item", {"item": "first"})
+    mock.queue_response(_completion("I handled the follow-up.", n=2))
+    runner = AgentRunnerBase(transport=mock, signals=SignalBus())
+    queued = iter(("follow-up",))
+
+    from agenthicc.runners.agent_turn import _run_agent_turn
+
+    await _run_agent_turn(
+        "initial request",
+        runner,
+        kernel,
+        project_plugin_tools=[inspect_item],
+        next_queued_message=lambda: next(queued, None),
+    )
+
+    assert calls == ["first"]
+    assert len(mock.calls) == 2
+    second_messages = mock.calls[1].messages
+    assert any(
+        (
+            (message.get("role") if isinstance(message, dict) else getattr(message, "role", None))
+            == "user"
+            and (
+                message.get("content")
+                if isinstance(message, dict)
+                else getattr(message, "content", None)
+            )
+            == "follow-up"
+        )
+        for message in second_messages
+    )
+
+    proc_task.cancel()
+    await asyncio.gather(proc_task, return_exceptions=True)
+
+
 async def test_multi_turn_workflow_progress_via_tools(kernel):
     """Agent advances a workflow node through tool calls across two turns."""
     proc_task = asyncio.create_task(kernel.run())

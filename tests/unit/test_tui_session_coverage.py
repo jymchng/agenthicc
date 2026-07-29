@@ -139,6 +139,18 @@ def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.Monk
     assert ctx.cmd_registry.get("/coverage") is None
 
 
+def test_queued_plain_text_is_claimed_at_tool_boundary_but_commands_wait() -> None:
+    session, _ctx, _workspace, _input = _make_session()
+
+    session._msg_queue = ["follow-up"]
+    assert session._next_queued_message() == "follow-up"
+    assert session._msg_queue == []
+
+    session._msg_queue = ["/workflow demo", "another follow-up"]
+    assert session._next_queued_message() is None
+    assert session._msg_queue == ["/workflow demo", "another follow-up"]
+
+
 def test_tui_reload_tools_replaces_session_tools_and_workflow_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

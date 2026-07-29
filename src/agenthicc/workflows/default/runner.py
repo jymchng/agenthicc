@@ -529,6 +529,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             "approval_svc": self._cfg.approval_svc,
             "output_collector": output_buf,
             "command_outcomes": command_outcomes,
+            "next_queued_message": self._cfg.next_queued_message,
             "system_prompt_suffix": role_prompt,
         }
 
