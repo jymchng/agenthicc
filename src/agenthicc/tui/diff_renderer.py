@@ -42,6 +42,10 @@ __all__ = ["render_file_diff", "render_file_create"]
 #: Maximum lines shown in a file-creation preview (FR: show 10 lines).
 CREATE_PREVIEW_LINES: int = 10
 
+#: Maximum changed rows shown for one contiguous diff block.  A block larger
+#: than this keeps its first and last three rows and gets one omission row.
+DIFF_PREVIEW_LINES: int = 6
+
 # ── palette ───────────────────────────────────────────────────────────────────
 
 _BG_DEL = "on #3a1515"
@@ -200,6 +204,69 @@ def _add_row(
     )
 
 
+_ChangeRow = tuple[str, int, str, Text, str | None]
+
+
+def _omitted_row(table: Table, count: int) -> None:
+    """Add the marker used when a long changed block is abbreviated."""
+    table.add_row(
+        Text("...", style="dim"),
+        Text(" "),
+        Text(f"{count} more diff lines", style="dim"),
+    )
+
+
+def _render_change_row(table: Table, row: _ChangeRow) -> None:
+    kind, lineno, raw, hl, pair_raw = row
+    if kind == "delete":
+        _del_row(table, lineno, raw, hl, pair_raw)
+    else:
+        _add_row(table, lineno, raw, hl, pair_raw)
+
+
+def _render_change_block(
+    table: Table,
+    changes: Sequence[Opcode],
+    old_lines: list[str],
+    new_lines: list[str],
+    old_hl: list[Text],
+    new_hl: list[Text],
+) -> None:
+    """Render adjacent non-equal opcodes, abbreviating long blocks.
+
+    ``SequenceMatcher`` can represent one contiguous visual change with more
+    than one non-equal opcode.  Flattening those opcodes before applying the
+    limit ensures that a single long change gets one omission marker rather
+    than one marker per opcode.
+    """
+    rows: list[_ChangeRow] = []
+    for _, i1, i2, j1, j2 in changes:
+        del_lines = old_lines[i1:i2]
+        add_lines = new_lines[j1:j2]
+        del_hl = old_hl[i1:i2]
+        add_hl = new_hl[j1:j2]
+        rows.extend(
+            ("delete", i1 + idx + 1, raw, hl, add_lines[idx] if idx < len(add_lines) else None)
+            for idx, (raw, hl) in enumerate(zip(del_lines, del_hl))
+        )
+        rows.extend(
+            ("add", j1 + idx + 1, raw, hl, del_lines[idx] if idx < len(del_lines) else None)
+            for idx, (raw, hl) in enumerate(zip(add_lines, add_hl))
+        )
+
+    if len(rows) <= DIFF_PREVIEW_LINES:
+        for row in rows:
+            _render_change_row(table, row)
+        return
+
+    edge = DIFF_PREVIEW_LINES // 2
+    for row in rows[:edge]:
+        _render_change_row(table, row)
+    _omitted_row(table, len(rows) - DIFF_PREVIEW_LINES)
+    for row in rows[-edge:]:
+        _render_change_row(table, row)
+
+
 # ── hunk grouping ────────────────────────────────────────────────────────────
 
 
@@ -210,8 +277,8 @@ def _build_hunks(
     """Group opcodes into hunks separated by equal gaps larger than 2*context.
 
     Each hunk is a flat list of opcodes with equal blocks pre-trimmed to at
-    most *context* lines at both edges.  The rendering loop can render every
-    opcode in a hunk in full — all context logic lives here, not there.
+    most *context* lines at both edges.  The rendering loop owns the separate
+    preview limit for non-equal opcodes; all context grouping logic lives here.
 
     Algorithm
     ---------
@@ -323,21 +390,28 @@ def render_file_diff(
         for hunk_idx, hunk in enumerate(hunks):
             if hunk_idx > 0:
                 _gap_row(table)
+            change_block: list[Opcode] = []
+
+            def flush_change_block() -> None:
+                if change_block:
+                    _render_change_block(
+                        table,
+                        change_block,
+                        old_lines,
+                        new_lines,
+                        old_hl,
+                        new_hl,
+                    )
+                    change_block.clear()
+
             for tag, i1, i2, j1, j2 in hunk:
                 if tag == "equal":
+                    flush_change_block()
                     for off in range(i2 - i1):
                         _context_row(table, i1 + off + 1, old_hl[i1 + off])
                 else:
-                    del_lines = old_lines[i1:i2]
-                    add_lines = new_lines[j1:j2]
-                    del_hl = old_hl[i1:i2]
-                    add_hl = new_hl[j1:j2]
-                    for idx, (raw, hl) in enumerate(zip(del_lines, del_hl)):
-                        pair = add_lines[idx] if idx < len(add_lines) else None
-                        _del_row(table, i1 + idx + 1, raw, hl, pair)
-                    for idx, (raw, hl) in enumerate(zip(add_lines, add_hl)):
-                        pair = del_lines[idx] if idx < len(del_lines) else None
-                        _add_row(table, j1 + idx + 1, raw, hl, pair)
+                    change_block.append((tag, i1, i2, j1, j2))
+            flush_change_block()
 
     return Group(
         _header(path, operation),

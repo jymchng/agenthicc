@@ -191,7 +191,8 @@ wall-clock duration is retained for turn telemetry.
 Tool completions use the same operation-style header as file updates: reads,
 searches, commands, and other tools show a `● Operation(...)` header, a result
 summary, and a bounded numbered output preview. File changes retain their
-unified diff preview.
+unified diff preview; long contiguous change blocks are abbreviated to six
+edge rows with a single `...` omission marker.
 
 Useful built-in slash commands include:
 

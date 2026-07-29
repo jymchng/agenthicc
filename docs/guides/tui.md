@@ -54,7 +54,9 @@ frames into scrollback.
 Tool results use the same operation-style block: `● Read(...)`, `● Run(...)`,
 `● Search(...)`, and similar headers are followed by a status summary and a
 bounded numbered output preview. File edits use the richer `● Update(...)`
-block with its unified diff.
+block with its unified diff. Each contiguous change block shows at most six
+changed rows; longer blocks retain their first and last three rows and show a
+single `...` omission row so large edits do not flood the scroll buffer.
 
 ## Modes
 
