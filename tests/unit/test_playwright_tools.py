@@ -319,6 +319,170 @@ def test_playwright_client_launches_and_routes_subresources(
     asyncio.run(check())
 
 
+def test_playwright_client_honors_channel_executable_and_persistent_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import agenthicc.tools.playwright.client as playwright_client
+
+    class BrowserType(_FakeBrowserType):
+        def __init__(self) -> None:
+            super().__init__()
+            self.launch_options: dict[str, object] | None = None
+            self.profile: str | None = None
+
+        async def launch_persistent_context(self, profile: str, **kwargs: object) -> _FakeContext:
+            self.profile = profile
+            self.launch_options = kwargs
+            return self.browser.context
+
+    browser_type = BrowserType()
+
+    class Playwright(_FakePlaywright):
+        def __init__(self) -> None:
+            self.chromium = browser_type
+
+    class ContextManager(_FakePlaywrightContextManager):
+        async def start(self) -> Playwright:
+            return Playwright()
+
+    monkeypatch.setattr(
+        playwright_client.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(async_playwright=lambda: ContextManager()),
+    )
+    client = PlaywrightBrowserClient(
+        PlaywrightSettings(
+            enabled=True,
+            allowed_domains=["example.com"],
+            browser_channel="chrome",
+            executable_path="/usr/bin/chromium",
+            allow_persistent_profiles=True,
+            profile_root="profiles",
+        ),
+        BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+        tmp_path,
+        session_id="opaque-session",
+    )
+
+    async def check() -> None:
+        context = await client._get_context()
+        assert isinstance(context, _FakeContext)
+        assert browser_type.profile == str(tmp_path / "profiles" / "opaque-session")
+        assert browser_type.launch_options == {
+            "headless": True,
+            "channel": "chrome",
+            "executable_path": "/usr/bin/chromium",
+            "accept_downloads": True,
+        }
+        await client.close_session("session")
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "api_factory",
+    [
+        lambda: SimpleNamespace(async_playwright=None),
+        lambda: SimpleNamespace(async_playwright=lambda: object()),
+    ],
+)
+def test_playwright_client_reports_startup_shape_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    api_factory: object,
+) -> None:
+    import agenthicc.tools.playwright.client as playwright_client
+
+    monkeypatch.setattr(playwright_client.importlib, "import_module", lambda _name: api_factory())  # type: ignore[operator]
+    client = PlaywrightBrowserClient(
+        PlaywrightSettings(allowed_domains=["example.com"]),
+        BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+        tmp_path,
+    )
+    health = asyncio.run(client.health())
+    assert health.status in {
+        BrowserErrorKind.EXECUTION.value,
+        BrowserErrorKind.BROWSER_UNAVAILABLE.value,
+    }
+
+
+def test_playwright_client_reports_missing_browser_type_and_runtime_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import agenthicc.tools.playwright.client as playwright_client
+
+    class MissingBrowserType:
+        async def start(self) -> object:
+            return SimpleNamespace()
+
+    monkeypatch.setattr(
+        playwright_client.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(async_playwright=lambda: MissingBrowserType()),
+    )
+    missing = PlaywrightBrowserClient(
+        PlaywrightSettings(browser_type="firefox", allowed_domains=["example.com"]),
+        BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+        tmp_path,
+    )
+    assert asyncio.run(missing.health()).status == BrowserErrorKind.INVALID_INPUT.value
+
+    class FailingStart:
+        async def start(self) -> object:
+            raise RuntimeError("browser binary missing")
+
+    monkeypatch.setattr(
+        playwright_client.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(async_playwright=lambda: FailingStart()),
+    )
+    failing = PlaywrightBrowserClient(
+        PlaywrightSettings(allowed_domains=["example.com"]),
+        BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+        tmp_path,
+    )
+    assert asyncio.run(failing.health()).status == BrowserErrorKind.BROWSER_UNAVAILABLE.value
+
+
+def test_playwright_health_keeps_unexpected_errors_safe(tmp_path: Path) -> None:
+    client = PlaywrightBrowserClient(
+        PlaywrightSettings(allowed_domains=["example.com"]),
+        BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+        tmp_path,
+    )
+
+    async def broken() -> object:
+        raise RuntimeError("private runtime detail")
+
+    client._get_context = broken  # type: ignore[method-assign]
+    health = asyncio.run(client.health())
+    assert health.status == BrowserErrorKind.BROWSER_UNAVAILABLE.value
+    assert "private runtime" not in health.message
+
+
+def test_playwright_cleanup_ignores_shutdown_errors(tmp_path: Path) -> None:
+    class BrokenClose:
+        async def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    class BrokenStop:
+        async def stop(self) -> None:
+            raise RuntimeError("stop failed")
+
+    client = PlaywrightBrowserClient(
+        PlaywrightSettings(allowed_domains=["example.com"]),
+        BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+        tmp_path,
+    )
+    client._context = BrokenClose()
+    client._browser = BrokenClose()
+    client._playwright = BrokenStop()
+    asyncio.run(client._cleanup_runtime())
+    assert client._context is None
+    assert client._browser is None
+    assert client._playwright is None
+
+
 def test_generated_workflows_may_use_canonical_playwright_tools(tmp_path: Path) -> None:
     source = """
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin

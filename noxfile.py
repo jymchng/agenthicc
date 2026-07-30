@@ -99,7 +99,7 @@ def tests_e2e(session: nox.Session) -> None:
 
 @nox.session(python=PRIMARY_PYTHON, name="coverage")
 def coverage(session: nox.Session) -> None:
-    """Run the full suite with coverage and enforce the current 65% floor."""
+    """Run the full suite with coverage and enforce the 90% floor."""
     _install_all(session)
     session.run(
         "pytest",
@@ -107,7 +107,7 @@ def coverage(session: nox.Session) -> None:
         "--cov-report=xml",
         "--cov-report=html",
         "--cov-report=term-missing",
-        "--cov-fail-under=65",
+        "--cov-fail-under=90",
         *session.posargs,
     )
 
