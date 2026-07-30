@@ -23,7 +23,7 @@ from agenthicc.tui.workspace.overlay import OverlayHost
 if TYPE_CHECKING:
     from rich.console import Console, RenderableType
     from rich.live import Live
-    from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tui.conversation_store import AppState, ConversationEvent
 
 
 def _border(cols: int) -> RenderableType:
@@ -161,6 +161,13 @@ class Workspace:
             except Exception:  # noqa: BLE001
                 pass
             self._live = None
+
+    async def replay_transcript(self, events: list["ConversationEvent"]) -> None:
+        """Display a resumed session's persisted transcript above the Live UI."""
+        self.scroll.replay(events)
+        # The appender schedules one event-loop callback for the batch. Yield
+        # once so the transcript is visible before input starts.
+        await asyncio.sleep(0)
 
     # ── rendering ─────────────────────────────────────────────────────────────
 

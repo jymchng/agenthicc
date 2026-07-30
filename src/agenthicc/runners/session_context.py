@@ -97,3 +97,8 @@ class SessionContext:
 
     # ── provider usage (PRD-157) ─────────────────────────────────────────────
     usage_ledger: "UsageLedger | None" = None
+
+    # ── visual resume (PRD-158) ──────────────────────────────────────────────
+    #: True when this TUI was opened against an existing session and should
+    #: replay its persisted scroll transcript after the Live block mounts.
+    resumed: bool = False

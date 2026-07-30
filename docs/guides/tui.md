@@ -104,6 +104,17 @@ a response, while its edits remain local to the overlay until saved.
 `/cancel`/`/interrupt` share the Ctrl+C cancellation owner, and
 `/bg`/`/background` use the background-session control plane.
 
+### Resumed transcript
+
+When the TUI is opened with an existing session, the session log is loaded
+after the Live workspace mounts and its historical conversation events are
+sent directly to `ScrollBufferAppender` in their original order. The same
+renderers are used for old and live turns, tool completions, errors, and
+assistant responses. This is presentation-only replay: the events are not
+appended to `ConversationStore` and therefore are not written to
+`conversation.jsonl` a second time. Provider memory, usage, and workflow state
+continue to restore through their existing durable stores.
+
 When a tool approval, plan review, or `ask_user()` question is pending, the
 status bar changes from the animated Thinking state to a stable waiting label.
 The Thinking duration is the total wall-clock time for the outer user activity:

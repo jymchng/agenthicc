@@ -147,7 +147,18 @@ class SessionEventLog:
             pass
 
     @staticmethod
-    def load(session_id: str) -> list[ConversationEvent]:
+    def load(
+        session_id: str,
+        *,
+        rendered: bool = True,
+    ) -> list[ConversationEvent]:
+        """Load conversation events, optionally marking them for display.
+
+        Normal restore uses ``rendered=True`` because it only reconstructs
+        metrics/state. The interactive resume path requests ``rendered=False``
+        and hands those events directly to the scroll appender; they are not
+        re-added to persistence subscribers.
+        """
         path = get_session_log_path(session_id)
         if not path.exists():
             return []
@@ -161,7 +172,7 @@ class SessionEventLog:
                         kind=data["kind"],
                         payload=data["payload"],
                         timestamp=data["timestamp"],
-                        rendered=True,  # already displayed; skip on restore
+                        rendered=rendered,
                     )
                 )
             except Exception:  # noqa: BLE001

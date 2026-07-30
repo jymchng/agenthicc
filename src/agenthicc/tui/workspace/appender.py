@@ -16,7 +16,7 @@ Architecture: PRD-60 §7, PRD-66 §3.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.conversation_store import ConversationEvent
@@ -201,6 +201,19 @@ class ScrollBufferAppender:
             self._unsub()
             self._unsub = None
 
+    def replay(self, events: Iterable[ConversationEvent]) -> None:
+        """Queue persisted events for display without persisting them again.
+
+        Resume must restore the visible transcript, but feeding historical
+        events through ``ConversationStore.append_event`` would notify the
+        session-log subscriber and duplicate the JSONL records. The appender
+        owns this presentation-only path and renders the original event
+        timestamps/order through the same renderers as live events.
+        """
+        for event in events:
+            event.rendered = False
+            self._queue_event(event)
+
     # ── event queuing ─────────────────────────────────────────────────────────
 
     def _queue_event(self, ev: ConversationEvent) -> None:
@@ -208,11 +221,7 @@ class ScrollBufferAppender:
         if not self._flush_scheduled:
             self._flush_scheduled = True
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.call_soon(self._flush_batch)
-                else:
-                    self._flush_batch()
+                asyncio.get_running_loop().call_soon(self._flush_batch)
             except RuntimeError:
                 self._flush_batch()
 

@@ -25,6 +25,7 @@ against the current source before implementing them.
 - [PRD-155 — Consolidated Safe, Plan, and Yolo Modes](prd-155-three-mode-operational-model.md)
 - [PRD-156 — Resumable Plan-Mode Interrupts and Workflow Continuation](prd-156-resumable-plan-interrupts.md)
 - [PRD-157 — Canonical Usage Accounting and TUI Token Observability](prd-157-usage-accounting-and-tui-token-observability.md)
+- [PRD-158 — Display Resumed TUI Transcript](prd-158-resumed-tui-transcript.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

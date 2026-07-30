@@ -603,6 +603,7 @@ async def _build_session_context(
         session_service=session_service,
         kernel_projection_task=kernel_projection_task,
         usage_ledger=usage_ledger,
+        resumed=bool(resume_id),
     )
 
 
@@ -1967,6 +1968,12 @@ class TUISession:
         self._wire_approval_overlay()
 
         self._workspace.start()
+        if getattr(ctx, "resumed", False):
+            from agenthicc.tui.runtime.session_log import SessionEventLog  # noqa: PLC0415
+
+            await self._workspace.replay_transcript(
+                SessionEventLog.load(ctx.session_id, rendered=False)
+            )
         proc_task = asyncio.create_task(ctx.processor.run())
         # If a previous session had an in-progress workflow, show a notification
         # but do NOT auto-start it — the user decides what to do next.
