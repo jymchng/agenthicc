@@ -214,7 +214,9 @@ to the queue.
 While the run is active, the slash picker labels entries as `runs now`,
 `queues while busy`, or `unavailable while busy`. Manual submission and the
 picker use the same metadata. Immediate output is local: `/usage` reads the
-existing conversation token/cost counters and never becomes an agent message.
+session `UsageLedger` projection and never becomes an agent message. It remains
+available during active runs; quality fields distinguish complete, partial,
+and unavailable usage, while cost fields distinguish estimates from unknowns.
 
 ## Dependencies and failures
 

@@ -1,5 +1,10 @@
 # PRD-83 — Token Tracking Architecture Revamp
 
+> Historical design note: PRD-157 supersedes this document's two-source
+> reconciliation model. Current token/cost authority is the durable,
+> session-scoped `UsageLedger`; the signal-correlation lessons below remain
+> historical context.
+
 ## Background
 
 PRD-82 identified that token counts update one generator-resume cycle too

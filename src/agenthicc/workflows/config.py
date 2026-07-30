@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from agenthicc.workflows.plugin import WorkflowParams
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.runners.usage_ledger import UsageLedger
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,8 @@ class WorkflowConfig:
     """Stable session conversation identifier passed to lauren-ai."""
     workflow_handle: "WorkflowRunHandle | None" = None
     """Active workflow lifecycle handle, when this config runs a workflow."""
+    usage_ledger: "UsageLedger | None" = None
+    """Session-scoped provider usage ledger (PRD-157)."""
 
     def all_plugin_tools(self) -> list["ToolLike"]:
         """Return project tools while accepting legacy list-based configs."""

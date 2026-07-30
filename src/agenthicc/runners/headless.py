@@ -130,6 +130,7 @@ async def execute_workflow(
         completed_turns=completed_turns,
         session_memory=session.session_memory,
         conversation_id=session.session_id,
+        usage_ledger=getattr(session, "usage_ledger", None),
         workflow_handle=workflow_handle,
         params=workflow_cls.build_params(session.cfg.workflows.get(workflow_name, {})),
         terminal_wait_policies={

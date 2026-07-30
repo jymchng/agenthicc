@@ -330,11 +330,14 @@ class ScrollBufferAppender:
         cols = shutil.get_terminal_size((80, 24)).columns
         sid = conv.session_id() or "session"
         turns = conv.turn_count()
-        cost = f"${conv.cost_usd():.3f}"
+        cost_status = getattr(conv, "cost_status", lambda: "estimated")()
+        cost = f"${conv.cost_usd():.3f}" if cost_status != "unavailable" else "cost unknown"
+        usage_status = getattr(conv, "usage_status", lambda: "complete")()
+        marker = " ?" if usage_status != "complete" else ""
         self._console.print(
             f" [dim]{sid}  |  {turns} turn{'s' if turns != 1 else ''}  |  {cost}[/dim]"
             f"  [cyan]↑ {conv.tokens_in():,}[/cyan]"
-            f"  [green]↓ {conv.tokens_out():,}[/green]",
+            f"  [green]↓ {conv.tokens_out():,}[/green]{marker}",
             markup=True,
             highlight=False,
         )

@@ -70,6 +70,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `inspect_session` | `agenthicc.tui.runtime.session_export` | Redacted durable session health and usage summary |
 | `SessionService` / `SessionSnapshot` / `SessionCommand` | `agenthicc.session_service` | Client-neutral session coordination and policy-filtered read model |
 | `SessionEvent` / `SessionEventStore` | `agenthicc.session_service` | Versioned durable event envelope and fsync-backed replay ledger |
+| `UsageLedger` / `UsageRecord` / `UsageSnapshot` | `agenthicc.runners.usage_ledger` | Session-scoped durable provider usage, quality, cost, and reconciliation |
 | `InProcessSessionClient` / `HttpSessionClient` | `agenthicc.session_service` | In-process and local HTTP client adapters |
 | `WebSessionAdapter` / `IdeSessionAdapter` | `agenthicc.session_service` | Transport adapters for future web and IDE/ACP clients |
 | `ProjectSnapshot` / `ProjectBootstrapPlan` | `agenthicc.project_bootstrap` | Bounded project inspection and reviewable `AGENTS.md` proposal |

@@ -6,14 +6,12 @@ import asyncio
 import os
 import sys
 import uuid
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
-    from lauren_ai._signals import AgentRunComplete
     from agenthicc.cli.context import CLIContext, CLIFlags
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
@@ -469,6 +467,16 @@ async def _build_session_context(
     )
     session_memory = session_conversation.memory
 
+    from agenthicc.runners.usage_ledger import UsageLedger  # noqa: PLC0415
+
+    usage_ledger = UsageLedger.open(
+        session_id,
+        journal=session_conversation.journal,
+        legacy_token_events=SessionEventLog.load(session_id),
+        conversation_id=session_conversation.conversation_id,
+    )
+    usage_ledger.bind_conversation_store(app_state.conversation)
+
     # PRD-132 L1: install the durable, freshness-validated workspace file cache so
     # read_file resolves unchanged files from a per-project store instead of disk.
     if cfg.execution.file_cache:
@@ -544,44 +552,6 @@ async def _build_session_context(
         cassette_dir=cassette_dir,
     )
 
-    # ── PRD-83: AgentRunComplete reconciliation handler ───────────────────────
-    # Per-run baseline captured just before each run; the handler uses it so
-    # that set_tokens() produces the correct SESSION total (baseline + run).
-    _runner_signals = getattr(agent_runner, "_signals", None)
-    if _runner_signals is not None:
-        from lauren_ai._signals import AgentRunComplete as _ARC  # noqa: PLC0415
-
-        signal_decorator = cast(
-            Callable[
-                [type[object]],
-                Callable[[Callable[..., Awaitable[None]]], Callable[..., Awaitable[None]]],
-            ],
-            _runner_signals.on,
-        )
-
-        # Baseline tokens accumulated before the current run began.
-        # Updated at run-start (AgentRunStarted) when that signal is available;
-        # for now we update it optimistically at the end of each completed run
-        # so the next run's baseline is correct.
-        _baseline: list[tuple[int, int, float]] = [(0, 0, 0.0)]
-
-        @signal_decorator(_ARC)
-        async def _on_agent_run_complete(sig: AgentRunComplete) -> None:
-            usage = getattr(sig, "total_usage", None)
-            cost = float(getattr(sig, "total_cost_usd", 0.0) or 0.0)
-            if usage is not None:
-                inp = int(getattr(usage, "input_tokens", 0) or 0)
-                out = int(getattr(usage, "output_tokens", 0) or 0)
-                base_inp, base_out, base_cost = _baseline[0]
-                # Authoritative session total = pre-run baseline + this run's total.
-                app_state.conversation.set_tokens(
-                    base_inp + inp,
-                    base_out + out,
-                    base_cost + cost,
-                )
-                # Advance baseline for the next run.
-                _baseline[0] = (base_inp + inp, base_out + out, base_cost + cost)
-
     # ── resume: restore previous context ─────────────────────────────────────
     # PRD-129 Phase 2: prior context is restored by folding the durable journal
     # at construction time (session_id == resume_id), so no explicit load is
@@ -632,6 +602,7 @@ async def _build_session_context(
         command_plugin_names=command_plugin_names,
         session_service=session_service,
         kernel_projection_task=kernel_projection_task,
+        usage_ledger=usage_ledger,
     )
 
 
@@ -687,6 +658,7 @@ class TUISession:
             semantic_index=ctx.semantic_index,
             session_memory=ctx.session_memory,
             conversation_id=ctx.session_id,
+            usage_ledger=getattr(ctx, "usage_ledger", None),
             next_queued_message=self._next_queued_message,
         )
         self._restore_paused_workflow()
@@ -910,6 +882,23 @@ class TUISession:
 
         conversation = self._ctx.app_state.conversation
         task = self._agent_task
+        ledger = getattr(self._ctx, "usage_ledger", None)
+        if ledger is not None:
+            ledger_snapshot = ledger.snapshot()
+            return UsageSnapshot(
+                input_tokens=ledger_snapshot.input_tokens,
+                output_tokens=ledger_snapshot.output_tokens,
+                cost_usd=ledger_snapshot.cost_usd,
+                active_run=bool(task is not None and not task.done()),
+                queue_depth=len(self._msg_queue),
+                usage_status=ledger_snapshot.usage_status,
+                cost_status=ledger_snapshot.cost_status,
+                calls=ledger_snapshot.calls,
+                known_calls=ledger_snapshot.known_calls,
+                unavailable_calls=ledger_snapshot.unavailable_calls,
+                provisional_calls=ledger_snapshot.provisional_calls,
+                durability_status=ledger_snapshot.durability_status,
+            )
         return UsageSnapshot(
             input_tokens=int(conversation.tokens_in()),
             output_tokens=int(conversation.tokens_out()),
@@ -1320,6 +1309,9 @@ class TUISession:
             model=model,
             conv_store=conv,
             max_input_tokens=ctx.cfg.execution.effective_context_window(),
+            usage_ledger=getattr(ctx, "usage_ledger", None),
+            session_id=ctx.session_id,
+            run_id=f"compaction:{ctx.session_id}:{uuid.uuid4().hex[:12]}",
         )
         conv.notify_transient("⎋ Compacted")
 
@@ -1553,6 +1545,7 @@ class TUISession:
                     resume_turn_id=getattr(resume, "turn_id", None),
                     resume_ledger=getattr(resume, "ledger", None),
                     next_queued_message=self._next_queued_message,
+                    usage_ledger=getattr(ctx, "usage_ledger", None),
                 )
 
         try:

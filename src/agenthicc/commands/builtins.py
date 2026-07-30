@@ -65,14 +65,25 @@ def _cmd_usage(ctx: CommandContext) -> bool:
         ctx.console.print("Usage is unavailable in this command context.", markup=False)
         return True
     state = "running" if snapshot.active_run else "idle"
+    if snapshot.usage_status == "unavailable":
+        input_text = output_text = total_text = "unknown"
+    else:
+        input_text = f"{snapshot.input_tokens:,}"
+        output_text = f"{snapshot.output_tokens:,}"
+        total_text = f"{snapshot.total_tokens:,}"
+    cost_text = "unknown" if snapshot.cost_status == "unavailable" else f"${snapshot.cost_usd:.4f}"
     ctx.console.print(
         "Usage: "
-        f"input={snapshot.input_tokens:,} "
-        f"output={snapshot.output_tokens:,} "
-        f"total={snapshot.total_tokens:,} "
-        f"cost=${snapshot.cost_usd:.4f} "
+        f"input={input_text} "
+        f"output={output_text} "
+        f"total={total_text} "
+        f"cost={cost_text} "
         f"state={state} "
-        f"queued={snapshot.queue_depth}",
+        f"queued={snapshot.queue_depth} "
+        f"usage_status={snapshot.usage_status} "
+        f"cost_status={snapshot.cost_status} "
+        f"calls={snapshot.calls} "
+        f"durability={snapshot.durability_status}",
         markup=False,
     )
     return True

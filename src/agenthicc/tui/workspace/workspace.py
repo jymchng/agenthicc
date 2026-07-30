@@ -101,6 +101,9 @@ class Workspace:
             conv.tokens_in,
             conv.tokens_out,
             conv.cost_usd,
+            conv.usage_status,
+            conv.cost_status,
+            conv.usage_calls,
             conv.notification,
             self._state.active_mode,  # PRD-75: single mode signal
             inp.buf,

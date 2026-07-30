@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
     from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.runners.retry import RetryConfig
+    from agenthicc.runners.usage_ledger import UsageLedger
 
 __all__ = ["make_spawn_subagents_tool"]
 
@@ -42,6 +43,9 @@ def make_spawn_subagents_tool(
     registry: SubagentTypeRegistry | None = None,
     tool_registry: "ToolRegistry | None" = None,
     retry_config: "RetryConfig | None" = None,
+    usage_ledger: "UsageLedger | None" = None,
+    conversation_id: str = "",
+    parent_run_id: str = "",
 ) -> Callable[..., object]:
     """Return a ``spawn_subagents`` @tool()-decorated function.
 
@@ -166,6 +170,9 @@ def make_spawn_subagents_tool(
             registry=_registry,
             tool_registry=tool_registry,
             retry_config=retry_config,
+            usage_ledger=usage_ledger,
+            conversation_id=conversation_id,
+            parent_run_id=parent_run_id,
         )
         result = await pool.run()
 

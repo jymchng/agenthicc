@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.capability_gate import ToolCapabilityGate
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.runners.retry import RetryConfig
+    from agenthicc.runners.usage_ledger import UsageLedger
 
 __all__ = [
     "WorkerState",
@@ -134,6 +135,9 @@ class SubagentWorker:
         app_state: AppState | None = None,
         registry: ToolRegistry | None = None,
         retry_config: "RetryConfig | None" = None,
+        usage_ledger: "UsageLedger | None" = None,
+        conversation_id: str = "",
+        parent_run_id: str = "",
     ) -> None:
         self._task = task
         self._spec = spec
@@ -144,6 +148,9 @@ class SubagentWorker:
         self._app_state = app_state
         self._registry = registry
         self._retry_config: RetryConfig | None = retry_config
+        self._usage_ledger = usage_ledger
+        self._conversation_id = conversation_id
+        self._parent_run_id = parent_run_id
         self.label = f"{spec.name} #{index}"
         # Expand glob patterns once at construction time.
         self._effective_allowed: frozenset[str] = _expand_allowed(spec.allowed_tools, registry)
@@ -236,37 +243,71 @@ class SubagentWorker:
             global_hooks=hooks or None,
         )
 
+        usage_tracker = None
+        if self._usage_ledger is not None:
+            from agenthicc.runners.usage_ledger import UsageRunTracker  # noqa: PLC0415
+
+            usage_tracker = UsageRunTracker(
+                self._usage_ledger,
+                run_id=f"{self._parent_run_id}:subagent:{self._task.task_id}",
+                provider="unknown",
+                model=self._parent_model,
+                category="subagent",
+                agent_name=self.label,
+            )
+
         from lauren_ai._config import AgentConfig  # noqa: PLC0415
 
         memory = ShortTermMemory(max_tokens=8_000)
         result: dict[str, str] = {"text": ""}
 
         async def _do_run() -> None:
-            response = await runner.run(
-                agent_instance,
-                self._task.task_description,
-                memory=memory,
-                config_override=AgentConfig(
-                    max_turns=self._spec.max_turns,
-                    parallel_tool_calls=True,
-                ),
-            )
+            # Keep lightweight runner doubles and legacy integrations working
+            # when accounting is disabled; production sessions always pass
+            # the scoped correlation fields with the ledger sink.
+            if usage_tracker is not None:
+                response = await runner.run(
+                    agent_instance,
+                    self._task.task_description,
+                    conversation_id=self._conversation_id or None,
+                    run_id=f"{self._parent_run_id}:subagent:{self._task.task_id}",
+                    memory=memory,
+                    config_override=AgentConfig(
+                        max_turns=self._spec.max_turns,
+                        parallel_tool_calls=True,
+                    ),
+                    event_sinks=[usage_tracker.sink],
+                )
+            else:
+                response = await runner.run(
+                    agent_instance,
+                    self._task.task_description,
+                    memory=memory,
+                    config_override=AgentConfig(
+                        max_turns=self._spec.max_turns,
+                        parallel_tool_calls=True,
+                    ),
+                )
             result["text"] = response.content or ""
 
         # PRD-126 gap 3: subagents call runner.run() directly (not via _stream),
         # so they wrap it in the same snapshot-rollback retry.  The fresh per-call
         # memory is snapshotted (empty) before each attempt and restored on a
         # transient error so runner.run() re-adds the user message cleanly.
-        if self._retry_config is not None:
-            from agenthicc.runners.retry import run_with_transport_retry  # noqa: PLC0415
+        try:
+            if self._retry_config is not None:
+                from agenthicc.runners.retry import run_with_transport_retry  # noqa: PLC0415
 
-            await run_with_transport_retry(
-                _do_run,
-                config=self._retry_config,
-                memory=memory,
-            )
-        else:
-            await _do_run()
+                await run_with_transport_retry(
+                    _do_run,
+                    config=self._retry_config,
+                    memory=memory,
+                )
+            else:
+                await _do_run()
+        finally:
+            if usage_tracker is not None:
+                usage_tracker.finalize("completed" if result["text"] else "failed")
         return result["text"]
 
 
@@ -293,6 +334,9 @@ class SubagentPool:
         registry: SubagentTypeRegistry = DEFAULT_REGISTRY,
         tool_registry: ToolRegistry | None = None,
         retry_config: "RetryConfig | None" = None,
+        usage_ledger: "UsageLedger | None" = None,
+        conversation_id: str = "",
+        parent_run_id: str = "",
     ) -> None:
         self.pool_id = uuid.uuid4().hex
         self._tasks = tasks
@@ -306,6 +350,9 @@ class SubagentPool:
         self._registry = registry
         self._tool_registry = tool_registry
         self._retry_config: RetryConfig | None = retry_config
+        self._usage_ledger = usage_ledger
+        self._conversation_id = conversation_id
+        self._parent_run_id = parent_run_id
 
     async def run(self) -> AggregatedResult:
         """Execute all tasks concurrently; return aggregated plain-text result."""
@@ -334,6 +381,9 @@ class SubagentPool:
                 app_state=self._app_state,
                 registry=self._tool_registry,
                 retry_config=self._retry_config,
+                usage_ledger=self._usage_ledger,
+                conversation_id=self._conversation_id,
+                parent_run_id=self._parent_run_id,
             )
             workers.append(w)
             worker_states.append(WorkerState(w.label, task.agent_type, "pending"))
@@ -591,6 +641,9 @@ async def run_pool(
     conv_store: ConversationStore | None = None,
     registry: SubagentTypeRegistry = DEFAULT_REGISTRY,
     tool_registry: ToolRegistry | None = None,
+    usage_ledger: "UsageLedger | None" = None,
+    conversation_id: str = "",
+    parent_run_id: str = "",
 ) -> AggregatedResult:
     """Create a SubagentPool and run it.  Convenience wrapper."""
     pool = SubagentPool(
@@ -604,5 +657,8 @@ async def run_pool(
         conv_store=conv_store,
         registry=registry,
         tool_registry=tool_registry,
+        usage_ledger=usage_ledger,
+        conversation_id=conversation_id,
+        parent_run_id=parent_run_id,
     )
     return await pool.run()

@@ -113,6 +113,9 @@ class ConversationStore:
         self.tokens_in: Signal[int] = Signal(0)
         self.tokens_out: Signal[int] = Signal(0)
         self.cost_usd: Signal[float] = Signal(0.0)
+        self.usage_status: Signal[str] = Signal("unavailable")
+        self.cost_status: Signal[str] = Signal("unavailable")
+        self.usage_calls: Signal[int] = Signal(0)
         self.session_id: Signal[str] = Signal("")
         self.model_name: Signal[str] = Signal("")
         self.notification: Signal[str | None] = Signal(None)
@@ -490,6 +493,9 @@ class ConversationStore:
         self.tokens_in.set(self.tokens_in() + inp)
         self.tokens_out.set(self.tokens_out() + out)
         self.cost_usd.set(self.cost_usd() + cost)
+        self.usage_status.set("complete")
+        self.cost_status.set("estimated")
+        self.usage_calls.set(self.usage_calls() + 1)
 
     def set_tokens(self, inp: int, out: int, cost: float) -> None:
         """Overwrite token counts with authoritative absolute values.
@@ -501,6 +507,8 @@ class ConversationStore:
         self.tokens_in.set(inp)
         self.tokens_out.set(out)
         self.cost_usd.set(cost)
+        self.usage_status.set("complete")
+        self.cost_status.set("estimated")
 
     # ── event appending ───────────────────────────────────────────────────────
 

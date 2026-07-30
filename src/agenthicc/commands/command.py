@@ -56,6 +56,13 @@ class UsageSnapshot:
     cost_usd: float
     active_run: bool
     queue_depth: int = 0
+    usage_status: str = "complete"
+    cost_status: str = "estimated"
+    calls: int = 0
+    known_calls: int = 0
+    unavailable_calls: int = 0
+    provisional_calls: int = 0
+    durability_status: str = "durable"
 
     @property
     def total_tokens(self) -> int:

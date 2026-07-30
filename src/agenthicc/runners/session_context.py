@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillDef
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.session_service import SessionService
+    from agenthicc.runners.usage_ledger import UsageLedger
     from asyncio import Task
 
 
@@ -93,3 +94,6 @@ class SessionContext:
     # ── client-neutral session boundary (PRD-150) ───────────────────────────
     session_service: "SessionService | None" = None
     kernel_projection_task: "Task[None] | None" = None
+
+    # ── provider usage (PRD-157) ─────────────────────────────────────────────
+    usage_ledger: "UsageLedger | None" = None

@@ -121,11 +121,20 @@ def _print_session_inspection(summary: dict[str, object]) -> None:
         f"{_integer(conversation.get('tool_calls'))} tool calls, "
         f"{_integer(conversation.get('errors'))} errors"
     )
+    usage_status = tokens.get("status", "unavailable")
+    cost_status = tokens.get("cost_status", "unavailable")
+    input_text = "unknown" if usage_status == "unavailable" else str(_integer(tokens.get("input")))
+    output_text = (
+        "unknown" if usage_status == "unavailable" else str(_integer(tokens.get("output")))
+    )
+    cost_text = (
+        "unknown" if cost_status == "unavailable" else f"${_number(tokens.get('cost_usd')):.4f}"
+    )
     print(
         "Tokens: "
-        f"{_integer(tokens.get('input'))} input, "
-        f"{_integer(tokens.get('output'))} output, "
-        f"${_number(tokens.get('cost_usd')):.4f}"
+        f"{input_text} input, "
+        f"{output_text} output, "
+        f"{cost_text} (status={usage_status}, cost_status={cost_status})"
     )
 
     workflows = _mapping(summary.get("workflows"))

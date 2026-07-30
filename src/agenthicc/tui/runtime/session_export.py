@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from agenthicc.runners.usage_ledger import summarize_usage_records
+
 __all__ = ["export_session", "inspect_session"]
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
@@ -221,7 +223,9 @@ def _increment(mapping: dict[str, int], key: str) -> None:
     mapping[key] = mapping.get(key, 0) + 1
 
 
-def _conversation_summary(records: list[object]) -> dict[str, object]:
+def _conversation_summary(
+    records: list[object], usage_records: list[object] | None = None
+) -> dict[str, object]:
     kinds: dict[str, int] = {}
     turns = 0
     tool_calls = 0
@@ -229,6 +233,7 @@ def _conversation_summary(records: list[object]) -> dict[str, object]:
     input_tokens = 0
     output_tokens = 0
     cost_usd = 0.0
+    legacy_token_events = 0
 
     for record in records:
         entry = _mapping(record)
@@ -244,11 +249,43 @@ def _conversation_summary(records: list[object]) -> dict[str, object]:
         elif kind == "error":
             errors += 1
         if kind == "tokens":
+            legacy_token_events += 1
             payload = _mapping(entry.get("payload"))
             if payload is not None:
                 input_tokens += _integer(payload.get("input_tokens"))
                 output_tokens += _integer(payload.get("output_tokens"))
                 cost_usd += _number(payload.get("cost_usd"))
+
+    if usage_records:
+        usage = summarize_usage_records(usage_records)
+        tokens: dict[str, object] = {
+            "input": usage["input"],
+            "output": usage["output"],
+            "cost_usd": usage["cost_usd"],
+            "cache_read": usage["cache_read"],
+            "cache_write": usage["cache_write"],
+            "status": usage["status"],
+            "cost_status": usage["cost_status"],
+            "calls": usage["calls"],
+            "known_calls": usage["known_calls"],
+            "unavailable_calls": usage["unavailable_calls"],
+        }
+    else:
+        tokens = {
+            "input": input_tokens,
+            "output": output_tokens,
+            "cost_usd": cost_usd,
+        }
+        if legacy_token_events == 0:
+            tokens.update(
+                {
+                    "status": "unavailable",
+                    "cost_status": "unavailable",
+                    "calls": 0,
+                    "known_calls": 0,
+                    "unavailable_calls": 0,
+                }
+            )
 
     return {
         "events": len(records),
@@ -256,12 +293,21 @@ def _conversation_summary(records: list[object]) -> dict[str, object]:
         "turns": turns,
         "tool_calls": tool_calls,
         "errors": errors,
-        "tokens": {
-            "input": input_tokens,
-            "output": output_tokens,
-            "cost_usd": cost_usd,
-        },
+        "tokens": tokens,
     }
+
+
+def _usage_records_from_journal(records: list[object]) -> list[object]:
+    """Extract canonical PRD-157 records without exposing raw journal entries."""
+    result: list[object] = []
+    for record in records:
+        entry = _mapping(record)
+        if entry is None or entry.get("kind") != "usage_record":
+            continue
+        payload = _mapping(entry.get("record"))
+        if payload:
+            result.append(dict(payload))
+    return result
 
 
 def _workflow_summary(records: list[object], redactor: _Redactor) -> dict[str, object]:
@@ -387,6 +433,7 @@ def inspect_session(
     kernel_records = loaded.jsonl_artifacts["kernel_events"][0]
     conversation_records = loaded.jsonl_artifacts["conversation_events"][0]
     journal_records = loaded.jsonl_artifacts["conversation_journal"][0]
+    usage_records = _usage_records_from_journal(journal_records)
 
     return {
         "session_id": valid_id,
@@ -400,7 +447,7 @@ def inspect_session(
                 )
             ),
         },
-        "conversation": _conversation_summary(conversation_records),
+        "conversation": _conversation_summary(conversation_records, usage_records),
         "resume": _resume_summary(journal_records),
         "workflows": _workflow_summary(kernel_records, redactor),
         "redactions": redactor.count,
@@ -440,6 +487,10 @@ def export_session(
     source_dir = Path(sessions_dir) if sessions_dir is not None else _SESSIONS_DIR
     loaded = _load_session(valid_id, source_dir)
     redactor = _Redactor()
+    usage_records = _usage_records_from_journal(loaded.jsonl_artifacts["conversation_journal"][0])
+    usage_summary = _conversation_summary(
+        loaded.jsonl_artifacts["conversation_events"][0], usage_records
+    )["tokens"]
 
     artifacts: dict[str, object] = {
         "kernel_events": [
@@ -463,6 +514,7 @@ def export_session(
         "metadata": redactor.value(loaded.metadata),
         "artifacts": artifacts,
         "manifest": _manifest(loaded),
+        "usage": redactor.value(usage_summary),
         "redactions": redactor.count,
     }
 

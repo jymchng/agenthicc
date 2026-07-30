@@ -151,11 +151,22 @@ class StatusComponent:
             sid = conv.session_id()
             turns = conv.turn_count()
             cost = conv.cost_usd()
+            inp = conv.tokens_in()
+            out = conv.tokens_out()
+            usage_status = getattr(conv, "usage_status", lambda: "complete")()
+            cost_status = getattr(conv, "cost_status", lambda: "estimated")()
             meta = ""
             if sid:
                 meta += f"[dim]{_e(sid)}[/dim]"
             meta += f"[dim] │  {turns} turn{'s' if turns != 1 else ''}[/dim]"
-            meta += f"[dim] │  ${cost:.3f}[/dim]"
+            meta += (
+                f"[dim] │  ${cost:.3f}[/dim]"
+                if cost_status != "unavailable"
+                else "[dim] │  cost unknown[/dim]"
+            )
+            meta += f"[dim] │  ↑ {inp:,} ↓ {out:,}[/dim]"
+            if usage_status != "complete":
+                meta += "[yellow] ?[/yellow]"
             return Group(
                 Text.from_markup(wait_line),
                 Text.from_markup(command_line),
@@ -201,8 +212,12 @@ class StatusComponent:
             l1_parts.append(f"[dim] │[/dim] {_fmt_elapsed(elapsed)}")
         inp = conv.tokens_in()
         out = conv.tokens_out()
-        if inp or out:
-            l1_parts.append(f"[dim] │[/dim] [cyan]↑ {inp:,}[/cyan] [green]↓ {out:,}[/green]")
+        usage_status = getattr(conv, "usage_status", lambda: "complete")()
+        if inp or out or usage_status != "unavailable":
+            marker = " [yellow]?[/yellow]" if usage_status != "complete" else ""
+            l1_parts.append(
+                f"[dim] │[/dim] [cyan]↑ {inp:,}[/cyan] [green]↓ {out:,}[/green]{marker}"
+            )
         _pool = conv.subagent_pool_state()
         if _pool is not None:
             l1_parts.append(
@@ -235,7 +250,12 @@ class StatusComponent:
         if sid:
             l3_parts.append(f"[dim]{_e(sid)}[/dim]")
         l3_parts.append(f"[dim] │  {turns} turn{'s' if turns != 1 else ''}[/dim]")
-        l3_parts.append(f"[dim] │  ${cost:.3f}[/dim]")
+        cost_status = getattr(conv, "cost_status", lambda: "estimated")()
+        l3_parts.append(
+            f"[dim] │  ${cost:.3f}[/dim]"
+            if cost_status != "unavailable"
+            else "[dim] │  cost unknown[/dim]"
+        )
         while len(l3_parts) > 1 and _vlen("".join(l3_parts)) > cols:
             l3_parts.pop()
         line3 = "".join(l3_parts)

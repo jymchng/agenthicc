@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -230,6 +231,46 @@ class ConversationJournal:
                 "result": result,
             }
         )
+
+    def append_usage_record(self, record: Mapping[str, object]) -> None:
+        """Durably append one PRD-157 provider-usage record.
+
+        Usage entries share the session journal with provider-memory and
+        workflow durability, but are intentionally ignored by ``fold()`` and
+        ``fold_resume_state()``. The usage ledger folds them independently.
+        """
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "usage_record",
+                "schema_version": 1,
+                "record": dict(record),
+            }
+        )
+
+    def fold_usage_records(self) -> list[dict[str, object]]:
+        """Return the latest valid usage record for each record ID."""
+        if not self._path.exists():
+            return []
+        latest: dict[str, dict[str, object]] = {}
+        with self._path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    break
+                if entry.get("kind") != "usage_record":
+                    continue
+                record = entry.get("record")
+                if not isinstance(record, dict):
+                    continue
+                record_id = record.get("record_id")
+                if isinstance(record_id, str) and record_id:
+                    latest[record_id] = record
+        return list(latest.values())
 
     def fold(self) -> tuple[list[object], str | None]:
         """Reconstruct ``(messages, summary)`` by replaying the on-disk journal."""

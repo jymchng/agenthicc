@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.skills.loader import SkillPermissionSet, SkillDef
+    from agenthicc.runners.usage_ledger import UsageLedger
 
 
 class AgentTurnOptions(TypedDict):
@@ -49,6 +50,7 @@ class AgentTurnOptions(TypedDict):
     output_collector: "list[str] | None"
     command_outcomes: "list[dict[str, object]] | None"
     next_queued_message: NotRequired[Callable[[], str | None] | None]
+    usage_ledger: NotRequired["UsageLedger | None"]
     system_prompt_suffix: str
     excluded_capabilities: NotRequired[frozenset[str]]
     allowed_tool_names: NotRequired[frozenset[str] | None]
@@ -126,3 +128,6 @@ class AgentTurnContext:
     #: before the next model call; slash commands remain FIFO-gated until the
     #: outer turn is idle and can route them locally.
     next_queued_message: "Callable[[], str | None] | None" = None
+
+    #: Canonical session-scoped provider usage accounting (PRD-157).
+    usage_ledger: "UsageLedger | None" = None

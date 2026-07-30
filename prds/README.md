@@ -24,6 +24,7 @@ against the current source before implementing them.
 - [PRD-153 — Reliable Agent-Owned Workflow Authoring](prd-153-reliable-agent-owned-workflow-authoring.md)
 - [PRD-155 — Consolidated Safe, Plan, and Yolo Modes](prd-155-three-mode-operational-model.md)
 - [PRD-156 — Resumable Plan-Mode Interrupts and Workflow Continuation](prd-156-resumable-plan-interrupts.md)
+- [PRD-157 — Canonical Usage Accounting and TUI Token Observability](prd-157-usage-accounting-and-tui-token-observability.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -120,6 +121,13 @@ PRD-156 proposes the workflow-specific continuation contract for Esc during
 Plan-mode thinking. It preserves the active run in a durable checkpoint,
 attaches queued follow-up input to the same run, and makes reset explicit so a
 paused workflow can never silently restart from its first phase.
+
+PRD-157 implements a canonical, session-scoped usage ledger so `/usage`, the
+TUI token/cost display, direct turns, workflows, subagents, compaction, session
+restore, and session inspection all use one idempotent durable accounting
+source. It revises the live-token assumptions recorded in PRD-82 and PRD-83;
+verification evidence is the PRD-157 test matrix and the repository quality
+gates.
 
 ## Existing PRDs
 

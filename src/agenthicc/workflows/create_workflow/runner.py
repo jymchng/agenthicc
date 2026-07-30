@@ -1012,6 +1012,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
                 next_queued_message=self._cfg.next_queued_message,
+                usage_ledger=self._cfg.usage_ledger,
             )
         finally:
             reset_current_terminal_wait_policy(policy_token)

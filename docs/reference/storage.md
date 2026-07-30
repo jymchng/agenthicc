@@ -12,7 +12,7 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>.jsonl` | kernel `EventProcessor` | Serialized domain events | `restore_from_log()` folds valid events |
 | `<id>/metadata.json` | `tui.runtime.session_log` | cwd, model, timestamps | Session discovery/index |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
-| `<id>/conversation-journal.jsonl` | `ConversationJournal` | Messages, resets, turn markers, tool records | Rebuild memory and resume interrupted turns |
+| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, turn markers, tool records, versioned usage records | Rebuild memory, restore usage, and resume interrupted turns |
 | `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase, plugin fingerprint, and journal cursor | Rehydrate an acknowledged paused workflow |
 | `<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
 
@@ -70,6 +70,13 @@ the current session context before assuming a custom path is active.
 - Session memory and in-process semantic fallback are not durable by themselves.
 - Cassettes can contain prompts, outputs, paths, and approval data; treat them
   as sensitive test artifacts.
+
+Completed provider calls are stored as `kind: "usage_record"` entries with
+`schema_version: 1`. The message fold ignores these entries; the usage fold
+keeps the latest valid record for each local `record_id` and tolerates a
+corrupt trailing line. Usage records contain token/cost metadata only, never
+prompts, completions, tool arguments, or credentials. Legacy `tokens` events in
+`conversation.jsonl` remain a read-only compatibility fallback.
 
 ## Safe cleanup
 

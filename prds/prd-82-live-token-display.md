@@ -1,5 +1,9 @@
 # PRD-82 — Live Token Usage Display
 
+> Historical design note: PRD-157 supersedes this document's process-local
+> counter assumptions with the session-scoped `UsageLedger`. The timing goal
+> remains valid, but current accounting and persistence follow PRD-157.
+
 ## Background
 
 The status bar already shows `↑ N,NNN ↓ N,NNN` for input and output

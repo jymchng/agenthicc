@@ -175,24 +175,57 @@ class SessionEventLog:
 async def restore_session(session_id: str, app_state: AppState) -> None:
     """Restore a previous session's metrics into ConversationStore."""
     from agenthicc.tui.conversation_store import ConversationTurn  # noqa: PLC0415
+    from agenthicc.memory.journal import ConversationJournal, journal_path_for  # noqa: PLC0415
+    from agenthicc.runners.usage_ledger import summarize_usage_records  # noqa: PLC0415
 
     events = SessionEventLog.load(session_id)
-    if not events:
-        return
 
     conv = app_state.conversation
 
-    # Restore cumulative metrics from token events
-    total_in, total_out, total_cost = 0, 0, 0.0
-    for ev in events:
-        if ev.kind == "tokens":
-            total_in += _int_value(ev.payload.get("input_tokens"))
-            total_out += _int_value(ev.payload.get("output_tokens"))
-            total_cost += _float_value(ev.payload.get("cost_usd"))
-    if total_in or total_out:
-        conv.tokens_in.set(total_in)
-        conv.tokens_out.set(total_out)
-        conv.cost_usd.set(total_cost)
+    # Canonical usage records and old rendered token events are deliberately
+    # mutually exclusive here: when canonical records exist they win, so a
+    # migrated/dual-written session cannot double count the same call.
+    usage_records: list[object] = []
+    usage_path = journal_path_for(session_id)
+    if usage_path.exists():
+        journal = ConversationJournal(usage_path)
+        try:
+            usage_records = [
+                {"record": record, "kind": "usage_record"}
+                for record in journal.fold_usage_records()
+            ]
+        finally:
+            journal.close()
+
+    if usage_records:
+        summary = summarize_usage_records(
+            [entry["record"] for entry in usage_records if isinstance(entry, dict)]
+        )
+        conv.tokens_in.set(_int_value(summary.get("input")))
+        conv.tokens_out.set(_int_value(summary.get("output")))
+        conv.cost_usd.set(_float_value(summary.get("cost_usd")))
+        conv.usage_status.set(_str_value(summary.get("status"), "unavailable"))
+        conv.cost_status.set(_str_value(summary.get("cost_status"), "unavailable"))
+        conv.usage_calls.set(_int_value(summary.get("calls")))
+    else:
+        # Restore cumulative metrics from the legacy conversation log.
+        total_in, total_out, total_cost = 0, 0, 0.0
+        token_events = [event for event in events if event.kind == "tokens"]
+        for event in token_events:
+            total_in += _int_value(event.payload.get("input_tokens"))
+            total_out += _int_value(event.payload.get("output_tokens"))
+            total_cost += _float_value(event.payload.get("cost_usd"))
+        if token_events:
+            conv.tokens_in.set(total_in)
+            conv.tokens_out.set(total_out)
+            conv.cost_usd.set(total_cost)
+            conv.usage_status.set("complete")
+            conv.cost_status.set("estimated")
+            conv.usage_calls.set(len(token_events))
+        else:
+            conv.usage_status.set("unavailable")
+            conv.cost_status.set("unavailable")
+            conv.usage_calls.set(0)
 
     # Reconstruct turn list (for turn_count Computed)
     current: ConversationTurn | None = None

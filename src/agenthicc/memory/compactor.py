@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
 
+    from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tui.conversation_store import ConversationStore
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,9 @@ async def compact_memory(
     model: str,
     conv_store: ConversationStore | None = None,
     max_input_tokens: int = 0,
+    usage_ledger: UsageLedger | None = None,
+    session_id: str = "",
+    run_id: str = "",
 ) -> int:
     """Summarise *memory* in-place into a ``[COMPACT SUMMARY]`` / ack pair.
 
@@ -76,6 +80,9 @@ async def compact_memory(
             transcript,
             model=model,
             max_input_chars=max_input_chars,
+            usage_ledger=usage_ledger,
+            session_id=session_id,
+            run_id=run_id,
         )
 
         if summary:
@@ -165,6 +172,9 @@ async def _summarize_text(
     *,
     model: str,
     max_input_chars: int = 0,
+    usage_ledger: UsageLedger | None = None,
+    session_id: str = "",
+    run_id: str = "",
 ) -> str:
     """Summarise text using lauren-ai's stable transport contract.
 
@@ -187,15 +197,37 @@ async def _summarize_text(
         ]
 
     async def summarize_chunk(chunk: str) -> str:
-        result = await transport.complete(  # type: ignore[attr-defined]
-            [Message.user(prompt_prefix + chunk)],
-            model=model,
-            system="You are a conversation summariser. Be concise and factual.",
-            max_tokens=512,
-            temperature=0.0,
-            stream=False,
-        )
-        return str(getattr(result, "content", "") or "")
+        usage_call = None
+        if usage_ledger is not None:
+            usage_call = usage_ledger.begin_call(
+                run_id=run_id or f"compaction:{session_id or 'session'}",
+                model=model,
+                category="compaction",
+            )
+        try:
+            result = await transport.complete(  # type: ignore[attr-defined]
+                [Message.user(prompt_prefix + chunk)],
+                model=model,
+                system="You are a conversation summariser. Be concise and factual.",
+                max_tokens=512,
+                temperature=0.0,
+                stream=False,
+            )
+            if usage_ledger is not None and usage_call is not None:
+                usage_ledger.complete(
+                    usage_call,
+                    getattr(result, "usage", None),
+                    cost_usd=_provider_cost(getattr(result, "usage", None), model),
+                )
+            return str(getattr(result, "content", "") or "")
+        except BaseException:
+            if usage_ledger is not None and usage_call is not None:
+                usage_ledger.complete(
+                    usage_call,
+                    source="unknown",
+                    lifecycle="failed",
+                )
+            raise
 
     partials = [await summarize_chunk(chunk) for chunk in chunks]
     while len(partials) > 1:
@@ -208,3 +240,15 @@ async def _summarize_text(
         ]
         partials = [await summarize_chunk(chunk) for chunk in chunks]
     return partials[0] if partials else ""
+
+
+def _provider_cost(usage: object | None, model: str) -> float | None:
+    """Return a provider-library estimate without coupling to a transport."""
+    method = getattr(usage, "cost_usd", None)
+    if not callable(method):
+        return None
+    try:
+        value = float(method(model))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None

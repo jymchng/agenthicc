@@ -264,6 +264,15 @@ silently restarting DESIGN. Use `/workflow resume` to continue a paused run,
 or `/workflow reset` to write a terminal discarded record and return to the
 active mode's default workflow.
 
+Usage accounting is inherited in the same way. The session supplies one
+`UsageLedger` through `WorkflowConfig`; the standard `_run_agent_turn()` phase
+boundary forwards it to `code_plan`, `create_workflow`, and generated custom
+runners. Their calls, retries, subagents, and compaction are therefore included
+in the same session total without custom token code. A plugin that bypasses the
+standard turn boundary must explicitly use `UsageLedger` and preserve the
+session `conversation_id`, or its provider calls are outside the automatic
+workflow accounting contract.
+
 ### Checkpointing a custom runner
 
 The framework codecs cover `WorkflowContext`, `CodePlanContext`, and

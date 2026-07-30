@@ -211,7 +211,7 @@ Useful built-in slash commands include:
 | `/replay [session-id]` | Replay a saved conversation |
 | `/cancel`, `/clear`, `/expand` | Control the current session or output |
 | `/mcp`, `/skills [reload]` | Inspect MCP and skills; reload or open their overlay |
-| `/usage` | Show local tokens, cost, run state, and queued input |
+| `/usage` | Show durable session usage, cost quality, run state, and queued input |
 | `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |
 

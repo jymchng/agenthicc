@@ -169,6 +169,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
+    from agenthicc.runners.usage_ledger import UsageLedger, UsageRunTracker
 
 
 # ── formatting helper (module-level, unchanged) ───────────────────────────────
@@ -299,6 +300,7 @@ class AgentTurnRunner:
 
         # Content produced during the turn.
         self._skill_suffix: str = ""
+        self._usage_tracker: UsageRunTracker | None = None
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -352,6 +354,13 @@ class AgentTurnRunner:
             cfg = getattr(transport, "_config", None)
             self._model_id = getattr(cfg, "model", "unknown") if cfg else "unknown"
         self._model_short = self._model_id.split("/")[-1]
+
+    def _provider_label(self) -> str:
+        """Return the configured provider label for usage diagnostics."""
+        transport = getattr(self._ctx.runner, "_transport", None)
+        config = getattr(transport, "_config", None)
+        provider = getattr(config, "provider", None)
+        return provider if isinstance(provider, str) and provider else "unknown"
 
     # ── step 2: kernel event ──────────────────────────────────────────────────
 
@@ -709,6 +718,9 @@ class AgentTurnRunner:
                 app_state=ctx.app_state,
                 processor=ctx.processor,
                 conv_store=ctx.conv_store,
+                usage_ledger=ctx.usage_ledger,
+                conversation_id=ctx.conversation_id,
+                parent_run_id=self._intent_id,
                 tool_registry=registry,
                 retry_config=_subagent_retry,
             )
@@ -733,6 +745,20 @@ class AgentTurnRunner:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
 
         ctx = self._ctx
+
+        usage_tracker = None
+        if ctx.usage_ledger is not None:
+            from agenthicc.runners.usage_ledger import UsageRunTracker  # noqa: PLC0415
+
+            usage_tracker = UsageRunTracker(
+                ctx.usage_ledger,
+                run_id=self._intent_id,
+                provider=self._provider_label(),
+                model=self._model_id,
+                agent_id=self._agent_id,
+                agent_name=ctx.active_agent or "default",
+            )
+            self._usage_tracker = usage_tracker
 
         # Heal any dangling tool_calls left by an interrupted previous turn
         # (e.g. a plan-approval that was cancelled while awaiting the user's
@@ -811,8 +837,13 @@ class AgentTurnRunner:
         # errors.  The user message is added inside run_stream(), so the retry
         # helper snapshots session_memory before each attempt and restores it on
         # a transient failure, guaranteeing a clean pre-turn history every time.
+        _attempt_number = [0]
+
         async def _stream_once() -> None:
             local_turn: list[str] = []
+            _attempt_number[0] += 1
+            if usage_tracker is not None and _attempt_number[0] > 1:
+                usage_tracker.finalize("failed")
             config_kwargs = _AgentConfig(
                 max_turns=ctx.max_agent_turns,
                 max_tokens_per_turn=_max_output,
@@ -822,13 +853,17 @@ class AgentTurnRunner:
                 summary_model=self._model_id,
             )
 
+            if usage_tracker is not None:
+                usage_tracker.ensure_call()
             stream = await active_runner.run_stream(
                 agent_instance,
                 agent_text,
                 conversation_id=ctx.conversation_id or None,
+                run_id=self._intent_id,
                 memory=ctx.session_memory,
                 idempotency_ledger=turn_ledger,
                 config_override=config_kwargs,
+                event_sinks=[usage_tracker.sink] if usage_tracker is not None else None,
             )
             async for chunk in stream:
                 if chunk.delta:
@@ -843,7 +878,9 @@ class AgentTurnRunner:
                     ctx.conv_store.append_event("system", {"text": system_notice})
 
                 # Live token update — PRD-83.
-                if chunk.usage is not None and ctx.conv_store:
+                if chunk.usage is not None and usage_tracker is not None:
+                    usage_tracker.observe_chunk(chunk.usage)
+                elif chunk.usage is not None and ctx.conv_store:
                     u = chunk.usage
                     cst = (
                         u.cost_usd(self._model_id)
@@ -904,6 +941,8 @@ class AgentTurnRunner:
             # Transient errors that survive _stream_with_retry are swallowed here
             # (PRD-117): the phase loop re-runs the whole turn and decides.
         finally:
+            if usage_tracker is not None:
+                usage_tracker.finalize("cancelled" if not turn_completed else "completed")
             self._turn_active = False
             if ctx.conv_store:
                 # close_turn() is idempotent — safe even when CancelledError path
@@ -1049,6 +1088,7 @@ async def _run_agent_turn(
     resume_ledger: IdempotencyLedger | None = None,
     command_outcomes: list[dict[str, object]] | None = None,
     next_queued_message: Callable[[], str | None] | None = None,
+    usage_ledger: UsageLedger | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -1083,5 +1123,6 @@ async def _run_agent_turn(
         resume_ledger=resume_ledger,
         command_outcomes=command_outcomes,
         next_queued_message=next_queued_message,
+        usage_ledger=usage_ledger,
     )
     await AgentTurnRunner(ctx).run()

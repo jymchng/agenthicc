@@ -2476,6 +2476,13 @@ class UsageSnapshot:
     cost_usd: float
     active_run: bool
     queue_depth: int = 0
+    usage_status: str = "complete"
+    cost_status: str = "estimated"
+    calls: int = 0
+    known_calls: int = 0
+    unavailable_calls: int = 0
+    provisional_calls: int = 0
+    durability_status: str = "durable"
 
 def classify_busy_command(
     text: str,
@@ -2489,6 +2496,22 @@ handler. Resolver errors fail closed to the queue, and immediate-control is
 reserved for built-in controls. The interactive session runs approved local
 queries such as `/usage` immediately while preserving FIFO queueing for normal
 messages, skills, mutations, and agent-starting operations.
+
+## Canonical usage accounting — `agenthicc.runners.usage_ledger`
+
+`UsageLedger` owns one session's completed provider-call records and folds
+versioned `usage_record` entries from the conversation journal. `UsageRecord`
+is immutable and contains session/conversation/run identity, model-call index,
+token/cache fields, cost provenance, source, lifecycle, and timestamps. It
+never stores prompts or responses. `UsageRunTracker` correlates stream chunks
+with scoped `ModelCallComplete` and `AgentRunComplete` signals so completion
+and cumulative reconciliation are idempotent. `UsageSnapshot` is projected to
+the reactive TUI store, `/usage`, session restore, export, and inspection.
+
+Standard workflow phases, generated `create_workflow` workflows, subagents, and
+compaction receive the ledger through `WorkflowConfig` and `_run_agent_turn()`.
+See `docs/guides/usage-accounting.md` and
+`docs/reference/usage-ledger.md` for persistence and quality rules.
 
 ### _parse_skill
 
