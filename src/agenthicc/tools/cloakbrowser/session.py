@@ -320,8 +320,18 @@ class BrowserSessionManager:
                 "error_kind": BrowserErrorKind.NETWORK.value,
                 "error": "Browser network operation failed.",
             }
-        except Exception:  # noqa: BLE001 — optional browser boundary must not leak details
-            log.exception("%s operation failed", self.backend_name.lower())
+        except Exception as exc:  # noqa: BLE001 — optional browser boundary must not leak details
+            # The structured result below is rendered as the tool completion.
+            # Do not use ``log.exception`` here: its traceback is written to
+            # the process console and can be mistaken for a second, leaked
+            # tool failure by the scroll appender.  Keep only the exception
+            # class at debug level; the exception value may contain page
+            # content, credentials, or other data that must not be echoed.
+            log.debug(
+                "%s operation failed (%s)",
+                self.backend_name.lower(),
+                type(exc).__name__,
+            )
             result = {
                 "ok": False,
                 "error_kind": BrowserErrorKind.EXECUTION.value,

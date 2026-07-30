@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,11 @@ class _ErrorClient(FakeBrowserClient):
 
     async def health(self) -> BrowserHealth:
         return BrowserHealth(self.status, "local", "unavailable")
+
+
+class _FailingClient(FakeBrowserClient):
+    async def open_page(self, session_id: str, url: str) -> PageState:
+        raise RuntimeError("secret Playwright navigation details")
 
 
 def test_browser_tool_classification_and_invalid_policy_status(tmp_path: Path) -> None:
@@ -99,6 +105,32 @@ async def test_browser_session_safe_errors_status_and_page_lifecycle(tmp_path: P
     await manager.close_session()
     assert (await manager.status())["status"] == BrowserErrorKind.CLOSED.value
     assert client.calls[-1][0] == "close_session"
+
+
+async def test_unexpected_browser_error_is_structured_without_traceback_leak(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    manager = BrowserSessionManager(
+        CloakBrowserSettings(enabled=True, allowed_domains=["example.com"]),
+        "conversation-1",
+        tmp_path,
+        client=_FailingClient(),
+        policy=_policy(),
+        backend_name="Playwright",
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="agenthicc.tools.cloakbrowser.session"):
+        result = await manager.open("https://example.com/")
+
+    assert result == {
+        "ok": False,
+        "error_kind": BrowserErrorKind.EXECUTION.value,
+        "error": "Browser operation failed.",
+        "operation_id": result["operation_id"],
+    }
+    assert "RuntimeError" in caplog.text
+    assert "secret Playwright navigation details" not in caplog.text
+    assert "Traceback" not in caplog.text
 
 
 async def _raise(exc: BaseException) -> dict[str, object]:
