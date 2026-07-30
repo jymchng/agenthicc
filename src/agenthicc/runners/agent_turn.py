@@ -189,7 +189,19 @@ def _fmt_args(args: dict[str, object]) -> str:
         # silent 25-character cut makes a valid module look invalid in the TUI
         # even though the complete value is sent to the tool executor.
         limit = 80 if key in {"module", "path", "symbol"} else 25
-        rendered = repr(value)
+        if key.casefold() in {
+            "value",
+            "password",
+            "passwd",
+            "secret",
+            "token",
+            "api_key",
+            "authorization",
+            "cookie",
+        }:
+            rendered = "<redacted>"
+        else:
+            rendered = repr(value)
         if len(rendered) > limit:
             rendered = rendered[: limit - 1] + "…"
         return f"{_e(key)}={_e(rendered)}"
@@ -307,6 +319,9 @@ class AgentTurnRunner:
     async def run(self) -> None:
         """Execute the full agent turn end-to-end."""
         ctx = self._ctx
+        reset_browser_budget = getattr(ctx.browser_manager, "reset_turn_budget", None)
+        if callable(reset_browser_budget):
+            reset_browser_budget()
         if ctx.runner is None:
             if ctx.conv_store:
                 ctx.conv_store.append_event(
@@ -332,12 +347,24 @@ class AgentTurnRunner:
             await self._stream(agent_instance, agent_text, active_runner)
         except (asyncio.CancelledError, KeyboardInterrupt):
             _intent_status = "failed"
+            await self._close_browser_after_failure()
             raise
         except Exception:
             _intent_status = "failed"
+            await self._close_browser_after_failure()
             raise
         finally:
             await self._emit_intent_complete(status=_intent_status)
+
+    async def _close_browser_after_failure(self) -> None:
+        """Release browser resources when the provider turn cannot continue."""
+        closer = getattr(self._ctx.browser_manager, "close_session", None)
+        if not callable(closer):
+            return
+        try:
+            await closer()
+        except Exception:  # noqa: BLE001 — preserve the original provider failure
+            pass
 
     # ── step 1: model resolution ──────────────────────────────────────────────
 
@@ -1089,6 +1116,7 @@ async def _run_agent_turn(
     command_outcomes: list[dict[str, object]] | None = None,
     next_queued_message: Callable[[], str | None] | None = None,
     usage_ledger: UsageLedger | None = None,
+    browser_manager: object | None = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -1124,5 +1152,6 @@ async def _run_agent_turn(
         command_outcomes=command_outcomes,
         next_queued_message=next_queued_message,
         usage_ledger=usage_ledger,
+        browser_manager=browser_manager,
     )
     await AgentTurnRunner(ctx).run()

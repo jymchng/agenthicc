@@ -17,6 +17,7 @@ refused outright for any path resolving outside the workspace root.
 from __future__ import annotations
 
 import dataclasses
+import ast
 import importlib.util
 import logging
 import sys
@@ -34,6 +35,62 @@ _RESERVED_NAMES: frozenset[str] = frozenset({"code_plan", "create_workflow"})
 
 #: Valid ``PhaseSpec.output_schema`` values understood by ``_parse_output_schema``.
 _KNOWN_OUTPUT_SCHEMAS: frozenset[str] = frozenset({"plan", "review_result", "free_text"})
+
+_FORBIDDEN_BROWSER_IMPORTS: tuple[str, ...] = (
+    "cloakbrowser",
+    "playwright",
+    "agenthicc.tools.cloakbrowser",
+)
+_KNOWN_BROWSER_TOOLS: frozenset[str] = frozenset(
+    {
+        "cloakbrowser_status",
+        "cloakbrowser_open",
+        "cloakbrowser_snapshot",
+        "cloakbrowser_click",
+        "cloakbrowser_fill",
+        "cloakbrowser_press",
+        "cloakbrowser_wait_for",
+        "cloakbrowser_screenshot",
+        "cloakbrowser_close",
+    }
+)
+
+
+def _check_browser_imports(source: str, errors: list[str]) -> None:
+    """Reject generated code that bypasses the session-owned browser adapter."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        else:
+            modules = []
+        for module in modules:
+            if any(
+                module == item or module.startswith(f"{item}.")
+                for item in _FORBIDDEN_BROWSER_IMPORTS
+            ):
+                errors.append(
+                    f"Generated workflows must not import {module!r}; use the session-provided "
+                    "cloakbrowser_* tools so policy and checkpoint boundaries remain enforced."
+                )
+        if isinstance(node, ast.Name) and node.id.startswith("cloakbrowser_"):
+            if node.id not in _KNOWN_BROWSER_TOOLS:
+                errors.append(
+                    f"Unknown browser tool {node.id!r}; use the session-provided canonical "
+                    "cloakbrowser_* tool names documented by describe_cloakbrowser_tools()."
+                )
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            value = node.value
+            if value.startswith("cloakbrowser_") and value not in _KNOWN_BROWSER_TOOLS:
+                errors.append(
+                    f"Unknown browser tool {value!r}; use the session-provided canonical "
+                    "cloakbrowser_* tool names documented by describe_cloakbrowser_tools()."
+                )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -414,6 +471,11 @@ def validate_workflow_file(
             f"{shown} has a syntax error on line {exc.lineno}: {exc.msg}. "
             "Fix the source and rewrite the file.",
         )
+
+    source_errors: list[str] = []
+    _check_browser_imports(source, source_errors)
+    if source_errors:
+        return _fail(shown, *source_errors)
 
     plugins, namespace, import_error = _import_plugins(resolved)
     if import_error:

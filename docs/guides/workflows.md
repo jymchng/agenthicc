@@ -569,6 +569,14 @@ same context dependencies whether it is generic or code-plan based. Missing
 memory or question tools in a runner is a correctness bug, not a documentation
 choice.
 
+When the optional CloakBrowser integration is enabled, the same
+session-scoped browser tools are also supplied to direct turns and custom
+workflow phases. A browser-capable phase should declare `NETWORK` plus `READ`
+for observation or `NETWORK` plus `WRITE` for interaction. The generated
+workflow itself should not import the optional package; use the injected
+`cloakbrowser_*` tools. `create_workflow` keeps design and validation phases
+browser-free unless a downstream author intentionally changes that policy.
+
 ## Resume and failure behaviour
 
 Workflow state is represented by `WorkflowRun`, phase outputs, kernel events,
@@ -610,6 +618,11 @@ Current implementation caveats to account for when authoring workflows:
 - No write tools: check active mode, agent role capabilities, and approvals.
 - Resume loses context: inspect the journal and `WorkflowRun` phase outputs,
   not only the visible transcript.
+- Browser resume loses a live page: this is intentional. Inspect checkpoint
+  browser metadata and reopen an approved URL explicitly; live page objects
+  are never deserialized into a process. Browser handles are opaque and scoped
+  to the session, and reusing a mutating call's `operation_id` returns its
+  cached receipt without repeating the action.
 - `/workflow` does nothing: ensure it is in the canonical built-in command
   registry and intercepted before generic slash dispatch.
 - `create_workflow` is unknown: restart the session after upgrading and verify

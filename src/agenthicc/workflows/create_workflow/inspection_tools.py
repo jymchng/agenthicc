@@ -503,7 +503,8 @@ class DocReviewWorkflow(WorkflowPlugin):
 def make_inspection_tools() -> list[Callable[..., object]]:
     """Return the read-only authoring-surface inspection tools.
 
-    ``[describe_phasespec, list_tool_capabilities, list_agent_roles, show_example_workflow]``
+    ``[describe_phasespec, list_tool_capabilities, list_agent_roles,
+    describe_cloakbrowser_tools, show_example_workflow]``
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
     from agenthicc.tools.capabilities import tool_read  # noqa: PLC0415
@@ -583,6 +584,48 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             if not name.startswith("_") and isinstance(value, str)
         ]
         return {"agent_types": roles}
+
+    @tool_read
+    @_tool()
+    async def describe_cloakbrowser_tools() -> dict[str, object]:
+        """Describe the optional, session-scoped browser tool contract."""
+        return {
+            "optional_extra": "cloakbrowser",
+            "enabled_by_default": False,
+            "configuration": "[tools.cloakbrowser]",
+            "tool_names": [
+                "cloakbrowser_status",
+                "cloakbrowser_open",
+                "cloakbrowser_snapshot",
+                "cloakbrowser_click",
+                "cloakbrowser_fill",
+                "cloakbrowser_press",
+                "cloakbrowser_wait_for",
+                "cloakbrowser_screenshot",
+                "cloakbrowser_close",
+            ],
+            "phase_guidance": (
+                "Declare NETWORK plus READ for observation phases and NETWORK plus WRITE "
+                "for interactions. Keep browser tools out of design/validation phases "
+                "unless the workflow has a documented, intentional reason."
+            ),
+            "phase_spec_example": (
+                "from agenthicc.tools.capabilities import ToolCapability\n"
+                "PhaseSpec(name='inspect_site', allowed_capabilities=frozenset({"
+                "ToolCapability.READ, ToolCapability.NETWORK}), max_turns=8, next='report')"
+            ),
+            "security": [
+                "navigation is restricted to operator-configured domains and public DNS results",
+                "sensitive form fields, raw JavaScript, arbitrary CDP, cookies, and proxy settings are unavailable",
+                "snapshots and screenshots are bounded and screenshots are workspace artifacts",
+                "browser objects are not serialized into workflow checkpoints",
+            ],
+            "operation_id": (
+                "Every browser tool accepts an optional bounded operation_id. Reuse the same "
+                "id when safely retrying a call; the session manager returns the cached result "
+                "instead of repeating a mutation."
+            ),
+        }
 
     @tool_read
     @_tool()
@@ -686,6 +729,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         describe_phasespec,
         list_tool_capabilities,
         list_agent_roles,
+        describe_cloakbrowser_tools,
         describe_runner_pattern,
         show_example_workflow,
     ]

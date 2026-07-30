@@ -51,6 +51,7 @@ class AgentTurnOptions(TypedDict):
     command_outcomes: "list[dict[str, object]] | None"
     next_queued_message: NotRequired[Callable[[], str | None] | None]
     usage_ledger: NotRequired["UsageLedger | None"]
+    browser_manager: NotRequired[object | None]
     system_prompt_suffix: str
     excluded_capabilities: NotRequired[frozenset[str]]
     allowed_tool_names: NotRequired[frozenset[str] | None]
@@ -131,3 +132,6 @@ class AgentTurnContext:
 
     #: Canonical session-scoped provider usage accounting (PRD-157).
     usage_ledger: "UsageLedger | None" = None
+
+    #: Session-scoped browser manager used to reset per-turn browser quotas.
+    browser_manager: object | None = None

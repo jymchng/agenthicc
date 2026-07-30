@@ -20,6 +20,26 @@ Configure the real project paths in `[security].allowed_paths`. The illustrative
 `network_allow_list` denies outbound destinations. Network tools must use the
 shared HTTP client so connect and read timeout policy is consistent.
 
+### Browser-specific boundaries
+
+CloakBrowser is opt-in and optional. Its local transport is lazy-loaded, and
+its CDP transport accepts only the configured loopback endpoint. Every
+navigation and redirect is checked against the configured domain allow-list;
+DNS results that resolve to loopback, private, link-local, or reserved
+addresses are denied by default. Browser tools cannot execute raw JavaScript,
+select a proxy, read cookies/storage, or fill password/token/card-like fields.
+Snapshots and screenshots are bounded, and screenshots cross the same
+`WorkspaceView` path boundary as other artifacts. Capability metadata remains
+the approval boundary: observation uses `NETWORK + READ`, interaction uses
+`NETWORK + WRITE`, and closing uses `WRITE`.
+
+The CloakBrowser package and binary are third-party licensed components with
+their own supported-platform matrix. Agenthicc never auto-installs them or
+uses an external detection site; operators must install and license them from
+official sources and authorize the destinations they automate. Static HTTP
+tools remain governed by their existing network boundary and are not browser
+fallbacks.
+
 ## Capabilities and modes
 
 Tools carry `ToolCapability` metadata. Modes restrict the available tool set;

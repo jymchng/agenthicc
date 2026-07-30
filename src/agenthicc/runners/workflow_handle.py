@@ -51,6 +51,7 @@ class WorkflowRunHandle:
     continuation_messages: list[str] = field(default_factory=list)
     last_error: str = ""
     created_at: float = field(default_factory=time.time)
+    browser_manager: object | None = None
 
     @classmethod
     def create(
@@ -61,6 +62,7 @@ class WorkflowRunHandle:
         conversation: SessionConversation,
         intent: str,
         checkpoint_store: WorkflowCheckpointStore,
+        browser_manager: object | None = None,
     ) -> "WorkflowRunHandle":
         """Create a handle for a new workflow run."""
         return cls(
@@ -71,6 +73,7 @@ class WorkflowRunHandle:
             plugin_fingerprint=workflow_fingerprint(workflow),
             checkpoint_store=checkpoint_store,
             workflow=workflow,
+            browser_manager=browser_manager,
         )
 
     def attach_context(self, context: object) -> None:
@@ -131,6 +134,13 @@ class WorkflowRunHandle:
         if self.context is None:
             raise ValueError("cannot checkpoint a workflow before its context exists")
         context_payload = context_to_payload(self.context, workflow=self.workflow)
+        browser_payload: dict[str, object] = {}
+        if self.browser_manager is not None:
+            exporter = getattr(self.browser_manager, "checkpoint_payload", None)
+            if callable(exporter):
+                candidate = exporter()
+                if isinstance(candidate, dict):
+                    browser_payload = candidate
         return WorkflowCheckpoint(
             run_id=self.run_id,
             workflow_name=self.workflow_name,
@@ -145,6 +155,7 @@ class WorkflowRunHandle:
             plugin_fingerprint=self.plugin_fingerprint,
             revision=self.checkpoint_revision + 1,
             reason=reason or self.last_error,
+            browser=browser_payload,
         )
 
     def save_checkpoint(self, *, reason: str = "") -> WorkflowCheckpoint:
@@ -162,6 +173,7 @@ class WorkflowRunHandle:
         workflow: type[object],
         conversation: SessionConversation,
         checkpoint_store: WorkflowCheckpointStore,
+        browser_manager: object | None = None,
     ) -> "WorkflowRunHandle":
         """Rehydrate a handle and typed context from a validated checkpoint."""
         expected = workflow_fingerprint(workflow)
@@ -186,7 +198,12 @@ class WorkflowRunHandle:
             checkpoint_revision=checkpoint.revision,
             pause_requested=checkpoint.status in {"paused", "pausing"},
             last_error=checkpoint.reason,
+            browser_manager=browser_manager,
         )
+        if browser_manager is not None:
+            importer = getattr(browser_manager, "restore_checkpoint", None)
+            if callable(importer):
+                importer(checkpoint.browser)
         handle.context = context_from_payload(
             checkpoint.context,
             memory=conversation.memory,

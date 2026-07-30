@@ -1,6 +1,6 @@
 ---
 title: "PRD-159: Specialized CloakBrowser Agent Tools"
-status: Proposed
+status: Implemented
 version: 1.0.0
 created: 2026-07-30
 study_date: 2026-07-30
@@ -238,7 +238,7 @@ final approved upstream version pinned before release:
 
 ```toml
 [project.optional-dependencies]
-cloakbrowser = ["cloakbrowser==<approved-version>"]
+cloakbrowser = ["cloakbrowser==0.5.3"]
 ```
 
 The resulting installation contract is:
@@ -671,13 +671,20 @@ choose otherwise:
    and governed by a separate retention policy. The initial default is
    ephemeral context per agenthicc session.
 
-Before implementation, confirm:
+Implementation decisions:
 
-* the supported CloakBrowser package/binary version and platform matrix for CI;
-* whether a headed browser is acceptable in any supported TUI deployment;
-* whether operator policy needs a first-class approval category for navigation
-  and form interaction instead of reusing `NETWORK`/`WRITE`;
-* whether Phase D's CDP mode is required for deployment or can remain optional.
+* CloakBrowser Python package `0.5.3` is pinned; its browser binary is obtained
+  by the operator from official channels and is never committed to agenthicc;
+* local async launch is the default transport and CDP is opt-in loopback-only;
+* headed mode is operator configuration, while the default remains headless;
+* existing `NETWORK`/`READ` and `NETWORK`/`WRITE` capability metadata is reused
+  rather than creating a second approval taxonomy;
+* browser checkpoint metadata contains only redacted page summaries, the
+  conversation binding, and an opaque browser-session identity. The latter is
+  reused only for a validated persistent-profile directory; live page/context
+  objects are never deserialized;
+* browser tools accept bounded operation IDs and cache structured receipts for
+  explicit retries, so an uncertain mutation is never automatically repeated.
 
 ## 16. Definition of done
 

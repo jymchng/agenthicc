@@ -28,11 +28,13 @@ if TYPE_CHECKING:
     from agenthicc.tui.trigger import TriggerManager
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.skills.loader import SkillDef
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.session_service import SessionService
     from agenthicc.runners.usage_ledger import UsageLedger
+    from agenthicc.tools.cloakbrowser import BrowserSessionManager
     from asyncio import Task
 
 
@@ -97,6 +99,10 @@ class SessionContext:
 
     # ── provider usage (PRD-157) ─────────────────────────────────────────────
     usage_ledger: "UsageLedger | None" = None
+
+    # ── optional browser integration (PRD-159) ─────────────────────────────
+    browser_manager: "BrowserSessionManager | None" = None
+    browser_tools: list["ToolLike"] = field(default_factory=list)
 
     # ── visual resume (PRD-158) ──────────────────────────────────────────────
     #: True when this TUI was opened against an existing session and should

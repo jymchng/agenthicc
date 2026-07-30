@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from agenthicc.kernel import SecurityPolicy, SystemSettings
 
@@ -38,6 +39,7 @@ __all__ = [
     "AgentsSettings",
     "ApiSettings",
     "BehaviourSettings",
+    "CloakBrowserSettings",
     "ExecutionSettings",
     "MemorySettings",
     "PluginSettings",
@@ -379,6 +381,92 @@ class ExecutionSettings:
 
 
 @dataclass
+class CloakBrowserSettings:
+    """Optional, fail-closed browser automation settings.
+
+    The Python package is deliberately not imported here.  This dataclass is
+    safe to construct in a base installation where the ``cloakbrowser`` extra
+    is not installed.  ``BrowserSessionManager`` performs the lazy dependency
+    check when a browser tool is actually used.
+    """
+
+    enabled: bool = False
+    transport: str = "local"
+    cdp_endpoint: str = "http://127.0.0.1:9222"
+    allowed_domains: list[str] = field(default_factory=list)
+    headless: bool = True
+    navigation_timeout_s: float = 15.0
+    action_timeout_s: float = 10.0
+    max_pages: int = 4
+    max_actions_per_turn: int = 20
+    max_snapshot_chars: int = 20_000
+    max_screenshot_bytes: int = 10_000_000
+    allow_persistent_profiles: bool = False
+    profile_root: str = ".agenthicc/browser-profiles"
+    license_key_env: str = "CLOAKBROWSER_LICENSE_KEY"
+
+    def __post_init__(self) -> None:
+        """Validate bounds before the settings reach a browser adapter."""
+        self.transport = self.transport.strip().lower()
+        if self.transport not in {"local", "cdp"}:
+            raise ValueError("tools.cloakbrowser.transport must be 'local' or 'cdp'")
+        if self.transport == "cdp":
+            try:
+                parsed_endpoint = urlsplit(self.cdp_endpoint.strip())
+                endpoint_port = parsed_endpoint.port
+            except ValueError as exc:
+                raise ValueError(
+                    "tools.cloakbrowser.cdp_endpoint must be an HTTP(S) loopback URL"
+                ) from exc
+            if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.hostname:
+                raise ValueError("tools.cloakbrowser.cdp_endpoint must be an HTTP(S) loopback URL")
+            if (
+                parsed_endpoint.username is not None
+                or parsed_endpoint.password is not None
+                or parsed_endpoint.path not in {"", "/"}
+                or parsed_endpoint.query
+                or parsed_endpoint.fragment
+            ):
+                raise ValueError(
+                    "tools.cloakbrowser.cdp_endpoint must not contain credentials, a path, "
+                    "a query, or a fragment"
+                )
+            if parsed_endpoint.hostname.lower() not in {"127.0.0.1", "localhost", "::1"}:
+                raise ValueError("tools.cloakbrowser.cdp_endpoint must use a loopback host")
+            if endpoint_port is not None and not 1 <= endpoint_port <= 65535:
+                raise ValueError("tools.cloakbrowser.cdp_endpoint has an invalid port")
+        if self.navigation_timeout_s <= 0 or self.action_timeout_s <= 0:
+            raise ValueError("CloakBrowser timeouts must be greater than zero")
+        if self.max_pages < 1:
+            raise ValueError("tools.cloakbrowser.max_pages must be at least 1")
+        if self.max_actions_per_turn < 1:
+            raise ValueError("tools.cloakbrowser.max_actions_per_turn must be at least 1")
+        if self.max_snapshot_chars < 256:
+            raise ValueError("tools.cloakbrowser.max_snapshot_chars must be at least 256")
+        if self.max_screenshot_bytes < 1024:
+            raise ValueError("tools.cloakbrowser.max_screenshot_bytes must be at least 1024")
+        self.allowed_domains = sorted(
+            {
+                domain.strip().lower().lstrip(".")
+                for domain in self.allowed_domains
+                if domain.strip()
+            }
+        )
+        profile_path = Path(self.profile_root)
+        if (
+            not self.profile_root.strip()
+            or profile_path.is_absolute()
+            or ".." in profile_path.parts
+        ):
+            raise ValueError(
+                "tools.cloakbrowser.profile_root must be a non-empty relative path "
+                "inside the workspace"
+            )
+        if not self.license_key_env.strip():
+            raise ValueError("tools.cloakbrowser.license_key_env must not be empty")
+
+
+@dataclass
 class ToolSettings:
     mcp_servers: list[McpServerConfig] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
@@ -386,6 +474,7 @@ class ToolSettings:
     denied: list[str] = field(default_factory=list)
     max_live_tool_calls: int = 5
     http_timeout_s: float = 30.0
+    cloakbrowser: CloakBrowserSettings = field(default_factory=CloakBrowserSettings)
     """Read timeout in seconds for all outbound HTTP tool calls (PRD-108).
     Set via ``[tools] http_timeout_s = N`` in agenthicc.toml.
     Use ``0.0`` to disable the read timeout (unbounded)."""
@@ -968,6 +1057,46 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         allowed=_as_string_list(to.get("allowed", to.get("allowed_tools"))),
         denied=_as_string_list(to.get("denied", to.get("denied_tools"))),
         max_live_tool_calls=_as_int(to.get("max_live_tool_calls"), 5),
+        http_timeout_s=_as_float(to.get("http_timeout_s"), 30.0),
+        cloakbrowser=CloakBrowserSettings(
+            enabled=_as_bool(_section(to.get("cloakbrowser")).get("enabled"), False),
+            transport=_as_str(_section(to.get("cloakbrowser")).get("transport"), "local"),
+            cdp_endpoint=_as_str(
+                _section(to.get("cloakbrowser")).get("cdp_endpoint"),
+                "http://127.0.0.1:9222",
+            ),
+            allowed_domains=_as_string_list(
+                _section(to.get("cloakbrowser")).get("allowed_domains")
+            ),
+            headless=_as_bool(_section(to.get("cloakbrowser")).get("headless"), True),
+            navigation_timeout_s=_as_float(
+                _section(to.get("cloakbrowser")).get("navigation_timeout_s"), 15.0
+            ),
+            action_timeout_s=_as_float(
+                _section(to.get("cloakbrowser")).get("action_timeout_s"), 10.0
+            ),
+            max_pages=_as_int(_section(to.get("cloakbrowser")).get("max_pages"), 4),
+            max_actions_per_turn=_as_int(
+                _section(to.get("cloakbrowser")).get("max_actions_per_turn"), 20
+            ),
+            max_snapshot_chars=_as_int(
+                _section(to.get("cloakbrowser")).get("max_snapshot_chars"), 20_000
+            ),
+            max_screenshot_bytes=_as_int(
+                _section(to.get("cloakbrowser")).get("max_screenshot_bytes"), 10_000_000
+            ),
+            allow_persistent_profiles=_as_bool(
+                _section(to.get("cloakbrowser")).get("allow_persistent_profiles"), False
+            ),
+            profile_root=_as_str(
+                _section(to.get("cloakbrowser")).get("profile_root"),
+                ".agenthicc/browser-profiles",
+            ),
+            license_key_env=_as_str(
+                _section(to.get("cloakbrowser")).get("license_key_env"),
+                "CLOAKBROWSER_LICENSE_KEY",
+            ),
+        ),
     )
 
     memory = MemorySettings(

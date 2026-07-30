@@ -291,6 +291,7 @@ class WorkflowCheckpoint:
     plugin_fingerprint: str
     revision: int = 0
     reason: str = ""
+    browser: dict[str, object] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     schema_version: int = CHECKPOINT_SCHEMA_VERSION
 
@@ -310,6 +311,7 @@ class WorkflowCheckpoint:
             "plugin_fingerprint": self.plugin_fingerprint,
             "revision": self.revision,
             "reason": self.reason,
+            "browser": self.browser,
             "created_at": self.created_at,
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -369,6 +371,9 @@ class WorkflowCheckpoint:
             raise CheckpointValidationError(f"unsupported workflow status: {raw['status']!r}")
         if not isinstance(raw["context"], dict):
             raise CheckpointValidationError("checkpoint context must be an object")
+        browser = raw.get("browser", {})
+        if not isinstance(browser, dict):
+            raise CheckpointValidationError("checkpoint browser metadata must be an object")
         numeric = ("phase_index", "phase_iteration", "conversation_cursor", "revision")
         if not all(isinstance(raw[key], int) and not isinstance(raw[key], bool) for key in numeric):
             raise CheckpointValidationError("checkpoint numeric fields must be integers")
@@ -391,5 +396,8 @@ class WorkflowCheckpoint:
             plugin_fingerprint=str(raw["plugin_fingerprint"]),
             revision=int(raw["revision"]),
             reason=str(raw.get("reason", "")),
+            browser=dict(raw.get("browser", {}))
+            if isinstance(raw.get("browser", {}), dict)
+            else {},
             created_at=float(raw.get("created_at", time.time()) or time.time()),
         )

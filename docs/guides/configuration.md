@@ -127,6 +127,46 @@ The internal identity `mcp:<server>:<tool>` is retained for MCP routing;
 the provider-facing schema uses a valid equivalent such as
 `mcp_database-dev_create_row`.
 
+## Optional CloakBrowser integration
+
+CloakBrowser is not a base dependency. Install it only when browser tools are
+needed:
+
+```bash
+pip install 'agenthicc[cloakbrowser]'
+# or, in a uv checkout:
+uv sync --extra cloakbrowser
+```
+
+The feature remains disabled unless explicitly enabled and given an operator
+allow-list. The package import is lazy, so a base installation reports a safe
+`dependency_missing` browser status instead of failing session startup.
+
+```toml
+[tools.cloakbrowser]
+enabled = true
+transport = "local"             # local or loopback-only cdp
+allowed_domains = ["example.com"]
+headless = true
+max_pages = 4
+max_actions_per_turn = 20
+max_snapshot_chars = 20000
+max_screenshot_bytes = 10000000
+```
+
+CDP uses the fixed loopback endpoint `http://127.0.0.1:9222`; it cannot be
+selected by an agent. Persistent profiles are disabled by default. Do not put
+license keys in TOML; the configured `license_key_env` names the environment
+variable read by the browser adapter.
+
+The wrapper and its browser binary are third-party software with their own
+platform support, download, and licensing terms. Install the pinned
+`cloakbrowser==0.5.3` package and any required browser runtime only from the
+official distribution channels, and use the tools only against sites and
+accounts the operator is authorized to access. Static HTTP tools and browser
+tools are separate surfaces: enabling this extra does not broaden ordinary
+HTTP or shell-tool permissions.
+
 ## Memory and storage
 
 ```toml

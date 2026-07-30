@@ -124,6 +124,7 @@ _AUTHORING_GUIDE: str = (
     "  - build_params(): typed WorkflowParams when [workflows.<name>] config is needed\n\n"
     + _RUNNER_GUIDE
     + "\nUse describe_phasespec(), list_tool_capabilities(), list_agent_roles(), "
+    "describe_cloakbrowser_tools(), "
     "describe_runner_pattern() and show_example_workflow() to read the real API instead of "
     "guessing at it. inspect_agenthicc_source() and search_agenthicc_docs() read the "
     "installed agenthicc source and documentation directly."
@@ -1022,6 +1023,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
     def _base_tools(self) -> _ToolList:
         """Return capability-filtered project tools for the current mode."""
         from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
+        from agenthicc.tools.cloakbrowser import is_cloakbrowser_tool  # noqa: PLC0415
         from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
 
         mode_blocked = self._cfg.app_state.active_mode().blocked_capabilities
@@ -1033,7 +1035,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 pass
 
         filtered: _ToolList = [
-            tool for tool in all_tools if not (get_tool_capabilities(tool) & mode_blocked)
+            tool
+            for tool in all_tools
+            if not is_cloakbrowser_tool(tool) and not (get_tool_capabilities(tool) & mode_blocked)
         ]
         # Memory tools carry no capability restrictions — always available.
         return filtered + make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index)

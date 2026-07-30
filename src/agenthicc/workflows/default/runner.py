@@ -596,6 +596,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             "command_outcomes": command_outcomes,
             "next_queued_message": self._cfg.next_queued_message,
             "usage_ledger": self._cfg.usage_ledger,
+            "browser_manager": self._cfg.browser_manager,
             "system_prompt_suffix": role_prompt,
         }
 

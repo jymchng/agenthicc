@@ -299,6 +299,38 @@ Use capability decorators, mode restrictions, approval prompts, explicit
 resource boundaries, and tests together. The [security guide](security.md)
 contains the broader checklist and current limitations.
 
+## Optional CloakBrowser tools
+
+The session can expose nine built-in `cloakbrowser_*` tools when
+`[tools.cloakbrowser].enabled = true` and the optional `cloakbrowser` extra is
+installed: `status`, `open`, `snapshot`, `click`, `fill`, `press`, `wait_for`,
+`screenshot`, and `close`. They are closures over one browser manager keyed by
+the session's stable conversation ID, so direct turns and workflow phases see
+the same browser context. Page, profile, and artifact directories use opaque
+browser-session handles rather than the provider conversation ID. Browser calls
+accept an optional bounded `operation_id`; reusing it returns the original
+structured receipt and prevents a retry from repeating a mutation.
+
+The adapter enforces an operator domain allow-list, HTTP(S)-only navigation,
+DNS/private-address checks, bounded pages/actions/snapshots/screenshots, safe
+keyboard keys, and rejection of sensitive form fields. It provides no raw
+JavaScript, arbitrary CDP, proxy, cookie, storage, or stealth controls. Page
+screenshots are written only through `WorkspaceView` below
+`.agenthicc/browser-artifacts/`. The live browser context is never serialized;
+workflow checkpoints retain only redacted page metadata and reattach the same
+session manager on resume.
+
+Custom workflows receive these tools through `WorkflowConfig`. Their authoring
+and validation phases are browser-free by default. `create_workflow` exposes
+`describe_cloakbrowser_tools()` so a generated workflow can declare the right
+`NETWORK`/`READ` or `NETWORK`/`WRITE` phase capabilities without importing
+CloakBrowser or Playwright directly.
+
+The upstream wrapper and binary have independent platform and licensing
+requirements; agenthicc does not download binaries or silently install the
+extra. Operators are responsible for authorized use and for retaining any
+license key only in the configured environment variable.
+
 ## Testing a user-defined tool
 
 At minimum, test the callable directly and test its plugin boundary:

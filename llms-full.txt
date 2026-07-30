@@ -535,6 +535,31 @@ Kernel tuning parameters. Reflected from `AgenthiccConfig.execution` via
 
 ## Tools — `agenthicc.tools`
 
+### Optional CloakBrowser integration — `agenthicc.tools.cloakbrowser`
+
+```python
+@dataclass
+class CloakBrowserSettings: ...
+
+ CLOAKBROWSER_AGENT_TOOLS: tuple[str, ...]
+class BrowserPolicy: ...
+class BrowserSessionManager: ...
+def make_cloakbrowser_tools(manager: BrowserSessionManager) -> list[ToolLike]: ...
+```
+
+The `cloakbrowser` package is an optional `cloakbrowser==0.5.3` extra and is
+loaded lazily. The feature is disabled by default. A session manager owns one
+opaque browser context per stable conversation, enforces operator domain/DNS
+policy and bounded limits, writes screenshots through `WorkspaceView`, and
+exports only redacted checkpoint metadata. The agent-facing tools are
+`cloakbrowser_status`, `cloakbrowser_open`, `cloakbrowser_snapshot`,
+`cloakbrowser_click`, `cloakbrowser_fill`, `cloakbrowser_press`,
+`cloakbrowser_wait_for`, `cloakbrowser_screenshot`, and `cloakbrowser_close`.
+No raw JavaScript, arbitrary CDP, proxy, cookie, storage, or sensitive-form
+field access is exposed.
+All browser tools accept an optional bounded `operation_id`; reusing one returns
+the cached receipt and prevents a transport retry from repeating a mutation.
+
 ### Tool
 
 ```python

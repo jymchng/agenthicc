@@ -467,6 +467,21 @@ async def _build_session_context(
     )
     session_memory = session_conversation.memory
 
+    # PRD-159: one browser manager and one opaque browser context per stable
+    # session conversation.  Construction is side-effect free; the optional
+    # CloakBrowser import happens only when a browser operation is requested.
+    from agenthicc.tools.cloakbrowser import (  # noqa: PLC0415
+        create_browser_session,
+        make_cloakbrowser_tools,
+    )
+
+    browser_manager = create_browser_session(
+        cfg.tools.cloakbrowser,
+        conversation_id=session_conversation.conversation_id,
+        workspace_root=Path.cwd(),
+    )
+    browser_tools = make_cloakbrowser_tools(browser_manager)
+
     from agenthicc.runners.usage_ledger import UsageLedger  # noqa: PLC0415
 
     usage_ledger = UsageLedger.open(
@@ -603,6 +618,8 @@ async def _build_session_context(
         session_service=session_service,
         kernel_projection_task=kernel_projection_task,
         usage_ledger=usage_ledger,
+        browser_manager=browser_manager,
+        browser_tools=browser_tools,
         resumed=bool(resume_id),
     )
 
@@ -660,6 +677,8 @@ class TUISession:
             session_memory=ctx.session_memory,
             conversation_id=ctx.session_id,
             usage_ledger=getattr(ctx, "usage_ledger", None),
+            browser_manager=getattr(ctx, "browser_manager", None),
+            browser_tools=list(getattr(ctx, "browser_tools", [])),
             next_queued_message=self._next_queued_message,
         )
         self._restore_paused_workflow()
@@ -734,6 +753,7 @@ class TUISession:
                 workflow=definition,
                 conversation=conversation,
                 checkpoint_store=store,
+                browser_manager=getattr(self._ctx, "browser_manager", None),
             )
             self._ctx.app_state.conversation.notification.set(
                 f"Workflow '{checkpoint.workflow_name}' is paused. Use /workflow resume or send a message to continue."
@@ -841,6 +861,7 @@ class TUISession:
 
         ctx = self._ctx
         project_tools: list[ToolLike] = list(ctx.project_plugins.all_tools)
+        project_tools.extend(getattr(ctx, "browser_tools", []))
         if ctx.mcp_registry is not None:
             project_tools.extend(ctx.mcp_registry.all_tools())
         tool_registry = build_registry(project_plugin_tools=project_tools)
@@ -1478,6 +1499,7 @@ class TUISession:
                             conversation=session_conversation,
                             intent=text,
                             checkpoint_store=WorkflowCheckpointStore(ctx.session_id),
+                            browser_manager=getattr(ctx, "browser_manager", None),
                         )
                 _wf_config = _dc.replace(
                     self._wf_config_base,
@@ -1535,6 +1557,7 @@ class TUISession:
                             memory_router=ctx.memory_router,
                             semantic_index=ctx.semantic_index,
                         )
+                        + list(getattr(ctx, "browser_tools", []))
                     ),
                     mcp_registry=ctx.mcp_registry,
                     active_agent="default",
@@ -1547,6 +1570,7 @@ class TUISession:
                     resume_ledger=getattr(resume, "ledger", None),
                     next_queued_message=self._next_queued_message,
                     usage_ledger=getattr(ctx, "usage_ledger", None),
+                    browser_manager=getattr(ctx, "browser_manager", None),
                 )
 
         try:
@@ -2104,6 +2128,9 @@ async def _run_tui_session(
             configure_file_cache(None)
         if ctx.mcp_registry:
             await ctx.mcp_registry.shutdown()
+        browser_manager = getattr(ctx, "browser_manager", None)
+        if browser_manager is not None:
+            await browser_manager.close_session()
         await ctx.terminal_manager.close()
         if ctx.kernel_projection_task is not None:
             ctx.kernel_projection_task.cancel()

@@ -306,7 +306,16 @@ network_allow_list = []
 
 [tools]
 max_live_tool_calls = 5
+
+# Optional browser automation; disabled unless explicitly enabled.
+[tools.cloakbrowser]
+enabled = false
+allowed_domains = ["example.com"]
 ```
+
+CloakBrowser is an optional dependency. Install it only when browser tools are
+needed with `pip install 'agenthicc[cloakbrowser]'` or `uv sync --extra
+cloakbrowser`; base installations do not import or require it.
 
 Config layers are merged in this order: built-in defaults, user config,
 project config, environment variables, then repeated `--set key=value`

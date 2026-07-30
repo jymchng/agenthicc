@@ -242,6 +242,7 @@ async def _run_direct_turn(session: object, request: WorkerRequest) -> None:
         approval_svc=getattr(session, "approval_svc"),
         memory_router=getattr(session, "memory_router"),
         semantic_index=getattr(session, "semantic_index"),
+        browser_manager=getattr(session, "browser_manager", None),
     )
 
 

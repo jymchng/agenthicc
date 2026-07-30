@@ -112,6 +112,7 @@ async def execute_workflow(
             conversation=session_conversation,
             intent=intent,
             checkpoint_store=WorkflowCheckpointStore(session.session_id),
+            browser_manager=getattr(session, "browser_manager", None),
         )
     workflow_config = WorkflowConfig(
         conv_store=session.app_state.conversation,
@@ -132,6 +133,8 @@ async def execute_workflow(
         conversation_id=session.session_id,
         usage_ledger=getattr(session, "usage_ledger", None),
         workflow_handle=workflow_handle,
+        browser_manager=getattr(session, "browser_manager", None),
+        browser_tools=list(getattr(session, "browser_tools", [])),
         params=workflow_cls.build_params(session.cfg.workflows.get(workflow_name, {})),
         terminal_wait_policies={
             phase.name: phase.terminal_wait_policy for phase in workflow_cls.phases
@@ -336,6 +339,9 @@ async def _close_headless_session(
         close_memory()
     if session.mcp_registry is not None:
         await session.mcp_registry.shutdown()
+    browser_manager = getattr(session, "browser_manager", None)
+    if browser_manager is not None:
+        await browser_manager.close_session()
     terminal_manager = getattr(session, "terminal_manager", None)
     if terminal_manager is not None:
         await terminal_manager.close()

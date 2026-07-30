@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
     from agenthicc.runners.usage_ledger import UsageLedger
+    from agenthicc.tools.cloakbrowser import BrowserSessionManager
 
 
 @dataclass(frozen=True)
@@ -63,9 +64,15 @@ class WorkflowConfig:
     """Active workflow lifecycle handle, when this config runs a workflow."""
     usage_ledger: "UsageLedger | None" = None
     """Session-scoped provider usage ledger (PRD-157)."""
+    browser_manager: "BrowserSessionManager | None" = None
+    """Session-owned browser lifecycle; live browser objects never enter checkpoints."""
+    browser_tools: list["ToolLike"] = field(default_factory=list)
+    """Session-bound CloakBrowser tools; empty when the optional feature is disabled."""
 
     def all_plugin_tools(self) -> list["ToolLike"]:
         """Return project tools while accepting legacy list-based configs."""
         if isinstance(self.plugin_tools, list):
-            return list(self.plugin_tools)
-        return list(self.plugin_tools.all_tools)
+            tools = list(self.plugin_tools)
+        else:
+            tools = list(self.plugin_tools.all_tools)
+        return [*tools, *self.browser_tools]

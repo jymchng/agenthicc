@@ -504,6 +504,7 @@ def test_inspection_tools_are_the_documented_set() -> None:
         "describe_phasespec",
         "list_tool_capabilities",
         "list_agent_roles",
+        "describe_cloakbrowser_tools",
         "describe_runner_pattern",
         "show_example_workflow",
     ]
