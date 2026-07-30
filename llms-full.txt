@@ -564,6 +564,28 @@ protections.
 All browser tools accept an optional bounded `operation_id`; reusing one returns
 the cached receipt and prevents a transport retry from repeating a mutation.
 
+### Optional Playwright integration — `agenthicc.tools.playwright`
+
+```python
+@dataclass
+class PlaywrightSettings: ...
+
+PLAYWRIGHT_AGENT_TOOLS: tuple[str, ...]
+class PlaywrightBrowserClient: ...
+def create_playwright_session(settings: PlaywrightSettings, conversation_id: str,
+                             workspace_root: Path) -> BrowserSessionManager: ...
+def make_playwright_tools(manager: BrowserSessionManager) -> list[ToolLike]: ...
+```
+
+The `playwright` extra installs Microsoft's official Playwright Python package;
+browser binaries are installed explicitly with `playwright install`. Set
+`[tools].browser_backend = "playwright"` to select it. The backend supports
+Chromium, Firefox, and WebKit and exposes the same bounded operations using
+`playwright_*` names. It shares the session manager's origin/DNS policy,
+`allow_all_domains` behavior, quotas, redaction, artifacts, idempotency, and
+checkpoint metadata with CloakBrowser. Generated workflows must use injected
+tools rather than importing Playwright directly.
+
 ### Tool
 
 ```python

@@ -27,6 +27,7 @@ against the current source before implementing them.
 - [PRD-157 — Canonical Usage Accounting and TUI Token Observability](prd-157-usage-accounting-and-tui-token-observability.md)
 - [PRD-158 — Display Resumed TUI Transcript](prd-158-resumed-tui-transcript.md)
 - [PRD-159 — Specialized CloakBrowser Agent Tools](prd-159-cloakbrowser-agent-tools.md)
+- [PRD-160 — Playwright Browser Agent Tools](prd-160-playwright-browser-agent-tools.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

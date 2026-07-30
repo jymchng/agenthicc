@@ -591,7 +591,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         """Describe the optional, session-scoped browser tool contract."""
         return {
             "optional_extra": "cloakbrowser",
-            "enabled_by_default": False,
+            "enabled_by_default": True,
             "configuration": "[tools.cloakbrowser]",
             "tool_names": [
                 "cloakbrowser_status",
@@ -616,6 +616,45 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             ),
             "security": [
                 "navigation is restricted to operator-configured domains and public DNS results",
+                "sensitive form fields, raw JavaScript, arbitrary CDP, cookies, and proxy settings are unavailable",
+                "snapshots and screenshots are bounded and screenshots are workspace artifacts",
+                "browser objects are not serialized into workflow checkpoints",
+            ],
+            "operation_id": (
+                "Every browser tool accepts an optional bounded operation_id. Reuse the same "
+                "id when safely retrying a call; the session manager returns the cached result "
+                "instead of repeating a mutation."
+            ),
+        }
+
+    @tool_read
+    @_tool()
+    async def describe_playwright_tools() -> dict[str, object]:
+        """Describe the optional, session-scoped Playwright browser contract."""
+        return {
+            "optional_extra": "playwright",
+            "enabled_by_default": True,
+            "backend_selection": "Set [tools].browser_backend = 'playwright'.",
+            "configuration": "[tools.playwright]",
+            "tool_names": [
+                "playwright_status",
+                "playwright_open",
+                "playwright_snapshot",
+                "playwright_click",
+                "playwright_fill",
+                "playwright_press",
+                "playwright_wait_for",
+                "playwright_screenshot",
+                "playwright_close",
+            ],
+            "browser_types": ["chromium", "firefox", "webkit"],
+            "phase_guidance": (
+                "Declare NETWORK plus READ for observation phases and NETWORK plus WRITE "
+                "for interactions. Keep browser tools out of design/validation phases "
+                "unless the workflow has a documented, intentional reason."
+            ),
+            "security": [
+                "navigation and subresource requests are restricted to operator-configured domains",
                 "sensitive form fields, raw JavaScript, arbitrary CDP, cookies, and proxy settings are unavailable",
                 "snapshots and screenshots are bounded and screenshots are workspace artifacts",
                 "browser objects are not serialized into workflow checkpoints",
@@ -730,6 +769,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         list_tool_capabilities,
         list_agent_roles,
         describe_cloakbrowser_tools,
+        describe_playwright_tools,
         describe_runner_pattern,
         show_example_workflow,
     ]

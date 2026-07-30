@@ -306,6 +306,7 @@ network_allow_list = []
 
 [tools]
 max_live_tool_calls = 5
+browser_backend = "cloakbrowser"  # cloakbrowser, playwright, or none
 
 # Optional browser automation; enabled as a deny-all surface until configured.
 [tools.cloakbrowser]
@@ -317,6 +318,41 @@ allow_all_domains = false
 CloakBrowser is an optional dependency. Install it only when browser tools are
 needed with `pip install 'agenthicc[cloakbrowser]'` or `uv sync --extra
 cloakbrowser`; base installations do not import or require it.
+
+Microsoft Playwright is an alternative backend. Select it explicitly and
+install its optional package and browser runtime:
+
+```bash
+uv sync --extra playwright
+uv run playwright install chromium
+```
+
+From another uv project, such as a sibling `python-password-generator`
+checkout, use an editable requirement because `uv sync --extra` reads the
+consumer project's extras:
+
+```bash
+uv run --no-project --with-editable '../agenthicc[playwright]' playwright install chromium
+OPENAI_API_KEY='...' OPENAI_MODEL='...' OPENAI_BASE_URL='...' \
+  uv run --no-project --with-editable '../agenthicc[playwright]' agenthicc --continue
+```
+
+```toml
+[tools]
+browser_backend = "playwright"
+
+[tools.playwright]
+enabled = true
+browser_type = "chromium"
+allowed_domains = ["example.com"]
+allow_all_domains = false
+```
+
+Playwright exposes the same bounded browser operations with `playwright_*`
+names. Domain, DNS, private-address, artifact, quota, and checkpoint policies
+are shared with the CloakBrowser adapter. The two backends are mutually
+exclusive per session, and neither optional package is imported unless its
+backend is selected.
 
 Config layers are merged in this order: built-in defaults, user config,
 project config, environment variables, then repeated `--set key=value`

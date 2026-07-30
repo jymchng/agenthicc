@@ -40,6 +40,7 @@ _FORBIDDEN_BROWSER_IMPORTS: tuple[str, ...] = (
     "cloakbrowser",
     "playwright",
     "agenthicc.tools.cloakbrowser",
+    "agenthicc.tools.playwright",
 )
 _KNOWN_BROWSER_TOOLS: frozenset[str] = frozenset(
     {
@@ -52,6 +53,15 @@ _KNOWN_BROWSER_TOOLS: frozenset[str] = frozenset(
         "cloakbrowser_wait_for",
         "cloakbrowser_screenshot",
         "cloakbrowser_close",
+        "playwright_status",
+        "playwright_open",
+        "playwright_snapshot",
+        "playwright_click",
+        "playwright_fill",
+        "playwright_press",
+        "playwright_wait_for",
+        "playwright_screenshot",
+        "playwright_close",
     }
 )
 
@@ -76,20 +86,25 @@ def _check_browser_imports(source: str, errors: list[str]) -> None:
             ):
                 errors.append(
                     f"Generated workflows must not import {module!r}; use the session-provided "
-                    "cloakbrowser_* tools so policy and checkpoint boundaries remain enforced."
+                    "the session-provided browser_* tools so policy and checkpoint boundaries "
+                    "remain enforced."
                 )
-        if isinstance(node, ast.Name) and node.id.startswith("cloakbrowser_"):
+        if isinstance(node, ast.Name) and (
+            node.id.startswith("cloakbrowser_") or node.id.startswith("playwright_")
+        ):
             if node.id not in _KNOWN_BROWSER_TOOLS:
                 errors.append(
                     f"Unknown browser tool {node.id!r}; use the session-provided canonical "
-                    "cloakbrowser_* tool names documented by describe_cloakbrowser_tools()."
+                    "browser_* tool names documented by the browser inspection tools."
                 )
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             value = node.value
-            if value.startswith("cloakbrowser_") and value not in _KNOWN_BROWSER_TOOLS:
+            if (
+                value.startswith("cloakbrowser_") or value.startswith("playwright_")
+            ) and value not in _KNOWN_BROWSER_TOOLS:
                 errors.append(
                     f"Unknown browser tool {value!r}; use the session-provided canonical "
-                    "cloakbrowser_* tool names documented by describe_cloakbrowser_tools()."
+                    "browser_* tool names documented by the browser inspection tools."
                 )
 
 

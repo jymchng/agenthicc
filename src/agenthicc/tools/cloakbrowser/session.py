@@ -7,6 +7,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Protocol, cast
 
 from agenthicc.config import CloakBrowserSettings
 from agenthicc.tools.sandbox import WorkspaceView
@@ -26,10 +27,31 @@ from .policy import BrowserPolicy, redact_link, redact_url
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "BrowserSettings",
     "BrowserSessionManager",
     "create_browser_session",
+    "is_browser_tool",
     "is_cloakbrowser_tool",
 ]
+
+
+class BrowserSettings(Protocol):
+    """Structural settings contract shared by optional browser backends."""
+
+    enabled: bool
+    transport: str
+    allowed_domains: list[str]
+    allow_all_domains: bool
+    headless: bool
+    navigation_timeout_s: float
+    action_timeout_s: float
+    max_pages: int
+    max_actions_per_turn: int
+    max_snapshot_chars: int
+    max_screenshot_bytes: int
+    allow_persistent_profiles: bool
+    profile_root: str
+
 
 CLOAKBROWSER_TOOL_NAMES = frozenset(
     {
@@ -57,6 +79,16 @@ def is_cloakbrowser_tool(tool: object) -> bool:
     return str(getattr(tool, "__name__", "")) in CLOAKBROWSER_TOOL_NAMES
 
 
+def is_browser_tool(tool: object) -> bool:
+    """Return whether a callable belongs to a session-owned browser backend."""
+    name = str(getattr(tool, "__name__", ""))
+    return name in CLOAKBROWSER_TOOL_NAMES or (
+        name.startswith("playwright_")
+        and name.removeprefix("playwright_")
+        in {item.removeprefix("cloakbrowser_") for item in CLOAKBROWSER_TOOL_NAMES}
+    )
+
+
 class BrowserSessionManager:
     """Own exactly one browser context for one stable agenthicc session.
 
@@ -68,15 +100,17 @@ class BrowserSessionManager:
 
     def __init__(
         self,
-        settings: CloakBrowserSettings,
+        settings: BrowserSettings,
         conversation_id: str,
         workspace_root: Path,
         *,
         client: BrowserClient | None = None,
         policy: BrowserPolicy | None = None,
         artifact_store: BrowserArtifactStore | None = None,
+        backend_name: str = "CloakBrowser",
     ) -> None:
         self.settings = settings
+        self.backend_name = backend_name
         self.conversation_id = conversation_id or "session"
         self._workspace_root = workspace_root
         self._closed = False
@@ -102,18 +136,18 @@ class BrowserSessionManager:
             self.client = UnavailableBrowserClient(
                 settings.transport,
                 BrowserErrorKind.DISABLED,
-                "CloakBrowser is disabled; set [tools.cloakbrowser].enabled = true.",
+                f"{backend_name} is disabled; enable the selected browser backend.",
             )
         elif settings.transport == "cdp":
             self.client = CdpCloakBrowserClient(
-                settings,
+                cast(CloakBrowserSettings, settings),
                 self.policy,
                 workspace_root,
                 session_id=self._browser_session_id,
             )
         else:
             self.client = LocalCloakBrowserClient(
-                settings,
+                cast(CloakBrowserSettings, settings),
                 self.policy,
                 workspace_root,
                 session_id=self._browser_session_id,
@@ -150,7 +184,7 @@ class BrowserSessionManager:
                 "status": BrowserErrorKind.DISABLED.value,
                 "transport": self.settings.transport,
                 "session_id": self._browser_session_id,
-                "message": "Configure at least one allowed browser origin.",
+                "message": f"Configure at least one allowed {self.backend_name} origin.",
             }
         health = await self.client.health()
         result = health.to_dict()
@@ -170,7 +204,7 @@ class BrowserSessionManager:
         if self._closed:
             raise BrowserToolError(BrowserErrorKind.CLOSED, "Browser session is closed.")
         if not self.settings.enabled:
-            raise BrowserToolError(BrowserErrorKind.DISABLED, "CloakBrowser is disabled.")
+            raise BrowserToolError(BrowserErrorKind.DISABLED, f"{self.backend_name} is disabled.")
         if self._policy_error is not None:
             raise BrowserToolError(
                 BrowserErrorKind.POLICY_DENIED, "Browser allow-list configuration is invalid."
@@ -178,7 +212,7 @@ class BrowserSessionManager:
         if not self.policy.allowed_domains and not self.policy.allow_all_domains:
             raise BrowserToolError(
                 BrowserErrorKind.POLICY_DENIED,
-                "No browser destinations are configured in the allow-list.",
+                f"No {self.backend_name} destinations are configured in the allow-list.",
             )
 
     async def _ensure_ready(self) -> None:
@@ -287,7 +321,7 @@ class BrowserSessionManager:
                 "error": "Browser network operation failed.",
             }
         except Exception:  # noqa: BLE001 — optional browser boundary must not leak details
-            log.exception("cloakbrowser operation failed")
+            log.exception("%s operation failed", self.backend_name.lower())
             result = {
                 "ok": False,
                 "error_kind": BrowserErrorKind.EXECUTION.value,
@@ -513,6 +547,7 @@ class BrowserSessionManager:
         return {
             "session_id": self._browser_session_id,
             "transport": self.settings.transport,
+            "backend": self.backend_name.lower(),
             "open_pages": [
                 {"page_id": page_id, "url": redact_url(page.url), "title": page.title[:200]}
                 for page_id, page in self._pages.items()

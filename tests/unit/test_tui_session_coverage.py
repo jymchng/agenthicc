@@ -519,6 +519,16 @@ async def test_build_session_context_fresh_and_resume_paths(
         plugin_loader, "discover_command_plugins", lambda **kwargs: CommandPluginSet()
     )
     monkeypatch.setattr(layers, "GlobalMemoryLayer", lambda: layers.SessionMemoryLayer())
+    (tmp_path / "agenthicc.toml").write_text(
+        """
+        [tools]
+        browser_backend = "playwright"
+
+        [tools.playwright]
+        allowed_domains = ["example.com"]
+        """,
+        encoding="utf-8",
+    )
 
     from agenthicc.runners.tui_session import _build_session_context
 
@@ -528,6 +538,7 @@ async def test_build_session_context_fresh_and_resume_paths(
     assert fresh.session_id and fresh.agent_runner is None
     assert fresh.mode_manager.active_name == "Safe"
     assert fresh.app_state.active_mode().name == "Safe"
+    assert "playwright_open" in {tool.__name__ for tool in fresh.browser_tools}
     assert fresh.mode_manager.set_by_name("Yolo") is not None
     session_id = fresh.session_id
     fresh.session_log.close()

@@ -176,6 +176,65 @@ Set `allow_all_domains = true` only when the project intentionally needs broad
 public-web access; it bypasses hostname matching but still permits only HTTP(S)
 on the configured ports and retains DNS, loopback, and private-address checks.
 
+## Optional Playwright integration
+
+Playwright is an alternative browser backend using Microsoft's official
+[`playwright-python`](https://github.com/microsoft/playwright-python) package.
+Install it only when this backend is selected:
+
+```bash
+pip install 'agenthicc[playwright]'
+playwright install chromium
+# or, in a uv checkout:
+uv sync --extra playwright
+uv run playwright install chromium
+```
+
+When running the checkout from another uv project (for example, a sibling
+`python-password-generator` checkout), `uv sync --extra playwright` selects
+that project's extras and therefore cannot see agenthicc's extra. Use an
+editable requirement for agenthicc instead:
+
+```bash
+uv run --no-project --with-editable '../agenthicc[playwright]' playwright install chromium
+OPENAI_API_KEY='...' OPENAI_MODEL='...' OPENAI_BASE_URL='...' \
+  uv run --no-project --with-editable '../agenthicc[playwright]' agenthicc --continue
+```
+
+The same pattern works with the `cloakbrowser` extra by replacing
+`playwright` in both commands. The path is resolved relative to the
+consumer-project directory.
+
+Select it explicitly; only one browser backend is exposed to the agent session:
+
+```toml
+[tools]
+browser_backend = "playwright"  # cloakbrowser, playwright, or none
+
+[tools.playwright]
+enabled = true
+browser_type = "chromium"        # chromium, firefox, or webkit
+allowed_domains = ["example.com"]
+allow_all_domains = false
+headless = true
+max_pages = 4
+max_actions_per_turn = 20
+max_snapshot_chars = 20000
+max_screenshot_bytes = 10000000
+allow_persistent_profiles = false
+```
+
+Playwright supports the same bare-host and exact HTTP(S) origin formats as
+CloakBrowser, including wildcard subdomains and explicit ports. The default
+empty allow-list denies navigation. `allow_all_domains = true` bypasses
+hostname matching but still enforces HTTP(S), configured ports, DNS rebinding,
+loopback, and private-address protections. The browser executable and profile
+path are operator configuration; they are never supplied by the model.
+
+The browser tools remain available without Playwright installed, but return a
+structured `dependency_missing` result. Playwright browser binaries are not
+downloaded automatically.
+
 CDP uses the fixed loopback endpoint `http://127.0.0.1:9222`; it cannot be
 selected by an agent. Persistent profiles are disabled by default. Do not put
 license keys in TOML; the configured `license_key_env` names the environment

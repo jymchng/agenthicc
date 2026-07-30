@@ -40,6 +40,7 @@ __all__ = [
     "ApiSettings",
     "BehaviourSettings",
     "CloakBrowserSettings",
+    "PlaywrightSettings",
     "ExecutionSettings",
     "MemorySettings",
     "PluginSettings",
@@ -470,6 +471,73 @@ class CloakBrowserSettings:
 
 
 @dataclass
+class PlaywrightSettings:
+    """Optional Playwright browser automation settings.
+
+    Playwright is deliberately an optional dependency.  The settings object
+    is safe to construct without the package or its browser binaries; the
+    transport reports a structured dependency/runtime diagnostic only when it
+    is selected and used.
+    """
+
+    enabled: bool = True
+    transport: str = "local"
+    browser_type: str = "chromium"
+    browser_channel: str = ""
+    executable_path: str = ""
+    allowed_domains: list[str] = field(default_factory=list)
+    headless: bool = True
+    navigation_timeout_s: float = 15.0
+    action_timeout_s: float = 10.0
+    max_pages: int = 4
+    max_actions_per_turn: int = 20
+    max_snapshot_chars: int = 20_000
+    max_screenshot_bytes: int = 10_000_000
+    allow_persistent_profiles: bool = False
+    profile_root: str = ".agenthicc/browser-profiles/playwright"
+    allow_all_domains: bool = False
+
+    def __post_init__(self) -> None:
+        self.transport = self.transport.strip().lower()
+        if self.transport != "local":
+            raise ValueError("tools.playwright.transport must be 'local'")
+        self.browser_type = self.browser_type.strip().lower()
+        if self.browser_type not in {"chromium", "firefox", "webkit"}:
+            raise ValueError(
+                "tools.playwright.browser_type must be 'chromium', 'firefox', or 'webkit'"
+            )
+        if self.navigation_timeout_s <= 0 or self.action_timeout_s <= 0:
+            raise ValueError("Playwright timeouts must be greater than zero")
+        if self.max_pages < 1:
+            raise ValueError("tools.playwright.max_pages must be at least 1")
+        if self.max_actions_per_turn < 1:
+            raise ValueError("tools.playwright.max_actions_per_turn must be at least 1")
+        if self.max_snapshot_chars < 256:
+            raise ValueError("tools.playwright.max_snapshot_chars must be at least 256")
+        if self.max_screenshot_bytes < 1024:
+            raise ValueError("tools.playwright.max_screenshot_bytes must be at least 1024")
+        self.allowed_domains = sorted(
+            {
+                domain.strip().lower().lstrip(".")
+                for domain in self.allowed_domains
+                if domain.strip()
+            }
+        )
+        profile_path = Path(self.profile_root)
+        if (
+            not self.profile_root.strip()
+            or profile_path.is_absolute()
+            or ".." in profile_path.parts
+        ):
+            raise ValueError(
+                "tools.playwright.profile_root must be a non-empty relative path "
+                "inside the workspace"
+            )
+        if self.browser_channel and self.browser_type != "chromium":
+            raise ValueError("tools.playwright.browser_channel is supported only for chromium")
+
+
+@dataclass
 class ToolSettings:
     mcp_servers: list[McpServerConfig] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
@@ -478,12 +546,21 @@ class ToolSettings:
     max_live_tool_calls: int = 5
     http_timeout_s: float = 30.0
     cloakbrowser: CloakBrowserSettings = field(default_factory=CloakBrowserSettings)
+    playwright: PlaywrightSettings = field(default_factory=PlaywrightSettings)
+    browser_backend: str = "cloakbrowser"
     """Read timeout in seconds for all outbound HTTP tool calls (PRD-108).
     Set via ``[tools] http_timeout_s = N`` in agenthicc.toml.
     Use ``0.0`` to disable the read timeout (unbounded)."""
     """Maximum tool completions rendered individually in the scroll buffer
     before collapsing the rest into a live "…and N more tool calls" indicator.
     Set via [tools] max_live_tool_calls = N in agenthicc.toml."""
+
+    def __post_init__(self) -> None:
+        self.browser_backend = self.browser_backend.strip().lower()
+        if self.browser_backend not in {"cloakbrowser", "playwright", "none"}:
+            raise ValueError(
+                "tools.browser_backend must be 'cloakbrowser', 'playwright', or 'none'"
+            )
 
 
 @dataclass
@@ -1061,6 +1138,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         denied=_as_string_list(to.get("denied", to.get("denied_tools"))),
         max_live_tool_calls=_as_int(to.get("max_live_tool_calls"), 5),
         http_timeout_s=_as_float(to.get("http_timeout_s"), 30.0),
+        browser_backend=_as_str(to.get("browser_backend"), "cloakbrowser"),
         cloakbrowser=CloakBrowserSettings(
             enabled=_as_bool(_section(to.get("cloakbrowser")).get("enabled"), True),
             transport=_as_str(_section(to.get("cloakbrowser")).get("transport"), "local"),
@@ -1101,6 +1179,40 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
             license_key_env=_as_str(
                 _section(to.get("cloakbrowser")).get("license_key_env"),
                 "CLOAKBROWSER_LICENSE_KEY",
+            ),
+        ),
+        playwright=PlaywrightSettings(
+            enabled=_as_bool(_section(to.get("playwright")).get("enabled"), True),
+            browser_type=_as_str(_section(to.get("playwright")).get("browser_type"), "chromium"),
+            browser_channel=_as_str(_section(to.get("playwright")).get("browser_channel"), ""),
+            executable_path=_as_str(_section(to.get("playwright")).get("executable_path"), ""),
+            allowed_domains=_as_string_list(_section(to.get("playwright")).get("allowed_domains")),
+            allow_all_domains=_as_bool(
+                _section(to.get("playwright")).get("allow_all_domains"), False
+            ),
+            headless=_as_bool(_section(to.get("playwright")).get("headless"), True),
+            navigation_timeout_s=_as_float(
+                _section(to.get("playwright")).get("navigation_timeout_s"), 15.0
+            ),
+            action_timeout_s=_as_float(
+                _section(to.get("playwright")).get("action_timeout_s"), 10.0
+            ),
+            max_pages=_as_int(_section(to.get("playwright")).get("max_pages"), 4),
+            max_actions_per_turn=_as_int(
+                _section(to.get("playwright")).get("max_actions_per_turn"), 20
+            ),
+            max_snapshot_chars=_as_int(
+                _section(to.get("playwright")).get("max_snapshot_chars"), 20_000
+            ),
+            max_screenshot_bytes=_as_int(
+                _section(to.get("playwright")).get("max_screenshot_bytes"), 10_000_000
+            ),
+            allow_persistent_profiles=_as_bool(
+                _section(to.get("playwright")).get("allow_persistent_profiles"), False
+            ),
+            profile_root=_as_str(
+                _section(to.get("playwright")).get("profile_root"),
+                ".agenthicc/browser-profiles/playwright",
             ),
         ),
     )

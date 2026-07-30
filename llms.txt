@@ -66,9 +66,9 @@ The primary entry point is `agenthicc.__main__:main`.
 | `UnifiedInputSession` | `agenthicc.tui.input` | Lifetime input/raw-mode loop |
 | `ModeManager` / `ModeRegistry` / `RuntimeMode` | `agenthicc.tui.runtime` | Canonical Safe/Plan/Yolo selection, aliases, lifecycle state, and capability policy |
 | `ToolCapability` / `classify_tool_capabilities` | `agenthicc.tools.capabilities` | Capability taxonomy and fail-closed metadata classification |
-| `CloakBrowserSettings` | `agenthicc.config` | Optional, disabled-by-default browser configuration |
-| `BrowserSessionManager` / `BrowserPolicy` | `agenthicc.tools.cloakbrowser` | Session-scoped browser lifecycle, allow-list, quotas, artifacts, and checkpoint metadata |
-| `make_cloakbrowser_tools` | `agenthicc.tools.cloakbrowser` | Nine capability-tagged agent-facing browser tools; lazy optional dependency |
+| `CloakBrowserSettings` / `PlaywrightSettings` | `agenthicc.config` | Optional browser backend configuration with fail-closed domain policy |
+| `BrowserSessionManager` / `BrowserPolicy` | `agenthicc.tools.cloakbrowser` | Shared session-scoped browser lifecycle, allow-list, quotas, artifacts, and checkpoint metadata |
+| `make_cloakbrowser_tools` / `make_playwright_tools` | `agenthicc.tools.cloakbrowser` / `agenthicc.tools.playwright` | Nine capability-tagged agent-facing tools for either lazy optional backend |
 | `export_session` | `agenthicc.tui.runtime.session_export` | Redacted portable session export |
 | `inspect_session` | `agenthicc.tui.runtime.session_export` | Redacted durable session health and usage summary |
 | `SessionService` / `SessionSnapshot` / `SessionCommand` | `agenthicc.session_service` | Client-neutral session coordination and policy-filtered read model |

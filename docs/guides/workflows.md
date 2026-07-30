@@ -569,13 +569,14 @@ same context dependencies whether it is generic or code-plan based. Missing
 memory or question tools in a runner is a correctness bug, not a documentation
 choice.
 
-When the optional CloakBrowser integration is enabled, the same
+When the optional CloakBrowser or Playwright integration is selected, the same
 session-scoped browser tools are also supplied to direct turns and custom
 workflow phases. A browser-capable phase should declare `NETWORK` plus `READ`
 for observation or `NETWORK` plus `WRITE` for interaction. The generated
-workflow itself should not import the optional package; use the injected
-`cloakbrowser_*` tools. `create_workflow` keeps design and validation phases
-browser-free unless a downstream author intentionally changes that policy.
+workflow itself should not import either optional package; use the injected
+`cloakbrowser_*` or `playwright_*` tools documented by the inspection tools.
+`create_workflow` keeps design and validation phases browser-free unless a
+downstream author intentionally changes that policy.
 
 ## Resume and failure behaviour
 

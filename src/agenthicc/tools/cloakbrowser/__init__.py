@@ -23,6 +23,7 @@ from .session import (
     CLOAKBROWSER_TOOL_NAMES,
     BrowserSessionManager,
     create_browser_session,
+    is_browser_tool,
     is_cloakbrowser_tool,
 )
 
@@ -44,6 +45,7 @@ __all__ = [
     "ScreenshotData",
     "UnavailableBrowserClient",
     "create_browser_session",
+    "is_browser_tool",
     "is_cloakbrowser_tool",
     "make_cloakbrowser_tools",
     "redact_url",

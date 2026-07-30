@@ -22,10 +22,12 @@ shared HTTP client so connect and read timeout policy is consistent.
 
 ### Browser-specific boundaries
 
-CloakBrowser is optional and its configuration surface is enabled by default
-with an empty deny-all allow-list. Its local transport is lazy-loaded, and its
-CDP transport accepts only the configured loopback endpoint. Every navigation
-and redirect is checked against the configured domain allow-list. The explicit
+Browser backends are optional and selected by `[tools].browser_backend`;
+`cloakbrowser` remains the backwards-compatible default and `playwright` is
+the Microsoft Playwright alternative. Both have an empty deny-all allow-list by
+default. CloakBrowser's CDP transport accepts only the configured loopback
+endpoint. Every navigation, redirect, and Playwright subresource request is
+checked against the configured domain allow-list. The explicit
 `allow_all_domains` setting defaults to `false`; enabling it bypasses hostname
 matching for public HTTP(S) destinations on configured ports but does not
 bypass DNS, loopback, or private-address protections.
@@ -37,12 +39,11 @@ Snapshots and screenshots are bounded, and screenshots cross the same
 the approval boundary: observation uses `NETWORK + READ`, interaction uses
 `NETWORK + WRITE`, and closing uses `WRITE`.
 
-The CloakBrowser package and binary are third-party licensed components with
-their own supported-platform matrix. Agenthicc never auto-installs them or
-uses an external detection site; operators must install and license them from
-official sources and authorize the destinations they automate. Static HTTP
-tools remain governed by their existing network boundary and are not browser
-fallbacks.
+CloakBrowser and Playwright packages/binaries are third-party components with
+their own supported-platform terms. Agenthicc never auto-installs them or uses
+an external detection site; operators must install them from official sources
+and authorize the destinations they automate. Static HTTP tools remain
+governed by their existing network boundary and are not browser fallbacks.
 
 ## Capabilities and modes
 

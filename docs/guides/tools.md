@@ -331,9 +331,22 @@ DNS, loopback, or private-address protections.
 
 Custom workflows receive these tools through `WorkflowConfig`. Their authoring
 and validation phases are browser-free by default. `create_workflow` exposes
-`describe_cloakbrowser_tools()` so a generated workflow can declare the right
-`NETWORK`/`READ` or `NETWORK`/`WRITE` phase capabilities without importing
-CloakBrowser or Playwright directly.
+`describe_cloakbrowser_tools()` and `describe_playwright_tools()` so a generated
+workflow can declare the right `NETWORK`/`READ` or `NETWORK`/`WRITE` phase
+capabilities without importing CloakBrowser or Playwright directly.
+
+### Optional Playwright tools
+
+The Microsoft Playwright backend provides the same nine bounded tool operations
+with a `playwright_*` prefix. Set `[tools].browser_backend = "playwright"` and
+install the optional `playwright` extra; the available names are
+`playwright_status`, `playwright_open`, `playwright_snapshot`,
+`playwright_click`, `playwright_fill`, `playwright_press`,
+`playwright_wait_for`, `playwright_screenshot`, and `playwright_close`.
+Choose `browser_type = "chromium"`, `"firefox"`, or `"webkit"` in
+`[tools.playwright]`. The backend is lazy and returns `dependency_missing` when
+the Python package or its browser runtime is unavailable. It never imports
+Playwright or starts a browser when CloakBrowser is selected.
 
 The upstream wrapper and binary have independent platform and licensing
 requirements; agenthicc does not download binaries or silently install the

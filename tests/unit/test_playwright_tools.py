@@ -1,0 +1,357 @@
+"""Unit coverage for the optional Playwright browser backend."""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from pathlib import Path
+
+import pytest
+
+from agenthicc.config import PlaywrightSettings, load_config
+from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
+from agenthicc.tools.cloakbrowser import BrowserPolicy, BrowserSessionManager
+from agenthicc.tools.cloakbrowser.errors import BrowserErrorKind
+from agenthicc.tools.playwright import (
+    PLAYWRIGHT_AGENT_TOOLS,
+    make_playwright_tools,
+)
+from agenthicc.tools.playwright.client import PlaywrightBrowserClient
+from agenthicc.workflows.create_workflow.validation import validate_workflow_file
+
+pytestmark = pytest.mark.unit
+
+
+class _FakeBrowserClient:
+    async def health(self):
+        from agenthicc.tools.cloakbrowser.client import BrowserHealth
+
+        return BrowserHealth("ready", "local", "")
+
+    async def open_page(self, session_id: str, url: str):
+        from agenthicc.tools.cloakbrowser.client import PageState
+
+        return PageState("page-1", url, "Fixture")
+
+    async def snapshot(self, session_id: str, page_id: str):
+        from agenthicc.tools.cloakbrowser.client import PageSnapshot, PageState
+
+        return PageSnapshot(PageState(page_id, "https://example.com/", "Fixture"), "fixture")
+
+    async def click(self, session_id: str, page_id: str, selector: str):
+        from agenthicc.tools.cloakbrowser.client import PageState
+
+        return PageState(page_id, "https://example.com/", "Fixture")
+
+    async def fill(self, session_id: str, page_id: str, selector: str, value: str):
+        return await self.click(session_id, page_id, selector)
+
+    async def press(self, session_id: str, page_id: str, key: str, selector: str):
+        return await self.click(session_id, page_id, selector)
+
+    async def wait_for(self, session_id: str, page_id: str, condition: str, value: str):
+        return await self.click(session_id, page_id, "body")
+
+    async def screenshot(self, session_id: str, page_id: str, image_type: str, full_page: bool):
+        from agenthicc.tools.cloakbrowser.client import ScreenshotData
+
+        return ScreenshotData(b"png", "image/png")
+
+    async def close_page(self, session_id: str, page_id: str) -> None:
+        return None
+
+    async def close_session(self, session_id: str) -> None:
+        return None
+
+
+def _manager(tmp_path: Path) -> BrowserSessionManager:
+    return BrowserSessionManager(
+        PlaywrightSettings(enabled=True, allowed_domains=["example.com"]),
+        "conversation-1",
+        tmp_path,
+        client=_FakeBrowserClient(),
+        policy=BrowserPolicy(
+            ("example.com",),
+            resolver=lambda _host: _addresses(),
+        ),
+        backend_name="Playwright",
+    )
+
+
+async def _addresses() -> list[str]:
+    return ["93.184.216.34"]
+
+
+def test_playwright_tools_match_the_shared_browser_contract(tmp_path: Path) -> None:
+    tools = make_playwright_tools(_manager(tmp_path))
+
+    assert tuple(tool.__name__ for tool in tools) == PLAYWRIGHT_AGENT_TOOLS
+    assert get_tool_capabilities(tools[0]) == frozenset({ToolCapability.READ})
+    assert get_tool_capabilities(tools[1]) == frozenset(
+        {ToolCapability.READ, ToolCapability.NETWORK}
+    )
+    assert get_tool_capabilities(tools[4]) == frozenset(
+        {ToolCapability.WRITE, ToolCapability.NETWORK}
+    )
+
+
+def test_playwright_tools_enforce_shared_policy_and_artifacts(tmp_path: Path) -> None:
+    async def check() -> None:
+        manager = _manager(tmp_path)
+        tools = {tool.__name__: tool for tool in make_playwright_tools(manager)}
+
+        opened = await tools["playwright_open"]("https://example.com/")
+        assert opened["ok"] is True
+        page_id = str(opened["page"]["page_id"])
+        assert (await tools["playwright_snapshot"](page_id))["ok"] is True
+        assert (await tools["playwright_screenshot"](page_id))["ok"] is True
+        denied = await tools["playwright_open"]("https://not-example.test/")
+        assert denied["error_kind"] == BrowserErrorKind.POLICY_DENIED.value
+        await manager.close_session()
+
+    asyncio.run(check())
+
+
+def test_playwright_config_is_optional_and_selectable(tmp_path: Path) -> None:
+    config_path = tmp_path / "agenthicc.toml"
+    config_path.write_text(
+        """
+        [tools]
+        browser_backend = "playwright"
+
+        [tools.playwright]
+        browser_type = "firefox"
+        allowed_domains = ["https://example.com", "https://*.example.org:8443"]
+        allow_all_domains = false
+        max_pages = 2
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(project_path=config_path, user_path=tmp_path / "missing.toml")
+
+    assert config.tools.browser_backend == "playwright"
+    assert config.tools.playwright.browser_type == "firefox"
+    assert config.tools.playwright.allowed_domains == [
+        "https://*.example.org:8443",
+        "https://example.com",
+    ]
+    assert config.tools.playwright.allow_all_domains is False
+    assert config.tools.playwright.max_pages == 2
+
+
+def test_playwright_config_rejects_invalid_browser_type() -> None:
+    with pytest.raises(ValueError, match="browser_type"):
+        PlaywrightSettings(browser_type="safari")
+
+
+def test_missing_playwright_dependency_is_structured(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = __import__("importlib").import_module
+
+    def missing(name: str, *args: object, **kwargs: object) -> object:
+        if name == "playwright.async_api":
+            raise ModuleNotFoundError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("agenthicc.tools.playwright.client.importlib.import_module", missing)
+    client = PlaywrightBrowserClient(
+        PlaywrightSettings(enabled=True, allowed_domains=["example.com"]),
+        BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+        Path.cwd(),
+    )
+
+    health = asyncio.run(client.health())
+
+    assert health.status == BrowserErrorKind.DEPENDENCY_MISSING.value
+    assert "playwright" in health.message.lower()
+
+
+class _FakeLocator:
+    first = None
+
+    def __init__(self) -> None:
+        self.first = self
+
+    async def inner_text(self, **_kwargs: object) -> str:
+        return "fixture body"
+
+    async def count(self) -> int:
+        return 0
+
+    async def click(self, **_kwargs: object) -> None:
+        return None
+
+    async def fill(self, _value: str, **_kwargs: object) -> None:
+        return None
+
+    async def press(self, _key: str, **_kwargs: object) -> None:
+        return None
+
+    async def wait_for(self, **_kwargs: object) -> None:
+        return None
+
+
+class _FakePage:
+    def __init__(self) -> None:
+        self.url = "about:blank"
+        self.route_handler = None
+        self.closed = False
+
+    async def title(self) -> str:
+        return "Fixture"
+
+    async def route(self, _pattern: str, handler: object) -> None:
+        self.route_handler = handler
+
+    async def goto(self, url: str, **_kwargs: object) -> None:
+        self.url = url
+
+    async def locator(self, _selector: str) -> _FakeLocator:
+        return _FakeLocator()
+
+    async def screenshot(self, **_kwargs: object) -> bytes:
+        return b"png"
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeContext:
+    def __init__(self) -> None:
+        self.pages: list[_FakePage] = []
+        self.closed = False
+
+    async def new_page(self) -> _FakePage:
+        page = _FakePage()
+        self.pages.append(page)
+        return page
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeBrowser:
+    def __init__(self) -> None:
+        self.context = _FakeContext()
+        self.closed = False
+
+    async def new_context(self, **_kwargs: object) -> _FakeContext:
+        return self.context
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeBrowserType:
+    def __init__(self) -> None:
+        self.browser = _FakeBrowser()
+
+    async def launch(self, **_kwargs: object) -> _FakeBrowser:
+        return self.browser
+
+    async def launch_persistent_context(self, _profile: str, **_kwargs: object) -> _FakeContext:
+        return self.browser.context
+
+
+class _FakePlaywright:
+    def __init__(self) -> None:
+        self.chromium = _FakeBrowserType()
+
+    async def stop(self) -> None:
+        return None
+
+
+class _FakePlaywrightContextManager:
+    async def start(self) -> _FakePlaywright:
+        return _FakePlaywright()
+
+
+class _FakeRoute:
+    def __init__(self) -> None:
+        self.aborted = False
+        self.continued = False
+
+    async def abort(self, **_kwargs: object) -> None:
+        self.aborted = True
+
+    async def continue_(self) -> None:
+        self.continued = True
+
+
+def test_playwright_client_launches_and_routes_subresources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import agenthicc.tools.playwright.client as playwright_client
+
+    monkeypatch.setattr(
+        playwright_client.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(async_playwright=lambda: _FakePlaywrightContextManager()),
+    )
+    client = PlaywrightBrowserClient(
+        PlaywrightSettings(enabled=True, allowed_domains=["example.com"]),
+        BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+        tmp_path,
+    )
+
+    async def check() -> None:
+        health = await client.health()
+        assert health.status == "ready"
+        page_state = await client.open_page("session", "https://example.com/")
+        snapshot = await client.snapshot("session", page_state.page_id)
+        assert snapshot.text == "fixture body"
+        await client.click("session", page_state.page_id, "button.submit")
+        screenshot = await client.screenshot("session", page_state.page_id, "png", False)
+        assert screenshot.content == b"png"
+
+        page = client._pages[("session", page_state.page_id)]
+        assert isinstance(page, _FakePage)
+        assert page.route_handler is not None
+        denied_route = _FakeRoute()
+        await page.route_handler(denied_route, SimpleNamespace(url="https://not-example.test/"))
+        assert denied_route.aborted is True
+        allowed_route = _FakeRoute()
+        await page.route_handler(allowed_route, SimpleNamespace(url="https://example.com/api"))
+        assert allowed_route.continued is True
+        await client.close_session("session")
+        assert page.closed is True
+
+    asyncio.run(check())
+
+
+def test_generated_workflows_may_use_canonical_playwright_tools(tmp_path: Path) -> None:
+    source = """
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+class Demo(WorkflowPlugin):
+    name = "demo"
+    description = "demo"
+    phases = [PhaseSpec(name="one")]
+
+TOOL_NAME = "playwright_open"
+"""
+    path = tmp_path / "demo.py"
+    path.write_text(source, encoding="utf-8")
+
+    report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
+
+    assert report.ok is True
+
+
+def test_generated_workflows_cannot_import_playwright_directly(tmp_path: Path) -> None:
+    source = """
+from playwright.async_api import async_playwright
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+class Demo(WorkflowPlugin):
+    name = "demo"
+    description = "demo"
+    phases = [PhaseSpec(name="one")]
+"""
+    path = tmp_path / "demo.py"
+    path.write_text(source, encoding="utf-8")
+
+    report = validate_workflow_file(str(path), expected_name="demo", root=tmp_path)
+
+    assert report.ok is False
+    assert "must not import" in report.errors[0]

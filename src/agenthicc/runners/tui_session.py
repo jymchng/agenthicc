@@ -468,20 +468,36 @@ async def _build_session_context(
     )
     session_memory = session_conversation.memory
 
-    # PRD-159: one browser manager and one opaque browser context per stable
-    # session conversation.  Construction is side-effect free; the optional
-    # CloakBrowser import happens only when a browser operation is requested.
-    from agenthicc.tools.cloakbrowser import (  # noqa: PLC0415
-        create_browser_session,
-        make_cloakbrowser_tools,
-    )
+    # One browser manager and one opaque browser context per stable session
+    # conversation.  The selected backend is side-effect free at construction;
+    # its optional package/browser runtime is loaded only when a tool is used.
+    if cfg.tools.browser_backend == "playwright":
+        from agenthicc.tools.playwright import (  # noqa: PLC0415
+            create_playwright_session,
+            make_playwright_tools,
+        )
 
-    browser_manager = create_browser_session(
-        cfg.tools.cloakbrowser,
-        conversation_id=session_conversation.conversation_id,
-        workspace_root=Path.cwd(),
-    )
-    browser_tools = make_cloakbrowser_tools(browser_manager)
+        browser_manager = create_playwright_session(
+            cfg.tools.playwright,
+            conversation_id=session_conversation.conversation_id,
+            workspace_root=Path.cwd(),
+        )
+        browser_tools = make_playwright_tools(browser_manager)
+    elif cfg.tools.browser_backend == "cloakbrowser":
+        from agenthicc.tools.cloakbrowser import (  # noqa: PLC0415
+            create_browser_session,
+            make_cloakbrowser_tools,
+        )
+
+        browser_manager = create_browser_session(
+            cfg.tools.cloakbrowser,
+            conversation_id=session_conversation.conversation_id,
+            workspace_root=Path.cwd(),
+        )
+        browser_tools = make_cloakbrowser_tools(browser_manager)
+    else:
+        browser_manager = None
+        browser_tools = []
 
     from agenthicc.runners.usage_ledger import UsageLedger  # noqa: PLC0415
 
