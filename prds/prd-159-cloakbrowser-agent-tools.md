@@ -278,6 +278,7 @@ enabled = true
 transport = "local"                 # local | cdp
 cdp_endpoint = "http://127.0.0.1:9222"
 allowed_domains = []                 # empty means deny all navigation
+allow_all_domains = false            # explicit broad public-web opt-in
 headless = true
 navigation_timeout_s = 15.0
 action_timeout_s = 10.0
@@ -691,6 +692,9 @@ Implementation decisions:
   origins, with an optional leading `*.` for subdomain-only origin matching;
   paths, credentials, queries, fragments, and unrestricted wildcards are
   rejected;
+* `allow_all_domains` is an explicit opt-in that bypasses hostname matching
+  for public HTTP(S) destinations on configured ports, while DNS, loopback,
+  and private-address protections remain active; its default is `false`;
 * browser tools accept bounded operation IDs and cache structured receipts for
   explicit retries, so an uncertain mutation is never automatically repeated.
 

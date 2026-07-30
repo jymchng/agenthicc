@@ -325,6 +325,10 @@ screenshots are written only through `WorkspaceView` below
 workflow checkpoints retain only redacted page metadata and reattach the same
 session manager on resume.
 
+`allow_all_domains = true` is an explicit broad-access opt-in, not the default.
+It permits public HTTP(S) hosts on the configured ports but does not bypass
+DNS, loopback, or private-address protections.
+
 Custom workflows receive these tools through `WorkflowConfig`. Their authoring
 and validation phases are browser-free by default. `create_workflow` exposes
 `describe_cloakbrowser_tools()` so a generated workflow can declare the right

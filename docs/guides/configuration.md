@@ -149,6 +149,7 @@ status instead of failing session startup.
 enabled = true
 transport = "local"             # local or loopback-only cdp
 allowed_domains = ["example.com"]
+allow_all_domains = false     # explicit opt-in for all public HTTP(S) hosts
 headless = true
 max_pages = 4
 max_actions_per_turn = 20
@@ -171,6 +172,9 @@ configured HTTP(S) ports. A full origin matches its scheme and port exactly;
 the leading `*.` form allows subdomains but not the root host. Paths,
 credentials, queries, fragments, and an unrestricted `*` are rejected. The
 DNS, loopback, and private-address checks still apply to every destination.
+Set `allow_all_domains = true` only when the project intentionally needs broad
+public-web access; it bypasses hostname matching but still permits only HTTP(S)
+on the configured ports and retains DNS, loopback, and private-address checks.
 
 CDP uses the fixed loopback endpoint `http://127.0.0.1:9222`; it cannot be
 selected by an agent. Persistent profiles are disabled by default. Do not put

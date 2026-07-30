@@ -558,6 +558,9 @@ and exports only redacted checkpoint metadata. The agent-facing tools are
 `cloakbrowser_wait_for`, `cloakbrowser_screenshot`, and `cloakbrowser_close`.
 No raw JavaScript, arbitrary CDP, proxy, cookie, storage, or sensitive-form
 field access is exposed.
+`allow_all_domains` is an explicit opt-in for broad public HTTP(S) host access;
+it defaults to `false` and does not bypass DNS, loopback, or private-address
+protections.
 All browser tools accept an optional bounded `operation_id`; reusing one returns
 the cached receipt and prevents a transport retry from repeating a mutation.
 

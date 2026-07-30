@@ -88,7 +88,9 @@ class BrowserSessionManager:
         self._operation_results: dict[str, dict[str, object]] = {}
         self._browser_session_id = uuid.uuid4().hex
         try:
-            self.policy = policy or BrowserPolicy(tuple(settings.allowed_domains))
+            self.policy = policy or BrowserPolicy(
+                tuple(settings.allowed_domains), allow_all_domains=settings.allow_all_domains
+            )
         except ValueError as exc:
             # A malformed/empty allow-list must make browser operations
             # unavailable, not prevent the rest of agenthicc from starting.
@@ -142,7 +144,7 @@ class BrowserSessionManager:
                 "session_id": self._browser_session_id,
                 "message": "Browser allow-list configuration is invalid.",
             }
-        if not self.policy.allowed_domains:
+        if not self.policy.allowed_domains and not self.policy.allow_all_domains:
             return {
                 "ok": False,
                 "status": BrowserErrorKind.DISABLED.value,
@@ -173,7 +175,7 @@ class BrowserSessionManager:
             raise BrowserToolError(
                 BrowserErrorKind.POLICY_DENIED, "Browser allow-list configuration is invalid."
             )
-        if not self.policy.allowed_domains:
+        if not self.policy.allowed_domains and not self.policy.allow_all_domains:
             raise BrowserToolError(
                 BrowserErrorKind.POLICY_DENIED,
                 "No browser destinations are configured in the allow-list.",

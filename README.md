@@ -311,6 +311,7 @@ max_live_tool_calls = 5
 [tools.cloakbrowser]
 enabled = true
 allowed_domains = ["https://example.com"]
+allow_all_domains = false
 ```
 
 CloakBrowser is an optional dependency. Install it only when browser tools are

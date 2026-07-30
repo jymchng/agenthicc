@@ -117,6 +117,7 @@ def _manager(
 def test_default_is_enabled_but_empty_allow_list_denies_navigation() -> None:
     manager = BrowserSessionManager(CloakBrowserSettings(), "s", Path.cwd())
     assert manager.enabled is True
+    assert manager.settings.allow_all_domains is False
     assert len(make_cloakbrowser_tools(manager)) == 9
     status = asyncio.run(manager.status())
     assert status["status"] == BrowserErrorKind.DISABLED.value
@@ -130,6 +131,7 @@ def test_loaded_default_configuration_enables_deny_all_browser_surface(tmp_path:
 
     assert config.tools.cloakbrowser.enabled is True
     assert config.tools.cloakbrowser.allowed_domains == []
+    assert config.tools.cloakbrowser.allow_all_domains is False
 
 
 def test_empty_policy_denies_every_destination() -> None:
@@ -139,6 +141,38 @@ def test_empty_policy_denies_every_destination() -> None:
         assert exc.value.kind is BrowserErrorKind.POLICY_DENIED
 
     asyncio.run(check())
+
+
+def test_allow_all_domains_supports_public_hosts_but_not_private_addresses() -> None:
+    async def resolve(host: str) -> list[str]:
+        return ["127.0.0.1"] if host == "localhost" else ["93.184.216.34"]
+
+    async def check() -> None:
+        policy = BrowserPolicy(allow_all_domains=True, resolver=resolve)
+        assert await policy.validate_url("https://any-public-host.example/") == (
+            "https://any-public-host.example/"
+        )
+        with pytest.raises(BrowserToolError) as loopback:
+            await policy.validate_url("http://localhost/")
+        assert loopback.value.kind is BrowserErrorKind.POLICY_DENIED
+        with pytest.raises(BrowserToolError):
+            await policy.validate_url("http://10.0.0.1/")
+        with pytest.raises(BrowserToolError):
+            await policy.validate_url("https://any-public-host.example:8443/")
+
+    asyncio.run(check())
+
+
+def test_manager_applies_allow_all_domains_setting(tmp_path: Path) -> None:
+    manager = BrowserSessionManager(
+        CloakBrowserSettings(enabled=True, allow_all_domains=True),
+        "conversation-1",
+        tmp_path,
+        client=FakeBrowserClient(),
+    )
+
+    assert manager.policy.allow_all_domains is True
+    assert manager.policy.allowed_domains == ()
 
 
 def test_missing_optional_dependency_is_a_safe_health_result(
@@ -163,6 +197,7 @@ def test_config_parses_optional_browser_section(tmp_path: Path) -> None:
         enabled = true
         transport = "local"
         allowed_domains = ["example.com", ".example.org"]
+        allow_all_domains = true
         max_pages = 2
         max_actions_per_turn = 7
         """,
@@ -171,6 +206,7 @@ def test_config_parses_optional_browser_section(tmp_path: Path) -> None:
     config = load_config(project_path=config_path, user_path=tmp_path / "missing.toml")
     assert config.tools.cloakbrowser.enabled is True
     assert config.tools.cloakbrowser.allowed_domains == ["example.com", "example.org"]
+    assert config.tools.cloakbrowser.allow_all_domains is True
     assert config.tools.cloakbrowser.max_pages == 2
     assert config.tools.cloakbrowser.max_actions_per_turn == 7
 

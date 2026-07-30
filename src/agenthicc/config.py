@@ -406,6 +406,7 @@ class CloakBrowserSettings:
     allow_persistent_profiles: bool = False
     profile_root: str = ".agenthicc/browser-profiles"
     license_key_env: str = "CLOAKBROWSER_LICENSE_KEY"
+    allow_all_domains: bool = False
 
     def __post_init__(self) -> None:
         """Validate bounds before the settings reach a browser adapter."""
@@ -1069,6 +1070,9 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
             ),
             allowed_domains=_as_string_list(
                 _section(to.get("cloakbrowser")).get("allowed_domains")
+            ),
+            allow_all_domains=_as_bool(
+                _section(to.get("cloakbrowser")).get("allow_all_domains"), False
             ),
             headless=_as_bool(_section(to.get("cloakbrowser")).get("headless"), True),
             navigation_timeout_s=_as_float(

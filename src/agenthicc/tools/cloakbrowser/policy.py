@@ -164,6 +164,7 @@ class BrowserPolicy:
     max_value_chars: int = 4000
     max_wait_value_chars: int = 512
     resolver: Callable[[str], Awaitable[Iterable[str]]] | None = field(default=None, repr=False)
+    allow_all_domains: bool = field(default=False, kw_only=True)
     _allowed_origins: tuple[_AllowedOrigin, ...] = field(init=False, repr=False, compare=False)
     _network_guard: NetworkGuard = field(init=False, repr=False, compare=False)
 
@@ -216,7 +217,10 @@ class BrowserPolicy:
     def _check_origin(self, parsed: SplitResult) -> None:
         host = (parsed.hostname or "").rstrip(".").lower()
         effective_port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
-        if not any(
+        if self.allow_all_domains:
+            if effective_port not in self.allowed_ports:
+                raise BrowserToolError(BrowserErrorKind.POLICY_DENIED, "URL port is not allowed.")
+        elif not any(
             origin.matches(parsed, effective_port, self.allowed_ports)
             for origin in self._allowed_origins
         ):
@@ -282,12 +286,13 @@ class BrowserPolicy:
         # Keep the existing network policy useful to operators who configure
         # the same domains globally.  It is redundant with the explicit check,
         # but gives this adapter the same boundary as other network tools.
-        try:
-            self._network_guard.check(url)
-        except PermissionError as exc:
-            raise BrowserToolError(
-                BrowserErrorKind.POLICY_DENIED, "Destination is not allow-listed."
-            ) from exc
+        if not self.allow_all_domains:
+            try:
+                self._network_guard.check(url)
+            except PermissionError as exc:
+                raise BrowserToolError(
+                    BrowserErrorKind.POLICY_DENIED, "Destination is not allow-listed."
+                ) from exc
         return urlunsplit(
             (parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, "")
         )
