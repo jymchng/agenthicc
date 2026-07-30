@@ -307,10 +307,10 @@ network_allow_list = []
 [tools]
 max_live_tool_calls = 5
 
-# Optional browser automation; disabled unless explicitly enabled.
+# Optional browser automation; enabled as a deny-all surface until configured.
 [tools.cloakbrowser]
-enabled = false
-allowed_domains = ["example.com"]
+enabled = true
+allowed_domains = ["https://example.com"]
 ```
 
 CloakBrowser is an optional dependency. Install it only when browser tools are

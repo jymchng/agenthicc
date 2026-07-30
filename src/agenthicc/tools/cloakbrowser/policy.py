@@ -47,6 +47,80 @@ _SAFE_KEYS = frozenset(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _AllowedOrigin:
+    """One normalized bare-domain or CORS-style origin rule."""
+
+    host: str
+    scheme: str | None = None
+    port: int | None = None
+    subdomains: bool = True
+    include_root: bool = True
+    exact_origin: bool = False
+
+    def matches(
+        self, parsed: SplitResult, effective_port: int, allowed_ports: frozenset[int]
+    ) -> bool:
+        host = (parsed.hostname or "").rstrip(".").lower()
+        if self.scheme is not None and parsed.scheme.lower() != self.scheme:
+            return False
+        if self.exact_origin:
+            if self.port != effective_port:
+                return False
+        elif effective_port not in allowed_ports:
+            return False
+        if host == self.host:
+            return self.include_root
+        return self.subdomains and host.endswith(f".{self.host}")
+
+
+def _parse_allowed_origin(value: str) -> _AllowedOrigin:
+    """Parse a bare host or an HTTP(S) origin without accepting URL paths."""
+    raw = value.strip().lower()
+    if not raw or raw == "*" or raw == "null":
+        raise ValueError("CloakBrowser allow-list entries must name an origin or host")
+
+    if "://" in raw:
+        try:
+            parsed = urlsplit(raw)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("CloakBrowser origin is malformed") from exc
+        host = (parsed.hostname or "").rstrip(".")
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "CloakBrowser origins must be HTTP(S) host origins without credentials or paths"
+            )
+        wildcard = host.startswith("*.")
+        host = host[2:] if wildcard else host
+        if not host or "*" in host:
+            raise ValueError("CloakBrowser origin wildcard must be a leading '*.domain' prefix")
+        return _AllowedOrigin(
+            host=host,
+            scheme=parsed.scheme,
+            port=port if port is not None else (443 if parsed.scheme == "https" else 80),
+            subdomains=wildcard,
+            include_root=not wildcard,
+            exact_origin=True,
+        )
+
+    if any(character in raw for character in "/?#@"):
+        raise ValueError("CloakBrowser host entries must not contain paths or URL components")
+    wildcard = raw.startswith("*.")
+    host = raw[2:] if wildcard else raw.lstrip(".")
+    if not host or "*" in host or any(character.isspace() for character in host):
+        raise ValueError("CloakBrowser host entry is malformed")
+    return _AllowedOrigin(host=host, subdomains=True, include_root=not wildcard)
+
+
 def redact_url(value: str) -> str:
     """Return a URL without credentials, query parameters, or fragments."""
     try:
@@ -90,20 +164,28 @@ class BrowserPolicy:
     max_value_chars: int = 4000
     max_wait_value_chars: int = 512
     resolver: Callable[[str], Awaitable[Iterable[str]]] | None = field(default=None, repr=False)
+    _allowed_origins: tuple[_AllowedOrigin, ...] = field(init=False, repr=False, compare=False)
+    _network_guard: NetworkGuard = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         normalized = tuple(
-            sorted(
-                {item.strip().lower().lstrip(".") for item in self.allowed_domains if item.strip()}
-            )
+            sorted({item.strip().lower() for item in self.allowed_domains if item.strip()})
         )
         object.__setattr__(self, "allowed_domains", normalized)
-        if not normalized:
-            raise ValueError("CloakBrowser requires at least one allowed domain")
         if not self.allowed_ports or any(
             port not in range(1, 65536) for port in self.allowed_ports
         ):
             raise ValueError("CloakBrowser allowed_ports contains an invalid port")
+        try:
+            allowed_origins = tuple(_parse_allowed_origin(item) for item in normalized)
+        except ValueError:
+            raise
+        object.__setattr__(self, "_allowed_origins", allowed_origins)
+        object.__setattr__(
+            self,
+            "_network_guard",
+            NetworkGuard([origin.host for origin in allowed_origins]),
+        )
 
     def _parse_url(self, url: str) -> SplitResult:
         if not isinstance(url, str) or not url.strip() or len(url) > self.max_url_chars:
@@ -114,7 +196,8 @@ class BrowserPolicy:
             )
         try:
             parsed = urlsplit(url.strip())
-            port = parsed.port
+            # Accessing ``port`` validates malformed numeric ports.
+            parsed.port
         except ValueError as exc:
             raise BrowserToolError(BrowserErrorKind.INVALID_INPUT, "URL is malformed.") from exc
         if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
@@ -128,20 +211,20 @@ class BrowserPolicy:
             )
         if parsed.fragment:
             raise BrowserToolError(BrowserErrorKind.POLICY_DENIED, "URL fragments are not allowed.")
-        if port is not None and port not in self.allowed_ports:
-            raise BrowserToolError(BrowserErrorKind.POLICY_DENIED, "URL port is not allowed.")
         return parsed
 
-    def _check_host(self, host: str) -> None:
-        lowered = host.rstrip(".").lower()
+    def _check_origin(self, parsed: SplitResult) -> None:
+        host = (parsed.hostname or "").rstrip(".").lower()
+        effective_port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
         if not any(
-            lowered == domain or lowered.endswith(f".{domain}") for domain in self.allowed_domains
+            origin.matches(parsed, effective_port, self.allowed_ports)
+            for origin in self._allowed_origins
         ):
             raise BrowserToolError(
                 BrowserErrorKind.POLICY_DENIED, "Destination is not allow-listed."
             )
         try:
-            address = ipaddress.ip_address(lowered)
+            address = ipaddress.ip_address(host)
         except ValueError:
             return
         if address.is_loopback and not self.allow_loopback:
@@ -170,7 +253,7 @@ class BrowserPolicy:
         """
         parsed = self._parse_url(url)
         host = (parsed.hostname or "").rstrip(".").lower()
-        self._check_host(host)
+        self._check_origin(parsed)
         try:
             addresses = await self._resolve(host)
         except OSError as exc:
@@ -200,7 +283,7 @@ class BrowserPolicy:
         # the same domains globally.  It is redundant with the explicit check,
         # but gives this adapter the same boundary as other network tools.
         try:
-            NetworkGuard(list(self.allowed_domains)).check(url)
+            self._network_guard.check(url)
         except PermissionError as exc:
             raise BrowserToolError(
                 BrowserErrorKind.POLICY_DENIED, "Destination is not allow-listed."

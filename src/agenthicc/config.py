@@ -390,7 +390,9 @@ class CloakBrowserSettings:
     check when a browser tool is actually used.
     """
 
-    enabled: bool = False
+    # The integration is available by default, but the empty allow-list still
+    # denies every destination until an operator configures it explicitly.
+    enabled: bool = True
     transport: str = "local"
     cdp_endpoint: str = "http://127.0.0.1:9222"
     allowed_domains: list[str] = field(default_factory=list)
@@ -1059,7 +1061,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_live_tool_calls=_as_int(to.get("max_live_tool_calls"), 5),
         http_timeout_s=_as_float(to.get("http_timeout_s"), 30.0),
         cloakbrowser=CloakBrowserSettings(
-            enabled=_as_bool(_section(to.get("cloakbrowser")).get("enabled"), False),
+            enabled=_as_bool(_section(to.get("cloakbrowser")).get("enabled"), True),
             transport=_as_str(_section(to.get("cloakbrowser")).get("transport"), "local"),
             cdp_endpoint=_as_str(
                 _section(to.get("cloakbrowser")).get("cdp_endpoint"),

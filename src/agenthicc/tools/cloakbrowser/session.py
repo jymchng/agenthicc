@@ -142,6 +142,14 @@ class BrowserSessionManager:
                 "session_id": self._browser_session_id,
                 "message": "Browser allow-list configuration is invalid.",
             }
+        if not self.policy.allowed_domains:
+            return {
+                "ok": False,
+                "status": BrowserErrorKind.DISABLED.value,
+                "transport": self.settings.transport,
+                "session_id": self._browser_session_id,
+                "message": "Configure at least one allowed browser origin.",
+            }
         health = await self.client.health()
         result = health.to_dict()
         result.update(
@@ -164,6 +172,11 @@ class BrowserSessionManager:
         if self._policy_error is not None:
             raise BrowserToolError(
                 BrowserErrorKind.POLICY_DENIED, "Browser allow-list configuration is invalid."
+            )
+        if not self.policy.allowed_domains:
+            raise BrowserToolError(
+                BrowserErrorKind.POLICY_DENIED,
+                "No browser destinations are configured in the allow-list.",
             )
 
     async def _ensure_ready(self) -> None:

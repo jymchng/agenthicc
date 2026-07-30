@@ -138,9 +138,11 @@ pip install 'agenthicc[cloakbrowser]'
 uv sync --extra cloakbrowser
 ```
 
-The feature remains disabled unless explicitly enabled and given an operator
-allow-list. The package import is lazy, so a base installation reports a safe
-`dependency_missing` browser status instead of failing session startup.
+The feature is enabled at the configuration layer by default, but the empty
+allow-list denies every destination until an operator configures it. The
+package import is lazy, so a fresh configuration reports `not_configured`, and
+a base installation with an allow-list reports a safe `dependency_missing`
+status instead of failing session startup.
 
 ```toml
 [tools.cloakbrowser]
@@ -153,6 +155,22 @@ max_actions_per_turn = 20
 max_snapshot_chars = 20000
 max_screenshot_bytes = 10000000
 ```
+
+`allowed_domains` accepts the existing bare-host form and HTTP(S) origin
+forms, including an optional port:
+
+```toml
+allowed_domains = [
+  "https://example.com",
+  "https://*.example.org:8443",
+]
+```
+
+A bare host such as `example.com` allows that host and its subdomains on the
+configured HTTP(S) ports. A full origin matches its scheme and port exactly;
+the leading `*.` form allows subdomains but not the root host. Paths,
+credentials, queries, fragments, and an unrestricted `*` are rejected. The
+DNS, loopback, and private-address checks still apply to every destination.
 
 CDP uses the fixed loopback endpoint `http://127.0.0.1:9222`; it cannot be
 selected by an agent. Persistent profiles are disabled by default. Do not put

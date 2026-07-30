@@ -548,10 +548,11 @@ def make_cloakbrowser_tools(manager: BrowserSessionManager) -> list[ToolLike]: .
 ```
 
 The `cloakbrowser` package is an optional `cloakbrowser==0.5.3` extra and is
-loaded lazily. The feature is disabled by default. A session manager owns one
-opaque browser context per stable conversation, enforces operator domain/DNS
-policy and bounded limits, writes screenshots through `WorkspaceView`, and
-exports only redacted checkpoint metadata. The agent-facing tools are
+loaded lazily. The feature is enabled by default but has an empty, deny-all
+allow-list until configured. A session manager owns one
+opaque browser context per stable conversation, enforces operator domain/origin
+and DNS policy and bounded limits, writes screenshots through `WorkspaceView`,
+and exports only redacted checkpoint metadata. The agent-facing tools are
 `cloakbrowser_status`, `cloakbrowser_open`, `cloakbrowser_snapshot`,
 `cloakbrowser_click`, `cloakbrowser_fill`, `cloakbrowser_press`,
 `cloakbrowser_wait_for`, `cloakbrowser_screenshot`, and `cloakbrowser_close`.

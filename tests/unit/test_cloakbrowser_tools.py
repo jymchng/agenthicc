@@ -114,11 +114,31 @@ def _manager(
     return manager, client
 
 
-def test_default_is_disabled_and_does_not_create_tools() -> None:
+def test_default_is_enabled_but_empty_allow_list_denies_navigation() -> None:
     manager = BrowserSessionManager(CloakBrowserSettings(), "s", Path.cwd())
-    assert manager.enabled is False
-    assert make_cloakbrowser_tools(manager) == []
-    assert asyncio.run(manager.status())["status"] == BrowserErrorKind.DISABLED.value
+    assert manager.enabled is True
+    assert len(make_cloakbrowser_tools(manager)) == 9
+    status = asyncio.run(manager.status())
+    assert status["status"] == BrowserErrorKind.DISABLED.value
+    assert status["ok"] is False
+
+
+def test_loaded_default_configuration_enables_deny_all_browser_surface(tmp_path: Path) -> None:
+    config = load_config(
+        project_path=tmp_path / "missing.toml", user_path=tmp_path / "also-missing.toml"
+    )
+
+    assert config.tools.cloakbrowser.enabled is True
+    assert config.tools.cloakbrowser.allowed_domains == []
+
+
+def test_empty_policy_denies_every_destination() -> None:
+    async def check() -> None:
+        with pytest.raises(BrowserToolError) as exc:
+            await BrowserPolicy().validate_url("https://example.com/")
+        assert exc.value.kind is BrowserErrorKind.POLICY_DENIED
+
+    asyncio.run(check())
 
 
 def test_missing_optional_dependency_is_a_safe_health_result(
@@ -155,6 +175,24 @@ def test_config_parses_optional_browser_section(tmp_path: Path) -> None:
     assert config.tools.cloakbrowser.max_actions_per_turn == 7
 
 
+def test_config_preserves_cors_style_origins(tmp_path: Path) -> None:
+    config_path = tmp_path / "agenthicc.toml"
+    config_path.write_text(
+        """
+        [tools.cloakbrowser]
+        allowed_domains = ["HTTPS://Example.com", "https://*.example.org:8443"]
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_config(project_path=config_path, user_path=tmp_path / "missing.toml")
+
+    assert config.tools.cloakbrowser.allowed_domains == [
+        "https://*.example.org:8443",
+        "https://example.com",
+    ]
+
+
 def test_policy_rejects_unsafe_destinations() -> None:
     async def check() -> None:
         with pytest.raises(BrowserToolError) as exc:
@@ -166,6 +204,50 @@ def test_policy_rejects_unsafe_destinations() -> None:
             await _policy().validate_url("https://example.com/#fragment")
 
     asyncio.run(check())
+
+
+def test_policy_supports_exact_and_wildcard_cors_style_origins() -> None:
+    async def resolve(_host: str) -> list[str]:
+        return ["93.184.216.34"]
+
+    async def check() -> None:
+        exact = BrowserPolicy(("https://example.com",), resolver=resolve)
+        assert await exact.validate_url("https://example.com/path") == ("https://example.com/path")
+        assert await exact.validate_url("https://example.com:443/path") == (
+            "https://example.com:443/path"
+        )
+        with pytest.raises(BrowserToolError):
+            await exact.validate_url("http://example.com/path")
+        with pytest.raises(BrowserToolError):
+            await exact.validate_url("https://sub.example.com/path")
+
+        custom_port = BrowserPolicy(("https://example.com:8443",), resolver=resolve)
+        assert await custom_port.validate_url("https://example.com:8443/path") == (
+            "https://example.com:8443/path"
+        )
+        with pytest.raises(BrowserToolError):
+            await custom_port.validate_url("https://example.com/path")
+
+        wildcard = BrowserPolicy(("https://*.example.com",), resolver=resolve)
+        assert await wildcard.validate_url("https://sub.example.com/path") == (
+            "https://sub.example.com/path"
+        )
+        with pytest.raises(BrowserToolError):
+            await wildcard.validate_url("https://example.com/path")
+
+    asyncio.run(check())
+
+
+def test_policy_rejects_unsafe_allow_list_entries() -> None:
+    for value in (
+        "*",
+        "https://user:secret@example.com",
+        "https://example.com/path",
+        "https://example.com?token=secret",
+        "https://example.com/#fragment",
+    ):
+        with pytest.raises(ValueError):
+            BrowserPolicy((value,))
 
 
 def test_manager_redacts_outputs_and_enforces_sensitive_fields(tmp_path: Path) -> None:

@@ -129,8 +129,9 @@ The implementation shall:
    details from agent-facing tools.
 2. Offer a small, stable tool surface for navigation, bounded inspection,
    explicitly approved interaction, waiting, screenshots, status, and cleanup.
-3. Make the integration disabled by default and fail closed when it is not
-   configured, unavailable, unhealthy, unauthorized, or outside its policy.
+3. Make the integration enabled by default at the configuration layer, while
+   an empty allow-list still fails closed when it is not configured; also fail
+   closed when it is unavailable, unhealthy, unauthorized, or outside policy.
 4. Enforce host, scheme, redirect, private-network, timeout, size, page-count,
    and action-count limits before a browser operation is dispatched.
 5. Reuse the existing capability, approval, workspace, workflow, memory,
@@ -273,7 +274,7 @@ follow current configuration conventions, but the effective shape is:
 
 ```toml
 [tools.cloakbrowser]
-enabled = false
+enabled = true
 transport = "local"                 # local | cdp
 cdp_endpoint = "http://127.0.0.1:9222"
 allowed_domains = []                 # empty means deny all navigation
@@ -291,9 +292,10 @@ profile_root = ".agenthicc/browser-profiles"
 Additional settings may select an operator-owned environment variable for the
 CloakBrowser license key and a pinned browser/package version. Secret values
 must not be written to TOML, tool output, checkpoints, event payloads, or
-logs. `enabled = false`, missing dependency, missing endpoint, or invalid
-configuration must leave the normal tool catalog unchanged except for a
-bounded diagnostic visible through the existing tool/session diagnostics.
+logs. `enabled = false`, an empty allow-list, a missing dependency, missing
+endpoint, or invalid configuration must not permit browser navigation. The
+optional dependency remains lazy and a bounded diagnostic is visible through
+the browser status tool/session diagnostics.
 
 The implementation must not auto-install Python packages or download a browser
 binary during import or session construction. Provide an explicit setup/check
@@ -495,7 +497,8 @@ Failures must be explicit and recoverable where retry is safe:
 1. A base `pip install agenthicc` does not install or import CloakBrowser, while
    `pip install 'agenthicc[cloakbrowser]'` installs the dedicated optional
    extra; existing base installations remain functional.
-2. The default configuration exposes no CloakBrowser tools and makes no binary,
+2. The default configuration may expose the bounded CloakBrowser status/tool
+   surface, but its empty allow-list denies navigation and it makes no binary,
    network, license, or browser-process request.
 3. An enabled local installation reports `ready` only after the dependency and
    binary health checks pass; imports remain side-effect free.
@@ -647,10 +650,11 @@ The implementation must update, in the same change:
   symbols;
 * this PRD's status and implementation evidence after completion.
 
-The feature is additive and disabled by default. Existing tool names, workflow
-phase contracts, mode names, conversation IDs, and session accounting remain
-compatible. The only intentional new behavior is that an explicitly enabled
-browser tool is subject to the existing capability and approval gates.
+The feature is additive and enabled by default only as a deny-all configured
+surface. Existing tool names, workflow phase contracts, mode names,
+conversation IDs, and session accounting remain compatible. Browser use is
+subject to the existing capability and approval gates, and navigation requires
+an explicit operator allow-list.
 
 ## 15. Assumptions and open decisions
 
@@ -683,6 +687,10 @@ Implementation decisions:
   conversation binding, and an opaque browser-session identity. The latter is
   reused only for a validated persistent-profile directory; live page/context
   objects are never deserialized;
+* `allowed_domains` accepts backward-compatible bare hosts and exact HTTP(S)
+  origins, with an optional leading `*.` for subdomain-only origin matching;
+  paths, credentials, queries, fragments, and unrestricted wildcards are
+  rejected;
 * browser tools accept bounded operation IDs and cache structured receipts for
   explicit retries, so an uncertain mutation is never automatically repeated.
 
