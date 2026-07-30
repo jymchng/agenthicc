@@ -26,6 +26,7 @@ against the current source before implementing them.
 - [PRD-156 — Resumable Plan-Mode Interrupts and Workflow Continuation](prd-156-resumable-plan-interrupts.md)
 - [PRD-157 — Canonical Usage Accounting and TUI Token Observability](prd-157-usage-accounting-and-tui-token-observability.md)
 - [PRD-158 — Display Resumed TUI Transcript](prd-158-resumed-tui-transcript.md)
+- [PRD-159 — Specialized CloakBrowser Agent Tools](prd-159-cloakbrowser-agent-tools.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -129,6 +130,13 @@ restore, and session inspection all use one idempotent durable accounting
 source. It revises the live-token assumptions recorded in PRD-82 and PRD-83;
 verification evidence is the PRD-157 test matrix and the repository quality
 gates.
+
+PRD-159 proposes an opt-in, policy-gated CloakBrowser integration with bounded
+browser tools, an optional `cloakbrowser` packaging extra, session-owned
+lifecycle management, safe artifacts, workflow capability/approval integration,
+and checkpoint-aware rehydration. It keeps raw Playwright/CDP access,
+model-controlled stealth settings, and persistent profiles outside the initial
+trust boundary.
 
 ## Existing PRDs
 
