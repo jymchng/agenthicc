@@ -180,6 +180,24 @@ class SessionEventLog:
         return events
 
 
+def load_user_message_history(session_id: str) -> list[str]:
+    """Return persisted user submissions for input-history navigation.
+
+    The reactive conversation store is rebuilt for a resumed TUI, while the
+    input navigator is a fresh object.  Keep its history derived from the
+    durable transcript and include only accepted user-message events, not
+    assistant output or internal lifecycle events.
+    """
+    history: list[str] = []
+    for event in SessionEventLog.load(session_id):
+        if event.kind != "user_message":
+            continue
+        text = event.payload.get("text")
+        if isinstance(text, str) and text.strip():
+            history.append(text.strip())
+    return history
+
+
 # ── Session restoration ───────────────────────────────────────────────────────
 
 

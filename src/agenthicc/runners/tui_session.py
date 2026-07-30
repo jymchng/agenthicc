@@ -128,6 +128,7 @@ from agenthicc.tui.runtime.session_log import (  # noqa: E402
     touch_session,
     find_latest_session_for_cwd,
     SessionEventLog,
+    load_user_message_history,
 )
 from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: E402
 from agenthicc.runners.session_context import SessionContext  # noqa: E402
@@ -2088,6 +2089,7 @@ async def _run_tui_session(
         overlay_host=workspace.overlays,
         cwd=Path(os.getcwd()),
         cfg=ctx.cfg,
+        history=load_user_message_history(ctx.session_id) if ctx.resumed else None,
     )
     session = TUISession(ctx, workspace, input_session)
     from agenthicc.background.terminals import (  # noqa: PLC0415

@@ -9,7 +9,7 @@ import pytest
 from rich.console import Console
 
 from agenthicc.tui.conversation_store import AppState, ConversationEvent
-from agenthicc.tui.runtime.session_log import SessionEventLog
+from agenthicc.tui.runtime.session_log import SessionEventLog, load_user_message_history
 from agenthicc.tui.workspace.appender import ScrollBufferAppender
 
 pytestmark = pytest.mark.unit
@@ -52,6 +52,31 @@ def test_resume_load_can_return_unrendered_events_without_changing_default(
     assert normal[0].rendered is True
     assert replay[0].rendered is False
     assert replay[0].payload == {"text": "old"}
+
+
+def test_resumed_input_history_uses_persisted_user_messages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    import agenthicc.tui.runtime.session_log as session_log
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime import CommandBus
+
+    monkeypatch.setattr(session_log, "_SESSIONS_DIR", tmp_path / "sessions")
+    log = SessionEventLog("resume")
+    log.append(ConversationEvent("user-1", "user_message", {"text": "first request"}, 1.0))
+    log.append(ConversationEvent("answer", "text", {"text": "answer"}, 2.0))
+    log.append(ConversationEvent("user-2", "user_message", {"text": "second request"}, 3.0))
+    log.close()
+
+    session = UnifiedInputSession(
+        AppState.create(), CommandBus(), history=load_user_message_history("resume")
+    )
+    asyncio.run(session._dispatch(Key.UP, ""))
+
+    assert session._buf.text == "second request"
 
 
 @pytest.mark.asyncio
