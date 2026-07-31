@@ -44,7 +44,13 @@ def _get_cols() -> int:
 class Workspace:
     """Root component — owns the terminal for the application lifetime."""
 
-    def __init__(self, app_state: AppState, console: Console, max_live_tool_calls: int = 5) -> None:
+    def __init__(
+        self,
+        app_state: AppState,
+        console: Console,
+        max_live_tool_calls: int = 5,
+        group_exploratory_calls: bool = True,
+    ) -> None:
         self._state = app_state
         self._console = console
 
@@ -56,6 +62,7 @@ class Workspace:
             app_state,
             console,
             max_live_tool_calls=max_live_tool_calls,
+            group_exploratory_calls=group_exploratory_calls,
         )
 
         self._live: Live | None = None

@@ -544,6 +544,8 @@ class ToolSettings:
     allowed: list[str] = field(default_factory=list)
     denied: list[str] = field(default_factory=list)
     max_live_tool_calls: int = 5
+    group_exploratory_calls: bool = True
+    """Render marked contiguous read-only calls as one ``Explored`` block."""
     http_timeout_s: float = 30.0
     cloakbrowser: CloakBrowserSettings = field(default_factory=CloakBrowserSettings)
     playwright: PlaywrightSettings = field(default_factory=PlaywrightSettings)
@@ -1137,6 +1139,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         allowed=_as_string_list(to.get("allowed", to.get("allowed_tools"))),
         denied=_as_string_list(to.get("denied", to.get("denied_tools"))),
         max_live_tool_calls=_as_int(to.get("max_live_tool_calls"), 5),
+        group_exploratory_calls=_as_bool(to.get("group_exploratory_calls"), True),
         http_timeout_s=_as_float(to.get("http_timeout_s"), 30.0),
         browser_backend=_as_str(to.get("browser_backend"), "cloakbrowser"),
         cloakbrowser=CloakBrowserSettings(

@@ -78,6 +78,7 @@ class ToolBase(abc.ABC):
     capabilities: ClassVar[frozenset[str]] = frozenset()
     destructive: ClassVar[bool] = False
     requires_approval: ClassVar[bool] = False
+    exploratory: ClassVar[bool] = False
 
     @abc.abstractmethod
     async def execute(
@@ -105,6 +106,7 @@ class Tool(abc.ABC):
     capabilities: ClassVar[frozenset[str]] = frozenset()
     destructive: ClassVar[bool] = False
     requires_approval: ClassVar[bool] = False
+    exploratory: ClassVar[bool] = False
 
     @property
     def provider_name(self) -> str:

@@ -20,9 +20,11 @@ from lauren_ai._tools import TOOL_METADATA as _TOOL_METADATA, set_metadata
 
 __all__ = [
     "CAPABILITIES_KEY",
+    "PRESENTATION_KEY",
     "ToolCapability",
     "get_tool_capabilities",
     "classify_tool_capabilities",
+    "is_exploratory_tool",
     "tool_read",
     "tool_write",
     "tool_execute",
@@ -35,10 +37,16 @@ __all__ = [
     "tool_network_write",
     "tool_network_search",
     "tool_control",
+    "tool_exploratory",
 ]
 
 #: Metadata key used by ToolCapabilityGate to look up capabilities.
 CAPABILITIES_KEY = "capabilities"
+
+# Presentation metadata is deliberately separate from ``CAPABILITIES_KEY``.
+# Capability values participate in mode and workflow permission filtering;
+# presentation tags must never change which tools can execute.
+PRESENTATION_KEY = "presentation"
 
 
 class ToolCapability(str, Enum):
@@ -89,6 +97,11 @@ tool_network_search = set_metadata(
 )
 tool_control = set_metadata(CAPABILITIES_KEY, frozenset({ToolCapability.CONTROL}))
 
+# Opt-in TUI presentation tag.  This decorator can be stacked with any
+# security-capability decorator, for example ``@tool_exploratory`` above
+# ``@tool_read_search``.
+tool_exploratory = set_metadata(PRESENTATION_KEY, {"exploratory": True})
+
 
 def get_tool_capabilities(tool: object) -> frozenset[ToolCapability]:
     """Return the ToolCapability frozenset stored on a @tool()-decorated function.
@@ -107,6 +120,22 @@ def get_tool_capabilities(tool: object) -> frozenset[ToolCapability]:
     ):
         return frozenset(capabilities)
     return frozenset()
+
+
+def is_exploratory_tool(tool: object) -> bool:
+    """Return whether *tool* opted into exploratory TUI presentation.
+
+    Missing, malformed, or legacy metadata is deliberately false.  This is a
+    presentation classification and is never consulted by the capability
+    gate or workflow permission filters.
+    """
+    if getattr(tool, "exploratory", False) is True:
+        return True
+    metadata: object = getattr(tool, _TOOL_METADATA, None) or {}
+    if not isinstance(metadata, dict):
+        return False
+    presentation = metadata.get(PRESENTATION_KEY)
+    return isinstance(presentation, dict) and presentation.get("exploratory") is True
 
 
 def classify_tool_capabilities(raw: object) -> frozenset[str]:

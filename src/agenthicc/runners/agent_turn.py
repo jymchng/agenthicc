@@ -209,6 +209,110 @@ def _fmt_args(args: dict[str, object]) -> str:
     return "[dim](" + ", ".join(format_item(k, v) for k, v in items[:3]) + ")[/dim]"
 
 
+_EXPLORATION_SENSITIVE_KEYS = frozenset(
+    {
+        "api_key",
+        "authorization",
+        "cookie",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "value",
+    }
+)
+_EXPLORATION_SENSITIVE_MARKERS = (
+    "api_key=",
+    "authorization:",
+    "bearer ",
+    "cookie=",
+    "password=",
+    "passwd=",
+    "secret=",
+    "token=",
+)
+
+
+def _exploration_value(key: str, value: object, *, limit: int = 80) -> str:
+    """Return one bounded, non-secret value for an exploration label."""
+    if key.casefold() in _EXPLORATION_SENSITIVE_KEYS:
+        return "<redacted>"
+    if isinstance(value, str):
+        rendered = value
+    elif isinstance(value, (int, float, bool)):
+        rendered = str(value)
+    elif isinstance(value, list):
+        rendered = ", ".join(_exploration_value(key, item) for item in value[:3])
+        if len(value) > 3:
+            rendered += ", …"
+    else:
+        return ""
+    if any(marker in rendered.casefold() for marker in _EXPLORATION_SENSITIVE_MARKERS):
+        return "<redacted>"
+    return rendered[:limit] + ("…" if len(rendered) > limit else "")
+
+
+def _exploration_target(name: str, args: Mapping[str, object]) -> str:
+    """Build a safe, bounded target label for an exploratory tool call."""
+    search_names = {
+        "grep_file",
+        "grep_files",
+        "search_agenthicc_docs",
+        "search_agenthicc_source",
+        "search_files",
+        "git_grep",
+    }
+    if name in search_names:
+        query_key = "pattern" if "pattern" in args else "query"
+        query = _exploration_value(query_key, args.get(query_key, ""))
+        location_key = next(
+            (key for key in ("path", "module", "section", "ref") if key in args),
+            "",
+        )
+        location = _exploration_value(location_key, args.get(location_key, ""))
+        if query and location and location != ".":
+            return f"{query} in {location}"
+        return query or location
+
+    for key in ("path", "paths", "target", "ref", "section", "module"):
+        if key in args:
+            return _exploration_value(key, args[key])
+    return ""
+
+
+def _exploration_presentation(name: str, args: Mapping[str, object]) -> dict[str, object]:
+    """Return bounded presentation metadata persisted on a tool event."""
+    presentation: dict[str, object] = {"exploratory": True}
+
+    # ``batch_read`` needs structured presentation metadata. Turning the
+    # complete path list into one string would lose the count when the target
+    # is abbreviated (and would make the TUI guess whether an ellipsis meant
+    # omitted files). Keep only the first two safe paths and persist the
+    # remainder explicitly. The executor still receives and returns the full
+    # argument/result; this is only a bounded display projection.
+    if name == "batch_read":
+        raw_paths = args.get("paths")
+        if isinstance(raw_paths, list):
+            paths = [
+                safe_path
+                for path in raw_paths
+                if isinstance(path, str)
+                for safe_path in [_exploration_value("path", path)]
+                if safe_path
+            ]
+            if paths:
+                presentation["files"] = paths[:2]
+                more_files = len(paths) - 2
+                if more_files > 0:
+                    presentation["more_files"] = more_files
+                return presentation
+
+    target = _exploration_target(name, args)
+    if target:
+        presentation["target"] = target
+    return presentation
+
+
 def _tool_output_preview(result: object) -> tuple[list[str], int]:
     """Return a bounded preview and omitted-line count for a tool result."""
     if isinstance(result, dict):
@@ -306,6 +410,7 @@ class AgentTurnRunner:
         self._tool_args: dict[str, dict[str, object]] = {}
         self._tool_names: dict[str, str] = {}
         self._tool_outputs: dict[str, tuple[list[str], int]] = {}
+        self._exploratory_tools: set[str] = set()
         self._tool_states: dict[str, str] = {}
         self._tool_ready: dict[str, bool] = {}
         self._file_snapshots: dict[str, tuple[str, str]] = {}
@@ -340,21 +445,33 @@ class AgentTurnRunner:
 
         agent_instance, active_runner = self._build_agent()
 
-        # Always emit IntentStatusChanged — success or failure — so the kernel
-        # intent never stays permanently at "pending" after an exception.
-        _intent_status = "complete"
+        # Keep cancellation active through the entire provider/tool loop. The
+        # foreground command tool performs child-process cleanup before raising
+        # the cancellation back to this task; without this scope it would turn
+        # ESC into an ordinary ``cancelled`` tool result and the model would
+        # continue with another turn.
+        from agenthicc.tools.exec import _PROPAGATE_TOOL_CANCELLATION  # noqa: PLC0415
+
+        cancellation_token = _PROPAGATE_TOOL_CANCELLATION.set(True)
         try:
-            await self._stream(agent_instance, agent_text, active_runner)
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            _intent_status = "failed"
-            await self._close_browser_after_failure()
-            raise
-        except Exception:
-            _intent_status = "failed"
-            await self._close_browser_after_failure()
-            raise
+            # Always emit IntentStatusChanged — success or failure — so the
+            # kernel intent never stays permanently at "pending" after an
+            # exception.
+            _intent_status = "complete"
+            try:
+                await self._stream(agent_instance, agent_text, active_runner)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                _intent_status = "failed"
+                await self._close_browser_after_failure()
+                raise
+            except Exception:
+                _intent_status = "failed"
+                await self._close_browser_after_failure()
+                raise
+            finally:
+                await self._emit_intent_complete(status=_intent_status)
         finally:
-            await self._emit_intent_complete(status=_intent_status)
+            _PROPAGATE_TOOL_CANCELLATION.reset(cancellation_token)
 
     async def _close_browser_after_failure(self) -> None:
         """Release browser resources when the provider turn cannot continue."""
@@ -516,20 +633,20 @@ class AgentTurnRunner:
             # rendered — the diff is more informative and the duplicate line
             # ("⎿ write_file(...)  ✓  4ms") is visual noise below the diff.
             if not showed_diff:
-                conv.append_event(
-                    "tool_complete",
-                    {
-                        "tool_use_id": tid,
-                        "name": name,
-                        "success": success,
-                        "state": state,
-                        "ready": ready,
-                        "args_str": _fmt_args(args),
-                        "dur_str": f"  [dim]{ms:.0f}ms[/dim]" if ms else "",
-                        "output_lines": output_lines,
-                        "output_more": output_more,
-                    },
-                )
+                payload: dict[str, object] = {
+                    "tool_use_id": tid,
+                    "name": name,
+                    "success": success,
+                    "state": state,
+                    "ready": ready,
+                    "args_str": _fmt_args(args),
+                    "dur_str": f"  [dim]{ms:.0f}ms[/dim]" if ms else "",
+                    "output_lines": output_lines,
+                    "output_more": output_more,
+                }
+                if name in self._exploratory_tools:
+                    payload["presentation"] = _exploration_presentation(name, args)
+                conv.append_event("tool_complete", payload)
 
     # ── step 5: @mention injection ────────────────────────────────────────────
 
@@ -603,7 +720,10 @@ class AgentTurnRunner:
         from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
         from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE  # noqa: PLC0415
         from agenthicc.runners.tool_populator import populate_agent_tools  # noqa: PLC0415
-        from agenthicc.tools.capabilities import get_tool_capabilities  # noqa: PLC0415
+        from agenthicc.tools.capabilities import (  # noqa: PLC0415
+            get_tool_capabilities,
+            is_exploratory_tool,
+        )
 
         ctx = self._ctx
 
@@ -669,6 +789,11 @@ class AgentTurnRunner:
                 self._tool_ready,
             )
         ]
+        self._exploratory_tools = {
+            str(getattr(tool, "__name__", getattr(tool, "name", "")))
+            for tool in visible_tools
+            if is_exploratory_tool(tool)
+        }
         if ctx.app_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
 

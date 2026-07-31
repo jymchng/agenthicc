@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import os
 import shutil
 import signal
@@ -22,6 +23,17 @@ from agenthicc.tools.exec.outcome import (
     invalid_timeout_result,
     resolve_deadline,
     validate_timeout,
+)
+
+
+# Direct callers historically receive a structured ``cancelled`` outcome when
+# they cancel a foreground command.  Interactive agent turns need a different
+# contract: after the subprocess is cleaned up, cancellation must continue up
+# through the tool executor so the LLM turn stops instead of receiving a normal
+# tool result and continuing.  AgentTurnRunner enables this scope only around
+# its provider/tool loop.
+_PROPAGATE_TOOL_CANCELLATION: ContextVar[bool] = ContextVar(
+    "agenthicc_propagate_tool_cancellation", default=False
 )
 
 if TYPE_CHECKING:
@@ -222,6 +234,8 @@ async def _run_proc(
             cleanup_result = await asyncio.shield(cleanup_task)
             stdout_b, stderr_b = await output_after_cleanup()
             stderr_b += b"[process stopped: cancellation]\n"
+            if _PROPAGATE_TOOL_CANCELLATION.get():
+                raise
         else:
             stdout_b, stderr_b = stdout_b, stderr_b
         if state is CommandState.EXITED and process.returncode != 0:

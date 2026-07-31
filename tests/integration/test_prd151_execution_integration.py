@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 from agenthicc.background.terminals import TerminalManager
-from agenthicc.tools.exec import RunCommandTool, WaitTerminalTool
+from agenthicc.tools.exec import (
+    RunCommandTool,
+    WaitTerminalTool,
+    _PROPAGATE_TOOL_CANCELLATION,
+    _run_proc,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -39,6 +44,26 @@ async def test_cancelled_foreground_command_returns_cancelled_and_keeps_output(
     assert result["cancelled"] is True
     assert "before-cancel" in str(result["stdout"])
     assert result["cleanup_result"] != "not_required"
+
+
+async def test_agent_turn_cancellation_propagates_after_foreground_cleanup(
+    tmp_path: Path,
+) -> None:
+    token = _PROPAGATE_TOOL_CANCELLATION.set(True)
+    try:
+        task = asyncio.create_task(
+            _run_proc(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=str(tmp_path),
+                timeout=0.0,
+            )
+        )
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        _PROPAGATE_TOOL_CANCELLATION.reset(token)
 
 
 async def test_background_timeout_is_distinct_from_observer_timeout(tmp_path: Path) -> None:

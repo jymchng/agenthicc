@@ -106,6 +106,7 @@ allowed = ["read_file", "git_*"]
 denied = ["delete_file"]
 plugins = []
 max_live_tool_calls = 5
+group_exploratory_calls = true  # presentation-only grouping of marked reads
 
 [[tools.mcp_servers]]
 name = "local-tools"

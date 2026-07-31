@@ -10,7 +10,7 @@ NOTE: no ``from __future__ import annotations`` — @tool() inspects real annota
 
 from lauren_ai._tools import tool
 
-from agenthicc.tools.capabilities import tool_read, tool_read_search
+from agenthicc.tools.capabilities import tool_exploratory, tool_read, tool_read_search
 
 __all__ = [
     "inspect_agenthicc_source",
@@ -22,6 +22,7 @@ __all__ = [
 ]
 
 
+@tool_exploratory
 @tool_read
 @tool()
 async def list_agenthicc_docs(section: str = "") -> dict[str, object]:
@@ -60,6 +61,7 @@ async def list_agenthicc_docs(section: str = "") -> dict[str, object]:
     }
 
 
+@tool_exploratory
 @tool_read
 @tool()
 async def read_agenthicc_doc(
@@ -81,6 +83,7 @@ async def read_agenthicc_doc(
     return read_doc(path, start_line=start_line, max_lines=max_lines)
 
 
+@tool_exploratory
 @tool_read_search
 @tool()
 async def search_agenthicc_docs(
@@ -103,6 +106,7 @@ async def search_agenthicc_docs(
     return search_docs(query, max_results=max_results, section=section)
 
 
+@tool_exploratory
 @tool_read
 @tool()
 async def inspect_agenthicc_source(target: str, include_source: bool = True) -> dict[str, object]:
@@ -127,6 +131,7 @@ async def inspect_agenthicc_source(target: str, include_source: bool = True) -> 
     return resolve_source(target, include_source=include_source)
 
 
+@tool_exploratory
 @tool_read_search
 @tool()
 async def search_agenthicc_source(

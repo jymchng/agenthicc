@@ -710,6 +710,17 @@ class TUISession:
     def _set_pending_replay(self, session_id: str) -> None:
         self._pending_replay_id = session_id
 
+    def _activate_streaming_input(self) -> None:
+        """Enable interruption before a newly created agent task can await.
+
+        The activity state can render ``Thinking`` before the scheduled task
+        gets its first event-loop slice.  Setting the mode at task ownership
+        time closes that race, so an immediate ESC is handled as an interrupt.
+        """
+        from agenthicc.tui.input.unified_session import InputMode  # noqa: PLC0415
+
+        self._input_session.set_mode(InputMode.STREAMING)
+
     def _finalize_returned_workflow(self) -> None:
         """Close a custom workflow handle whose runner returned normally.
 
@@ -1315,6 +1326,7 @@ class TUISession:
         if definition is None or handle.context is None:
             conv.notify_transient(f"⚠ Workflow '{handle.workflow_name}' is not available to resume")
             return True
+        self._activate_streaming_input()
         self._agent_task = asyncio.create_task(
             self._resume_workflow_task(definition, handle.context),
             name=f"resume-workflow-{handle.run_id}",
@@ -1381,6 +1393,8 @@ class TUISession:
             if self._pending_replay_id:
                 replay_id = self._pending_replay_id
                 self._pending_replay_id = None
+                if isinstance(self, TUISession):
+                    self._activate_streaming_input()
                 self._agent_task = asyncio.create_task(self._run_replay(replay_id), name="replay")
             return True
         cmd_name = msg.split()[0]
@@ -1412,6 +1426,7 @@ class TUISession:
         self._publish_session_event(
             "turn_queued", {"text": text, "client_id": "tui"}, turn_id=turn_id
         )
+        self._activate_streaming_input()
         self._agent_task = asyncio.create_task(
             self._resume_workflow_task(
                 definition,
@@ -1457,6 +1472,7 @@ class TUISession:
             self._publish_session_event(
                 "turn_queued", {"text": msg, "client_id": "tui"}, turn_id=turn_id
             )
+            self._activate_streaming_input()
             self._agent_task = asyncio.create_task(
                 self.agent_task_body(msg, turn_id=turn_id), name="agent-turn"
             )
@@ -1756,6 +1772,8 @@ class TUISession:
                     task = self.agent_task_body(body, turn_id=turn_id)
                 else:
                     task = self.agent_task_body(body)
+                if isinstance(self, TUISession):
+                    self._activate_streaming_input()
                 self._agent_task = asyncio.create_task(task, name="agent-turn")
             return
         self._ctx.app_state.conversation.append_event("user_message", {"text": text})
@@ -1766,6 +1784,8 @@ class TUISession:
             task = self.agent_task_body(text, turn_id=turn_id)
         else:
             task = self.agent_task_body(text)
+        if isinstance(self, TUISession):
+            self._activate_streaming_input()
         self._agent_task = asyncio.create_task(task, name="agent-turn")
 
     def handle_interrupt(self, cmd: "InterruptAgentCommand") -> None:
@@ -1864,6 +1884,7 @@ class TUISession:
         ctx.app_state.conversation.notification.set(
             "↻ Resuming an interrupted turn — completed tools are replayed, not repeated…"
         )
+        self._activate_streaming_input()
         self._agent_task = asyncio.create_task(
             self.agent_task_body(str(getattr(plan, "user_message", "")), resume=plan),
             name="resume-turn",
@@ -2096,6 +2117,7 @@ async def _run_tui_session(
         ctx.app_state,
         ctx.console,
         max_live_tool_calls=ctx.cfg.tools.max_live_tool_calls,
+        group_exploratory_calls=ctx.cfg.tools.group_exploratory_calls,
     )
     input_session = UnifiedInputSession(
         app_state=ctx.app_state,

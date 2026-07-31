@@ -27,7 +27,12 @@ from lauren_ai._tools._executor import (
 )
 
 from agenthicc.tools.base import Tool, ToolBase, ToolResult, ToolResultEnvelope
-from agenthicc.tools.capabilities import CAPABILITIES_KEY, get_tool_capabilities
+from agenthicc.tools.capabilities import (
+    CAPABILITIES_KEY,
+    PRESENTATION_KEY,
+    get_tool_capabilities,
+    is_exploratory_tool,
+)
 from agenthicc.tools.context import ToolCallContext
 from agenthicc.tools.sandbox import ToolSandbox
 from agenthicc.tools.exec.outcome import CommandState, outcome_from_mapping
@@ -679,11 +684,10 @@ def _make_lauren_tool(
     # function. Mark it as a first-class Lauren tool before exposing it to
     # @use_tools.
     setattr(implementation, TOOL_META, registered.lauren_meta)
-    setattr(
-        implementation,
-        "__lauren_ai_tool_metadata__",
-        {CAPABILITIES_KEY: metadata.capabilities},
-    )
+    lauren_metadata: dict[str, object] = {CAPABILITIES_KEY: metadata.capabilities}
+    if is_exploratory_tool(tool):
+        lauren_metadata[PRESENTATION_KEY] = {"exploratory": True}
+    setattr(implementation, "__lauren_ai_tool_metadata__", lauren_metadata)
     implementation.__name__ = metadata.name
     implementation.__qualname__ = metadata.name
     implementation.__doc__ = metadata.description

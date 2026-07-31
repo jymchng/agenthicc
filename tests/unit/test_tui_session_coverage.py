@@ -303,6 +303,38 @@ async def test_esc_then_ctrl_c_reaches_idle_exit_sequence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_immediate_esc_interrupts_before_agent_coroutine_starts() -> None:
+    """Thinking can render before the scheduled turn gets its first await."""
+
+    from agenthicc.runners.tui_session import TUISession
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.input.unified_session import InputMode, UnifiedInputSession
+
+    _unused_session, ctx, workspace, _unused_input = _make_session()
+    input_session = UnifiedInputSession(ctx.app_state, ctx.command_bus)
+    session = TUISession(ctx, workspace, input_session)
+    ctx.command_bus.register(InterruptAgentCommand, session.handle_interrupt)
+    started = asyncio.Event()
+
+    async def pending_turn(*_args: object, **_kwargs: object) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    session.agent_task_body = pending_turn  # type: ignore[method-assign]
+    await session.handle_send(SendMessageCommand(text="run something"))
+
+    assert input_session._mode is InputMode.STREAMING
+    task = session._agent_task
+    assert task is not None
+    await input_session._dispatch(Key.ESC, "")
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert started.is_set() is False
+    assert input_session._mode is InputMode.IDLE
+    assert task.cancelled() is True
+
+
+@pytest.mark.asyncio
 async def test_tui_direct_turn_timeout_and_success(monkeypatch: pytest.MonkeyPatch) -> None:
     from agenthicc.runners import tui_session
 

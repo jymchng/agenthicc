@@ -5,7 +5,7 @@ NOTE: no ``from __future__ import annotations`` — @tool() inspects real annota
 
 import os
 from lauren_ai._tools import tool
-from agenthicc.tools.capabilities import tool_git_read, tool_git_write
+from agenthicc.tools.capabilities import tool_exploratory, tool_git_read, tool_git_write
 
 __all__ = [
     "git_add",
@@ -25,6 +25,7 @@ __all__ = [
 _CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
 
 
+@tool_exploratory
 @tool_git_read
 @tool()
 async def git_status() -> dict[str, object]:
@@ -34,6 +35,7 @@ async def git_status() -> dict[str, object]:
     return await GitStatusTool().execute({}, _CTX())
 
 
+@tool_exploratory
 @tool_git_read
 @tool()
 async def git_diff(
@@ -56,6 +58,7 @@ async def git_diff(
     return await GitDiffTool().execute(args, _CTX())
 
 
+@tool_exploratory
 @tool_git_read
 @tool()
 async def git_log(n: int = 10, path: str | None = None) -> dict[str, object]:
@@ -73,6 +76,7 @@ async def git_log(n: int = 10, path: str | None = None) -> dict[str, object]:
     return await GitLogTool().execute(args, _CTX())
 
 
+@tool_exploratory
 @tool_git_read
 @tool()
 async def git_show(ref: str = "HEAD") -> dict[str, object]:
@@ -130,6 +134,7 @@ async def git_checkout(branch: str, create: bool = False) -> dict[str, object]:
     return await GitCheckoutTool().execute({"branch": branch, "create": create}, _CTX())
 
 
+@tool_exploratory
 @tool_git_read
 @tool()
 async def git_branch(pattern: str | None = None) -> dict[str, object]:
@@ -163,6 +168,7 @@ async def git_stash(action: str = "push", message: str | None = None) -> dict[st
     return await GitStashTool().execute(args, _CTX())
 
 
+@tool_exploratory
 @tool_git_read
 @tool()
 async def git_blame(
@@ -183,6 +189,7 @@ async def git_blame(
     return await GitBlameTool().execute(args, _CTX())
 
 
+@tool_exploratory
 @tool_git_read
 @tool()
 async def git_grep(pattern: str, ref: str = "HEAD") -> dict[str, object]:

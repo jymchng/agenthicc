@@ -14,6 +14,7 @@ from agenthicc.tools.capabilities import (
     tool_read,
     tool_write,
     tool_read_search,
+    tool_exploratory,
 )
 
 if TYPE_CHECKING:
@@ -81,6 +82,7 @@ def configure_router(router: "BackendRouter") -> None:
     _router = router
 
 
+@tool_exploratory
 @tool_read
 @tool()
 async def read_file(path: str, encoding: str = "utf-8") -> dict[str, object]:
@@ -167,6 +169,7 @@ async def copy_file(source: str, destination: str) -> dict[str, object]:
     return await CopyFileTool().execute({"source": source, "destination": destination}, _CTX())
 
 
+@tool_exploratory
 @tool_read_search
 @tool()
 async def list_directory(
@@ -199,6 +202,7 @@ async def make_directory(path: str) -> dict[str, object]:
     return await MakeDirectoryTool().execute({"path": path}, _CTX())
 
 
+@tool_exploratory
 @tool_read
 @tool()
 async def file_exists(path: str) -> dict[str, object]:
@@ -212,6 +216,7 @@ async def file_exists(path: str) -> dict[str, object]:
     return await FileExistsTool().execute({"path": path}, _CTX())
 
 
+@tool_exploratory
 @tool_read_search
 @tool()
 async def search_files(pattern: str, path: str = ".", recursive: bool = True) -> dict[str, object]:
@@ -229,6 +234,7 @@ async def search_files(pattern: str, path: str = ".", recursive: bool = True) ->
     )
 
 
+@tool_exploratory
 @tool_read_search
 @tool()
 async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> dict[str, object]:
@@ -247,6 +253,7 @@ async def grep_files(pattern: str, path: str = ".", max_results: int = 50) -> di
     )
 
 
+@tool_exploratory
 @tool_read
 @tool()
 async def get_file_info(path: str) -> dict[str, object]:
@@ -260,6 +267,7 @@ async def get_file_info(path: str) -> dict[str, object]:
     return await GetFileInfoTool().execute({"path": path}, _CTX())
 
 
+@tool_exploratory
 @tool_read
 @tool()
 async def read_lines(path: str, start: int = 1, end: int | None = None) -> dict[str, object]:
@@ -295,6 +303,7 @@ async def patch_file(path: str, old_content: str, new_content: str) -> dict[str,
     )
 
 
+@tool_exploratory
 @tool_read_search
 @tool()
 async def grep_file(
@@ -421,6 +430,7 @@ async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict[
     }
 
 
+@tool_exploratory
 @tool_read
 @tool()
 async def checksum_file(path: str, algorithm: str = "sha256") -> dict[str, object]:
@@ -489,6 +499,7 @@ async def touch_file(path: str, create: bool = True) -> dict[str, object]:
     return {"ok": True, "path": path, "created": not existed}
 
 
+@tool_exploratory
 @tool_read
 @tool()
 async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict[str, object]:

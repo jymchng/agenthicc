@@ -28,6 +28,7 @@ against the current source before implementing them.
 - [PRD-158 — Display Resumed TUI Transcript](prd-158-resumed-tui-transcript.md)
 - [PRD-159 — Specialized CloakBrowser Agent Tools](prd-159-cloakbrowser-agent-tools.md)
 - [PRD-160 — Playwright Browser Agent Tools](prd-160-playwright-browser-agent-tools.md)
+- [PRD-161 — Exploratory Tool-Call Consolidation in the TUI](prd-161-exploratory-tool-call-consolidation.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -138,6 +139,12 @@ lifecycle management, safe artifacts, workflow capability/approval integration,
 and checkpoint-aware rehydration. It keeps raw Playwright/CDP access,
 model-controlled stealth settings, and persistent profiles outside the initial
 trust boundary.
+
+PRD-161 implements consolidation of contiguous exploratory tool calls into a
+derived `Explored` TUI block while preserving every individual tool event,
+result, journal record, checkpoint, and replay path. The presentation marker
+is separate from `ToolCapability`, because the current capability enum controls
+permission and phase filtering as well as metadata.
 
 ## Existing PRDs
 

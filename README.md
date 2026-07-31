@@ -306,6 +306,7 @@ network_allow_list = []
 
 [tools]
 max_live_tool_calls = 5
+group_exploratory_calls = true  # presentation-only grouping of marked reads
 browser_backend = "cloakbrowser"  # cloakbrowser, playwright, or none
 
 # Optional browser automation; enabled as a deny-all surface until configured.

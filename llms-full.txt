@@ -701,6 +701,18 @@ Capability metadata classification is fail-closed: missing, empty, malformed,
 or unknown values produce `UNDECLARED`. Safe approval and Plan blocking use the
 same classifier. `tool_control` marks internal workflow transition tools.
 
+### Exploratory tool presentation
+
+```python
+PRESENTATION_KEY = "presentation"
+tool_exploratory = set_metadata(PRESENTATION_KEY, {"exploratory": True})
+def is_exploratory_tool(tool: object) -> bool: ...
+```
+
+`tool_exploratory` is a presentation-only opt-in for contiguous discovery-call
+grouping in the TUI. It is independent of `ToolCapability` and never changes
+permission, approval, workflow filtering, or tool execution semantics.
+
 ## Runtime modes — `agenthicc.tui.runtime`
 
 ### RuntimeMode

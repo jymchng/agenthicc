@@ -69,6 +69,11 @@ _TOOL_DISPLAY_OP: dict[str, str] = {
     "file_exists": "Check",
     "get_file_info": "Inspect",
     "checksum_file": "Checksum",
+    "list_agenthicc_docs": "List",
+    "read_agenthicc_doc": "Read",
+    "search_agenthicc_docs": "Search",
+    "inspect_agenthicc_source": "Inspect",
+    "search_agenthicc_source": "Search",
     "shell": "Run",
     "run_bash": "Run",
     "run_command": "Run",
@@ -82,6 +87,9 @@ _TOOL_DISPLAY_OP: dict[str, str] = {
     "git_diff": "Diff",
     "git_log": "Log",
     "git_show": "Show",
+    "git_branch": "Branch",
+    "git_blame": "Blame",
+    "git_grep": "Search",
 }
 
 _LANG_MAP: dict[str, str] = {
@@ -110,6 +118,9 @@ _LANG_MAP: dict[str, str] = {
     "css": "css",
     "sql": "sql",
 }
+
+_MAX_EXPLORATION_ITEMS = 12
+_MAX_EXPLORATION_TARGET = 80
 
 
 def _lang_for_path(path: str) -> str:
@@ -179,11 +190,18 @@ class ScrollBufferAppender:
     on the asyncio event-loop thread (not on background threads).
     """
 
-    def __init__(self, app_state: AppState, console: Console, max_live_tool_calls: int = 5) -> None:
+    def __init__(
+        self,
+        app_state: AppState,
+        console: Console,
+        max_live_tool_calls: int = 5,
+        group_exploratory_calls: bool = True,
+    ) -> None:
         self._state: AppState = app_state
         self._console: Console = console
         self._unsub: Callable[[], None] | None = None
         self._max_tool_calls: int = max_live_tool_calls
+        self._group_exploratory_calls: bool = group_exploratory_calls
         # Small batch buffer to coalesce rapid events (e.g. many tool completions)
         self._pending: list[ConversationEvent] = []
         self._flush_scheduled = False
@@ -192,11 +210,16 @@ class ScrollBufferAppender:
         # maintained locally so it is accurate during _flush_batch regardless
         # of what other events in the same batch have already reset the signal.
         self._group_count: int = 0
+        # Presentation-only state for contiguous exploratory tool completions.
+        # The canonical ConversationStore still receives one event per call.
+        self._exploration_count: int = 0
+        self._exploration_hidden: int = 0
 
     def mount(self) -> None:
         self._unsub = self._state.conversation.on_event(self._queue_event)
 
     def unmount(self) -> None:
+        self._flush_exploration_group()
         if self._unsub:
             self._unsub()
             self._unsub = None
@@ -210,6 +233,7 @@ class ScrollBufferAppender:
         owns this presentation-only path and renders the original event
         timestamps/order through the same renderers as live events.
         """
+        self._flush_exploration_group()
         for event in events:
             event.rendered = False
             self._queue_event(event)
@@ -245,9 +269,79 @@ class ScrollBufferAppender:
 
     def _render_one(self, ev: ConversationEvent) -> None:
         """Dispatch to the registered renderer for ev.kind; silently ignore unknown kinds."""
+        if ev.kind != "tool_complete":
+            self._flush_exploration_group()
         renderer = _RENDERERS.get(ev.kind)
         if renderer is not None:
             renderer(self, ev)
+
+    def _flush_exploration_group(self) -> None:
+        """Close the derived exploratory block without touching raw events."""
+        if self._exploration_count == 0:
+            return
+        if self._exploration_hidden:
+            word = "call" if self._exploration_hidden == 1 else "calls"
+            self._console.print(
+                f"    [dim]…and {self._exploration_hidden} more exploratory {word}[/dim]",
+                markup=True,
+                highlight=False,
+            )
+        self._exploration_count = 0
+        self._exploration_hidden = 0
+
+    def _exploration_payload(self, payload: Mapping[str, object]) -> Mapping[str, object] | None:
+        if not self._group_exploratory_calls:
+            return None
+        presentation = payload.get("presentation")
+        if not isinstance(presentation, Mapping) or presentation.get("exploratory") is not True:
+            return None
+        return presentation
+
+    def _render_exploration_complete(
+        self,
+        payload: dict[str, object],
+        presentation: Mapping[str, object],
+    ) -> None:
+        """Render one successful exploratory call in the open derived group."""
+        if self._group_count:
+            self._flush_group_summary()
+        if self._exploration_count == 0:
+            self._console.print(
+                "[bold cyan]●[/bold cyan] [bold]Explored[/bold]",
+                markup=True,
+                highlight=False,
+            )
+        self._exploration_count += 1
+        if self._exploration_count > _MAX_EXPLORATION_ITEMS:
+            self._exploration_hidden += 1
+            return
+
+        name = str(payload.get("name", ""))
+        operation = _tool_display_operation(name)
+        files = _string_list(presentation.get("files"))
+        more_files_raw = presentation.get("more_files", 0)
+        more_files = more_files_raw if isinstance(more_files_raw, int) else 0
+        if operation == "Read" and files:
+            target = ", ".join(files[:2])
+            if more_files > 0:
+                target += f", and {more_files} more files."
+        else:
+            raw_target = presentation.get("target", "")
+            target = str(raw_target)[:_MAX_EXPLORATION_TARGET]
+            if len(str(raw_target)) > _MAX_EXPLORATION_TARGET:
+                target += "…"
+        label = f"{operation} {target}" if target else operation
+        # Every derived exploratory child uses the same tree marker as the
+        # initial ``List .`` row. This keeps Read, Search, Status, and custom
+        # exploratory tools visually consistent.
+        prefix = "  [dim]└[/dim] "
+        from rich.markup import escape as _e
+
+        self._console.print(
+            f"{prefix}{_e(label)}",
+            markup=True,
+            highlight=False,
+        )
 
     def _flush_group_summary(self) -> None:
         """Close the current tool group: reset the live signal, print permanent record."""
@@ -383,6 +477,16 @@ def _render_user_message(self: ScrollBufferAppender, ev: ConversationEvent) -> N
 
 @register_renderer("tool_complete")
 def _render_tool_complete_ev(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    presentation = self._exploration_payload(ev.payload)
+    if presentation is not None:
+        if not bool(ev.payload.get("success", True)):
+            self._flush_exploration_group()
+            self._flush_group_summary()
+            self._render_tool_complete(ev.payload)
+            return
+        self._render_exploration_complete(ev.payload, presentation)
+        return
+    self._flush_exploration_group()
     self._group_count += 1
     if self._group_count <= self._max_tool_calls:
         self._render_tool_complete(ev.payload)
