@@ -325,6 +325,9 @@ class ScrollBufferAppender:
             target = ", ".join(files[:2])
             if more_files > 0:
                 target += f", and {more_files} more files."
+            extra_arguments = presentation.get("arguments", "")
+            if isinstance(extra_arguments, str) and extra_arguments:
+                target += f" ({extra_arguments})"
         else:
             raw_target = presentation.get("target", "")
             target = str(raw_target)[:_MAX_EXPLORATION_TARGET]

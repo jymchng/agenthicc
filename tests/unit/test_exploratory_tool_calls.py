@@ -40,6 +40,7 @@ def _event(
     target: str = "",
     files: list[str] | None = None,
     more_files: int = 0,
+    arguments: str = "",
     success: bool = True,
 ) -> ConversationEvent:
     payload: dict[str, object] = {
@@ -56,6 +57,8 @@ def _event(
             presentation["files"] = files
         if more_files:
             presentation["more_files"] = more_files
+        if arguments:
+            presentation["arguments"] = arguments
         payload["presentation"] = presentation
     return ConversationEvent(name, "tool_complete", payload)
 
@@ -122,7 +125,7 @@ def test_exploration_target_is_bounded_and_redacted() -> None:
 
     assert presentation == {
         "exploratory": True,
-        "target": "def _emit|event_sinks in src/agenthicc/runners/_runner.py",
+        "target": ("def _emit|event_sinks in src/agenthicc/runners/_runner.py (token=<redacted>)"),
     }
     assert "do-not-display" not in str(presentation)
 
@@ -149,6 +152,34 @@ def test_batch_read_presentation_keeps_file_count_separate_from_target_text() ->
         "exploratory": True,
         "files": ["password_generator/batch.py", "password_generator/templates.py"],
         "more_files": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "args", "target"),
+    [
+        ("read_file", {"path": "README.md", "encoding": "utf-16"}, "README.md (encoding=utf-16)"),
+        (
+            "list_directory",
+            {"path": ".", "pattern": "*.py", "recursive": True},
+            ". (pattern=*.py, recursive=True)",
+        ),
+        ("git_log", {"n": 10}, "n=10"),
+        ("git_branch", {"pattern": "feature/*"}, "pattern=feature/*"),
+        ("git_diff", {"staged": True}, "staged=True"),
+        (
+            "inspect_agenthicc_source",
+            {"target": "agenthicc.config", "include_source": False},
+            "agenthicc.config (include_source=False)",
+        ),
+    ],
+)
+def test_exploration_labels_preserve_non_target_arguments(
+    name: str, args: dict[str, object], target: str
+) -> None:
+    assert _exploration_presentation(name, args) == {
+        "exploratory": True,
+        "target": target,
     }
 
 
@@ -249,6 +280,49 @@ def test_batched_reads_use_list_prefix_and_report_omitted_files() -> None:
         "password_generator/templates.py, and 3 more files." in line
         for line in lines
     )
+
+
+def test_batched_reads_display_remaining_arguments() -> None:
+    appender, console = _appender()
+    presentation = _exploration_presentation(
+        "batch_read",
+        {"paths": ["one.py", "two.py", "three.py"], "encoding": "latin-1"},
+    )
+    assert presentation["arguments"] == "encoding=latin-1"
+    _flush(
+        appender,
+        [
+            _event(
+                "batch_read",
+                exploratory=True,
+                files=["one.py", "two.py"],
+                more_files=1,
+                arguments="encoding=latin-1",
+            )
+        ],
+    )
+
+    lines = _printed_lines(console)
+    assert any("(encoding=latin-1)" in line for line in lines)
+
+
+def test_explored_rows_show_arguments_for_search_and_log() -> None:
+    appender, console = _appender()
+    _flush(
+        appender,
+        [
+            _event(
+                "search_files",
+                exploratory=True,
+                target="needle in src (recursive=False)",
+            ),
+            _event("git_log", exploratory=True, target="n=5"),
+        ],
+    )
+
+    lines = _printed_lines(console)
+    assert any("Search needle in src (recursive=False)" in line for line in lines)
+    assert any("Log n=5" in line for line in lines)
 
 
 def test_all_explored_tools_use_the_list_tree_prefix() -> None:

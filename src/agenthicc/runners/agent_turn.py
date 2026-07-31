@@ -241,6 +241,8 @@ def _exploration_value(key: str, value: object, *, limit: int = 80) -> str:
         rendered = value
     elif isinstance(value, (int, float, bool)):
         rendered = str(value)
+    elif value is None:
+        rendered = "None"
     elif isinstance(value, list):
         rendered = ", ".join(_exploration_value(key, item) for item in value[:3])
         if len(value) > 3:
@@ -250,6 +252,30 @@ def _exploration_value(key: str, value: object, *, limit: int = 80) -> str:
     if any(marker in rendered.casefold() for marker in _EXPLORATION_SENSITIVE_MARKERS):
         return "<redacted>"
     return rendered[:limit] + ("…" if len(rendered) > limit else "")
+
+
+def _exploration_extra_arguments(args: Mapping[str, object], used_keys: set[str]) -> str:
+    """Format unconsumed tool arguments for a safe exploration label."""
+    details: list[str] = []
+    for key, value in args.items():
+        if key in used_keys:
+            continue
+        safe_value = _exploration_value(key, value, limit=40)
+        if safe_value:
+            details.append(f"{key}={safe_value}")
+    rendered = ", ".join(details)
+    return rendered[:79] + "…" if len(rendered) > 80 else rendered
+
+
+def _exploration_with_arguments(
+    target: str, args: Mapping[str, object], used_keys: set[str]
+) -> str:
+    """Append safe, bounded arguments that are not part of *target*."""
+    details = _exploration_extra_arguments(args, used_keys)
+    if not details:
+        return target
+    combined = f"{target} ({details})" if target else details
+    return combined[:79] + "…" if len(combined) > 80 else combined
 
 
 def _exploration_target(name: str, args: Mapping[str, object]) -> str:
@@ -271,13 +297,15 @@ def _exploration_target(name: str, args: Mapping[str, object]) -> str:
         )
         location = _exploration_value(location_key, args.get(location_key, ""))
         if query and location and location != ".":
-            return f"{query} in {location}"
-        return query or location
+            target = f"{query} in {location}"
+        else:
+            target = query or location
+        return _exploration_with_arguments(target, args, {query_key, location_key})
 
     for key in ("path", "paths", "target", "ref", "section", "module"):
         if key in args:
-            return _exploration_value(key, args[key])
-    return ""
+            return _exploration_with_arguments(_exploration_value(key, args[key]), args, {key})
+    return _exploration_with_arguments("", args, set())
 
 
 def _exploration_presentation(name: str, args: Mapping[str, object]) -> dict[str, object]:
@@ -305,6 +333,9 @@ def _exploration_presentation(name: str, args: Mapping[str, object]) -> dict[str
                 more_files = len(paths) - 2
                 if more_files > 0:
                     presentation["more_files"] = more_files
+                extra_arguments = _exploration_extra_arguments(args, {"paths"})
+                if extra_arguments:
+                    presentation["arguments"] = extra_arguments
                 return presentation
 
     target = _exploration_target(name, args)

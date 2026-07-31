@@ -311,6 +311,9 @@ bounded and failures/responses must flush it immediately.
 
 The first implementation should use existing operation labels (`Read`,
 `Search`, `Inspect`) and a safe bounded target supplied by the projection.
+The projection also retains additional non-sensitive arguments in a bounded
+parenthetical, such as `Search needle in src (recursive=False)` or `Log n=5`,
+so grouping does not erase the tool call's useful context.
 Repeated calls may be coalesced by operation, but distinct targets must not be
 silently discarded. The renderer must preserve the user's ability to
 distinguish:

@@ -14,6 +14,10 @@ remaining count is explicit, for example `Read one.py, two.py, and 3 more
 files.`. This is presentation metadata only; every file result remains an
 individual tool event.
 
+Other exploratory rows retain their useful arguments as well: for example,
+`Search needle in src (recursive=False)` and `Log n=5`. Additional values are
+bounded and sensitive arguments are redacted.
+
 This is presentation-only. The executor still runs each call separately, the
 model receives each normal tool result, and the conversation store, session
 log, workflow state, and replay path retain one event per call.
