@@ -81,6 +81,21 @@ class JournaledShortTermMemory(ShortTermMemory):
         self._messages = self._messages[:count]
         self._journal.reset(self._messages, self._summary)
 
+    def ensure_valid_and_persist(self) -> None:
+        """Heal an interrupted provider tail and persist the healed state.
+
+        ``ShortTermMemory.ensure_valid()`` inserts synthetic interruption
+        results for unanswered tool calls, but the base implementation does
+        not journal that in-place repair. That is normally correct for a
+        transient pre-send repair. An explicit user cancellation is different:
+        the repaired history is the context the next turn must remember, so it
+        must survive a process restart as well.
+        """
+        before = list(self._messages)
+        self.ensure_valid()
+        if self._messages != before:
+            self._journal.reset(self._messages, self._summary)
+
     @property
     def journal(self) -> ConversationJournal:
         """The underlying durable journal (turn markers, tool records)."""

@@ -232,6 +232,31 @@ def test_explored_block_groups_calls_and_flushes_before_mutation() -> None:
     assert not any("[green]●[/green] [bold]Read" in line for line in lines)
 
 
+def test_explored_block_has_a_blank_separator_before_the_next_tool() -> None:
+    appender, console = _appender()
+    _flush(
+        appender,
+        [
+            _event("read_file", exploratory=True, target="Makefile"),
+            _event("run_tests"),
+        ],
+    )
+
+    calls = console.print.call_args_list
+    read_index = next(
+        index
+        for index, call in enumerate(calls)
+        if call.args and "Read Makefile" in str(call.args[0])
+    )
+    next_tool_index = next(
+        index
+        for index, call in enumerate(calls)
+        if call.args and "[bold]Test[/bold]" in str(call.args[0])
+    )
+    assert calls[read_index + 1].args == ()
+    assert read_index < read_index + 1 < next_tool_index
+
+
 def test_exploration_failure_is_not_hidden_and_starts_a_new_group() -> None:
     appender, console = _appender()
     _flush(

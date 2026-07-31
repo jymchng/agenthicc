@@ -51,6 +51,7 @@ def test_source_discovery_journey_groups_exploration_and_preserves_events() -> N
     assert "└ Read command.py" in rendered
     assert "Read command.py" in rendered
     assert "Search def _emit in _runner.py" in rendered
+    assert "Search def _emit in _runner.py\n\n" in rendered
     assert "Update" in rendered
     assert "Inspection complete." in rendered
 

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import pytest
 
 from lauren_ai import ToolResult
@@ -13,8 +17,11 @@ from agenthicc.memory.journal import (
     journal_path_for,
 )
 from agenthicc.memory.journaled import JournaledShortTermMemory
+from agenthicc.runners.agent_turn import AgentTurnRunner
 from agenthicc.runners.durable_ledger import DurableIdempotencyLedger
 from agenthicc.runners.run_coordinator import RunCoordinator
+from agenthicc.runners.agent_turn import _preserve_interrupted_memory
+from agenthicc.runners.agent_turn_context import AgentTurnContext
 
 pytestmark = pytest.mark.unit
 
@@ -199,6 +206,110 @@ class TestRunCoordinatorCycle:
         folded, _ = fold_path(jp)
         assert len(folded) == base
         j.close()
+
+    def test_interruption_preserves_completed_context_and_persists_healed_tail(
+        self, tmp_path
+    ) -> None:
+        jp = tmp_path / "j.jsonl"
+        journal = ConversationJournal(jp)
+        memory = JournaledShortTermMemory(journal, max_tokens=32_000)
+        memory.add_user("inspect the test runner")
+        memory.add_assistant(
+            {
+                "role": "assistant",
+                "content": "I found the test configuration and was checking the runner.",
+            }
+        )
+        memory.add_assistant(
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "run-1",
+                        "name": "run_tests",
+                        "input": {"path": "tests"},
+                    }
+                ],
+            }
+        )
+
+        _preserve_interrupted_memory(memory)
+        assert len(memory._messages) == 4
+        assert memory._messages[1]["content"].startswith("I found")
+        assert memory._messages[-1]["content"][0]["tool_use_id"] == "run-1"
+
+        journal.close()
+        resumed = JournaledShortTermMemory(ConversationJournal(jp), max_tokens=32_000)
+        assert resumed._messages == memory._messages
+        resumed.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_turn_cancellation_preserves_context_for_the_next_prompt(tmp_path) -> None:
+    """Cancellation must retain completed tool context instead of rolling back the turn."""
+
+    journal = ConversationJournal(tmp_path / "j.jsonl")
+    memory = JournaledShortTermMemory(journal, max_tokens=32_000)
+    memory.add_user("inspect the test runner")
+    memory.add_assistant({"role": "assistant", "content": "I was checking pytest setup."})
+
+    class ExecutionConfig:
+        auto_compact = True
+        max_output_tokens = 512
+        transport_max_retries = 0
+        transport_retry_base_delay_s = 0.0
+        transport_retry_max_total_s = 0.0
+
+        @staticmethod
+        def effective_context_window() -> int:
+            return 8_192
+
+        @staticmethod
+        def effective_usable_budget() -> int:
+            return 7_000
+
+    ctx = AgentTurnContext(
+        text="inspect the test runner",
+        runner=SimpleNamespace(_transport=None),  # type: ignore[arg-type]
+        processor=MagicMock(),
+        session_memory=memory,
+        conv_store=MagicMock(),
+        exec_cfg=ExecutionConfig(),  # type: ignore[arg-type]
+    )
+    runner = AgentTurnRunner(ctx)
+    runner._intent_id = "cancelled-turn"
+    runner._agent_id = "agent-cancelled"
+    runner._model_id = "test-model"
+
+    async def cancel_after_partial_progress(_stream_once) -> None:
+        memory.add_assistant(
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "pytest-1",
+                        "name": "run_tests",
+                        "input": {"path": "tests"},
+                    }
+                ],
+            }
+        )
+        raise asyncio.CancelledError
+
+    runner._stream_with_retry = cancel_after_partial_progress  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner._stream(object(), "inspect the test runner", object())  # type: ignore[arg-type]
+
+    assert any(
+        message.get("content") == "I was checking pytest setup."
+        for message in memory._messages
+        if isinstance(message, dict)
+    )
+    assert memory._messages[-1]["content"][0]["tool_use_id"] == "pytest-1"
+    journal.close()
 
 
 def test_journal_path_for_is_under_sessions() -> None:

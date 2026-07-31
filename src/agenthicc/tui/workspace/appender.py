@@ -286,6 +286,10 @@ class ScrollBufferAppender:
                 markup=True,
                 highlight=False,
             )
+        # Keep the derived exploration block visually separate from the next
+        # tool card or assistant response. The blank is presentation-only and
+        # does not alter the canonical event stream.
+        self._console.print()
         self._exploration_count = 0
         self._exploration_hidden = 0
 

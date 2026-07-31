@@ -35,6 +35,26 @@ def _read_text_if_exists(path: str) -> str:
         return handle.read()
 
 
+def _preserve_interrupted_memory(memory: object | None) -> None:
+    """Keep valid completed context while healing an interrupted tool tail.
+
+    Cancelling a turn must not roll the shared session conversation back to its
+    pre-turn count: that would erase the tool calls and assistant reasoning the
+    next user message needs. The memory boundary heals any unanswered final
+    tool call into a provider-valid interruption result and, when supported,
+    persists that repair in the session journal.
+    """
+    if memory is None:
+        return
+    persist_heal = getattr(memory, "ensure_valid_and_persist", None)
+    if callable(persist_heal):
+        persist_heal()
+        return
+    ensure_valid = getattr(memory, "ensure_valid", None)
+    if callable(ensure_valid):
+        ensure_valid()
+
+
 # ── Permanent-error detection (PRD-117) ───────────────────────────────────────
 
 
@@ -951,7 +971,6 @@ class AgentTurnRunner:
         if ctx.session_memory is not None:
             ctx.session_memory.ensure_valid()
 
-        turn_base_count = len(ctx.session_memory._messages) if ctx.session_memory is not None else 0
         turn_completed = False
 
         # PRD-135: auto-compaction is driven *inside* the run loop by lauren-ai's
@@ -1102,10 +1121,11 @@ class AgentTurnRunner:
             await self._stream_with_retry(_stream_once)
             turn_completed = True
         except (asyncio.CancelledError, KeyboardInterrupt):
-            if ctx.session_memory is not None:
-                rollback = getattr(ctx.session_memory, "rollback_to", None)
-                if callable(rollback):
-                    rollback(turn_base_count)
+            # Preserve completed sub-turns and tool results so the next user
+            # message can ask what was in progress. Only an unanswered final
+            # tool call is healed; rolling back to ``turn_base_count`` would
+            # erase the useful context from the shared session conversation.
+            _preserve_interrupted_memory(ctx.session_memory)
             if ctx.conv_store:
                 ctx.conv_store.close_turn()
             raise  # must propagate so task.cancel() terminates the workflow runner

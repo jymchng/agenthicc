@@ -37,6 +37,13 @@ reset, turn marker, and durable tool record is written to
 into the live memory; an incomplete turn can be re-driven with already-complete
 tools replayed from the durable ledger.
 
+An explicit turn interruption preserves the valid assistant/tool exchanges
+that completed before cancellation. If the interrupted tail contains an
+unanswered tool call, it is healed with the provider's interruption result and
+that repair is journaled, so a follow-up such as “what were you doing?” sees
+the same context in the current process and after restart. A cancellation no
+longer erases the whole turn by rolling memory back to its pre-turn count.
+
 Automatic compaction is model-aware. The manual `/compact` command uses a
 bounded map-reduce summarizer and records a reset in the journal so the durable
 projection remains aligned with the live messages.
