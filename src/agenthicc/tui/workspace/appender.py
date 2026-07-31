@@ -224,7 +224,12 @@ class ScrollBufferAppender:
             self._unsub()
             self._unsub = None
 
-    def replay(self, events: Iterable[ConversationEvent]) -> None:
+    def replay(
+        self,
+        events: Iterable[ConversationEvent],
+        *,
+        continue_group: bool = False,
+    ) -> None:
         """Queue persisted events for display without persisting them again.
 
         Resume must restore the visible transcript, but feeding historical
@@ -233,7 +238,8 @@ class ScrollBufferAppender:
         owns this presentation-only path and renders the original event
         timestamps/order through the same renderers as live events.
         """
-        self._flush_exploration_group()
+        if not continue_group:
+            self._flush_exploration_group()
         for event in events:
             event.rendered = False
             self._queue_event(event)

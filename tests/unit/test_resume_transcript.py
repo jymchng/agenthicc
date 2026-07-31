@@ -138,3 +138,34 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
 
     assert workspace.calls[:2] == ["start", "replay"]
     assert workspace.events == history
+
+
+@pytest.mark.asyncio
+async def test_workspace_replay_shows_loading_spinner_and_yields_between_chunks() -> None:
+    from agenthicc.tui.workspace.workspace import Workspace
+
+    state = AppState.create()
+    workspace = Workspace(state, Console(record=True, force_terminal=False))
+    observations: list[tuple[bool, int, bool, int]] = []
+
+    class RecordingScroll:
+        def replay(self, events, *, continue_group: bool = False) -> None:
+            observations.append(
+                (
+                    state.conversation.transcript_loading(),
+                    state.conversation.frame(),
+                    continue_group,
+                    len(events),
+                )
+            )
+
+    workspace.scroll = RecordingScroll()  # type: ignore[assignment]
+    events = [ConversationEvent(str(index), "text", {"text": "history"}) for index in range(130)]
+
+    await workspace.replay_transcript(events)
+
+    assert [entry[2] for entry in observations] == [False, True, True]
+    assert all(entry[0] is True for entry in observations)
+    assert [entry[3] for entry in observations] == [64, 64, 2]
+    assert len({entry[1] for entry in observations}) == 1
+    assert state.conversation.transcript_loading() is False

@@ -1311,6 +1311,9 @@ start or stop Live per agent turn.
 active mode, workflow progress, overlays, approvals, and notifications. This
 `AppState` is intentionally distinct from `kernel.AppState`; it is not the
 durable domain model and must not replace event reduction.
+During `--continue` or `--resume SESSION_ID`, its `transcript_loading` signal
+drives the `Loading transcript…` status while `Workspace` replays history to
+`ScrollBufferAppender` in responsive chunks.
 
 ### UnifiedInputSession
 

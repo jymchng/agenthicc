@@ -121,6 +121,8 @@ class ConversationStore:
         self.notification: Signal[str | None] = Signal(None)
         self.workflow_override: Signal[str | None] = Signal(None)
         """Name of the /workflow-selected override (PRD-114).  None = mode default."""
+        self.transcript_loading: Signal[bool] = Signal(False)
+        """True while a resumed session transcript is being replayed."""
         self.compaction_active: Signal[bool] = Signal(False)
         """True while a compaction LLM call is in flight (PRD-119)."""
         self.subagent_pool_state: Signal[SubagentPoolState | None] = Signal(None)

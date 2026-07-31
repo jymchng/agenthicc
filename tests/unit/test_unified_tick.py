@@ -406,6 +406,24 @@ class TestFrameDrivesAnimation:
 
         assert len(results) > 1, "Spinner must cycle across frame values"
 
+    def test_transcript_loading_status_has_no_spinner(self) -> None:
+        from rich.console import Console  # noqa: PLC0415
+        from agenthicc.tui.workspace.components import (  # noqa: PLC0415
+            StatusComponent,
+            _COMPACT_SPINNER,
+        )
+
+        for i in range(4):
+            state = self._make_state(frame=i)
+            state.conversation.transcript_loading.return_value = True
+            comp = StatusComponent(state)
+            console = Console(highlight=False, markup=False, no_color=True, width=120)
+            with console.capture() as cap:
+                console.print(comp.render())
+            rendered = cap.get()
+            line = next(line for line in rendered.splitlines() if "Loading transcript" in line)
+            assert not any(f"{spinner} Loading transcript" in line for spinner in _COMPACT_SPINNER)
+
     @pytest.mark.parametrize(
         ("kind", "label"),
         [

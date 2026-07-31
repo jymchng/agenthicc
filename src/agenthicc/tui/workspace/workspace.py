@@ -112,6 +112,7 @@ class Workspace:
             conv.cost_status,
             conv.usage_calls,
             conv.notification,
+            conv.transcript_loading,
             self._state.active_mode,  # PRD-75: single mode signal
             inp.buf,
             inp.cursor,
@@ -170,11 +171,36 @@ class Workspace:
             self._live = None
 
     async def replay_transcript(self, events: list["ConversationEvent"]) -> None:
-        """Display a resumed session's persisted transcript above the Live UI."""
-        self.scroll.replay(events)
-        # The appender schedules one event-loop callback for the batch. Yield
-        # once so the transcript is visible before input starts.
-        await asyncio.sleep(0)
+        """Display a resumed transcript while showing a loading state.
+
+        Replay is deliberately chunked. A single large appender batch would
+        block the event loop until every historical event had rendered, making
+        the loading state impossible to observe and delaying the first Live redraw.
+        Chunks also keep the UI responsive without changing the persisted event
+        order or grouping decisions.
+        """
+        conv = self._state.conversation
+        chunk_size = 64
+        first_chunk = True
+        conv.transcript_loading.set(True)
+        try:
+            # Let the Live block render the loading state before the first
+            # historical event is queued.
+            await asyncio.sleep(0)
+            for start in range(0, len(events), chunk_size):
+                self.scroll.replay(
+                    events[start : start + chunk_size],
+                    continue_group=not first_chunk,
+                )
+                first_chunk = False
+                # The appender flushes on the next loop turn before the next
+                # bounded chunk is queued.
+                await asyncio.sleep(0)
+        finally:
+            conv.transcript_loading.set(False)
+            # Flush the final appender callback and redraw the normal status
+            # before input is accepted.
+            await asyncio.sleep(0)
 
     # ── rendering ─────────────────────────────────────────────────────────────
 

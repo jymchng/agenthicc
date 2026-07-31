@@ -115,6 +115,11 @@ appended to `ConversationStore` and therefore are not written to
 `conversation.jsonl` a second time. Provider memory, usage, and workflow state
 continue to restore through their existing durable stores.
 
+While the transcript is being replayed, the status bar shows a
+`Loading transcript…` label. Replay is chunked so the TUI remains responsive
+until the scroll appender has finished loading the history; this applies
+equally to `--continue` and `--resume SESSION_ID`.
+
 When a tool approval, plan review, or `ask_user()` question is pending, the
 status bar changes from the animated Thinking state to a stable waiting label.
 The Thinking duration is the total wall-clock time for the outer user activity:

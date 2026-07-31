@@ -448,6 +448,24 @@ def test_replay_uses_the_same_derived_grouping() -> None:
     assert _printed_lines(replay_console) == live_lines
 
 
+def test_chunked_replay_can_continue_one_explored_group() -> None:
+    appender, console = _appender()
+    first = [_event("read_file", exploratory=True, target="one.py")]
+    second = [
+        _event("search_files", exploratory=True, target="needle"),
+        ConversationEvent("answer", "text", {"text": "done"}),
+    ]
+
+    appender.replay(first)
+    appender.replay(second, continue_group=True)
+    appender._flush_batch()
+
+    lines = _printed_lines(console)
+    assert sum("Explored" in line for line in lines) == 1
+    assert any("Read one.py" in line for line in lines)
+    assert any("Search needle" in line for line in lines)
+
+
 def test_real_console_rendering_has_plain_explored_label() -> None:
     state = MagicMock()
     output = StringIO()

@@ -174,6 +174,8 @@ class StatusComponent:
             )
         waiting_label = _waiting_label(self._state)
         waiting = waiting_label is not None
+        loading_signal = getattr(conv, "transcript_loading", None)
+        transcript_loading = loading_signal() is True if callable(loading_signal) else False
 
         _frame = conv.frame()
         # Flower animates only while the agent is active; frozen at index 0 when idle.
@@ -185,8 +187,10 @@ class StatusComponent:
         agent_st = conv.agent_state()
         state_name = agent_st.name.lower()
 
-        if waiting:
-            state_text = waiting_label
+        if transcript_loading:
+            state_text = "Loading transcript…"
+        elif waiting:
+            state_text = waiting_label or "Waiting for approval"
         elif conv.is_running():
             if state_name == "recovering":
                 state_text = "↻ " + _thinking_markup(_frame)
@@ -203,7 +207,7 @@ class StatusComponent:
             "error": "red",
             "complete": "green",
         }
-        color = colors.get(state_name, "dim")
+        color = "yellow" if transcript_loading else colors.get(state_name, "dim")
 
         # ── line 1: state animation + elapsed + tokens + active tool ────────────
         l1_parts = [f"{flower} [{color}]{state_text}[/{color}]"]

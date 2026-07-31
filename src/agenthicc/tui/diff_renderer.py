@@ -22,8 +22,9 @@ Visual output
 from __future__ import annotations
 
 import difflib
+from collections import deque
 from io import StringIO
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -85,6 +86,38 @@ def _highlight_block(lines: list[str], language: str) -> list[Text]:
     while len(raw) < len(lines):
         raw.append("")
     return [Text.from_ansi(raw[i]) for i in range(len(lines))]
+
+
+def _highlight_selected_lines(
+    lines: list[str],
+    indices: set[int],
+    language: str,
+) -> dict[int, Text]:
+    """Highlight only rows that the bounded diff preview will render.
+
+    File-modification events persist complete before/after snapshots so they
+    can be inspected later.  The terminal preview, however, renders only the
+    changed edges and a few context rows.  Highlighting the complete snapshots
+    makes replay scale with the size of every file rather than the size of the
+    visible preview, and can make ``--resume`` appear to hang on a large
+    workflow transcript.
+    """
+    selected = sorted(index for index in indices if 0 <= index < len(lines))
+    if not selected:
+        return {}
+    highlighted = _highlight_block([lines[index] for index in selected], language)
+    return dict(zip(selected, highlighted))
+
+
+def _line_text(
+    lines: list[str],
+    highlighted: Mapping[int, Text] | Sequence[Text],
+    index: int,
+) -> Text:
+    """Return a highlighted row, or a cheap plain fallback for hidden rows."""
+    if isinstance(highlighted, Mapping):
+        return highlighted.get(index, Text(lines[index]))
+    return highlighted[index]
 
 
 # ── word-level diff ───────────────────────────────────────────────────────────
@@ -229,8 +262,8 @@ def _render_change_block(
     changes: Sequence[Opcode],
     old_lines: list[str],
     new_lines: list[str],
-    old_hl: list[Text],
-    new_hl: list[Text],
+    old_hl: Mapping[int, Text] | Sequence[Text],
+    new_hl: Mapping[int, Text] | Sequence[Text],
 ) -> None:
     """Render adjacent non-equal opcodes, abbreviating long blocks.
 
@@ -239,32 +272,84 @@ def _render_change_block(
     limit ensures that a single long change gets one omission marker rather
     than one marker per opcode.
     """
-    rows: list[_ChangeRow] = []
-    for _, i1, i2, j1, j2 in changes:
-        del_lines = old_lines[i1:i2]
-        add_lines = new_lines[j1:j2]
-        del_hl = old_hl[i1:i2]
-        add_hl = new_hl[j1:j2]
-        rows.extend(
-            ("delete", i1 + idx + 1, raw, hl, add_lines[idx] if idx < len(add_lines) else None)
-            for idx, (raw, hl) in enumerate(zip(del_lines, del_hl))
-        )
-        rows.extend(
-            ("add", j1 + idx + 1, raw, hl, del_lines[idx] if idx < len(del_lines) else None)
-            for idx, (raw, hl) in enumerate(zip(add_lines, add_hl))
-        )
-
-    if len(rows) <= DIFF_PREVIEW_LINES:
+    total_rows = sum((i2 - i1) + (j2 - j1) for _, i1, i2, j1, j2 in changes)
+    rows = _iter_change_rows(changes, old_lines, new_lines, old_hl, new_hl)
+    if total_rows <= DIFF_PREVIEW_LINES:
         for row in rows:
             _render_change_row(table, row)
         return
 
     edge = DIFF_PREVIEW_LINES // 2
-    for row in rows[:edge]:
+    first_rows: list[_ChangeRow] = []
+    last_rows: deque[_ChangeRow] = deque(maxlen=edge)
+    for row in rows:
+        if len(first_rows) < edge:
+            first_rows.append(row)
+        last_rows.append(row)
+    for row in first_rows:
         _render_change_row(table, row)
-    _omitted_row(table, len(rows) - DIFF_PREVIEW_LINES)
-    for row in rows[-edge:]:
+    _omitted_row(table, total_rows - DIFF_PREVIEW_LINES)
+    for row in last_rows:
         _render_change_row(table, row)
+
+
+def _iter_change_rows(
+    changes: Sequence[Opcode],
+    old_lines: list[str],
+    new_lines: list[str],
+    old_hl: Mapping[int, Text] | Sequence[Text],
+    new_hl: Mapping[int, Text] | Sequence[Text],
+) -> Iterator[_ChangeRow]:
+    """Yield change rows without retaining hidden rows in memory."""
+    for _, i1, i2, j1, j2 in changes:
+        for index in range(i1, i2):
+            pair_index = j1 + (index - i1)
+            pair_raw = new_lines[pair_index] if pair_index < j2 else None
+            yield (
+                "delete",
+                index + 1,
+                old_lines[index],
+                _line_text(old_lines, old_hl, index),
+                pair_raw,
+            )
+        for index in range(j1, j2):
+            pair_index = i1 + (index - j1)
+            pair_raw = old_lines[pair_index] if pair_index < i2 else None
+            yield (
+                "add",
+                index + 1,
+                new_lines[index],
+                _line_text(new_lines, new_hl, index),
+                pair_raw,
+            )
+
+
+def _visible_change_indices(
+    changes: Sequence[Opcode],
+) -> tuple[set[int], set[int]]:
+    """Return old/new line indices needed for one bounded change block."""
+    total_rows = sum((i2 - i1) + (j2 - j1) for _, i1, i2, j1, j2 in changes)
+    rows = _iter_change_indices(changes)
+    if total_rows > DIFF_PREVIEW_LINES:
+        edge = DIFF_PREVIEW_LINES // 2
+        first_rows: list[tuple[str, int]] = []
+        last_rows: deque[tuple[str, int]] = deque(maxlen=edge)
+        for row in rows:
+            if len(first_rows) < edge:
+                first_rows.append(row)
+            last_rows.append(row)
+        rows = iter((*first_rows, *last_rows))
+    return (
+        {index for kind, index in rows if kind == "old"},
+        {index for kind, index in rows if kind == "new"},
+    )
+
+
+def _iter_change_indices(changes: Sequence[Opcode]) -> Iterator[tuple[str, int]]:
+    """Yield old/new indices in the same order as the rendered change rows."""
+    for _, i1, i2, j1, j2 in changes:
+        yield from (("old", index) for index in range(i1, i2))
+        yield from (("new", index) for index in range(j1, j2))
 
 
 # ── hunk grouping ────────────────────────────────────────────────────────────
@@ -372,9 +457,40 @@ def render_file_diff(
     n_added = sum(j2 - j1 for t, _, _, j1, j2 in opcodes if t in ("insert", "replace"))
     n_removed = sum(i2 - i1 for t, i1, i2, _, _ in opcodes if t in ("delete", "replace"))
 
-    # Pre-highlight both versions as blocks so syntax context is correct.
-    old_hl = _highlight_block(old_lines, language)
-    new_hl = _highlight_block(new_lines, language)
+    if n_added or n_removed:
+        hunks = _build_hunks(opcodes, context)
+        old_indices: set[int] = set()
+        new_indices: set[int] = set()
+        pending_changes: list[Opcode] = []
+
+        def collect_change_block() -> None:
+            if pending_changes:
+                old_visible, new_visible = _visible_change_indices(pending_changes)
+                old_indices.update(old_visible)
+                new_indices.update(new_visible)
+                pending_changes.clear()
+
+        for hunk in hunks:
+            for tag, i1, i2, j1, j2 in hunk:
+                if tag == "equal":
+                    collect_change_block()
+                    old_indices.update(range(i1, i2))
+                    new_indices.update(range(j1, j2))
+                else:
+                    pending_changes.append((tag, i1, i2, j1, j2))
+            collect_change_block()
+
+        # Highlight the rows that will actually be added to the preview table.
+        # The complete snapshots remain available to the summary and hunk
+        # calculation, but never need to pass through Pygments during replay.
+        old_hl = _highlight_selected_lines(old_lines, old_indices, language)
+        new_hl = _highlight_selected_lines(new_lines, new_indices, language)
+    else:
+        # Preserve the existing complete-file rendering for an explicitly
+        # requested identical diff; there is no bounded change preview to use.
+        hunks = []
+        old_hl = dict(enumerate(_highlight_block(old_lines, language)))
+        new_hl = dict(enumerate(_highlight_block(new_lines, language)))
 
     table = Table.grid(padding=(0, 1))
     table.add_column(justify="right", no_wrap=True)  # line number
@@ -383,10 +499,9 @@ def render_file_diff(
 
     if not (n_added or n_removed):
         # Identical files — show everything with no markers.
-        for lineno, hl in enumerate(old_hl, 1):
-            _context_row(table, lineno, hl)
+        for index in range(len(old_lines)):
+            _context_row(table, index + 1, _line_text(old_lines, old_hl, index))
     else:
-        hunks = _build_hunks(opcodes, context)
         for hunk_idx, hunk in enumerate(hunks):
             if hunk_idx > 0:
                 _gap_row(table)
@@ -408,7 +523,11 @@ def render_file_diff(
                 if tag == "equal":
                     flush_change_block()
                     for off in range(i2 - i1):
-                        _context_row(table, i1 + off + 1, old_hl[i1 + off])
+                        _context_row(
+                            table,
+                            i1 + off + 1,
+                            _line_text(old_lines, old_hl, i1 + off),
+                        )
                 else:
                     change_block.append((tag, i1, i2, j1, j2))
             flush_change_block()

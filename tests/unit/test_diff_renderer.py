@@ -82,3 +82,23 @@ def test_separate_change_blocks_get_separate_omission_markers() -> None:
     )
 
     assert output.count("...") == 2
+
+
+def test_large_change_highlights_only_the_bounded_preview(monkeypatch: pytest.MonkeyPatch) -> None:
+    import agenthicc.tui.diff_renderer as diff_renderer
+
+    highlighted_sizes: list[int] = []
+    original = diff_renderer._highlight_block
+
+    def record_highlight(lines: list[str], language: str) -> list[object]:
+        highlighted_sizes.append(len(lines))
+        return original(lines, language)
+
+    monkeypatch.setattr(diff_renderer, "_highlight_block", record_highlight)
+    old_lines = [f"old {index}" for index in range(1000)]
+    new_lines = [f"new {index}" for index in range(1000)]
+
+    _render(old_lines, new_lines)
+
+    assert highlighted_sizes
+    assert max(highlighted_sizes) <= DIFF_PREVIEW_LINES
