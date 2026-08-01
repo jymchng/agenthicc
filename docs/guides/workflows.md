@@ -638,6 +638,16 @@ workflow itself should not import either optional package; use the injected
 `create_workflow` keeps design and validation phases browser-free unless a
 downstream author intentionally changes that policy.
 
+### `site_imitate` is mobile-first
+
+`site_imitate` always treats responsive mobile behavior as a required workflow
+invariant. Its stable phase contract requires mobile-first layouts that work at
+approximately 320px, 375px, 768px, and desktop widths without horizontal
+overflow, with responsive navigation, readable typography, responsive images,
+and usable touch targets. Every component verification must include responsive
+evidence, and the final verification tool rejects a success summary that does
+not mention mobile, responsive, or viewport checks.
+
 ## Resume and failure behaviour
 
 Workflow state is represented by `WorkflowRun`, phase outputs, kernel events,

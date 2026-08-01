@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 
 import pytest
@@ -11,6 +12,11 @@ from agenthicc.workflows.site_imitate import (
     SiteImitateRunner,
     SiteImitateState,
     SiteImitateWorkflow,
+)
+from agenthicc.workflows.site_imitate.runner import (
+    MOBILE_RESPONSIVE_CONTRACT,
+    _make_final_verify_tools,
+    _make_verify_tools,
 )
 
 pytestmark = pytest.mark.unit
@@ -35,6 +41,7 @@ def test_static_phase_prompts_name_their_transition_tools() -> None:
             assert tool_name in prompt, (phase_name, tool_name)
         assert "successful transition-tool call" in prompt
         assert "never advances" in prompt
+        assert "mobile" in prompt.lower()
 
 
 @pytest.mark.asyncio
@@ -51,13 +58,14 @@ async def test_runtime_phase_prompts_name_the_tools_the_runner_expects() -> None
         component_plan=[{"name": "Header", "build": "header", "verify": "renders"}],
     )
     prompts: dict[str, str] = {}
+    stable_prompts: dict[str, str] = {}
     transition_args: dict[str, tuple[object, ...]] = {
         "submit_analysis": ("analysis", "inventory"),
         "submit_plan": ("plan", ["Header | header | renders"]),
         "scaffold_complete": ("/tmp/site",),
         "component_built": (),
-        "component_verified": ("verified",),
-        "final_verify_passed": ("built",),
+        "component_verified": ("verified at mobile, tablet, and desktop viewports",),
+        "final_verify_passed": ("built and responsive at mobile, tablet, and desktop viewports",),
     }
 
     async def fake_run_phase(
@@ -72,6 +80,9 @@ async def test_runtime_phase_prompts_name_the_tools_the_runner_expects() -> None
             if f"{name.replace('_', ' ').upper()} phase" in system_prompt
         )
         prompts[phase_name] = system_prompt
+        stable_prompt = _kwargs.get("stable_system_prompt")
+        assert stable_prompt == MOBILE_RESPONSIVE_CONTRACT
+        stable_prompts[phase_name] = str(stable_prompt)
         for tool in tools:
             tool_name = getattr(tool, "__name__", "")
             if tool_name in transition_args:
@@ -94,3 +105,24 @@ async def test_runtime_phase_prompts_name_the_tools_the_runner_expects() -> None
         assert all(tool_name in prompt for tool_name in tool_names), phase_name
         assert "successful" in prompt
         assert "never advances" in prompt
+        assert "mobile" in prompt.lower()
+
+    assert set(stable_prompts) == set(_EXPECTED_TOOLS)
+    assert all("320px" in prompt and "horizontal" in prompt for prompt in stable_prompts.values())
+
+
+@pytest.mark.asyncio
+async def test_verification_tools_require_mobile_evidence() -> None:
+    component_event = asyncio.Event()
+    component_data: dict[str, str] = {}
+    component_tools = _make_verify_tools(component_event, component_data)
+    rejected = await component_tools[0]("TypeScript passes")
+    assert rejected["ok"] is False  # type: ignore[index]
+    assert not component_event.is_set()
+
+    final_event = asyncio.Event()
+    final_data: dict[str, str] = {}
+    final_tools = _make_final_verify_tools(final_event, final_data)
+    accepted = await final_tools[0]("Responsive mobile, tablet, and desktop viewports pass")
+    assert accepted["ok"] is True  # type: ignore[index]
+    assert final_event.is_set()

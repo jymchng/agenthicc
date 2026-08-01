@@ -141,6 +141,10 @@ authoring.
 Project tools and slash commands are authored separately through the
 `/create-tools` and `/create-commands` skills; they are not workflow selectors.
 
+The built-in `site_imitate` workflow always creates mobile-first responsive
+websites. Its planning, build, and verification phases enforce narrow/tablet/
+desktop viewport checks, responsive navigation, and no horizontal overflow.
+
 The generated workflow is expected to ship its own state-machine runner — typed
 state enum, typed context, one bounded method per state, an explicit
 `while not state.is_terminal` / `match` driver, `resume()`, and transitions that
