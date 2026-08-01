@@ -33,6 +33,7 @@ from agenthicc.workflows.create_workflow import (
     CreateWorkflowState,
     validate_workflow_file,
 )
+from agenthicc.workflows.create_workflow.inspection_tools import make_inspection_tools
 from agenthicc.workflows.loader import load_builtin_workflows, load_python_workflows
 from agenthicc.workflows.registry import build_workflow_registry
 
@@ -328,6 +329,29 @@ async def test_generated_workflow_loads_through_load_python_workflows(
     plugins = load_python_workflows(Path(ctx.generated_path), source="project")
     assert [plugin.name for plugin in plugins] == ["doc_review"]
     assert plugins[0].build_params({}) is not None
+
+
+async def test_cache_stable_template_round_trips_through_real_validator(tmp_path: Path) -> None:
+    """The authoring inspection surface produces a strict-valid custom runner."""
+    template = await _call(make_inspection_tools(), "show_workflow_template")
+    assert isinstance(template, dict)
+    source = template["source"]
+    assert isinstance(source, str)
+
+    package = tmp_path / ".agenthicc" / "workflows" / "release_check"
+    package.mkdir(parents=True)
+    entry = package / "runner.py"
+    entry.write_text(source, encoding="utf-8")
+
+    report = validate_workflow_file(
+        str(package),
+        expected_name="release_check",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+    assert report.ok, report.render()
+    assert report.cache_contract == "contract-native"
+    assert report.phase_names == ("plan", "verify", "report")
 
 
 async def test_generated_workflow_does_not_shadow_the_builtins(tmp_path: Path, processor) -> None:

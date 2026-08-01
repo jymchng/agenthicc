@@ -141,18 +141,41 @@ authoring.
 Project tools and slash commands are authored separately through the
 `/create-tools` and `/create-commands` skills; they are not workflow selectors.
 
+The built-in `site_imitate` workflow always creates mobile-first responsive
+websites. Its planning, build, and verification phases enforce narrow/tablet/
+desktop viewport checks, responsive navigation, and no horizontal overflow.
+
 The generated workflow is expected to ship its own state-machine runner — typed
 state enum, typed context, one bounded method per state, an explicit
 `while not state.is_terminal` / `match` driver, `resume()`, and transitions that
 only ever happen on a tool call. Design turns inspect the real authoring API with
 the built-in `describe_phasespec`, `list_tool_capabilities`, `list_agent_roles`,
-`describe_runner_pattern`, and `show_example_workflow` tools, which read from the
-running code rather than from prose. Each authoring phase has its own prompt and
+`describe_runner_pattern`, `describe_transition_tool_pattern`, and
+`show_example_workflow` tools, which read from the running code rather than from
+prose. Each authoring phase has its own prompt and
 bounded multi-turn budget; tune the caps with
 `[execution].authoring_max_phase_turns` and
 `[execution].authoring_max_generation_attempts`. All workflow phases can use the
 existing `ask_user` tool to ask several focused clarification questions, including
 multiple rounds when requirements need to be refined.
+
+Generated custom runners also receive a cache-stability contract: immutable
+workflow policy and deterministic tool schemas stay in the reusable prefix,
+while phase state, artifacts, questions, answers, and summaries stay dynamic.
+The authoring agent is instructed to declare a literal `CACHE_CONTRACT`, pass it
+as `stable_system_prompt` to `CodePlanRunner.run_phase()`, and use `ask_user`
+instead of guessing over material ambiguity. Strict validation rejects runners
+that bypass this boundary or mutate the shared conversation history.
+
+Transition tools in generated runners must use the canonical bare
+`@tool_control` decorator imported from `agenthicc.tools.capabilities`, above
+`@tool()`. The authoring inspection tool `describe_transition_tool_pattern`
+shows the exact form, and strict validation catches factory-local import or
+decorator mistakes before the workflow is accepted.
+
+If a selected workflow still fails during startup, the TUI renders the
+exception as an error event, marks the workflow run failed, and discards the
+failed handle so the next message can retry it cleanly.
 
 Every session also carries five read-only tools for reading agenthicc itself —
 `list_agenthicc_docs`, `read_agenthicc_doc`, `search_agenthicc_docs`,

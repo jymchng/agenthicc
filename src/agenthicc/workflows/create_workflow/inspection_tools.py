@@ -77,6 +77,17 @@ log = logging.getLogger(__name__)
 #: Bounded retries per phase — never loop forever waiting for a tool call.
 _MAX_ATTEMPTS = 5
 
+# Stable workflow policy.  Keep phase-specific instructions and current
+# artifacts in the dynamic ``system_prompt`` argument to ``run_phase``.
+CACHE_CONTRACT = """
+[CACHE-STABLE WORKFLOW POLICY]
+Keep this workflow contract unchanged across phases. Ask the user a focused
+clarifying question through the existing `ask_user` tool whenever required
+information is missing, ambiguous, or would materially change the result.
+Wait for the answer; do not guess. Actual questions and answers,
+phase state, and artifacts are dynamic context and do not belong here.
+""".strip()
+
 
 class ReleaseState(Enum):
     """Every state this workflow can be in."""
@@ -117,7 +128,9 @@ def _make_plan_tools(
 ) -> list[Callable[..., object]]:
     """Return the only tool that can end the plan phase."""
     from lauren_ai._tools import tool
+    from agenthicc.tools.capabilities import tool_control
 
+    @tool_control
     @tool()
     async def submit_release_plan(plan: str) -> dict[str, object]:
         """Record the ordered release checks and advance to the verify phase.
@@ -144,7 +157,9 @@ def _make_verify_tools(
 ) -> list[Callable[..., object]]:
     """Return the pass/block decision tools for the verify phase."""
     from lauren_ai._tools import tool
+    from agenthicc.tools.capabilities import tool_control
 
+    @tool_control
     @tool()
     async def release_passed(summary: str) -> dict[str, object]:
         """Signal that every check passed.
@@ -157,6 +172,7 @@ def _make_verify_tools(
         event.set()
         return {"ok": True}
 
+    @tool_control
     @tool()
     async def release_blocked(blocker: str) -> dict[str, object]:
         """Signal that a check failed and the release is blocked.
@@ -280,6 +296,7 @@ class ReleaseCheckRunner(CodePlanRunner):
             await self.run_phase(
                 intent=ctx.intent,
                 text=ctx.intent if attempt == 1 else "Call submit_release_plan(plan) now.",
+                stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
                     "You are in the PLAN phase of release_check. List the checks that must "
                     "pass before this release, then call submit_release_plan(plan). Only a "
@@ -310,6 +327,7 @@ class ReleaseCheckRunner(CodePlanRunner):
                     if attempt == 1
                     else "Call release_passed(summary) or release_blocked(blocker) now."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
                     "You are in the VERIFY phase of release_check. Run the planned checks "
                     "with the shell tools, then call release_passed(summary) or "
@@ -338,6 +356,7 @@ class ReleaseCheckRunner(CodePlanRunner):
         await self.run_phase(
             intent=ctx.intent,
             text=f"Plan:\\n{ctx.plan}\\n\\nResult: {ctx.verdict or ctx.blocker}",
+            stable_system_prompt=CACHE_CONTRACT,
             system_prompt=(
                 "You are in the REPORT phase of release_check. Summarise what was checked "
                 "and whether the release is clear to ship. No phase-transition tool is "
@@ -787,6 +806,141 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "example": "show_example_workflow('runner')",
         }
 
+    @tool_read
+    @_tool()
+    async def describe_transition_tool_pattern() -> dict[str, object]:
+        """Return the canonical import/decorator pattern for phase handoffs.
+
+        This is intentionally separate from the broad runner checklist because
+        a local import error inside a tool factory is invisible to module-load
+        validation until that phase actually starts.
+        """
+        return {
+            "canonical_import": (
+                "from lauren_ai._tools import tool\n"
+                "from agenthicc.tools.capabilities import tool_control"
+            ),
+            "canonical_decorators": "@tool_control\n@tool()\nasync def transition(...): ...",
+            "decorator_rules": [
+                "tool_control is a bare decorator; never write @tool_control().",
+                "tool_control must come from agenthicc.tools.capabilities, not lauren_ai._tools.",
+                "Put @tool_control above @tool() so the final callable carries CONTROL metadata.",
+                "Apply it to every callable that can advance, reject, retry, or branch a phase.",
+            ],
+            "validation_boundary": (
+                "Factory-local imports are checked statically because validation must not "
+                "execute arbitrary generated tool factories. Import success alone does not "
+                "prove local factory imports work; use this contract and the generated "
+                "template before calling a phase."
+            ),
+            "failure_prevented": [
+                "ImportError: cannot import name 'tool_control' from lauren_ai._tools",
+                "AttributeError caused by invoking the bare decorator as @tool_control()",
+                "phase transitions not being classified with ToolCapability.CONTROL",
+            ],
+        }
+
+    @tool_read
+    @_tool()
+    async def describe_prompt_cache_contract() -> dict[str, object]:
+        """Describe the cache-stable prompt and user-questioning contract."""
+
+        from agenthicc.runners.prompt_contract import (  # noqa: PLC0415
+            CACHE_CONTRACT_VERSION,
+            DEFAULT_WORKFLOW_CACHE_POLICY,
+        )
+
+        return {
+            "contract_version": CACHE_CONTRACT_VERSION,
+            "regions": [
+                {
+                    "name": "stable_system_prefix",
+                    "purpose": "Immutable workflow policy, safety, capability, and question policy.",
+                    "must_not_contain": [
+                        "phase state",
+                        "user/artifact/validation content",
+                        "rolling summaries",
+                        "individual question answers",
+                    ],
+                },
+                {
+                    "name": "dynamic_context",
+                    "purpose": "Phase instructions, current intent, artifacts, questions, answers, and transitions.",
+                    "transport": "append after the stable prefix as the current turn context",
+                },
+                {
+                    "name": "stable_tools",
+                    "purpose": "Tools whose schema and authorization remain valid across the workflow epoch.",
+                },
+                {
+                    "name": "phase_tools",
+                    "purpose": "Phase-local write, validation, and transition tools; ordered after stable tools.",
+                },
+            ],
+            "required_policy": DEFAULT_WORKFLOW_CACHE_POLICY,
+            "authoring_rules": [
+                "Declare a literal CACHE_CONTRACT in runner.py.",
+                "Pass CACHE_CONTRACT as stable_system_prompt=... to every run_phase() call.",
+                "Use the existing ask_user tool for material clarification and wait for its answer.",
+                "Keep actual questions, answers, phase state, and artifacts dynamic.",
+                "Never insert messages into the beginning of shared conversation history.",
+                "Never call _run_agent_turn directly from generated code.",
+            ],
+            "invalidation_reasons": [
+                "phase_context_changed",
+                "question_appended",
+                "summary_updated",
+                "history_compacted",
+                "stable_contract_changed",
+                "connection_changed",
+                "provider_expired",
+            ],
+            "provider_behavior": {
+                "anthropic": "explicit stable system/tool prefix when supported",
+                "openai-compatible": "deterministic prefix for automatic provider caching",
+                "ollama/litellm": "logical contract preserved; cache may be unsupported",
+            },
+        }
+
+    @tool_read
+    @_tool()
+    async def show_workflow_template() -> dict[str, object]:
+        """Return the cache-stable custom-runner template."""
+
+        return {
+            "style": "cache-stable-runner",
+            "path": ".agenthicc/workflows/release_check/runner.py",
+            "entry_point": ".agenthicc/workflows/release_check/runner.py",
+            "source": _RUNNER_EXAMPLE,
+            "required_call": "run_phase(..., stable_system_prompt=CACHE_CONTRACT, system_prompt=phase_prompt)",
+            "note": (
+                "Copy the stable CACHE_CONTRACT literally, keep phase-specific data dynamic, "
+                "and use the existing ask_user tool for missing or ambiguous requirements."
+            ),
+        }
+
+    @tool_read
+    @_tool()
+    async def validate_workflow_cache_contract(path: str) -> dict[str, object]:
+        """Validate a generated workflow's cache and question-tool contract."""
+
+        from pathlib import Path  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.validation import validate_workflow_file  # noqa: PLC0415
+
+        report = validate_workflow_file(
+            path,
+            root=Path.cwd(),
+            strict_cache_contract=True,
+        )
+        return {
+            "ok": report.ok,
+            "path": report.path,
+            "cache_contract": report.cache_contract,
+            "errors": list(report.errors),
+            "warnings": list(report.warnings),
+            "phase_names": list(report.phase_names),
+        }
+
     return [
         describe_phasespec,
         list_tool_capabilities,
@@ -794,5 +948,9 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         describe_cloakbrowser_tools,
         describe_playwright_tools,
         describe_runner_pattern,
+        describe_transition_tool_pattern,
         show_example_workflow,
+        describe_prompt_cache_contract,
+        show_workflow_template,
+        validate_workflow_cache_contract,
     ]

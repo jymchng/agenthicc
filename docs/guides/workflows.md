@@ -153,13 +153,17 @@ The design phase must state, and the generate phase must write:
    `while not state.is_terminal` + `match state`;
 5. `resume(context)` re-entering the same dispatch path;
 6. phase tool factories whose `@tool()` closures set an `asyncio.Event`, checked
-   after the turn returns — never parsing the agent's prose. Mark transition
-   callables with `@tool_control`, name them in the phase prompt, and state that
-   only a successful call changes phase;
+   after the turn returns — never parsing the agent's prose. Import `tool` from
+   `lauren_ai._tools` and the bare `tool_control` decorator from
+   `agenthicc.tools.capabilities`; put `@tool_control` above `@tool()` on every
+   transition callable, name them in the phase prompt, and state that only a
+   successful call changes phase. Never write `@tool_control()`;
 7. `build_runner()` on the plugin returning that runner.
 
-`describe_runner_pattern()` returns this checklist to the agent, and
-`show_example_workflow()` returns a complete working runner to adapt (pass
+`describe_runner_pattern()` returns this checklist to the agent.
+`describe_transition_tool_pattern()` returns the canonical handoff-tool
+import/decorator contract, while `show_example_workflow()` returns a complete
+working runner to adapt (pass
 `"declarative"` for the runner-less fallback). The generated runner subclasses
 `CodePlanRunner` for the session wiring and its public
 `run_phase(intent=, text=, system_prompt=, mode=, max_turns=, shared_memory=, tools=)`
@@ -170,6 +174,47 @@ when the runner it ships is abstract or missing `run`/`resume`.
 
 A purely declarative graph is still correct when every phase really is one
 unconditional agent turn.
+
+### Cache-stable workflow turns
+
+Workflow runners use a shared prompt contract when `[execution].prompt_cache`
+is enabled. The contract keeps the workflow's immutable policy and deterministic
+tool schemas in the stable prefix, while phase instructions, artifacts,
+validation reports, questions, answers, and rolling summaries are rendered as
+append-only dynamic context. A custom runner should preserve that boundary by
+passing its literal policy separately:
+
+```python
+await self.run_phase(
+    intent=intent,
+    text=artifact_and_phase_state,
+    system_prompt="Review the current artifact and report blockers.",
+    stable_system_prompt=CACHE_CONTRACT,
+    mode="Safe",
+    max_turns=8,
+    shared_memory=context.shared_memory,
+    tools=phase_tools,
+)
+```
+
+Stable tools are ordered before phase-local tools after capability and approval
+filtering. Generated workflows must use `CodePlanRunner.run_phase()` (or the
+shared `build_workflow_prompt_contract()` helper), must not insert messages into
+shared history, and must declare a literal `CACHE_CONTRACT`. The contract also
+instructs agents to use the existing `ask_user` tool for missing or ambiguous
+requirements and to wait for answers instead of guessing. The
+`describe_prompt_cache_contract`, `show_workflow_template`, and
+`validate_workflow_cache_contract` inspection tools expose these rules during
+authoring; strict validation rejects a generated custom runner that omits them.
+
+The runtime records only redacted contract fingerprints and cache epochs in the
+conversation journal and workflow checkpoint. A phase change does not change
+the stable epoch. A provider/model/profile change, a stable tool or policy
+change, provider TTL expiry, or history compaction can legitimately invalidate
+reuse and is reported separately. Anthropic uses explicit cache controls when
+available; OpenAI-compatible providers rely on stable-prefix reuse; providers
+without a supported cache contract use the compatibility path without claiming
+a cache hit.
 
 ### Generation writes the workflow package directly
 
@@ -220,6 +265,12 @@ the run loops back to `generate` with the concrete errors attached. A workflow
 that does not import can therefore never be accepted, however confident the model
 is.
 
+Runtime startup failures are also surfaced in the TUI. This covers errors that
+occur before `run_phase()` opens an agent turn, such as a lazy phase-tool
+factory import failure: the exception is rendered, the workflow run is marked
+failed, and its handle is discarded rather than leaving the session apparently
+idle with a running workflow indicator.
+
 ### Budgets
 
 Two previously advisory settings drive the loops:
@@ -254,6 +305,7 @@ API:
 | `list_tool_capabilities()` | every `ToolCapability` value with a description |
 | `list_agent_roles()` | every `PhaseRole` usable as `agent_type` |
 | `describe_runner_pattern()` | the custom-runner checklist and when a runner is required |
+| `describe_transition_tool_pattern()` | the canonical import/decorator contract for phase handoff tools |
 | `show_example_workflow(style)` | a complete `runner.py` package entry point to adapt — `"runner"` (default) or `"declarative"` |
 
 Every workflow phase gets the existing `ask_user` tool for clarifying questions.
@@ -596,6 +648,16 @@ workflow itself should not import either optional package; use the injected
 `cloakbrowser_*` or `playwright_*` tools documented by the inspection tools.
 `create_workflow` keeps design and validation phases browser-free unless a
 downstream author intentionally changes that policy.
+
+### `site_imitate` is mobile-first
+
+`site_imitate` always treats responsive mobile behavior as a required workflow
+invariant. Its stable phase contract requires mobile-first layouts that work at
+approximately 320px, 375px, 768px, and desktop widths without horizontal
+overflow, with responsive navigation, readable typography, responsive images,
+and usable touch targets. Every component verification must include responsive
+evidence, and the final verification tool rejects a success summary that does
+not mention mobile, responsive, or viewport checks.
 
 ## Resume and failure behaviour
 

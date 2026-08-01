@@ -512,6 +512,9 @@ class WorkflowRunner(BaseWorkflowRunner):
             _WORKFLOW_USER_QUESTION_REMINDER,
             phase_transition_instruction,
         )  # noqa: PLC0415
+        from agenthicc.runners.prompt_contract import (  # noqa: PLC0415
+            build_workflow_prompt_contract,
+        )
 
         if spec.agent_type == "human":
             return await self._run_human_phase(spec, context)
@@ -594,6 +597,21 @@ class WorkflowRunner(BaseWorkflowRunner):
             else _base_exec
         )
 
+        # Declarative phases may expose different capability-filtered tools.
+        # Keep the stable region empty here rather than accidentally treating a
+        # phase-specific read/write tool as reusable across the whole workflow;
+        # every visible tool remains deterministic in the phase-local region.
+        prompt_contract = build_workflow_prompt_contract(
+            workflow_name=self._plugin.name,
+            phase_prompt=role_prompt,
+            stable_tools=(),
+            phase_tools=filtered,
+            execution=_exec_cfg,
+        )
+        record_contract = getattr(self._cfg.workflow_handle, "record_prompt_contract", None)
+        if callable(record_contract):
+            record_contract(prompt_contract)
+
         # Shared kwargs for all _run_agent_turn calls in this phase.
         _turn_kwargs: AgentTurnOptions = {
             "runner": self._cfg.agent_runner,
@@ -618,6 +636,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             "usage_ledger": self._cfg.usage_ledger,
             "browser_manager": self._cfg.browser_manager,
             "system_prompt_suffix": role_prompt,
+            "prompt_contract": prompt_contract,
         }
 
         try:

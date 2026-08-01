@@ -1695,6 +1695,19 @@ sets the handoff event. `CodePlanContext` carries the approved plan, selected
 execute mode, summaries, rejection/failure reasons, command outcomes, and
 shared short-term memory.
 
+### Prompt contracts — `agenthicc.runners.prompt_contract`
+
+`PromptContract` and `build_workflow_prompt_contract()` separate immutable
+workflow policy and deterministic stable tool schemas from dynamic phase
+instructions, artifacts, questions, answers, and summaries. Stable tools are
+ordered before phase-local tools after capability filtering. The contract emits
+redacted fingerprints, cache epochs, provider capability, and local cache status
+for journals and checkpoints; it never persists dynamic prompt text or raw
+endpoint credentials. `AgentTurnRunner` renders dynamic blocks append-only and
+temporarily keeps lauren-ai's rolling summary out of the stable system prompt.
+Use `stable_system_prompt=` with `CodePlanRunner.run_phase()` for custom
+workflows.
+
 ### CreateWorkflowRunner
 
 The specialized `create_workflow` runner uses typed authoring state and phase
@@ -1738,7 +1751,9 @@ available in that phase and explicitly tells the agent that only a successful
 control-tool call changes phase; assistant prose such as "done" never advances
 the workflow. Built-in handoff tools retain a compatibility name list, while
 custom workflow handoff tools are discovered from `ToolCapability.CONTROL`
-(`@tool_control`). Declarative phases without a control tool are told that the
+(`@tool_control`). `describe_transition_tool_pattern()` gives generated runners
+the canonical import and bare-decorator form; strict validation also checks
+factory-local transition-tool code. Declarative phases without a control tool are told that the
 generic runner applies their declared graph after the turn.
 
 Design is read-only and human-gated: `request_design_approval(design,
@@ -1969,12 +1984,14 @@ block injected into the validating agent's system prompt.
 def make_inspection_tools() -> list[ToolLike]
 ```
 
-Creates the five read-only authoring-surface tools injected into the design
+Creates the read-only authoring-surface tools injected into the design
 phase: `describe_phasespec` (every `PhaseSpec` field, type, default, and purpose,
 read live from the dataclass), `list_tool_capabilities` (every `ToolCapability`),
 `list_agent_roles` (every `PhaseRole`), `describe_runner_pattern` (the checklist a
-generated custom runner must satisfy, and when one is required), and
-`show_example_workflow(style="runner" | "declarative")` — defaulting to a
+generated custom runner must satisfy, and when one is required),
+`describe_transition_tool_pattern` (the canonical handoff-tool import and
+decorator contract), and `show_example_workflow(style="runner" | "declarative")` —
+defaulting to a
 complete, known-valid workflow that ships its own state-machine runner. They take
 no session state and cause no side effects.
 

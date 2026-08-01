@@ -656,6 +656,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         intent: str,
         text: str,
         system_prompt: str,
+        stable_system_prompt: str = "",
         mode: str | None = None,
         max_turns: int = 10,
         shared_memory: "ShortTermMemory | None" = None,
@@ -683,6 +684,11 @@ class CodePlanRunner(BaseWorkflowRunner):
             includes key outputs from prior phases (plan, execute summary, …).
         system_prompt:
             Full system-prompt for this phase.  Replaces any role default.
+        stable_system_prompt:
+            Optional immutable workflow contract appended to the stable system
+            prefix for prompt caching.  Phase-specific instructions belong in
+            ``system_prompt`` and remain dynamic.  The default workflow cache
+            and user-question policies are always included.
         mode:
             Optional mode name (e.g. ``"Yolo"``) to switch for this phase.
             Restored automatically on exit.
@@ -718,14 +724,27 @@ class CodePlanRunner(BaseWorkflowRunner):
         if tools:
             phase_tools.extend(tools)
         # PRD-126: composite-workflow phases get transport retry too.
-        await self._run_turn(
-            text,
-            tools=phase_tools,
-            mode=mode,
-            system_prompt=system_prompt,
-            max_turns=max_turns,
-            ctx=_ctx,
-        )
+        if stable_system_prompt:
+            await self._run_turn(
+                text,
+                tools=phase_tools,
+                mode=mode,
+                system_prompt=system_prompt,
+                stable_system_prompt=stable_system_prompt,
+                max_turns=max_turns,
+                ctx=_ctx,
+            )
+        else:
+            # Keep compatibility with downstream subclasses/tests overriding
+            # the historical _run_turn signature.
+            await self._run_turn(
+                text,
+                tools=phase_tools,
+                mode=mode,
+                system_prompt=system_prompt,
+                max_turns=max_turns,
+                ctx=_ctx,
+            )
 
     # ── phase helpers (PRD-115) ───────────────────────────────────────────────
 
@@ -775,6 +794,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         tools: _ToolList,
         mode: str | None,
         system_prompt: str,
+        stable_system_prompt: str = "",
         max_turns: int,
         ctx: CodePlanContext,
         phase_name: str = "",
@@ -791,6 +811,11 @@ class CodePlanRunner(BaseWorkflowRunner):
             _WORKFLOW_USER_QUESTION_REMINDER,
             phase_transition_instruction,
         )
+        from agenthicc.runners.prompt_contract import (  # noqa: PLC0415
+            build_workflow_prompt_contract,
+            tool_name,
+        )
+        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities  # noqa: PLC0415
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
@@ -818,6 +843,28 @@ class CodePlanRunner(BaseWorkflowRunner):
         policy = self._cfg.terminal_wait_policies.get(phase_name, "foreground")
         policy_token = set_current_terminal_wait_policy(policy)
         try:
+            stable_tools: _ToolList = []
+            phase_tools: _ToolList = []
+            for tool in tools:
+                name = tool_name(tool)
+                capabilities = get_tool_capabilities(tool)
+                is_transition = name != "ask_user" and ToolCapability.CONTROL in capabilities
+                (phase_tools if is_transition else stable_tools).append(tool)
+            prompt_contract = build_workflow_prompt_contract(
+                workflow_name=self.workflow_name,
+                stable_system_prefix=stable_system_prompt,
+                phase_prompt=(
+                    f"{system_prompt}\n\n"
+                    f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
+                    f"{phase_transition_instruction(tools, phase_name=phase_name)}"
+                ),
+                stable_tools=stable_tools,
+                phase_tools=phase_tools,
+                execution=exec_cfg,
+            )
+            record_contract = getattr(self._cfg.workflow_handle, "record_prompt_contract", None)
+            if callable(record_contract):
+                record_contract(prompt_contract)
             await _run_agent_turn(
                 text,
                 runner=self._cfg.agent_runner,
@@ -843,6 +890,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                     f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
                     f"{phase_transition_instruction(tools, phase_name=phase_name)}"
                 ),
+                prompt_contract=prompt_contract,
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
                 next_queued_message=self._cfg.next_queued_message,

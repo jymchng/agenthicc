@@ -507,7 +507,11 @@ def test_inspection_tools_are_the_documented_set() -> None:
         "describe_cloakbrowser_tools",
         "describe_playwright_tools",
         "describe_runner_pattern",
+        "describe_transition_tool_pattern",
         "show_example_workflow",
+        "describe_prompt_cache_contract",
+        "show_workflow_template",
+        "validate_workflow_cache_contract",
     ]
 
 
@@ -575,6 +579,8 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
         "checkpoint_context_from_payload",
         "successful submit_release_plan(plan) call changes phase",
         "transition tools changes phase",
+        "from agenthicc.tools.capabilities import tool_control",
+        "@tool_control",
     ):
         assert required in source, required
 
@@ -586,6 +592,15 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
     assert report.ok, report.render()
     assert report.warnings == (), report.render()
     assert report.phase_names == ("plan", "verify", "report")
+
+    strict_report = validate_workflow_file(
+        str(path),
+        expected_name="release_check",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+    assert strict_report.ok, strict_report.render()
+    assert strict_report.cache_contract == "contract-native"
 
     spec = importlib.util.spec_from_file_location("generated_release_check", entry_point)
     assert spec is not None and spec.loader is not None
@@ -634,6 +649,83 @@ async def test_show_example_workflow_declarative_style_is_opt_in(tmp_path: Path)
     assert any("ships no runner" in warn for warn in report.warnings)
 
 
+async def test_strict_validation_catches_factory_local_tool_control_mistakes(
+    tmp_path: Path,
+) -> None:
+    result = await _call(make_inspection_tools(), "show_example_workflow")
+    assert isinstance(result, dict)
+    source = result["source"]
+    assert isinstance(source, str)
+    broken = source.replace(
+        "from agenthicc.tools.capabilities import tool_control",
+        "from lauren_ai._tools import tool_control",
+    ).replace("@tool_control\n", "@tool_control()\n")
+    path = tmp_path / "workflows" / "release_check"
+    path.mkdir(parents=True)
+    (path / "runner.py").write_text(broken, encoding="utf-8")
+
+    report = validate_workflow_file(
+        str(path),
+        expected_name="release_check",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+    assert not report.ok
+    assert any("agenthicc.tools.capabilities" in error for error in report.errors)
+    assert any("bare decorator" in error for error in report.errors)
+
+
+async def test_prompt_cache_inspection_describes_contract_and_template() -> None:
+    tools = make_inspection_tools()
+    contract = await _call(tools, "describe_prompt_cache_contract")
+    assert isinstance(contract, dict)
+    assert contract["contract_version"] == "agenthicc.prompt-cache.v1"
+    assert any("CACHE_CONTRACT" in str(rule) for rule in contract["authoring_rules"])
+    assert "ask_user" in contract["required_policy"]
+    assert "history_compacted" in contract["invalidation_reasons"]
+
+    template = await _call(tools, "show_workflow_template")
+    assert isinstance(template, dict)
+    assert template["style"] == "cache-stable-runner"
+    assert "stable_system_prompt=CACHE_CONTRACT" in template["required_call"]
+    assert "ask_user" in template["source"]
+
+
+def test_strict_cache_validation_rejects_dynamic_or_guessing_runner(tmp_path: Path) -> None:
+    source = """
+from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+CACHE_CONTRACT = f"dynamic-{object()}"
+
+class BadRunner(CodePlanRunner):
+    async def run(self, intent):
+        return None
+    async def resume(self, context):
+        return None
+
+class BadWorkflow(WorkflowPlugin):
+    name = "bad_cache"
+    description = "bad"
+    phases = [PhaseSpec(name="one")]
+    @classmethod
+    def build_runner(cls, config, mode_manager):
+        return BadRunner(config, mode_manager)
+"""
+    path = tmp_path / "bad_cache.py"
+    path.write_text(source, encoding="utf-8")
+    report = validate_workflow_file(
+        str(path),
+        expected_name="bad_cache",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+    assert not report.ok
+    assert report.cache_contract == "invalid"
+    assert any("immutable literal policy" in error for error in report.errors)
+    assert any("ask_user" in error for error in report.errors)
+
+
 async def test_describe_runner_pattern_lists_every_required_element() -> None:
     result = await _call(make_inspection_tools(), "describe_runner_pattern")
     assert isinstance(result, dict)
@@ -655,6 +747,17 @@ async def test_describe_runner_pattern_lists_every_required_element() -> None:
         str(item)
         for item in result["reference_implementations"]  # type: ignore[union-attr]
     )
+
+
+async def test_describe_transition_tool_pattern_returns_canonical_import_and_decorator() -> None:
+    result = await _call(make_inspection_tools(), "describe_transition_tool_pattern")
+    assert isinstance(result, dict)
+    assert "from agenthicc.tools.capabilities import tool_control" in result["canonical_import"]
+    assert (
+        result["canonical_decorators"] == "@tool_control\n@tool()\nasync def transition(...): ..."
+    )
+    assert any("never write @tool_control()" in rule for rule in result["decorator_rules"])
+    assert any("lauren_ai._tools" in rule for rule in result["decorator_rules"])
 
 
 # ── validation: path handling ─────────────────────────────────────────────────

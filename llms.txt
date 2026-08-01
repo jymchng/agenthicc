@@ -61,6 +61,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
 | `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
 | `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints |
+| `PromptContract` / `build_workflow_prompt_contract` | `agenthicc.runners.prompt_contract` | Cache-stable system/tool prefix plus append-only dynamic workflow context; emits redacted cache diagnostics |
 | `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
 | `execute_workflow` | `agenthicc.runners.headless` | Execute a registered workflow in a session |
 | `run_headless_workflow` | `agenthicc.runners.headless` | Build, run, and close one headless workflow session |
@@ -136,7 +137,7 @@ the legacy plan-review option set.
 | CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, approved design, generated path, per-phase `PhaseArtifact`s, shared memory |
 | make_*_tools | agenthicc.workflows.create_workflow.phase_tools | Phase transition handoffs; rejected transitions return actionable `error`, `fix`, and `message` fields |
 | validate_workflow_file | agenthicc.workflows.create_workflow.validation | Imports the generated file or package like the loader does; a failing report overrides an agent approval |
-| make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only authoring-surface inspection read live from `PhaseSpec`, `ToolCapability`, `PhaseRole`; `show_example_workflow()` defaults to the custom-runner shape |
+| make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only authoring-surface inspection read live from `PhaseSpec`, `ToolCapability`, `PhaseRole`; includes `describe_transition_tool_pattern()` and `show_example_workflow()` defaults to the custom-runner shape |
 
 A generated workflow is expected to ship its own state-machine runner in
 `<name>/runner.py` (typed state enum, typed context, one bounded async method per state,
@@ -144,6 +145,12 @@ A generated workflow is expected to ship its own state-machine runner in
 `build_runner()`). `CodePlanRunner.run_phase(..., tools=...)` is the public helper
 for running one tool-gated phase. Validation warns when a multi-phase workflow
 inherits the declarative runner.
+
+Custom runners should pass a literal `stable_system_prompt` policy to
+`run_phase`; phase state, artifacts, questions, answers, and summaries remain in
+dynamic context. Generated workflows must use the existing `ask_user` tool for
+material ambiguity and strict validation rejects direct history insertion or
+turn calls that bypass the contract.
 
 Every session also carries five read-only self-inspection tools so the agent reads
 the current API instead of remembering it:

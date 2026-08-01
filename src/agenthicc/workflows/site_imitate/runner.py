@@ -31,6 +31,36 @@ log = logging.getLogger(__name__)
 #: Bounded retries per phase — never loop forever waiting for a tool call.
 _MAX_ATTEMPTS = 5
 
+# This is stable workflow policy, not phase state. Passing it through
+# ``CodePlanRunner.run_phase(..., stable_system_prompt=...)`` makes mobile
+# responsiveness a requirement of every generated site, including retries and
+# dynamically planned component phases.
+MOBILE_RESPONSIVE_CONTRACT = """
+[MOBILE-FIRST RESPONSIVE SITE CONTRACT]
+The generated website must always be mobile-friendly, not merely desktop-scaled.
+Design and implement mobile-first layouts that work at narrow widths around
+320px and 375px, tablet widths around 768px, and desktop widths without
+horizontal scrolling or clipped content. Use responsive CSS/Tailwind breakpoints,
+fluid sizing, responsive images, accessible collapsible navigation, readable
+typography, and touch targets of at least 44px where practical. Never hard-code
+desktop-only widths or rely on hover as the only way to reach an action.
+Verify responsive behavior before completion at narrow, tablet, and desktop
+viewports; fix overflow, wrapping, navigation, spacing, and interaction issues
+instead of accepting a desktop-only result.
+""".strip()
+
+
+def _mobile_verification_error(summary: str) -> str | None:
+    """Require verification evidence before a site can advance to completion."""
+    normalized = summary.strip().lower()
+    if any(marker in normalized for marker in ("mobile", "responsive", "viewport")):
+        return None
+    return (
+        "Mobile responsiveness was not evidenced. Re-run the verification at narrow, "
+        "tablet, and desktop viewports and mention the responsive/overflow results in "
+        "the summary."
+    )
+
 
 # ---------------------------------------------------------------------------
 # NameThatUI integration — a canonical component dictionary for the
@@ -396,6 +426,9 @@ def _make_verify_tools(
             summary: What was verified (compile check, canonical anatomy,
                 matches the reference) and the result.
         """
+        mobile_error = _mobile_verification_error(summary)
+        if mobile_error is not None:
+            return {"ok": False, "error": mobile_error, "fix": "Verify mobile responsiveness."}
         data["action"] = "pass"
         data["summary"] = summary.strip()
         event.set()
@@ -431,6 +464,9 @@ def _make_final_verify_tools(
         Args:
             summary: Build output summary showing success.
         """
+        mobile_error = _mobile_verification_error(summary)
+        if mobile_error is not None:
+            return {"ok": False, "error": mobile_error, "fix": "Verify mobile responsiveness."}
         data["action"] = "pass"
         data["summary"] = summary.strip()
         event.set()
@@ -633,7 +669,8 @@ class SiteImitateRunner(CodePlanRunner):
                     "the reference website using the playwright_* browser tools, explore it "
                     "thoroughly, and document everything: page structure, layouts, components, "
                     "navigation patterns, color scheme, typography, interactive features, and "
-                    "user flows. Take multiple snapshots and screenshots.\n\n"
+                    "user flows. Take multiple snapshots and screenshots, including narrow "
+                    "mobile-width behavior when it is available.\n\n"
                     "Use the lookup_component(description) tool to name every distinct UI "
                     "element you observe - describe it in sloppy words ('the three lines "
                     "that open a side panel', 'the gray text that disappears when you type') "
@@ -647,6 +684,7 @@ class SiteImitateRunner(CodePlanRunner):
                     "advances ANALYZE to PLAN; prose such as 'done' never advances the "
                     "workflow."
                 ),
+                stable_system_prompt=MOBILE_RESPONSIVE_CONTRACT,
                 max_turns=20,
                 shared_memory=memory,
                 tools=_make_analyze_tools(event, data, ctx.catalog),
@@ -687,6 +725,9 @@ class SiteImitateRunner(CodePlanRunner):
                     "pages/routes, tech stack (NextJS App Router, Tailwind CSS v4, "
                     "shadCN/ui, TanStack Query, Stripe if payments needed), data sources, "
                     "directory structure, and an ordered build plan.\n\n"
+                    "Make the implementation mobile-first and responsive at narrow, tablet, "
+                    "and desktop widths; include those checks in every component's verify "
+                    "criteria.\n\n"
                     "Write the plan in terms of the Named Component Inventory from the "
                     "analysis: for each component, name it by its canonical dictionary name "
                     'and use the shadcn/ui symbol when one exists (e.g. Sheet side="left" '
@@ -708,6 +749,7 @@ class SiteImitateRunner(CodePlanRunner):
                     "successful submit_plan() or request_reanalysis() transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
+                stable_system_prompt=MOBILE_RESPONSIVE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_plan_tools(event, data),
@@ -763,11 +805,13 @@ class SiteImitateRunner(CodePlanRunner):
                     "(npx create-next-app), install all dependencies: tailwind CSS, shadCN/ui, "
                     "@tanstack/react-query, lucide-react, stripe if needed. Configure Tailwind "
                     "CSS, set up the project directory structure with component folders. "
+                    "Include the mobile-first responsive foundation and viewport configuration. "
                     "Call scaffold_complete(path) with the project directory path when done. "
                     "Only a successful scaffold_complete(path) call advances to BUILD (or "
                     "FINAL VERIFY when there are no components); prose never advances the "
                     "workflow."
                 ),
+                stable_system_prompt=MOBILE_RESPONSIVE_CONTRACT,
                 mode="Yolo",
                 max_turns=15,
                 shared_memory=memory,
@@ -817,6 +861,8 @@ class SiteImitateRunner(CodePlanRunner):
                     "Build this component using its canonical API symbols and anatomy - when a "
                     'shadcn/ui symbol is listed (e.g. Sheet side="left"), use that primitive; '
                     "otherwise hand-roll the component with its canonical ARIA/HTML/CSS anatomy. "
+                    "Implement it mobile-first: use responsive breakpoints, fluid sizing, and "
+                    "avoid horizontal overflow or desktop-only fixed widths. "
                     "You may call lookup_component(description) to retrieve the full paste-ready "
                     "build prompt. Write the component's source files into the project created in "
                     "the scaffold phase. Build ONLY this component - the other components have "
@@ -824,6 +870,7 @@ class SiteImitateRunner(CodePlanRunner):
                     "component_built() call advances BUILD to VERIFY; prose never advances "
                     "the workflow."
                 ),
+                stable_system_prompt=MOBILE_RESPONSIVE_CONTRACT,
                 mode="Yolo",
                 max_turns=40,
                 shared_memory=memory,
@@ -859,12 +906,14 @@ class SiteImitateRunner(CodePlanRunner):
                     "Check that the component compiles (e.g. npx tsc --noEmit, or the project's "
                     "type check), uses the canonical anatomy from its spec (e.g. the Sheet "
                     "primitive, aria-expanded + aria-controls, a real <label for>), and matches "
-                    "the reference site. If it passes, call component_verified(summary). If it "
+                    "the reference site at mobile, tablet, and desktop widths without horizontal "
+                    "overflow. If it passes, call component_verified(summary). If it "
                     "fails, call component_verification_failed(errors) - the build phase for "
                     "this component will re-run. Only a successful component_verified() or "
                     "component_verification_failed() transition-tool call changes phase; "
                     "prose never advances the workflow."
                 ),
+                stable_system_prompt=MOBILE_RESPONSIVE_CONTRACT,
                 max_turns=10,
                 shared_memory=memory,
                 tools=_make_verify_tools(event, data),
@@ -901,13 +950,16 @@ class SiteImitateRunner(CodePlanRunner):
                     "You are in the FINAL VERIFY phase of site_imitate. Run 'npx next build' in "
                     "the project directory and check for TypeScript errors and build output. "
                     "Verify all routes compile and every planned component from the component "
-                    "plan is present and wired into the pages.\n\n"
+                    "plan is present and wired into the pages. Check the site at narrow mobile, "
+                    "tablet, and desktop widths for overflow, responsive navigation, readable "
+                    "text, and usable touch targets.\n\n"
                     "If the build succeeds, call final_verify_passed(summary) with the build "
                     "output. If it fails, call final_verify_failed(errors) with the errors - "
                     "the last component's build phase will re-run so you can fix them. Only "
                     "a successful final_verify_passed() or final_verify_failed() call "
                     "changes phase; prose never advances the workflow."
                 ),
+                stable_system_prompt=MOBILE_RESPONSIVE_CONTRACT,
                 max_turns=10,
                 shared_memory=memory,
                 tools=_make_final_verify_tools(event, data),
@@ -966,7 +1018,8 @@ class SiteImitateWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the ANALYZE phase of site_imitate. Call "
                 "submit_analysis(analysis, components=...) to advance to PLAN. Only a "
-                "successful transition-tool call changes phase; prose never advances it."
+                "successful transition-tool call changes phase; prose never advances it. "
+                "Record the reference site's mobile behavior and responsive breakpoints."
             ),
         ),
         PhaseSpec(
@@ -979,7 +1032,9 @@ class SiteImitateWorkflow(WorkflowPlugin):
                 "You are in the PLAN phase of site_imitate. Call "
                 "submit_plan(plan, components=[...]) to advance to SCAFFOLD, or call "
                 "request_reanalysis(question) to branch back to ANALYZE. Only a successful "
-                "transition-tool call changes phase; prose never advances it."
+                "transition-tool call changes phase; prose never advances it. The plan must "
+                "include a mobile-first responsive layout and narrow-viewport verification "
+                "for every component."
             ),
         ),
         PhaseSpec(
@@ -992,7 +1047,9 @@ class SiteImitateWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the SCAFFOLD phase of site_imitate. Call "
                 "scaffold_complete(path) to advance to BUILD or FINAL VERIFY. Only a "
-                "successful transition-tool call changes phase; prose never advances it."
+                "successful transition-tool call changes phase; prose never advances it. "
+                "Scaffold the responsive/mobile-first foundation, including the viewport "
+                "configuration and responsive CSS structure."
             ),
         ),
         # The build/verify phases below are a static skeleton; the runner
@@ -1008,7 +1065,8 @@ class SiteImitateWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the BUILD phase of site_imitate. Call component_built() to "
                 "advance to VERIFY. Only a successful transition-tool call changes phase; "
-                "prose never advances it."
+                "prose never advances it. Build the component mobile-first with no fixed "
+                "desktop-only layout or horizontal overflow."
             ),
         ),
         PhaseSpec(
@@ -1022,6 +1080,7 @@ class SiteImitateWorkflow(WorkflowPlugin):
                 "component_verified(summary) to advance, or "
                 "component_verification_failed(errors) to return to BUILD. Only a "
                 "successful transition-tool call changes phase; prose never advances it."
+                " Include mobile, tablet, and desktop viewport checks."
             ),
         ),
         PhaseSpec(
@@ -1034,7 +1093,9 @@ class SiteImitateWorkflow(WorkflowPlugin):
                 "You are in the FINAL VERIFY phase of site_imitate. Call "
                 "final_verify_passed(summary) to complete, or "
                 "final_verify_failed(errors) to return to BUILD. Only a successful "
-                "transition-tool call changes phase; prose never advances it."
+                "transition-tool call changes phase; prose never advances it. The final "
+                "verification must include mobile and desktop responsive behavior, overflow, "
+                "navigation, and touch interaction checks."
             ),
         ),
     ]

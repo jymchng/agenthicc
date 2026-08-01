@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from agenthicc.runners.agent_turn_context import AgentTurnContext
+from agenthicc.runners.prompt_contract import PromptBlock
 from agenthicc.tools.hooks import (
     AfterToolHookDecision,
     ErrorToolHookDecision,
@@ -238,6 +239,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.mcp import McpToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.runners.usage_ledger import UsageLedger, UsageRunTracker
+    from agenthicc.runners.prompt_contract import PromptContract
 
 
 # ── formatting helper (module-level, unchanged) ───────────────────────────────
@@ -516,6 +518,8 @@ class AgentTurnRunner:
 
         # Content produced during the turn.
         self._skill_suffix: str = ""
+        self._runtime_dynamic_blocks: list[PromptBlock] = []
+        self._cache_summary: str | None = None
         self._usage_tracker: UsageRunTracker | None = None
 
     # ── public entry point ────────────────────────────────────────────────────
@@ -819,6 +823,7 @@ class AgentTurnRunner:
         from agenthicc.plugins.registry import build_registry  # noqa: PLC0415
         from agenthicc.agents.plugin import BASE_SYSTEM_PROMPT as _BASE  # noqa: PLC0415
         from agenthicc.runners.tool_populator import populate_agent_tools  # noqa: PLC0415
+        from agenthicc.runners.prompt_contract import PromptBlock  # noqa: PLC0415
         from agenthicc.tools.capabilities import (  # noqa: PLC0415
             get_tool_capabilities,
             is_exploratory_tool,
@@ -849,26 +854,56 @@ class AgentTurnRunner:
         }
         excluded_names = [name for name in registry.names if name not in visible_names]
 
+        prompt_contract = ctx.prompt_contract
+        if prompt_contract is not None:
+            visible_tools = prompt_contract.ordered_tools(visible_tools)
+
         # System prompt
         cfg_base = getattr(ctx.exec_cfg, "base_system_prompt", None) or ""
         effective_base = cfg_base or _BASE
-        system = (
-            effective_base
-            + (f"\n\n{ctx.system_prompt_suffix}" if ctx.system_prompt_suffix else "")
-            + (self._skill_suffix or "")
-            + (
-                f"\n\n{registry.describe(excluded_names=excluded_names)}"
-                if registry.describe(excluded_names=excluded_names)
-                else ""
+        if prompt_contract is None:
+            system = (
+                effective_base
+                + (f"\n\n{ctx.system_prompt_suffix}" if ctx.system_prompt_suffix else "")
+                + (self._skill_suffix or "")
+                + (
+                    f"\n\n{registry.describe(excluded_names=excluded_names)}"
+                    if registry.describe(excluded_names=excluded_names)
+                    else ""
+                )
             )
-        )
-        if allowed_tool_names is not None:
-            system += (
-                "\n\n### Phase-local tool policy\n"
-                "Only the tools listed above are available in this phase. Do not call shell, "
-                "run_bash, run_command, or any other omitted tool. When calling write_file, "
-                "provide both required arguments: path and complete content."
-            )
+            if allowed_tool_names is not None:
+                system += (
+                    "\n\n### Phase-local tool policy\n"
+                    "Only the tools listed above are available in this phase. Do not call shell, "
+                    "run_bash, run_command, or any other omitted tool. When calling write_file, "
+                    "provide both required arguments: path and complete content."
+                )
+            self._runtime_dynamic_blocks = []
+        else:
+            # Contract-native workflow turns keep only immutable policy in the
+            # system string.  Tool summaries and phase restrictions are dynamic
+            # context because the visible tool set may change between phases.
+            system = effective_base
+            if prompt_contract.stable_system_prefix:
+                system += f"\n\n{prompt_contract.stable_system_prefix}"
+            self._runtime_dynamic_blocks = []
+            description = registry.describe(excluded_names=excluded_names)
+            if description:
+                self._runtime_dynamic_blocks.append(PromptBlock("AVAILABLE TOOLS", description))
+            if self._skill_suffix:
+                self._runtime_dynamic_blocks.append(
+                    PromptBlock("MATCHED SKILLS", self._skill_suffix)
+                )
+            if allowed_tool_names is not None:
+                self._runtime_dynamic_blocks.append(
+                    PromptBlock(
+                        "PHASE TOOL POLICY",
+                        "Only the tools listed above are available in this phase. Do not call "
+                        "shell, run_bash, run_command, or any other omitted tool. When calling "
+                        "write_file, provide both required arguments: path and complete content.",
+                    )
+                )
 
         @agent_decorator(model=self._model_id, system=system)
         @use_tools(*visible_tools)
@@ -988,6 +1023,20 @@ class AgentTurnRunner:
             ):
                 visible_tools.append(spawn_tool)
                 populate_agent_tools(agent_instance, visible_tools)
+
+        # The registry description is intentionally captured after all
+        # session-bound tools (including spawn_subagents) have been registered.
+        if prompt_contract is not None:
+            visible_tools = prompt_contract.ordered_tools(visible_tools)
+            populate_agent_tools(agent_instance, visible_tools)
+            self._runtime_dynamic_blocks = [
+                block
+                for block in self._runtime_dynamic_blocks
+                if getattr(block, "kind", "") != "AVAILABLE TOOLS"
+            ]
+            description = registry.describe(excluded_names=excluded_names)
+            if description:
+                self._runtime_dynamic_blocks.insert(0, PromptBlock("AVAILABLE TOOLS", description))
 
         return agent_instance, active_runner
 
@@ -1118,6 +1167,42 @@ class AgentTurnRunner:
             )
         return isinstance(after, int) and after < before
 
+    def _prepare_cache_stable_message(self, message: str) -> str:
+        """Move the rolling summary into dynamic context for contract turns.
+
+        lauren-ai 1.4 appends ``memory.summary`` to the decorated system
+        prompt.  That is correct for ordinary turns but would make the stable
+        system cache block change after compaction.  Contract-native turns
+        temporarily hide that field from lauren-ai and append the same summary
+        as an ordinary user-context block instead.  The original value is
+        restored when the turn finishes, so journal/checkpoint semantics remain
+        unchanged.
+        """
+
+        contract = self._ctx.prompt_contract
+        memory = self._ctx.session_memory
+        if contract is None or memory is None:
+            return message
+        summary = getattr(memory, "summary", None)
+        self._cache_summary = summary if isinstance(summary, str) and summary else None
+        if hasattr(memory, "_summary"):
+            memory._summary = None
+        extra = list(self._runtime_dynamic_blocks)
+        if self._cache_summary:
+            extra.append(PromptBlock("EARLIER CONVERSATION SUMMARY", self._cache_summary))
+        return contract.render_dynamic_message(message, extra_blocks=extra)
+
+    def _restore_cache_summary(self) -> None:
+        """Restore the hidden rolling summary after a contract-native turn."""
+
+        memory = self._ctx.session_memory
+        if (
+            self._ctx.prompt_contract is not None
+            and memory is not None
+            and hasattr(memory, "_summary")
+        ):
+            memory._summary = self._cache_summary
+
     async def _stream(
         self,
         agent_instance: object,
@@ -1127,6 +1212,13 @@ class AgentTurnRunner:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
 
         ctx = self._ctx
+
+        contract = ctx.prompt_contract
+        # Keep the caller-supplied turn text separate from the rendered
+        # contract message.  A context-overflow retry must rebuild the latter
+        # after compaction without replacing the phase prompt with ``ctx.text``
+        # (which may not include workflow-generated dynamic instructions).
+        base_agent_text = agent_text
 
         usage_tracker = None
         if ctx.usage_ledger is not None:
@@ -1185,6 +1277,19 @@ class AgentTurnRunner:
             _window = _context_window_for(self._model_id)
             _window_tokens = max(1, _window - _max_output - max(4_000, _window // 25))
 
+        if contract is not None:
+            # Use agenthicc's journal-aware compactor before handing control to
+            # lauren-ai.  This keeps the provider runner from rebuilding a
+            # system prompt containing its rolling summary.
+            await self._auto_compact_if_needed(
+                active_runner,
+                agent_text,
+                max_input_tokens=_window_tokens,
+            )
+            agent_text = self._prepare_cache_stable_message(agent_text)
+            if ctx.conv_store is not None:
+                ctx.conv_store.append_event("prompt_cache", contract.diagnostics())
+
         # Lauren 1.3.1 has the summarisation fields but not the hard context
         # guard.  Newer versions add ``context_window`` and exact counting.
         # Pass it when available; the dynamic field check keeps the published
@@ -1240,7 +1345,11 @@ class AgentTurnRunner:
                 # Old Lauren's heuristic summariser is intentionally disabled
                 # here: the agenthicc fallback is bounded, journal-aware, and
                 # emits the same user-visible compaction event.
-                summarize_at=0.8 if _auto_compact and _supports_context_guard else None,
+                summarize_at=(
+                    None
+                    if contract is not None
+                    else (0.8 if _auto_compact and _supports_context_guard else None)
+                ),
                 summary_model=self._model_id,
             )
             # Provider profiles carry sampling and vendor-specific request
@@ -1391,6 +1500,8 @@ class AgentTurnRunner:
                     force=True,
                 )
                 if compacted:
+                    if contract is not None:
+                        agent_text = self._prepare_cache_stable_message(base_agent_text)
                     try:
                         await self._stream_with_retry(_stream_once)
                     except Exception as retry_exc:  # noqa: BLE001
@@ -1433,6 +1544,7 @@ class AgentTurnRunner:
                         _journal.turn_aborted(self._intent_id, reason="cancelled-or-failed")
                 except OSError:
                     pass
+            self._restore_cache_summary()
 
     # ── transport retry wrapper (PRD-126) ─────────────────────────────────────
 
@@ -1551,6 +1663,7 @@ async def _run_agent_turn(
     approval_svc: ApprovalService | None = None,
     output_collector: list[str] | None = None,
     system_prompt_suffix: str = "",
+    prompt_contract: "PromptContract | None" = None,
     excluded_capabilities: frozenset[str] = frozenset(),
     allowed_tool_names: frozenset[str] | None = None,
     memory_router: MemoryRouter | None = None,
@@ -1588,6 +1701,7 @@ async def _run_agent_turn(
         approval_svc=approval_svc,
         output_collector=output_collector,
         system_prompt_suffix=system_prompt_suffix,
+        prompt_contract=prompt_contract,
         excluded_capabilities=excluded_capabilities,
         allowed_tool_names=allowed_tool_names,
         memory_router=memory_router,
