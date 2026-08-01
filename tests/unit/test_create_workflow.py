@@ -552,7 +552,8 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
     result = await _call(make_inspection_tools(), "show_example_workflow")
     assert isinstance(result, dict)
     assert result["style"] == "runner"
-    assert result["path"] == ".agenthicc/workflows/release_check.py"
+    assert result["path"] == ".agenthicc/workflows/release_check"
+    assert result["entry_point"] == ".agenthicc/workflows/release_check/runner.py"
     source = result["source"]
     assert isinstance(source, str)
 
@@ -577,13 +578,16 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
     ):
         assert required in source, required
 
-    path = _write(tmp_path, "release_check.py", source)
+    path = tmp_path / "workflows" / "release_check"
+    path.mkdir(parents=True)
+    entry_point = path / "runner.py"
+    entry_point.write_text(source, encoding="utf-8")
     report = validate_workflow_file(str(path), expected_name="release_check", root=tmp_path)
     assert report.ok, report.render()
     assert report.warnings == (), report.render()
     assert report.phase_names == ("plan", "verify", "report")
 
-    spec = importlib.util.spec_from_file_location("generated_release_check", path)
+    spec = importlib.util.spec_from_file_location("generated_release_check", entry_point)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -613,14 +617,17 @@ async def test_show_example_workflow_declarative_style_is_opt_in(tmp_path: Path)
     result = await _call(make_inspection_tools(), "show_example_workflow", "declarative")
     assert isinstance(result, dict)
     assert result["style"] == "declarative"
-    assert result["path"] == ".agenthicc/workflows/doc_review.py"
+    assert result["path"] == ".agenthicc/workflows/doc_review"
+    assert result["entry_point"] == ".agenthicc/workflows/doc_review/runner.py"
     assert "show_example_workflow('runner')" in str(result["note"])
     source = result["source"]
     assert isinstance(source, str)
     assert "BaseWorkflowRunner" not in source
     assert "phase-transition tool is" in source
 
-    path = _write(tmp_path, "doc_review.py", source)
+    path = tmp_path / "workflows" / "doc_review"
+    path.mkdir(parents=True)
+    (path / "runner.py").write_text(source, encoding="utf-8")
     report = validate_workflow_file(str(path), expected_name="doc_review", root=tmp_path)
     assert report.ok, report.render()
     # Valid, but flagged: two phases with no runner of its own.
@@ -1175,8 +1182,8 @@ def test_phase_model_maps_summarize_onto_summary_model() -> None:
 
 def test_target_path_uses_the_project_workflow_directory() -> None:
     runner = _runner()
-    assert runner._target_path("demo") == ".agenthicc/workflows/demo.py"
-    assert runner._target_path("") == ".agenthicc/workflows/my_workflow.py"
+    assert runner._target_path("demo") == ".agenthicc/workflows/demo"
+    assert runner._target_path("") == ".agenthicc/workflows/my_workflow"
 
 
 def test_workspace_root_is_the_current_directory() -> None:
@@ -1486,12 +1493,13 @@ async def test_generate_prompt_requires_writing_the_runner_not_a_stub() -> None:
         prompt = kwargs["system_prompt"]
         assert isinstance(prompt, str)
         prompts.append(prompt)
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo.py")
+        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
 
     runner._run_turn = turn  # type: ignore[method-assign]
     await runner._generate(ctx)
     prompt = prompts[0]
-    assert "SAME file" in prompt
+    assert "runner.py" in prompt
+    assert "workflow directory" in prompt
     assert "state enum" in prompt
     assert "build_runner()" in prompt
     assert "checkpoint_context_to_payload" in prompt
@@ -1515,17 +1523,17 @@ async def test_generate_prompt_tells_the_agent_to_write_in_chunks() -> None:
         prompt = kwargs["system_prompt"]
         assert isinstance(prompt, str)
         prompts.append(prompt)
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo.py")
+        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
 
     runner._run_turn = turn  # type: ignore[method-assign]
     await runner._generate(ctx)
     prompt = prompts[0]
-    assert "WRITE THE FILE IN CHUNKS" in prompt
-    assert "write_file(path, content)" in prompt
-    assert "append_file(path, content)" in prompt
-    assert "read_file(path)" in prompt
+    assert "WRITE THE PACKAGE IN CHUNKS" in prompt
+    assert "write_file(path/runner.py, content)" in prompt
+    assert "append_file(path/runner.py, content)" in prompt
+    assert "read_file(path/runner.py)" in prompt
     assert "response limit" in prompt
-    assert "Never re-write the file from the start after appending" in prompt
+    assert "Never re-write runner.py from the start after appending" in prompt
 
 
 async def test_generate_reminder_tells_the_agent_to_resume_not_restart() -> None:
@@ -1542,7 +1550,7 @@ async def test_generate_reminder_tells_the_agent_to_resume_not_restart() -> None
     await runner._generate(ctx)
     reminder = texts[1]
     assert "response was too long and was discarded" in reminder
-    assert "append_file(path, content)" in reminder
+    assert "append_file(path/runner.py, content)" in reminder
     assert "Do not start the file over" in reminder
 
 
@@ -1568,14 +1576,14 @@ async def test_design_prompt_carries_the_intent_and_authoring_guide() -> None:
     ctx = _ctx("build me a doc review workflow")
     await runner._design(ctx)
     assert "build me a doc review workflow" in prompts[0]
-    assert ".agenthicc/workflows/<name>.py" in prompts[0]
+    assert ".agenthicc/workflows/<name>/" in prompts[0]
     assert "describe_phasespec()" in prompts[0]
 
 
 # ── runner: generate phase ────────────────────────────────────────────────────
 
 
-def _generated_ctx(path: str = ".agenthicc/workflows/demo.py") -> CreateWorkflowContext:
+def _generated_ctx(path: str = ".agenthicc/workflows/demo") -> CreateWorkflowContext:
     ctx = _ctx()
     ctx.design = "the design"
     ctx.workflow_name = "demo"
@@ -1590,15 +1598,15 @@ async def test_generate_transitions_to_validate_and_records_the_artifact() -> No
     ctx.workflow_name = "demo"
 
     async def turn(_text: str, **kwargs: object) -> None:
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo.py")
+        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
 
     runner._run_turn = turn  # type: ignore[method-assign]
     assert await runner._generate(ctx) is CreateWorkflowState.VALIDATE
-    assert ctx.generated_path == "x/demo.py"
+    assert ctx.generated_path == "x/demo"
     assert ctx.generation_summary == "wrote it"
     artifact = ctx.artifacts["generate"]
     assert artifact.kind == "workflow_file"
-    assert artifact.metadata["path"] == "x/demo.py"
+    assert artifact.metadata["path"] == "x/demo"
 
 
 async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt() -> None:
@@ -1611,7 +1619,7 @@ async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt() -> Non
     async def turn(text: str, **kwargs: object) -> None:
         seen.update(kwargs)
         seen["text"] = text
-        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo.py")
+        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
 
     runner._run_turn = turn  # type: ignore[method-assign]
     await runner._generate(ctx)
@@ -1619,8 +1627,8 @@ async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt() -> Non
     prompt = seen["system_prompt"]
     assert isinstance(prompt, str)
     assert "phases: draft then review" in prompt
-    assert ".agenthicc/workflows/demo.py" in prompt
-    assert ".agenthicc/workflows/demo.py" in str(seen["text"])
+    assert ".agenthicc/workflows/demo" in prompt
+    assert ".agenthicc/workflows/demo" in str(seen["text"])
 
 
 async def test_generate_repair_prompt_includes_the_rejection_and_report() -> None:

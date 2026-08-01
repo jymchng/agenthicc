@@ -2,7 +2,9 @@
 
 ``create_workflow`` is a *meta-workflow*: it drives a single agent through the
 phases of authoring a brand-new agenthicc :class:`~agenthicc.workflows.plugin.WorkflowPlugin`
-and writing it to ``.agenthicc/workflows/<name>.py``.  It is modelled tightly on
+and writing it to ``.agenthicc/workflows/<name>/``.  The directory contains a
+``runner.py`` entry point and may contain workflow-specific tools and helpers.
+It is modelled tightly on
 ``code_plan``:
 
 * an **outer loop** (:meth:`~agenthicc.workflows.create_workflow.runner.CreateWorkflowRunner.run`)
@@ -94,7 +96,7 @@ class CreateWorkflowContext:
     run_id: str
     design: str = ""  # approved design text, set after DESIGN
     workflow_name: str = ""  # lower_snake_case slug of the workflow being authored
-    generated_path: str = ""  # path the workflow file was written to, set after GENERATE
+    generated_path: str = ""  # workflow package path written during GENERATE
     generation_summary: str = ""  # agent's summary of what it generated
     validation_report: str = ""  # deterministic loader/validator report
     validation_summary: str = ""  # agent's approval summary, set on VALIDATE approve

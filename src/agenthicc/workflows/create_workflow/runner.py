@@ -116,8 +116,10 @@ _RUNNER_GUIDE: str = (
 )
 
 _AUTHORING_GUIDE: str = (
-    "A custom workflow is a single Python file at "
-    f"{_WORKFLOW_DIR}/<name>.py that defines a WorkflowPlugin subclass:\n"
+    "A custom workflow is a directory at "
+    f"{_WORKFLOW_DIR}/<name>/ with runner.py as its entry point. It may contain "
+    "__init__.py and workflow-specific tools/helpers in sibling files such as tools.py. "
+    "runner.py defines the WorkflowPlugin subclass:\n"
     "  - name: lower_snake_case identifier, unique and not a builtin\n"
     "  - description: one line shown in the workflow picker\n"
     "  - mode_bindings: list of mode names that auto-select it ([] = manual only)\n"
@@ -171,9 +173,9 @@ _DESIGN_REMINDER: str = (
 
 _GENERATE_PROMPT: str = (
     "You are in the GENERATION phase of create_workflow. The approved design is in your "
-    "system prompt. Write the complete workflow file to disk now with the write tools — "
+    "system prompt. Write the complete workflow directory to disk now with the write tools — "
     "do NOT re-design and do NOT ask for approval again.\n\n"
-    "The file must import cleanly on its own: include the module docstring, "
+    "The package must import cleanly through its runner.py entry point: include the module docstring, "
     "'from __future__ import annotations', the imports it uses, and the full "
     "WorkflowPlugin subclass with every PhaseSpec from the approved design. Every "
     "next / on_reject value must name a phase that exists in the same workflow.\n\n"
@@ -181,7 +183,7 @@ _GENERATE_PROMPT: str = (
     "say that only a successful transition-tool call changes phase; prose never advances "
     "the workflow. Mark custom transition callables with @tool_control so the runtime can "
     "advertise them automatically.\n\n"
-    "Write the runner the design specified into the SAME file — the state enum, the "
+    "Write the runner the design specified into runner.py — the state enum, the "
     "context dataclass, one bounded async method per state, the "
     "'while not state.is_terminal' + 'match state' driver in run(), resume(), the phase "
     "tool factories, checkpoint_context_to_payload(), "
@@ -191,40 +193,44 @@ _GENERATE_PROMPT: str = (
     "show_example_workflow() for a complete working runner to adapt, and "
     "inspect_agenthicc_source('agenthicc.workflows.code_plan.runner:CodePlanRunner') when "
     "you need the real signatures.\n\n"
-    "WRITE THE FILE IN CHUNKS. A workflow with its own runner is a few hundred lines, and "
+    "WRITE THE PACKAGE IN CHUNKS. A workflow with its own runner is a few hundred lines, and "
     "one tool call carrying the whole file can exceed the response limit — if that happens "
     "the call is discarded and nothing reaches disk. So:\n"
-    "  1. write_file(path, content) with the first chunk — the module docstring, the "
+    "  1. make_directory(path) for the target directory;\n"
+    "  2. write_file(path/runner.py, content) with the first chunk — the module docstring, the "
     "imports, and the state enum;\n"
-    "  2. append_file(path, content) for each following chunk — the context dataclass, the "
+    "  3. append_file(path/runner.py, content) for each following chunk — the context dataclass, the "
     "tool factories, the runner, then the plugin class;\n"
-    "  3. keep each chunk to roughly 60-80 lines, and split only between top-level "
+    "  4. write_file(path/tools.py, content) (and other sibling modules) for workflow-specific "
+    "tools; keep imports relative to the package;\n"
+    "  5. keep each chunk to roughly 60-80 lines, and split only between top-level "
     "definitions so no chunk cuts a statement in half;\n"
-    "  4. read_file(path) at the end to confirm the whole file is on disk and complete.\n"
-    "Never re-write the file from the start after appending — that discards earlier chunks.\n\n"
+    "  6. read_file(path/runner.py) and the sibling files at the end to confirm the package "
+    "is on disk and complete.\n"
+    "Never re-write runner.py from the start after appending — that discards earlier chunks.\n\n"
     "The generated runner must use the WorkflowConfig.session_memory supplied by the "
     "session, including on resume; never instantiate a fresh ShortTermMemory when an "
     "injected session memory exists. The restore hook must attach its memory argument "
     "to the context.\n\n"
-    "When the complete file is on disk, call mark_generation_complete(summary, path) "
+    "When the complete directory is on disk, call mark_generation_complete(summary, path) "
     "with the exact path you wrote to. Do not call it before the file is written."
 )
 _GENERATE_REMINDER: str = (
     "You have not yet called mark_generation_complete(summary, path). The approved design "
     "and target path are in your system prompt.\n\n"
     "If a previous write produced no result, the response was too long and was discarded — "
-    "write less per call. Use read_file(path) to see how much of the file already exists, "
-    "then continue with append_file(path, content) in chunks of roughly 60-80 lines from "
-    "where it stops. Do not start the file over. Call mark_generation_complete(summary, path) "
-    "once the whole file is on disk."
+    "write less per call. Use read_file(path/runner.py) to see how much of the runner exists, "
+    "then continue with append_file(path/runner.py, content) in chunks of roughly 60-80 lines from "
+    "where it stops. Do not start the file over. Confirm every sibling tool module is also "
+    "present. Call mark_generation_complete(summary, path) once the whole directory is on disk."
 )
 
 _VALIDATE_PROMPT: str = (
-    "You are in the VALIDATION phase of create_workflow. The generated file has already "
+    "You are in the VALIDATION phase of create_workflow. The generated package has already "
     "been imported and checked automatically; the report is in your system prompt.\n\n"
     "Read the report first. If it lists ANY error, call reject_workflow(reason) naming the "
     "concrete fix — the generation phase will run again. If the report passes, read the "
-    "generated file and confirm its phases and prompts match the approved design, then "
+    "generated package and confirm its phases and prompts match the approved design, then "
     "call approve_workflow(summary).\n\n"
     "You MUST call exactly one of these two tools."
 )
@@ -747,7 +753,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         return CreateWorkflowState.FAILED
 
     async def _validate(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
-        """Check the generated file, then loop until the agent votes.
+        """Check the generated package, then loop until the agent votes.
 
         Returns SUMMARIZE (approved and the deterministic check passed), GENERATE
         (rejected, or approved against a failing check), or FAILED.
@@ -867,7 +873,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         text: str = (
             f"Request: {ctx.intent}\n\n"
             f"Workflow created: {ctx.workflow_name or '(unnamed)'}\n"
-            f"File: {ctx.generated_path or '(unknown)'}\n"
+            f"Directory: {ctx.generated_path or '(unknown)'}\n"
             f"What was generated: {ctx.generation_summary or '(see conversation)'}\n"
             f"Validation verdict: {ctx.validation_summary or 'approved'}"
         )
@@ -921,7 +927,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     def _target_path(self, workflow_name: str) -> str:
         """Return the conventional project-local path for *workflow_name*."""
-        return f"{_WORKFLOW_DIR}/{workflow_name or 'my_workflow'}.py"
+        return f"{_WORKFLOW_DIR}/{workflow_name or 'my_workflow'}"
 
     def _phase_model(self, phase_name: str) -> str:
         """Return the model override for *phase_name*, or '' for the global default.

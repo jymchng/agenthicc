@@ -79,7 +79,7 @@ rejects invalid lifecycle/policy combinations before activation.
 ## Create a workflow from the input panel
 
 The built-in `create_workflow` authoring workflow turns a natural-language
-request into a project-local workflow file:
+request into a project-local workflow package:
 
 ```text
 /workflow create_workflow
@@ -171,19 +171,22 @@ when the runner it ships is abstract or missing `run`/`resume`.
 A purely declarative graph is still correct when every phase really is one
 unconditional agent turn.
 
-### Generation writes the file directly
+### Generation writes the workflow package directly
 
 `generate` runs with `mode_override="Yolo"` so the write tools are available. The
-agent writes the complete Python source to `.agenthicc/workflows/<name>.py` and
-then calls `mark_generation_complete(summary, path)` with the exact path it wrote.
-The runner never copies assistant text into a file, never stages a copy, and never
-publishes: the file the agent wrote is the artifact.
+agent creates `.agenthicc/workflows/<name>/`, writes its entry point to
+`runner.py`, keeps workflow-specific tools/helpers in sibling modules inside the
+directory, and then calls `mark_generation_complete(summary, path)` with the
+exact directory path it wrote. The runner never copies assistant text into a
+file, never stages a copy, and never publishes: the package the agent wrote is
+the artifact.
 
 A workflow with its own runner is a few hundred lines, which does not fit in one
 tool call under a small completion ceiling — the truncated call is discarded and
 nothing reaches disk. The generate prompt therefore instructs a chunked write:
-`write_file` for the first chunk, `append_file` for each following chunk of
-roughly 60–80 lines split between top-level definitions, then `read_file` to
+`write_file` for the first `runner.py` chunk, `append_file` for each following
+chunk of roughly 60–80 lines split between top-level definitions, sibling writes
+for local tools, and then `read_file` to
 confirm the whole file landed. The retry reminder tells the agent to resume from
 what is already on disk rather than start over. See
 `[execution].max_output_tokens` in the
@@ -192,12 +195,12 @@ what is already on disk rather than start over. See
 ### Validation is deterministic first, agent second
 
 Before the validating agent is asked for anything, the runner imports the
-generated file exactly the way `load_python_workflows` will and checks it against
+generated package exactly the way `load_python_workflows` will and checks it against
 the real `WorkflowPlugin` contract. `validate_workflow_file` reports:
 
 - refusal, without importing, for a path outside the workspace root, a missing
-  file, a directory, a non-`.py` or underscore-prefixed filename, or an empty
-  file;
+  file, a directory without `runner.py`, a non-`.py` legacy file or
+  underscore-prefixed entry, or an empty Python source file;
 - syntax errors with a line number, and import failures with the exception type
   and message;
 - a missing `WorkflowPlugin` subclass, a name that does not match the approved
@@ -251,7 +254,7 @@ API:
 | `list_tool_capabilities()` | every `ToolCapability` value with a description |
 | `list_agent_roles()` | every `PhaseRole` usable as `agent_type` |
 | `describe_runner_pattern()` | the custom-runner checklist and when a runner is required |
-| `show_example_workflow(style)` | a complete workflow file to adapt — `"runner"` (default) or `"declarative"` |
+| `show_example_workflow(style)` | a complete `runner.py` package entry point to adapt — `"runner"` (default) or `"declarative"` |
 
 `design` also gets `ask_user` for clarifying questions. Every phase can additionally
 read the installed agenthicc source and documentation with the session-wide
@@ -394,7 +397,7 @@ discovered MCP tools, and labels each tool `builtin` or `plugin`; `/workflows`
 includes source, phase topology, runner type, and mode bindings. Press Enter
 for details and Esc to close, just as with `/commands` and `/skills`.
 
-Use `/workflows reload` after adding or editing a workflow file. It rebuilds the
+Use `/workflows reload` after adding or editing a workflow file or package. It rebuilds the
 session registry in place and reports added or removed workflow names; if
 discovery fails, the previous registry remains active. In the workflows
 overlay, press Enter on a workflow and then Enter again on its details page to
@@ -411,8 +414,11 @@ loads sources in this order:
 
 Later sources replace an earlier workflow with the same `name`, so a project
 workflow can intentionally override a user-global or built-in workflow. Files
-whose names start with `_` are skipped. A single Python file may define more
-than one named `WorkflowPlugin` subclass.
+and workflow directories whose names start with `_` are skipped. Legacy single
+Python files may define more than one named `WorkflowPlugin` subclass. A
+directory workflow is discovered when it contains `runner.py`; its sibling
+Python modules are loaded as the same temporary package, so relative imports
+for workflow-specific tools work during startup and `/workflows reload`.
 
 Workflow files are imported as Python code during discovery. There is no
 workflow-specific trust prompt at import time, so only place code there that
@@ -447,8 +453,8 @@ should only be used in a trusted automation environment.
 
 ## Minimal plugin
 
-Place a Python file in `.agenthicc/workflows/` or
-`~/.agenthicc/workflows/`:
+Place a legacy Python file, or a package directory containing `runner.py`, in
+`.agenthicc/workflows/` or `~/.agenthicc/workflows/`:
 
 ```python
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
@@ -471,8 +477,8 @@ The loader scans both project-local and user-global directories. Project
 definitions take precedence over user definitions with the same name. Files
 starting with `_` are skipped.
 
-The filename does not have to match the class name, and the class does not
-need a separate registration call. Give the plugin a non-empty `name`, then
+The file/directory name does not have to match the class name, and the class
+does not need a separate registration call. Give the plugin a non-empty `name`, then
 verify discovery with `uv run agenthicc workflows list --json`.
 
 ## PhaseSpec essentials

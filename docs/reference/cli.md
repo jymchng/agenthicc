@@ -107,8 +107,9 @@ executable when submitted.
 To author a workflow interactively, submit
 `/workflow create_workflow`, then enter the intent as the next ordinary input.
 Its phases are `design → generate → validate → summarize`: the design is gated on
-your approval, the generate phase writes the complete source directly to
-`.agenthicc/workflows/<name>.py`, and the validate phase imports that file and
+your approval, the generate phase writes a complete package directly to
+`.agenthicc/workflows/<name>/runner.py` (with workflow-specific helpers in the
+same directory), and the validate phase imports that package and
 loops back to generate until it loads cleanly. There is no staging directory or
 publish phase. Run `/workflows reload` after the run completes. `/workflow resume`
 is not used for this direct-write authoring flow; run `/workflow create_workflow`

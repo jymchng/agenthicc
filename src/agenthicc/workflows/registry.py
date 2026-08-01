@@ -129,8 +129,12 @@ def _scan_workflow_dir(
         return
     from agenthicc.workflows.loader import load_python_workflows  # noqa: PLC0415
 
-    for path in sorted(directory.iterdir()):
-        if path.name.startswith("_") or path.suffix != ".py":
+    for path in sorted(directory.iterdir(), key=lambda item: item.name):
+        if path.name.startswith("_"):
+            continue
+        is_python_file = path.is_file() and path.suffix == ".py"
+        is_workflow_package = path.is_dir() and (path / "runner.py").is_file()
+        if not is_python_file and not is_workflow_package:
             continue
         try:
             for plugin_cls in load_python_workflows(path, source):

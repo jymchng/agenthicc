@@ -113,13 +113,16 @@ class CreateWorkflow(WorkflowPlugin):
             mode_override="Yolo",
             system_prompt_override=(
                 "You are in the GENERATION phase of create_workflow. You already designed "
-                "the workflow — do NOT re-design. Write the complete WorkflowPlugin source "
-                "to .agenthicc/workflows/<name>.py with the write tools: module docstring, "
-                "imports, the plugin class, every approved PhaseSpec, and the approved "
-                "state-machine runner in the same file — state enum, context dataclass, one "
+                "the workflow — do NOT re-design. Write the complete WorkflowPlugin package "
+                "to .agenthicc/workflows/<name>/ with the write tools. The directory must "
+                "contain runner.py (the plugin entry point), __init__.py when useful for "
+                "re-exports, and workflow-specific tools/helpers in sibling files such as "
+                "tools.py. Put the module docstring, imports, plugin class, every approved "
+                "PhaseSpec, and the approved state-machine runner in runner.py — state enum, context dataclass, one "
                 "async method per state, the while/match driver in run(), resume(), the "
                 "phase tool factories, and build_runner() returning it. No stubs or TODOs. "
-                "When the file is fully written, call mark_generation_complete(summary, path). "
+                "When the directory and all of its files are fully written, call "
+                "mark_generation_complete(summary, path). "
                 "Only a successful mark_generation_complete() call changes phase; prose "
                 "such as 'done' never advances it."
             ),
@@ -134,8 +137,8 @@ class CreateWorkflow(WorkflowPlugin):
             require_explicit_review=True,
             mode_override=None,
             system_prompt_override=(
-                "You are in the VALIDATION phase of create_workflow. The generated file has "
-                "already been imported and checked; read that report first. Call "
+                "You are in the VALIDATION phase of create_workflow. The generated package "
+                "has already been imported and checked; read that report first. Call "
                 "reject_workflow(reason) if it lists any error or the file does not match the "
                 "approved design, otherwise call approve_workflow(summary). You MUST call "
                 "exactly one of these two tools. Only a successful call to "

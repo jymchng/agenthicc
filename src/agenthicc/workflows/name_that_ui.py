@@ -32,8 +32,7 @@ def js_unescape(s: str) -> str:
     out: list[str] = []
     i = 0
     n = len(s)
-    simple = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/",
-              "b": "\b", "f": "\f"}
+    simple = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f"}
     while i < n:
         c = s[i]
         if c == "\\" and i + 1 < n:
@@ -44,7 +43,7 @@ def js_unescape(s: str) -> str:
                 continue
             if nxt == "u" and i + 6 <= n:
                 try:
-                    out.append(chr(int(s[i + 2:i + 6], 16)))
+                    out.append(chr(int(s[i + 2 : i + 6], 16)))
                     i += 6
                     continue
                 except ValueError:
@@ -263,18 +262,24 @@ def list_names(
         if platform and rp != platform:
             continue
         if q:
-            hay = _norm(" ".join(
-                [name] + [str(r.get("tagline") or "")] + [str(r.get("description") or "")]
-                + [str(a) for a in (r.get("aka") or [])]
-                + [str(f) for f in (r.get("fuzzy") or [])]
-            ))
+            hay = _norm(
+                " ".join(
+                    [name]
+                    + [str(r.get("tagline") or "")]
+                    + [str(r.get("description") or "")]
+                    + [str(a) for a in (r.get("aka") or [])]
+                    + [str(f) for f in (r.get("fuzzy") or [])]
+                )
+            )
             if q not in hay and not any(q in _norm(w) for w in [name]):
                 continue
-        out.append({
-            "name": name,
-            "platform": r.get("platform") or "web",
-            "shadcn": shadcn_symbols(r),
-        })
+        out.append(
+            {
+                "name": name,
+                "platform": r.get("platform") or "web",
+                "shadcn": shadcn_symbols(r),
+            }
+        )
     out.sort(key=lambda x: (str(x["platform"]), str(x["name"]).lower()))
     if top is not None and top > 0:
         out = out[:top]

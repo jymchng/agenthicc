@@ -687,7 +687,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
     @tool_read
     @_tool()
     async def show_example_workflow(style: str = "runner") -> dict[str, object]:
-        """Return a complete, known-valid example workflow file to adapt.
+        """Return a complete, known-valid workflow package entry point to adapt.
 
         Default style="runner" returns the shape you should almost always copy: a
         workflow that ships its OWN state-machine runner — typed state enum, typed
@@ -709,7 +709,8 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         if style.strip().lower() == "declarative":
             return {
                 "style": "declarative",
-                "path": ".agenthicc/workflows/doc_review.py",
+                "path": ".agenthicc/workflows/doc_review",
+                "entry_point": ".agenthicc/workflows/doc_review/runner.py",
                 "source": _DECLARATIVE_EXAMPLE,
                 "note": (
                     "No runner: every phase is one unconditional agent turn. If any phase "
@@ -719,7 +720,8 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             }
         return {
             "style": "runner",
-            "path": ".agenthicc/workflows/release_check.py",
+            "path": ".agenthicc/workflows/release_check",
+            "entry_point": ".agenthicc/workflows/release_check/runner.py",
             "source": _RUNNER_EXAMPLE,
             "note": (
                 "Recommended. The runner owns the control flow and every transition is a "

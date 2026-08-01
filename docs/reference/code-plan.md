@@ -250,7 +250,8 @@ copying only the prompts:
 The built-in `create_workflow` authoring runner follows this same structure with
 the phases `DESIGN`, `GENERATE`, `VALIDATE`, and `SUMMARIZE`. Its design phase is
 gated on human approval like `code_plan`'s plan phase, its generate phase writes
-the workflow file directly, and its validate phase imports that file
+the workflow package directly (`<name>/runner.py` plus optional local helpers),
+and its validate phase imports that package
 deterministically before the agent votes — a failing report overrides an
 approval and routes back to generate. It stages and publishes nothing.
 

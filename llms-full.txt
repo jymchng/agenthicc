@@ -1673,8 +1673,11 @@ sole executable source of truth.
 `checkpoint_context_from_payload(payload, memory=None)` are required hooks for
 plugin-owned custom runner contexts. Built-in contexts are encoded by the
 framework. `create_workflow` deterministically rejects a generated custom
-runner that omits either hook. Legacy/manual plugins without the hooks may
-remain runnable, but Esc pause fails closed instead of restarting them.
+runner that omits either hook. It writes a package directory with `runner.py`
+as the entry point and permits workflow-specific tools/helpers in sibling
+modules; legacy single-file plugins remain supported. Legacy/manual plugins
+without the hooks may remain runnable, but Esc pause fails closed instead of
+restarting them.
 The restore hook must attach the supplied session memory and must not construct
 a second conversation.
 
@@ -1696,9 +1699,17 @@ shared short-term memory.
 
 The specialized `create_workflow` runner uses typed authoring state and phase
 artifacts for `design → generate → validate → summarize`. It writes generated
-workflow source directly to `.agenthicc/workflows/`, validates the exact file
-that the loader will import, and exposes read-only inspection tools to the
+workflow source directly to `.agenthicc/workflows/<name>/runner.py` (with
+optional workflow-local modules beside it), validates the exact package that
+the loader will import, and exposes read-only inspection tools to the
 authoring agent.
+
+`load_python_workflows()` accepts both legacy `.py` plugins and directory
+plugins containing `runner.py`. Directory plugins are loaded as temporary
+packages, so relative imports from local tool modules work and are fully
+removed on reload. The registry discovers these packages in both
+`~/.agenthicc/workflows/` and `.agenthicc/workflows/`, after built-ins and in
+the existing user-global → project-local precedence order.
 
 ## Plan approval modes — `agenthicc.tools.approval`
 
@@ -1734,7 +1745,8 @@ Design is read-only and human-gated: `request_design_approval(design,
 workflow_name)` raises the plan-review overlay and `finalize_design(design,
 workflow_name)` refuses until it returned `approved=True`. Generate runs with
 `mode_override="Yolo"` so the write tools are available and the agent writes the
-plugin source to `.agenthicc/workflows/<name>.py`. Validate imports that file
+plugin package to `.agenthicc/workflows/<name>/runner.py`, with optional
+workflow-local tools/helpers beside it. Validate imports that package
 deterministically before the agent votes, and routes `on_reject` back to
 generate. `mode_bindings` is empty, so the workflow is manual-only.
 

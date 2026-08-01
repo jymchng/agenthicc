@@ -19,7 +19,9 @@ my-project/
 ├── .agenthicc/
 │   ├── agenthicc.toml
 │   └── workflows/
-│       └── release_review.py
+│       └── release_review/
+│           ├── runner.py
+│           └── tools.py        # optional workflow-local tools
 └── ...
 ```
 
@@ -144,8 +146,9 @@ copy-ready configuration template in the module documentation.
 ```
 
 The design phase presents the workflow's name and phase graph for your approval
-and writes nothing. The generate phase then writes the complete Python source to
-`.agenthicc/workflows/<name>.py`, giving every phase a literal
+and writes nothing. The generate phase then writes a complete workflow package
+to `.agenthicc/workflows/<name>/runner.py`, with workflow-specific tools/helpers
+in sibling files inside that directory, giving every phase a literal
 `system_prompt_override` so the runtime agent knows the objective, tools, inputs,
 outputs, verification, completion signal, and handoff. It uses the inherited
 generic runner when the phase graph is enough; `build_runner()` and a custom
@@ -223,7 +226,7 @@ After editing a plugin file, reload the registry in the active session:
 ```
 
 Restarting the session reloads both the workflow and configuration. The
-`/workflows reload` command reloads Python workflow files, not the TOML
+`/workflows reload` command reloads Python workflow files/packages, not the TOML
 configuration.
 
 You can keep a separate configuration file for a workflow or environment and

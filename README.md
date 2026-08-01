@@ -127,9 +127,10 @@ project plugins; it documents the current sandbox and trust boundaries.
 To create a specialized workflow, select `/workflow create_workflow` and enter
 the intent in the next input. It runs `design → generate → validate → summarize`
 on the same state-machine pattern as `code_plan`: the design is presented for your
-approval, the generate phase writes complete Python source to
-`.agenthicc/workflows/<name>.py` with a runtime prompt for every phase, and the
-validate phase imports that file and loops back to generate until it loads
+approval, the generate phase writes a complete workflow package to
+`.agenthicc/workflows/<name>/runner.py` (with workflow-specific tools/helpers
+in sibling files) with a runtime prompt for every phase, and the
+validate phase imports that package and loops back to generate until it loads
 cleanly — an approval of a file that does not import is overridden. For
 non-trivial behavior the agent is guided to create a `code_plan`-style custom
 runner with typed states, context, per-state functions, explicit `match`

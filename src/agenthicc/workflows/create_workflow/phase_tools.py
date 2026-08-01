@@ -27,8 +27,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalService
 
-# A workflow name must be a python-module-safe slug so the generated file can
-# live at ``.agenthicc/workflows/<name>.py`` and be importable by the loader.
+# A workflow name must be a python-module-safe slug so the generated package
+# can live at ``.agenthicc/workflows/<name>/`` and be importable by the loader.
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -239,7 +239,7 @@ def make_generation_tools(
 ) -> list[Callable[..., object]]:
     """Return ``[mark_generation_complete]``.
 
-    Set once the agent has written the workflow file to disk.  ``generate_data``
+    Set once the agent has written the workflow package to disk.  ``generate_data``
     captures ``{"summary": str, "path": str}``; the runner validates the path
     deterministically after the turn returns.  If the turn ends without this tool
     firing, the generate phase retries.
@@ -250,27 +250,28 @@ def make_generation_tools(
     @tool_control
     @_tool()
     async def mark_generation_complete(summary: str, path: str) -> dict[str, object]:
-        """Signal that the workflow file has been fully written to disk.
+        """Signal that the workflow package has been fully written to disk.
 
-        Call this ONLY after you have written the complete WorkflowPlugin source
-        to .agenthicc/workflows/<name>.py using the write tools.  The validation
-        phase will import and check the file automatically.  Do not call it more
+        Call this ONLY after you have written the complete WorkflowPlugin package
+        to .agenthicc/workflows/<name>/ using the write tools. The directory must
+        contain runner.py; keep workflow-specific tools in sibling files inside it.
+        The validation phase will import and check the package automatically. Do not call it more
         than once, and do not call it before the file is written.
 
         Args:
             summary: One or two sentences describing the generated workflow.
-            path: The path the workflow file was written to.
+            path: The path to the workflow directory that was written.
         """
         if not isinstance(summary, str) or not summary.strip():
             return _transition_failure(
                 "The generation transition was rejected: completion summary must be non-empty.",
-                "Finish writing the workflow file and call "
-                "mark_generation_complete(summary, path) with a concise summary of the file.",
+                "Finish writing the workflow package and call "
+                "mark_generation_complete(summary, path) with a concise summary of the package.",
             )
         if not isinstance(path, str) or not path.strip():
             return _transition_failure(
                 "The generation transition was rejected: the written file path must be provided.",
-                "Write the workflow file, then call mark_generation_complete(summary, path) "
+                "Write the workflow directory, then call mark_generation_complete(summary, path) "
                 "with the exact path you wrote to.",
             )
         generate_data["summary"] = summary.strip()

@@ -123,8 +123,8 @@ phase prompt receives a `[PHASE TRANSITION TOOLS]` block naming the available
 handoff tools; only a successful call advances state, never assistant prose.
 Custom handoff callables marked with `@tool_control` are discovered automatically.
 The workflow's four phases are design (human-approved, read-only), generate (`Yolo` mode, writes
-`.agenthicc/workflows/<name>.py`), validate (deterministic import-and-check, then
-the agent's vote), and summarize:
+`.agenthicc/workflows/<name>/runner.py` plus optional local helper modules), validate
+(deterministic import-and-check, then the agent's vote), and summarize:
 
 `code_plan` plan approval presents explicit `Approve - Safe` and
 `Approve - YOLO` choices. The selected mode is carried into the execute phase
@@ -135,11 +135,11 @@ the legacy plan-review option set.
 | CreateWorkflowState | agenthicc.workflows.create_workflow.state | Design/generate/validate/summarize state machine with COMPLETE, EXITED, FAILED terminals |
 | CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, approved design, generated path, per-phase `PhaseArtifact`s, shared memory |
 | make_*_tools | agenthicc.workflows.create_workflow.phase_tools | Phase transition handoffs; rejected transitions return actionable `error`, `fix`, and `message` fields |
-| validate_workflow_file | agenthicc.workflows.create_workflow.validation | Imports the generated file like the loader does; a failing report overrides an agent approval |
+| validate_workflow_file | agenthicc.workflows.create_workflow.validation | Imports the generated file or package like the loader does; a failing report overrides an agent approval |
 | make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only authoring-surface inspection read live from `PhaseSpec`, `ToolCapability`, `PhaseRole`; `show_example_workflow()` defaults to the custom-runner shape |
 
-A generated workflow is expected to ship its own state-machine runner in the same
-file (typed state enum, typed context, one bounded async method per state,
+A generated workflow is expected to ship its own state-machine runner in
+`<name>/runner.py` (typed state enum, typed context, one bounded async method per state,
 `while not state.is_terminal` + `match` driver, `resume()`, phase tool factories,
 `build_runner()`). `CodePlanRunner.run_phase(..., tools=...)` is the public helper
 for running one tool-gated phase. Validation warns when a multi-phase workflow

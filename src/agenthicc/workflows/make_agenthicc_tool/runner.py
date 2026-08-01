@@ -159,7 +159,13 @@ def _make_analyze_tools(
                 "fix": "Provide a one-line description for the tool schema.",
             }
         valid_caps: tuple[str, ...] = (
-            "read", "write", "execute", "git_read", "git_write", "network", "search",
+            "read",
+            "write",
+            "execute",
+            "git_read",
+            "git_write",
+            "network",
+            "search",
         )
         caps: list[str] = list(capabilities or [])
         bad_caps: list[str] = [c for c in caps if c not in valid_caps]
@@ -176,12 +182,14 @@ def _make_analyze_tools(
             p_name = str(raw.get("name", "")).strip()
             if not p_name or not p_name.isidentifier():
                 continue
-            cleaned_params.append({
-                "name": p_name,
-                "type_hint": str(raw.get("type_hint", "str")).strip() or "str",
-                "default": str(raw.get("default", "")).strip(),
-                "description": str(raw.get("description", "")).strip(),
-            })
+            cleaned_params.append(
+                {
+                    "name": p_name,
+                    "type_hint": str(raw.get("type_hint", "str")).strip() or "str",
+                    "default": str(raw.get("default", "")).strip(),
+                    "description": str(raw.get("description", "")).strip(),
+                }
+            )
         data["tool_name"] = tool_name.strip()
         data["description"] = description.strip()
         data["parameters"] = cleaned_params
@@ -325,9 +333,7 @@ class MakeToolRunner(CodePlanRunner):
         memory = (
             self._cfg.session_memory
             if self._cfg.session_memory is not None
-            else ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         )
         ctx = MakeToolContext(
             intent=intent,
@@ -377,9 +383,7 @@ class MakeToolRunner(CodePlanRunner):
             else context.shared_memory
         )
         if memory is None:
-            memory = ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
+            memory = ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         context.shared_memory = memory
         handle = self._cfg.workflow_handle
         if handle is not None:
@@ -412,7 +416,6 @@ class MakeToolRunner(CodePlanRunner):
     @staticmethod
     def _phase_index(state: MakeToolState) -> int:
         return _PHASE_INDEX.get(state.name.lower(), 0)
-
 
     async def _analyze(
         self,
@@ -507,10 +510,13 @@ class MakeToolRunner(CodePlanRunner):
         memory: object,
     ) -> MakeToolState:
         """Loop until confirm_generation_complete fires; return VALIDATE or FAILED."""
-        params_block = "\n".join(
-            f"    {p.name} ({p.type_hint}){' = ' + p.default if p.default else ''} — {p.description}"
-            for p in ctx.parameters
-        ) or "    (no parameters)"
+        params_block = (
+            "\n".join(
+                f"    {p.name} ({p.type_hint}){' = ' + p.default if p.default else ''} — {p.description}"
+                for p in ctx.parameters
+            )
+            or "    (no parameters)"
+        )
         caps_note = ", ".join(ctx.capabilities) if ctx.capabilities else "(none)"
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -541,7 +547,7 @@ class MakeToolRunner(CodePlanRunner):
                     f".agenthicc/tools/{ctx.tool_name}.py.\n"
                     "2. Decorator — MUST include the parentheses:\n"
                     "        from lauren_ai import tool\n"
-                    "        @tool(name=\"<tool_name>\", description=\"<description>\")\n"
+                    '        @tool(name="<tool_name>", description="<description>")\n'
                     "   Use the planned tool_name and description verbatim.\n"
                     "3. Function form (default):\n"
                     "        async def <tool_name>(<params>) -> dict[str, object]:\n"
@@ -565,13 +571,13 @@ class MakeToolRunner(CodePlanRunner):
                     "True, add @tool(..., requires_confirmation=True).\n"
                     "7. Dependencies: if the plan lists any, declare them at module "
                     "level:\n"
-                    "        DEPENDENCIES = [\"<pkg>=<ver>\"]\n"
+                    '        DEPENDENCIES = ["<pkg>=<ver>"]\n'
                     "   Do NOT auto-install; just declare. Prefer deps already in the "
                     "project environment when possible.\n"
                     "8. Bounded, structured returns — always return a dict:\n"
-                    "        return {\"ok\": True, ...}\n"
+                    '        return {"ok": True, ...}\n'
                     "   and for recoverable failures:\n"
-                    "        return {\"ok\": False, \"error\": \"...\", \"recoverable\": True}\n"
+                    '        return {"ok": False, "error": "...", "recoverable": True}\n'
                     "   Bound inputs and outputs; never log credentials, tokens, or "
                     "unbounded remote responses.\n"
                     "9. NO import-time side effects: no network calls, file mutation, "
@@ -599,7 +605,6 @@ class MakeToolRunner(CodePlanRunner):
 
         ctx.fail_reason = "generate phase never called confirm_generation_complete()"
         return MakeToolState.FAILED
-
 
     async def _validate(
         self,
@@ -630,7 +635,7 @@ class MakeToolRunner(CodePlanRunner):
                     "1. The file exists at the reported path under .agenthicc/tools/, "
                     "is a .py file, and its filename is not underscore-prefixed.\n"
                     "2. It parses as valid Python (python -m py_compile or ast).\n"
-                    "3. It imports cleanly (python -c \"import importlib.util; ...\") — "
+                    '3. It imports cleanly (python -c "import importlib.util; ...") — '
                     "if it fails on a missing dependency listed in DEPENDENCIES, that "
                     "is fixable (reject with the missing module named); if it fails "
                     "with a syntax/name error, that is also fixable.\n"
@@ -645,7 +650,7 @@ class MakeToolRunner(CodePlanRunner):
                     "calls the network MUST be tagged network).\n"
                     "8. No import-time side effects: no top-level network calls, file "
                     "mutation, or secret printing.\n"
-                    "9. Returns are structured dicts ({\"ok\": ...}) and inputs/outputs "
+                    '9. Returns are structured dicts ({"ok": ...}) and inputs/outputs '
                     "are bounded; idempotency is addressed for side-effecting tools.\n"
                     "10. Dependencies are declared (DEPENDENCIES or sidecar "
                     "<name>.requirements.txt) when the tool imports third-party "

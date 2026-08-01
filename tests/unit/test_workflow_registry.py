@@ -237,3 +237,68 @@ class TestPythonLoader:
 
     def test_load_python_nonexistent_file_returns_empty(self, tmp_path):
         assert load_python_workflows(tmp_path / "missing.py", "user") == []
+
+    def test_load_directory_workflow_with_relative_tool_module(self, tmp_path):
+        package = tmp_path / "package_workflow"
+        package.mkdir()
+        (package / "tools.py").write_text('DESCRIPTION = "loaded from tools"\n')
+        (package / "runner.py").write_text(
+            "from .tools import DESCRIPTION\n"
+            "from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin\n"
+            "\n"
+            "class PackageWorkflow(WorkflowPlugin):\n"
+            '    name = "package_workflow"\n'
+            "    description = DESCRIPTION\n"
+            '    phases = [PhaseSpec(name="run")]\n'
+        )
+
+        results = load_python_workflows(package, "project")
+
+        assert [plugin.name for plugin in results] == ["package_workflow"]
+        assert results[0].description == "loaded from tools"
+        assert results[0].__module__.endswith(".runner")
+
+    def test_directory_without_runner_is_not_a_workflow(self, tmp_path):
+        package = tmp_path / "incomplete"
+        package.mkdir()
+        (package / "tools.py").write_text("VALUE = 1\n")
+
+        assert load_python_workflows(package, "project") == []
+
+    def test_project_directory_workflow_is_discovered_and_overrides_user_file(self, tmp_path):
+        user = tmp_path / "user"
+        project = tmp_path / "project"
+        user.mkdir()
+        project.mkdir()
+        user_workflows = user / "workflows"
+        user_workflows.mkdir()
+        _write_py(
+            user_workflows,
+            """
+            from agenthicc.workflows.plugin import WorkflowPlugin, PhaseSpec
+            class User(WorkflowPlugin):
+                name = "same_name"
+                description = "user"
+                phases = [PhaseSpec(name="user")]
+            """,
+            "same_name.py",
+        )
+        project_workflows = project / "workflows"
+        project_workflows.mkdir()
+        package = project_workflows / "same_name"
+        package.mkdir()
+        (package / "runner.py").write_text(
+            "from agenthicc.workflows.plugin import WorkflowPlugin, PhaseSpec\n"
+            "class Project(WorkflowPlugin):\n"
+            '    name = "same_name"\n'
+            '    description = "project"\n'
+            '    phases = [PhaseSpec(name="project")]\n'
+        )
+
+        registry = build_workflow_registry(project_dir=project, user_dir=user)
+
+        entry = registry.get_entry("same_name")
+        assert entry is not None
+        assert entry.source == "project"
+        assert entry.path == str(package)
+        assert entry.plugin_cls.description == "project"

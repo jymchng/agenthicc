@@ -7,7 +7,7 @@ Structure mirrors ``agenthicc.workflows.code_plan``:
 * :mod:`.phase_tools` — the ``@tool()`` closures that are the *only* way a phase
   can transition.
 * :mod:`.inspection_tools` — read-only tools exposing the real authoring API.
-* :mod:`.validation` — deterministic import-and-check of the generated file.
+* :mod:`.validation` — deterministic import-and-check of the generated package.
 * :mod:`.runner` — the outer state machine and its per-phase inner loops.
 * :mod:`.definition` — the :class:`CreateWorkflow` plugin and its params.
 """

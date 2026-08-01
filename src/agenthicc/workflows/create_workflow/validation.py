@@ -18,9 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import ast
-import importlib.util
 import logging
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -110,7 +108,7 @@ def _check_browser_imports(source: str, errors: list[str]) -> None:
 
 @dataclasses.dataclass(frozen=True)
 class ValidationReport:
-    """Outcome of deterministically validating one generated workflow file.
+    """Outcome of deterministically validating one generated workflow package.
 
     :param path: The resolved path that was validated (empty when unresolvable).
     :param ok: True only when :attr:`errors` is empty.
@@ -146,7 +144,7 @@ class ValidationReport:
             lines.extend(f"  {i}. {warn}" for i, warn in enumerate(self.warnings, 1))
         if self.ok and not self.warnings:
             lines.append("")
-            lines.append("The file imports cleanly and its phase graph is consistent.")
+            lines.append("The workflow imports cleanly and its phase graph is consistent.")
         return "\n".join(lines)
 
 
@@ -169,32 +167,28 @@ def _import_plugins(
     import inspect  # noqa: PLC0415
 
     from agenthicc.workflows.plugin import WorkflowPlugin as _Plugin  # noqa: PLC0415
+    from agenthicc.workflows.loader import load_python_workflow_modules  # noqa: PLC0415
 
-    module_name = f"_agenthicc_create_workflow_validate_{path.stem}"
     try:
-        spec = importlib.util.spec_from_file_location(module_name, path)
-    except (OSError, ValueError) as exc:
-        return [], {}, f"{type(exc).__name__}: {exc}"
-    if spec is None or spec.loader is None:
-        return [], {}, f"Python could not build an import spec for {path}."
-
-    module = importlib.util.module_from_spec(spec)
-    # Registered before exec_module so decorators can resolve the module during
-    # class creation, exactly like the real loader does.
-    sys.modules[module_name] = module
-    try:
-        spec.loader.exec_module(module)
+        modules = load_python_workflow_modules(path)
     except (Exception, SystemExit) as exc:  # noqa: BLE001 — generated code, any failure
         return [], {}, f"{type(exc).__name__}: {exc}"
-    finally:
-        sys.modules.pop(module_name, None)
 
-    found: list[type[WorkflowPlugin]] = [
-        obj
-        for _name, obj in inspect.getmembers(module, inspect.isclass)
-        if obj is not _Plugin and issubclass(obj, _Plugin) and getattr(obj, "name", "") != ""
-    ]
-    return found, dict(vars(module)), ""
+    found: list[type[WorkflowPlugin]] = []
+    namespace: dict[str, object] = {}
+    seen: set[type[WorkflowPlugin]] = set()
+    for module in modules:
+        namespace.update(vars(module))
+        for _name, obj in inspect.getmembers(module, inspect.isclass):
+            if (
+                obj is not _Plugin
+                and issubclass(obj, _Plugin)
+                and getattr(obj, "name", "") != ""
+                and obj not in seen
+            ):
+                seen.add(obj)
+                found.append(obj)
+    return found, namespace, ""
 
 
 def _check_phases(
@@ -393,7 +387,7 @@ def _check_runner(
         warnings.append(
             f"{plugin.__name__}.build_runner() is overridden but the file defines no "
             "BaseWorkflowRunner subclass of its own; it must return a runner that lives in "
-            "this workflow file."
+            "this workflow package."
         )
         return
 
@@ -414,11 +408,11 @@ def validate_workflow_file(
     expected_name: str = "",
     root: Path | None = None,
 ) -> ValidationReport:
-    """Deterministically validate the workflow plugin file at *path*.
+    """Deterministically validate a workflow file or package at *path*.
 
     :param path: Path the generation phase reported writing, absolute or relative
         to *root*.
-    :param expected_name: When non-empty, the approved workflow name the file must
+    :param expected_name: When non-empty, the approved workflow name the path must
         define.
     :param root: Workspace root the file must live inside; defaults to the current
         working directory.  A path resolving outside it is refused without import.
@@ -431,8 +425,8 @@ def validate_workflow_file(
     if not raw:
         return _fail(
             "",
-            "No workflow file path was recorded, so there is nothing to validate. "
-            "Write the workflow file and call mark_generation_complete(summary, path).",
+            "No workflow package path was recorded, so there is nothing to validate. "
+            "Write the package and call mark_generation_complete(summary, path).",
         )
 
     candidate = Path(raw).expanduser()
@@ -447,48 +441,75 @@ def validate_workflow_file(
     if not resolved.is_relative_to(base):
         return _fail(
             shown,
-            f"{shown} is outside the workspace root {base}; the workflow file must be written "
-            "inside the project, normally at .agenthicc/workflows/<name>.py.",
+            f"{shown} is outside the workspace root {base}; the workflow must be written "
+            "inside the project, normally at .agenthicc/workflows/<name>/runner.py.",
         )
     if not resolved.exists():
         return _fail(
             shown,
-            f"No file exists at {shown}. Write the complete workflow source to that path "
-            "with the write tools before marking generation complete.",
+            f"No file exists at {shown}; no workflow file or directory exists there. Write the complete workflow "
+            "package to that path with the write tools before marking generation complete.",
         )
-    if not resolved.is_file():
-        return _fail(shown, f"{shown} is a directory, not a Python file.")
-    if resolved.suffix != ".py":
-        return _fail(
-            shown,
-            f"{shown} does not end in .py, so the workflow loader will skip it. "
-            "Write the workflow to .agenthicc/workflows/<name>.py.",
-        )
+    is_package = resolved.is_dir()
+    if not is_package and not resolved.is_file():
+        return _fail(shown, f"{shown} is neither a workflow file nor a workflow directory.")
     if resolved.name.startswith("_"):
         return _fail(
             shown,
             f"{resolved.name} starts with an underscore, and the workflow loader skips those "
-            "files. Rename it to <name>.py.",
+            "entries. Rename it to <name> or <name>.py.",
         )
 
-    try:
-        source = resolved.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        return _fail(shown, f"{shown} could not be read as UTF-8 text: {type(exc).__name__}: {exc}")
-    if not source.strip():
-        return _fail(shown, f"{shown} is empty; the complete workflow source was never written.")
+    source_paths: list[Path]
+    if is_package:
+        runner_path = resolved / "runner.py"
+        if not runner_path.is_file():
+            return _fail(
+                shown,
+                f"{shown} is a directory but has no runner.py workflow entry point. "
+                "Write the runner to .agenthicc/workflows/<name>/runner.py.",
+            )
+        source_paths = sorted(resolved.glob("*.py"))
+        if not source_paths:
+            return _fail(shown, f"{shown} contains no Python source files.")
+    else:
+        if resolved.suffix != ".py":
+            return _fail(
+                shown,
+                f"{shown} does not end in .py, so the workflow loader will skip it. "
+                "Write a legacy workflow to .agenthicc/workflows/<name>.py or use "
+                ".agenthicc/workflows/<name>/runner.py.",
+            )
+        source_paths = [resolved]
 
     try:
-        compile(source, shown, "exec")
-    except SyntaxError as exc:
+        sources = {
+            source_path: source_path.read_text(encoding="utf-8") for source_path in source_paths
+        }
+    except (OSError, UnicodeDecodeError) as exc:
         return _fail(
             shown,
-            f"{shown} has a syntax error on line {exc.lineno}: {exc.msg}. "
-            "Fix the source and rewrite the file.",
+            f"{shown} could not be read as UTF-8 text: {type(exc).__name__}: {exc}",
         )
+    empty = next(
+        (source_path for source_path, source in sources.items() if not source.strip()), None
+    )
+    if empty is not None:
+        return _fail(shown, f"{empty} is empty; the complete workflow source was never written.")
+
+    for source_path, source in sources.items():
+        try:
+            compile(source, str(source_path), "exec")
+        except SyntaxError as exc:
+            return _fail(
+                shown,
+                f"{source_path} has a syntax error on line {exc.lineno}: {exc.msg}. "
+                "Fix the source and rewrite the workflow package.",
+            )
 
     source_errors: list[str] = []
-    _check_browser_imports(source, source_errors)
+    for source in sources.values():
+        _check_browser_imports(source, source_errors)
     if source_errors:
         return _fail(shown, *source_errors)
 
@@ -515,10 +536,20 @@ def validate_workflow_file(
             f"The approved workflow name is {expected_name!r} but {shown} defines "
             f"{list(plugin_names)}. Set name = {expected_name!r} on the plugin class."
         )
-    if expected_name and resolved.stem != expected_name:
+    if (
+        expected_name
+        and resolved.name != expected_name
+        and not is_package
+        and resolved.stem != expected_name
+    ):
         warnings.append(
             f"The file is named {resolved.name} but the workflow is {expected_name!r}; "
             f"{expected_name}.py is the conventional filename."
+        )
+    elif expected_name and is_package and resolved.name != expected_name:
+        warnings.append(
+            f"The workflow directory is named {resolved.name} but the workflow is "
+            f"{expected_name!r}; {expected_name}/ is the conventional directory."
         )
 
     target = next(

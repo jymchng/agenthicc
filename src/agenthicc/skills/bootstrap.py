@@ -326,7 +326,9 @@ by extending an existing one such as ``code_plan``.
 ## Workflow plugin basics
 
 Every workflow is a ``WorkflowPlugin`` subclass placed in
-``.agenthicc/workflows/<name>.py``.  The minimal structure:
+``.agenthicc/workflows/<name>/runner.py``. The directory may also contain
+``__init__.py`` and workflow-specific tools/helpers such as ``tools.py``. The
+minimal entry-point structure:
 
 ```python
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
@@ -420,7 +422,7 @@ execute_model = "claude-haiku-4-5"
 the global execution model. Provider, credentials, and ``base_url`` are
 session-wide; do not invent per-phase provider keys. Never put API keys in a
 generated workflow or TOML template. The authoring workflow writes the Python
-artifact directly to ``.agenthicc/workflows/<name>.py`` and does not modify
+artifact directly to ``.agenthicc/workflows/<name>/runner.py`` and does not modify
 configuration, so present any required TOML as a copy-ready template and tell
 the user which config file to update and when to restart the session.
 
@@ -508,8 +510,8 @@ PhaseSpec(name="human_check", agent_type="human", next="execute", on_reject="pla
 ## File placement
 
 ```
-.agenthicc/workflows/my_workflow.py    ← project-local (preferred)
-~/.agenthicc/workflows/my_workflow.py  ← user-global
+.agenthicc/workflows/my_workflow/runner.py    ← project-local (preferred)
+~/.agenthicc/workflows/my_workflow/runner.py  ← user-global
 ```
 
 ## Activate
@@ -521,7 +523,8 @@ PhaseSpec(name="human_check", agent_type="human", next="execute", on_reject="pla
 
 ## What to produce
 
-1. The complete ``.agenthicc/workflows/<name>.py`` file.
+1. The complete ``.agenthicc/workflows/<name>/`` package, with ``runner.py``
+   as its entry point and local tools/helpers alongside it.
 2. A custom runner when the workflow needs behavior beyond the declarative
    phase graph, including context-preserving ``run()`` and ``resume()``.
 3. A typed ``WorkflowParams``/``build_params()`` implementation when TOML

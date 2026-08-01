@@ -1,7 +1,7 @@
-"""make_pdf_book — Write a specialised, technical book chapter-by-chapter and compile it into a PDF.
+"""make_epub_book — Write a specialised, technical book chapter-by-chapter and compile it into an EPUB.
 
-Same shape as ``make_epub_book``, but the output is a polished, typeset PDF
-instead of an EPUB. The workflow:
+Turns a request like "write me a 6-chapter technical book about X" into a
+finished ``.epub`` file. The workflow:
 
 1. ``toc`` — plans the table of contents (title, author, audience, technical
    level, chapter list with outlines, output directory, rich content types).
@@ -10,12 +10,14 @@ instead of an EPUB. The workflow:
 3. ``chapter`` — one phase run PER chapter. The runner re-enters this phase
    once for every chapter in the TOC, so the effective number of phases is
    dynamic: ``N chapters + 3`` for a given run.
-4. ``compile`` — typesets all chapters into a PDF (typst → xelatex →
-   chromium+MathJax → reportlab) and validates the result.
+4. ``compile`` — assembles all chapters into a valid EPUB (pandoc →
+   ebooklib → hand-written minimal EPUB) and validates the result.
 
 Books are RICH in content: images and figures with captions, LaTeX equations
-(native typeset math in the PDF), syntax-highlighted code snippets, and data
-tables — all preserved through compilation.
+(kept as TeX text and typeset by calibre’s built-in MathJax — the calibre-native
+approach — with an optional SVG fallback for readers without MathJax),
+syntax-highlighted code snippets, and data tables — all preserved through
+compilation.
 
 The declarative ``phases`` list is a static 4-node skeleton because the
 registry reads it at discovery time; the custom runner owns the per-chapter
@@ -46,11 +48,11 @@ log = logging.getLogger(__name__)
 _MAX_ATTEMPTS = 5
 
 
-#: MathJax node renderer template injected into the compile prompt. Used by the
-#: CHROMIUM-HEADLESS fallback tier of the PDF pipeline: it replaces pandoc's
-#: MathML <math> elements with self-contained SVG images (glyphs inline as path
-#: data — no fonts, no JS, no network), which Chromium then prints to PDF as
-#: crisp vector math. Hardened against the pitfalls that break strict parsers.
+#: MathJax node renderer template injected into the compile prompt. It replaces
+#: pandoc's MathML <math> elements with self-contained SVG images (glyphs inline
+#: as path data — no fonts, no JS, no network), so equations render correctly in
+#: EVERY EPUB reader (Apple Books, Kindle, Calibre, KOReader, ...). Hardened
+#: against the pitfalls that break strict readers.
 _MATHJAX_RENDERER_JS = r"""// render-math.js — replace pandoc MathML <math> with self-contained MathJax SVG.
 // Usage: node render-math.js <file.xhtml>   (edits the file in place)
 const fs = require('fs');
@@ -108,7 +110,7 @@ fs.writeFileSync(file, html);
 console.log('rendered ' + count + ' equations -> ' + file);"""
 
 
-class MakePdfBookState(Enum):
+class MakeEpubBookState(Enum):
     """Every state this workflow can be in."""
 
     TOC = auto()
@@ -124,7 +126,7 @@ class MakePdfBookState(Enum):
     @property
     def is_terminal(self) -> bool:
         """True when no further phase should run."""
-        return self in (MakePdfBookState.COMPLETE, MakePdfBookState.FAILED)
+        return self in (MakeEpubBookState.COMPLETE, MakeEpubBookState.FAILED)
 
 
 @dataclasses.dataclass
@@ -141,12 +143,12 @@ class ChapterInfo:
 
 
 @dataclasses.dataclass
-class MakePdfBookContext:
+class MakeEpubBookContext:
     """Data carried across every phase of one run."""
 
     intent: str
     run_id: str = ""
-    state: MakePdfBookState = MakePdfBookState.TOC
+    state: MakeEpubBookState = MakeEpubBookState.TOC
     phase_iteration: int = 0
     # Session memory is injected by the session and deliberately excluded from
     # the checkpoint payload. The restore hook reattaches the supplied object.
@@ -168,7 +170,7 @@ class MakePdfBookContext:
     research_notes: dict[int, str] = dataclasses.field(default_factory=dict)
     research_sources: list[str] = dataclasses.field(default_factory=list)
     research_summary: str = ""
-    pdf_path: str = ""
+    epub_path: str = ""
     compile_summary: str = ""
     front_matter_summary: str = ""
     front_matter_files: list[str] = dataclasses.field(default_factory=list)
@@ -211,7 +213,7 @@ def _make_toc_tools(
             technical_level: Depth target — "intermediate", "advanced", or
                 "expert".
             prerequisites: Knowledge the reader is assumed to have.
-            output_dir: Directory to write chapters and the PDF into
+            output_dir: Directory to write chapters and the EPUB into
                 (defaults to a folder derived from the title).
             content_types: Rich content the book should include — any subset of
                 "images", "equations", "code", "tables" (default: all four).
@@ -324,9 +326,7 @@ def _make_research_tools(
             if not raw_notes.strip():
                 continue
             covered[raw_index] = raw_notes.strip()
-        missing: list[int] = [
-            i for i in range(chapter_count) if i not in covered
-        ]
+        missing: list[int] = [i for i in range(chapter_count) if i not in covered]
         if missing:
             return {
                 "ok": False,
@@ -396,8 +396,6 @@ def _make_chapter_tools(
         }
 
     return [confirm_chapter_complete]
-
-
 
 
 def _make_assets_tools(
@@ -515,29 +513,29 @@ def _make_compile_tools(
 
     @tool()
     async def mark_book_complete(
-        pdf_path: str,
+        epub_path: str,
         summary: str,
     ) -> dict[str, object]:
-        """Signal that the PDF was compiled and validated.
+        """Signal that the EPUB was compiled and validated.
 
         Args:
-            pdf_path: Path to the finished .pdf file.
-            summary: Summary of the book and how to open the PDF.
+            epub_path: Path to the finished .epub file.
+            summary: Summary of the book and how to open the EPUB.
         """
-        if not pdf_path.strip() or not pdf_path.lower().endswith(".pdf"):
+        if not epub_path.strip() or not epub_path.lower().endswith(".epub"):
             return {
                 "ok": False,
-                "error": "pdf_path must point to a .pdf file.",
-                "fix": "Provide the actual path of the compiled PDF.",
+                "error": "epub_path must point to a .epub file.",
+                "fix": "Provide the actual path of the compiled EPUB.",
             }
         if not summary.strip():
             return {
                 "ok": False,
                 "error": "summary must not be empty.",
-                "fix": "Describe the finished book and where the PDF lives.",
+                "fix": "Describe the finished book and where the EPUB lives.",
             }
         data["action"] = "complete"
-        data["pdf_path"] = pdf_path.strip()
+        data["epub_path"] = epub_path.strip()
         data["summary"] = summary.strip()
         event.set()
         return {"ok": True, "message": "Book marked as complete."}
@@ -575,11 +573,19 @@ def _make_compile_tools(
 # ── runner ────────────────────────────────────────────────────────────────────
 
 # Static phase names for status-bar and event payloads.
-_PHASE_NAMES: tuple[str, ...] = ("toc", "research", "assets", "chapter", "front_matter", "back_matter", "compile")
+_PHASE_NAMES: tuple[str, ...] = (
+    "toc",
+    "research",
+    "assets",
+    "chapter",
+    "front_matter",
+    "back_matter",
+    "compile",
+)
 
 
-class MakePdfBookRunner(CodePlanRunner):
-    """State-machine runner for make_pdf_book.
+class MakeEpubBookRunner(CodePlanRunner):
+    """State-machine runner for make_epub_book.
 
     Subclasses ``CodePlanRunner`` purely to inherit its session wiring and the
     public ``run_phase()`` helper. ``super().run()`` is never called, so none of
@@ -590,10 +596,10 @@ class MakePdfBookRunner(CodePlanRunner):
     as soon as the TOC reveals the chapter count.
     """
 
-    workflow_name = "make_pdf_book"
+    workflow_name = "make_epub_book"
     total_phases = 7
 
-    async def run(self, intent: str) -> MakePdfBookContext:
+    async def run(self, intent: str) -> MakeEpubBookContext:
         """Drive toc → research → chapter×N → compile."""
         from lauren_ai._memory import ShortTermMemory
 
@@ -602,14 +608,12 @@ class MakePdfBookRunner(CodePlanRunner):
         memory = (
             self._cfg.session_memory
             if self._cfg.session_memory is not None
-            else ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         )
-        ctx = MakePdfBookContext(
+        ctx = MakeEpubBookContext(
             intent=intent,
             run_id=run_id,
-            state=MakePdfBookState.TOC,
+            state=MakeEpubBookState.TOC,
             shared_memory=memory,
         )
         if handle is not None:
@@ -627,42 +631,40 @@ class MakePdfBookRunner(CodePlanRunner):
                     ctx.phase_iteration,
                 )
             match state:
-                case MakePdfBookState.TOC:
+                case MakeEpubBookState.TOC:
                     state = await self._toc(ctx, memory)
-                case MakePdfBookState.RESEARCH:
+                case MakeEpubBookState.RESEARCH:
                     state = await self._research(ctx, memory)
-                case MakePdfBookState.ASSETS:
+                case MakeEpubBookState.ASSETS:
                     state = await self._assets(ctx, memory)
-                case MakePdfBookState.CHAPTER:
+                case MakeEpubBookState.CHAPTER:
                     state = await self._chapter(ctx, memory)
-                case MakePdfBookState.FRONT_MATTER:
+                case MakeEpubBookState.FRONT_MATTER:
                     state = await self._front_matter(ctx, memory)
-                case MakePdfBookState.BACK_MATTER:
+                case MakeEpubBookState.BACK_MATTER:
                     state = await self._back_matter(ctx, memory)
-                case MakePdfBookState.COMPILE:
+                case MakeEpubBookState.COMPILE:
                     state = await self._compile(ctx, memory)
-            log.info("make_pdf_book → %s", state.name)
+            log.info("make_epub_book → %s", state.name)
 
         ctx.state = state
         if handle is not None:
             handle.attach_context(ctx)
         return ctx
 
-    async def resume(self, context: object) -> MakePdfBookContext:
+    async def resume(self, context: object) -> MakeEpubBookContext:
         """Resume the saved state with the session's existing conversation."""
         from lauren_ai._memory import ShortTermMemory
 
-        if not isinstance(context, MakePdfBookContext):
-            raise TypeError("make_pdf_book resume requires MakePdfBookContext")
+        if not isinstance(context, MakeEpubBookContext):
+            raise TypeError("make_epub_book resume requires MakeEpubBookContext")
         memory = (
             self._cfg.session_memory
             if self._cfg.session_memory is not None
             else context.shared_memory
         )
         if memory is None:
-            memory = ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
+            memory = ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         context.shared_memory = memory
         if len(context.chapters) > 0:
             self.total_phases = len(context.chapters) + 6
@@ -681,19 +683,19 @@ class MakePdfBookRunner(CodePlanRunner):
                     context.phase_iteration,
                 )
             match state:
-                case MakePdfBookState.TOC:
+                case MakeEpubBookState.TOC:
                     state = await self._toc(context, memory)
-                case MakePdfBookState.RESEARCH:
+                case MakeEpubBookState.RESEARCH:
                     state = await self._research(context, memory)
-                case MakePdfBookState.ASSETS:
+                case MakeEpubBookState.ASSETS:
                     state = await self._assets(context, memory)
-                case MakePdfBookState.CHAPTER:
+                case MakeEpubBookState.CHAPTER:
                     state = await self._chapter(context, memory)
-                case MakePdfBookState.FRONT_MATTER:
+                case MakeEpubBookState.FRONT_MATTER:
                     state = await self._front_matter(context, memory)
-                case MakePdfBookState.BACK_MATTER:
+                case MakeEpubBookState.BACK_MATTER:
                     state = await self._back_matter(context, memory)
-                case MakePdfBookState.COMPILE:
+                case MakeEpubBookState.COMPILE:
                     state = await self._compile(context, memory)
         context.state = state
         if handle is not None:
@@ -701,35 +703,34 @@ class MakePdfBookRunner(CodePlanRunner):
         return context
 
     @staticmethod
-    def _phase_index(state: MakePdfBookState, ctx: MakePdfBookContext) -> int:
+    def _phase_index(state: MakeEpubBookState, ctx: MakeEpubBookContext) -> int:
         """Return the dynamic status-bar position for *state*.
 
         toc=0, research=1, assets=2, chapter=3+index, front_matter=N+3,
         back_matter=N+4, compile=N+5. With N chapters the total is N+6.
         """
         n: int = len(ctx.chapters)
-        if state is MakePdfBookState.TOC:
+        if state is MakeEpubBookState.TOC:
             return 0
-        if state is MakePdfBookState.RESEARCH:
+        if state is MakeEpubBookState.RESEARCH:
             return 1
-        if state is MakePdfBookState.ASSETS:
+        if state is MakeEpubBookState.ASSETS:
             return 2
-        if state is MakePdfBookState.CHAPTER:
+        if state is MakeEpubBookState.CHAPTER:
             return 3 + ctx.current_chapter_index
-        if state is MakePdfBookState.FRONT_MATTER:
+        if state is MakeEpubBookState.FRONT_MATTER:
             return n + 3
-        if state is MakePdfBookState.BACK_MATTER:
+        if state is MakeEpubBookState.BACK_MATTER:
             return n + 4
-        if state is MakePdfBookState.COMPILE:
+        if state is MakeEpubBookState.COMPILE:
             return n + 5
         return 0
 
-
     async def _toc(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeEpubBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeEpubBookState:
         """Loop until submit_toc fires; return RESEARCH or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -745,7 +746,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     )
                 ),
                 system_prompt=(
-                    "You are in the TOC phase of make_pdf_book. Your job is to plan the "
+                    "You are in the TOC phase of make_epub_book. Your job is to plan the "
                     "table of contents for a SPECIALISED, TECHNICAL book from the user's "
                     "intent. This is not a general-audience title — it is written for "
                     "practitioners who already know their field.\n\n"
@@ -788,7 +789,6 @@ class MakePdfBookRunner(CodePlanRunner):
                     "   - TABLE OF CONTENTS: a visible contents page listing every chapter and its sections, placed after the preface.\n"
                     "   - INDEX: an index section at the end listing the key terms of the book (term -> chapter/section), so the book is navigable.\n"
                     "   - COLOURED HEADINGS: headings must be coloured (a consistent accent colour for h1/h2), not plain black — plan the accent colour here (e.g. a deep blue fitting the subject).\n"
-
                     "user's directory if given.\n\n"
                     "Call submit_toc(title, author, chapters, audience, technical_level, "
                     "prerequisites, output_dir, content_types) where chapters is a list of "
@@ -825,9 +825,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     "code",
                     "tables",
                 ]
-                ctx.assets_dir = (
-                    f"{ctx.output_dir}/assets" if ctx.output_dir else "assets"
-                )
+                ctx.assets_dir = f"{ctx.output_dir}/assets" if ctx.output_dir else "assets"
                 ctx.chapters = chapters
                 ctx.current_chapter_index = 0
                 self.total_phases = len(chapters) + 6
@@ -838,21 +836,19 @@ class MakePdfBookRunner(CodePlanRunner):
                     f"Prerequisites: {ctx.prerequisites or '(unspecified)'}\n"
                     f"Content: {', '.join(ctx.content_types)}\n"
                     f"Chapters: {len(chapters)}\n"
-                    + "\n".join(
-                        f"  {i + 1}. {c.title}" for i, c in enumerate(chapters)
-                    )
+                    + "\n".join(f"  {i + 1}. {c.title}" for i, c in enumerate(chapters))
                 )
                 ctx.artifacts["toc"] = ctx.toc_summary
-                return MakePdfBookState.RESEARCH
+                return MakeEpubBookState.RESEARCH
 
         ctx.fail_reason = "toc phase never called submit_toc()"
-        return MakePdfBookState.FAILED
+        return MakeEpubBookState.FAILED
 
     async def _research(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeEpubBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeEpubBookState:
         """Loop until submit_research fires; return CHAPTER or FAILED."""
         chapter_titles: str = "\n".join(
             f"  {i + 1}. {c.title} — {c.outline}" for i, c in enumerate(ctx.chapters)
@@ -874,7 +870,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     )
                 ),
                 system_prompt=(
-                    "You are in the RESEARCH phase of make_pdf_book. Gather extensive, "
+                    "You are in the RESEARCH phase of make_epub_book. Gather extensive, "
                     "AUTHORITATIVE, TECHNICAL research before any chapter is written. "
                     "This book is specialised — vague general knowledge is not enough.\n\n"
                     f"Book: {ctx.title}\nAuthor: {ctx.author}\n"
@@ -934,24 +930,23 @@ class MakePdfBookRunner(CodePlanRunner):
                     f"{len(ctx.research_notes)} chapters researched; "
                     f"{len(ctx.research_sources)} sources; {len(ctx.images)} assets"
                 )
-                return MakePdfBookState.ASSETS
+                return MakeEpubBookState.ASSETS
 
         ctx.fail_reason = "research phase never called submit_research()"
-        return MakePdfBookState.FAILED
-
+        return MakeEpubBookState.FAILED
 
     async def _chapter(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeEpubBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeEpubBookState:
         """Write one chapter; loop until confirm_chapter_complete fires.
 
         Returns CHAPTER (next chapter) while chapters remain, else COMPILE.
         """
         index: int = ctx.current_chapter_index
         if index >= len(ctx.chapters):
-            return MakePdfBookState.FRONT_MATTER
+            return MakeEpubBookState.FRONT_MATTER
         chapter: ChapterInfo = ctx.chapters[index]
         research_block: str = ctx.research_notes.get(index, "")
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -975,7 +970,7 @@ class MakePdfBookRunner(CodePlanRunner):
                 intent=ctx.intent,
                 text=text,
                 system_prompt=(
-                    "You are in the CHAPTER phase of make_pdf_book. One phase runs per "
+                    "You are in the CHAPTER phase of make_epub_book. One phase runs per "
                     "chapter — write exactly ONE technical chapter now, in full.\n\n"
                     f"Book: {ctx.title}\nAuthor: {ctx.author}\n"
                     f"Audience: {ctx.audience or '(specialist reader)'}\n"
@@ -1004,7 +999,6 @@ class MakePdfBookRunner(CodePlanRunner):
                     "- Use a single '# ' chapter title and '## ' section headings — the typesetter colours these automatically with the accent colour planned in the TOC; never style headings with raw HTML or inline colours.\n"
                     "- Mark every key indexable term in **bold** on first use — the index section collects these, so consistent marking makes the index accurate.\n"
                     "- Keep paragraphs, lists, and spacing clean; prefer short, scannable sections over dense walls of text.\n"
-
                     "RICH CONTENT — use every enabled content type where it adds value:\n"
                     + (
                         "- IMAGES: for every figure the outline/research calls for, place "
@@ -1017,10 +1011,9 @@ class MakePdfBookRunner(CodePlanRunner):
                     )
                     + (
                         "- EQUATIONS: write mathematics in LaTeX — $...$ for inline and "
-                        "$$...$$ for display equations. At build time these are typeset "
-                        "natively in the PDF (typst or LaTeX render them as selectable, "
-                        "crisp math), so use proper LaTeX (\\frac, \\sum, \\int, \\sqrt, "
-                        "...).\n"
+                        "$$...$$ for display equations. At build time these are compiled "
+                        "to crisp SVG images that render in every EPUB reader, so use "
+                        "proper LaTeX (\\frac, \\sum, \\int, \\sqrt, ...).\n"
                         if "equations" in ctx.content_types
                         else ""
                     )
@@ -1028,8 +1021,8 @@ class MakePdfBookRunner(CodePlanRunner):
                         "- CODE: include fenced code blocks with a language tag (```python, "
                         "```rust, ```ts). Code must be accurate, runnable, and directly "
                         "relevant. Add a short comment or prose tie-in for each snippet. The "
-                    "language tag enables pygments syntax highlighting in the compiled "
-                    "book.\n"
+                        "language tag enables pygments syntax highlighting in the compiled "
+                        "book.\n"
                         if "code" in ctx.content_types
                         else ""
                     )
@@ -1053,7 +1046,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     "chapter (technical books run denser than general ones).\n"
                     "5. End with a short transition that sets up the next chapter.\n"
                     "6. Do NOT include the book title or author in the file — just the "
-                    "chapter content. The PDF metadata handles title/author.\n\n"
+                    "chapter content. The EPUB metadata handles title/author.\n\n"
                     "Write the file with the write tool, then call "
                     "confirm_chapter_complete(chapter_index=<index>, file_path=..., "
                     "word_count=..., assets=[...]) with the exact index you were assigned "
@@ -1081,17 +1074,16 @@ class MakePdfBookRunner(CodePlanRunner):
                     f"{len(chapter.assets)} assets)"
                 )
                 ctx.current_chapter_index = index + 1
-                return MakePdfBookState.CHAPTER
+                return MakeEpubBookState.CHAPTER
 
         ctx.fail_reason = f"chapter {index + 1} never confirmed completion"
-        return MakePdfBookState.FAILED
-
+        return MakeEpubBookState.FAILED
 
     async def _assets(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeEpubBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeEpubBookState:
         """Produce all figure/asset files; loop until confirm_assets_ready fires."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -1105,7 +1097,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     else "Call confirm_assets_ready(assets) now with the full asset list."
                 ),
                 system_prompt=(
-                    "You are in the ASSETS phase of make_pdf_book. Produce EVERY visual asset "
+                    "You are in the ASSETS phase of make_epub_book. Produce EVERY visual asset "
                     "the book needs, in one phase, before any chapter is written.\n\n"
                     f"Book: {ctx.title}\nAssets dir: {ctx.assets_dir or '<output_dir>/assets'}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
@@ -1132,16 +1124,16 @@ class MakePdfBookRunner(CodePlanRunner):
             if event.is_set():
                 ctx.images = [str(a) for a in data.get("assets", [])]
                 ctx.artifacts["assets"] = f"{len(ctx.images)} assets produced"
-                return MakePdfBookState.CHAPTER
+                return MakeEpubBookState.CHAPTER
 
         ctx.fail_reason = "assets phase never called confirm_assets_ready()"
-        return MakePdfBookState.FAILED
+        return MakeEpubBookState.FAILED
 
     async def _front_matter(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeEpubBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeEpubBookState:
         """Build cover, preface, and table-of-contents pages; return BACK_MATTER or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -1155,7 +1147,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     else "Call confirm_front_matter_ready(summary, files) now."
                 ),
                 system_prompt=(
-                    "You are in the FRONT_MATTER phase of make_pdf_book. Build the book's "
+                    "You are in the FRONT_MATTER phase of make_epub_book. Build the book's "
                     "front-matter pages so the finished book looks like a real published "
                     "book.\n\n"
                     f"Book: {ctx.title}\nAuthor: {ctx.author}\n"
@@ -1182,16 +1174,16 @@ class MakePdfBookRunner(CodePlanRunner):
                 ctx.front_matter_summary = str(data.get("summary", ""))
                 ctx.front_matter_files = list(data.get("files", []))
                 ctx.artifacts["front_matter"] = ctx.front_matter_summary
-                return MakePdfBookState.BACK_MATTER
+                return MakeEpubBookState.BACK_MATTER
 
         ctx.fail_reason = "front_matter phase never called confirm_front_matter_ready()"
-        return MakePdfBookState.FAILED
+        return MakeEpubBookState.FAILED
 
     async def _back_matter(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeEpubBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeEpubBookState:
         """Build the index page; return COMPILE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -1205,7 +1197,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     else "Call confirm_back_matter_ready(summary, files) now."
                 ),
                 system_prompt=(
-                    "You are in the BACK_MATTER phase of make_pdf_book. Build the book's "
+                    "You are in the BACK_MATTER phase of make_epub_book. Build the book's "
                     "index page.\n\n"
                     f"Book: {ctx.title}\nChapters: {ctx.toc_summary or '(see plan)'}\n\n"
                     "Read the chapter files and collect every **bold-marked** indexable "
@@ -1225,18 +1217,17 @@ class MakePdfBookRunner(CodePlanRunner):
                 ctx.back_matter_summary = str(data.get("summary", ""))
                 ctx.back_matter_files = list(data.get("files", []))
                 ctx.artifacts["back_matter"] = ctx.back_matter_summary
-                return MakePdfBookState.COMPILE
+                return MakeEpubBookState.COMPILE
 
         ctx.fail_reason = "back_matter phase never called confirm_back_matter_ready()"
-        return MakePdfBookState.FAILED
-
+        return MakeEpubBookState.FAILED
 
     async def _compile(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeEpubBookContext,
         memory: object,
-    ) -> MakePdfBookState:
-        """Typeset the PDF; loop until a verdict tool fires."""
+    ) -> MakeEpubBookState:
+        """Assemble the EPUB; loop until a verdict tool fires."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
@@ -1244,189 +1235,136 @@ class MakePdfBookRunner(CodePlanRunner):
             paths: str = "\n".join(f"  {c.file_path}" for c in written)
             asset_list: str = "\n".join(f"  {a}" for a in ctx.images)
             text: str = (
-                f"Compile the finished book into a PDF.\n\n"
+                f"Compile the finished book into an EPUB.\n\n"
                 f"Title: {ctx.title}\nAuthor: {ctx.author}\n"
                 f"Output dir: {ctx.output_dir or '(derived from title)'}\n"
                 f"Rich content: {', '.join(ctx.content_types)}\n"
                 f"Chapter files:\n{paths}\n"
                 + (
-                    f"\nFront matter (cover/preface/contents):\n"
+                    "\nFront matter (cover/preface/contents):\n"
                     + "\n".join(f"  {f}" for f in ctx.front_matter_files)
-                    + f"\nBack matter (index):\n"
+                    + "\nBack matter (index):\n"
                     + "\n".join(f"  {f}" for f in ctx.back_matter_files)
                     if ctx.front_matter_files or ctx.back_matter_files
                     else ""
                 )
                 + (f"Asset files:\n{asset_list}" if ctx.images else "")
                 if attempt == 1
-                else "Call mark_book_complete(pdf_path, summary) or reject_book(issue, chapter_index) now."
+                else "Call mark_book_complete(epub_path, summary) or reject_book(issue, chapter_index) now."
             )
             await self.run_phase(
                 intent=ctx.intent,
                 text=text,
                 system_prompt=(
-                    "You are in the COMPILE phase of make_pdf_book. Typeset all written "
-                    "chapters into a single polished PDF file, preserving every kind of "
-                    "rich content.\n\n"
+                    "You are in the COMPILE phase of make_epub_book. Assemble all written "
+                    "chapters into a single valid EPUB file, preserving every kind of rich "
+                    "content.\n\n"
                     f"Title: {ctx.title}\nAuthor: {ctx.author}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
-                    "Chapter files:\n"
-                    + "\n".join(f"  {c.file_path}" for c in written)
-                    + "\n\n"
+                    "Chapter files:\n" + "\n".join(f"  {c.file_path}" for c in written) + "\n\n"
                     "Asset files (images/figures the chapters reference):\n"
-                    + (
-                        "\n".join(f"  {a}" for a in ctx.images)
-                        if ctx.images
-                        else "  (none)"
-                    )
+                    + ("\n".join(f"  {a}" for a in ctx.images) if ctx.images else "  (none)")
                     + "\n\n"
-                    "BOOK POLISH — the finished PDF must look like a real published book. The front-matter pages (cover/preface/contents) and the index page were already built by the FRONT_MATTER and BACK_MATTER phases — use those files, do NOT rebuild them:\n"
-                    "  FRONT MATTER: the cover/preface/contents Markdown files from the FRONT_MATTER phase (ctx.front_matter_files) go FIRST, before the chapter list, in this order: cover, preface, contents, chapters.\n"
-                    "  BACK MATTER: append the index file from the BACK_MATTER phase (ctx.back_matter_files) after the last chapter.\n"
-                    "  COLOURED HEADINGS:\n"
-                    "   - TYPST tier: after the sed symbol fixes, prepend to book.typ a heading-colour rule and a clean page setup (adjust colours to the planned accent):\n"
-                    "        #set page(paper: \"a4\", margin: 2.2cm)\n"
-                    "        #show heading.where(level: 1): set text(fill: rgb(\"#1f4e79\"), size: 20pt, weight: \"bold\")\n"
-                    "        #show heading.where(level: 2): set text(fill: rgb(\"#2e74b5\"), size: 15pt)\n"
-                    "     Prepend with: sed -i '1i #set page(paper: \"a4\", margin: 2.2cm)' book.typ (repeat per rule).\n"
-                    "   - XELATEX tier: write a header.tex with \\usepackage{xcolor} \\usepackage{sectsty}, \\definecolor{accent}{HTML}{1F4E79}, \\allsectionsfont{\\color{accent}}, and pass pandoc -H header.tex.\n"
-                    "  TOC: the engine must emit a table of contents (pandoc --toc for typst/xelatex); the generated toc.md guarantees a visible one even if --toc is unavailable.\n"
-                    "  INDEX: index.md lists the marked terms; for typst/xelatex use chapter numbers as references when page numbers are not known in advance.\n"
-                    "  After building, verify: the extracted text contains 'Preface', 'Contents' and 'Index'; the cover title appears; and the typst source contains a '#show heading' colour rule (grep 'show heading' book.typ).\n"
-
-                    "Compile strategy — try in order until one produces a valid PDF:\n"
-                    "1. TYPST (preferred — native typeset math, single static binary, "
-                    "no system install):\n"
-                    "   a. If `typst --version` fails, download it (no root needed):\n"
-                    "        curl -L https://github.com/typst/typst/releases/latest/"
-                    "download/typst-x86_64-unknown-linux-musl.tar.xz -o /tmp/typst.tar.xz\n"
-                    "        mkdir -p .math-render\n"
-                    "        tar -xJf /tmp/typst.tar.xz -C .math-render --strip-components=1\n"
-                    "        export PATH=\"$PWD/.math-render:$PATH\"\n"
-                    "   b. Create a small title page file <title>.txt:\n"
-                    "        # <Title>\n        **<Author>**\n"
-                    "   c. IMPORTANT — pandoc's typst writer emits symbol names that "
-                    "older typst (0.15.x) rejects. Compile in TWO steps so you can patch "
-                    "the intermediate .typ, and apply the FIXES below. Do NOT use "
-                    "`--pdf-engine=typst` directly — it fails hard with no intermediate "
-                    "to patch. Instead:\n"
-                    "        pandoc <title>.txt chapters/*.md -t typst --toc "
-                    "--toc-depth=2 --metadata title='<title>' --metadata author='<author>' "
-                    "-o book.typ\n"
-                    "        sed -i 's/planck\\.reduce/u{210f}/g; s/angle\\.l/⟨/g; "
-                    "s/angle\\.r/⟩/g; s/times\\.circle/⊗/g' book.typ\n"
-                    "        typst compile book.typ <title>.pdf\n"
-                    "   d. WHY THESE FIXES (learned the hard way — typst ≤ 0.15 "
-                    "rejects them all):\n"
-                    "        - pandoc renders \\hbar as `planck.reduce` → unknown symbol "
-                    "modifier; replace with `u{210f}` (the ℏ glyph).\n"
-                    "        - \\langle / \\rangle become `angle.l` / `angle.r` → FAIL; "
-                    "replace with literal ⟨ / ⟩.\n"
-                    "        - \\otimes becomes `times.circle` → FAIL; replace with ⊗.\n"
-                    "        - In the MARKDOWN (before pandoc): texmath cannot parse \\AA "
-                    "(Ångström) — write \\text{Å} instead; and matplotlib "
-                    "figure titles reject \\tfrac — use \\frac{1}{2}.\n"
-                    "        After sed, grep -cE 'planck\\.reduce|angle\\.|times\\.circle' "
-                    "book.typ must print 0 (counts inside ```python code blocks are fine "
-                    "— only math outside code matters).\n"
-                    "   e. pandoc converts the LaTeX math to native typst math "
-                    "automatically (searchable, selectable text — better than images). "
-                    "PNG figures, tables, and syntax-highlighted code all typeset "
-                    "natively. Note: the shell expands chapters/*.md in the order given "
-                    "— ensure it matches NN- ordering, or list the files explicitly "
-                    "(pandoc does NOT sort them for you).\n"
-                    "2. XELATEX (gold-standard LaTeX math; heavier install, needs root):\n"
-                    "   a. apt-get install -y texlive-xetex texlive-fonts-recommended\n"
-                    "   b. pandoc <title>.txt chapters/*.md -o <title>.pdf "
-                    "--pdf-engine=xelatex --toc --metadata title='<title>' "
-                    "--metadata author='<author>'\n"
-                    "   Only use this tier if typst cannot be obtained. (xelatex handles "
-                    "\\AA and \\hbar natively — no symbol fixes needed.)\n"
-                    "3. CHROMIUM HEADLESS + MATHJAX SVG (works when no TeX/typst engine "
-                    "can be installed):\n"
-                    "   a. pandoc <title>.txt chapters/*.md -o book.epub --mathml "
-                    "(same as the EPUB pipeline), extract it, and run the RENDERER "
-                    "TEMPLATE below over every chapter XHTML to turn each <math> into a "
-                    "self-contained SVG (glyphs inline, no fonts/JS/network).\n"
-                    "   b. Concatenate the chapter bodies into ONE self-contained HTML "
-                    "with a <style> block, inlining every PNG figure as base64 <img> "
-                    "and every equation SVG directly.\n"
-                    "   c. Install chromium via playwright if needed:\n"
-                    "        pip install playwright && playwright install chromium\n"
-                    "   d. Print to PDF with headless Chromium:\n"
-                    "        python3 - <<'PY'\n"
-                    "        from playwright.sync_api import sync_playwright\n"
-                    "        with sync_playwright() as p:\n"
-                    "            b = p.chromium.launch()\n"
-                    "            pg = b.new_page()\n"
-                    "            pg.goto('file://' + '<full path to book.html>')\n"
-                    "            pg.pdf(path='<title>.pdf', format='A4', "
-                    "print_background=True)\n"
-                    "            b.close()\n"
-                    "        PY\n"
-                    "   Math prints as crisp vector SVG; text and code remain selectable.\n"
-                    "4. REPORTLAB (absolute last resort — hand-rolled PDF):\n"
-                    "   a. pip install reportlab\n"
-                    "   b. Render each equation to a PNG via the MathJax node pipeline "
-                    "(same RENDERER TEMPLATE outputting PNG or rasterized SVG), then "
-                    "lay out title page, chapters (text, images, tables), and "
-                    "equation PNGs manually with reportlab.platypus.\n\n"
-                    "RICH CONTENT must survive — verify each enabled type in the PDF:\n"
-                    "  - IMAGES: every figure referenced in a chapter appears in the PDF\n"
-                    "  - EQUATIONS: math is present as real glyphs (typst/LaTeX typeset "
-                    "it natively; the chromium fallback prints SVG) — NOT raw LaTeX "
-                    "strings like \\frac or $...$\n"
-                    "  - CODE: code blocks appear intact with their language styling "
-                    "— every fenced block must carry a language tag (```python, ```rust) "
-                    "so pandoc\u2019s highlighting engine (pygments themes; e.g. "
-                    "--highlight-style pygments) styles it; pip install pygments if the "
-                    "pygments theme is unavailable\n"
-                    "  - TABLES: Markdown tables render as real tables\n"
-                    "  - inline citations like [RFC 8446] remain visible\n\n"
-                    "PDF VALIDATION — the file MUST pass all of these before you "
-                    "confirm (mandatory):\n"
-                    "  1. exists and starts with the '%PDF' magic bytes (head -c 4 "
-                    "<file> == %PDF)\n"
-                    "  2. page count >= 1 (aim 3+ for a real book): pip install pypdf "
-                    "&& python3 -c \"from pypdf import PdfReader; "
-                    "print(len(PdfReader('<title>.pdf').pages))\"  (or pdfinfo)\n"
-                    "  3. EVERY chapter title appears in the extracted text (so no "
-                    "chapter was dropped). pdftotext is often NOT installed — use "
-                    "pypdf's extract_text instead:\n"
-                    "        python3 - <<'PY'\n"
-                    "        from pypdf import PdfReader\n"
-                    "        t = '\\n'.join((p.extract_text() or '') for p in "
-                    "PdfReader('<title>.pdf').pages)\n"
-                    "        for title in ['<Chapter 1 title>', ..., '<Chapter N "
-                    "title>']:\n"
-                    "            assert title in t, f'MISSING: {title}'\n"
-                    "        print('all chapter titles present')\n"
-                    "        PY\n"
-                    "  4. no raw markup leaked: the extracted text must NOT contain "
-                    "'<math', '<svg', '<table' or '\\frac' (those mean math/markup "
-                    "was not rendered), and must NOT contain 'planck.reduce' or "
-                    "'angle.' or 'times.circle' (those mean the typst symbol fixes "
-                    "in step 1d were skipped).\n"
-                    "  5. code and table text are present in the extracted text\n"
-                    "  6. figures embedded: count image XObjects with pypdf — must "
-                    "equal the number of figure files the chapters reference (8 in "
-                    "the worked example):\n"
-                    "        python3 - <<'PY'\n"
-                    "        from pypdf import PdfReader\n"
-                    "        r = PdfReader('<title>.pdf'); c = 0\n"
-                    "        for p in r.pages:\n"
-                    "          for n in p.get('/Resources', {}).get('/XObject', {}):\n"
-                    "            if p['/Resources']['/XObject'][n].get_object()"
-                    ".get('/Subtype') == '/Image': c += 1\n"
-                    "        print('images:', c)\n"
-                    "        PY\n"
-                    "Output path convention: <output_dir>/<title-slug>.pdf (e.g. "
-                    "Kalman-Filtering/Kalman-Filtering.pdf).\n\n"
-                    "RENDERER TEMPLATE (only needed for tiers 3–4) — write this exactly "
-                    "to .math-render/render-math.js and run with node:\n"
-                    + _MATHJAX_RENDERER_JS
-                    + "\n\n"
-                    "On success call mark_book_complete(pdf_path, summary) with the path "
+                    "BOOK POLISH — the finished EPUB must look like a real published book. The front-matter pages (cover/preface/contents) and the index page were already built by the FRONT_MATTER and BACK_MATTER phases — use those files, do NOT rebuild them:\n"
+                    "  FRONT MATTER: add the front-matter XHTML items from the FRONT_MATTER phase (ctx.front_matter_files) FIRST in the spine (after 'nav'), in order: cover, preface, contents; set the cover as the library cover with book.set_cover('cover.png', open(...,'rb').read()) when the cover asset exists.\n"
+                    "  BACK MATTER: append the index item from the BACK_MATTER phase (ctx.back_matter_files) after the last chapter.\n"
+                    "  COLOURED HEADINGS: extend the TRIGGER SNIPPET zip post-process to also inject a <style> into every chapter <head> (adjust to the planned accent):\n"
+                    "        <style>h1{color:#1f4e79;border-bottom:2px solid #1f4e79;} h2{color:#2e74b5;} h3{color:#2e74b5;}</style>\n"
+                    "     Inject both the MathJax trigger and the style in the same '<head>' replace pass.\n"
+                    "  TOC: the ebooklib nav/toc.ncx already provides navigation; the visible toc page mirrors it for in-book reading.\n"
+                    "  After building, verify: every chapter head contains both 'x-mathjax-config' and the <style> colour rule; the spine includes cover, preface, toc and index; and the cover title appears in the cover page.\n"
+                    "Compile strategy — try in order until one produces a valid EPUB:\n"
+                    "1. CALIBRE-NATIVE (preferred — math stays as TeX text, typeset by calibre's built-in MathJax):\n"
+                    "   This is how calibre renders math in e-books: keep the mathematics as TeX notation in the HTML, and add the marker\n"
+                    '   <script type="text/x-mathjax-config"></script> to every chapter\'s <head>. The calibre E-book viewer detects that marker and typesets the TeX with its own bundled MathJax.\n'
+                    "   Math is NOT converted to images — it stays as selectable, searchable text (much better than SVG or MathML). Steps:\n"
+                    "   a. Per chapter, convert Markdown to XHTML keeping the math as TeX (pandoc must preserve $...$ / $$...$$ — use the --mathjax flag, which outputs \\(...\\) / \\[...\\] TeX spans):\n"
+                    "        pandoc <chapter>.md -t html5 --mathjax\n"
+                    "      - pandoc auto-escapes & < > inside math to &amp; &lt; &gt; (calibre requires this).\n"
+                    "      - Do NOT use plain `-t html5`: pandoc's default HTML math method mangles equations into <em>/<sup> fragments. --mathjax keeps real TeX.\n"
+                    '      - Strip pandoc\'s injected <script src=".../MathJax.js"> line — calibre bundles its own MathJax, and the CDN/system path will not resolve inside the EPUB.\n'
+                    "   b. Assemble the EPUB with EBBOOKLIB (REBUILD SNIPPET below). ebooklib REWRITES each chapter's <head> and strips custom script tags, so\n"
+                    '   c. POST-PROCESS the .epub zip: inject <script type="text/x-mathjax-config"></script> into every chapter\'s <head> (python3 zipfile rewrite, see TRIGGER SNIPPET below). Without this marker calibre will not activate MathJax.\n'
+                    "   d. Caveat (state it in the summary): math renders in MathJax-capable readers — the calibre viewer is the reference. Readers without MathJax (Apple Books, Kindle) show the raw TeX. If universal rendering is required, use tier 2 instead.\n"
+                    "   REBUILD SNIPPET (ebooklib, python3):\n"
+                    "     pip install ebooklib\n"
+                    "     import os, re, uuid, subprocess\n"
+                    "     from ebooklib import epub\n"
+                    "     book = epub.EpubBook()\n"
+                    "     book.set_identifier(str(uuid.uuid4())); book.set_title('<title>')\n"
+                    "     book.set_language('en'); book.add_author('<author>')\n"
+                    "     order = sorted(f for f in os.listdir('chapters') if f.endswith('.md'))\n"
+                    "     items = []\n"
+                    "     for fname in order:\n"
+                    "         out = subprocess.run(['pandoc', f'chapters/{fname}', '-t', 'html5', '--mathjax'], capture_output=True, text=True).stdout\n"
+                    "         out = re.sub(r'<script[^>]*MathJax[^>]*>.*?</script>', '', out, flags=re.S)  # strip pandoc MathJax script\n"
+                    "         t = os.path.splitext(fname)[0]\n"
+                    "         c = epub.EpubHtml(title=t, file_name=f'text/{t}.xhtml', lang='en'); c.content = out\n"
+                    "         book.add_item(c); items.append(c); book.toc.append(c)\n"
+                    '     imgs = {m for c in items for m in re.findall(r\'<img[^>]+src="assets/([^"]+)"\', c.content)}\n'
+                    "     for img in sorted(imgs):\n"
+                    "         it = epub.EpubImage(); it.file_name = f'media/{img}'; it.media_type = 'image/png'\n"
+                    "         it.content = open(f'assets/{img}','rb').read(); book.add_item(it)\n"
+                    "     for c in items:  # point img srcs at the epub media dir\n"
+                    '         c.content = re.sub(r\'src="assets/([^"]+)"\', r\'src="../media/\\1"\', c.content)\n'
+                    "     book.add_item(epub.EpubNcx()); book.add_item(epub.EpubNav())\n"
+                    "     book.spine = ['nav'] + items\n"
+                    "     epub.write_epub('<title>.epub', book)\n"
+                    "   TRIGGER SNIPPET (python3 — inject the calibre marker into every chapter head; ebooklib strips custom heads):\n"
+                    "     import zipfile, shutil\n"
+                    "     _T = '<script type=\"text/x-mathjax-config\"></script>'\n"
+                    "     tmp = '<title>.epub.tmp'\n"
+                    "     with zipfile.ZipFile('<title>.epub','r') as zin, zipfile.ZipFile(tmp,'w') as zout:\n"
+                    "       for it in zin.infolist():\n"
+                    "         d = zin.read(it.filename)\n"
+                    "         if it.filename.startswith('EPUB/text/') and it.filename.endswith('.xhtml'):\n"
+                    "           s = d.decode('utf-8')\n"
+                    "           if 'x-mathjax-config' not in s and '<head>' in s:\n"
+                    "             s = s.replace('<head>', '<head>\\n  ' + _T, 1)\n"
+                    "           d = s.encode('utf-8')\n"
+                    "         zout.writestr(it, d)\n"
+                    "     shutil.move(tmp, '<title>.epub')\n"
+                    "2. SVG FALLBACK (universal readers — Apple Books, Kindle, any reader: math becomes crisp self-contained SVG images, rendered identically everywhere).\n"
+                    "   Use this tier when the book must render in readers WITHOUT MathJax, or when calibre's viewer is not the target:\n"
+                    "   a. Build a MathML EPUB first (pandoc --mathml), extract it: python3 -c \"import zipfile; zipfile.ZipFile('<title>.epub').extractall('.epub-work')\"\n"
+                    "   b. Check `node --version`. If mathjax-full is not installed: mkdir -p .math-render && cd .math-render && npm init -y >/dev/null && npm install mathjax-full\n"
+                    "   c. Write the RENDERER TEMPLATE below exactly to .math-render/render-math.js, then run it over every chapter XHTML IN PLACE:\n"
+                    '        for f in .epub-work/EPUB/text/ch*.xhtml; do node .math-render/render-math.js "$f"; done\n'
+                    "   d. Assemble the final EPUB with EBBOOKLIB (same REBUILD SNIPPET above, reading .epub-work/EPUB/text/*.xhtml instead of running pandoc).\n"
+                    '   The renderer already handles the pitfalls that break readers: it never duplicates the xmlns attribute on <svg>; display equations use <span style="display:block"> (a <div> inside <p> is invalid XHTML); and it matches the OUTER <svg> greedily because MathJax nests inner <svg> for stretchy delimiters (\\left...\\right, \\begin{cases}).\n'
+                    "   RENDERER TEMPLATE — write this exactly to .math-render/render-math.js:\n"
+                    "   RENDERER TEMPLATE \u2014 write this exactly to "
+                    ".math-render/render-math.js:\n" + _MATHJAX_RENDERER_JS + "\n"
+                    '3. EBBOOKLIB FROM SCRATCH (fallback when pandoc is missing): convert each Markdown chapter to XHTML yourself (a markdown library is fine), keep the LaTeX inside <span class="math">\\[...\\] or \\$...\\$ so it survives, then use tier 1 or tier 2 math handling (calibre trigger for tier 1; MathJax SVG for tier 2), and assemble with ebooklib exactly like the REBUILD SNIPPET (embed every referenced image as an EpubImage item; never ship bare MathML or unescaped TeX).\n'
+                    "4. HAND-WRITTEN MINIMAL EPUB (last resort — only if neither pandoc nor ebooklib is usable): create a zip with:\n"
+                    "   - 'mimetype' (contents: application/epub+zip, stored uncompressed)\n"
+                    "   - 'META-INF/container.xml' pointing at the OPF\n"
+                    "   - 'OEBPS/content.opf' with metadata + manifest of chapter XHTML AND image items\n"
+                    "   - 'OEBPS/toc.ncx' navigation file\n"
+                    "   - 'OEBPS/chapters/*.xhtml' — one per Markdown chapter (convert the Markdown to XHTML, preserving <h1>/<h2>, <p>, <ul>/<ol>, <pre>/<code> blocks for any code, and <table> elements)\n"
+                    "   - 'OEBPS/assets/*' — copy every referenced image into the EPUB and reference it with <img src=\"../assets/...\"> and proper captions\n"
+                    "   - Math: keep TeX and add the calibre trigger (tier 1) or render SVG (tier 2)\n"
+                    "   Use Python's zipfile to build it.\n"
+                    "Rich content must survive compilation — verify each enabled type:\n"
+                    "  - IMAGES: every image referenced in a chapter exists in the EPUB, is declared in the OPF manifest, and displays with its caption\n"
+                    '  - EQUATIONS (tier 1 calibre-native): every chapter XHTML has the <script type="text/x-mathjax-config"></script> marker in its <head>, math is present as TeX spans (\\(...\\) / \\[...\\]), and ZERO <math> (MathML) remains.\n'
+                    "  - EQUATIONS (tier 2 SVG): every <math> element was replaced by a <svg> (ZERO <math> left), each SVG has real glyph path data, and every XHTML still parses as strict XML\n"
+                    "  - CODE: fenced code blocks render as <pre><code> with the code "
+                    "intact — give every block a language tag (```python, ```rust, ```ts) "
+                    "so pandoc highlights it with pygments (pip install pygments if the "
+                    "pygments theme is unavailable)\n"
+                    "  - TABLES: Markdown tables render as <table> markup\n"
+                    "  - inline citations like [RFC 8446] remain visible in the text\n"
+                    "Validation — the file MUST:\n"
+                    "  - exist at the reported path,\n"
+                    "  - start with the 'PK' zip magic bytes,\n"
+                    "  - contain a 'mimetype' entry with 'application/epub+zip',\n"
+                    "  - every EPUB/text/*.xhtml parses as well-formed XML (check with xml.dom.minidom), and\n"
+                    "  - tier 1: 'x-mathjax-config' present in every chapter head AND no <math> anywhere; tier 2: no <math> and every equation is an <svg>.\n"
+                    "If chapters reference images, also confirm those images are inside the EPUB (list the zip contents). Check these with the file tools / shell before confirming.\n"
+                    "Output path convention: <output_dir>/<title-slug>.epub (e.g. "
+                    "The-Art-of-Tea/The-Art-of-Tea.epub).\n\n"
+                    "On success call mark_book_complete(epub_path, summary) with the path "
                     "and a summary. On failure call reject_book(issue, chapter_index) — "
                     "include the zero-based chapter_index that needs rewriting (or -1 to "
                     "revisit the whole book). You MUST call one of them."
@@ -1439,27 +1377,27 @@ class MakePdfBookRunner(CodePlanRunner):
             if event.is_set():
                 action: str = str(data.get("action", ""))
                 if action == "complete":
-                    ctx.pdf_path = str(data.get("pdf_path", ""))
+                    ctx.epub_path = str(data.get("epub_path", ""))
                     ctx.compile_summary = str(data.get("summary", ""))
-                    ctx.artifacts["pdf"] = ctx.pdf_path
-                    return MakePdfBookState.COMPLETE
+                    ctx.artifacts["epub"] = ctx.epub_path
+                    return MakeEpubBookState.COMPLETE
                 ctx.fail_reason = str(data.get("issue", ""))
                 bad_index: int = int(data.get("chapter_index", -1))
                 if 0 <= bad_index < len(ctx.chapters):
                     ctx.current_chapter_index = bad_index
-                    return MakePdfBookState.CHAPTER
-                return MakePdfBookState.FAILED
+                    return MakeEpubBookState.CHAPTER
+                return MakeEpubBookState.FAILED
 
         ctx.fail_reason = "compile phase never reported a verdict"
-        return MakePdfBookState.FAILED
+        return MakeEpubBookState.FAILED
 
 
 # ── plugin ────────────────────────────────────────────────────────────────────
 
 
 @dataclasses.dataclass
-class MakePdfBookParams(WorkflowParams):
-    """Per-phase model overrides read from [workflows.make_pdf_book]."""
+class MakeEpubBookParams(WorkflowParams):
+    """Per-phase model overrides read from [workflows.make_epub_book]."""
 
     toc_model: str = ""
     research_model: str = ""
@@ -1476,16 +1414,16 @@ class MakePdfBookParams(WorkflowParams):
         }
 
 
-class MakePdfBookWorkflow(WorkflowPlugin):
-    """Write a specialised, technical book chapter by chapter and compile it into a typeset PDF."""
+class MakeEpubBookWorkflow(WorkflowPlugin):
+    """Write a specialised, technical book chapter by chapter and compile it into an EPUB."""
 
-    name = "make_pdf_book"
+    name = "make_epub_book"
     description = (
         "Write a specialised, technical book chapter by chapter (one phase per chapter, "
         "dynamic count) with images, equations, code, and tables, then compile it into "
-        "a typeset PDF."
+        "an EPUB file."
     )
-    mode_bindings = []  # manual only — invoke with /workflow make_pdf_book
+    mode_bindings = []  # manual only — invoke with /workflow make_epub_book
 
     # Static skeleton graph. The registry reads this at discovery time, so the
     # per-chapter count cannot be declared statically: the runner re-enters the
@@ -1498,7 +1436,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="research",
             on_reject="toc",
             system_prompt_override=(
-                "You are in the TOC phase of make_pdf_book. Plan a specialised, technical "
+                "You are in the TOC phase of make_epub_book. Plan a specialised, technical "
                 "book's table of contents (title, author, audience, technical level, "
                 "prerequisites, chapter list with concrete outlines, rich content types), "
                 "then call submit_toc()."
@@ -1512,7 +1450,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="assets",
             on_reject="research",
             system_prompt_override=(
-                "You are in the RESEARCH phase of make_pdf_book. Gather extensive, "
+                "You are in the RESEARCH phase of make_epub_book. Gather extensive, "
                 "authoritative technical research for EVERY chapter topic (primary "
                 "sources, data, formulas, citations), then call submit_research()."
             ),
@@ -1525,7 +1463,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="chapter",
             on_reject="assets",
             system_prompt_override=(
-                "You are in the ASSETS phase of make_pdf_book. Produce EVERY visual asset "
+                "You are in the ASSETS phase of make_epub_book. Produce EVERY visual asset "
                 "the book needs (figures, architecture diagrams with the 'diagrams' "
                 "library, and the cover image) into the assets dir, then call "
                 "confirm_assets_ready()."
@@ -1539,7 +1477,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="chapter",  # self-loop: the runner advances the chapter index
             on_reject="chapter",
             system_prompt_override=(
-                "You are in the CHAPTER phase of make_pdf_book. Write exactly ONE "
+                "You are in the CHAPTER phase of make_epub_book. Write exactly ONE "
                 "technical chapter in full as Markdown (precise terminology, data, "
                 "formulas, code snippets, tables, images with captions, and inline "
                 "citations grounded in the research), then call "
@@ -1554,7 +1492,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="back_matter",
             on_reject="front_matter",
             system_prompt_override=(
-                "You are in the FRONT_MATTER phase of make_pdf_book. Build the cover page, "
+                "You are in the FRONT_MATTER phase of make_epub_book. Build the cover page, "
                 "preface, and table-of-contents page, then call "
                 "confirm_front_matter_ready()."
             ),
@@ -1567,7 +1505,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="compile",
             on_reject="back_matter",
             system_prompt_override=(
-                "You are in the BACK_MATTER phase of make_pdf_book. Build the index page "
+                "You are in the BACK_MATTER phase of make_epub_book. Build the index page "
                 "from the bold-marked terms, then call confirm_back_matter_ready()."
             ),
         ),
@@ -1579,12 +1517,11 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next=None,  # terminal on success
             on_reject="chapter",  # re-enter at the offending chapter index
             system_prompt_override=(
-                "You are in the COMPILE phase of make_pdf_book. Typeset all chapters "
-                "into a valid .pdf (pandoc -t typst + sed symbol fixes + typst compile "
-                "→ xelatex → chromium+MathJax → reportlab), preserve images, "
-                "native math, code, and tables, validate it (%PDF, page count, "
-                "pypdf chapter-title + no-leak + image-count checks), and call "
-                "mark_book_complete() or reject_book()."
+                "You are in the COMPILE phase of make_epub_book. Assemble all chapters "
+                "into a valid .epub (calibre-native: pandoc --mathjax TeX + ebooklib + "
+                "MathJax-config trigger → SVG fallback → hand-written EPUB), preserve "
+                "images, equations (as TeX for calibre or SVG fallback), code, and tables, "
+                "validate it, and call mark_book_complete() or reject_book()."
             ),
         ),
     ]
@@ -1592,8 +1529,8 @@ class MakePdfBookWorkflow(WorkflowPlugin):
     @classmethod
     def checkpoint_context_to_payload(cls, context: object) -> dict[str, object]:
         """Encode resumable state without duplicating provider memory."""
-        if not isinstance(context, MakePdfBookContext):
-            raise TypeError("make_pdf_book checkpoint requires MakePdfBookContext")
+        if not isinstance(context, MakeEpubBookContext):
+            raise TypeError("make_epub_book checkpoint requires MakeEpubBookContext")
         return {
             "intent": context.intent,
             "run_id": context.run_id,
@@ -1629,7 +1566,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             "front_matter_files": context.front_matter_files,
             "back_matter_summary": context.back_matter_summary,
             "back_matter_files": context.back_matter_files,
-            "pdf_path": context.pdf_path,
+            "epub_path": context.epub_path,
             "compile_summary": context.compile_summary,
             "fail_reason": context.fail_reason,
             "artifacts": context.artifacts,
@@ -1640,13 +1577,13 @@ class MakePdfBookWorkflow(WorkflowPlugin):
         cls,
         payload: dict[str, object],
         memory: object | None = None,
-    ) -> MakePdfBookContext:
+    ) -> MakeEpubBookContext:
         """Restore state and attach the already-open session memory."""
-        raw_state = str(payload.get("state", MakePdfBookState.TOC.name))
+        raw_state = str(payload.get("state", MakeEpubBookState.TOC.name))
         try:
-            state = MakePdfBookState[raw_state]
+            state = MakeEpubBookState[raw_state]
         except KeyError as exc:
-            raise ValueError(f"unknown make_pdf_book state: {raw_state}") from exc
+            raise ValueError(f"unknown make_epub_book state: {raw_state}") from exc
         raw_chapters = payload.get("chapters", [])
         chapters: list[ChapterInfo] = []
         if isinstance(raw_chapters, list):
@@ -1662,7 +1599,8 @@ class MakePdfBookWorkflow(WorkflowPlugin):
                         word_count=int(raw.get("word_count", 0)),
                         status=str(raw.get("status", "pending")),
                         assets=[
-                            str(a) for a in raw.get("assets", [])
+                            str(a)
+                            for a in raw.get("assets", [])
                             if isinstance(raw.get("assets"), list)
                         ],
                     )
@@ -1683,11 +1621,9 @@ class MakePdfBookWorkflow(WorkflowPlugin):
                     continue
         raw_research_sources = payload.get("research_sources", [])
         research_sources = (
-            [str(s) for s in raw_research_sources]
-            if isinstance(raw_research_sources, list)
-            else []
+            [str(s) for s in raw_research_sources] if isinstance(raw_research_sources, list) else []
         )
-        return MakePdfBookContext(
+        return MakeEpubBookContext(
             intent=str(payload.get("intent", "")),
             run_id=str(payload.get("run_id", "")),
             state=state,
@@ -1698,7 +1634,8 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             technical_level=str(payload.get("technical_level", "advanced")),
             prerequisites=str(payload.get("prerequisites", "")),
             output_dir=str(payload.get("output_dir", "")),
-            content_types=list(payload.get("content_types", [])) or [
+            content_types=list(payload.get("content_types", []))
+            or [
                 "images",
                 "equations",
                 "code",
@@ -1716,11 +1653,13 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             research_summary=str(payload.get("research_summary", "")),
             front_matter_summary=str(payload.get("front_matter_summary", "")),
             front_matter_files=[str(f) for f in payload.get("front_matter_files", [])]
-            if isinstance(payload.get("front_matter_files", []), list) else [],
+            if isinstance(payload.get("front_matter_files", []), list)
+            else [],
             back_matter_summary=str(payload.get("back_matter_summary", "")),
             back_matter_files=[str(f) for f in payload.get("back_matter_files", [])]
-            if isinstance(payload.get("back_matter_files", []), list) else [],
-            pdf_path=str(payload.get("pdf_path", "")),
+            if isinstance(payload.get("back_matter_files", []), list)
+            else [],
+            epub_path=str(payload.get("epub_path", "")),
             compile_summary=str(payload.get("compile_summary", "")),
             fail_reason=str(payload.get("fail_reason", "")),
             artifacts=artifacts,
@@ -1732,14 +1671,14 @@ class MakePdfBookWorkflow(WorkflowPlugin):
         cls,
         config: WorkflowConfig,
         mode_manager: ModeManager | None,
-    ) -> MakePdfBookRunner:
+    ) -> MakeEpubBookRunner:
         """Return this workflow's own state-machine runner."""
-        return MakePdfBookRunner(config, mode_manager)
+        return MakeEpubBookRunner(config, mode_manager)
 
     @classmethod
     def build_params(cls, source: dict[str, object]) -> WorkflowParams:
-        """Build typed params from [workflows.make_pdf_book]."""
-        return MakePdfBookParams(
+        """Build typed params from [workflows.make_epub_book]."""
+        return MakeEpubBookParams(
             toc_model=str(source.get("toc_model", "") or ""),
             research_model=str(source.get("research_model", "") or ""),
             chapter_model=str(source.get("chapter_model", "") or ""),

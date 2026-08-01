@@ -373,7 +373,10 @@ def _make_build_tools(
         """
         data["built"] = "1"
         event.set()
-        return {"ok": True, "message": "Component built. The verify phase for this component starts next."}
+        return {
+            "ok": True,
+            "message": "Component built. The verify phase for this component starts next.",
+        }
 
     return [lookup_component, component_built]
 
@@ -443,7 +446,10 @@ def _make_final_verify_tools(
         data["action"] = "fail"
         data["errors"] = errors.strip()
         event.set()
-        return {"ok": True, "message": "Errors recorded. Re-entering the last component's build phase."}
+        return {
+            "ok": True,
+            "message": "Errors recorded. Re-entering the last component's build phase.",
+        }
 
     return [final_verify_passed, final_verify_failed]
 
@@ -537,9 +543,7 @@ class SiteImitateRunner(CodePlanRunner):
             else context.shared_memory
         )
         if memory is None:
-            memory = ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
+            memory = ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         context.shared_memory = memory
         context.catalog = _load_ntui_catalog()
         if context.component_plan:
@@ -597,7 +601,6 @@ class SiteImitateRunner(CodePlanRunner):
         if state is SiteImitateState.FINAL_VERIFY:
             return 3 + 2 * n
         return 0
-
 
     async def _analyze(self, ctx: SiteImitateContext, memory: object) -> SiteImitateState:
         """Loop until submit_analysis fires; return PLAN or FAILED."""
@@ -686,14 +689,14 @@ class SiteImitateRunner(CodePlanRunner):
                     "directory structure, and an ordered build plan.\n\n"
                     "Write the plan in terms of the Named Component Inventory from the "
                     "analysis: for each component, name it by its canonical dictionary name "
-                    "and use the shadcn/ui symbol when one exists (e.g. Sheet side=\"left\" "
+                    'and use the shadcn/ui symbol when one exists (e.g. Sheet side="left" '
                     "for the nav drawer, <Pagination /> for the page control); when no "
                     "shadcn/ui primitive exists, plan to hand-roll the component with its "
                     "canonical anatomy (the ARIA/HTML/CSS symbols from the inventory).\n\n"
                     "CRITICAL - the components list: call submit_plan(plan, components=[...]) "
                     "where components is the ordered list of distinct website parts, one "
                     "string per part in the format 'NAME | BUILD SPEC | VERIFY CHECK'. "
-                    "Examples: 'Nav Drawer | Sheet side=\"left\" with the three-line button "
+                    'Examples: \'Nav Drawer | Sheet side="left" with the three-line button '
                     "(aria-expanded + aria-controls) | button toggles the panel and the Sheet "
                     "primitive is used', 'Header | sticky top bar with logo, nav links, mobile "
                     "hamburger | header is sticky and the logo and links render'. Cover every "
@@ -812,7 +815,7 @@ class SiteImitateRunner(CodePlanRunner):
                     f"{ctx.component_index + 1} of {len(ctx.component_plan)}).\n\n"
                     f"Component spec:\n{comp.get('build') or '(follow the plan)'}\n\n"
                     "Build this component using its canonical API symbols and anatomy - when a "
-                    "shadcn/ui symbol is listed (e.g. Sheet side=\"left\"), use that primitive; "
+                    'shadcn/ui symbol is listed (e.g. Sheet side="left"), use that primitive; '
                     "otherwise hand-roll the component with its canonical ARIA/HTML/CSS anatomy. "
                     "You may call lookup_component(description) to retrieve the full paste-ready "
                     "build prompt. Write the component's source files into the project created in "
