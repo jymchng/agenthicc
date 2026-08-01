@@ -139,6 +139,22 @@ class TestCompactMemory:
         assert isinstance(result, int)
         assert len(mem._messages) == 2
 
+    async def test_empty_model_summary_is_reported_as_recoverable(self) -> None:
+        from agenthicc.tui.conversation_store import ConversationStore
+
+        conv = ConversationStore()
+        events = []
+        conv.on_event(events.append)
+        mem = self._make_mem()
+        await compact_memory(mem, _MockTransport(""), model="m", conv_store=conv)
+
+        assert any(
+            event.kind == "system"
+            and event.payload.get("text") == "⎋ Compaction returned an empty summary"
+            for event in events
+        )
+        assert not any(event.payload.get("text") == "⎋ Nothing to compact" for event in events)
+
 
 # ── _format_transcript ─────────────────────────────────────────────────────────
 

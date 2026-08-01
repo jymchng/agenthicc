@@ -69,6 +69,7 @@ async def compact_memory(
         await asyncio.sleep(0)
 
         transcript = _format_transcript(memory._messages)
+        had_transcript = bool(transcript.strip())
         max_input_chars = 0
         if max_input_tokens > 0:
             usable = (
@@ -101,7 +102,16 @@ async def compact_memory(
         log.info("compactor: compacted to ~%d tokens", new_estimate)
 
         if conv_store is not None:
-            text = f"⎋ Compacted → ~{new_estimate:,} tokens" if summary else "⎋ Nothing to compact"
+            if summary:
+                text = f"⎋ Compacted → ~{new_estimate:,} tokens"
+            elif had_transcript:
+                # A non-empty history with an empty model response is a
+                # failed compaction, not an empty conversation.  Reporting it
+                # accurately prevents the operator from mistaking a provider
+                # failure for a successful no-op before an overflow retry.
+                text = "⎋ Compaction returned an empty summary"
+            else:
+                text = "⎋ Nothing to compact"
             conv_store.append_event("system", {"text": text})
         return new_estimate
 

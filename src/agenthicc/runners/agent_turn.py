@@ -170,6 +170,44 @@ def _is_permanent_error(exc: BaseException) -> bool:
     return 400 <= status < 500 and status != 429
 
 
+def _is_context_overflow_error(exc: BaseException) -> bool:
+    """Return whether *exc* is a provider context-length rejection.
+
+    Lauren versions before the context-window guard exposed this as a generic
+    ``TransportError`` wrapping an SDK ``BadRequestError``.  Do not rely only
+    on Lauren's newer ``AgentContextOverflowError``: the provider error in
+    practice is often the only signal available at this integration boundary.
+    """
+    try:
+        from lauren_ai import _exceptions  # noqa: PLC0415
+
+        overflow_type = getattr(_exceptions, "AgentContextOverflowError", None)
+    except ImportError:
+        overflow_type = None
+    if overflow_type is not None and isinstance(exc, overflow_type):
+        return True
+
+    # Walk the short exception chain used by SDK wrappers.  Include the type
+    # name because several SDKs put the useful text only on repr-like output.
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    markers = (
+        "context length",
+        "maximum context",
+        "context window",
+        "too many tokens",
+        "prompt is too long",
+        "requested tokens",
+    )
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        description = f"{type(current).__name__}: {current}".lower()
+        if any(marker in description for marker in markers):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
 if TYPE_CHECKING:
     from lauren_ai import AgentContext
     from lauren_ai._tools import ToolResult
@@ -939,6 +977,131 @@ class AgentTurnRunner:
 
     # ── step 8: streaming loop ────────────────────────────────────────────────
 
+    async def _auto_compact_if_needed(
+        self,
+        active_runner: AgentRunnerBase,
+        agent_text: str,
+        *,
+        max_input_tokens: int,
+        force: bool = False,
+    ) -> bool:
+        """Compact the shared session memory before an oversized turn.
+
+        Recent Lauren releases own this operation and perform an exact
+        ``count_tokens`` check.  Older releases (including 1.3.1) expose only
+        the sliding-window heuristic, so agenthicc keeps this compatibility
+        fallback at the send boundary.  The fallback uses the bounded,
+        map-reduce compactor and is deliberately conservative: it compacts at
+        80% of the usable input budget, leaving room for the current user
+        message and provider/system/tool framing.
+
+        ``force`` is used only after a provider explicitly rejects the request
+        for context length.  The caller restores the pre-attempt snapshot
+        before invoking this method, so the retried turn cannot duplicate its
+        user message.
+        """
+        ctx = self._ctx
+        memory = ctx.session_memory
+        if not bool(getattr(ctx.exec_cfg, "auto_compact", True)) or memory is None:
+            return False
+
+        messages = getattr(memory, "_messages", None)
+        if not isinstance(messages, list) or not messages:
+            # A single enormous new user message has no older history to
+            # summarise.  It needs a user-facing irreducible-overflow error.
+            return False
+
+        estimate = getattr(memory, "token_estimate", 0)
+        if not isinstance(estimate, int):
+            return False
+        projected = estimate + max(1, len(agent_text) // 4)
+        threshold = max(1, int(max_input_tokens * 0.8))
+        if not force and projected < threshold:
+            return False
+
+        transport = getattr(active_runner, "_transport", None)
+        if transport is None or not callable(getattr(transport, "complete", None)):
+            return False
+
+        before = estimate
+        from agenthicc.memory.compactor import compact_memory  # noqa: PLC0415
+
+        await compact_memory(
+            memory,
+            transport,
+            model=self._model_id,
+            conv_store=ctx.conv_store,
+            max_input_tokens=max_input_tokens,
+            usage_ledger=ctx.usage_ledger,
+            session_id=ctx.conversation_id,
+            run_id=self._intent_id,
+        )
+        after = getattr(memory, "token_estimate", before)
+        if isinstance(after, int) and after < before:
+            return True
+
+        # A provider may accept the summarisation request but return no text
+        # (some OpenAI-compatible reasoning endpoints do this for a
+        # stream=False completion).  Never continue with the same oversized
+        # memory in that case.  Use a deterministic, journal-aware lossy
+        # fallback as the final safety rung; it is better to retain recent
+        # context and continue than to resubmit an identical context-length
+        # rejection.
+        return self._local_compaction_fallback(max_input_tokens=max_input_tokens)
+
+    def _local_compaction_fallback(self, *, max_input_tokens: int) -> bool:
+        """Bound memory locally when an LLM summary is unavailable."""
+        memory = self._ctx.session_memory
+        if memory is None:
+            return False
+        before = getattr(memory, "token_estimate", 0)
+        if not isinstance(before, int):
+            return False
+
+        # Keep a generous recent window but leave ample room for system/tool
+        # schemas and the requested completion.  This path is only reached
+        # after LLM compaction failed or produced no usable reduction.
+        target = max(1, int(max_input_tokens * 0.75))
+        trim_to_fit = getattr(memory, "trim_to_fit", None)
+        if callable(trim_to_fit):
+            trim_to_fit(target)
+        after = getattr(memory, "token_estimate", before)
+
+        if not isinstance(after, int) or after >= before:
+            messages = getattr(memory, "_messages", None)
+            if not isinstance(messages, list) or not messages:
+                return False
+            from agenthicc.memory.compactor import _format_transcript  # noqa: PLC0415
+
+            # Keep the replacement strictly smaller than the oversized source
+            # even when the source is one indivisible user/tool message.
+            excerpt = _format_transcript(messages)[-1_000:]
+            memory._messages = [
+                {
+                    "role": "user",
+                    "content": (
+                        "[COMPACT FALLBACK]\n"
+                        "The prior history exceeded the model context and its summary was empty. "
+                        "Continue from this recent transcript excerpt:\n"
+                        f"{excerpt}"
+                    ),
+                },
+                {
+                    "role": "assistant",
+                    "content": "Understood. Continuing from the retained context.",
+                },
+            ]
+            after = getattr(memory, "token_estimate", before)
+
+        journal_reset = getattr(memory, "journal_reset", None)
+        if callable(journal_reset):
+            journal_reset()
+        if self._ctx.conv_store is not None:
+            self._ctx.conv_store.append_event(
+                "system", {"text": "⎋ Compaction fallback: retained recent history"}
+            )
+        return isinstance(after, int) and after < before
+
     async def _stream(
         self,
         agent_instance: object,
@@ -1006,6 +1169,13 @@ class AgentTurnRunner:
             _window = _context_window_for(self._model_id)
             _window_tokens = max(1, _window - _max_output - max(4_000, _window // 25))
 
+        # Lauren 1.3.1 has the summarisation fields but not the hard context
+        # guard.  Newer versions add ``context_window`` and exact counting.
+        # Pass it when available; the dynamic field check keeps the published
+        # agenthicc package compatible with both API generations.
+        _agent_config_fields = getattr(_AgentConfig, "__dataclass_fields__", {})
+        _supports_context_guard = "context_window" in _agent_config_fields
+
         # PRD-129 Phase 1/3: one idempotency ledger per turn, created OUTSIDE the
         # retry loop so it survives across attempts.  When a transient failure
         # rolls session_memory back to its pre-turn snapshot and the turn re-runs,
@@ -1051,9 +1221,20 @@ class AgentTurnRunner:
                 max_tokens_per_turn=_max_output,
                 parallel_tool_calls=True,
                 memory_window_tokens=_window_tokens,
-                summarize_at=0.8 if _auto_compact else None,
+                # Old Lauren's heuristic summariser is intentionally disabled
+                # here: the agenthicc fallback is bounded, journal-aware, and
+                # emits the same user-visible compaction event.
+                summarize_at=0.8 if _auto_compact and _supports_context_guard else None,
                 summary_model=self._model_id,
             )
+            if _supports_context_guard:
+                # ``context_window`` is absent from Lauren 1.3.1.  Use the
+                # dataclass replacement only on versions that advertise the
+                # field, while keeping the old constructor statically typed.
+                from dataclasses import replace  # noqa: PLC0415
+
+                replace_config = cast(Callable[..., _AgentConfig], replace)
+                config_kwargs = replace_config(config_kwargs, context_window=_window)
 
             if usage_tracker is not None:
                 usage_tracker.ensure_call()
@@ -1117,7 +1298,29 @@ class AgentTurnRunner:
                         doc_id = f"{self._intent_id}_{ctx.completed_turns}"
                         asyncio.create_task(ctx.semantic_index.add(doc_id, turn_text))
 
+        # Snapshot after any proactive compaction, immediately before Lauren
+        # adds this turn's user message.  It is the safe rollback point for the
+        # reactive compact-then-retry path below.
+        turn_snapshot = (
+            ctx.session_memory.snapshot()
+            if ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot")
+            else None
+        )
+
         try:
+            # Older Lauren releases do not run the exact-count compaction
+            # ladder.  This preflight is a compatibility fallback; newer
+            # releases also receive context_window above and keep their exact
+            # guard as the source of truth.
+            if not _supports_context_guard:
+                await self._auto_compact_if_needed(
+                    active_runner,
+                    agent_text,
+                    max_input_tokens=_window_tokens,
+                )
+                if ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot"):
+                    turn_snapshot = ctx.session_memory.snapshot()
+
             await self._stream_with_retry(_stream_once)
             turn_completed = True
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -1130,6 +1333,32 @@ class AgentTurnRunner:
                 ctx.conv_store.close_turn()
             raise  # must propagate so task.cancel() terminates the workflow runner
         except Exception as exc:
+            # A generic 400 from older Lauren/OpenAI integrations is still
+            # recoverable when its only cause is an overlong context. Restore
+            # the pre-attempt memory (run_stream has already appended the user
+            # message), compact once, and retry the same turn exactly once.
+            # This prevents the previous behaviour: the phase loop retried an
+            # identical oversized request until the user had to intervene.
+            if _auto_compact and _is_context_overflow_error(exc) and turn_snapshot is not None:
+                memory = ctx.session_memory
+                if memory is not None and hasattr(memory, "restore"):
+                    memory.restore(turn_snapshot)
+                compacted = await self._auto_compact_if_needed(
+                    active_runner,
+                    agent_text,
+                    max_input_tokens=_window_tokens,
+                    force=True,
+                )
+                if compacted:
+                    try:
+                        await self._stream_with_retry(_stream_once)
+                    except Exception as retry_exc:  # noqa: BLE001
+                        exc = retry_exc
+                    else:
+                        turn_completed = True
+
+            if turn_completed:
+                return
             if ctx.conv_store:
                 # Emit one well-formatted error event with the exception class name.
                 # Do NOT call fail_turn/close_turn here — the finally block handles

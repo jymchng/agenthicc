@@ -44,9 +44,19 @@ that repair is journaled, so a follow-up such as “what were you doing?” sees
 the same context in the current process and after restart. A cancellation no
 longer erases the whole turn by rolling memory back to its pre-turn count.
 
-Automatic compaction is model-aware. The manual `/compact` command uses a
-bounded map-reduce summarizer and records a reset in the journal so the durable
-projection remains aligned with the live messages.
+Automatic compaction is model-aware. Newer lauren-ai versions receive the
+resolved `context_window` and use their exact-count compaction ladder. When an
+older lauren-ai transport cannot provide that guard, agenthicc runs the same
+bounded map-reduce fallback at the turn boundary. If the provider still
+returns a context-length 400, the pre-turn memory snapshot is restored,
+compacted once, and the turn is retried rather than submitting the same
+oversized request again. If an OpenAI-compatible endpoint returns an empty
+summary, a bounded local recent-history fallback is applied before retrying.
+
+The manual `/compact` command uses the bounded map-reduce summarizer and
+records a reset in the journal so the durable projection remains aligned with
+the live messages. Automatic and manual compaction both emit a visible
+`⎋ Compacting conversation…` event.
 
 ## Context budgeting
 
