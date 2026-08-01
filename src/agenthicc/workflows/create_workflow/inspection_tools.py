@@ -128,7 +128,9 @@ def _make_plan_tools(
 ) -> list[Callable[..., object]]:
     """Return the only tool that can end the plan phase."""
     from lauren_ai._tools import tool
+    from agenthicc.tools.capabilities import tool_control
 
+    @tool_control
     @tool()
     async def submit_release_plan(plan: str) -> dict[str, object]:
         """Record the ordered release checks and advance to the verify phase.
@@ -155,7 +157,9 @@ def _make_verify_tools(
 ) -> list[Callable[..., object]]:
     """Return the pass/block decision tools for the verify phase."""
     from lauren_ai._tools import tool
+    from agenthicc.tools.capabilities import tool_control
 
+    @tool_control
     @tool()
     async def release_passed(summary: str) -> dict[str, object]:
         """Signal that every check passed.
@@ -168,6 +172,7 @@ def _make_verify_tools(
         event.set()
         return {"ok": True}
 
+    @tool_control
     @tool()
     async def release_blocked(blocker: str) -> dict[str, object]:
         """Signal that a check failed and the release is blocked.
@@ -803,6 +808,40 @@ def make_inspection_tools() -> list[Callable[..., object]]:
 
     @tool_read
     @_tool()
+    async def describe_transition_tool_pattern() -> dict[str, object]:
+        """Return the canonical import/decorator pattern for phase handoffs.
+
+        This is intentionally separate from the broad runner checklist because
+        a local import error inside a tool factory is invisible to module-load
+        validation until that phase actually starts.
+        """
+        return {
+            "canonical_import": (
+                "from lauren_ai._tools import tool\n"
+                "from agenthicc.tools.capabilities import tool_control"
+            ),
+            "canonical_decorators": "@tool_control\n@tool()\nasync def transition(...): ...",
+            "decorator_rules": [
+                "tool_control is a bare decorator; never write @tool_control().",
+                "tool_control must come from agenthicc.tools.capabilities, not lauren_ai._tools.",
+                "Put @tool_control above @tool() so the final callable carries CONTROL metadata.",
+                "Apply it to every callable that can advance, reject, retry, or branch a phase.",
+            ],
+            "validation_boundary": (
+                "Factory-local imports are checked statically because validation must not "
+                "execute arbitrary generated tool factories. Import success alone does not "
+                "prove local factory imports work; use this contract and the generated "
+                "template before calling a phase."
+            ),
+            "failure_prevented": [
+                "ImportError: cannot import name 'tool_control' from lauren_ai._tools",
+                "AttributeError caused by invoking the bare decorator as @tool_control()",
+                "phase transitions not being classified with ToolCapability.CONTROL",
+            ],
+        }
+
+    @tool_read
+    @_tool()
     async def describe_prompt_cache_contract() -> dict[str, object]:
         """Describe the cache-stable prompt and user-questioning contract."""
 
@@ -909,6 +948,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         describe_cloakbrowser_tools,
         describe_playwright_tools,
         describe_runner_pattern,
+        describe_transition_tool_pattern,
         show_example_workflow,
         describe_prompt_cache_contract,
         show_workflow_template,

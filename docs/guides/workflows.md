@@ -153,13 +153,17 @@ The design phase must state, and the generate phase must write:
    `while not state.is_terminal` + `match state`;
 5. `resume(context)` re-entering the same dispatch path;
 6. phase tool factories whose `@tool()` closures set an `asyncio.Event`, checked
-   after the turn returns — never parsing the agent's prose. Mark transition
-   callables with `@tool_control`, name them in the phase prompt, and state that
-   only a successful call changes phase;
+   after the turn returns — never parsing the agent's prose. Import `tool` from
+   `lauren_ai._tools` and the bare `tool_control` decorator from
+   `agenthicc.tools.capabilities`; put `@tool_control` above `@tool()` on every
+   transition callable, name them in the phase prompt, and state that only a
+   successful call changes phase. Never write `@tool_control()`;
 7. `build_runner()` on the plugin returning that runner.
 
-`describe_runner_pattern()` returns this checklist to the agent, and
-`show_example_workflow()` returns a complete working runner to adapt (pass
+`describe_runner_pattern()` returns this checklist to the agent.
+`describe_transition_tool_pattern()` returns the canonical handoff-tool
+import/decorator contract, while `show_example_workflow()` returns a complete
+working runner to adapt (pass
 `"declarative"` for the runner-less fallback). The generated runner subclasses
 `CodePlanRunner` for the session wiring and its public
 `run_phase(intent=, text=, system_prompt=, mode=, max_turns=, shared_memory=, tools=)`
@@ -295,6 +299,7 @@ API:
 | `list_tool_capabilities()` | every `ToolCapability` value with a description |
 | `list_agent_roles()` | every `PhaseRole` usable as `agent_type` |
 | `describe_runner_pattern()` | the custom-runner checklist and when a runner is required |
+| `describe_transition_tool_pattern()` | the canonical import/decorator contract for phase handoff tools |
 | `show_example_workflow(style)` | a complete `runner.py` package entry point to adapt — `"runner"` (default) or `"declarative"` |
 
 Every workflow phase gets the existing `ask_user` tool for clarifying questions.

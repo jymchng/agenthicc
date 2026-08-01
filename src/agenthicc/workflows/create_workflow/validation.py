@@ -441,6 +441,93 @@ def _check_dynamic_stable_prompt_ast(source: str, errors: list[str]) -> None:
             )
 
 
+def _ast_decorator_name(node: ast.expr) -> str:
+    """Return the simple name used by a decorator expression."""
+    candidate: ast.expr = node.func if isinstance(node, ast.Call) else node
+    return candidate.id if isinstance(candidate, ast.Name) else ""
+
+
+def _check_transition_tool_contract(
+    source: str,
+    errors: list[str],
+    *,
+    strict: bool,
+) -> bool:
+    """Catch phase-tool decorator/import mistakes hidden inside factories.
+
+    Importing a generated module does not execute local factory bodies. Static
+    inspection therefore has to reject the two common failures directly:
+    importing ``tool_control`` from ``lauren_ai._tools`` and calling the bare
+    metadata decorator as ``@tool_control()``.
+    """
+    validation_errors = errors if strict else []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+
+    control_names: set[str] = {"tool_control"}
+    correct_import = False
+    saw_control_reference = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(
+            alias.name == "tool_control" for alias in node.names
+        ):
+            alias = next(alias for alias in node.names if alias.name == "tool_control")
+            local_name = alias.asname or alias.name
+            control_names.add(local_name)
+            saw_control_reference = True
+            if node.module == "agenthicc.tools.capabilities":
+                correct_import = True
+            elif node.module == "lauren_ai._tools":
+                validation_errors.append(
+                    "tool_control must be imported from agenthicc.tools.capabilities, "
+                    "not lauren_ai._tools. lauren_ai._tools exports tool only."
+                )
+            else:
+                validation_errors.append(
+                    f"tool_control is imported from {node.module or '(relative module)'}, "
+                    "but generated workflows must use agenthicc.tools.capabilities."
+                )
+
+    decorated_transition = False
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        names = [_ast_decorator_name(decorator) for decorator in node.decorator_list]
+        control_indexes = [index for index, name in enumerate(names) if name in control_names]
+        if not control_indexes:
+            continue
+        decorated_transition = True
+        saw_control_reference = True
+        for index in control_indexes:
+            decorator = node.decorator_list[index]
+            if isinstance(decorator, ast.Call):
+                validation_errors.append(
+                    f"{node.name} uses @tool_control() but tool_control is a bare decorator; "
+                    "write @tool_control without parentheses."
+                )
+        tool_indexes = [
+            index
+            for index, name in enumerate(names)
+            if name == "tool" or name in {"_tool", "lauren_tool"}
+        ]
+        if tool_indexes and min(control_indexes) > min(tool_indexes):
+            validation_errors.append(
+                f"{node.name} must place @tool_control above @tool() so CONTROL metadata "
+                "survives decoration."
+            )
+
+    if saw_control_reference and not correct_import:
+        # The import-specific branch above supplies the actionable detail for
+        # known wrong imports; this covers an unqualified/aliased reference.
+        if not any("tool_control must be imported" in error for error in validation_errors):
+            validation_errors.append(
+                "transition tools must import tool_control from agenthicc.tools.capabilities."
+            )
+    return decorated_transition
+
+
 def _check_prompt_cache_contract(
     sources: dict[Path, str],
     plugin: type[WorkflowPlugin],
@@ -464,6 +551,11 @@ def _check_prompt_cache_contract(
     )
 
     _check_dynamic_stable_prompt_ast(source, errors)
+    has_transition_decorator = _check_transition_tool_contract(
+        source,
+        errors,
+        strict=strict,
+    )
     if "insert(0" in source or "_messages.insert" in source:
         errors.append(
             "workflow code must not insert messages at the beginning of shared conversation "
@@ -503,6 +595,12 @@ def _check_prompt_cache_contract(
         errors.append(
             "CACHE_CONTRACT must instruct the workflow agent to ask clarifying questions "
             "for missing or ambiguous requirements and not guess."
+        )
+    if not has_transition_decorator:
+        errors.append(
+            "generated custom workflows must mark every phase handoff callable with the "
+            "bare @tool_control decorator imported from agenthicc.tools.capabilities. "
+            "Use describe_transition_tool_pattern() for the exact pattern."
         )
     if errors:
         return "invalid"

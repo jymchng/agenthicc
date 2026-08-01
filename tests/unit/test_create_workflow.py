@@ -507,6 +507,7 @@ def test_inspection_tools_are_the_documented_set() -> None:
         "describe_cloakbrowser_tools",
         "describe_playwright_tools",
         "describe_runner_pattern",
+        "describe_transition_tool_pattern",
         "show_example_workflow",
         "describe_prompt_cache_contract",
         "show_workflow_template",
@@ -578,6 +579,8 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
         "checkpoint_context_from_payload",
         "successful submit_release_plan(plan) call changes phase",
         "transition tools changes phase",
+        "from agenthicc.tools.capabilities import tool_control",
+        "@tool_control",
     ):
         assert required in source, required
 
@@ -644,6 +647,32 @@ async def test_show_example_workflow_declarative_style_is_opt_in(tmp_path: Path)
     assert report.ok, report.render()
     # Valid, but flagged: two phases with no runner of its own.
     assert any("ships no runner" in warn for warn in report.warnings)
+
+
+async def test_strict_validation_catches_factory_local_tool_control_mistakes(
+    tmp_path: Path,
+) -> None:
+    result = await _call(make_inspection_tools(), "show_example_workflow")
+    assert isinstance(result, dict)
+    source = result["source"]
+    assert isinstance(source, str)
+    broken = source.replace(
+        "from agenthicc.tools.capabilities import tool_control",
+        "from lauren_ai._tools import tool_control",
+    ).replace("@tool_control\n", "@tool_control()\n")
+    path = tmp_path / "workflows" / "release_check"
+    path.mkdir(parents=True)
+    (path / "runner.py").write_text(broken, encoding="utf-8")
+
+    report = validate_workflow_file(
+        str(path),
+        expected_name="release_check",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+    assert not report.ok
+    assert any("agenthicc.tools.capabilities" in error for error in report.errors)
+    assert any("bare decorator" in error for error in report.errors)
 
 
 async def test_prompt_cache_inspection_describes_contract_and_template() -> None:
@@ -718,6 +747,17 @@ async def test_describe_runner_pattern_lists_every_required_element() -> None:
         str(item)
         for item in result["reference_implementations"]  # type: ignore[union-attr]
     )
+
+
+async def test_describe_transition_tool_pattern_returns_canonical_import_and_decorator() -> None:
+    result = await _call(make_inspection_tools(), "describe_transition_tool_pattern")
+    assert isinstance(result, dict)
+    assert "from agenthicc.tools.capabilities import tool_control" in result["canonical_import"]
+    assert (
+        result["canonical_decorators"] == "@tool_control\n@tool()\nasync def transition(...): ..."
+    )
+    assert any("never write @tool_control()" in rule for rule in result["decorator_rules"])
+    assert any("lauren_ai._tools" in rule for rule in result["decorator_rules"])
 
 
 # ── validation: path handling ─────────────────────────────────────────────────
