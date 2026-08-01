@@ -762,6 +762,46 @@ class TUISession:
             except Exception:  # noqa: BLE001 — lifecycle cleanup must not mask the result
                 handle.checkpoint_supported = False
 
+    def _fail_workflow_run(self, error: str) -> None:
+        """Publish and finalize a workflow failure that escaped its runner.
+
+        A generated workflow can fail before ``run_phase()`` opens a
+        ``ConversationStore`` turn (for example, while executing a lazy phase
+        tool factory).  In that case ``close_turn(error=...)`` has no active
+        turn to annotate, and the TUI otherwise appears to return to idle with
+        no explanation.  Make the failure visible and ensure the failed handle
+        cannot be accidentally reused by the next message.
+        """
+        conv = self._ctx.app_state.conversation
+        if conv.is_turn_active:
+            conv.close_turn(error=error)
+        else:
+            conv.append_event("error", {"message": error})
+
+        workflow_run = self._ctx.app_state.workflow_run()
+        if workflow_run is not None:
+            import dataclasses as _dc  # noqa: PLC0415
+
+            if _dc.is_dataclass(workflow_run):
+                self._ctx.app_state.workflow_run.set(
+                    _dc.replace(workflow_run, status="failed", current_phase=None)
+                )
+
+        handle = self._workflow_handle
+        if handle is None:
+            return
+        if handle.lifecycle not in {"complete", "failed", "discarded"}:
+            handle.mark_terminal("failed", error=error)
+            if handle.checkpoint_supported:
+                try:
+                    handle.save_checkpoint(reason="failed")
+                except Exception:  # noqa: BLE001 — failure reporting must not mask the cause
+                    pass
+        # A failed handle must not be reused when the user sends the next
+        # message to the same selected workflow.
+        if handle.lifecycle in {"complete", "failed", "discarded"}:
+            self._workflow_handle = None
+
     def _restore_paused_workflow(self) -> None:
         """Rehydrate the newest paused workflow checkpoint for this session."""
         conversation = getattr(self._ctx, "session_conversation", None)
@@ -1689,9 +1729,15 @@ class TUISession:
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:
             turn_failed = True
-            # Only emit an error event if the turn is still open; if _stream()
-            # already closed it (via its own finally), this is a no-op.
-            conv.close_turn(error=_fmt_exc(exc) if conv.is_turn_active else None)
+            error = _fmt_exc(exc)
+            # Workflow startup can fail before an agent turn exists. Publish
+            # that failure explicitly instead of silently returning to idle.
+            if self._workflow_handle is not None:
+                self._fail_workflow_run(error)
+            elif conv.is_turn_active:
+                conv.close_turn(error=error)
+            else:
+                conv.append_event("error", {"message": error})
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             conv.end_activity()
@@ -2012,7 +2058,13 @@ class TUISession:
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:
             conv = ctx.app_state.conversation
-            conv.close_turn(error=_fmt_exc(exc) if conv.is_turn_active else None)
+            error = _fmt_exc(exc)
+            if self._workflow_handle is not None:
+                self._fail_workflow_run(error)
+            elif conv.is_turn_active:
+                conv.close_turn(error=error)
+            else:
+                conv.append_event("error", {"message": error})
             if handle is not None and handle.lifecycle not in {"complete", "failed", "discarded"}:
                 handle.mark_terminal("failed", error=_fmt_exc(exc))
                 try:

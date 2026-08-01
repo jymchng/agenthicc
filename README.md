@@ -173,6 +173,10 @@ Transition tools in generated runners must use the canonical bare
 shows the exact form, and strict validation catches factory-local import or
 decorator mistakes before the workflow is accepted.
 
+If a selected workflow still fails during startup, the TUI renders the
+exception as an error event, marks the workflow run failed, and discards the
+failed handle so the next message can retry it cleanly.
+
 Every session also carries five read-only tools for reading agenthicc itself —
 `list_agenthicc_docs`, `read_agenthicc_doc`, `search_agenthicc_docs`,
 `inspect_agenthicc_source`, and `search_agenthicc_source`. They serve the `docs/`

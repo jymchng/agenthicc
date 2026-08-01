@@ -265,6 +265,12 @@ the run loops back to `generate` with the concrete errors attached. A workflow
 that does not import can therefore never be accepted, however confident the model
 is.
 
+Runtime startup failures are also surfaced in the TUI. This covers errors that
+occur before `run_phase()` opens an agent turn, such as a lazy phase-tool
+factory import failure: the exception is rendered, the workflow run is marked
+failed, and its handle is discarded rather than leaving the session apparently
+idle with a running workflow indicator.
+
 ### Budgets
 
 Two previously advisory settings drive the loops:

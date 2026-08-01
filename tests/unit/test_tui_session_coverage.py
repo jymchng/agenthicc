@@ -391,6 +391,112 @@ async def test_tui_workflow_selector_passes_next_input_as_exact_intent() -> None
 
 
 @pytest.mark.asyncio
+async def test_activated_custom_workflow_receives_and_answers_next_message() -> None:
+    session, ctx, _workspace, _input = _make_session()
+    from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+    seen: list[str] = []
+    rendered: list[object] = []
+    unsubscribe = ctx.app_state.conversation.on_event(rendered.append)
+
+    class CustomWorkflow(WorkflowPlugin):
+        name = "copy_website"
+        description = "copy a website"
+        phases = [PhaseSpec(name="copy", next=None)]
+
+        @classmethod
+        def build_params(cls, raw: object) -> object:
+            return raw
+
+        @classmethod
+        def build_runner(cls, config: object, mode: object) -> object:
+            class Runner:
+                async def run(self, intent: str) -> None:
+                    seen.append(intent)
+                    ctx.app_state.conversation.append_event(
+                        "text", {"text": f"Workflow received: {intent}"}
+                    )
+
+            return Runner()
+
+    ctx.workflow_registry.register(CustomWorkflow)
+    assert session.route("/workflow copy_website") is True
+
+    await session.handle_send(SendMessageCommand(text="hi"))
+    task = session._agent_task
+    assert task is not None
+    await task
+    unsubscribe()
+
+    assert seen == ["hi"]
+    assert any(
+        event.kind == "text" and event.payload.get("text") == "Workflow received: hi"
+        for event in rendered
+    )
+
+
+@pytest.mark.asyncio
+async def test_workflow_startup_failure_is_visible_when_no_agent_turn_exists() -> None:
+    session, ctx, _workspace, _input = _make_session()
+    from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin, WorkflowRun
+
+    rendered: list[object] = []
+    unsubscribe = ctx.app_state.conversation.on_event(rendered.append)
+
+    class BrokenWorkflow(WorkflowPlugin):
+        name = "copy_website"
+        description = "copy a website"
+        phases = [PhaseSpec(name="copy", next=None)]
+
+        @classmethod
+        def build_params(cls, raw: object) -> object:
+            return raw
+
+        @classmethod
+        def build_runner(cls, config: object, mode: object) -> object:
+            raise ImportError("cannot import name 'tool_control'")
+
+    ctx.workflow_registry.register(BrokenWorkflow)
+    assert session.route("/workflow copy_website") is True
+
+    class Handle:
+        workflow_name = "copy_website"
+        lifecycle = "running"
+        checkpoint_supported = False
+
+        def mark_terminal(self, status: str, *, error: str = "") -> None:
+            self.lifecycle = status
+            self.error = error
+
+    handle = Handle()
+    session._workflow_handle = handle  # type: ignore[assignment]
+    ctx.app_state.workflow_run.set(
+        WorkflowRun(
+            run_id="copy-run",
+            workflow_name="copy_website",
+            intent="hi",
+            current_phase="build",
+            status="running",
+        )
+    )
+
+    await session.handle_send(SendMessageCommand(text="hi"))
+    task = session._agent_task
+    assert task is not None
+    await task
+    unsubscribe()
+
+    errors = [event for event in rendered if event.kind == "error"]
+    assert errors
+    assert "ImportError" in str(errors[-1].payload["message"])
+    assert session._agent_task is None
+    assert handle.lifecycle == "failed"
+    assert session._workflow_handle is None
+    assert ctx.app_state.workflow_run().status == "failed"
+    assert ctx.app_state.workflow_run().current_phase is None
+
+
+@pytest.mark.asyncio
 async def test_tui_workflow_resume_explains_direct_write_contract() -> None:
     session, ctx, _workspace, _input = _make_session()
     assert session.route("/workflow resume") is True
