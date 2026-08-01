@@ -30,6 +30,7 @@ against the current source before implementing them.
 - [PRD-160 — Playwright Browser Agent Tools](prd-160-playwright-browser-agent-tools.md)
 - [PRD-161 — Exploratory Tool-Call Consolidation in the TUI](prd-161-exploratory-tool-call-consolidation.md)
 - [PRD-162 — Provider Connection Profiles and OpenAI-Compatible Endpoints](prd-162-provider-connection-profiles-and-modal-endpoints.md)
+- [PRD-163 — Cache-Stable Workflow Prompts and Generated Workflows](prd-163-cache-stable-workflow-prompts-and-generated-workflows.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -146,6 +147,13 @@ derived `Explored` TUI block while preserving every individual tool event,
 result, journal record, checkpoint, and replay path. The presentation marker
 is separate from `ToolCapability`, because the current capability enum controls
 permission and phase filtering as well as metadata.
+
+PRD-163 proposes a shared structured prompt/cache contract for every workflow
+runner. It keeps stable system and tool regions reusable while phase state,
+artifacts, summaries, questions, and transition details remain dynamic. It
+also makes `CreateWorkflowRunner` teach, template, inspect, and validate
+cache-stable generated workflows so downstream workflows inherit the common
+runner behavior instead of implementing provider-specific caching.
 
 ## Existing PRDs
 
