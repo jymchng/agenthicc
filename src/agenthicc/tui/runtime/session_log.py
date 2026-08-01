@@ -6,6 +6,7 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Collection, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -16,6 +17,14 @@ from agenthicc.tui.conversation_store import ConversationEvent
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 _SESSION_INDEX = _SESSIONS_DIR / "index.json"
+
+# Visual resume is intentionally bounded.  A session may contain thousands of
+# tool events, but the user normally needs only the most recent exchanges to
+# orient themselves.  The durable event log remains complete; this limit only
+# controls the presentation/input-history projection rebuilt at startup.
+DEFAULT_RESUME_TRANSCRIPT_TURNS = 20
+_TAIL_READ_BYTES = 64 * 1024
+_MAX_RECENT_EVENTS = 4096
 
 
 def _int_value(value: object) -> int:
@@ -151,6 +160,8 @@ class SessionEventLog:
         session_id: str,
         *,
         rendered: bool = True,
+        last_turns: int | None = None,
+        kinds: Collection[str] | None = None,
     ) -> list[ConversationEvent]:
         """Load conversation events, optionally marking them for display.
 
@@ -158,29 +169,29 @@ class SessionEventLog:
         metrics/state. The interactive resume path requests ``rendered=False``
         and hands those events directly to the scroll appender; they are not
         re-added to persistence subscribers.
+
+        ``last_turns`` bounds visual/history loading to the newest complete
+        turn groups.  It is a tail read of the JSONL file, so an old session
+        does not need to be read and decoded in full before the TUI can start.
+        A non-positive value keeps the backwards-compatible full-load
+        behavior. ``kinds`` is useful for narrow projections such as legacy
+        token accounting and avoids retaining unrelated event payloads.
         """
         path = get_session_log_path(session_id)
         if not path.exists():
             return []
-        events: list[ConversationEvent] = []
-        for line in path.read_text().splitlines():
-            try:
-                data = json.loads(line)
-                events.append(
-                    ConversationEvent(
-                        event_id=data["event_id"],
-                        kind=data["kind"],
-                        payload=data["payload"],
-                        timestamp=data["timestamp"],
-                        rendered=rendered,
-                    )
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        if last_turns is not None and last_turns > 0:
+            events = _load_recent_turns(path, last_turns, rendered=rendered, kinds=kinds)
+        else:
+            events = list(_iter_events(path, rendered=rendered, kinds=kinds))
         return events
 
 
-def load_user_message_history(session_id: str) -> list[str]:
+def load_user_message_history(
+    session_id: str,
+    *,
+    last_turns: int | None = None,
+) -> list[str]:
     """Return persisted user submissions for input-history navigation.
 
     The reactive conversation store is rebuilt for a resumed TUI, while the
@@ -189,13 +200,107 @@ def load_user_message_history(session_id: str) -> list[str]:
     assistant output or internal lifecycle events.
     """
     history: list[str] = []
-    for event in SessionEventLog.load(session_id):
+    for event in SessionEventLog.load(session_id, last_turns=last_turns):
         if event.kind != "user_message":
             continue
         text = event.payload.get("text")
         if isinstance(text, str) and text.strip():
             history.append(text.strip())
     return history
+
+
+def _iter_events(
+    path: Path,
+    *,
+    rendered: bool,
+    kinds: Collection[str] | None = None,
+) -> Iterator[ConversationEvent]:
+    """Yield valid events without retaining the whole JSONL file in memory."""
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            event = _decode_event(line, rendered=rendered)
+            if event is not None and (kinds is None or event.kind in kinds):
+                yield event
+
+
+def _decode_event(raw: str | bytes, *, rendered: bool) -> ConversationEvent | None:
+    """Decode one event line, treating malformed records as skippable history."""
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        event_id = data.get("event_id")
+        kind = data.get("kind")
+        payload = data.get("payload")
+        timestamp = data.get("timestamp")
+        if (
+            not isinstance(event_id, str)
+            or not isinstance(kind, str)
+            or not isinstance(payload, dict)
+            or not isinstance(timestamp, (int, float))
+        ):
+            return None
+        return ConversationEvent(
+            event_id=event_id,
+            kind=kind,
+            payload=cast(dict[str, object], payload),
+            timestamp=float(timestamp),
+            rendered=rendered,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _load_recent_turns(
+    path: Path,
+    last_turns: int,
+    *,
+    rendered: bool,
+    kinds: Collection[str] | None = None,
+) -> list[ConversationEvent]:
+    """Read the newest turn groups by scanning a JSONL file backwards.
+
+    The returned events remain in their original order.  Scanning from the
+    tail stops as soon as the requested number of ``turn_start`` markers has
+    been found, with a hard event cap protecting against a malformed or
+    exceptionally large single turn.  Logs created before turn markers were
+    introduced naturally fall back to their newest bounded event suffix.
+    """
+    selected: list[ConversationEvent] = []
+    turn_count = 0
+    position = path.stat().st_size
+    pending = b""
+
+    with path.open("rb") as handle:
+        while position > 0 and len(selected) < _MAX_RECENT_EVENTS:
+            start = max(0, position - _TAIL_READ_BYTES)
+            handle.seek(start)
+            block = handle.read(position - start)
+            lines = (block + pending).split(b"\n")
+            pending = lines[0]
+
+            for raw in reversed(lines[1:]):
+                if not raw.strip():
+                    continue
+                event = _decode_event(raw, rendered=rendered)
+                if event is None:
+                    continue
+                if event.kind == "turn_start":
+                    turn_count += 1
+                if kinds is None or event.kind in kinds:
+                    selected.append(event)
+                if turn_count >= last_turns:
+                    return list(reversed(selected))
+                if len(selected) >= _MAX_RECENT_EVENTS:
+                    break
+            position = start
+
+        if pending.strip() and len(selected) < _MAX_RECENT_EVENTS:
+            event = _decode_event(pending, rendered=rendered)
+            if event is not None:
+                selected.append(event)
+
+    return list(reversed(selected))
 
 
 # ── Session restoration ───────────────────────────────────────────────────────

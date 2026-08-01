@@ -133,6 +133,7 @@ class TestLoadConfig:
         assert config.api.api_key_env == "AGENTHICC_API_KEY"
         assert config.memory.vector_db == "sqlite-vec"
         assert config.memory.session_ttl_seconds == 86400
+        assert config.behaviour.resume_transcript_turns == 20
         assert config.hooks == {}
         assert config.tools.allowed == []
         assert config.tools.denied == []
@@ -152,6 +153,22 @@ class TestLoadConfig:
 
         assert config.execution.authoring_max_generation_attempts == 6
         assert config.execution.authoring_max_phase_turns == 7
+
+    def test_resume_transcript_turns_are_configurable_and_nonnegative(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        _write(
+            project,
+            """
+            [behaviour]
+            resume_transcript_turns = 7
+            """,
+        )
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+        assert config.behaviour.resume_transcript_turns == 7
+
+        project.write_text("[behaviour]\nresume_transcript_turns = -3\n")
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+        assert config.behaviour.resume_transcript_turns == 0
 
     def test_invalid_toml_raises(self, tmp_path):
         bad = tmp_path / "agenthicc.toml"

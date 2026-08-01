@@ -146,6 +146,30 @@ def test_journal_reopen_restores_latest_records_and_ignores_corrupt_tail(tmp_pat
     reopened_journal.close()
 
 
+def test_canonical_journal_records_skip_lazy_legacy_history(tmp_path: Path) -> None:
+    path = tmp_path / "conversation-journal.jsonl"
+    journal = ConversationJournal(path)
+    ledger = UsageLedger("session", journal=journal)
+    call = ledger.begin_call(run_id="run", model="mock")
+    ledger.complete(call, _usage(20, 4), cost_usd=0.2)
+    journal.close()
+
+    def unexpected_legacy_scan():
+        raise AssertionError("legacy conversation log should not be scanned")
+        yield  # pragma: no cover
+
+    reopened_journal = ConversationJournal(path)
+    reopened = UsageLedger(
+        "session",
+        journal=reopened_journal,
+        legacy_token_events=unexpected_legacy_scan(),
+    )
+
+    assert reopened.snapshot().input_tokens == 20
+    assert len(reopened.records()) == 1
+    reopened_journal.close()
+
+
 def test_legacy_tokens_are_imported_without_becoming_false_zero() -> None:
     event = ConversationEvent(
         event_id="legacy-event",

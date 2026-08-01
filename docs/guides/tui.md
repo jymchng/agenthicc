@@ -106,11 +106,16 @@ a response, while its edits remain local to the overlay until saved.
 
 ### Resumed transcript
 
-When the TUI is opened with an existing session, the session log is loaded
-after the Live workspace mounts and its historical conversation events are
-sent directly to `ScrollBufferAppender` in their original order. The same
-renderers are used for old and live turns, tool completions, errors, and
-assistant responses. This is presentation-only replay: the events are not
+When the TUI is opened with an existing session, the newest 20 complete turns
+are loaded from the tail of the session log after the Live workspace mounts and
+sent directly to `ScrollBufferAppender` in their original order. This bounded
+projection prevents a very large historical log from delaying startup. Set
+`[behaviour] resume_transcript_turns = N` to choose a different number; set it
+to `0` to request the complete visual transcript. The setting does not delete
+or trim provider memory, usage, workflow state, or the durable event log.
+
+The same renderers are used for old and live turns, tool completions, errors,
+and assistant responses. This is presentation-only replay: the events are not
 appended to `ConversationStore` and therefore are not written to
 `conversation.jsonl` a second time. Provider memory, usage, and workflow state
 continue to restore through their existing durable stores.

@@ -412,8 +412,9 @@ Session artifacts live below `~/.agenthicc/sessions/`:
 
 - `<session-id>.jsonl` — kernel event log;
 - `<session-id>/conversation.jsonl` — rendered conversation events; resumed
-  TUI sessions replay this transcript through the scroll appender without
-  duplicating the stored records;
+  TUI sessions replay the newest 20 complete turns from this transcript through
+  the scroll appender without duplicating stored records. Configure the limit
+  with `[behaviour] resume_transcript_turns` or use `0` for the full replay;
 - `<session-id>/conversation-journal.jsonl` — durable conversation-memory
   transitions used for crash recovery and tool replay;
 - `<session-id>/workflows/<run-id>/checkpoint.json` — atomic, bounded workflow

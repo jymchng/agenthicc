@@ -7,7 +7,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Iterator, Literal, cast
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -121,6 +121,7 @@ def _reset_terminal_on_exit() -> None:
 
 
 from agenthicc.tui.runtime.session_log import (  # noqa: E402
+    DEFAULT_RESUME_TRANSCRIPT_TURNS,
     create_session_id,
     register_session,
     update_session_mode,
@@ -501,10 +502,14 @@ async def _build_session_context(
 
     from agenthicc.runners.usage_ledger import UsageLedger  # noqa: PLC0415
 
+    def _legacy_token_events() -> Iterator[object]:
+        """Defer the legacy log scan until the ledger actually needs it."""
+        yield from SessionEventLog.load(session_id, kinds={"tokens"})
+
     usage_ledger = UsageLedger.open(
         session_id,
         journal=session_conversation.journal,
-        legacy_token_events=SessionEventLog.load(session_id),
+        legacy_token_events=_legacy_token_events(),
         conversation_id=session_conversation.conversation_id,
     )
     usage_ledger.bind_conversation_store(app_state.conversation)
@@ -2033,8 +2038,20 @@ class TUISession:
         if getattr(ctx, "resumed", False):
             from agenthicc.tui.runtime.session_log import SessionEventLog  # noqa: PLC0415
 
+            behaviour = getattr(getattr(ctx, "cfg", None), "behaviour", None)
+            replay_turns = getattr(
+                behaviour,
+                "resume_transcript_turns",
+                DEFAULT_RESUME_TRANSCRIPT_TURNS,
+            )
+            if not isinstance(replay_turns, int):
+                replay_turns = DEFAULT_RESUME_TRANSCRIPT_TURNS
             await self._workspace.replay_transcript(
-                SessionEventLog.load(ctx.session_id, rendered=False)
+                SessionEventLog.load(
+                    ctx.session_id,
+                    rendered=False,
+                    last_turns=replay_turns or None,
+                )
             )
         proc_task = asyncio.create_task(ctx.processor.run())
         # If a previous session had an in-progress workflow, show a notification
@@ -2113,6 +2130,7 @@ async def _run_tui_session(
     # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
     if cli_flags is not None:
         ctx.app_state.cli_flags = cli_flags
+    replay_turns = ctx.cfg.behaviour.resume_transcript_turns
     workspace = Workspace(
         ctx.app_state,
         ctx.console,
@@ -2127,7 +2145,11 @@ async def _run_tui_session(
         overlay_host=workspace.overlays,
         cwd=Path(os.getcwd()),
         cfg=ctx.cfg,
-        history=load_user_message_history(ctx.session_id) if ctx.resumed else None,
+        history=(
+            load_user_message_history(ctx.session_id, last_turns=replay_turns or None)
+            if ctx.resumed
+            else None
+        ),
     )
     session = TUISession(ctx, workspace, input_session)
     from agenthicc.background.terminals import (  # noqa: PLC0415

@@ -54,6 +54,62 @@ def test_resume_load_can_return_unrendered_events_without_changing_default(
     assert replay[0].payload == {"text": "old"}
 
 
+def test_resume_load_reads_only_the_newest_complete_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agenthicc.tui.runtime.session_log as session_log
+
+    monkeypatch.setattr(session_log, "_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(session_log, "_TAIL_READ_BYTES", 64)
+    log = SessionEventLog("large-resume")
+    for index in range(40):
+        log.append(
+            ConversationEvent(
+                f"turn-{index}",
+                "turn_start",
+                {"agent_name": "assistant"},
+                float(index),
+            )
+        )
+        log.append(
+            ConversationEvent(
+                f"text-{index}",
+                "text",
+                {"text": f"answer-{index}-" + ("x" * 100)},
+                float(index) + 0.5,
+            )
+        )
+    log.close()
+
+    recent = SessionEventLog.load("large-resume", rendered=False, last_turns=3)
+
+    assert [event.event_id for event in recent] == [
+        "turn-37",
+        "text-37",
+        "turn-38",
+        "text-38",
+        "turn-39",
+        "text-39",
+    ]
+    assert all(event.rendered is False for event in recent)
+
+
+def test_session_log_kind_projection_does_not_load_unrelated_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agenthicc.tui.runtime.session_log as session_log
+
+    monkeypatch.setattr(session_log, "_SESSIONS_DIR", tmp_path / "sessions")
+    log = SessionEventLog("usage-projection")
+    log.append(ConversationEvent("text", "text", {"text": "not usage"}, 1.0))
+    log.append(ConversationEvent("tokens", "tokens", {"input_tokens": 3, "output_tokens": 2}, 2.0))
+    log.close()
+
+    events = SessionEventLog.load("usage-projection", kinds={"tokens"})
+
+    assert [event.event_id for event in events] == ["tokens"]
+
+
 def test_resumed_input_history_uses_persisted_user_messages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -88,10 +144,16 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
     import agenthicc.tui.runtime.session_log as session_log
 
     history = [ConversationEvent("old", "text", {"text": "from yesterday"}, 1.0)]
+    load_calls: list[dict[str, object]] = []
+
+    def load_history(_session_id: str, **kwargs: object) -> list[ConversationEvent]:
+        load_calls.append(kwargs)
+        return history
+
     monkeypatch.setattr(
         session_log.SessionEventLog,
         "load",
-        staticmethod(lambda _session_id, *, rendered=True: history),
+        staticmethod(load_history),
     )
 
     class Workspace:
@@ -123,6 +185,7 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
         command_bus=CommandBus(),
         processor=SimpleNamespace(run=processor_run),
         app_state=AppState.create(),
+        cfg=SimpleNamespace(behaviour=SimpleNamespace(resume_transcript_turns=2)),
     )
     session = TUISession.__new__(TUISession)
     session._ctx = ctx
@@ -138,6 +201,7 @@ async def test_resumed_tui_replays_transcript_before_accepting_input(
 
     assert workspace.calls[:2] == ["start", "replay"]
     assert workspace.events == history
+    assert load_calls == [{"rendered": False, "last_turns": 2}]
 
 
 @pytest.mark.asyncio

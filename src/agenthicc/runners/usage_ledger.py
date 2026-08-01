@@ -324,13 +324,20 @@ class UsageLedger:
         self._projection: Callable[[UsageSnapshot], None] | None = None
         self._persistence_failed = False
 
+        has_canonical_records = False
         if journal is not None:
             for raw in journal.fold_usage_records():
                 record = UsageRecord.from_mapping(raw)
                 if record is not None and record.session_id == session_id:
                     self._records[record.record_id] = record
                     self._advance_index(record)
-        self._import_legacy(legacy_token_events)
+                    has_canonical_records = True
+        # Canonical journal records supersede rendered legacy token events.
+        # Besides preventing double counting, this keeps a modern session from
+        # synchronously scanning a potentially enormous conversation.jsonl at
+        # startup when the caller supplied a lazy legacy projection.
+        if not has_canonical_records:
+            self._import_legacy(legacy_token_events)
 
     @classmethod
     def open(

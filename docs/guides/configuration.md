@@ -264,6 +264,21 @@ default = 128000
 The current runtime also creates durable session journals and a project file
 cache. Paths and retention are described in the [storage reference](../reference/storage.md).
 
+### Resume transcript size
+
+Large sessions do not replay their entire visual transcript synchronously at
+startup. By default, resume displays the newest 20 complete turns by reading
+the tail of `conversation.jsonl`:
+
+```toml
+[behaviour]
+resume_transcript_turns = 20
+```
+
+Use `0` to restore the legacy full-transcript replay. This setting only affects
+the TUI transcript and input-history projection; the provider conversation,
+durable journal, usage records, and workflow state remain complete.
+
 ## Security
 
 ```toml
