@@ -256,8 +256,10 @@ API:
 | `describe_runner_pattern()` | the custom-runner checklist and when a runner is required |
 | `show_example_workflow(style)` | a complete `runner.py` package entry point to adapt — `"runner"` (default) or `"declarative"` |
 
-`design` also gets `ask_user` for clarifying questions. Every phase can additionally
-read the installed agenthicc source and documentation with the session-wide
+Every workflow phase gets the existing `ask_user` tool for clarifying questions.
+The phase agent is explicitly reminded that it can ask multiple focused questions
+in one call, or across several rounds, whenever requirements are unclear. Every
+phase can additionally read the installed agenthicc source and documentation with the session-wide
 `inspect_agenthicc_source`, `search_agenthicc_source`, `read_agenthicc_doc`, and
 `search_agenthicc_docs` tools — see the [tools guide](tools.md).
 

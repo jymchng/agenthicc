@@ -89,6 +89,8 @@ async def test_phase_specific_continuations_and_results(monkeypatch: pytest.Monk
         suffix = kwargs.get("system_prompt_suffix")
         if isinstance(suffix, str):
             prompts.append(suffix)
+        tools = kwargs.get("project_plugin_tools", [])
+        assert any(getattr(tool, "__name__", "") == "ask_user" for tool in tools)  # type: ignore[union-attr]
         await _call_named_tools(kwargs, "request_plan_approval", "plan")
         await _call_named_tools(kwargs, "finalize_plan", "plan")
 
@@ -124,6 +126,8 @@ async def test_phase_specific_continuations_and_results(monkeypatch: pytest.Monk
     assert "[PHASE TRANSITION TOOLS]" in prompts[0]
     assert "`request_plan_approval`" in prompts[0]
     assert "`finalize_plan`" in prompts[0]
+    assert "[REQUIREMENTS CLARIFICATION]" in prompts[0]
+    assert "multiple focused questions" in prompts[0]
 
 
 @pytest.mark.asyncio

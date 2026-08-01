@@ -158,6 +158,25 @@ def test_base_tools_filters_blocked_capabilities_and_phase_model() -> None:
 
 
 @pytest.mark.asyncio
+async def test_code_plan_plan_phase_injects_the_existing_question_tool() -> None:
+    runner = _runner()
+    captured: list[str] = []
+
+    async def run_turn(_text: str, **kwargs: object) -> None:
+        tools = kwargs["tools"]
+        assert isinstance(tools, list)
+        captured.extend(getattr(tool, "__name__", "") for tool in tools)
+        await _complete_tools(tools)
+
+    runner._run_turn = run_turn  # type: ignore[method-assign]
+    assert (
+        await runner._plan(CodePlanContext("intent", "run", shared_memory=MagicMock()))
+        is CodePlanState.EXECUTE
+    )
+    assert "ask_user" in captured
+
+
+@pytest.mark.asyncio
 async def test_resume_type_validation_and_extension_phase(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = _runner()
     with pytest.raises(TypeError):
@@ -206,6 +225,8 @@ async def test_run_turn_appends_the_phase_transition_tool_instruction(
     assert "[PHASE TRANSITION TOOLS]" in suffix
     assert "`mark_execute_complete`" in suffix
     assert "prose" in suffix
+    assert "[REQUIREMENTS CLARIFICATION]" in suffix
+    assert "multiple focused questions" in suffix
 
 
 @pytest.mark.asyncio

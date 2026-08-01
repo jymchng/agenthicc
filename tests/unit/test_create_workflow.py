@@ -1453,6 +1453,8 @@ async def test_run_turn_appends_the_design_transition_instruction(
     assert "`finalize_design`" in suffix
     assert "`exit_create_workflow`" in suffix
     assert "only after a transition tool call succeeds" in suffix
+    assert "[REQUIREMENTS CLARIFICATION]" in suffix
+    assert "multiple focused questions" in suffix
 
 
 async def test_design_prompt_requires_the_workflow_to_ship_its_own_runner() -> None:

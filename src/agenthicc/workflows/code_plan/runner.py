@@ -415,11 +415,12 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _plan(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until finalize_plan() or exit_code_plan() fires; return EXECUTE, EXITED, or FAILED."""
-        from agenthicc.workflows.code_plan.phase_tools import make_planner_tools  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import (  # noqa: PLC0415
+            make_planner_tools,
+            make_questions_tool,
+        )
 
         ctx.command_outcomes.clear()
-
-        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
 
         self._set_phase("plan", 0, ctx)
         exit_event: asyncio.Event = asyncio.Event()
@@ -438,7 +439,6 @@ class CodePlanRunner(BaseWorkflowRunner):
                 )
             )
             tools.extend(make_questions_tool(self._cfg.approval_svc))
-
             text: str = ctx.intent if attempt == 1 else _PLAN_REMINDER
 
             try:
@@ -485,7 +485,10 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _execute(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until mark_execute_complete() fires; return REVIEW or FAILED."""
-        from agenthicc.workflows.code_plan.phase_tools import make_executor_tools  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import (  # noqa: PLC0415
+            make_executor_tools,
+            make_questions_tool,
+        )
 
         self._set_phase("execute", 1, ctx)
         ctx.command_outcomes.clear()
@@ -506,6 +509,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             tools: _ToolList = list(self._base_tools()) + list(
                 make_executor_tools(execute_event, execute_data)
             )
+            tools.extend(make_questions_tool(self._cfg.approval_svc))
             text: str = (
                 f"[PLAN]\n{ctx.plan}\n\nTask: {ctx.intent}" if attempt == 1 else _EXECUTE_REMINDER
             )
@@ -543,7 +547,10 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _review(self, ctx: CodePlanContext) -> CodePlanState:
         """Loop until approve_review() or reject_review() fires; return SUMMARIZE, EXECUTE, or FAILED."""
-        from agenthicc.workflows.code_plan.phase_tools import make_reviewer_tools  # noqa: PLC0415
+        from agenthicc.workflows.code_plan.phase_tools import (  # noqa: PLC0415
+            make_reviewer_tools,
+            make_questions_tool,
+        )
 
         ctx.command_outcomes.clear()
 
@@ -564,6 +571,7 @@ class CodePlanRunner(BaseWorkflowRunner):
             tools: _ToolList = list(self._base_tools()) + list(
                 make_reviewer_tools(review_event, review_data)
             )
+            tools.extend(make_questions_tool(self._cfg.approval_svc))
             text: str = (
                 (
                     f"Execution complete. Review the implementation for: {ctx.intent}"
@@ -612,6 +620,8 @@ class CodePlanRunner(BaseWorkflowRunner):
 
     async def _summarize(self, ctx: CodePlanContext) -> CodePlanState:
         """Single turn; always returns COMPLETE."""
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+
         self._set_phase("summarize", 3, ctx)
         ctx.command_outcomes.clear()
         text: str = (
@@ -620,9 +630,11 @@ class CodePlanRunner(BaseWorkflowRunner):
             f"Review verdict: {ctx.review_summary or 'approved'}"
         )
         try:
+            tools = list(self._base_tools())
+            tools.extend(make_questions_tool(self._cfg.approval_svc))
             await self._run_turn(
                 text,
-                tools=self._base_tools(),
+                tools=tools,
                 mode=None,
                 system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER INTENT]\n{ctx.intent}",
                 max_turns=4,
@@ -699,7 +711,10 @@ class CodePlanRunner(BaseWorkflowRunner):
             run_id=self._run_id or "extension",
             shared_memory=_sm,
         )
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+
         phase_tools: _ToolList = list(self._base_tools())
+        phase_tools.extend(make_questions_tool(self._cfg.approval_svc))
         if tools:
             phase_tools.extend(tools)
         # PRD-126: composite-workflow phases get transport retry too.
@@ -772,7 +787,10 @@ class CodePlanRunner(BaseWorkflowRunner):
         picks up the per-phase model (PRD-115).
         """
         from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
-        from agenthicc.workflows.plugin import phase_transition_instruction  # noqa: PLC0415
+        from agenthicc.workflows.plugin import (  # noqa: PLC0415
+            _WORKFLOW_USER_QUESTION_REMINDER,
+            phase_transition_instruction,
+        )
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
@@ -822,6 +840,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 command_outcomes=ctx.command_outcomes,
                 system_prompt_suffix=(
                     f"{system_prompt}\n\n"
+                    f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
                     f"{phase_transition_instruction(tools, phase_name=phase_name)}"
                 ),
                 memory_router=self._cfg.memory_router,

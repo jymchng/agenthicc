@@ -609,7 +609,6 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 )
             )
             tools.extend(make_questions_tool(self._cfg.approval_svc))
-
             text: str = ctx.intent if attempt == 1 else _DESIGN_REMINDER
 
             try:
@@ -670,6 +669,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         from agenthicc.workflows.create_workflow.phase_tools import (  # noqa: PLC0415
             make_generation_tools,
         )
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
 
         self._set_phase("generate", _PHASE_INDEX["generate"], ctx)
         ctx.command_outcomes.clear()
@@ -706,6 +706,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             tools: _ToolList = list(self._base_tools()) + list(
                 make_generation_tools(generate_event, generate_data)
             )
+            tools.extend(make_questions_tool(self._cfg.approval_svc))
             text: str = first_text if attempt == 1 else _GENERATE_REMINDER
 
             try:
@@ -761,6 +762,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         from agenthicc.workflows.create_workflow.phase_tools import (  # noqa: PLC0415
             make_validation_tools,
         )
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
         from agenthicc.workflows.create_workflow.validation import (  # noqa: PLC0415
             validate_workflow_file,
         )
@@ -804,6 +806,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             tools: _ToolList = list(self._base_tools()) + list(
                 make_validation_tools(validate_event, validate_data)
             )
+            tools.extend(make_questions_tool(self._cfg.approval_svc))
             text: str = (
                 (
                     f"The generated workflow is at {report.path or ctx.generated_path}. "
@@ -867,6 +870,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     async def _summarize(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
         """Single turn; always returns COMPLETE."""
+        from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+
         self._set_phase("summarize", _PHASE_INDEX["summarize"], ctx)
         ctx.command_outcomes.clear()
 
@@ -878,9 +883,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             f"Validation verdict: {ctx.validation_summary or 'approved'}"
         )
         try:
+            tools = list(self._base_tools())
+            tools.extend(make_questions_tool(self._cfg.approval_svc))
             await self._run_turn(
                 text,
-                tools=self._base_tools(),
+                tools=tools,
                 mode=None,
                 system_prompt=_SUMMARIZE_PROMPT + f"\n\n[USER REQUEST]\n{ctx.intent}",
                 max_turns=min(4, self._max_phase_turns),
@@ -983,7 +990,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         with ``model=model_override`` so the per-phase model is picked up.
         """
         from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
-        from agenthicc.workflows.plugin import phase_transition_instruction  # noqa: PLC0415
+        from agenthicc.workflows.plugin import (  # noqa: PLC0415
+            _WORKFLOW_USER_QUESTION_REMINDER,
+            phase_transition_instruction,
+        )
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
@@ -1032,6 +1042,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 command_outcomes=ctx.command_outcomes,
                 system_prompt_suffix=(
                     f"{system_prompt}\n\n"
+                    f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
                     f"{phase_transition_instruction(tools, phase_name=phase_name)}"
                 ),
                 memory_router=self._cfg.memory_router,
@@ -1064,4 +1075,5 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             if not is_browser_tool(tool) and not (get_tool_capabilities(tool) & mode_blocked)
         ]
         # Memory tools carry no capability restrictions — always available.
-        return filtered + make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index)
+        filtered = filtered + make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index)
+        return filtered

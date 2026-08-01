@@ -150,7 +150,9 @@ the built-in `describe_phasespec`, `list_tool_capabilities`, `list_agent_roles`,
 running code rather than from prose. Each authoring phase has its own prompt and
 bounded multi-turn budget; tune the caps with
 `[execution].authoring_max_phase_turns` and
-`[execution].authoring_max_generation_attempts`.
+`[execution].authoring_max_generation_attempts`. All workflow phases can use the
+existing `ask_user` tool to ask several focused clarification questions, including
+multiple rounds when requirements need to be refined.
 
 Every session also carries five read-only tools for reading agenthicc itself —
 `list_agenthicc_docs`, `read_agenthicc_doc`, `search_agenthicc_docs`,

@@ -75,3 +75,14 @@ def test_missing_transition_tools_are_explicitly_described() -> None:
 
     assert "No phase-transition tool is available" in prompt
     assert "enclosing runner" in prompt
+
+
+def test_question_tool_is_not_mislabelled_as_a_phase_transition() -> None:
+    async def ask_user(questions: list[dict[str, object]]) -> dict[str, object]:
+        return {"questions": questions}
+
+    ask_user = tool_control(ask_user)
+    prompt = phase_transition_instruction([ask_user], phase_name="design")
+
+    assert "No phase-transition tool is available" in prompt
+    assert "ask_user" not in prompt

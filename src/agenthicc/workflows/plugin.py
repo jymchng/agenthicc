@@ -71,6 +71,18 @@ _PHASE_TRANSITION_TOOL_NAMES = frozenset(
 )
 
 
+_WORKFLOW_USER_QUESTION_REMINDER = (
+    "[REQUIREMENTS CLARIFICATION]\n"
+    "Do not guess when an unanswered requirement could materially change the work. "
+    "You can ask the user multiple focused questions, including several questions "
+    "in one call, by using the `ask_user` tool. Ask about goals, constraints, "
+    "priorities, choices, and acceptance criteria whenever they are unclear; use "
+    "the available exploration tools first when the answer can be discovered from "
+    "the project. Incorporate the user's answers into this workflow before making "
+    "the next phase decision."
+)
+
+
 def phase_transition_instruction(
     tools: Iterable[object],
     *,
@@ -93,7 +105,11 @@ def phase_transition_instruction(
         if not name:
             fallback: object = getattr(tool, "name", "")
             name = fallback if isinstance(fallback, str) else ""
-        is_control_tool = ToolCapability.CONTROL in get_tool_capabilities(tool)
+        # ``ask_user`` is marked CONTROL for safe capability handling, but it
+        # clarifies requirements and does not transition the workflow.
+        is_control_tool = name != "ask_user" and ToolCapability.CONTROL in get_tool_capabilities(
+            tool
+        )
         is_known_transition = name in _PHASE_TRANSITION_TOOL_NAMES
         if (is_control_tool or is_known_transition) and (expected is None or name in expected):
             if name not in available:

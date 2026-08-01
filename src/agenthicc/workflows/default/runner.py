@@ -509,6 +509,7 @@ class WorkflowRunner(BaseWorkflowRunner):
         from agenthicc.workflows.plugin import (
             PhaseOutput,
             _parse_output_schema,
+            _WORKFLOW_USER_QUESTION_REMINDER,
             phase_transition_instruction,
         )  # noqa: PLC0415
 
@@ -563,6 +564,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             expected_transition_tools = ()
         role_prompt = (
             f"{role_prompt}\n\n"
+            f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
             f"{phase_transition_instruction(filtered, phase_name=spec.name, expected_tool_names=expected_transition_tools)}"
         ).strip()
 
@@ -946,6 +948,15 @@ class WorkflowRunner(BaseWorkflowRunner):
             if phase_allowed is not None and not (caps <= phase_allowed):
                 continue
             result.append(tool)
+        # Reuse the existing interactive question tool in every generic
+        # workflow phase. It remains safe in headless runs, where the factory
+        # returns a cancelled result, and mode policy still gates CONTROL.
+        from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
+
+        if ToolCapability.CONTROL not in mode_blocked:
+            from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+
+            result.extend(make_questions_tool(self._cfg.approval_svc))
         return result
 
     def _determine_transition(self, spec: PhaseSpec, output: PhaseOutput) -> str | None:
