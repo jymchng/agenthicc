@@ -14,6 +14,7 @@ from agenthicc.tools.cloakbrowser import BrowserPolicy, BrowserSessionManager
 from agenthicc.tools.cloakbrowser.errors import BrowserErrorKind
 from agenthicc.tools.playwright import (
     PLAYWRIGHT_AGENT_TOOLS,
+    create_playwright_session,
     make_playwright_tools,
 )
 from agenthicc.tools.playwright.client import PlaywrightBrowserClient
@@ -143,6 +144,30 @@ def test_playwright_config_is_optional_and_selectable(tmp_path: Path) -> None:
 def test_playwright_config_rejects_invalid_browser_type() -> None:
     with pytest.raises(ValueError, match="browser_type"):
         PlaywrightSettings(browser_type="safari")
+
+
+def test_playwright_policy_allows_local_preview_ports(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        "agenthicc.tools.cloakbrowser.policy.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [("", "", "", "", ("127.0.0.1", 0))],
+    )
+    manager = create_playwright_session(
+        PlaywrightSettings(enabled=False, allowed_domains=["localhost"]),
+        "conversation-local",
+        tmp_path,
+    )
+
+    async def check() -> None:
+        assert manager.policy is not None
+        assert 3000 in manager.policy.allowed_ports
+        assert manager.policy.allow_loopback is True
+        assert await manager.policy.validate_url("http://localhost:3000/") == (
+            "http://localhost:3000/"
+        )
+
+    asyncio.run(check())
 
 
 def test_missing_playwright_dependency_is_structured(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -236,7 +236,9 @@ class BrowserPolicy:
                 BrowserErrorKind.POLICY_DENIED, "Loopback destinations are blocked."
             )
         if (
-            address.is_private or address.is_link_local or address.is_reserved
+            (address.is_private and not address.is_loopback)
+            or address.is_link_local
+            or address.is_reserved
         ) and not self.allow_private_addresses:
             raise BrowserToolError(
                 BrowserErrorKind.POLICY_DENIED, "Private destinations are blocked."
@@ -278,7 +280,9 @@ class BrowserPolicy:
                     BrowserErrorKind.POLICY_DENIED, "Loopback destinations are blocked."
                 )
             if (
-                address.is_private or address.is_link_local or address.is_reserved
+                (address.is_private and not address.is_loopback)
+                or address.is_link_local
+                or address.is_reserved
             ) and not self.allow_private_addresses:
                 raise BrowserToolError(
                     BrowserErrorKind.POLICY_DENIED, "Private destinations are blocked."

@@ -29,8 +29,10 @@ default. CloakBrowser's CDP transport accepts only the configured loopback
 endpoint. Every navigation, redirect, and Playwright subresource request is
 checked against the configured domain allow-list. The explicit
 `allow_all_domains` setting defaults to `false`; enabling it bypasses hostname
-matching for public HTTP(S) destinations on configured ports but does not
-bypass DNS, loopback, or private-address protections.
+matching. CloakBrowser retains its configured-port and loopback protections.
+Playwright intentionally allows any destination port and loopback preview
+servers, while still applying HTTP(S), hostname, DNS, and private
+non-loopback checks.
 DNS results that resolve to loopback, private, link-local, or reserved
 addresses are denied by default. Browser tools cannot execute raw JavaScript,
 select a proxy, read cookies/storage, or fill password/token/card-like fields.

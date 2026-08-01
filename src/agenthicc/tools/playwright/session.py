@@ -35,6 +35,12 @@ PLAYWRIGHT_TOOL_NAMES = frozenset(
     }
 )
 
+# Playwright is used for local development and preview servers as well as
+# public sites.  Its destination policy deliberately does not impose the
+# CloakBrowser default {80, 443} port ceiling; the configured domain policy
+# still controls which hosts may be reached.
+_PLAYWRIGHT_ALLOWED_PORTS = frozenset(range(1, 65_536))
+
 
 def is_playwright_tool(tool: object) -> bool:
     """Return whether a callable is one of the built-in Playwright tools."""
@@ -50,6 +56,8 @@ def create_playwright_session(
     try:
         policy = BrowserPolicy(
             tuple(settings.allowed_domains),
+            allowed_ports=_PLAYWRIGHT_ALLOWED_PORTS,
+            allow_loopback=True,
             allow_all_domains=settings.allow_all_domains,
         )
     except ValueError:

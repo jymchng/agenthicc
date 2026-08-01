@@ -399,7 +399,9 @@ Playwright exposes the same bounded browser operations with `playwright_*`
 names. Domain, DNS, private-address, artifact, quota, and checkpoint policies
 are shared with the CloakBrowser adapter. The two backends are mutually
 exclusive per session, and neither optional package is imported unless its
-backend is selected.
+backend is selected. Playwright permits any destination port and loopback
+preview servers such as `http://localhost:3000/`; the configured domain policy
+still controls which hosts may be reached.
 
 Config layers are merged in this order: built-in defaults, user config,
 project config, environment variables, then repeated `--set key=value`
