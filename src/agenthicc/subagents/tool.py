@@ -46,6 +46,7 @@ def make_spawn_subagents_tool(
     usage_ledger: "UsageLedger | None" = None,
     conversation_id: str = "",
     parent_run_id: str = "",
+    provider_options: Mapping[str, object] | None = None,
 ) -> Callable[..., object]:
     """Return a ``spawn_subagents`` @tool()-decorated function.
 
@@ -173,6 +174,7 @@ def make_spawn_subagents_tool(
             usage_ledger=usage_ledger,
             conversation_id=conversation_id,
             parent_run_id=parent_run_id,
+            provider_options=provider_options,
         )
         result = await pool.run()
 

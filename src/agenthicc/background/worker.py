@@ -37,6 +37,7 @@ class WorkerRequest:
     wall_timeout_s: float = 0.0
     max_activity_bytes: int = 64_000
     source: str = "cli"
+    set_secret_overrides: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "WorkerRequest":
@@ -52,6 +53,12 @@ class WorkerRequest:
         overrides = (
             tuple(item for item in raw_overrides if isinstance(item, str))
             if isinstance(raw_overrides, (list, tuple))
+            else ()
+        )
+        raw_secret_overrides = value.get("set_secret_overrides", ())
+        secret_overrides = (
+            tuple(item for item in raw_secret_overrides if isinstance(item, str))
+            if isinstance(raw_secret_overrides, (list, tuple))
             else ()
         )
         config_path = value.get("config_path")
@@ -75,6 +82,7 @@ class WorkerRequest:
             config_path=config_path if isinstance(config_path, str) else None,
             set_overrides=overrides,
             dangerously_skip_permissions=bool(value.get("dangerously_skip_permissions", False)),
+            set_secret_overrides=secret_overrides,
             wall_timeout_s=wall_timeout_s,
             max_activity_bytes=max_activity_bytes,
             source=str(value.get("source", "cli")),
@@ -288,6 +296,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             resume_id=request.session_id,
             config_path=request.config_path,
             set_overrides=request.set_overrides,
+            set_secret_overrides=request.set_secret_overrides,
             flags=CLIFlags(dangerously_skip_permissions=request.dangerously_skip_permissions),
         )
         # A CLI-created job may be the first durable record for this session.
@@ -304,6 +313,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             request.session_id,
             list(request.set_overrides),
             config_path=request.config_path,
+            cli_secret_overrides=list(request.set_secret_overrides),
             headless=True,
         )
         session.app_state.cli_flags = ctx.flags

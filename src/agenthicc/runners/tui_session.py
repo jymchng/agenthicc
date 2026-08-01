@@ -150,6 +150,7 @@ async def _build_session_context(
     record_cassette_dir: Path | None = None,
     config_path: str | None = None,
     headless: bool = False,
+    cli_secret_overrides: list[str] | None = None,
 ) -> SessionContext:
     """Construct all session-scoped singletons and return a SessionContext."""
     from rich.console import Console  # noqa: PLC0415
@@ -224,7 +225,11 @@ async def _build_session_context(
     )
 
     # ── config / LLM ─────────────────────────────────────────────────────────
-    cfg = load_config(cli_overrides=cli_overrides or [], config_path=config_path)
+    cfg = load_config(
+        cli_overrides=cli_overrides or [],
+        cli_secret_overrides=cli_secret_overrides or [],
+        config_path=config_path,
+    )
 
     # PRD-149: terminal subprocesses are owned by a session-scoped manager.
     # Keep their registry alongside the existing background-session store but
@@ -272,6 +277,10 @@ async def _build_session_context(
         quiet=headless,
     )
     try:
+        # Resolve the selected profile immediately before constructing the
+        # transport.  This keeps secrets out of durable session/workflow state
+        # and re-reads rotated environment values on every resume.
+        cfg.resolve_provider_profile(requires_tools=True)
         llm_cfg = build_llm_config(cfg.execution)
     except ValueError as exc:
         console.print(
@@ -642,6 +651,8 @@ async def _build_session_context(
         usage_ledger=usage_ledger,
         browser_manager=browser_manager,
         browser_tools=browser_tools,
+        cfg_overrides=tuple(cli_overrides or ()),
+        cfg_secret_overrides=tuple(cli_secret_overrides or ()),
         resumed=bool(resume_id),
     )
 
@@ -781,6 +792,13 @@ class TUISession:
             )
             return
         try:
+            active_profile = self._ctx.cfg.execution.profile
+            if checkpoint.provider_profile and checkpoint.provider_profile != active_profile:
+                raise ValueError(
+                    "checkpoint requires provider profile "
+                    f"{checkpoint.provider_profile!r}, but the current session uses "
+                    f"{active_profile or '<legacy execution settings>'!r}"
+                )
             self._workflow_handle = WorkflowRunHandle.from_checkpoint(
                 checkpoint,
                 workflow=definition,
@@ -1538,6 +1556,7 @@ class TUISession:
                             intent=text,
                             checkpoint_store=WorkflowCheckpointStore(ctx.session_id),
                             browser_manager=getattr(ctx, "browser_manager", None),
+                            provider_profile=ctx.cfg.execution.profile,
                         )
                 _wf_config = _dc.replace(
                     self._wf_config_base,
@@ -2117,6 +2136,7 @@ async def _run_tui_session(
     record_cassette: str | None = None,
     cli_flags: CLIFlags | None = None,
     config_path: str | None = None,
+    cli_secret_overrides: list[str] | None = None,
 ) -> None:
     """Reactive TUI session — single entry point, no legacy branches."""
     from agenthicc.tui.workspace import Workspace  # noqa: PLC0415
@@ -2125,7 +2145,11 @@ async def _run_tui_session(
     cassette_base: Path | None = Path(record_cassette) if record_cassette else None
 
     ctx = await _build_session_context(
-        resume_id, cli_overrides, cassette_base, config_path=config_path
+        resume_id,
+        cli_overrides,
+        cassette_base,
+        config_path=config_path,
+        cli_secret_overrides=cli_secret_overrides,
     )
     # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
     if cli_flags is not None:
@@ -2261,6 +2285,7 @@ def _run_tui(ctx: CLIContext) -> None:
                 record_cassette=ctx.record_cassette,
                 cli_flags=ctx.flags,
                 config_path=ctx.config_path,
+                cli_secret_overrides=list(ctx.set_secret_overrides),
             )
         )
     except Exception as exc:

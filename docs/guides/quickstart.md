@@ -35,6 +35,28 @@ uv run agenthicc --set execution.provider=openai --set execution.model=gpt-4o
 uv run agenthicc --set execution.provider=ollama --set execution.model=llama3.2
 ```
 
+For an OpenAI-compatible deployment such as Modal, define a profile so the
+same endpoint and request options are used by direct turns and workflows:
+
+```toml
+[execution]
+profile = "modal"
+
+[providers.modal]
+provider = "openai"
+model = "moonshotai/Kimi-K3"
+base_url = "https://your-endpoint.modal.run/v1"
+api_key_env = "MODAL_API_KEY"
+```
+
+Then set `MODAL_API_KEY` and verify the connection settings without starting
+an agent turn:
+
+```bash
+uv run agenthicc config profiles
+uv run agenthicc config validate
+```
+
 ## Launch the TUI
 
 ```bash

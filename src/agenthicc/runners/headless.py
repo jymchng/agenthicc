@@ -113,6 +113,7 @@ async def execute_workflow(
             intent=intent,
             checkpoint_store=WorkflowCheckpointStore(session.session_id),
             browser_manager=getattr(session, "browser_manager", None),
+            provider_profile=session.cfg.execution.profile,
         )
     workflow_config = WorkflowConfig(
         conv_store=session.app_state.conversation,
@@ -224,6 +225,7 @@ async def run_headless_workflow(
         list(ctx.set_overrides),
         cassette_base,
         config_path=ctx.config_path,
+        cli_secret_overrides=list(ctx.set_secret_overrides),
         headless=True,
     )
     session.app_state.cli_flags = ctx.flags
@@ -260,6 +262,7 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
         list(ctx.set_overrides),
         cassette_base,
         config_path=ctx.config_path,
+        cli_secret_overrides=list(ctx.set_secret_overrides),
         headless=True,
     )
     session.app_state.cli_flags = ctx.flags

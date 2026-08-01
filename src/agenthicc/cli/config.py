@@ -35,14 +35,25 @@ def _do_config_show(args: object) -> None:
         if isinstance(raw_overrides, (list, tuple))
         else []
     )
-    config = load_config(cli_overrides=cli_overrides)
+    raw_secret_overrides = vars(args).get("set_secret_overrides", ())
+    cli_secret_overrides = (
+        [item for item in raw_secret_overrides if isinstance(item, str)]
+        if isinstance(raw_secret_overrides, (list, tuple))
+        else []
+    )
+    config = load_config(
+        cli_overrides=cli_overrides,
+        cli_secret_overrides=cli_secret_overrides,
+        config_path=vars(args).get("config_path"),
+    )
+    redacted = config.redacted_dict()
     print("# Effective configuration")
-    for section_name in ["execution", "memory", "security", "api", "tools"]:
-        section = getattr(config, section_name, None)
-        if section is None:
-            continue
+    for section_name, section in redacted.items():
         print(f"\n[{section_name}]")
-        for k, v in vars(section).items():
+        if not isinstance(section, dict):
+            print(f"{section!r}")
+            continue
+        for k, v in section.items():
             print(f"{k} = {v!r}")
 
 

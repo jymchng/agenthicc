@@ -26,7 +26,26 @@ Inspect the result with:
 ```bash
 uv run agenthicc config show
 uv run agenthicc --set execution.provider=ollama config show
+uv run agenthicc config profiles
+uv run agenthicc config validate
 ```
+
+For one-off secret-backed settings, use `--set-secret PATH=ENV_VAR`. The right
+side is an environment-variable name; its value is resolved only when the
+provider client is built. This keeps the credential out of the command-line
+arguments, configuration output, checkpoints, and cassettes:
+
+```bash
+export MODAL_KEY="..."
+uv run agenthicc \
+  --set-secret execution.default_headers.Modal-Key=MODAL_KEY
+```
+
+`--set-secret` supports nested paths such as
+`execution.request_options.extra_headers.Modal-Key` and
+`execution.api_key`. Missing variables and malformed paths fail validation
+with an actionable error. Existing `--set` remains a plaintext value
+override and is unchanged.
 
 Review the source of `config.py` when adding a setting: a dataclass field is
 not automatically loaded from TOML until `_dict_to_config()` handles it. This
@@ -41,6 +60,54 @@ model = ""             # empty uses the provider default
 base_url = ""          # useful for Ollama or compatible endpoints
 api_key = ""           # prefer environment variables
 ```
+
+For repeatable deployments, use a named profile. Profiles are the portable
+connection boundary for workflows: `code_plan`, `create_workflow`, custom
+workflows, and spawned subagents inherit the active profile without workflow
+code needing provider-specific branches.
+
+```toml
+[execution]
+profile = "modal_kimi"
+max_output_tokens = 16384
+transport_max_retries = 3
+llm_sdk_max_retries = 2
+
+[providers.modal_kimi]
+provider = "openai"                 # OpenAI-compatible, including Modal
+model = "moonshotai/Kimi-K3"
+base_url = "https://your-endpoint.modal.run/v1"
+api_key_env = "MODAL_API_KEY"
+timeout_s = 120.0
+temperature = 0.3
+top_p = 0.95
+max_completion_tokens = 16384
+
+[providers.modal_kimi.default_headers]
+"Modal-Key" = { env = "MODAL_KEY" }
+
+[providers.modal_kimi.request_options.provider]
+reasoning_effort = "none"
+
+[providers.modal_kimi.request_options.extra_body]
+vendor_trace = true
+```
+
+`provider = "openai"` selects lauren-ai's OpenAI transport; no Modal SDK is
+required. `base_url` can point at any compatible gateway, vLLM server, or
+private endpoint. Secret values should use `{ env = "NAME" }` references (or
+the provider's `api_key_env`), never TOML literals. `config show` redacts
+literal secrets and displays only environment-variable names. `config validate`
+checks the selected profile and resolves required environment variables without
+printing their values.
+
+`request_options` maps to lauren-ai 1.4's request-scoped options:
+`provider` for vendor fields, `extra_body` for compatible JSON body extensions,
+`extra_headers` and `extra_query` for per-request additions, plus optional
+`timeout_s`, `max_retries`, and `include_raw_response`. `default_headers`,
+`default_query`, and `client_options` configure the underlying provider client.
+Profile secrets are resolved again when a resumed session starts; workflow
+checkpoints store only the profile name and never store resolved credentials.
 
 Environment variables are safer for credentials:
 

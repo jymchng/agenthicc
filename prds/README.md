@@ -29,6 +29,7 @@ against the current source before implementing them.
 - [PRD-159 — Specialized CloakBrowser Agent Tools](prd-159-cloakbrowser-agent-tools.md)
 - [PRD-160 — Playwright Browser Agent Tools](prd-160-playwright-browser-agent-tools.md)
 - [PRD-161 — Exploratory Tool-Call Consolidation in the TUI](prd-161-exploratory-tool-call-consolidation.md)
+- [PRD-162 — Provider Connection Profiles and OpenAI-Compatible Endpoints](prd-162-provider-connection-profiles-and-modal-endpoints.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

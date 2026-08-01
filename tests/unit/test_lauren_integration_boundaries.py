@@ -12,7 +12,7 @@ import pytest
 from lauren_ai._agents import agent, use_tools
 from lauren_ai._agents._runner import AgentRunnerBase
 from lauren_ai._tools._schema import generate_tool_schema
-from lauren_ai._transport import Completion, Message, TokenUsage
+from lauren_ai._transport import Completion, Message, RequestOptions, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
 from agenthicc.testing.recording_transport import RecordingTransport
@@ -99,6 +99,41 @@ async def test_recording_transport_accepts_lauren_dict_tool_schemas(tmp_path: Pa
 
     assert result.content == "done"
     assert '"tool_names_available": ["read_file"]' in (tmp_path / "cassette.jsonl").read_text()
+
+
+async def test_recording_transport_forwards_profile_options_without_recording_secrets(
+    tmp_path: Path,
+):
+    inner = MockTransport()
+    inner.queue_response(
+        Completion(
+            id="c-profile",
+            model="mock",
+            content="done",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    recorder = RecordingTransport(inner, tmp_path / "cassette.jsonl")
+    await recorder.complete(
+        [Message.user("hello")],
+        model="mock",
+        temperature=0.3,
+        top_p=0.95,
+        max_completion_tokens=0,
+        request_options=RequestOptions(
+            extra_headers={"Authorization": "secret-value"},
+            extra_body={"vendor_trace": True},
+        ),
+    )
+    call = inner.calls[0]
+    assert call.temperature == 0.3
+    assert call.top_p == 0.95
+    assert call.max_completion_tokens == 0
+    assert call.request_options is not None
+    assert call.request_options.extra_body["vendor_trace"] is True
+    assert "secret-value" not in (tmp_path / "cassette.jsonl").read_text()
 
 
 async def test_streamed_agent_turn_with_read_file_does_not_crash(tmp_path: Path):

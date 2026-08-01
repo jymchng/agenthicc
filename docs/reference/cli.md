@@ -23,9 +23,19 @@ based and implemented in `cli/registry.py`.
 |---|---|
 | `init [--write] [--force]` | Preview or explicitly write project guidance to `AGENTS.md` |
 | `config show` | Print effective configuration |
+| `config profiles` | List configured provider profiles without secret values |
+| `config validate` | Validate the selected provider profile and required secret references |
 | `config init [--force]` | Create `.agenthicc/agenthicc.toml` |
 | `sessions list` | List saved sessions for the current directory |
 | `sessions show SESSION_ID` | Print stored event summaries |
+
+Global configuration overrides include `--set KEY=VALUE` and the safer
+`--set-secret KEY=ENV_VAR`. The latter stores a symbolic environment-variable
+reference, rather than placing the secret value in the command arguments:
+
+```bash
+agenthicc --set-secret execution.default_headers.Modal-Key=MODAL_KEY config show
+```
 | `sessions inspect SESSION_ID [--json]` | Summarize durable state and resume health |
 | `sessions export SESSION_ID [--output PATH]` | Write a redacted portable session export |
 | `session list [--project-root PATH] [--json]` | List client-neutral session snapshots |

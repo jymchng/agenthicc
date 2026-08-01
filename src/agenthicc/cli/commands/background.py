@@ -27,7 +27,11 @@ def _jobs_group() -> None: ...
 def _config(ctx: CLIContext) -> object:
     from agenthicc.config import load_config  # noqa: PLC0415
 
-    return load_config(cli_overrides=list(ctx.set_overrides), config_path=ctx.config_path)
+    return load_config(
+        cli_overrides=list(ctx.set_overrides),
+        cli_secret_overrides=list(ctx.set_secret_overrides),
+        config_path=ctx.config_path,
+    )
 
 
 def _store_and_supervisor(ctx: CLIContext) -> tuple[BackgroundStore, BackgroundSupervisor]:
@@ -93,6 +97,7 @@ async def _open_manager(ctx: CLIContext) -> None:
             await _run_tui_session(
                 resume_id=result.session_id,
                 cli_overrides=list(ctx.set_overrides),
+                cli_secret_overrides=list(ctx.set_secret_overrides),
                 config_path=ctx.config_path,
                 background_read_only=True,  # type: ignore[call-arg]
             )
@@ -142,6 +147,7 @@ async def run(
             config_path=ctx.config_path,
             set_overrides=ctx.set_overrides,
             dangerously_skip_permissions=ctx.flags.dangerously_skip_permissions,
+            set_secret_overrides=ctx.set_secret_overrides,
         )
     except (RuntimeError, ValueError) as exc:
         print(f"Unable to start background session: {exc}")

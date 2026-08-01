@@ -82,6 +82,7 @@ def _handoff(session: object) -> bool:
             cwd=str(Path.cwd()),
             config_path=None,
             set_overrides=tuple(ctx.cfg_overrides) if hasattr(ctx, "cfg_overrides") else (),
+            set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
             dangerously_skip_permissions=bool(
                 getattr(
                     getattr(ctx.app_state, "cli_flags", None), "dangerously_skip_permissions", False

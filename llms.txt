@@ -43,6 +43,8 @@ The primary entry point is `agenthicc.__main__:main`.
 | `EventProcessor` | `agenthicc.kernel` | MPSC queue and reducer loop |
 | `root_reducer` | `agenthicc.kernel` | Pure event-to-state reducer |
 | `load_config` | `agenthicc.config` | TOML/env/CLI configuration loader |
+| `ProviderProfile` / `SecretReference` / `RequestOptionSettings` | `agenthicc.config` | Typed provider profiles, environment-backed secrets, and request options |
+| `ResolvedProviderProfile` | `agenthicc.config` | Runtime profile with secrets resolved at session startup |
 | `PermissionChecker` | `agenthicc.security` | Ordered fail-closed policy evaluator |
 | `MemoryRouter` | `agenthicc.memory` | Three-tier memory dispatcher |
 | `Tool` / `ToolBase` | `agenthicc.tools` | Legacy and typed class-based contracts adapted to lauren-ai |

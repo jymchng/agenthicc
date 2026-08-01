@@ -29,6 +29,7 @@ class BackgroundRequest:
     wall_timeout_s: float = 0.0
     max_activity_bytes: int = 64_000
     source: str = "cli"
+    set_secret_overrides: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -39,6 +40,7 @@ class BackgroundRequest:
             "config_path": self.config_path,
             "set_overrides": list(self.set_overrides),
             "dangerously_skip_permissions": self.dangerously_skip_permissions,
+            "set_secret_overrides": list(self.set_secret_overrides),
             "wall_timeout_s": self.wall_timeout_s,
             "max_activity_bytes": self.max_activity_bytes,
             "source": self.source,
@@ -159,6 +161,7 @@ class BackgroundSupervisor:
         config_path: str | None = None,
         set_overrides: tuple[str, ...] = (),
         dangerously_skip_permissions: bool = False,
+        set_secret_overrides: tuple[str, ...] = (),
     ) -> BackgroundSession:
         """Create and launch a new background session."""
 
@@ -181,6 +184,7 @@ class BackgroundSupervisor:
             config_path=config_path,
             set_overrides=set_overrides,
             dangerously_skip_permissions=dangerously_skip_permissions,
+            set_secret_overrides=set_secret_overrides,
             wall_timeout_s=self.wall_timeout_s,
             max_activity_bytes=self.max_activity_bytes,
             source="cli",
@@ -207,6 +211,7 @@ class BackgroundSupervisor:
         config_path: str | None = None,
         set_overrides: tuple[str, ...] = (),
         dangerously_skip_permissions: bool = False,
+        set_secret_overrides: tuple[str, ...] = (),
     ) -> BackgroundSession:
         """Detach an existing foreground session into one tracked worker."""
 
@@ -236,6 +241,7 @@ class BackgroundSupervisor:
             config_path=config_path,
             set_overrides=set_overrides,
             dangerously_skip_permissions=dangerously_skip_permissions,
+            set_secret_overrides=set_secret_overrides,
             wall_timeout_s=self.wall_timeout_s,
             max_activity_bytes=self.max_activity_bytes,
         )

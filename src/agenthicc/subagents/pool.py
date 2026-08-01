@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from agenthicc.subagents.types import SubagentTypeSpec, SubagentTypeRegistry, DEFAULT_REGISTRY
 
@@ -138,6 +139,7 @@ class SubagentWorker:
         usage_ledger: "UsageLedger | None" = None,
         conversation_id: str = "",
         parent_run_id: str = "",
+        provider_options: Mapping[str, object] | None = None,
     ) -> None:
         self._task = task
         self._spec = spec
@@ -151,6 +153,7 @@ class SubagentWorker:
         self._usage_ledger = usage_ledger
         self._conversation_id = conversation_id
         self._parent_run_id = parent_run_id
+        self._provider_options = dict(provider_options or {})
         self.label = f"{spec.name} #{index}"
         # Expand glob patterns once at construction time.
         self._effective_allowed: frozenset[str] = _expand_allowed(spec.allowed_tools, registry)
@@ -260,6 +263,33 @@ class SubagentWorker:
 
         memory = ShortTermMemory(max_tokens=8_000)
         result: dict[str, str] = {"text": ""}
+        from dataclasses import fields as dataclass_fields  # noqa: PLC0415
+
+        agent_fields = {field.name for field in dataclass_fields(AgentConfig)}
+        config_options: dict[str, object] = {
+            "temperature": self._provider_options.get("temperature"),
+            "top_p": self._provider_options.get("top_p"),
+            "max_completion_tokens": self._provider_options.get("max_completion_tokens"),
+            "request_options": self._provider_options.get("request_options"),
+        }
+        if config_options["request_options"] is not None:
+            from agenthicc.config import RequestOptionSettings  # noqa: PLC0415
+
+            if isinstance(config_options["request_options"], RequestOptionSettings):
+                config_options["request_options"] = config_options["request_options"].resolve()
+        config_options = {
+            name: value
+            for name, value in config_options.items()
+            if name in agent_fields and value is not None
+        }
+
+        def _agent_config() -> AgentConfig:
+            agent_constructor = cast(Callable[..., AgentConfig], AgentConfig)
+            return agent_constructor(
+                max_turns=self._spec.max_turns,
+                parallel_tool_calls=True,
+                **config_options,
+            )
 
         async def _do_run() -> None:
             # Keep lightweight runner doubles and legacy integrations working
@@ -272,10 +302,7 @@ class SubagentWorker:
                     conversation_id=self._conversation_id or None,
                     run_id=f"{self._parent_run_id}:subagent:{self._task.task_id}",
                     memory=memory,
-                    config_override=AgentConfig(
-                        max_turns=self._spec.max_turns,
-                        parallel_tool_calls=True,
-                    ),
+                    config_override=_agent_config(),
                     event_sinks=[usage_tracker.sink],
                 )
             else:
@@ -283,10 +310,7 @@ class SubagentWorker:
                     agent_instance,
                     self._task.task_description,
                     memory=memory,
-                    config_override=AgentConfig(
-                        max_turns=self._spec.max_turns,
-                        parallel_tool_calls=True,
-                    ),
+                    config_override=_agent_config(),
                 )
             result["text"] = response.content or ""
 
@@ -337,6 +361,7 @@ class SubagentPool:
         usage_ledger: "UsageLedger | None" = None,
         conversation_id: str = "",
         parent_run_id: str = "",
+        provider_options: Mapping[str, object] | None = None,
     ) -> None:
         self.pool_id = uuid.uuid4().hex
         self._tasks = tasks
@@ -353,6 +378,7 @@ class SubagentPool:
         self._usage_ledger = usage_ledger
         self._conversation_id = conversation_id
         self._parent_run_id = parent_run_id
+        self._provider_options = dict(provider_options or {})
 
     async def run(self) -> AggregatedResult:
         """Execute all tasks concurrently; return aggregated plain-text result."""
@@ -384,6 +410,7 @@ class SubagentPool:
                 usage_ledger=self._usage_ledger,
                 conversation_id=self._conversation_id,
                 parent_run_id=self._parent_run_id,
+                provider_options=self._provider_options,
             )
             workers.append(w)
             worker_states.append(WorkerState(w.label, task.agent_type, "pending"))
@@ -644,6 +671,7 @@ async def run_pool(
     usage_ledger: "UsageLedger | None" = None,
     conversation_id: str = "",
     parent_run_id: str = "",
+    provider_options: Mapping[str, object] | None = None,
 ) -> AggregatedResult:
     """Create a SubagentPool and run it.  Convenience wrapper."""
     pool = SubagentPool(
@@ -660,5 +688,6 @@ async def run_pool(
         usage_ledger=usage_ledger,
         conversation_id=conversation_id,
         parent_run_id=parent_run_id,
+        provider_options=provider_options,
     )
     return await pool.run()

@@ -27,6 +27,16 @@ from agenthicc.tools.hooks import (
 )
 
 
+def _config_value(config: object | None, name: str, default: object) -> object:
+    """Read an optional execution setting from real configs and test doubles."""
+    if config is None:
+        return default
+    try:
+        return object.__getattribute__(config, name)
+    except AttributeError:
+        return default
+
+
 def _read_text_if_exists(path: str) -> str:
     """Read a file for the edit-preview adapter, returning empty when absent."""
     if not os.path.exists(path):
@@ -964,6 +974,12 @@ class AgentTurnRunner:
                 parent_run_id=self._intent_id,
                 tool_registry=registry,
                 retry_config=_subagent_retry,
+                provider_options={
+                    "temperature": _config_value(_ec, "temperature", 1.0),
+                    "top_p": _config_value(_ec, "top_p", None),
+                    "max_completion_tokens": _config_value(_ec, "max_completion_tokens", None),
+                    "request_options": _config_value(_ec, "request_options", None),
+                },
             )
             registry.register(spawn_tool, source="builtin")
             spawn_name = getattr(spawn_tool, "__name__", getattr(spawn_tool, "name", ""))
@@ -1227,12 +1243,37 @@ class AgentTurnRunner:
                 summarize_at=0.8 if _auto_compact and _supports_context_guard else None,
                 summary_model=self._model_id,
             )
+            # Provider profiles carry sampling and vendor-specific request
+            # options into every turn, including workflow phases.  Use
+            # dataclass field detection so a downstream runner double or an
+            # older lauren-ai installation remains import-compatible.
+            from dataclasses import replace  # noqa: PLC0415
+
+            provider_options: dict[str, object] = {
+                "temperature": _config_value(ctx.exec_cfg, "temperature", 1.0),
+                "top_p": _config_value(ctx.exec_cfg, "top_p", None),
+                "max_completion_tokens": _config_value(ctx.exec_cfg, "max_completion_tokens", None),
+                "request_options": _config_value(ctx.exec_cfg, "request_options", None),
+            }
+            if provider_options["request_options"] is not None:
+                from agenthicc.config import RequestOptionSettings  # noqa: PLC0415
+
+                if isinstance(provider_options["request_options"], RequestOptionSettings):
+                    provider_options["request_options"] = provider_options[
+                        "request_options"
+                    ].resolve()
+            supported_provider_options = {
+                name: value
+                for name, value in provider_options.items()
+                if name in _agent_config_fields and value is not None
+            }
+            if supported_provider_options:
+                replace_config = cast(Callable[..., _AgentConfig], replace)
+                config_kwargs = replace_config(config_kwargs, **supported_provider_options)
             if _supports_context_guard:
                 # ``context_window`` is absent from Lauren 1.3.1.  Use the
                 # dataclass replacement only on versions that advertise the
                 # field, while keeping the old constructor statically typed.
-                from dataclasses import replace  # noqa: PLC0415
-
                 replace_config = cast(Callable[..., _AgentConfig], replace)
                 config_kwargs = replace_config(config_kwargs, context_window=_window)
 

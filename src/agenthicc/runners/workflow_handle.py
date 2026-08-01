@@ -52,6 +52,7 @@ class WorkflowRunHandle:
     last_error: str = ""
     created_at: float = field(default_factory=time.time)
     browser_manager: object | None = None
+    provider_profile: str = ""
 
     @classmethod
     def create(
@@ -63,6 +64,7 @@ class WorkflowRunHandle:
         intent: str,
         checkpoint_store: WorkflowCheckpointStore,
         browser_manager: object | None = None,
+        provider_profile: str = "",
     ) -> "WorkflowRunHandle":
         """Create a handle for a new workflow run."""
         return cls(
@@ -74,6 +76,7 @@ class WorkflowRunHandle:
             checkpoint_store=checkpoint_store,
             workflow=workflow,
             browser_manager=browser_manager,
+            provider_profile=provider_profile,
         )
 
     def attach_context(self, context: object) -> None:
@@ -156,6 +159,7 @@ class WorkflowRunHandle:
             revision=self.checkpoint_revision + 1,
             reason=reason or self.last_error,
             browser=browser_payload,
+            provider_profile=self.provider_profile,
         )
 
     def save_checkpoint(self, *, reason: str = "") -> WorkflowCheckpoint:
@@ -199,6 +203,7 @@ class WorkflowRunHandle:
             pause_requested=checkpoint.status in {"paused", "pausing"},
             last_error=checkpoint.reason,
             browser_manager=browser_manager,
+            provider_profile=checkpoint.provider_profile,
         )
         if browser_manager is not None:
             importer = getattr(browser_manager, "restore_checkpoint", None)

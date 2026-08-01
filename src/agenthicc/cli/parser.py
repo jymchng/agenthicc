@@ -61,6 +61,17 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         help="Override a config key (section.key=value). Can be repeated.",
     )
     parser.add_argument(
+        "--set-secret",
+        metavar="KEY=ENV_VAR",
+        action="append",
+        default=[],
+        dest="set_secret_overrides",
+        help=(
+            "Set a secret config key from an environment variable "
+            "(section.key=ENV_VAR). Can be repeated."
+        ),
+    )
+    parser.add_argument(
         "--dangerously-skip-permissions",
         dest="dangerously_skip_permissions",
         action="store_true",
@@ -110,6 +121,7 @@ def _build_ctx(ns: argparse.Namespace) -> CLIContext:
         headless=getattr(ns, "headless", False),
         config_path=getattr(ns, "config", None),
         set_overrides=tuple(getattr(ns, "set_overrides", [])),
+        set_secret_overrides=tuple(getattr(ns, "set_secret_overrides", [])),
         flags=flags,
         record_cassette=getattr(ns, "record_cassette", None),
         continue_session=getattr(ns, "continue_session", False),

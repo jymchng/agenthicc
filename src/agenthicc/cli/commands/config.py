@@ -1,8 +1,9 @@
-"""Configuration management commands — config show, config init."""
+"""Configuration management commands — show, validate, profiles, and init."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from pprint import pformat
 
 from agenthicc.cli.context import CLIContext
 from agenthicc.cli.registry import command, group
@@ -42,15 +43,66 @@ def config_show(ctx: CLIContext) -> None:
     """Print the merged effective configuration including all TOML layers and --set overrides."""
     from agenthicc.config import load_config  # noqa: PLC0415
 
-    cfg = load_config(cli_overrides=list(ctx.set_overrides))
+    cfg = load_config(
+        cli_overrides=list(ctx.set_overrides),
+        cli_secret_overrides=list(ctx.set_secret_overrides),
+        config_path=ctx.config_path,
+    )
+    redacted = cfg.redacted_dict()
     print("# Effective configuration")
-    for section_name in ["execution", "behaviour", "memory", "security", "api", "tools", "plugins"]:
-        section = getattr(cfg, section_name, None)
-        if section is None:
-            continue
+    for section_name, section in redacted.items():
         print(f"\n[{section_name}]")
-        for k, v in vars(section).items():
+        if not isinstance(section, dict):
+            print(pformat(section, sort_dicts=True))
+            continue
+        for k, v in section.items():
             print(f"{k} = {v!r}")
+
+
+@command("config", "validate", help="Validate the effective provider configuration")
+def config_validate(ctx: CLIContext) -> None:
+    """Validate profile selection, endpoint syntax, and required env secrets."""
+    from agenthicc.config import load_config  # noqa: PLC0415
+
+    try:
+        cfg = load_config(
+            cli_overrides=list(ctx.set_overrides),
+            cli_secret_overrides=list(ctx.set_secret_overrides),
+            config_path=ctx.config_path,
+        )
+        cfg.resolve_provider_profile(strict=True, requires_tools=True)
+    except ValueError as exc:
+        raise SystemExit(f"Configuration invalid: {exc}") from exc
+    provider = cfg.execution.provider
+    model = cfg.execution.effective_model()
+    profile = cfg.execution.profile or "legacy execution settings"
+    print(f"Configuration is valid: {profile} ({provider}/{model})")
+
+
+@command("config", "profiles", help="List configured provider profiles")
+def config_profiles(ctx: CLIContext) -> None:
+    """List profile names and non-secret connection metadata."""
+    from agenthicc.config import load_config  # noqa: PLC0415
+
+    cfg = load_config(
+        cli_overrides=list(ctx.set_overrides),
+        cli_secret_overrides=list(ctx.set_secret_overrides),
+        config_path=ctx.config_path,
+    )
+    if not cfg.providers:
+        print("No provider profiles configured.")
+        return
+    for name in sorted(cfg.providers):
+        profile = cfg.providers[name]
+        model = profile.model or "<provider default>"
+        endpoint = profile.base_url or "<provider default>"
+        capabilities = (
+            ",".join(
+                f"{key}={str(value).lower()}" for key, value in sorted(profile.capabilities.items())
+            )
+            or "-"
+        )
+        print(f"{name}\t{profile.provider}\t{model}\t{endpoint}\t{capabilities}")
 
 
 @command("config", "init", help="Create a template agenthicc.toml in .agenthicc/")

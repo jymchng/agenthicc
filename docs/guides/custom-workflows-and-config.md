@@ -8,7 +8,7 @@ environments belong in `agenthicc.toml`.
 |---|---|
 | Phase order, transitions, roles, tools, and turn limits | `PhaseSpec` in a Python workflow plugin |
 | Workflow-specific values such as phase model IDs | `[workflows.<name>]` in TOML, read by `build_params()` |
-| Provider, base URL, credentials, and session defaults | `[execution]` in TOML or provider environment variables |
+| Provider profiles, endpoint, credentials, and request options | `[providers.<name>]` plus `[execution].profile` |
 
 ## 1. Create the project layout
 
@@ -158,25 +158,38 @@ configuration files or write secrets.
 
 ## 4. Choose a provider
 
-Provider selection is currently session-wide:
+Provider selection is session-wide and profile-aware:
 
 ```toml
 [execution]
-provider = "openai" # anthropic, openai, ollama, or litellm
+profile = "modal_kimi"
+
+[providers.modal_kimi]
+provider = "openai" # native or OpenAI-compatible endpoint
 model = "your-default-model"
-base_url = ""
+base_url = "https://your-endpoint.modal.run/v1"
+api_key_env = "MODAL_API_KEY"
+
+[providers.modal_kimi.request_options.provider]
+reasoning_effort = "none"
 ```
 
-Per-phase model selection is supported, but per-phase provider selection is
-not. A setting such as
+The profile is resolved once when a session starts and is inherited by every
+phase, including generated custom workflows and subagents. A resumed workflow
+stores only the profile name; the current environment is consulted again for
+rotated secrets. `provider = "openai"` is the OpenAI-compatible adapter and
+does not require a Modal-specific SDK.
+
+Per-phase model selection is supported, but per-phase provider/profile selection
+is not. A setting such as
 `[workflows.release_review.phases.plan].provider` is not consumed by the
-current runner. The session creates one provider transport and phase
-overrides replace its model only; `base_url` and credentials are also
-session-wide.
+current runner. The session creates one provider transport and phase overrides
+replace its model only; the profile's endpoint, headers, request options, and
+credentials remain session-wide.
 
 If phases must use different provider backends, use one of these patterns:
 
-1. Run separate workflow invocations with different `[execution]` settings.
+1. Run separate workflow invocations with different `[execution].profile` settings.
 2. Put a LiteLLM gateway behind `provider = "litellm"` and use the routed
    model IDs exposed by that gateway in the phase model fields.
 3. Keep one provider for the workflow and vary only the model per phase.

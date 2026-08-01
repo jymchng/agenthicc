@@ -292,6 +292,9 @@ class WorkflowCheckpoint:
     revision: int = 0
     reason: str = ""
     browser: dict[str, object] = field(default_factory=dict)
+    # Non-secret identity only. The named profile is resolved from the
+    # current environment when the owning session is rebuilt.
+    provider_profile: str = ""
     created_at: float = field(default_factory=time.time)
     schema_version: int = CHECKPOINT_SCHEMA_VERSION
 
@@ -312,6 +315,7 @@ class WorkflowCheckpoint:
             "revision": self.revision,
             "reason": self.reason,
             "browser": self.browser,
+            "provider_profile": self.provider_profile,
             "created_at": self.created_at,
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -374,6 +378,9 @@ class WorkflowCheckpoint:
         browser = raw.get("browser", {})
         if not isinstance(browser, dict):
             raise CheckpointValidationError("checkpoint browser metadata must be an object")
+        provider_profile = raw.get("provider_profile", "")
+        if not isinstance(provider_profile, str):
+            raise CheckpointValidationError("provider_profile must be a string")
         numeric = ("phase_index", "phase_iteration", "conversation_cursor", "revision")
         if not all(isinstance(raw[key], int) and not isinstance(raw[key], bool) for key in numeric):
             raise CheckpointValidationError("checkpoint numeric fields must be integers")
@@ -399,5 +406,6 @@ class WorkflowCheckpoint:
             browser=dict(raw.get("browser", {}))
             if isinstance(raw.get("browser", {}), dict)
             else {},
+            provider_profile=provider_profile,
             created_at=float(raw.get("created_at", time.time()) or time.time()),
         )

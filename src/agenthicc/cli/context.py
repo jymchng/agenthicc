@@ -28,6 +28,7 @@ class CLIContext:
     headless: bool = False
     config_path: str | None = None
     set_overrides: tuple[str, ...] = ()
+    set_secret_overrides: tuple[str, ...] = ()
     flags: CLIFlags = field(default_factory=CLIFlags)
     record_cassette: str | None = None
     continue_session: bool = False

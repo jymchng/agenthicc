@@ -19,7 +19,7 @@ from lauren_ai._agents._runner import AgentRunnerBase
 from lauren_ai._config import AgentConfig
 from lauren_ai._memory import ShortTermMemory
 from lauren_ai._signals import SignalBus
-from lauren_ai._transport import Completion, TokenUsage
+from lauren_ai._transport import Completion, RequestOptions, TokenUsage
 from lauren_ai._transport._mock import MockTransport
 
 from agenthicc.config import AgenthiccConfig, load_config
@@ -153,6 +153,30 @@ async def test_the_default_ceiling_is_sent_when_nothing_is_configured(processor)
     await processor.drain()
 
     assert mock.calls[0].max_tokens == 16_384
+
+
+async def test_profile_sampling_and_request_options_reach_agent_config(processor) -> None:
+    mock = MockTransport()
+    mock.queue_response(_completion())
+    cfg = AgenthiccConfig()
+    cfg.execution.temperature = 0.3
+    cfg.execution.top_p = 0.95
+    cfg.execution.max_completion_tokens = 0
+    cfg.execution.request_options = RequestOptions(
+        provider={"reasoning_effort": "none"},
+        extra_body={"vendor_trace": True},
+    )
+
+    await _turn(processor, TUIAppState.create(), cfg, mock)
+    await processor.drain()
+
+    call = mock.calls[0]
+    assert call.temperature == 0.3
+    assert call.top_p == 0.95
+    assert call.max_completion_tokens == 0
+    assert call.request_options is not None
+    assert call.request_options.provider["reasoning_effort"] == "none"
+    assert call.request_options.extra_body["vendor_trace"] is True
 
 
 async def test_a_zero_ceiling_falls_back_to_the_library_default(processor) -> None:

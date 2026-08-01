@@ -92,6 +92,14 @@ class TestArgParsing:
             args = _parse_args()
         assert len(args.set_overrides) == 2
 
+    def test_set_secret_flag(self):
+        with patch(
+            "sys.argv",
+            ["agenthicc", "--set-secret", "execution.api_key=OPENAI_API_KEY"],
+        ):
+            args = _parse_args()
+        assert args.set_secret_overrides == ["execution.api_key=OPENAI_API_KEY"]
+
     def test_config_show_subcommand(self):
         with patch("sys.argv", ["agenthicc", "config", "show"]):
             args = _parse_args()

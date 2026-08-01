@@ -8,7 +8,8 @@ Merge order (later sources override earlier ones):
 3. .agenthicc/agenthicc.toml    — per-project overrides (project model, paths,
                                    project-specific tools/modes/commands)
 4. Environment variables AGENTHICC_* prefix  (CI / dev convenience)
-5. CLI --set section.key=value overrides (highest priority)
+5. CLI --set section.key=value and --set-secret section.key=ENV_VAR overrides
+   (highest priority)
 
 Project config always wins over user-global config.  User-global config supplies
 shared defaults that any project can override.  This mirrors the Git
@@ -20,10 +21,12 @@ Scalars are overwritten, lists are replaced, tables are merged recursively.
 from __future__ import annotations
 
 import tomllib
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Mapping
+from types import MappingProxyType
+from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
 from agenthicc.kernel import SecurityPolicy, SystemSettings
@@ -44,6 +47,10 @@ __all__ = [
     "ExecutionSettings",
     "MemorySettings",
     "PluginSettings",
+    "ProviderProfile",
+    "ResolvedProviderProfile",
+    "RequestOptionSettings",
+    "SecretReference",
     "PROVIDER_API_KEY_ENVVAR",
     "PROVIDER_DEFAULT_MODELS",
     "PROVIDER_ENV_SHORTCUTS",
@@ -262,6 +269,631 @@ PROVIDER_ENV_SHORTCUTS: dict[str, tuple[str, str]] = {
 }
 
 
+# Provider profiles deliberately use a small, typed surface.  The profile
+# remains a configuration object until ``resolve`` is called at session
+# startup; this is what lets a resumed session pick up rotated environment
+# secrets without writing those secrets into journals or checkpoints.
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_PROFILE_KEYS = {
+    "provider",
+    "model",
+    "base_url",
+    "api_key",
+    "api_key_env",
+    "default_headers",
+    "default_query",
+    "client_options",
+    "request_options",
+    "timeout_s",
+    "max_retries",
+    "sdk_max_retries",
+    "temperature",
+    "top_p",
+    "max_completion_tokens",
+    "protocol",
+    "capabilities",
+}
+_CAPABILITY_NAMES = {
+    "tools",
+    "streaming",
+    "structured_output",
+    "thinking",
+    "vision",
+    "embeddings",
+}
+_SENSITIVE_KEY_PARTS = (
+    "token",
+    "secret",
+    "password",
+    "credential",
+    "authorization",
+    "api_key",
+)
+_CANONICAL_REQUEST_KEYS = {
+    "model",
+    "messages",
+    "stream",
+    "max_tokens",
+    "max_completion_tokens",
+    "temperature",
+    "top_p",
+    "tools",
+    "tool_choice",
+    "stop",
+    "stop_sequences",
+    "thinking",
+    "options",
+    "system",
+}
+_CLIENT_OPTION_KEYS = {
+    "follow_redirects",
+    "http2",
+    "verify",
+    "trust_env",
+    "max_redirects",
+    "local_address",
+}
+
+
+def _copy_option_value(value: object, *, path: str) -> object:
+    """Copy and validate JSON-like provider option values.
+
+    Provider SDKs accept mappings and scalar values.  Rejecting arbitrary
+    Python objects at the configuration boundary prevents accidental object
+    injection and makes the value safe to carry through a workflow context.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {
+            str(key): _copy_option_value(item, path=f"{path}.{key}") for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _copy_option_value(item, path=f"{path}[{index}]") for index, item in enumerate(value)
+        ]
+    raise ValueError(f"{path} must contain only JSON-compatible values")
+
+
+def _freeze_option_value(value: object) -> object:
+    """Create an immutable snapshot of a validated option tree."""
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze_option_value(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_option_value(item) for item in value)
+    return value
+
+
+def _freeze_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
+    """Freeze a validated mapping while retaining its static mapping type."""
+    frozen = _freeze_option_value(value)
+    if not isinstance(frozen, Mapping):
+        raise TypeError("internal error: expected a mapping")
+    return cast(Mapping[str, object], frozen)
+
+
+def _redact_value(value: object, *, key: str = "") -> object:
+    """Recursively redact sensitive option keys for diagnostics."""
+    lowered = key.lower()
+    if any(part in lowered for part in _SENSITIVE_KEY_PARTS):
+        return "<redacted>"
+    if isinstance(value, SecretReference):
+        return value.redacted()
+    if isinstance(value, Mapping):
+        return {str(name): _redact_value(item, key=str(name)) for name, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_value(item, key=key) for item in value]
+    return value
+
+
+def _validate_request_option_collisions(
+    *, provider: Mapping[str, object], extra_body: Mapping[str, object], path: str
+) -> None:
+    provider_keys = set(provider)
+    body_keys = set(extra_body)
+    overlap = provider_keys & body_keys
+    if overlap:
+        names = ", ".join(sorted(map(str, overlap)))
+        raise ValueError(f"{path} duplicates option(s) in provider and extra_body: {names}")
+    canonical_provider = provider_keys & _CANONICAL_REQUEST_KEYS
+    canonical_body = body_keys & _CANONICAL_REQUEST_KEYS
+    if canonical_provider or canonical_body:
+        names = ", ".join(sorted(map(str, canonical_provider | canonical_body)))
+        raise ValueError(f"{path} cannot redefine canonical request option(s): {names}")
+
+
+def _validate_client_options(value: Mapping[str, object], *, path: str) -> dict[str, object]:
+    unknown = sorted(set(value) - _CLIENT_OPTION_KEYS)
+    if unknown:
+        raise ValueError(
+            f"{path} contains unsupported client option(s): {', '.join(map(str, unknown))}"
+        )
+    boolean_options = {"follow_redirects", "http2", "trust_env"}
+    for name in boolean_options & set(value):
+        if not isinstance(value[name], bool):
+            raise ValueError(f"{path}.{name} must be boolean")
+    if "max_redirects" in value and (
+        not isinstance(value["max_redirects"], int) or isinstance(value["max_redirects"], bool)
+    ):
+        raise ValueError(f"{path}.max_redirects must be an integer")
+    if "local_address" in value and not isinstance(value["local_address"], str):
+        raise ValueError(f"{path}.local_address must be a string")
+    if "verify" in value and not isinstance(value["verify"], (bool, str)):
+        raise ValueError(f"{path}.verify must be boolean or a certificate path")
+    return cast(dict[str, object], _copy_option_value(value, path=path))
+
+
+def _resolve_header_value(
+    value: str | SecretReference, *, environ: Mapping[str, str] | None, path: str
+) -> str:
+    resolved = value.resolve(environ) if isinstance(value, SecretReference) else value
+    if not isinstance(resolved, str):
+        raise ValueError(f"{path} must resolve to a string")
+    return _validate_header_value(resolved, path=path)
+
+
+def _resolve_headers(
+    values: Mapping[str, str | SecretReference],
+    *,
+    environ: Mapping[str, str] | None,
+    path: str,
+) -> dict[str, str]:
+    """Resolve a header mapping without retaining secret values in config."""
+    return {
+        name: _resolve_header_value(value, environ=environ, path=f"{path}.{name}")
+        for name, value in values.items()
+    }
+
+
+def _validate_env_name(value: str, *, path: str) -> str:
+    name = value.strip()
+    if not _ENV_NAME_RE.fullmatch(name):
+        raise ValueError(f"{path} must be a valid environment variable name")
+    return name
+
+
+def _validate_header_name(value: str, *, path: str) -> str:
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"{path} is not a valid HTTP header name")
+    name = value.strip()
+    if not _HEADER_NAME_RE.fullmatch(name):
+        raise ValueError(f"{path} is not a valid HTTP header name")
+    return name
+
+
+def _validate_header_value(value: str, *, path: str) -> str:
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"{path} must not contain CR/LF characters")
+    return value
+
+
+def _validate_base_url(value: str, *, path: str = "base_url") -> str:
+    url = value.strip()
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url)
+    except ValueError as exc:
+        raise ValueError(f"{path} must be a valid HTTP(S) URL") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"{path} must be an HTTP(S) URL with a hostname")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{path} must not contain URL credentials")
+    if parsed.query:
+        raise ValueError(f"{path} must not contain a query; use default_query instead")
+    if parsed.fragment:
+        raise ValueError(f"{path} must not contain a URL fragment")
+    if any(ord(char) < 32 for char in url):
+        raise ValueError(f"{path} must not contain control characters")
+    return url.rstrip("/")
+
+
+def _optional_float(value: object, path: str) -> float | None:
+    if value is None:
+        return None
+    result = _as_float(value, float("nan"))
+    if result != result:  # NaN is not a valid configuration value.
+        raise ValueError(f"{path} must be a number")
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class SecretReference:
+    """A symbolic reference to a secret held in the process environment."""
+
+    env: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "env", _validate_env_name(self.env, path="secret.env"))
+
+    @classmethod
+    def from_value(cls, value: object, *, path: str) -> "SecretReference":
+        if not isinstance(value, Mapping) or set(value) != {"env"}:
+            raise ValueError(f'{path} must be a literal string or {{ env = "NAME" }}')
+        env = value.get("env")
+        if not isinstance(env, str):
+            raise ValueError(f"{path}.env must be a string")
+        return cls(_validate_env_name(env, path=f"{path}.env"))
+
+    def resolve(self, environ: Mapping[str, str] | None = None) -> str:
+        import os  # noqa: PLC0415
+
+        value = (environ if environ is not None else os.environ).get(self.env, "")
+        if not value:
+            raise ValueError(f"Missing secret environment variable {self.env!r}")
+        return value
+
+    def redacted(self) -> dict[str, str]:
+        return {"env": self.env}
+
+
+def _parse_secret_or_string(value: object, *, path: str) -> str | SecretReference:
+    if isinstance(value, str):
+        return _validate_header_value(value, path=path)
+    return SecretReference.from_value(value, path=path)
+
+
+@dataclass(frozen=True, slots=True)
+class RequestOptionSettings:
+    """Provider request options accepted by lauren-ai 1.4.x."""
+
+    extra_headers: dict[str, str | SecretReference] = field(default_factory=dict)
+    extra_query: dict[str, object] = field(default_factory=dict)
+    extra_body: dict[str, object] = field(default_factory=dict)
+    provider: dict[str, object] = field(default_factory=dict)
+    timeout_s: float | None = None
+    max_retries: int | None = None
+    include_raw_response: bool = False
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, object], *, path: str) -> "RequestOptionSettings":
+        allowed = {
+            "extra_headers",
+            "extra_query",
+            "extra_body",
+            "provider",
+            "timeout_s",
+            "timeout",
+            "max_retries",
+            "sdk_max_retries",
+            "include_raw_response",
+        }
+        unknown = sorted(set(raw) - allowed)
+        if unknown:
+            raise ValueError(f"{path} contains unknown option(s): {', '.join(map(str, unknown))}")
+
+        raw_headers = raw.get("extra_headers", {})
+        if not isinstance(raw_headers, Mapping):
+            raise ValueError(f"{path}.extra_headers must be a table")
+        headers: dict[str, str | SecretReference] = {}
+        for name, value in raw_headers.items():
+            header_name = _validate_header_name(str(name), path=f"{path}.extra_headers")
+            headers[header_name] = _parse_secret_or_string(
+                value, path=f"{path}.extra_headers.{header_name}"
+            )
+
+        def option_map(name: str) -> dict[str, object]:
+            value = raw.get(name, {})
+            if not isinstance(value, Mapping):
+                raise ValueError(f"{path}.{name} must be a table")
+            return cast(dict[str, object], _copy_option_value(value, path=f"{path}.{name}"))
+
+        timeout_raw = raw.get("timeout_s", raw.get("timeout"))
+        timeout = None if timeout_raw is None else _as_float(timeout_raw, -1.0)
+        if timeout is not None and timeout <= 0:
+            raise ValueError(f"{path}.timeout_s must be greater than zero")
+        retries_raw = raw.get("sdk_max_retries", raw.get("max_retries"))
+        retries = None if retries_raw is None else _as_int(retries_raw, -1)
+        if retries is not None and retries < 0:
+            raise ValueError(f"{path}.max_retries must be non-negative")
+        include_raw = raw.get("include_raw_response", False)
+        if not isinstance(include_raw, bool):
+            raise ValueError(f"{path}.include_raw_response must be boolean")
+        provider_options = option_map("provider")
+        body_options = option_map("extra_body")
+        _validate_request_option_collisions(
+            provider=provider_options,
+            extra_body=body_options,
+            path=path,
+        )
+        return cls(
+            extra_headers=headers,
+            extra_query=option_map("extra_query"),
+            extra_body=body_options,
+            provider=provider_options,
+            timeout_s=timeout,
+            max_retries=retries,
+            include_raw_response=include_raw,
+        )
+
+    def resolve(self, environ: Mapping[str, str] | None = None) -> object:
+        from lauren_ai._transport import RequestOptions  # noqa: PLC0415
+
+        headers = {
+            name: _resolve_header_value(
+                value,
+                environ=environ,
+                path=f"request_options.extra_headers.{name}",
+            )
+            for name, value in self.extra_headers.items()
+        }
+        return RequestOptions(
+            extra_headers=headers,
+            extra_query=self.extra_query,
+            extra_body=self.extra_body,
+            provider=self.provider,
+            timeout=self.timeout_s,
+            max_retries=self.max_retries,
+            include_raw_response=self.include_raw_response,
+        )
+
+    def redacted(self) -> dict[str, object]:
+        return {
+            "extra_headers": {
+                name: value.redacted() if isinstance(value, SecretReference) else "<redacted>"
+                for name, value in self.extra_headers.items()
+            },
+            "extra_query": _redact_value(self.extra_query),
+            "extra_body": _redact_value(self.extra_body),
+            "provider": _redact_value(self.provider),
+            "timeout_s": self.timeout_s,
+            "max_retries": self.max_retries,
+            "include_raw_response": self.include_raw_response,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderProfile:
+    """Named connection profile for a native or OpenAI-compatible endpoint."""
+
+    name: str
+    provider: str
+    model: str = ""
+    base_url: str = ""
+    api_key: str | SecretReference | None = None
+    api_key_env: str = ""
+    default_headers: dict[str, str | SecretReference] = field(default_factory=dict)
+    default_query: dict[str, object] = field(default_factory=dict)
+    client_options: dict[str, object] = field(default_factory=dict)
+    request_options: RequestOptionSettings | None = None
+    timeout_s: float | None = None
+    max_retries: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_completion_tokens: int | None = None
+    protocol: str = ""
+    capabilities: dict[str, bool] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, name: str, raw: Mapping[str, object]) -> "ProviderProfile":
+        unknown = sorted(set(raw) - _PROFILE_KEYS)
+        if unknown:
+            raise ValueError(
+                f"providers.{name} contains unknown option(s): {', '.join(map(str, unknown))}"
+            )
+        provider = str(raw.get("provider", "")).strip().lower()
+        if provider not in SUPPORTED_PROVIDERS:
+            supported = ", ".join(SUPPORTED_PROVIDERS)
+            raise ValueError(f"providers.{name}.provider must be one of: {supported}")
+        api_key_raw = raw.get("api_key")
+        api_key: str | SecretReference | None
+        if api_key_raw is None:
+            api_key = None
+        elif isinstance(api_key_raw, str):
+            api_key = api_key_raw
+        else:
+            api_key = SecretReference.from_value(api_key_raw, path=f"providers.{name}.api_key")
+        api_key_env = str(raw.get("api_key_env", "")).strip()
+        if api_key_env:
+            api_key_env = _validate_env_name(api_key_env, path=f"providers.{name}.api_key_env")
+        headers_raw = raw.get("default_headers", {})
+        if not isinstance(headers_raw, Mapping):
+            raise ValueError(f"providers.{name}.default_headers must be a table")
+        headers: dict[str, str | SecretReference] = {}
+        for header, value in headers_raw.items():
+            header_name = _validate_header_name(
+                str(header), path=f"providers.{name}.default_headers"
+            )
+            headers[header_name] = _parse_secret_or_string(
+                value, path=f"providers.{name}.default_headers.{header_name}"
+            )
+
+        def option_map(key: str) -> dict[str, object]:
+            value = raw.get(key, {})
+            if not isinstance(value, Mapping):
+                raise ValueError(f"providers.{name}.{key} must be a table")
+            return cast(
+                dict[str, object], _copy_option_value(value, path=f"providers.{name}.{key}")
+            )
+
+        client_options = _validate_client_options(
+            option_map("client_options"), path=f"providers.{name}.client_options"
+        )
+
+        timeout_raw = raw.get("timeout_s")
+        timeout = None if timeout_raw is None else _as_float(timeout_raw, -1.0)
+        if timeout is not None and timeout <= 0:
+            raise ValueError(f"providers.{name}.timeout_s must be greater than zero")
+        retries_raw = raw.get("sdk_max_retries", raw.get("max_retries"))
+        retries = None if retries_raw is None else _as_int(retries_raw, -1)
+        if retries is not None and retries < 0:
+            raise ValueError(f"providers.{name}.max_retries must be non-negative")
+        temperature = _optional_float(raw.get("temperature"), f"providers.{name}.temperature")
+        top_p = _optional_float(raw.get("top_p"), f"providers.{name}.top_p")
+        if temperature is not None and temperature < 0:
+            raise ValueError(f"providers.{name}.temperature must be non-negative")
+        if top_p is not None and not 0 <= top_p <= 1:
+            raise ValueError(f"providers.{name}.top_p must be between 0 and 1")
+        max_completion = raw.get("max_completion_tokens")
+        if max_completion is not None:
+            max_completion = _as_int(max_completion, -1)
+            if max_completion < 0:
+                raise ValueError(f"providers.{name}.max_completion_tokens must be non-negative")
+        protocol = str(raw.get("protocol", "")).strip().lower()
+        if protocol and protocol not in {
+            "chat_completions",
+            "messages",
+            "ollama",
+            "openai",
+            "openai-compatible",
+            "anthropic",
+            "ollama",
+            "litellm",
+        }:
+            raise ValueError(f"providers.{name}.protocol is not supported")
+        capabilities_raw = raw.get("capabilities", {})
+        if not isinstance(capabilities_raw, Mapping):
+            raise ValueError(f"providers.{name}.capabilities must be a table")
+        capabilities: dict[str, bool] = {}
+        for capability, enabled in capabilities_raw.items():
+            if str(capability) not in _CAPABILITY_NAMES:
+                raise ValueError(
+                    f"providers.{name}.capabilities.{capability} is not a known capability"
+                )
+            if not isinstance(enabled, bool):
+                raise ValueError(f"providers.{name}.capabilities.{capability} must be boolean")
+            capabilities[str(capability)] = enabled
+        request_raw = raw.get("request_options")
+        request_options = (
+            RequestOptionSettings.from_mapping(
+                request_raw, path=f"providers.{name}.request_options"
+            )
+            if isinstance(request_raw, Mapping)
+            else None
+        )
+        if request_raw is not None and request_options is None:
+            raise ValueError(f"providers.{name}.request_options must be a table")
+        if provider == "ollama" and request_options is not None:
+            unsupported = {
+                field
+                for field, value in (
+                    ("extra_headers", request_options.extra_headers),
+                    ("extra_query", request_options.extra_query),
+                    ("provider", request_options.provider),
+                )
+                if value
+            }
+            if unsupported:
+                names = ", ".join(sorted(unsupported))
+                raise ValueError(
+                    f"providers.{name}.request_options contains unsupported Ollama field(s): {names}; "
+                    "use extra_body for Ollama payload extensions"
+                )
+        return cls(
+            name=name,
+            provider=provider,
+            model=str(raw.get("model", "")).strip(),
+            base_url=_validate_base_url(
+                str(raw.get("base_url", "")), path=f"providers.{name}.base_url"
+            ),
+            api_key=api_key,
+            api_key_env=api_key_env,
+            default_headers=headers,
+            default_query=option_map("default_query"),
+            client_options=client_options,
+            request_options=request_options,
+            timeout_s=timeout,
+            max_retries=retries,
+            temperature=temperature,
+            top_p=top_p,
+            max_completion_tokens=max_completion,
+            protocol=protocol,
+            capabilities=capabilities,
+        )
+
+    def redacted(self) -> dict[str, object]:
+        def redact(value: str | SecretReference) -> object:
+            return value.redacted() if isinstance(value, SecretReference) else "<redacted>"
+
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "base_url": self.base_url,
+            "api_key": redact(self.api_key) if self.api_key is not None else None,
+            "api_key_env": self.api_key_env,
+            "default_headers": {
+                name: redact(value) for name, value in self.default_headers.items()
+            },
+            "default_query": _redact_value(self.default_query),
+            "client_options": _redact_value(self.client_options),
+            "request_options": self.request_options.redacted() if self.request_options else None,
+            "timeout_s": self.timeout_s,
+            "max_retries": self.max_retries,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "max_completion_tokens": self.max_completion_tokens,
+            "protocol": self.protocol,
+            "capabilities": dict(self.capabilities),
+        }
+
+    def resolve(self, environ: Mapping[str, str] | None = None) -> "ResolvedProviderProfile":
+        import os  # noqa: PLC0415
+
+        env = environ if environ is not None else os.environ
+        api_key: str | None
+        if isinstance(self.api_key, SecretReference):
+            api_key = self.api_key.resolve(env)
+        elif self.api_key is not None:
+            api_key = self.api_key
+        elif self.api_key_env:
+            api_key = SecretReference(self.api_key_env).resolve(env)
+        else:
+            api_key = env.get(PROVIDER_API_KEY_ENVVAR.get(self.provider, "")) or None
+        headers = {
+            name: _resolve_header_value(
+                value,
+                environ=env,
+                path=f"providers.{self.name}.default_headers.{name}",
+            )
+            for name, value in self.default_headers.items()
+        }
+        request_options = self.request_options.resolve(env) if self.request_options else None
+        return ResolvedProviderProfile(
+            name=self.name,
+            provider=self.provider,
+            model=self.model or PROVIDER_DEFAULT_MODELS[self.provider],
+            base_url=self.base_url,
+            api_key=api_key,
+            default_headers=MappingProxyType(dict(headers)),
+            default_query=_freeze_mapping(self.default_query),
+            client_options=_freeze_mapping(self.client_options),
+            request_options=request_options,
+            timeout_s=self.timeout_s,
+            max_retries=self.max_retries,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            max_completion_tokens=self.max_completion_tokens,
+            protocol=self.protocol
+            or ("openai-compatible" if self.provider == "openai" else self.provider),
+            capabilities=MappingProxyType(dict(self.capabilities)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedProviderProfile:
+    """Runtime provider profile with secrets resolved just before an LLM call."""
+
+    name: str
+    provider: str
+    model: str
+    base_url: str
+    api_key: str | None
+    default_headers: Mapping[str, str]
+    default_query: Mapping[str, object]
+    client_options: Mapping[str, object]
+    request_options: object | None
+    timeout_s: float | None
+    max_retries: int | None
+    temperature: float | None
+    top_p: float | None
+    max_completion_tokens: int | None
+    protocol: str
+    capabilities: Mapping[str, bool]
+
+
 @dataclass
 class ExecutionSettings:
     max_concurrent_intents: int = 8
@@ -321,10 +953,24 @@ class ExecutionSettings:
     transport_retry_max_total_s: float = 0.0  # wall-clock ceiling; 0 = no cap
     llm_sdk_max_retries: int = 2
     # LLM provider selection
+    profile: str = ""
     provider: str = "anthropic"
     model: str = ""  # empty → use PROVIDER_DEFAULT_MODELS[provider]
-    api_key: str = ""  # empty → read from PROVIDER_API_KEY_ENVVAR
+    api_key: str | SecretReference = ""  # empty → read from provider env
+    api_key_env: str = ""  # optional explicit environment variable for legacy execution config
     base_url: str = ""  # Ollama / self-hosted endpoint override
+    default_headers: dict[str, str | SecretReference] = field(default_factory=dict, repr=False)
+    default_query: dict[str, object] = field(default_factory=dict, repr=False)
+    client_options: dict[str, object] = field(default_factory=dict, repr=False)
+    request_options: object | None = field(default=None, repr=False)
+    timeout_s: float = 60.0
+    temperature: float = 1.0
+    top_p: float | None = None
+    max_completion_tokens: int | None = None
+    provider_capabilities: dict[str, bool] = field(default_factory=dict, repr=False)
+    _resolved_profile: ResolvedProviderProfile | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def effective_model(self) -> str:
         return self.model or PROVIDER_DEFAULT_MODELS.get(self.provider, self.model)
@@ -332,8 +978,14 @@ class ExecutionSettings:
     def effective_api_key(self) -> str | None:
         import os  # noqa: PLC0415
 
+        if self._resolved_profile is not None:
+            return self._resolved_profile.api_key
+        if isinstance(self.api_key, SecretReference):
+            return self.api_key.resolve()
         if self.api_key:
             return self.api_key
+        if self.api_key_env:
+            return os.environ.get(self.api_key_env, "") or None
         env_var = PROVIDER_API_KEY_ENVVAR.get(self.provider)
         return os.environ.get(env_var, "") or None if env_var else None
 
@@ -743,6 +1395,7 @@ class StorageSettings:
 @dataclass
 class AgenthiccConfig:
     execution: ExecutionSettings = field(default_factory=ExecutionSettings)
+    providers: dict[str, ProviderProfile] = field(default_factory=dict)
     behaviour: BehaviourSettings = field(default_factory=BehaviourSettings)
     hooks: dict[str, list[str]] = field(default_factory=dict)
     tools: ToolSettings = field(default_factory=ToolSettings)
@@ -770,6 +1423,171 @@ class AgenthiccConfig:
         from agenthicc.security import build_policy_from_config
 
         return build_policy_from_config(self)
+
+    def resolve_provider_profile(
+        self,
+        *,
+        environ: Mapping[str, str] | None = None,
+        strict: bool = True,
+        requires_tools: bool = False,
+        requires_streaming: bool = True,
+    ) -> ResolvedProviderProfile | None:
+        """Resolve and activate the selected profile for this config.
+
+        Resolution is intentionally explicit and late.  A profile name and
+        all non-secret settings can safely remain in a workflow/session
+        object; the environment is consulted again when a session is resumed.
+        """
+        profile_name = self.execution.profile.strip()
+        import os  # noqa: PLC0415
+
+        env = environ if environ is not None else os.environ
+        if not profile_name:
+            if strict:
+                provider = self.execution.provider.lower()
+                if provider not in SUPPORTED_PROVIDERS:
+                    supported = ", ".join(SUPPORTED_PROVIDERS)
+                    raise ValueError(f"execution.provider must be one of: {supported}")
+                _validate_base_url(self.execution.base_url, path="execution.base_url")
+                if isinstance(self.execution.api_key, SecretReference):
+                    self.execution.api_key.resolve(env)
+                _resolve_headers(
+                    self.execution.default_headers,
+                    environ=env,
+                    path="execution.default_headers",
+                )
+                if isinstance(self.execution.request_options, RequestOptionSettings):
+                    self.execution.request_options.resolve(env)
+            return None
+        profile = self.providers.get(profile_name)
+        if profile is None:
+            available = ", ".join(sorted(self.providers)) or "none"
+            raise ValueError(
+                f"Unknown provider profile {profile_name!r}; available profiles: {available}"
+            )
+        resolved = profile.resolve(environ)
+        from dataclasses import replace  # noqa: PLC0415
+
+        if profile.api_key is None and not profile.api_key_env:
+            if isinstance(self.execution.api_key, SecretReference):
+                resolved = replace(resolved, api_key=self.execution.api_key.resolve(env))
+            elif self.execution.api_key:
+                resolved = replace(resolved, api_key=self.execution.api_key)
+            elif self.execution.api_key_env:
+                resolved = replace(
+                    resolved,
+                    api_key=SecretReference(self.execution.api_key_env).resolve(env),
+                )
+        resolved = replace(
+            resolved,
+            model=profile.model or self.execution.model or resolved.model,
+            base_url=profile.base_url
+            or _validate_base_url(self.execution.base_url, path="execution.base_url"),
+            default_headers=MappingProxyType(
+                dict(resolved.default_headers)
+                if profile.default_headers
+                else _resolve_headers(
+                    self.execution.default_headers,
+                    environ=env,
+                    path="execution.default_headers",
+                )
+            ),
+            default_query=_freeze_mapping(
+                profile.default_query if profile.default_query else self.execution.default_query
+            ),
+            client_options=_freeze_mapping(
+                profile.client_options if profile.client_options else self.execution.client_options
+            ),
+            request_options=(
+                resolved.request_options
+                if profile.request_options is not None
+                else (
+                    self.execution.request_options.resolve(env)
+                    if isinstance(self.execution.request_options, RequestOptionSettings)
+                    else self.execution.request_options
+                )
+            ),
+            timeout_s=profile.timeout_s
+            if profile.timeout_s is not None
+            else self.execution.timeout_s,
+            max_retries=profile.max_retries
+            if profile.max_retries is not None
+            else self.execution.llm_sdk_max_retries,
+            temperature=profile.temperature
+            if profile.temperature is not None
+            else self.execution.temperature,
+            top_p=profile.top_p if profile.top_p is not None else self.execution.top_p,
+            max_completion_tokens=(
+                profile.max_completion_tokens
+                if profile.max_completion_tokens is not None
+                else self.execution.max_completion_tokens
+            ),
+        )
+        if resolved.timeout_s is None or resolved.timeout_s <= 0:
+            raise ValueError(f"providers.{profile_name}.timeout_s must be greater than zero")
+        if requires_tools and resolved.capabilities.get("tools") is False:
+            raise ValueError(
+                f"providers.{profile_name}.capabilities.tools=false cannot run a tool-enabled session"
+            )
+        if requires_streaming and resolved.capabilities.get("streaming") is False:
+            raise ValueError(
+                f"providers.{profile_name}.capabilities.streaming=false cannot run the streaming session"
+            )
+        self.execution.provider = resolved.provider
+        self.execution.model = resolved.model
+        self.execution.base_url = resolved.base_url
+        self.execution._resolved_profile = resolved
+        if resolved.timeout_s is not None:
+            self.execution.timeout_s = resolved.timeout_s
+        if resolved.temperature is not None:
+            self.execution.temperature = resolved.temperature
+        if resolved.top_p is not None:
+            self.execution.top_p = resolved.top_p
+        if resolved.max_completion_tokens is not None:
+            self.execution.max_completion_tokens = resolved.max_completion_tokens
+        if resolved.max_retries is not None:
+            self.execution.llm_sdk_max_retries = resolved.max_retries
+        self.execution.default_headers = dict(resolved.default_headers)
+        self.execution.default_query = dict(resolved.default_query)
+        self.execution.client_options = dict(resolved.client_options)
+        self.execution.provider_capabilities = dict(resolved.capabilities)
+        self.execution.request_options = resolved.request_options
+        if strict and not resolved.model:
+            raise ValueError(f"Provider profile {profile_name!r} did not resolve a model")
+        return resolved
+
+    def redacted_dict(self) -> dict[str, object]:
+        """Return a CLI-safe representation without resolved secret values."""
+        execution = {
+            key: _redact_value(value, key=key)
+            for key, value in vars(self.execution).items()
+            if not key.startswith("_") and key not in {"api_key", "default_headers"}
+        }
+        execution["api_key"] = (
+            self.execution.api_key.redacted()
+            if isinstance(self.execution.api_key, SecretReference)
+            else ("<redacted>" if self.execution.api_key else None)
+        )
+        execution["default_headers"] = {
+            name: value.redacted() if isinstance(value, SecretReference) else "<redacted>"
+            for name, value in self.execution.default_headers.items()
+        }
+        if isinstance(self.execution.request_options, RequestOptionSettings):
+            execution["request_options"] = self.execution.request_options.redacted()
+        elif self.execution.request_options is not None:
+            # lauren-ai's immutable RequestOptions owns its own redacted
+            # diagnostic representation; do not call repr on it here.
+            execution["request_options"] = "<configured>"
+        return {
+            "execution": execution,
+            "providers": {name: profile.redacted() for name, profile in self.providers.items()},
+            "behaviour": vars(self.behaviour).copy(),
+            "memory": vars(self.memory).copy(),
+            "security": vars(self.security).copy(),
+            "api": vars(self.api).copy(),
+            "tools": vars(self.tools).copy(),
+            "plugins": vars(self.plugins).copy(),
+        }
 
 
 def _parse_mcp_servers(raw_list: list[dict[str, object]]) -> list[McpServerConfig]:
@@ -983,18 +1801,51 @@ def _apply_env_overrides(config: dict[str, object]) -> dict[str, object]:
 
 
 def _apply_cli_overrides(config: dict[str, object], overrides: list[str]) -> dict[str, object]:
-    """Apply --set section.key=value overrides (highest priority)."""
+    """Apply dotted ``--set`` overrides (highest priority)."""
     for override in overrides:
         if "=" not in override:
             continue
         key_path, _, value_str = override.partition("=")
-        parts = key_path.strip().split(".", 1)
-        if len(parts) != 2:
+        parts = [part.strip() for part in key_path.strip().split(".") if part.strip()]
+        if len(parts) < 2:
             continue
-        section, field_name = parts
-        section_config = _section(config.get(section))
-        section_config[field_name] = _coerce_env(value_str)
-        config[section] = section_config
+        target = config
+        for part in parts[:-1]:
+            nested = target.get(part)
+            child = (
+                {str(key): item for key, item in nested.items()}
+                if isinstance(nested, Mapping)
+                else {}
+            )
+            target[part] = child
+            target = child
+        target[parts[-1]] = _coerce_env(value_str)
+    return config
+
+
+def _apply_cli_secret_overrides(
+    config: dict[str, object], overrides: list[str]
+) -> dict[str, object]:
+    """Apply ``--set-secret PATH=ENV_VAR`` overrides as symbolic references."""
+    for override in overrides:
+        if "=" not in override:
+            raise ValueError("--set-secret expects KEY=ENV_VAR")
+        key_path, _, env_name = override.partition("=")
+        parts = [part.strip() for part in key_path.strip().split(".") if part.strip()]
+        if len(parts) < 2:
+            raise ValueError("--set-secret KEY must be a dotted configuration path")
+        env_name = _validate_env_name(env_name, path=f"--set-secret {key_path}.ENV_VAR")
+        target = config
+        for part in parts[:-1]:
+            nested = target.get(part)
+            child = (
+                {str(key): item for key, item in nested.items()}
+                if isinstance(nested, Mapping)
+                else {}
+            )
+            target[part] = child
+            target = child
+        target[parts[-1]] = {"env": env_name}
     return config
 
 
@@ -1109,6 +1960,23 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
     _context_windows = {
         str(k).lower(): _as_int(v, 0) for k, v in _section(me.get("context_windows")).items()
     }
+    execution_headers_raw = ex.get("default_headers", {})
+    if not isinstance(execution_headers_raw, Mapping):
+        raise ValueError("execution.default_headers must be a table")
+    execution_headers: dict[str, str | SecretReference] = {}
+    for header, value in execution_headers_raw.items():
+        header_name = _validate_header_name(str(header), path="execution.default_headers")
+        execution_headers[header_name] = _parse_secret_or_string(
+            value, path=f"execution.default_headers.{header_name}"
+        )
+    execution_request_raw = ex.get("request_options")
+    execution_request_options = (
+        RequestOptionSettings.from_mapping(execution_request_raw, path="execution.request_options")
+        if isinstance(execution_request_raw, Mapping)
+        else None
+    )
+    if execution_request_raw is not None and execution_request_options is None:
+        raise ValueError("execution.request_options must be a table")
     execution = ExecutionSettings(
         max_concurrent_intents=_as_int(ex.get("max_concurrent_intents"), 8),
         max_parallel_tasks=_as_int(ex.get("max_parallel_tasks"), 4),
@@ -1125,11 +1993,42 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         transport_retry_base_delay_s=_as_float(ex.get("transport_retry_base_delay_s"), 1.0),
         transport_retry_max_total_s=_as_float(ex.get("transport_retry_max_total_s"), 0.0),
         llm_sdk_max_retries=_as_int(ex.get("llm_sdk_max_retries"), 2),
+        profile=_as_str(ex.get("profile"), ""),
         provider=_as_str(ex.get("provider"), "anthropic"),
         model=_as_str(ex.get("model"), ""),
-        api_key=_as_str(ex.get("api_key"), ""),
+        api_key=(
+            _parse_secret_or_string(ex["api_key"], path="execution.api_key")
+            if "api_key" in ex
+            else ""
+        ),
+        api_key_env=_as_str(ex.get("api_key_env"), ""),
         base_url=_as_str(ex.get("base_url"), ""),
+        default_headers=execution_headers,
+        default_query=cast(
+            dict[str, object],
+            _copy_option_value(_section(ex.get("default_query")), path="execution.default_query"),
+        ),
+        client_options=_validate_client_options(
+            _section(ex.get("client_options")), path="execution.client_options"
+        ),
+        request_options=execution_request_options,
+        timeout_s=_as_float(ex.get("timeout_s"), 60.0),
+        temperature=_as_float(ex.get("temperature"), 1.0),
+        top_p=_optional_float(ex.get("top_p"), "execution.top_p"),
+        max_completion_tokens=(
+            None
+            if ex.get("max_completion_tokens") is None
+            else _as_int(ex.get("max_completion_tokens"), -1)
+        ),
     )
+    if execution.timeout_s <= 0:
+        raise ValueError("execution.timeout_s must be greater than zero")
+    if execution.temperature < 0:
+        raise ValueError("execution.temperature must be non-negative")
+    if execution.top_p is not None and not 0 <= execution.top_p <= 1:
+        raise ValueError("execution.top_p must be between 0 and 1")
+    if execution.max_completion_tokens is not None and execution.max_completion_tokens < 0:
+        raise ValueError("execution.max_completion_tokens must be non-negative")
 
     hooks = _flatten_hooks(_section(data.get("hooks")))
 
@@ -1298,8 +2197,22 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         if isinstance(params, Mapping)
     }
 
+    raw_providers = data.get("providers")
+    if raw_providers is None:
+        providers_raw: dict[str, object] = {}
+    elif isinstance(raw_providers, Mapping):
+        providers_raw = _section(raw_providers)
+    else:
+        raise ValueError("providers must be a TOML table")
+    providers: dict[str, ProviderProfile] = {}
+    for name, params in providers_raw.items():
+        if not isinstance(params, Mapping):
+            raise ValueError(f"providers.{name} must be a TOML table")
+        providers[str(name)] = ProviderProfile.from_mapping(str(name), params)
+
     return AgenthiccConfig(
         execution=execution,
+        providers=providers,
         behaviour=behaviour,
         hooks=hooks,
         tools=tools,
@@ -1323,6 +2236,7 @@ def load_config(
     env_overrides: bool = True,
     cli_overrides: list[str] | None = None,
     config_path: str | Path | None = None,
+    cli_secret_overrides: list[str] | None = None,
 ) -> AgenthiccConfig:
     """Load and merge configuration into a typed :class:`AgenthiccConfig`.
 
@@ -1335,7 +2249,8 @@ def load_config(
     4a. Provider shorthand env vars (``OPENAI_MODEL``, ``ANTHROPIC_API_KEY``, …)
     4b. ``AGENTHICC_<SECTION>_<KEY>`` env vars         — always override config files;
                                                           win over 4a shorthands
-    5. CLI ``--set section.key=value`` overrides (highest)
+    5. CLI ``--set section.key=value`` and
+       ``--set-secret section.key=ENV_VAR`` overrides (highest)
 
     Environment variables always override both config files (user-global and
     per-project).  This lets CI/CD and shell profiles reliably control
@@ -1384,9 +2299,12 @@ def load_config(
     if env_overrides:
         merged = _apply_env_overrides(merged)
 
-    # 5. CLI --set overrides (highest of all)
+    # 5. CLI overrides (highest of all). Secret overrides are applied last so
+    # they cannot be accidentally replaced by a plaintext --set value.
     if cli_overrides:
         merged = _apply_cli_overrides(merged, cli_overrides)
+    if cli_secret_overrides:
+        merged = _apply_cli_secret_overrides(merged, cli_secret_overrides)
 
     return _dict_to_config(merged)
 
@@ -1408,19 +2326,38 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
     import os  # noqa: PLC0415
     from lauren_ai._config import LLMConfig  # noqa: PLC0415
 
+    llm_fields = {field.name for field in dataclasses.fields(LLMConfig)}
+    required_fields = {
+        "default_headers",
+        "default_query",
+        "client_options",
+        "request_options",
+        "top_p",
+        "max_completion_tokens",
+    }
+    missing_fields = sorted(required_fields - llm_fields)
+    if missing_fields:
+        raise ValueError(
+            "Provider profiles require lauren-ai >= 1.4.0; the installed version "
+            f"is missing: {', '.join(missing_fields)}"
+        )
+
     def _cache(cfg: "LLMConfig") -> "LLMConfig":
         # PRD-132 L0: enable incremental prompt caching (system + tools +
         # conversation prefix).  Read only by the Anthropic transport — a clean
         # no-op for OpenAI/Ollama/litellm.
         fields = getattr(cfg, "__dataclass_fields__", {})
-        result = dataclasses.replace(
-            cfg,
-            cache_system_prompt=execution.prompt_cache,
-            cache_tools=execution.prompt_cache,
-        )
-        # lauren-ai 1.3.1 has no conversation-cache field yet.  Preserve the
-        # agenthicc setting on the immutable config for callers that inspect
-        # the complete cache policy; transports ignore the unsupported flag.
+        replace_kwargs: dict[str, object] = {
+            "cache_system_prompt": execution.prompt_cache,
+            "cache_tools": execution.prompt_cache,
+        }
+        if "cache_conversation" in fields:
+            replace_kwargs["cache_conversation"] = execution.prompt_cache
+        replace_config = cast(Callable[..., LLMConfig], dataclasses.replace)
+        result = replace_config(cfg, **replace_kwargs)
+        # Keep this compatibility branch for downstream installations that
+        # import agenthicc with an older lauren-ai wheel despite the declared
+        # dependency constraint.
         if "cache_conversation" not in fields:
             object.__setattr__(result, "cache_conversation", execution.prompt_cache)
         return result
@@ -1435,68 +2372,86 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
         or (os.environ.get("OLLAMA_HOST") if provider == "ollama" else None)
         or None
     )
+    if base_url:
+        base_url = _validate_base_url(base_url, path="execution.base_url")
 
     # SDK-level retries only — turn-level retry (transport_max_retries) is the
     # memory-safe primary mechanism and is applied by the runners (PRD-126).
-    max_retries: int = execution.llm_sdk_max_retries
+    max_retries = execution.llm_sdk_max_retries
+    resolved = execution._resolved_profile
+    default_headers = (
+        dict(resolved.default_headers)
+        if resolved
+        else _resolve_headers(
+            execution.default_headers,
+            environ=os.environ,
+            path="execution.default_headers",
+        )
+    )
+    default_query = dict(resolved.default_query) if resolved else dict(execution.default_query)
+    client_options = dict(resolved.client_options) if resolved else dict(execution.client_options)
+    request_options = resolved.request_options if resolved else execution.request_options
+    if isinstance(request_options, RequestOptionSettings):
+        request_options = request_options.resolve()
+    timeout = (
+        resolved.timeout_s if resolved and resolved.timeout_s is not None else execution.timeout_s
+    )
+    temperature = (
+        resolved.temperature
+        if resolved and resolved.temperature is not None
+        else execution.temperature
+    )
+    top_p = resolved.top_p if resolved and resolved.top_p is not None else execution.top_p
+    max_completion_tokens = (
+        resolved.max_completion_tokens
+        if resolved and resolved.max_completion_tokens is not None
+        else execution.max_completion_tokens
+    )
+    common: dict[str, object] = {
+        "max_tokens": execution.max_output_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_completion_tokens": max_completion_tokens,
+        "timeout": timeout,
+        "max_retries": max_retries,
+        "default_headers": default_headers,
+        "default_query": default_query,
+        "client_options": client_options,
+        "request_options": request_options,
+    }
+    # Optional fields are omitted rather than sent as None to older lauren
+    # compatibility shims and to avoid changing their default behavior.
+    common = {key: value for key, value in common.items() if value is not None}
 
     if provider == "anthropic":
         if base_url:
-            return _cache(
-                LLMConfig.for_anthropic(
-                    model=model,
-                    api_key=api_key,
-                    max_retries=max_retries,
-                    base_url=base_url,
-                )
-            )
-        return _cache(
-            LLMConfig.for_anthropic(
-                model=model,
-                api_key=api_key,
-                max_retries=max_retries,
-            )
-        )
+            common["base_url"] = base_url
+        for_anthropic = cast(Callable[..., LLMConfig], LLMConfig.for_anthropic)
+        return _cache(for_anthropic(model=model, api_key=api_key, **common))
 
     if provider == "openai":
-        # LLMConfig.for_openai passes base_url to OpenAI client, enabling any
-        # OpenAI-compatible endpoint (poolside, Together, Groq, local vLLM, etc.)
+        # ``for_openai`` accepts any OpenAI-compatible endpoint, including
+        # Modal deployments, vLLM, Together, Groq, and private gateways.
         if base_url:
-            return _cache(
-                LLMConfig.for_openai(
-                    model=model,
-                    api_key=api_key,
-                    max_retries=max_retries,
-                    base_url=base_url,
-                )
-            )
-        return _cache(
-            LLMConfig.for_openai(
-                model=model,
-                api_key=api_key,
-                max_retries=max_retries,
-            )
-        )
+            common["base_url"] = base_url
+        for_openai = cast(Callable[..., LLMConfig], LLMConfig.for_openai)
+        return _cache(for_openai(model=model, api_key=api_key, **common))
 
     if provider == "ollama":
         if base_url:
-            return _cache(
-                LLMConfig.for_ollama(
-                    model=model,
-                    max_retries=max_retries,
-                    base_url=base_url,
-                )
-            )
-        return _cache(LLMConfig.for_ollama(model=model, max_retries=max_retries))
+            common["base_url"] = base_url
+        for_ollama = cast(Callable[..., LLMConfig], LLMConfig.for_ollama)
+        return _cache(for_ollama(model=model, **common))
 
     if provider == "litellm":
+        llm_constructor = cast(Callable[..., LLMConfig], LLMConfig)
         return _cache(
-            LLMConfig(
+            llm_constructor(
                 provider="litellm",
                 model=model,
                 api_key=api_key,
                 base_url=base_url,
-                max_retries=max_retries,
+                **common,
             )
         )
 

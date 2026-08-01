@@ -104,6 +104,10 @@ class SessionContext:
     browser_manager: "BrowserSessionManager | None" = None
     browser_tools: list["ToolLike"] = field(default_factory=list)
 
+    # ── invocation configuration ────────────────────────────────────────────
+    cfg_overrides: tuple[str, ...] = ()
+    cfg_secret_overrides: tuple[str, ...] = ()
+
     # ── visual resume (PRD-158) ──────────────────────────────────────────────
     #: True when this TUI was opened against an existing session and should
     #: replay its persisted scroll transcript after the Live block mounts.

@@ -70,6 +70,26 @@ You can set the provider, model, base URL, and execution options in
 [configuration guide](./docs/guides/configuration.md) for precedence and the
 supported settings.
 
+Named provider profiles also support OpenAI-compatible endpoints such as Modal
+without a provider-specific SDK. They carry endpoint headers, request options,
+sampling, retries, and environment-backed secrets through direct turns,
+workflows, subagents, and resume:
+
+```toml
+[execution]
+profile = "modal"
+
+[providers.modal]
+provider = "openai"
+model = "moonshotai/Kimi-K3"
+base_url = "https://your-endpoint.modal.run/v1"
+api_key_env = "MODAL_API_KEY"
+```
+
+Use `agenthicc config validate` before a run; secret values are never printed.
+For one-off credentials, use `--set-secret PATH=ENV_VAR`; it stores only an
+environment-variable reference and resolves the value at provider startup.
+
 ## First run
 
 Create a project config if desired:

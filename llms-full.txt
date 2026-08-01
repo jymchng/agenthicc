@@ -2081,6 +2081,7 @@ Missing files are skipped. Invalid TOML raises `tomllib.TOMLDecodeError`.
 @dataclass
 class AgenthiccConfig:
     execution: ExecutionSettings
+    providers: dict[str, ProviderProfile]
     hooks: dict[str, list[str]]
     tools: ToolSettings
     memory: MemorySettings
@@ -2089,11 +2090,60 @@ class AgenthiccConfig:
 
     def to_system_settings(self) -> SystemSettings: ...
     def to_security_policy(self) -> SecurityPolicy: ...
+    def resolve_provider_profile(self, *, environ: Mapping[str, str] | None = None,
+                                 strict: bool = True) -> ResolvedProviderProfile | None: ...
+    def redacted_dict(self) -> dict[str, object]: ...
 ```
 
 Top-level typed configuration. `to_system_settings()` reflects execution settings
 into the kernel. `to_security_policy()` builds a `SecurityPolicy` from security
 settings via `build_policy_from_config`.
+
+---
+
+### ProviderProfile, SecretReference, RequestOptionSettings
+
+```python
+@dataclass(frozen=True, slots=True)
+class SecretReference:
+    env: str
+    def resolve(self, environ: Mapping[str, str] | None = None) -> str: ...
+
+@dataclass(frozen=True, slots=True)
+class RequestOptionSettings:
+    extra_headers: dict[str, str | SecretReference]
+    extra_query: dict[str, object]
+    extra_body: dict[str, object]
+    provider: dict[str, object]
+    timeout_s: float | None
+    max_retries: int | None
+    include_raw_response: bool
+
+@dataclass(frozen=True, slots=True)
+class ProviderProfile:
+    name: str; provider: str; model: str; base_url: str
+    api_key: str | SecretReference | None; api_key_env: str
+    default_headers: dict[str, str | SecretReference]
+    default_query: dict[str, object]; client_options: dict[str, object]
+    request_options: RequestOptionSettings | None
+    timeout_s: float | None; max_retries: int | None
+    temperature: float | None; top_p: float | None
+    max_completion_tokens: int | None; protocol: str
+    capabilities: dict[str, bool]
+
+@dataclass(frozen=True, slots=True)
+class ResolvedProviderProfile:
+    name: str; provider: str; model: str; base_url: str
+    api_key: str | None; request_options: object | None
+```
+
+Profiles are selected with `[execution].profile` and defined under
+`[providers.<name>]`. `provider = "openai"` supports Modal and other
+OpenAI-compatible HTTP endpoints through lauren-ai's OpenAI transport; no
+provider-specific Modal SDK is required. Secret references are resolved only
+when a session starts or resumes, and `redacted_dict()` never includes their
+values. Profile request options flow through direct turns, workflow phases, and
+subagents.
 
 ---
 
@@ -2388,6 +2438,11 @@ llm = build_llm_config(cfg.execution)
 # → LLMConfig(provider="anthropic", model="claude-opus-4-8", ...)
 ```
 
+The builder passes profile `default_headers`, `default_query`,
+`client_options`, sampling (`temperature`, `top_p`, and
+`max_completion_tokens`), timeout/retry settings, and lauren-ai 1.4
+`RequestOptions` through to the selected transport.
+
 ### SUPPORTED_PROVIDERS
 
 ```python
@@ -2434,6 +2489,16 @@ class ExecutionSettings:
     model: str = ""                 # empty → PROVIDER_DEFAULT_MODELS[provider]
     api_key: str = ""               # empty → PROVIDER_API_KEY_ENVVAR[provider]
     base_url: str = ""              # Ollama / custom endpoint
+    profile: str = ""               # selected [providers.<name>] profile
+    api_key_env: str = ""            # explicit legacy environment reference
+    timeout_s: float = 60.0
+    temperature: float = 1.0
+    top_p: float | None = None
+    max_completion_tokens: int | None = None
+    default_headers: dict[str, str] = field(default_factory=dict)
+    default_query: dict[str, object] = field(default_factory=dict)
+    client_options: dict[str, object] = field(default_factory=dict)
+    request_options: object | None = None
     # PRD-136: per-model context windows — the SINGLE source for the context
     # system (replaces the old model_context_window + session_memory_max_tokens).
     # Parsed from the [memory.context_windows] TOML table; key "default" is the

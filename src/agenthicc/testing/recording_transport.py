@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         ToolSchema,
         Message,
         ToolChoice,
+        RequestOptions,
     )
 
 
@@ -97,6 +98,9 @@ class RecordingTransport:
         stream: bool = False,
         thinking: bool = False,
         thinking_budget_tokens: int = 8000,
+        top_p: float | None = None,
+        max_completion_tokens: int | None = None,
+        request_options: RequestOptions | None = None,
     ) -> Completion | AsyncIterator[CompletionChunk]:
         tool_names = [_tool_schema_name(t) for t in (tools or [])]
         inner = cast(_Transport, self._inner)
@@ -115,6 +119,9 @@ class RecordingTransport:
                 stream=False,
                 thinking=thinking,
                 thinking_budget_tokens=thinking_budget_tokens,
+                top_p=top_p,
+                max_completion_tokens=max_completion_tokens,
+                request_options=request_options,
             )
             completion = cast(Completion, result)
             self._record_completion(model, tool_names, completion)
@@ -137,6 +144,9 @@ class RecordingTransport:
                 stream=True,
                 thinking=thinking,
                 thinking_budget_tokens=thinking_budget_tokens,
+                top_p=top_p,
+                max_completion_tokens=max_completion_tokens,
+                request_options=request_options,
             ),
         )
         return self._intercepting_stream(model, tool_names, inner_iter)
