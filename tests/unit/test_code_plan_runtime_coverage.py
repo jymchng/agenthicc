@@ -12,6 +12,7 @@ from agenthicc.config import AgenthiccConfig
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.runtime.mode_manager import ModeManager
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.code_plan.phase_tools import make_executor_tools
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.config import WorkflowConfig
 from agenthicc.workflows.plugin import PhaseOutput, WorkflowContext
@@ -177,6 +178,34 @@ async def test_resume_type_validation_and_extension_phase(monkeypatch: pytest.Mo
         shared_memory=MagicMock(),
     )
     assert captured
+
+
+@pytest.mark.asyncio
+async def test_run_turn_appends_the_phase_transition_tool_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    captured: dict[str, object] = {}
+
+    async def fake_turn(_text: str, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", fake_turn)
+    await runner._run_turn(
+        "implement the approved plan",
+        tools=make_executor_tools(asyncio.Event(), {}),
+        mode=None,
+        system_prompt="Execute the approved work.",
+        max_turns=2,
+        ctx=CodePlanContext("intent", "run", shared_memory=MagicMock()),
+        phase_name="execute",
+    )
+
+    suffix = captured["system_prompt_suffix"]
+    assert isinstance(suffix, str)
+    assert "[PHASE TRANSITION TOOLS]" in suffix
+    assert "`mark_execute_complete`" in suffix
+    assert "prose" in suffix
 
 
 @pytest.mark.asyncio

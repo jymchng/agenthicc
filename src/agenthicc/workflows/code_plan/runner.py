@@ -772,6 +772,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         picks up the per-phase model (PRD-115).
         """
         from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
+        from agenthicc.workflows.plugin import phase_transition_instruction  # noqa: PLC0415
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
@@ -819,7 +820,10 @@ class CodePlanRunner(BaseWorkflowRunner):
                 approval_svc=self._cfg.approval_svc,
                 output_collector=[],
                 command_outcomes=ctx.command_outcomes,
-                system_prompt_suffix=system_prompt,
+                system_prompt_suffix=(
+                    f"{system_prompt}\n\n"
+                    f"{phase_transition_instruction(tools, phase_name=phase_name)}"
+                ),
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
                 next_queued_message=self._cfg.next_queued_message,

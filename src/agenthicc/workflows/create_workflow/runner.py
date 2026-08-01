@@ -88,16 +88,21 @@ _RUNNER_GUIDE: str = (
     "  4. run(intent): build the context, then drive "
     "'while not state.is_terminal' + 'match state'\n"
     "  5. resume(context): re-enter the same dispatch path\n"
-    "  6. phase tool factories whose @tool() closures set an asyncio.Event — the state "
-    "method checks the event after the turn and NEVER parses the agent's prose\n"
-    "  7. build_runner() on the plugin returning that runner\n"
-    "  8. checkpoint_context_to_payload(context) and "
+    "  6. phase tool factories whose @tool() closures set an asyncio.Event, and whose "
+    "transition callables are also marked @tool_control — the state method checks the "
+    "event after the turn and NEVER parses the agent's prose\n"
+    "  7. every phase system prompt MUST explicitly name the phase-transition tool(s) "
+    "available in that phase, explain which tool advances or branches the state, and "
+    "tell the phase agent that prose such as 'done' never advances the workflow; only "
+    "a successful transition-tool call does\n"
+    "  8. build_runner() on the plugin returning that runner\n"
+    "  9. checkpoint_context_to_payload(context) and "
     "checkpoint_context_from_payload(payload, memory=None) on the plugin. The context "
     "must carry run_id, current state, phase_iteration, completed artefacts, and all "
     "workflow-specific resume data; omit asyncio.Events, locks, clients, and session "
     "memory from the payload, then attach the supplied memory object during restore. "
     "The payload must contain only bounded JSON-compatible values.\n"
-    "  9. run() and resume(context) must use config.session_memory when it is supplied "
+    "  10. run() and resume(context) must use config.session_memory when it is supplied "
     "and must never create a second conversation for a resumed run. Use "
     "config.workflow_handle to attach context and publish the current phase.\n"
     "Subclass CodePlanRunner for the session wiring and its public run_phase(intent=, "
@@ -121,6 +126,9 @@ _AUTHORING_GUIDE: str = (
     "  - build_runner(): returns the workflow's own runner (see below)\n"
     "  - checkpoint codecs: required for a custom runner/context so the generated "
     "workflow can pause and resume after Esc or a process restart\n"
+    "  - phase prompts: each prompt must list its available transition tool(s), mark "
+    "those callables with @tool_control, and state that only a successful call to one "
+    "of them changes phase\n"
     "  - build_params(): typed WorkflowParams when [workflows.<name>] config is needed\n\n"
     + _RUNNER_GUIDE
     + "\nUse describe_phasespec(), list_tool_capabilities(), list_agent_roles(), "
@@ -140,7 +148,9 @@ _DESIGN_PROMPT: str = (
     "tools, and read existing workflow files only if the request depends on them.\n\n"
     "Your design MUST also state the workflow's own runner: the state enum members, the "
     "context dataclass fields, the checkpoint payload fields and memory reattachment rule, "
-    "one method per state, and the transition tool that ends each phase. Call "
+    "one method per state, and the transition tool that ends each phase. For every phase "
+    "name the exact transition tool(s) available to its agent and state that only a "
+    "successful call changes phase; prose such as 'done' never advances the workflow. Call "
     "describe_runner_pattern() and follow it. Only if every phase is a single "
     "unconditional turn may you propose a declarative graph with no runner — and then say "
     "so explicitly and justify it.\n\n"
@@ -167,6 +177,10 @@ _GENERATE_PROMPT: str = (
     "'from __future__ import annotations', the imports it uses, and the full "
     "WorkflowPlugin subclass with every PhaseSpec from the approved design. Every "
     "next / on_reject value must name a phase that exists in the same workflow.\n\n"
+    "Every phase's system_prompt_override must name its exact transition tool(s) and "
+    "say that only a successful transition-tool call changes phase; prose never advances "
+    "the workflow. Mark custom transition callables with @tool_control so the runtime can "
+    "advertise them automatically.\n\n"
     "Write the runner the design specified into the SAME file — the state enum, the "
     "context dataclass, one bounded async method per state, the "
     "'while not state.is_terminal' + 'match state' driver in run(), resume(), the phase "
@@ -963,6 +977,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         with ``model=model_override`` so the per-phase model is picked up.
         """
         from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: PLC0415
+        from agenthicc.workflows.plugin import phase_transition_instruction  # noqa: PLC0415
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
@@ -1009,7 +1024,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 approval_svc=self._cfg.approval_svc,
                 output_collector=[],
                 command_outcomes=ctx.command_outcomes,
-                system_prompt_suffix=system_prompt,
+                system_prompt_suffix=(
+                    f"{system_prompt}\n\n"
+                    f"{phase_transition_instruction(tools, phase_name=phase_name)}"
+                ),
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
                 next_queued_message=self._cfg.next_queued_message,

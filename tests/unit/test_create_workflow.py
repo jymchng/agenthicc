@@ -572,6 +572,8 @@ async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
         "run_phase(",
         "checkpoint_context_to_payload",
         "checkpoint_context_from_payload",
+        "successful submit_release_plan(plan) call changes phase",
+        "transition tools changes phase",
     ):
         assert required in source, required
 
@@ -616,6 +618,7 @@ async def test_show_example_workflow_declarative_style_is_opt_in(tmp_path: Path)
     source = result["source"]
     assert isinstance(source, str)
     assert "BaseWorkflowRunner" not in source
+    assert "phase-transition tool is" in source
 
     path = _write(tmp_path, "doc_review.py", source)
     report = validate_workflow_file(str(path), expected_name="doc_review", root=tmp_path)
@@ -635,6 +638,8 @@ async def test_describe_runner_pattern_lists_every_required_element() -> None:
         "match state",
         "resume",
         "asyncio.Event",
+        "@tool_control",
+        "only a successful transition-tool call changes phase",
     ):
         assert required in elements, required
     assert result["when_required"]
@@ -1410,6 +1415,39 @@ async def test_design_injects_inspection_and_question_tools() -> None:
     } <= set(captured)
 
 
+@pytest.mark.asyncio
+async def test_run_turn_appends_the_design_transition_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+    tools = make_design_tools(None, event, data, asyncio.Event())
+    captured: dict[str, object] = {}
+
+    async def fake_turn(_text: str, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", fake_turn)
+    await runner._run_turn(
+        "design a workflow",
+        tools=tools,
+        mode=None,
+        system_prompt="Design the workflow.",
+        max_turns=2,
+        ctx=_ctx(),
+        phase_name="design",
+    )
+
+    suffix = captured["system_prompt_suffix"]
+    assert isinstance(suffix, str)
+    assert "[PHASE TRANSITION TOOLS]" in suffix
+    assert "`request_design_approval`" in suffix
+    assert "`finalize_design`" in suffix
+    assert "`exit_create_workflow`" in suffix
+    assert "only after a transition tool call succeeds" in suffix
+
+
 async def test_design_prompt_requires_the_workflow_to_ship_its_own_runner() -> None:
     runner = _runner()
     prompts: list[str] = []
@@ -1433,6 +1471,8 @@ async def test_design_prompt_requires_the_workflow_to_ship_its_own_runner() -> N
     assert "build_runner()" in prompt
     assert "checkpoint payload fields" in prompt
     assert "memory reattachment" in prompt
+    assert "exact transition tool(s)" in prompt
+    assert "prose such as 'done' never advances" in prompt
 
 
 async def test_generate_prompt_requires_writing_the_runner_not_a_stub() -> None:
@@ -1459,6 +1499,8 @@ async def test_generate_prompt_requires_writing_the_runner_not_a_stub() -> None:
     assert "session_memory" in prompt
     assert "stub" in prompt
     assert "show_example_workflow()" in prompt
+    assert "@tool_control" in prompt
+    assert "only a successful transition-tool call changes phase" in prompt
 
 
 async def test_generate_prompt_tells_the_agent_to_write_in_chunks() -> None:

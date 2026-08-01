@@ -116,8 +116,11 @@ and remain separate from durable agent-session records.
 
 `create_workflow` is modelled on `code_plan`: typed phase state evolved by an
 outer loop, one bounded async method per phase as the inner loop, transitions
-only via tool calls, and a typed context capturing each phase's artefact. Its
-four phases are design (human-approved, read-only), generate (`Yolo` mode, writes
+only via tool calls, and a typed context capturing each phase's artefact. Every
+phase prompt receives a `[PHASE TRANSITION TOOLS]` block naming the available
+handoff tools; only a successful call advances state, never assistant prose.
+Custom handoff callables marked with `@tool_control` are discovered automatically.
+The workflow's four phases are design (human-approved, read-only), generate (`Yolo` mode, writes
 `.agenthicc/workflows/<name>.py`), validate (deterministic import-and-check, then
 the agent's vote), and summarize:
 

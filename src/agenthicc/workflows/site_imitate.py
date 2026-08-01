@@ -639,7 +639,10 @@ class SiteImitateRunner(CodePlanRunner):
                     "vocabulary instead of free-form guesses.\n\n"
                     "Then call submit_analysis(analysis, components=...) with your complete "
                     "structured analysis, and pass the Named Component Inventory as "
-                    "components= (one line per element: 'observed -> Canonical Name (symbol)')."
+                    "components= (one line per element: 'observed -> Canonical Name (symbol)'). "
+                    "Only a successful submit_analysis(analysis, components=...) call "
+                    "advances ANALYZE to PLAN; prose such as 'done' never advances the "
+                    "workflow."
                 ),
                 max_turns=20,
                 shared_memory=memory,
@@ -697,7 +700,10 @@ class SiteImitateRunner(CodePlanRunner):
                     "site-wide part (header, sidebar, footer, layout shell) and each page "
                     "section. The workflow builds and verifies each part in its own phase, in "
                     "the order given. If you need more information about the reference site, "
-                    "call request_reanalysis(question)."
+                    "call request_reanalysis(question) to branch back to ANALYZE. Call "
+                    "submit_plan(plan, components=[...]) to advance to SCAFFOLD. Only a "
+                    "successful submit_plan() or request_reanalysis() transition-tool call "
+                    "changes phase; prose never advances the workflow."
                 ),
                 max_turns=15,
                 shared_memory=memory,
@@ -754,7 +760,10 @@ class SiteImitateRunner(CodePlanRunner):
                     "(npx create-next-app), install all dependencies: tailwind CSS, shadCN/ui, "
                     "@tanstack/react-query, lucide-react, stripe if needed. Configure Tailwind "
                     "CSS, set up the project directory structure with component folders. "
-                    "Call scaffold_complete(path) with the project directory path when done."
+                    "Call scaffold_complete(path) with the project directory path when done. "
+                    "Only a successful scaffold_complete(path) call advances to BUILD (or "
+                    "FINAL VERIFY when there are no components); prose never advances the "
+                    "workflow."
                 ),
                 mode="Yolo",
                 max_turns=15,
@@ -808,7 +817,9 @@ class SiteImitateRunner(CodePlanRunner):
                     "You may call lookup_component(description) to retrieve the full paste-ready "
                     "build prompt. Write the component's source files into the project created in "
                     "the scaffold phase. Build ONLY this component - the other components have "
-                    "their own phases. Call component_built() when done."
+                    "their own phases. Call component_built() when done. Only a successful "
+                    "component_built() call advances BUILD to VERIFY; prose never advances "
+                    "the workflow."
                 ),
                 mode="Yolo",
                 max_turns=40,
@@ -847,7 +858,9 @@ class SiteImitateRunner(CodePlanRunner):
                     "primitive, aria-expanded + aria-controls, a real <label for>), and matches "
                     "the reference site. If it passes, call component_verified(summary). If it "
                     "fails, call component_verification_failed(errors) - the build phase for "
-                    "this component will re-run."
+                    "this component will re-run. Only a successful component_verified() or "
+                    "component_verification_failed() transition-tool call changes phase; "
+                    "prose never advances the workflow."
                 ),
                 max_turns=10,
                 shared_memory=memory,
@@ -888,7 +901,9 @@ class SiteImitateRunner(CodePlanRunner):
                     "plan is present and wired into the pages.\n\n"
                     "If the build succeeds, call final_verify_passed(summary) with the build "
                     "output. If it fails, call final_verify_failed(errors) with the errors - "
-                    "the last component's build phase will re-run so you can fix them."
+                    "the last component's build phase will re-run so you can fix them. Only "
+                    "a successful final_verify_passed() or final_verify_failed() call "
+                    "changes phase; prose never advances the workflow."
                 ),
                 max_turns=10,
                 shared_memory=memory,
@@ -945,7 +960,11 @@ class SiteImitateWorkflow(WorkflowPlugin):
             max_turns=20,
             next="plan",
             on_reject="analyze",
-            system_prompt_override="You are in the ANALYZE phase of site_imitate.",
+            system_prompt_override=(
+                "You are in the ANALYZE phase of site_imitate. Call "
+                "submit_analysis(analysis, components=...) to advance to PLAN. Only a "
+                "successful transition-tool call changes phase; prose never advances it."
+            ),
         ),
         PhaseSpec(
             name="plan",
@@ -953,7 +972,12 @@ class SiteImitateWorkflow(WorkflowPlugin):
             max_turns=15,
             next="scaffold",
             on_reject="analyze",
-            system_prompt_override="You are in the PLAN phase of site_imitate.",
+            system_prompt_override=(
+                "You are in the PLAN phase of site_imitate. Call "
+                "submit_plan(plan, components=[...]) to advance to SCAFFOLD, or call "
+                "request_reanalysis(question) to branch back to ANALYZE. Only a successful "
+                "transition-tool call changes phase; prose never advances it."
+            ),
         ),
         PhaseSpec(
             name="scaffold",
@@ -962,7 +986,11 @@ class SiteImitateWorkflow(WorkflowPlugin):
             next="build",
             on_reject="scaffold",
             mode_override="Yolo",
-            system_prompt_override="You are in the SCAFFOLD phase of site_imitate.",
+            system_prompt_override=(
+                "You are in the SCAFFOLD phase of site_imitate. Call "
+                "scaffold_complete(path) to advance to BUILD or FINAL VERIFY. Only a "
+                "successful transition-tool call changes phase; prose never advances it."
+            ),
         ),
         # The build/verify phases below are a static skeleton; the runner
         # re-enters them once per planned component (like make_pdf_book's
@@ -974,7 +1002,11 @@ class SiteImitateWorkflow(WorkflowPlugin):
             next="verify",
             on_reject="plan",
             mode_override="Yolo",
-            system_prompt_override="You are in the BUILD phase of site_imitate.",
+            system_prompt_override=(
+                "You are in the BUILD phase of site_imitate. Call component_built() to "
+                "advance to VERIFY. Only a successful transition-tool call changes phase; "
+                "prose never advances it."
+            ),
         ),
         PhaseSpec(
             name="verify",
@@ -982,7 +1014,12 @@ class SiteImitateWorkflow(WorkflowPlugin):
             max_turns=10,
             next="build",
             on_reject="build",
-            system_prompt_override="You are in the VERIFY phase of site_imitate.",
+            system_prompt_override=(
+                "You are in the VERIFY phase of site_imitate. Call "
+                "component_verified(summary) to advance, or "
+                "component_verification_failed(errors) to return to BUILD. Only a "
+                "successful transition-tool call changes phase; prose never advances it."
+            ),
         ),
         PhaseSpec(
             name="final_verify",
@@ -990,7 +1027,12 @@ class SiteImitateWorkflow(WorkflowPlugin):
             max_turns=10,
             next="complete",
             on_reject="build",
-            system_prompt_override="You are in the FINAL VERIFY phase of site_imitate.",
+            system_prompt_override=(
+                "You are in the FINAL VERIFY phase of site_imitate. Call "
+                "final_verify_passed(summary) to complete, or "
+                "final_verify_failed(errors) to return to BUILD. Only a successful "
+                "transition-tool call changes phase; prose never advances it."
+            ),
         ),
     ]
 

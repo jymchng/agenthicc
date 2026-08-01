@@ -99,6 +99,15 @@ exactly:
 - a **typed context**, `CreateWorkflowContext`, that records the artefact each
   phase produced as a `PhaseArtifact`.
 
+Every workflow turn receives a `[PHASE TRANSITION TOOLS]` prompt block. It names
+the control tools actually available in that phase and states that only a
+successful call can change phase; words such as “done” are never a handoff.
+Built-in workflows receive this through their shared runner, including the
+`CodePlanRunner` subclasses. A custom transition callable should use
+`@tool_control`, so its own name is discovered and included automatically. A
+declarative phase with no control tool is told that its declared graph is applied
+by the generic runner after the turn.
+
 ### Phase graph
 
 | Phase | Mode | Required handoff | On success | On rejection |
@@ -144,7 +153,9 @@ The design phase must state, and the generate phase must write:
    `while not state.is_terminal` + `match state`;
 5. `resume(context)` re-entering the same dispatch path;
 6. phase tool factories whose `@tool()` closures set an `asyncio.Event`, checked
-   after the turn returns — never parsing the agent's prose;
+   after the turn returns — never parsing the agent's prose. Mark transition
+   callables with `@tool_control`, name them in the phase prompt, and state that
+   only a successful call changes phase;
 7. `build_runner()` on the plugin returning that runner.
 
 `describe_runner_pattern()` returns this checklist to the agent, and

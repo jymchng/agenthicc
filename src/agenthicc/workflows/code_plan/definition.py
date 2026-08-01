@@ -70,7 +70,9 @@ class CodePlan(WorkflowPlugin):
                 "You are in the PLANNING phase. First explore the repository to "
                 "understand the codebase. Then produce a detailed implementation "
                 "plan. Use request_plan_approval() to present the plan for human "
-                "review, and finalize_plan() once it is approved."
+                "review, and finalize_plan() once it is approved. Only a successful "
+                "call to request_plan_approval() / finalize_plan() (or the explicit "
+                "exit_code_plan() branch) changes phase; prose never advances it."
             ),
         ),
         PhaseSpec(
@@ -90,7 +92,9 @@ class CodePlan(WorkflowPlugin):
                 "in the previous phase — do NOT re-explore. Implement the approved "
                 "plan step by step using tools. "
                 "When ALL tasks are complete, call mark_execute_complete() with a "
-                "brief summary. Do not stop without calling it."
+                "brief summary. Only a successful mark_execute_complete() call changes "
+                "phase; prose such as 'done' never advances it. Do not stop without "
+                "calling it."
             ),
         ),
         PhaseSpec(
@@ -107,7 +111,9 @@ class CodePlan(WorkflowPlugin):
                 "and run the tests. "
                 "Call approve_review(summary) if all tests pass and the code is correct. "
                 "Call reject_review(reason) if there are issues that need fixing. "
-                "You MUST call one of these two tools — do not output any other signal."
+                "Only a successful call to approve_review() or reject_review() changes "
+                "phase; prose never advances it. You MUST call one of these two tools — "
+                "do not output any other signal."
             ),
         ),
         PhaseSpec(
@@ -118,7 +124,8 @@ class CodePlan(WorkflowPlugin):
             mode_override=None,
             system_prompt_override=(
                 "You are in the SUMMARY phase. Write a concise summary of what "
-                "was planned, implemented, and verified in this session."
+                "was planned, implemented, and verified in this session. No "
+                "phase-transition tool is available; the runner owns completion."
             ),
         ),
     ]

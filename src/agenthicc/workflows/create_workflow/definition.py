@@ -98,7 +98,9 @@ class CreateWorkflow(WorkflowPlugin):
                 "request_design_approval(design, workflow_name) and call "
                 "finalize_design(design, workflow_name) once it is approved. If the "
                 "request is not about creating a new workflow, call "
-                "exit_create_workflow(suggestion) instead."
+                "exit_create_workflow(suggestion) instead. Only a successful call to "
+                "request_design_approval(), finalize_design(), or "
+                "exit_create_workflow() changes phase; prose never advances it."
             ),
         ),
         PhaseSpec(
@@ -117,7 +119,9 @@ class CreateWorkflow(WorkflowPlugin):
                 "state-machine runner in the same file — state enum, context dataclass, one "
                 "async method per state, the while/match driver in run(), resume(), the "
                 "phase tool factories, and build_runner() returning it. No stubs or TODOs. "
-                "When the file is fully written, call mark_generation_complete(summary, path)."
+                "When the file is fully written, call mark_generation_complete(summary, path). "
+                "Only a successful mark_generation_complete() call changes phase; prose "
+                "such as 'done' never advances it."
             ),
         ),
         PhaseSpec(
@@ -134,7 +138,9 @@ class CreateWorkflow(WorkflowPlugin):
                 "already been imported and checked; read that report first. Call "
                 "reject_workflow(reason) if it lists any error or the file does not match the "
                 "approved design, otherwise call approve_workflow(summary). You MUST call "
-                "exactly one of these two tools."
+                "exactly one of these two tools. Only a successful call to "
+                "approve_workflow() or reject_workflow() changes phase; prose never "
+                "advances it."
             ),
         ),
         PhaseSpec(
@@ -146,7 +152,8 @@ class CreateWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the SUMMARY phase of create_workflow. Tell the user which "
                 "workflow was created, where it lives, what its phases are, and that "
-                "'/workflows reload' makes it available in this session."
+                "'/workflows reload' makes it available in this session. No "
+                "phase-transition tool is available; the runner owns completion."
             ),
         ),
     ]

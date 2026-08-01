@@ -83,8 +83,12 @@ async def test_phase_specific_continuations_and_results(monkeypatch: pytest.Monk
     config, app, mode = _config()
     runner = WorkflowRunner(Branches, config, mode)
     context = WorkflowContext("intent", "run", Branches.name)
+    prompts: list[str] = []
 
     async def planner(_text: str, **kwargs: object) -> None:
+        suffix = kwargs.get("system_prompt_suffix")
+        if isinstance(suffix, str):
+            prompts.append(suffix)
         await _call_named_tools(kwargs, "request_plan_approval", "plan")
         await _call_named_tools(kwargs, "finalize_plan", "plan")
 
@@ -117,6 +121,9 @@ async def test_phase_specific_continuations_and_results(monkeypatch: pytest.Monk
         context,
     )
     assert reviewed.approved is True and reviewed.full_text == "approved"
+    assert "[PHASE TRANSITION TOOLS]" in prompts[0]
+    assert "`request_plan_approval`" in prompts[0]
+    assert "`finalize_plan`" in prompts[0]
 
 
 @pytest.mark.asyncio

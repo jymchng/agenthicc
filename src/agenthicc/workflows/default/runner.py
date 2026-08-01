@@ -506,7 +506,11 @@ class WorkflowRunner(BaseWorkflowRunner):
     async def _run_phase(
         self, spec: PhaseSpec, intent: str, context: WorkflowContext
     ) -> PhaseOutput:
-        from agenthicc.workflows.plugin import PhaseOutput, _parse_output_schema  # noqa: PLC0415
+        from agenthicc.workflows.plugin import (
+            PhaseOutput,
+            _parse_output_schema,
+            phase_transition_instruction,
+        )  # noqa: PLC0415
 
         if spec.agent_type == "human":
             return await self._run_human_phase(spec, context)
@@ -547,6 +551,20 @@ class WorkflowRunner(BaseWorkflowRunner):
             if spec.require_explicit_review:
                 review_event = asyncio.Event()
                 filtered.extend(make_reviewer_tools(review_event, review_data))
+
+        expected_transition_tools: tuple[str, ...]
+        if spec.require_plan_finalization:
+            expected_transition_tools = ("request_plan_approval", "finalize_plan")
+        elif spec.require_explicit_completion:
+            expected_transition_tools = ("mark_execute_complete",)
+        elif spec.require_explicit_review:
+            expected_transition_tools = ("approve_review", "reject_review")
+        else:
+            expected_transition_tools = ()
+        role_prompt = (
+            f"{role_prompt}\n\n"
+            f"{phase_transition_instruction(filtered, phase_name=spec.name, expected_tool_names=expected_transition_tools)}"
+        ).strip()
 
         _original_mode = self._cfg.app_state.active_mode()
         if spec.mode_override and self._mode_manager is not None:

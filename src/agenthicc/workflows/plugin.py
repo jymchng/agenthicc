@@ -13,15 +13,111 @@ import dataclasses
 import re
 import time
 from dataclasses import field
-from collections.abc import Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import TYPE_CHECKING
 
-from agenthicc.tools.capabilities import ToolCapability
+from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 
 if TYPE_CHECKING:
     from agenthicc.workflows.base_runner import BaseWorkflowRunner
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.tui.runtime.mode_manager import ModeManager
+
+
+# These are the built-in workflow handoff tools.  The prompt helper also uses
+# ToolCapability.CONTROL below, so custom workflow tools marked with
+# ``@tool_control`` are advertised without needing to be added here.  The
+# name-based fallback preserves compatibility with older plugin callables that
+# predate capability metadata.
+_PHASE_TRANSITION_TOOL_NAMES = frozenset(
+    {
+        "request_plan_approval",
+        "finalize_plan",
+        "exit_code_plan",
+        "mark_execute_complete",
+        "approve_review",
+        "reject_review",
+        "request_design_approval",
+        "finalize_design",
+        "exit_create_workflow",
+        "mark_generation_complete",
+        "approve_workflow",
+        "reject_workflow",
+        "submit_tool_plan",
+        "confirm_generation_complete",
+        "approve_tool",
+        "reject_tool",
+        "submit_toc",
+        "submit_research",
+        "confirm_chapter_complete",
+        "confirm_assets_ready",
+        "confirm_front_matter_ready",
+        "confirm_back_matter_ready",
+        "mark_book_complete",
+        "reject_book",
+        "submit_analysis",
+        "submit_plan",
+        "request_reanalysis",
+        "scaffold_complete",
+        "component_built",
+        "component_verified",
+        "component_verification_failed",
+        "final_verify_passed",
+        "final_verify_failed",
+        "submit_release_plan",
+        "release_passed",
+        "release_blocked",
+    }
+)
+
+
+def phase_transition_instruction(
+    tools: Iterable[object],
+    *,
+    phase_name: str = "",
+    expected_tool_names: Collection[str] | None = None,
+) -> str:
+    """Describe the phase's available handoff tools for the agent.
+
+    Workflow transitions are control-plane effects, not prose conventions.  The
+    runner appends this block to every phase system prompt so the LLM can see
+    the exact callable names it must use.  ``expected_tool_names`` is used by
+    the generic declarative runner, which injects several shared tool groups and
+    therefore needs to narrow the list to the current phase.
+    """
+    available: list[str] = []
+    expected = set(expected_tool_names) if expected_tool_names is not None else None
+    for tool in tools:
+        name_value: object = getattr(tool, "__name__", "")
+        name = name_value if isinstance(name_value, str) else ""
+        if not name:
+            fallback: object = getattr(tool, "name", "")
+            name = fallback if isinstance(fallback, str) else ""
+        is_control_tool = ToolCapability.CONTROL in get_tool_capabilities(tool)
+        is_known_transition = name in _PHASE_TRANSITION_TOOL_NAMES
+        if (is_control_tool or is_known_transition) and (expected is None or name in expected):
+            if name not in available:
+                available.append(name)
+
+    phase_label = f" in the {phase_name!r} phase" if phase_name else ""
+    if not available:
+        return (
+            "[PHASE TRANSITION TOOLS]\n"
+            f"No phase-transition tool is available{phase_label}. Do not claim that the "
+            "workflow advanced in prose or invent a replacement tool; the enclosing "
+            "runner will apply its declared phase graph after this turn."
+        )
+
+    names = ", ".join(f"`{name}`" for name in available)
+    return (
+        "[PHASE TRANSITION TOOLS]\n"
+        f"Available transition tool(s){phase_label}: {names}. Call exactly the "
+        "appropriate tool when this phase's work is complete or a documented branch "
+        "must be taken. A phase changes only after a transition tool call succeeds; "
+        "prose such as 'done' or 'moving to the next phase' never advances the "
+        "workflow. After a successful transition call, stop and let the runner take "
+        "control."
+    )
 
 
 # ── WorkflowParams — per-workflow tunable parameters (PRD-111) ───────────────

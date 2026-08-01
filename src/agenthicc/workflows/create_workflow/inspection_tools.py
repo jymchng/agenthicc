@@ -282,8 +282,9 @@ class ReleaseCheckRunner(CodePlanRunner):
                 text=ctx.intent if attempt == 1 else "Call submit_release_plan(plan) now.",
                 system_prompt=(
                     "You are in the PLAN phase of release_check. List the checks that must "
-                    "pass before this release, then call submit_release_plan(plan). Do not "
-                    "run the checks yet."
+                    "pass before this release, then call submit_release_plan(plan). Only a "
+                    "successful submit_release_plan(plan) call changes phase; prose such "
+                    "as 'done' never advances the workflow. Do not run the checks yet."
                 ),
                 max_turns=10,
                 shared_memory=memory,
@@ -312,7 +313,9 @@ class ReleaseCheckRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the VERIFY phase of release_check. Run the planned checks "
                     "with the shell tools, then call release_passed(summary) or "
-                    "release_blocked(blocker). You MUST call one of them."
+                    "release_blocked(blocker). Only a successful call to one of these "
+                    "transition tools changes phase; prose never advances the workflow. "
+                    "You MUST call one of them."
                 ),
                 mode="Yolo",  # unlock write / execute tools for this phase
                 max_turns=20,
@@ -337,7 +340,8 @@ class ReleaseCheckRunner(CodePlanRunner):
             text=f"Plan:\\n{ctx.plan}\\n\\nResult: {ctx.verdict or ctx.blocker}",
             system_prompt=(
                 "You are in the REPORT phase of release_check. Summarise what was checked "
-                "and whether the release is clear to ship."
+                "and whether the release is clear to ship. No phase-transition tool is "
+                "available in this terminal phase; the runner owns completion."
             ),
             max_turns=4,
             shared_memory=memory,
@@ -375,20 +379,31 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
             name="plan",
             max_turns=10,
             next="verify",
-            system_prompt_override="You are in the PLAN phase of release_check.",
+            system_prompt_override=(
+                "You are in the PLAN phase of release_check. Call "
+                "submit_release_plan(plan); only a successful transition-tool call "
+                "changes phase, never prose."
+            ),
         ),
         PhaseSpec(
             name="verify",
             max_turns=20,
             next="report",
             mode_override="Yolo",
-            system_prompt_override="You are in the VERIFY phase of release_check.",
+            system_prompt_override=(
+                "You are in the VERIFY phase of release_check. Call "
+                "release_passed(summary) or release_blocked(blocker); only a successful "
+                "transition-tool call changes phase, never prose."
+            ),
         ),
         PhaseSpec(
             name="report",
             max_turns=4,
             output_schema="free_text",
-            system_prompt_override="You are in the REPORT phase of release_check.",
+            system_prompt_override=(
+                "You are in the REPORT phase of release_check. No phase-transition tool "
+                "is available; the runner owns completion."
+            ),
         ),
     ]
 
@@ -482,7 +497,9 @@ class DocReviewWorkflow(WorkflowPlugin):
             mode_override="Yolo",  # unlock write tools for this phase
             system_prompt_override=(
                 "You are in the DRAFT phase. Write the requested document to disk "
-                "using the write tools, then briefly state what you wrote and where."
+                "using the write tools, then briefly state what you wrote and where. No "
+                "phase-transition tool is available; the declarative runner applies the "
+                "declared next phase after this turn."
             ),
         ),
         PhaseSpec(
@@ -493,7 +510,8 @@ class DocReviewWorkflow(WorkflowPlugin):
             output_schema="free_text",
             system_prompt_override=(
                 "You are in the REVIEW phase. Read the drafted document and summarise "
-                "whether it satisfies the request, noting any gaps."
+                "whether it satisfies the request, noting any gaps. No phase-transition "
+                "tool is available in this terminal phase; the runner owns completion."
             ),
         ),
     ]
@@ -745,6 +763,9 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                 "omit session memory from JSON and reattach the supplied memory on restore",
                 "phase tool factories that set an asyncio.Event; the state method checks "
                 "the event after the turn returns and never parses the agent's prose",
+                "each phase prompt names its @tool_control transition tool(s) and says "
+                "that only a successful transition-tool call changes phase; prose never "
+                "advances the workflow",
                 "build_runner() on the plugin returning the runner class",
             ],
             "turn_api": (

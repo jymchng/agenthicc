@@ -1721,6 +1721,15 @@ ordinary input is the authoring intent. Its four phases are
 runs all four sharing a single `ShortTermMemory`, and every transition happens
 only because a phase tool was called.
 
+Before each workflow agent turn, the runner appends a `[PHASE TRANSITION TOOLS]`
+instruction to the phase system prompt. It lists the transition callables
+available in that phase and explicitly tells the agent that only a successful
+control-tool call changes phase; assistant prose such as "done" never advances
+the workflow. Built-in handoff tools retain a compatibility name list, while
+custom workflow handoff tools are discovered from `ToolCapability.CONTROL`
+(`@tool_control`). Declarative phases without a control tool are told that the
+generic runner applies their declared graph after the turn.
+
 Design is read-only and human-gated: `request_design_approval(design,
 workflow_name)` raises the plan-review overlay and `finalize_design(design,
 workflow_name)` refuses until it returned `approved=True`. Generate runs with
