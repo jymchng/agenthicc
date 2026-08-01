@@ -1695,6 +1695,19 @@ sets the handoff event. `CodePlanContext` carries the approved plan, selected
 execute mode, summaries, rejection/failure reasons, command outcomes, and
 shared short-term memory.
 
+### Prompt contracts — `agenthicc.runners.prompt_contract`
+
+`PromptContract` and `build_workflow_prompt_contract()` separate immutable
+workflow policy and deterministic stable tool schemas from dynamic phase
+instructions, artifacts, questions, answers, and summaries. Stable tools are
+ordered before phase-local tools after capability filtering. The contract emits
+redacted fingerprints, cache epochs, provider capability, and local cache status
+for journals and checkpoints; it never persists dynamic prompt text or raw
+endpoint credentials. `AgentTurnRunner` renders dynamic blocks append-only and
+temporarily keeps lauren-ai's rolling summary out of the stable system prompt.
+Use `stable_system_prompt=` with `CodePlanRunner.run_phase()` for custom
+workflows.
+
 ### CreateWorkflowRunner
 
 The specialized `create_workflow` runner uses typed authoring state and phase

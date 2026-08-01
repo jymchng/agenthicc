@@ -100,7 +100,11 @@ class CreateWorkflow(WorkflowPlugin):
                 "request is not about creating a new workflow, call "
                 "exit_create_workflow(suggestion) instead. Only a successful call to "
                 "request_design_approval(), finalize_design(), or "
-                "exit_create_workflow() changes phase; prose never advances it."
+                "exit_create_workflow() changes phase; prose never advances it. Keep "
+                "immutable workflow policy in a literal CACHE_CONTRACT and put phase "
+                "state, artifacts, questions, answers, and summaries in dynamic context. "
+                "The generated runner must use ask_user for material ambiguity and must "
+                "not guess."
             ),
         ),
         PhaseSpec(
@@ -121,6 +125,10 @@ class CreateWorkflow(WorkflowPlugin):
                 "PhaseSpec, and the approved state-machine runner in runner.py — state enum, context dataclass, one "
                 "async method per state, the while/match driver in run(), resume(), the "
                 "phase tool factories, and build_runner() returning it. No stubs or TODOs. "
+                "Declare a literal CACHE_CONTRACT containing stable workflow policy, pass "
+                "it as stable_system_prompt to CodePlanRunner.run_phase(), keep phase state "
+                "and artifacts dynamic, and use ask_user whenever requirements are missing "
+                "or ambiguous rather than guessing. "
                 "When the directory and all of its files are fully written, call "
                 "mark_generation_complete(summary, path). "
                 "Only a successful mark_generation_complete() call changes phase; prose "

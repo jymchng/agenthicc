@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.skills.loader import SkillPermissionSet, SkillDef
     from agenthicc.runners.usage_ledger import UsageLedger
+    from agenthicc.runners.prompt_contract import PromptContract
 
 
 class AgentTurnOptions(TypedDict):
@@ -53,6 +54,7 @@ class AgentTurnOptions(TypedDict):
     usage_ledger: NotRequired["UsageLedger | None"]
     browser_manager: NotRequired[object | None]
     system_prompt_suffix: str
+    prompt_contract: NotRequired["PromptContract | None"]
     excluded_capabilities: NotRequired[frozenset[str]]
     allowed_tool_names: NotRequired[frozenset[str] | None]
 
@@ -100,6 +102,10 @@ class AgentTurnContext:
     # ── output capture ────────────────────────────────────────────────────────
     output_collector: "list[str] | None" = None
     system_prompt_suffix: str = ""
+    #: Structured workflow prompt/cache contract.  When present, changing
+    #: phase content is rendered into the append-only user context rather than
+    #: rebuilding the cacheable system prefix.
+    prompt_contract: "PromptContract | None" = None
     #: Capability tags excluded from this turn's tool surface. Unannotated
     #: phase-control tools remain available.
     excluded_capabilities: frozenset[str] = frozenset()

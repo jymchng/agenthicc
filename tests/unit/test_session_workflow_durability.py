@@ -11,6 +11,7 @@ from agenthicc.memory.journal import ConversationJournal, fold_resume_state
 from agenthicc.runners.session_conversation import ConversationBusyError, SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.runners.workflow_handle import WorkflowRunHandle
+from agenthicc.runners.prompt_contract import build_prompt_contract
 from agenthicc.workflows.checkpoint import (
     CheckpointValidationError,
     WorkflowCheckpoint,
@@ -126,10 +127,22 @@ def test_checkpoint_store_round_trip_and_tamper_detection(tmp_path: Path) -> Non
         conversation_cursor=7,
         context={"kind": "CodePlanContext", "fields": {}},
         plugin_fingerprint="fingerprint",
+        cache_contract_version="agenthicc.prompt-cache.v1",
+        cache_epoch="epoch-1",
+        stable_prompt_fingerprint="stable-1",
+        dynamic_prompt_fingerprint="dynamic-1",
+        cache_provider_capability="explicit",
+        cache_status="eligible",
+        cache_invalidation_reason="phase_context_changed",
     )
     path = store.save(checkpoint)
     assert store.load("run-1") == checkpoint
     assert path.stat().st_mode & 0o777 == 0o600
+
+    restored = WorkflowCheckpoint.from_dict(checkpoint.to_dict())
+    assert restored.cache_contract_version == "agenthicc.prompt-cache.v1"
+    assert restored.cache_epoch == "epoch-1"
+    assert restored.cache_invalidation_reason == "phase_context_changed"
 
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["intent"] = "tampered"
@@ -159,6 +172,34 @@ def test_workflow_handle_rehydrates_typed_context_and_rejects_plugin_drift(tmp_p
             state=CodePlanState.EXECUTE,
         )
     )
+    initial_contract = build_prompt_contract(
+        stable_system_prefix="policy",
+        provider="openai",
+        model="model-a",
+    )
+    handle.record_prompt_contract(initial_contract)
+    same_contract = build_prompt_contract(
+        stable_system_prefix="policy",
+        dynamic_system_context=(),
+        provider="openai",
+        model="model-a",
+    )
+    handle.record_prompt_contract(same_contract)
+    assert handle.cache_invalidation_reason == "phase_context_changed"
+    changed_policy = build_prompt_contract(
+        stable_system_prefix="new policy",
+        provider="openai",
+        model="model-a",
+    )
+    handle.record_prompt_contract(changed_policy)
+    assert handle.cache_invalidation_reason == "stable_contract_changed"
+    changed_connection = build_prompt_contract(
+        stable_system_prefix="new policy",
+        provider="openai",
+        model="model-b",
+    )
+    handle.record_prompt_contract(changed_connection)
+    assert handle.cache_invalidation_reason == "connection_changed"
     handle.request_pause()
     handle.mark_paused()
     checkpoint = handle.save_checkpoint(reason="escape")

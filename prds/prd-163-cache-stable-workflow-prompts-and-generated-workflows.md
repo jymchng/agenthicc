@@ -1,6 +1,6 @@
 ---
 title: "PRD-163: Cache-Stable Workflow Prompts and Generated Workflows"
-status: Proposed
+status: Implemented
 version: 1.0.0
 created: 2026-08-01
 related_prds:
@@ -115,12 +115,15 @@ functions or provider-specific behavior.
    supported runner contract.
 6. Give `create_workflow` agents precise prompt guidance, examples, inspection
    tools, and validation diagnostics for authoring optimized workflows.
-7. Preserve existing workflow semantics: phase transitions still occur only
+7. Require generated workflows to include a stable system-prompt instruction
+   that the agent should ask the user clarifying questions whenever required
+   information is missing, ambiguous, or materially affects the result.
+8. Preserve existing workflow semantics: phase transitions still occur only
    through the existing transition tools, capabilities remain enforced, and
    the full conversation and workflow memory remain available to the agent.
-8. Preserve provider portability and backwards compatibility when a provider
+9. Preserve provider portability and backwards compatibility when a provider
    or lauren-ai version does not support structured cache blocks.
-9. Expose cache decisions and invalidation reasons without logging prompts,
+10. Expose cache decisions and invalidation reasons without logging prompts,
    conversation contents, credentials, or tool arguments.
 
 ## 4. Non-goals
@@ -184,6 +187,9 @@ invalidation—not a silent accidental miss.
 - Stable prompt bytes and stable-tool ordering are deterministic for equal
   inputs.
 - Dynamic phase state is never interpolated into the stable prefix.
+- The generated workflow's user-questioning instruction is stable workflow
+  policy and is included in the stable system prefix, while each actual
+  question, answer, and answer-dependent state remains dynamic.
 - A summary update changes dynamic context or conversation state, not the
   stable prefix.
 - A phase transition does not change the cache epoch unless it changes the
@@ -402,7 +408,19 @@ section equivalent to the following:
 The prompt must explain the unavoidable exceptions: provider TTL, connection
 changes, stable contract changes, and history compaction can invalidate a cache.
 It must also state that prompt caching never replaces capability filtering or
-tool authorization.
+tool authorization. It must additionally instruct the authoring agent to put a
+user-questioning policy in the generated workflow's stable system prompt:
+
+> Ask the user a clarifying question whenever required information is missing,
+> ambiguous, or would materially change the workflow result. Use the existing
+> user-question tool and wait for its answer before continuing. Do not guess
+> over a material ambiguity. Keep the question policy stable; put each actual
+> question and answer in dynamic conversation/context state.
+
+This instruction must be part of the generated workflow's stable system
+contract, not a phase-local string rebuilt on every turn. The generated
+workflow must use the existing question-tool contract and must not implement a
+second ad-hoc question mechanism.
 
 This guidance must appear in `DESIGN` and `GENERATE`, be summarized in
 `VALIDATE`, and be available through the inspection tool rather than being
@@ -441,7 +459,10 @@ The generation agent must produce code that:
 7. does not call a private transport or create a provider-specific cache
    implementation;
 8. includes no prompt or secret contents in cache telemetry;
-9. leaves the generated workflow runnable when prompt caching is disabled or
+9. adds a stable system-prompt instruction to ask the user clarifying questions
+   for missing, ambiguous, or materially consequential information, and wires
+   the existing question tool into the workflow's permitted tool set;
+10. leaves the generated workflow runnable when prompt caching is disabled or
    unsupported by the provider.
 
 The generated package must include a short `CACHE_CONTRACT` or equivalent
@@ -462,6 +483,9 @@ At minimum they must detect:
 - a phase-local tool declared as stable without an explicit reason;
 - message insertion, history rewriting, or summary interpolation into the
   stable prompt;
+- absence of the required stable user-questioning instruction or absence of
+  the existing question tool when the generated workflow can encounter
+  ambiguity;
 - bypassing `CodePlanRunner.run_phase()` or the generic runner when the design
   selected that path;
 - missing cache metadata, missing resume/checkpoint integration, or a cache
@@ -542,6 +566,13 @@ The prompt should tell the agent to reuse stable instructions rather than
 repeating them in every phase. It must also tell the agent that the complete
 conversation remains available through the shared conversation ID and memory,
 so optimization must not remove prior user/LLM context needed for correctness.
+
+Every generated workflow's stable system prompt must also contain a
+user-questioning instruction. The instruction must tell the workflow agent to
+ask the user whenever a missing or ambiguous requirement could change the
+result, to use the existing question tool, and to wait for the response before
+proceeding. The current question and answer are dynamic state and must never be
+copied into the stable prompt.
 
 ### 8.3 Question and approval tools
 
@@ -688,29 +719,34 @@ cache-stable behavior until they use the contract-native API.
   the cache contract without exposing secrets or unrelated files.
 - **AC-163.14**: `VALIDATE` rejects generated code that places dynamic values in
   the stable prompt, uses unstable tool ordering, rewrites conversation history,
-  bypasses the supported boundary, or claims cache stability without runtime
-  evidence.
+  bypasses the supported boundary, omits the required stable user-questioning
+  instruction/question-tool integration, or claims cache stability without
+  runtime evidence.
 - **AC-163.15**: A generated workflow that passes validation receives cache-safe
   behavior without hand-written provider-specific code. A generated workflow
   can run with caching disabled and with a no-cache provider.
-- **AC-163.16**: Generated workflow metadata records the contract version and
+- **AC-163.16**: Every generated workflow's stable system prompt instructs its
+  agent to ask the user clarifying questions for missing, ambiguous, or
+  materially consequential information, and the workflow invokes the existing
+  question tool rather than guessing or implementing a duplicate mechanism.
+- **AC-163.17**: Generated workflow metadata records the contract version and
   cache-stability claim, but runtime does not trust metadata in place of actual
   contract usage.
 
 ### 13.4 Providers, persistence, and observability
 
-- **AC-163.17**: Anthropic explicit cache controls place stable system/tool
+- **AC-163.18**: Anthropic explicit cache controls place stable system/tool
   regions before dynamic context and do not include rolling summaries in the
   stable system block.
-- **AC-163.18**: OpenAI-compatible/Modal, Ollama, LiteLLM, and unsupported
+- **AC-163.19**: OpenAI-compatible/Modal, Ollama, LiteLLM, and unsupported
   providers preserve logical region ordering and degrade without errors.
-- **AC-163.19**: Checkpoint/resume rehydrates memory, journal, phase state, and
+- **AC-163.20**: Checkpoint/resume rehydrates memory, journal, phase state, and
   conversation ID; it reuses an epoch only when the stable contract matches
   and otherwise records a cold/new epoch reason.
-- **AC-163.20**: Cache diagnostics report eligibility/hit/miss/unsupported and
+- **AC-163.21**: Cache diagnostics report eligibility/hit/miss/unsupported and
   invalidation reasons without prompt, message, secret, or tool-argument
   leakage.
-- **AC-163.21**: Documentation explains the contract, generated-workflow rules,
+- **AC-163.22**: Documentation explains the contract, generated-workflow rules,
   provider limitations, configuration gate, and unavoidable invalidations.
 
 ## 14. Test plan
@@ -746,6 +782,9 @@ cache controls, tools, conversation ID, memory, and telemetry. Cover:
 - CodePlan-derived runners sharing one prompt/cache implementation;
 - CreateWorkflow design, generation, validation rejection, correction, and
   summarize flows;
+- a generated workflow asking a user clarification through the existing
+  question tool, preserving the stable question policy while keeping the
+  question and answer dynamic;
 - cache-safe generated workflow execution using the sample template;
 - compaction with stable system/tool reuse and history invalidation;
 - profile/model/provider changes creating new epochs;
@@ -784,6 +823,8 @@ Add regressions for:
 - stale phase-local tools surviving a transition;
 - `CreateWorkflowRunner` bypassing the shared composer;
 - generated runners using a changing module-level prompt constant;
+- generated workflows omitting the stable user-questioning instruction or
+  bypassing the existing question tool;
 - resume restoring a rendered prompt instead of reconstructing regions from
   checkpoint state;
 - a provider capability failure making a no-cache workflow unusable.
@@ -899,3 +940,40 @@ uv run pytest tests/ -q
 The fake-provider integration suite must be included in the normal test
 command. Live provider cache behavior is not a CI requirement; provider
 fixtures and captured structured requests are the deterministic evidence.
+
+## 21. Implementation record
+
+Implemented in the shared runner boundary with:
+
+- `agenthicc.runners.prompt_contract` for deterministic stable/dynamic prompt
+  composition, tool ordering, provider capability detection, redacted
+  fingerprints, and cache epochs;
+- `AgentTurnRunner` integration that keeps rolling summaries dynamic, performs
+  journal-aware compaction, and preserves the stable contract across retries;
+- built-in generic, `code_plan`, and `create_workflow` runner integration;
+- `CreateWorkflowRunner` authoring guidance, a cache-safe runner template,
+  inspection tools, strict static validation, and explicit `ask_user` guidance;
+- backward-compatible checkpoint metadata and workflow handle restoration; and
+- unit, integration, and end-to-end coverage for contract composition,
+  validation, checkpoint metadata, and generated-runner behavior.
+
+The lauren-ai 1.4 API does not expose a provider-neutral structured prompt
+region type, so agenthicc uses a compatibility renderer at the agent boundary:
+the stable prefix remains the decorated system prompt and dynamic blocks are
+appended to the turn message. Provider transports retain responsibility for
+their native cache controls. This preserves behavior when caching is disabled
+and avoids claiming cache hits where the provider offers no evidence.
+
+Verification completed on 2026-08-01:
+
+- `uv run pytest tests/unit -q`: 2,812 passed, 14 skipped;
+- `uv run pytest tests/integration -q`: 182 passed;
+- `uv run pytest tests/e2e -q`: 91 passed, 1 skipped;
+- `uv run pytest tests/ -q`: 3,088 passed, 15 skipped, 4 existing warnings;
+- Ruff lint, Ruff formatting, and the type-audit baseline check passed.
+
+The repository-wide mypy command remains blocked by two pre-existing optional
+environment issues outside this change: the optional `name_that_ui` module has
+no installed stub/implementation, and the installed NumPy stubs use a type
+statement unsupported by the configured interpreter check. No new mypy error
+was reported from the changed modules before those blockers stopped analysis.

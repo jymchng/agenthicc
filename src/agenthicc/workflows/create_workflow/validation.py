@@ -124,6 +124,7 @@ class ValidationReport:
     warnings: tuple[str, ...] = ()
     plugin_names: tuple[str, ...] = ()
     phase_names: tuple[str, ...] = ()
+    cache_contract: str = "legacy"
 
     def render(self) -> str:
         """Render the report as the text block shown to the validating agent."""
@@ -134,6 +135,7 @@ class ValidationReport:
             lines.append(f"workflows found: {', '.join(self.plugin_names)}")
         if self.phase_names:
             lines.append(f"phases: {' → '.join(self.phase_names)}")
+        lines.append(f"cache contract: {self.cache_contract}")
         if self.errors:
             lines.append("")
             lines.append(f"errors ({len(self.errors)}) — these MUST be fixed:")
@@ -402,11 +404,117 @@ def _check_runner(
     _check_checkpoint_contract(plugin, errors)
 
 
+def _check_dynamic_stable_prompt_ast(source: str, errors: list[str]) -> None:
+    """Reject changing expressions embedded in stable prompt constants."""
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return
+    stable_names = {
+        "CACHE_CONTRACT",
+        "STABLE_SYSTEM_PROMPT",
+        "STABLE_PROMPT",
+        "WORKFLOW_CACHE_PROMPT",
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        names = {target.id for target in node.targets if isinstance(target, ast.Name)}
+        if not names.intersection(stable_names):
+            continue
+        is_literal_strip = (
+            isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr == "strip"
+            and len(node.value.args) == 0
+            and isinstance(node.value.func.value, ast.Constant)
+            and isinstance(node.value.func.value.value, str)
+        )
+        if isinstance(node.value, (ast.JoinedStr, ast.BinOp)) or (
+            isinstance(node.value, ast.Call) and not is_literal_strip
+        ):
+            errors.append(
+                "stable prompt constants must contain immutable literal policy only; "
+                f"{sorted(names.intersection(stable_names))[0]} contains a dynamic expression. "
+                "Move phase state, artifacts, summaries, questions, and answers to dynamic context."
+            )
+
+
+def _check_prompt_cache_contract(
+    sources: dict[Path, str],
+    plugin: type[WorkflowPlugin],
+    errors: list[str],
+    *,
+    strict: bool,
+) -> str:
+    """Validate the generated-workflow cache/questioning authoring contract."""
+
+    source = "\n".join(sources.values())
+    has_custom_runner = _has_custom_runner(plugin)
+    if not has_custom_runner:
+        return "generic-runner"
+
+    has_cache_contract = "CACHE_CONTRACT" in source
+    has_runner_helper = "run_phase(" in source or "build_workflow_prompt_contract" in source
+    has_stable_argument = "stable_system_prompt" in source
+    has_question_tool = "ask_user" in source or "make_questions_tool" in source
+    has_question_policy = all(
+        marker in source.lower() for marker in ("clarifying", "ambiguous", "do not guess")
+    )
+
+    _check_dynamic_stable_prompt_ast(source, errors)
+    if "insert(0" in source or "_messages.insert" in source:
+        errors.append(
+            "workflow code must not insert messages at the beginning of shared conversation "
+            "history; append dynamic context through the supported runner API."
+        )
+    if "_run_agent_turn" in source and "build_workflow_prompt_contract" not in source:
+        errors.append(
+            "custom workflows must use CodePlanRunner.run_phase() or "
+            "build_workflow_prompt_contract(); direct _run_agent_turn calls bypass the "
+            "cache/checkpoint contract."
+        )
+
+    if not strict:
+        return "contract-native" if has_cache_contract and has_runner_helper else "legacy"
+
+    if not has_cache_contract:
+        errors.append(
+            "generated custom workflows must declare a literal CACHE_CONTRACT stable system "
+            "prompt. Include the user-questioning and cache-stability policy."
+        )
+    if not has_runner_helper:
+        errors.append(
+            "generated custom workflows must use CodePlanRunner.run_phase() or the shared "
+            "build_workflow_prompt_contract() helper."
+        )
+    if not has_stable_argument:
+        errors.append(
+            "every generated custom workflow must pass CACHE_CONTRACT as "
+            "stable_system_prompt=...; phase-specific instructions remain dynamic."
+        )
+    if not has_question_tool:
+        errors.append(
+            "generated workflows must use the existing ask_user/make_questions_tool contract "
+            "for clarifying questions."
+        )
+    if not has_question_policy:
+        errors.append(
+            "CACHE_CONTRACT must instruct the workflow agent to ask clarifying questions "
+            "for missing or ambiguous requirements and not guess."
+        )
+    if errors:
+        return "invalid"
+    return "contract-native"
+
+
 def validate_workflow_file(
     path: str,
     *,
     expected_name: str = "",
     root: Path | None = None,
+    strict_cache_contract: bool = False,
 ) -> ValidationReport:
     """Deterministically validate a workflow file or package at *path*.
 
@@ -593,6 +701,12 @@ def validate_workflow_file(
 
     phase_names = _check_phases(target, errors, warnings)
     _check_runner(target, namespace, errors, warnings, len(phase_names))
+    cache_contract = _check_prompt_cache_contract(
+        sources,
+        target,
+        errors,
+        strict=strict_cache_contract,
+    )
 
     return ValidationReport(
         path=shown,
@@ -601,4 +715,5 @@ def validate_workflow_file(
         warnings=tuple(warnings),
         plugin_names=plugin_names,
         phase_names=phase_names,
+        cache_contract=cache_contract,
     )

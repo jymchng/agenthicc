@@ -101,6 +101,15 @@ behaves. Consolidating or formalizing this boundary is PRD-138 P0.3.
 7. Completion, rejection, error, or interruption determines the next phase or
    resume plan.
 
+For workflow turns, `AgentTurnRunner` also applies the shared prompt contract:
+the stable system policy and deterministic stable-tool schemas form the reusable
+prefix, while phase instructions, artifacts, questions, answers, and summaries
+are appended as dynamic context. The contract records redacted fingerprints and
+an epoch in the conversation journal/checkpoint; it never exposes provider
+credentials or raw endpoint URLs. Provider-specific cache support is detected at
+the boundary, so unsupported providers retain correct execution semantics
+without being reported as cache hits.
+
 The canonical selectable modes are Safe, Plan, and Yolo, in that cycle order.
 Safe asks for approval before side effects, Plan hard-blocks side effects, and
 Yolo preserves the unrestricted Auto behavior. Auto, Guard, Ask, and Review are

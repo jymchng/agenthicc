@@ -110,6 +110,15 @@ _RUNNER_GUIDE: str = (
     "injected session memory for every call (create a local fallback only when no session "
     "memory was supplied). Never "
     "call super().run() — that would execute code_plan's own phases.\n"
+    "  11. Add a module-level CACHE_CONTRACT stable system prompt to the generated "
+    "workflow. It MUST tell the workflow agent to ask the user clarifying questions "
+    "through the existing ask_user tool whenever required information is missing, "
+    "ambiguous, or materially changes the result, and to wait for the answer instead "
+    "of guessing. Pass it as stable_system_prompt=CACHE_CONTRACT to run_phase(); keep "
+    "phase instructions, artifacts, questions, and answers in the dynamic phase text.\n"
+    "  12. Keep stable tools separate from phase-local transition/write tools and use "
+    "the deterministic tool ordering inherited from run_phase(). Never insert messages "
+    "into the beginning of shared memory or put a rolling summary into CACHE_CONTRACT.\n"
     "Call describe_runner_pattern() for the full checklist and "
     "show_example_workflow() for a complete working runner to adapt. Omit the runner ONLY "
     "when every single phase is one unconditional agent turn with no retry and no branch."
@@ -183,6 +192,12 @@ _GENERATE_PROMPT: str = (
     "say that only a successful transition-tool call changes phase; prose never advances "
     "the workflow. Mark custom transition callables with @tool_control so the runtime can "
     "advertise them automatically.\n\n"
+    "Add a module-level CACHE_CONTRACT string to runner.py and pass it as the "
+    "stable_system_prompt argument on every CodePlanRunner.run_phase() call. It must "
+    "include this policy verbatim in substance: ask the user a focused question through "
+    "the existing ask_user tool whenever a missing or ambiguous requirement could change "
+    "the result; wait for the answer and do not guess. The current question and answer "
+    "are dynamic context, not part of CACHE_CONTRACT.\n\n"
     "Write the runner the design specified into runner.py — the state enum, the "
     "context dataclass, one bounded async method per state, the "
     "'while not state.is_terminal' + 'match state' driver in run(), resume(), the phase "
@@ -774,6 +789,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             ctx.generated_path,
             expected_name=ctx.workflow_name,
             root=self._workspace_root(),
+            strict_cache_contract=True,
         )
         ctx.validation_report = report.render()
         ctx.add_artifact(
@@ -994,6 +1010,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             _WORKFLOW_USER_QUESTION_REMINDER,
             phase_transition_instruction,
         )
+        from agenthicc.runners.prompt_contract import (  # noqa: PLC0415
+            build_workflow_prompt_contract,
+            tool_name,
+        )
+        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities  # noqa: PLC0415
 
         original_mode = self._cfg.app_state.active_mode()
         if mode is not None and self._mode_manager is not None:
@@ -1020,6 +1041,27 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         policy = self._cfg.terminal_wait_policies.get(phase_name, "foreground")
         policy_token = set_current_terminal_wait_policy(policy)
         try:
+            stable_tools: _ToolList = []
+            phase_tools: _ToolList = []
+            for tool in tools:
+                is_transition = tool_name(
+                    tool
+                ) != "ask_user" and ToolCapability.CONTROL in get_tool_capabilities(tool)
+                (phase_tools if is_transition else stable_tools).append(tool)
+            prompt_contract = build_workflow_prompt_contract(
+                workflow_name="create_workflow",
+                phase_prompt=(
+                    f"{system_prompt}\n\n"
+                    f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
+                    f"{phase_transition_instruction(tools, phase_name=phase_name)}"
+                ),
+                stable_tools=stable_tools,
+                phase_tools=phase_tools,
+                execution=exec_cfg,
+            )
+            record_contract = getattr(self._cfg.workflow_handle, "record_prompt_contract", None)
+            if callable(record_contract):
+                record_contract(prompt_contract)
             await _run_agent_turn(
                 text,
                 runner=self._cfg.agent_runner,
@@ -1045,6 +1087,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
                     f"{phase_transition_instruction(tools, phase_name=phase_name)}"
                 ),
+                prompt_contract=prompt_contract,
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,
                 next_queued_message=self._cfg.next_queued_message,

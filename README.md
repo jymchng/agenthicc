@@ -154,6 +154,14 @@ bounded multi-turn budget; tune the caps with
 existing `ask_user` tool to ask several focused clarification questions, including
 multiple rounds when requirements need to be refined.
 
+Generated custom runners also receive a cache-stability contract: immutable
+workflow policy and deterministic tool schemas stay in the reusable prefix,
+while phase state, artifacts, questions, answers, and summaries stay dynamic.
+The authoring agent is instructed to declare a literal `CACHE_CONTRACT`, pass it
+as `stable_system_prompt` to `CodePlanRunner.run_phase()`, and use `ask_user`
+instead of guessing over material ambiguity. Strict validation rejects runners
+that bypass this boundary or mutate the shared conversation history.
+
 Every session also carries five read-only tools for reading agenthicc itself —
 `list_agenthicc_docs`, `read_agenthicc_doc`, `search_agenthicc_docs`,
 `inspect_agenthicc_source`, and `search_agenthicc_source`. They serve the `docs/`

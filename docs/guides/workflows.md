@@ -171,6 +171,47 @@ when the runner it ships is abstract or missing `run`/`resume`.
 A purely declarative graph is still correct when every phase really is one
 unconditional agent turn.
 
+### Cache-stable workflow turns
+
+Workflow runners use a shared prompt contract when `[execution].prompt_cache`
+is enabled. The contract keeps the workflow's immutable policy and deterministic
+tool schemas in the stable prefix, while phase instructions, artifacts,
+validation reports, questions, answers, and rolling summaries are rendered as
+append-only dynamic context. A custom runner should preserve that boundary by
+passing its literal policy separately:
+
+```python
+await self.run_phase(
+    intent=intent,
+    text=artifact_and_phase_state,
+    system_prompt="Review the current artifact and report blockers.",
+    stable_system_prompt=CACHE_CONTRACT,
+    mode="Safe",
+    max_turns=8,
+    shared_memory=context.shared_memory,
+    tools=phase_tools,
+)
+```
+
+Stable tools are ordered before phase-local tools after capability and approval
+filtering. Generated workflows must use `CodePlanRunner.run_phase()` (or the
+shared `build_workflow_prompt_contract()` helper), must not insert messages into
+shared history, and must declare a literal `CACHE_CONTRACT`. The contract also
+instructs agents to use the existing `ask_user` tool for missing or ambiguous
+requirements and to wait for answers instead of guessing. The
+`describe_prompt_cache_contract`, `show_workflow_template`, and
+`validate_workflow_cache_contract` inspection tools expose these rules during
+authoring; strict validation rejects a generated custom runner that omits them.
+
+The runtime records only redacted contract fingerprints and cache epochs in the
+conversation journal and workflow checkpoint. A phase change does not change
+the stable epoch. A provider/model/profile change, a stable tool or policy
+change, provider TTL expiry, or history compaction can legitimately invalidate
+reuse and is reported separately. Anthropic uses explicit cache controls when
+available; OpenAI-compatible providers rely on stable-prefix reuse; providers
+without a supported cache contract use the compatibility path without claiming
+a cache hit.
+
 ### Generation writes the workflow package directly
 
 `generate` runs with `mode_override="Yolo"` so the write tools are available. The

@@ -8,6 +8,7 @@ from typing import Literal
 
 from agenthicc.runners.session_conversation import SessionConversation
 from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
+from agenthicc.runners.prompt_contract import PromptContract
 from agenthicc.workflows.checkpoint import (
     WorkflowCheckpoint,
     context_from_payload,
@@ -53,6 +54,13 @@ class WorkflowRunHandle:
     created_at: float = field(default_factory=time.time)
     browser_manager: object | None = None
     provider_profile: str = ""
+    cache_contract_version: str = ""
+    cache_epoch: str = ""
+    stable_prompt_fingerprint: str = ""
+    dynamic_prompt_fingerprint: str = ""
+    cache_provider_capability: str = ""
+    cache_status: str = ""
+    cache_invalidation_reason: str = ""
 
     @classmethod
     def create(
@@ -88,6 +96,31 @@ class WorkflowRunHandle:
         self.current_phase = phase
         self.phase_index = index
         self.phase_iteration = iteration
+
+    def record_prompt_contract(self, contract: PromptContract) -> None:
+        """Record redacted cache metadata for the next workflow checkpoint."""
+
+        previous_epoch = self.cache_epoch
+        previous_stable_fingerprint = self.stable_prompt_fingerprint
+        self.cache_contract_version = contract.contract_version
+        self.cache_epoch = contract.cache_epoch.value
+        self.stable_prompt_fingerprint = contract.stable_fingerprint
+        self.dynamic_prompt_fingerprint = contract.dynamic_fingerprint
+        self.cache_provider_capability = contract.provider_capability
+        self.cache_status = contract.cache_status
+        self.cache_invalidation_reason = (
+            "initial"
+            if not previous_epoch
+            else (
+                "phase_context_changed"
+                if previous_epoch == self.cache_epoch
+                else (
+                    "stable_contract_changed"
+                    if previous_stable_fingerprint != contract.stable_fingerprint
+                    else "connection_changed"
+                )
+            )
+        )
 
     def request_pause(self) -> bool:
         """Request a cooperative pause exactly once."""
@@ -160,6 +193,13 @@ class WorkflowRunHandle:
             reason=reason or self.last_error,
             browser=browser_payload,
             provider_profile=self.provider_profile,
+            cache_contract_version=self.cache_contract_version,
+            cache_epoch=self.cache_epoch,
+            stable_prompt_fingerprint=self.stable_prompt_fingerprint,
+            dynamic_prompt_fingerprint=self.dynamic_prompt_fingerprint,
+            cache_provider_capability=self.cache_provider_capability,
+            cache_status=self.cache_status,
+            cache_invalidation_reason=self.cache_invalidation_reason,
         )
 
     def save_checkpoint(self, *, reason: str = "") -> WorkflowCheckpoint:
@@ -204,6 +244,13 @@ class WorkflowRunHandle:
             last_error=checkpoint.reason,
             browser_manager=browser_manager,
             provider_profile=checkpoint.provider_profile,
+            cache_contract_version=checkpoint.cache_contract_version,
+            cache_epoch=checkpoint.cache_epoch,
+            stable_prompt_fingerprint=checkpoint.stable_prompt_fingerprint,
+            dynamic_prompt_fingerprint=checkpoint.dynamic_prompt_fingerprint,
+            cache_provider_capability=checkpoint.cache_provider_capability,
+            cache_status=checkpoint.cache_status,
+            cache_invalidation_reason=checkpoint.cache_invalidation_reason,
         )
         if browser_manager is not None:
             importer = getattr(browser_manager, "restore_checkpoint", None)

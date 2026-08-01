@@ -295,6 +295,15 @@ class WorkflowCheckpoint:
     # Non-secret identity only. The named profile is resolved from the
     # current environment when the owning session is rebuilt.
     provider_profile: str = ""
+    # Redacted prompt-cache metadata (PRD-163). These fields never contain
+    # prompt text, conversation contents, credentials, or provider cache tokens.
+    cache_contract_version: str = ""
+    cache_epoch: str = ""
+    stable_prompt_fingerprint: str = ""
+    dynamic_prompt_fingerprint: str = ""
+    cache_provider_capability: str = ""
+    cache_status: str = ""
+    cache_invalidation_reason: str = ""
     created_at: float = field(default_factory=time.time)
     schema_version: int = CHECKPOINT_SCHEMA_VERSION
 
@@ -316,6 +325,13 @@ class WorkflowCheckpoint:
             "reason": self.reason,
             "browser": self.browser,
             "provider_profile": self.provider_profile,
+            "cache_contract_version": self.cache_contract_version,
+            "cache_epoch": self.cache_epoch,
+            "stable_prompt_fingerprint": self.stable_prompt_fingerprint,
+            "dynamic_prompt_fingerprint": self.dynamic_prompt_fingerprint,
+            "cache_provider_capability": self.cache_provider_capability,
+            "cache_status": self.cache_status,
+            "cache_invalidation_reason": self.cache_invalidation_reason,
             "created_at": self.created_at,
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -381,6 +397,17 @@ class WorkflowCheckpoint:
         provider_profile = raw.get("provider_profile", "")
         if not isinstance(provider_profile, str):
             raise CheckpointValidationError("provider_profile must be a string")
+        cache_fields = (
+            "cache_contract_version",
+            "cache_epoch",
+            "stable_prompt_fingerprint",
+            "dynamic_prompt_fingerprint",
+            "cache_provider_capability",
+            "cache_status",
+            "cache_invalidation_reason",
+        )
+        if not all(isinstance(raw.get(key, ""), str) for key in cache_fields):
+            raise CheckpointValidationError("cache metadata fields must be strings")
         numeric = ("phase_index", "phase_iteration", "conversation_cursor", "revision")
         if not all(isinstance(raw[key], int) and not isinstance(raw[key], bool) for key in numeric):
             raise CheckpointValidationError("checkpoint numeric fields must be integers")
@@ -407,5 +434,12 @@ class WorkflowCheckpoint:
             if isinstance(raw.get("browser", {}), dict)
             else {},
             provider_profile=provider_profile,
+            cache_contract_version=str(raw.get("cache_contract_version", "")),
+            cache_epoch=str(raw.get("cache_epoch", "")),
+            stable_prompt_fingerprint=str(raw.get("stable_prompt_fingerprint", "")),
+            dynamic_prompt_fingerprint=str(raw.get("dynamic_prompt_fingerprint", "")),
+            cache_provider_capability=str(raw.get("cache_provider_capability", "")),
+            cache_status=str(raw.get("cache_status", "")),
+            cache_invalidation_reason=str(raw.get("cache_invalidation_reason", "")),
             created_at=float(raw.get("created_at", time.time()) or time.time()),
         )
