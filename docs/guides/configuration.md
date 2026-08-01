@@ -295,9 +295,11 @@ allow_persistent_profiles = false
 Playwright supports the same bare-host and exact HTTP(S) origin formats as
 CloakBrowser, including wildcard subdomains and explicit ports. The default
 empty allow-list denies navigation. `allow_all_domains = true` bypasses
-hostname matching but still enforces HTTP(S), configured ports, DNS rebinding,
-loopback, and private-address protections. The browser executable and profile
-path are operator configuration; they are never supplied by the model.
+hostname matching. Playwright does not impose a port allow-list, so local
+preview servers such as `http://localhost:3000/` work when their host is
+allowed; loopback is permitted for this backend while private non-loopback
+addresses remain protected. The browser executable and profile path are
+operator configuration; they are never supplied by the model.
 
 The browser tools remain available without Playwright installed, but return a
 structured `dependency_missing` result. Playwright browser binaries are not

@@ -560,7 +560,9 @@ No raw JavaScript, arbitrary CDP, proxy, cookie, storage, or sensitive-form
 field access is exposed.
 `allow_all_domains` is an explicit opt-in for broad public HTTP(S) host access;
 it defaults to `false` and does not bypass DNS, loopback, or private-address
-protections.
+protections for CloakBrowser. Playwright uses the same domain/DNS boundary but
+allows any destination port and loopback preview servers such as
+`http://localhost:3000/`.
 All browser tools accept an optional bounded `operation_id`; reusing one returns
 the cached receipt and prevents a transport retry from repeating a mutation.
 
@@ -583,7 +585,9 @@ browser binaries are installed explicitly with `playwright install`. Set
 Chromium, Firefox, and WebKit and exposes the same bounded operations using
 `playwright_*` names. It shares the session manager's origin/DNS policy,
 `allow_all_domains` behavior, quotas, redaction, artifacts, idempotency, and
-checkpoint metadata with CloakBrowser. Generated workflows must use injected
+checkpoint metadata with CloakBrowser. Playwright intentionally has no port
+ceiling and permits loopback preview servers; private non-loopback and DNS
+rebinding checks remain active. Generated workflows must use injected
 tools rather than importing Playwright directly.
 
 ### Tool

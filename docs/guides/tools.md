@@ -326,8 +326,11 @@ workflow checkpoints retain only redacted page metadata and reattach the same
 session manager on resume.
 
 `allow_all_domains = true` is an explicit broad-access opt-in, not the default.
-It permits public HTTP(S) hosts on the configured ports but does not bypass
-DNS, loopback, or private-address protections.
+For CloakBrowser it permits public HTTP(S) hosts on the configured ports but
+does not bypass DNS, loopback, or private-address protections. Playwright has
+no port ceiling and permits loopback preview servers such as
+`http://localhost:3000/`; its domain policy and private non-loopback checks
+still apply.
 
 Custom workflows receive these tools through `WorkflowConfig`. Their authoring
 and validation phases are browser-free by default. `create_workflow` exposes
@@ -347,6 +350,9 @@ Choose `browser_type = "chromium"`, `"firefox"`, or `"webkit"` in
 `[tools.playwright]`. The backend is lazy and returns `dependency_missing` when
 the Python package or its browser runtime is unavailable. It never imports
 Playwright or starts a browser when CloakBrowser is selected.
+Playwright has no port ceiling and permits loopback preview servers such as
+`http://localhost:3000/`; its configured domain policy, DNS rebinding checks,
+and private non-loopback protection remain active.
 
 The upstream wrapper and binary have independent platform and licensing
 requirements; agenthicc does not download binaries or silently install the
