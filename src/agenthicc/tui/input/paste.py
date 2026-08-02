@@ -1,8 +1,8 @@
 """PasteState — manages bracketed paste condensation.
 
 Large pastes are "condensed" to a single label line so they don't flood
-the input bar.  Ctrl+V expands back to the full content.  Backspace on a
-condensed paste deletes the entire paste block cleanly.
+the input bar.  Ctrl+V expands back to the full content.  Backspace deletes
+one character at a time while keeping the paste condensed.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ class PasteState:
     start: int = 0
     end: int = 0
     count: int = field(default=0, repr=False)
+    _label_uses_lines: bool = field(default=False, repr=False)
 
     def apply(self, buf: InputBuffer, text: str, cols: int) -> None:
         """Insert *text* at the current cursor; condense if large."""
@@ -31,6 +32,7 @@ class PasteState:
         should_condense = n_lines > _CONDENSE_LINES or len(text) > max(cols - 4, 40)
         if should_condense:
             self.count += 1
+            self._label_uses_lines = n_lines > 1
             suffix = f"+{n_lines} lines" if n_lines > 1 else f"{len(text)} chars"
             self.label = f"[Pasted text #{self.count} {suffix}]"
             self.condensed = True
@@ -38,6 +40,15 @@ class PasteState:
     def expand(self) -> None:
         """Ctrl+V — show full paste content."""
         self.condensed = False
+
+    def delete_condensed(self, buf: InputBuffer) -> None:
+        """Delete the hidden paste block while it is still condensed."""
+        if not self.condensed:
+            return
+        buf.delete_range(self.start, self.end)
+        self.condensed = False
+        self.label = ""
+        self.start = self.end = min(self.start, len(buf))
 
     def _condensed_view(self, buf: InputBuffer) -> tuple[list[str], int]:
         """Return the composer view with the paste replaced by its label.
@@ -64,6 +75,38 @@ class PasteState:
         return display, cursor
 
     def backspace(self, buf: InputBuffer) -> None:
-        """Delete the entire paste block and exit condensed mode."""
-        buf.delete_range(self.start, self.end)
-        self.condensed = False
+        """Delete one character without expanding the condensed paste.
+
+        Characters typed after the paste are deleted first. Once the cursor
+        reaches the hidden range, backspace removes one hidden character and
+        refreshes the label; this keeps backspace's normal editing semantics
+        without flooding the composer with the full paste.
+        """
+        cursor = buf.cursor
+        if cursor <= self.start:
+            if cursor > 0:
+                buf.delete_before()
+                self.start -= 1
+                self.end -= 1
+            return
+
+        if cursor > self.end:
+            buf.delete_before()
+            return
+
+        # The cursor is inside or immediately after the hidden range.
+        buf.delete_before()
+        self.end -= 1
+        remaining = "".join(buf.buf[self.start : self.end])
+        if not remaining:
+            self.condensed = False
+            self.label = ""
+            self.start = self.end = self.start
+            return
+
+        if self._label_uses_lines:
+            line_count = remaining.count("\n") + 1
+            suffix = f"+{line_count} lines"
+        else:
+            suffix = f"{len(remaining)} chars"
+        self.label = f"[Pasted text #{self.count} {suffix}]"

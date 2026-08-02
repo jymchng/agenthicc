@@ -75,11 +75,41 @@ class TestExpand:
 
 
 class TestBackspace:
-    def test_backspace_deletes_entire_paste(self) -> None:
+    def test_backspace_deletes_one_character_from_condensed_paste(self) -> None:
+        buf = InputBuffer()
+        ps = PasteState()
+        text = "x" * 100
+        ps.apply(buf, text, _COLS)
+
+        ps.backspace(buf)
+
+        assert len(buf) == len(text) - 1
+        assert ps.condensed
+        assert "99 chars" in ps.label
+
+    def test_backspace_deletes_typed_suffix_before_hidden_paste(self) -> None:
         buf = InputBuffer()
         ps = PasteState()
         ps.apply(buf, "a\nb\nc\nd", _COLS)
-        len(buf)
+        buf.insert_many(list(" hello hey"))
+
         ps.backspace(buf)
-        assert len(buf) == 0  # all inserted chars removed
+
+        assert buf.text.endswith(" hello he")
+        assert ps.condensed
+        display, cursor = ps._condensed_view(buf)
+        assert "".join(display) == f"{ps.label} hello he"
+        assert cursor == len(display)
+
+    def test_placeholder_disappears_after_hidden_content_is_exhausted(self) -> None:
+        buf = InputBuffer()
+        ps = PasteState()
+        text = "a\nb\nc\nd"
+        ps.apply(buf, text, _COLS)
+
+        for _ in text:
+            ps.backspace(buf)
+
         assert not ps.condensed
+        assert ps.label == ""
+        assert buf.text == ""

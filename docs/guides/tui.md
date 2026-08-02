@@ -97,8 +97,12 @@ Large bracketed pastes stay behind a single `[Pasted text #N ...]` composer
 placeholder while the user edits the input. Ordinary typing, whitespace,
 newlines, cursor movement, and history navigation do not expand the paste or
 redraw its full contents. Use `Ctrl+V` when the full pasted text should be
-shown. Backspace removes a condensed paste as a single block, and Enter
-submits its original contents.
+shown. Backspace deletes one character at a time—typed suffix text first, then
+the hidden paste content—while keeping the placeholder condensed. Enter
+submits the remaining original contents and edits. `Esc` deletes the entire
+hidden paste only when the cursor is immediately after its placeholder; with
+typed suffix text or a different cursor position, `Esc` keeps its normal mode
+behavior.
 
 While the agent is responding, submitted input is classified before it enters
 the session queue. Local read-only commands and run controls can execute

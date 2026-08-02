@@ -432,7 +432,8 @@ class FooterComponent:
         elif self._state.input.paste_condensed():
             _extra_notif_lines = []
             hints_str = _build_hints(
-                "Ctrl+V Expand paste  Backspace Delete  Enter Submit as-is", cols
+                "Ctrl+V Expand paste  Backspace Delete char  Esc Delete paste  Enter Submit as-is",
+                cols,
             )
         else:
             _extra_notif_lines = []

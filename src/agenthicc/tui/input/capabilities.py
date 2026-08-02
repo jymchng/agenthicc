@@ -77,6 +77,32 @@ class OverlayCapability:
         return _PASS
 
 
+# ── Condensed-paste escape ───────────────────────────────────────────────────
+
+
+class CondensedPasteEscapeCapability:
+    """Delete a condensed paste when ESC is directly after its placeholder.
+
+    The underlying buffer cursor must be exactly at the end of the hidden
+    paste range. A typed suffix therefore prevents this shortcut, preserving
+    normal ESC behavior and leaving the suffix editable.
+    """
+
+    async def handle(
+        self,
+        key: Key,
+        ch: str,
+        session: UnifiedInputSession,
+    ) -> CapabilityResult:
+        if key != Key.ESC or not session._paste.condensed:
+            return _PASS
+        if session._buf.cursor != session._paste.end:
+            return _PASS
+        session._paste.delete_condensed(session._buf)
+        session._push()
+        return _CONSUMED
+
+
 # ── Ctrl+C (idle) ─────────────────────────────────────────────────────────────
 
 
@@ -445,6 +471,7 @@ class InsertCapability:
 #: Full feature set: triggers, history, cursor movement, mode cycling.
 IDLE_CAPABILITIES: list[Capability] = [
     OverlayCapability(),
+    CondensedPasteEscapeCapability(),
     CtrlCCapability(),  # first: resets counter on any non-Ctrl+C key
     CtrlDCapability(),
     PasteCapability(),
@@ -462,6 +489,7 @@ IDLE_CAPABILITIES: list[Capability] = [
 #: Reduced set: queue messages, interrupt agent, paste, basic editing.
 STREAMING_CAPABILITIES: list[Capability] = [
     OverlayCapability(),
+    CondensedPasteEscapeCapability(),
     InterruptCapability(),  # Ctrl+C / ESC → cancel agent
     PasteCapability(),
     TriggerCapability(),  # @, / etc. — same as idle

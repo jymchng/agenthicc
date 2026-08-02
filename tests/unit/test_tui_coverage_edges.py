@@ -22,6 +22,7 @@ from agenthicc.tui.input.capabilities import (
     _EXIT,
     BackspaceCapability,
     ClearCapability,
+    CondensedPasteEscapeCapability,
     CtrlCCapability,
     CtrlDCapability,
     CursorCapability,
@@ -269,6 +270,78 @@ async def test_text_typed_after_condensed_paste_is_submitted() -> None:
 
     assert submitted == [pasted + "G"]
     assert not state.input.paste_condensed()
+
+
+@pytest.mark.asyncio
+async def test_backspace_keeps_condensed_paste_and_deletes_only_suffix() -> None:
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+
+    state = AppState()
+    session = UnifiedInputSession(state, CommandBus())
+    pasted = "a\nb\nc\nd"
+
+    await session._dispatch(Key.PASTE, pasted)
+    for char in " hello hey":
+        await session._dispatch(Key.CHAR, char)
+
+    await session._dispatch(Key.BACKSPACE, "")
+
+    assert session._buf.text == pasted + " hello he"
+    assert state.input.paste_condensed()
+    assert state.input.paste_label() in "".join(state.input.buf())
+    assert "".join(state.input.buf()).endswith(" hello he")
+
+
+@pytest.mark.asyncio
+async def test_escape_deletes_condensed_paste_only_at_placeholder_end() -> None:
+    session = _FakeSession()
+    session._paste.apply(session._buf, "a\nb\nc\nd", 80)
+
+    assert await CondensedPasteEscapeCapability().handle(Key.ESC, "", session) is _CONSUMED
+    assert not session._paste.condensed
+    assert session._buf.text == ""
+
+    session = _FakeSession()
+    session._paste.apply(session._buf, "a\nb\nc\nd", 80)
+    session._buf.insert("G")
+
+    assert await CondensedPasteEscapeCapability().handle(Key.ESC, "", session) is False
+    assert session._paste.condensed
+    assert session._buf.text.endswith("G")
+
+
+@pytest.mark.asyncio
+async def test_unified_session_routes_escape_paste_delete_by_cursor_position() -> None:
+    from agenthicc.tui.input.unified_session import InputMode, UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus, InterruptAgentCommand
+
+    state = AppState()
+    session = UnifiedInputSession(state, CommandBus())
+    await session._dispatch(Key.PASTE, "a\nb\nc\nd")
+    await session._dispatch(Key.ESC, "")
+    assert not state.input.paste_condensed()
+    assert session._buf.text == ""
+
+    state = AppState()
+    session = UnifiedInputSession(state, CommandBus())
+    await session._dispatch(Key.PASTE, "a\nb\nc\nd")
+    await session._dispatch(Key.CHAR, "G")
+    await session._dispatch(Key.ESC, "")
+    assert state.input.paste_condensed()
+    assert session._buf.text.endswith("G")
+
+    state = AppState()
+    bus = CommandBus()
+    interrupted: list[InterruptAgentCommand] = []
+    bus.register(InterruptAgentCommand, interrupted.append)
+    session = UnifiedInputSession(state, bus)
+    session.set_mode(InputMode.STREAMING)
+    await session._dispatch(Key.PASTE, "a\nb\nc\nd")
+    await session._dispatch(Key.ESC, "")
+    assert not state.input.paste_condensed()
+    assert session._buf.text == ""
+    assert not interrupted
 
 
 @pytest.mark.asyncio
