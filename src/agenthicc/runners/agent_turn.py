@@ -1265,9 +1265,14 @@ class AgentTurnRunner:
         # whole source file): the partial call is discarded, the turn yields nothing,
         # and the calling phase retries forever.  ExecutionSettings.max_output_tokens
         # is the configurable ceiling and is what effective_usable_budget() reserves.
-        _max_output = int(getattr(ctx.exec_cfg, "max_output_tokens", 0) or 0) or int(
-            _AgentConfig().max_tokens_per_turn
-        )
+        if ctx.exec_cfg is None:
+            from agenthicc.config import ExecutionSettings  # noqa: PLC0415
+
+            _max_output = ExecutionSettings().max_output_tokens
+        else:
+            _max_output = int(getattr(ctx.exec_cfg, "max_output_tokens", 0) or 0) or int(
+                _AgentConfig().max_tokens_per_turn
+            )
         if ctx.exec_cfg is not None:
             _window = ctx.exec_cfg.effective_context_window()
             _window_tokens = ctx.exec_cfg.effective_usable_budget()
@@ -1432,10 +1437,14 @@ class AgentTurnRunner:
                             "system",
                             {
                                 "text": (
-                                    f"⚠ Response hit the {_max_output}-token output limit and was "
-                                    "truncated. A tool call cut off this way is discarded. Raise "
-                                    "[execution].max_output_tokens, or write large files in "
-                                    "chunks with write_file then append_file."
+                                    f"⚠ The response was truncated after reaching the "
+                                    f"{_max_output}-token output limit, so the incomplete "
+                                    "write_file call was discarded. Please split large files "
+                                    "into chunks: use write_file for the first chunk, then "
+                                    "append_file for each subsequent chunk, and read the file "
+                                    "to verify it. You can also raise "
+                                    "[execution].max_output_tokens for models that support "
+                                    "larger completions."
                                 )
                             },
                         )

@@ -102,6 +102,7 @@ SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "litellm")
 # output cap automatically shrinks the live window by the same amount.
 _CONTEXT_RESERVE_MIN: int = 4_000
 _DEFAULT_CONTEXT_WINDOW: int = 200_000
+_DEFAULT_MAX_OUTPUT_TOKENS: int = 32_768
 
 # lauren-ai 1.3.1 exposes provider configuration but not a context-window
 # registry.  Keep the compatibility table at this integration boundary so a
@@ -906,7 +907,7 @@ class ExecutionSettings:
     authoring_max_phase_turns: int = 20
     """Maximum agent sub-turns allowed in one ``create_*`` phase by default."""
 
-    max_output_tokens: int = 16_384
+    max_output_tokens: int = _DEFAULT_MAX_OUTPUT_TOKENS
     """Completion-token ceiling for a single LLM round-trip.
 
     This is the model's output budget per sub-turn, passed to lauren-ai as
@@ -916,7 +917,7 @@ class ExecutionSettings:
     It must be large enough for the biggest single tool call a phase can make.
     lauren-ai defaults to 4096, which silently truncates a ``write_file`` call
     carrying a whole source file: the partial tool call is discarded, the turn
-    produces nothing, and the phase retries forever. 16384 fits a substantial
+    produces nothing, and the phase retries forever. 32768 fits a larger
     file; raise it further for a model that supports it, and prefer chunked
     ``write_file`` + ``append_file`` writes for anything larger.
     """
@@ -1984,7 +1985,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_agent_turns=_as_int(ex.get("max_agent_turns"), 200),
         authoring_max_generation_attempts=_as_int(ex.get("authoring_max_generation_attempts"), 20),
         authoring_max_phase_turns=_as_int(ex.get("authoring_max_phase_turns"), 20),
-        max_output_tokens=_as_int(ex.get("max_output_tokens"), 16_384),
+        max_output_tokens=_as_int(ex.get("max_output_tokens"), _DEFAULT_MAX_OUTPUT_TOKENS),
         auto_compact=_as_bool(ex.get("auto_compact"), True),
         context_windows=_context_windows,
         prompt_cache=_as_bool(ex.get("prompt_cache"), True),

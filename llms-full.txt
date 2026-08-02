@@ -2501,7 +2501,7 @@ PROVIDER_API_KEY_ENVVAR: dict[str, str]
 Authoring settings include authoring_max_generation_attempts (default 20) and
 authoring_max_phase_turns (default 20); both bound the shared create_* lifecycle.
 
-`max_output_tokens` (default 16384) is the completion ceiling for one LLM
+`max_output_tokens` (default 32768) is the completion ceiling for one LLM
 round-trip. It is passed to lauren-ai as `AgentConfig.max_tokens_per_turn` and is
 the amount `effective_usable_budget()` reserves from the context window, so
 raising it shrinks the live window by the same amount. It must exceed the largest
@@ -2517,7 +2517,7 @@ class ExecutionSettings:
     max_concurrent_intents: int = 8
     max_parallel_tasks: int = 4
     agent_pool_size: int = 16
-    max_output_tokens: int = 16_384  # completion ceiling per LLM round-trip
+    max_output_tokens: int = 32_768  # completion ceiling per LLM round-trip
     provider: str = "anthropic"     # which LLM provider to use
     model: str = ""                 # empty → PROVIDER_DEFAULT_MODELS[provider]
     api_key: str = ""               # empty → PROVIDER_API_KEY_ENVVAR[provider]
@@ -2549,7 +2549,7 @@ class ExecutionSettings:
 
 ```toml
 [execution]
-max_output_tokens = 16384   # raise for models that support a larger completion
+max_output_tokens = 32768   # raise for models that support a larger completion
 
 # [memory.context_windows] — one knob per model (PRD-136)
 [memory.context_windows]

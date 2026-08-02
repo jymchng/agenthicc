@@ -36,7 +36,7 @@ pytestmark = pytest.mark.unit
 def test_the_default_ceiling_is_well_above_the_library_default() -> None:
     """4096 is not enough for a whole source file in one tool call."""
     cfg = AgenthiccConfig()
-    assert cfg.execution.max_output_tokens == 16_384
+    assert cfg.execution.max_output_tokens == 32_768
     assert cfg.execution.max_output_tokens > AgentConfig().max_tokens_per_turn
 
 
@@ -78,7 +78,7 @@ def test_the_ceiling_falls_back_to_the_default_for_junk_toml(tmp_path: Path) -> 
     toml = tmp_path / "agenthicc.toml"
     toml.write_text('[execution]\nmax_output_tokens = "lots"\n', encoding="utf-8")
     cfg = load_config(project_path=toml, user_path=tmp_path / "missing.toml")
-    assert cfg.execution.max_output_tokens == 16_384
+    assert cfg.execution.max_output_tokens == 32_768
 
 
 # ── the ceiling actually reaches the provider ─────────────────────────────────
@@ -152,7 +152,7 @@ async def test_the_default_ceiling_is_sent_when_nothing_is_configured(processor)
     await _turn(processor, TUIAppState.create(), cfg, mock)
     await processor.drain()
 
-    assert mock.calls[0].max_tokens == 16_384
+    assert mock.calls[0].max_tokens == 32_768
 
 
 async def test_profile_sampling_and_request_options_reach_agent_config(processor) -> None:
@@ -224,7 +224,9 @@ async def test_a_truncated_response_is_reported_to_the_user(processor) -> None:
     assert "truncated" in notices
     assert "12345" in notices  # names the ceiling that was hit
     assert "max_output_tokens" in notices  # names the setting to raise
-    assert "append_file" in notices  # names the workaround for large writes
+    assert "write_file for the first chunk" in notices
+    assert "append_file for each subsequent chunk" in notices
+    assert "read the file to verify" in notices
 
 
 async def test_a_normal_response_reports_no_truncation(processor) -> None:

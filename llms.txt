@@ -159,7 +159,7 @@ the current API instead of remembering it:
 | inspect_agenthicc_source / search_agenthicc_source | agenthicc.tools.introspect | Any `agenthicc` module or symbol, resolved by path + `ast` with no imports; private names included |
 
 - Start `EventProcessor.run()` before `emit()` and await `drain()` before reading.
-- `[execution].max_output_tokens` (default 16384) caps one LLM round-trip. It must
+- `[execution].max_output_tokens` (default 32768) caps one LLM round-trip. It must
   exceed the largest single tool call: lauren-ai's 4096 default silently truncates
   a `write_file` carrying a whole file, discarding the tool call entirely.
 - `root_reducer` is pure and kernel `AppState` is frozen.

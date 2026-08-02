@@ -69,7 +69,7 @@ code needing provider-specific branches.
 ```toml
 [execution]
 profile = "modal_kimi"
-max_output_tokens = 16384
+max_output_tokens = 32768
 transport_max_retries = 3
 llm_sdk_max_retries = 2
 
@@ -131,7 +131,7 @@ the code rather than hard-coding them in support material.
 | `max_agent_turns` | 200 | Agent-loop iteration cap |
 | `authoring_max_generation_attempts` | 20 | Maximum complete source-generation attempts for `create_*` authoring |
 | `authoring_max_phase_turns` | 20 | Maximum agent sub-turns in one `create_*` phase; phase definitions may request less |
-| `max_output_tokens` | 16384 | Completion-token ceiling for one LLM round-trip |
+| `max_output_tokens` | 32768 | Completion-token ceiling for one LLM round-trip |
 | `auto_compact` | true | Enable proactive model-aware conversation compaction |
 | `context_windows` | `{}` | Model id → context window under `[memory.context_windows]` |
 | `prompt_cache` | true | Enable provider prompt-cache integration where supported |
@@ -151,8 +151,10 @@ make. lauren-ai's own default is 4096, which is not enough for a `write_file`
 carrying a whole source file: the provider truncates the completion mid-argument,
 the partial tool call is discarded, the sub-turn produces nothing at all, and the
 calling phase retries with no visible cause. agenthicc therefore defaults to
-16384 and passes the value through explicitly. When a response is truncated the
-session now prints a notice naming the ceiling and the setting.
+32768 and passes the value through explicitly. When a response is truncated the
+session prints a friendly notice explaining how to split the file: use
+`write_file` for the first chunk, `append_file` for subsequent chunks, and then
+read the file to verify it.
 
 ```toml
 [execution]
