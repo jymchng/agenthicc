@@ -39,6 +39,30 @@ class PasteState:
         """Ctrl+V — show full paste content."""
         self.condensed = False
 
+    def _condensed_view(self, buf: InputBuffer) -> tuple[list[str], int]:
+        """Return the composer view with the paste replaced by its label.
+
+        The input buffer keeps the complete pasted payload so submission and
+        explicit expansion remain lossless.  The reactive composer instead
+        receives this compact projection, which also preserves text typed
+        around the hidden paste (for example, a character appended to it).
+        """
+        if not self.condensed:
+            return list(buf.buf), buf.cursor
+
+        start = max(0, min(self.start, len(buf)))
+        end = max(start, min(self.end, len(buf)))
+        label = list(self.label)
+        display = buf.buf[:start] + label + buf.buf[end:]
+
+        if buf.cursor <= start:
+            cursor = buf.cursor
+        elif buf.cursor <= end:
+            cursor = start + len(label)
+        else:
+            cursor = buf.cursor - (end - start) + len(label)
+        return display, cursor
+
     def backspace(self, buf: InputBuffer) -> None:
         """Delete the entire paste block and exit condensed mode."""
         buf.delete_range(self.start, self.end)

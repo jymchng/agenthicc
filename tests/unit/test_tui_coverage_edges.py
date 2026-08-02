@@ -143,9 +143,6 @@ class _FakeSession:
     def _push(self) -> None:
         self._state.input.update(self._buf.buf, self._buf.cursor)
 
-    def _paste_exit(self) -> None:
-        self._paste.expand()
-
     def _ctrl_c_sequence(self) -> object:
         self._ctrl_c_count += 1
         return _EXIT if self._ctrl_c_count > 1 else None
@@ -224,7 +221,7 @@ async def test_space_does_not_expand_condensed_paste() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unified_session_keeps_paste_placeholder_after_space() -> None:
+async def test_only_ctrl_v_expands_condensed_paste() -> None:
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime.commands import CommandBus
 
@@ -235,11 +232,42 @@ async def test_unified_session_keeps_paste_placeholder_after_space() -> None:
     assert state.input.paste_condensed()
 
     await session._dispatch(Key.CHAR, " ")
-
     assert state.input.paste_condensed()
     assert state.input.buf()[-1] == " "
 
+    await session._dispatch(Key.CHAR, "z")
+    assert state.input.paste_condensed()
+    assert state.input.buf()[-1] == "z"
+    assert state.input.paste_label() in "".join(state.input.buf())
+
+    await session._dispatch(Key.CTRL_ENTER, "")
+    assert state.input.paste_condensed()
+    assert state.input.buf()[-1] == "\n"
+
+    await session._dispatch(Key.LEFT, "")
+    assert state.input.paste_condensed()
+
     await session._dispatch(Key.CTRL_V, "")
+    assert not state.input.paste_condensed()
+
+
+@pytest.mark.asyncio
+async def test_text_typed_after_condensed_paste_is_submitted() -> None:
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus, SendMessageCommand
+
+    state = AppState()
+    bus = CommandBus()
+    submitted: list[str] = []
+    bus.register(SendMessageCommand, lambda command: submitted.append(command.text))
+    session = UnifiedInputSession(state, bus)
+    pasted = "a\nb\nc\nd"
+
+    await session._dispatch(Key.PASTE, pasted)
+    await session._dispatch(Key.CHAR, "G")
+    await session._dispatch(Key.ENTER, "")
+
+    assert submitted == [pasted + "G"]
     assert not state.input.paste_condensed()
 
 

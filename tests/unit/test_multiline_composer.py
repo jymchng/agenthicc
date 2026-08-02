@@ -142,6 +142,15 @@ class TestComposerRenderPaths:
         assert isinstance(result, Text)
         assert "Pasted text" in result.plain
 
+    def test_condensed_paste_keeps_followup_text_visible(self):
+        label = "[Pasted text #1 10845 chars]"
+        comp = _make_comp(list(label + "G"), len(label) + 1, True, label)
+        result = comp.render()
+        assert isinstance(result, Group)
+        combined = "".join(renderable.plain for renderable in result.renderables)
+        assert label in combined
+        assert "G" in combined
+
     def test_expanded_paste_multiline_returns_group(self):
         # After Ctrl+V: paste_condensed=False, buf has newlines
         buf = list("def f():\n    pass")

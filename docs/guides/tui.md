@@ -94,10 +94,11 @@ Current triggers include:
 - trigger selection may update the input buffer or submit immediately.
 
 Large bracketed pastes stay behind a single `[Pasted text #N ...]` composer
-placeholder while the user continues typing. Whitespace, including a normal
-space, does not expand the paste or redraw its full contents; use `Ctrl+V` when
-the full pasted text should be shown. Backspace removes a condensed paste as a
-single block, and Enter submits its original contents.
+placeholder while the user edits the input. Ordinary typing, whitespace,
+newlines, cursor movement, and history navigation do not expand the paste or
+redraw its full contents. Use `Ctrl+V` when the full pasted text should be
+shown. Backspace removes a condensed paste as a single block, and Enter
+submits its original contents.
 
 While the agent is responding, submitted input is classified before it enters
 the session queue. Local read-only commands and run controls can execute

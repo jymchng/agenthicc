@@ -180,7 +180,6 @@ class TriggerCapability:
         if can:
             await session._open_trigger_overlay(tch)
         else:
-            session._paste_exit()
             session._buf.insert(tch)
             session._push()
         return _CONSUMED
@@ -261,7 +260,6 @@ class NewlineCapability:
     ) -> CapabilityResult:
         if key != Key.CTRL_ENTER:
             return _PASS
-        session._paste_exit()
         session._buf.insert("\n")
         session._push()
         return _CONSUMED
@@ -340,16 +338,12 @@ class CursorCapability:
     ) -> CapabilityResult:
         match key:
             case Key.LEFT:
-                session._paste_exit()
                 session._buf.move_left()
             case Key.RIGHT:
-                session._paste_exit()
                 session._buf.move_right()
             case Key.HOME:
-                session._paste_exit()
                 session._buf.move_home()
             case Key.END:
-                session._paste_exit()
                 session._buf.move_end()
             case _:
                 return _PASS
@@ -371,14 +365,12 @@ class HistoryCapability:
     ) -> CapabilityResult:
         match key:
             case Key.UP:
-                session._paste_exit()
                 if not session._buf.move_up():
                     result = session._hist.up(session._buf.buf)
                     if result is not None:
                         session._buf.set(result)
                         session._paste.condensed = False
             case Key.DOWN:
-                session._paste_exit()
                 if not session._buf.move_down():
                     result = session._hist.down(session._buf.buf)
                     if result is not None:
@@ -431,13 +423,6 @@ class InsertCapability:
     ) -> CapabilityResult:
         if key != Key.CHAR or not ch:
             return _PASS
-        # Whitespace is ordinary text after a condensed paste.  Keep the
-        # placeholder collapsed so typing a space does not redraw the whole
-        # pasted payload and destabilise the Live layout.  Ctrl+V remains the
-        # explicit way to expand the paste; other edits retain the existing
-        # behaviour of leaving condensed mode.
-        if not ch.isspace():
-            session._paste_exit()
         # Re-enter trigger overlay when typing into an existing trigger token.
         if not ch.isspace() and session._buf.cursor == len(session._buf):
             tail = session._find_trigger_tail()

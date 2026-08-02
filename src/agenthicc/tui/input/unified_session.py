@@ -147,18 +147,15 @@ class UnifiedInputSession:
     def _push(self) -> None:
         inp = self._state.input
         if self._paste.condensed:
+            display_buf, display_cursor = self._paste._condensed_view(self._buf)
             inp.update(
-                list(self._buf.buf),
-                self._buf.cursor,
+                display_buf,
+                display_cursor,
                 paste_condensed=True,
                 paste_label=self._paste.label,
             )
         else:
             inp.update(list(self._buf.buf), self._buf.cursor)
-
-    def _paste_exit(self) -> None:
-        if self._paste.condensed:
-            self._paste.expand()
 
     def _ctrl_c_sequence(self) -> _ExitSentinel | None:
         self._ctrl_c_count += 1

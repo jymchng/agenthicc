@@ -62,6 +62,17 @@ class TestExpand:
         ps.expand()
         assert not ps.condensed
 
+    def test_condensed_view_keeps_text_typed_after_paste_visible(self) -> None:
+        buf = InputBuffer(list("prefix"))
+        ps = PasteState()
+        ps.apply(buf, "a\nb\nc\nd", _COLS)
+        buf.insert("G")
+
+        display, cursor = ps._condensed_view(buf)
+
+        assert "".join(display) == f"prefix{ps.label}G"
+        assert cursor == len(display)
+
 
 class TestBackspace:
     def test_backspace_deletes_entire_paste(self) -> None:

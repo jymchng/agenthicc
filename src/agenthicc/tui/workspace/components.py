@@ -357,13 +357,18 @@ class ComposerComponent:
         from agenthicc.tui.input.renderer import build_prompt  # noqa: PLC0415
 
         inp = self._state.input
-        cols = _get_cols()
 
-        # Condensed paste label — always a single line, _fit is safe.
+        # UnifiedInputSession projects the hidden paste range into buf while
+        # retaining any text typed before or after it.  Keep the fallback for
+        # callers that construct InputState directly (including overlays and
+        # tests) with only a paste label.
         if inp.paste_condensed():
-            disp_buf = list(inp.paste_label())
-            disp_cursor = len(disp_buf)
-            return Text.from_markup(_fit(build_prompt(disp_buf, disp_cursor), cols))
+            disp_buf = inp.buf()
+            label = inp.paste_label()
+            if disp_buf and label and label in "".join(disp_buf):
+                return _render_multiline(disp_buf, inp.cursor())
+            fallback = list(label)
+            return Text.from_markup(_fit(build_prompt(fallback, len(fallback)), _get_cols()))
 
         # Non-condensed: always use _render_multiline regardless of line count.
         # Single-line buffers produce one Text in the Group — Rich soft-wraps
@@ -374,7 +379,9 @@ class ComposerComponent:
         inp = self._state.input
         buf = inp.buf()
         if inp.paste_condensed():
-            return 1
+            label = inp.paste_label()
+            if not label or label not in "".join(buf):
+                return 1
         lines = "".join(buf).split("\n") if buf else [""]
         total = 0
         for i, line in enumerate(lines):
