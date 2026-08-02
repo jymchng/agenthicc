@@ -93,6 +93,12 @@ Current triggers include:
 - `@` — project file/mention picker;
 - trigger selection may update the input buffer or submit immediately.
 
+Large bracketed pastes stay behind a single `[Pasted text #N ...]` composer
+placeholder while the user continues typing. Whitespace, including a normal
+space, does not expand the paste or redraw its full contents; use `Ctrl+V` when
+the full pasted text should be shown. Backspace removes a condensed paste as a
+single block, and Enter submits its original contents.
+
 While the agent is responding, submitted input is classified before it enters
 the session queue. Local read-only commands and run controls can execute
 immediately; ordinary requests, skills, mutations, and workflow actions show

@@ -431,7 +431,13 @@ class InsertCapability:
     ) -> CapabilityResult:
         if key != Key.CHAR or not ch:
             return _PASS
-        session._paste_exit()
+        # Whitespace is ordinary text after a condensed paste.  Keep the
+        # placeholder collapsed so typing a space does not redraw the whole
+        # pasted payload and destabilise the Live layout.  Ctrl+V remains the
+        # explicit way to expand the paste; other edits retain the existing
+        # behaviour of leaving condensed mode.
+        if not ch.isspace():
+            session._paste_exit()
         # Re-enter trigger overlay when typing into an existing trigger token.
         if not ch.isspace() and session._buf.cursor == len(session._buf):
             tail = session._find_trigger_tail()

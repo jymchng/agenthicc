@@ -209,6 +209,41 @@ async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> No
 
 
 @pytest.mark.asyncio
+async def test_space_does_not_expand_condensed_paste() -> None:
+    session = _FakeSession()
+    session._paste.apply(session._buf, "a\nb\nc\nd", 80)
+    assert session._paste.condensed
+
+    await InsertCapability().handle(Key.CHAR, " ", session)
+
+    assert session._paste.condensed
+    assert session._buf.text.endswith(" ")
+
+    await PasteCapability().handle(Key.CTRL_V, "", session)
+    assert not session._paste.condensed
+
+
+@pytest.mark.asyncio
+async def test_unified_session_keeps_paste_placeholder_after_space() -> None:
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+
+    state = AppState()
+    session = UnifiedInputSession(state, CommandBus())
+
+    await session._dispatch(Key.PASTE, "a\nb\nc\nd")
+    assert state.input.paste_condensed()
+
+    await session._dispatch(Key.CHAR, " ")
+
+    assert state.input.paste_condensed()
+    assert state.input.buf()[-1] == " "
+
+    await session._dispatch(Key.CTRL_V, "")
+    assert not state.input.paste_condensed()
+
+
+@pytest.mark.asyncio
 async def test_trigger_capability_passes_or_opens_registered_trigger() -> None:
     session = _FakeSession()
     handler = SimpleNamespace(can_activate=lambda _pre: True)
