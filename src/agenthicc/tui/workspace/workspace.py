@@ -170,6 +170,16 @@ class Workspace:
                 pass
             self._live = None
 
+    def flush_scroll(self) -> None:
+        """Flush pending transcript output before an agent interruption.
+
+        The appender normally closes tool groups when it receives the next
+        conversation event.  Cancellation can precede that event, so expose
+        the boundary through the workspace rather than reaching into the
+        renderer from session orchestration.
+        """
+        self.scroll.flush()
+
     async def replay_transcript(self, events: list["ConversationEvent"]) -> None:
         """Display a resumed transcript while showing a loading state.
 

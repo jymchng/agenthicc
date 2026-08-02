@@ -34,6 +34,9 @@ class _Workspace:
     def stop(self) -> None:
         self.stopped = True
 
+    def flush_scroll(self) -> None:
+        pass
+
 
 class _Input:
     def __init__(self) -> None:
@@ -264,6 +267,15 @@ async def test_tui_queue_and_interrupt_paths() -> None:
     assert _input.modes[-1] is InputMode.IDLE
     with pytest.raises(asyncio.CancelledError):
         await session._agent_task
+
+
+def test_interrupt_flushes_pending_tool_summary() -> None:
+    session, _ctx, workspace, _input = _make_session()
+    from unittest.mock import MagicMock
+
+    workspace.flush_scroll = MagicMock()
+    session.handle_interrupt(InterruptAgentCommand())
+    workspace.flush_scroll.assert_called_once_with()
 
 
 @pytest.mark.asyncio

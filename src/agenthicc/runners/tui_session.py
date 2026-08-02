@@ -1860,6 +1860,11 @@ class TUISession:
 
     def handle_interrupt(self, cmd: "InterruptAgentCommand") -> None:
         """Cancel, or cooperatively pause, the current agent task."""
+        # Cancellation may happen before the agent's ``turn_complete`` event
+        # is delivered.  Flush the appender first so a collapsed tool group is
+        # committed to the scroll buffer rather than stranded in the live
+        # footer while the task unwinds.
+        self._workspace.flush_scroll()
         handle = self._workflow_handle
         if (
             getattr(cmd, "disposition", "cancel") == "pause"

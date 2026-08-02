@@ -227,6 +227,43 @@ class TestSummaryLine:
         assert len(_tool_lines(lines)) == _LIMIT
         assert any("3 more tool calls" in s for s in lines)
 
+    def test_overflow_summary_precedes_next_assistant_header(self):
+        appender, console = _make_appender()
+        events = [_tool(name="shell") for _ in range(_LIMIT + 32)]
+        events.extend(
+            [
+                _ev("turn_complete", elapsed_s=1.0),
+                _ev("user_message", text="continue"),
+                _ev("turn_start", agent_name="assistant"),
+            ]
+        )
+
+        _flush(appender, events)
+
+        lines = _str_calls(console)
+        run_index = next(i for i, line in enumerate(lines) if "[bold]Run[/bold]" in line)
+        summary_index = next(
+            i for i, line in enumerate(lines) if "...and 32 more tool calls" in line
+        )
+        assistant_index = next(
+            i for i, line in enumerate(lines) if "[bold]assistant[/bold]" in line
+        )
+        assert run_index < summary_index < assistant_index
+
+    def test_flush_persists_overflow_when_interrupted_without_boundary_event(self):
+        appender, console = _make_appender()
+        _flush(appender, [_tool(name="shell") for _ in range(_LIMIT + 4)])
+
+        # An interrupt can cancel the agent before its turn_complete event is
+        # delivered.  The workspace explicitly flushes the appender at that
+        # boundary, so the summary must not remain in the live footer.
+        appender.flush()
+
+        lines = _str_calls(console)
+        assert any("...and 4 more tool calls" in s for s in lines)
+        assert appender._group_count == 0
+        assert appender._state.conversation.live_tool_overflow.set.call_args.args == (0,)
+
 
 # ── ConversationStore signal ──────────────────────────────────────────────────
 

@@ -57,6 +57,9 @@ bounded numbered output preview. File edits use the richer `● Update(...)`
 block with its unified diff. Each contiguous change block shows at most six
 changed rows; longer blocks retain their first and last three rows and show a
 single `...` omission row so large edits do not flood the scroll buffer.
+When a tool group is collapsed, its `...and N more tool calls` line is flushed
+to the scroll buffer at the next conversation boundary and immediately when
+the agent is interrupted; it is never left only in the live status footer.
 
 ## Modes
 

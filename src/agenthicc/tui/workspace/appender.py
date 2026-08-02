@@ -219,10 +219,28 @@ class ScrollBufferAppender:
         self._unsub = self._state.conversation.on_event(self._queue_event)
 
     def unmount(self) -> None:
-        self._flush_exploration_group()
+        # Shutdown can race the final cancellation/turn event.  Drain queued
+        # events and close both kinds of tool group so the live overflow row
+        # cannot be left behind as the terminal is torn down.
+        self.flush()
         if self._unsub:
             self._unsub()
             self._unsub = None
+
+    def flush(self) -> None:
+        """Render queued events and persist any open tool-group summary.
+
+        Interrupts cancel the agent task before its normal ``turn_complete``
+        event necessarily reaches the appender.  The workspace calls this
+        method at that boundary so the collapsed tool count is printed in the
+        scroll buffer instead of remaining in the live footer.  It is safe to
+        call repeatedly; both group counters are reset after flushing.
+        """
+        if self._pending or self._flush_scheduled:
+            self._flush_batch()
+        with self._console:
+            self._flush_exploration_group()
+            self._flush_group_summary()
 
     def replay(
         self,
@@ -277,6 +295,11 @@ class ScrollBufferAppender:
         """Dispatch to the registered renderer for ev.kind; silently ignore unknown kinds."""
         if ev.kind != "tool_complete":
             self._flush_exploration_group()
+            # Close regular tool groups before any boundary event. In
+            # particular, a turn_start used to reset _group_count before the
+            # overflow summary was printed, leaving the live footer's
+            # ``...and N more`` line below the next assistant header.
+            self._flush_group_summary()
         renderer = _RENDERERS.get(ev.kind)
         if renderer is not None:
             renderer(self, ev)

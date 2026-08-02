@@ -1302,12 +1302,15 @@ class Workspace:
     def __init__(self, app_state: AppState, console: Console, max_live_tool_calls: int = 5) -> None: ...
     def start(self) -> None: ...
     def stop(self) -> None: ...
+    def flush_scroll(self) -> None: ...
 ```
 
 The Rich Live root owns one terminal block for the application lifetime. It
 renders status, composer, footer, overlays, and the scroll-buffer bridge. Start
 it once before the input loop and stop it once during session teardown; do not
-start or stop Live per agent turn.
+start or stop Live per agent turn. `flush_scroll()` commits queued transcript
+events and collapsed tool-group summaries before an agent interruption can
+cancel the normal turn-boundary event.
 
 ### ConversationStore and reactive TUI AppState
 
