@@ -5,12 +5,48 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from lauren_ai._transport import Completion, TokenUsage
 
 from agenthicc.subagents.pool import AggregatedResult, SubagentResult, SubagentTask, SubagentPool
 from agenthicc.subagents.types import DEFAULT_REGISTRY
 from agenthicc.tui.conversation_store import AppState
 
 pytestmark = pytest.mark.unit
+
+
+class _NullUsageTransport:
+    """OpenAI-compatible endpoint that omits usage values."""
+
+    async def complete(self, messages: list[object], **kwargs: object) -> Completion:
+        return Completion(
+            id="completion",
+            model="model",
+            content="done",
+            tool_calls=[],
+            stop_reason="end_turn",
+            usage=TokenUsage(input_tokens=None, output_tokens=None),  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.asyncio
+async def test_pool_normalizes_nullable_provider_usage_for_large_batch() -> None:
+    """Ten workers must not fail on ``int + None`` usage arithmetic."""
+    from agenthicc.subagents.pool import SubagentPool, SubagentTask
+
+    pool = SubagentPool(
+        [SubagentTask(f"task-{i}", "researcher", "research") for i in range(10)],
+        parent_runner=SimpleNamespace(_transport=_NullUsageTransport()),
+        parent_model="model",
+        all_tools=[],
+        max_concurrent=4,
+        registry=DEFAULT_REGISTRY,
+    )
+
+    result = await pool.run()
+
+    assert result.total == 10
+    assert result.succeeded == 10
+    assert result.failed == 0
 
 
 @pytest.mark.asyncio

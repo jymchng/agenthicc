@@ -108,6 +108,9 @@ printing their values.
 `default_query`, and `client_options` configure the underlying provider client.
 Profile secrets are resolved again when a resumed session starts; workflow
 checkpoints store only the profile name and never store resolved credentials.
+OpenAI-compatible endpoints may omit token-usage fields; spawned subagents
+normalize those unavailable counts so the response remains usable instead of
+failing with an `int + NoneType` error.
 
 Environment variables are safer for credentials:
 

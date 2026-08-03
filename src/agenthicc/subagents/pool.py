@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, cast
+from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass, field, fields, replace
+from typing import TYPE_CHECKING, Protocol, cast
 
 from agenthicc.subagents.types import SubagentTypeSpec, SubagentTypeRegistry, DEFAULT_REGISTRY
 
@@ -32,6 +32,100 @@ __all__ = [
 ]
 
 _MAX_RESULT_CHARS = 2_000
+
+
+class _TransportLike(Protocol):
+    """Minimal transport surface used by the usage-normalising proxy."""
+
+    async def complete(self, messages: list[object], **kwargs: object) -> object: ...
+
+
+def _token_count(value: object) -> int:
+    """Return a safe integer for provider usage fields.
+
+    OpenAI-compatible gateways are allowed to return ``null`` for usage
+    fields, especially when usage accounting is disabled.  Lauren-ai's
+    ``TokenUsage.__add__`` assumes those fields are integers and otherwise
+    raises ``TypeError: int + NoneType`` while a subagent is finishing.
+    Missing or malformed counts mean *unknown*, not a failed worker; use zero
+    and preserve the worker's actual response.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        return max(0, int(value))
+    if isinstance(value, str):
+        try:
+            return max(0, int(value))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _usage_field(usage: object | None, name: str, default: object = 0) -> object:
+    """Read a possibly absent usage attribute without assuming a provider type."""
+    if usage is None:
+        return default
+    try:
+        return object.__getattribute__(usage, name)
+    except AttributeError:
+        return default
+
+
+def _normalise_usage(usage: object | None) -> object:
+    """Convert a provider's nullable usage object to Lauren's numeric type."""
+    from lauren_ai._transport import TokenUsage  # noqa: PLC0415
+
+    available = {item.name for item in fields(TokenUsage)}
+    values: dict[str, object] = {
+        "input_tokens": _token_count(_usage_field(usage, "input_tokens")),
+        "output_tokens": _token_count(_usage_field(usage, "output_tokens")),
+        "cache_read_tokens": _token_count(_usage_field(usage, "cache_read_tokens")),
+        "cache_write_tokens": _token_count(_usage_field(usage, "cache_write_tokens")),
+        "reasoning_tokens": _token_count(_usage_field(usage, "reasoning_tokens")),
+        "audio_input_tokens": _token_count(_usage_field(usage, "audio_input_tokens")),
+        "audio_output_tokens": _token_count(_usage_field(usage, "audio_output_tokens")),
+    }
+    metadata = _usage_field(usage, "provider_metadata", {})
+    values["provider_metadata"] = dict(metadata) if isinstance(metadata, Mapping) else {}
+    return TokenUsage(**{name: value for name, value in values.items() if name in available})
+
+
+def _normalise_completion(value: object) -> object:
+    """Replace nullable usage on a completion or stream chunk."""
+    from lauren_ai._transport import Completion, CompletionChunk  # noqa: PLC0415
+
+    if isinstance(value, Completion):
+        return replace(value, usage=_normalise_usage(value.usage))
+    if isinstance(value, CompletionChunk) and value.usage is not None:
+        return replace(value, usage=_normalise_usage(value.usage))
+    return value
+
+
+async def _normalised_stream(stream: AsyncIterator[object]) -> AsyncIterator[object]:
+    """Yield stream chunks with nullable usage fields converted to zero."""
+    async for chunk in stream:
+        yield _normalise_completion(chunk)
+
+
+class _UsageNormalisingTransport:
+    """Transparent transport proxy that protects Lauren's usage arithmetic."""
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+
+    async def complete(self, messages: list[object], **kwargs: object) -> object:
+        transport = cast(_TransportLike, self._inner)
+        result = await transport.complete(messages, **kwargs)
+        if kwargs.get("stream") is True:
+            return _normalised_stream(cast(AsyncIterator[object], result))
+        return _normalise_completion(result)
+
+    def __getattr__(self, name: str) -> object:
+        """Delegate optional transport methods such as ``count_tokens``."""
+        return object.__getattribute__(self._inner, name)
 
 
 # ── TUI state models ──────────────────────────────────────────────────────────
@@ -242,7 +336,10 @@ class SubagentWorker:
             hooks.append(ToolCapabilityGate(self._app_state))
 
         runner = _RunnerBase(
-            transport=self._parent_runner._transport,
+            # OpenAI-compatible endpoints may return nullable usage fields.
+            # Lauren's non-streaming runner adds those fields directly, so
+            # isolate each worker behind the normalising proxy.
+            transport=_UsageNormalisingTransport(self._parent_runner._transport),
             global_hooks=hooks or None,
         )
 
