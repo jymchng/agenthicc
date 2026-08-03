@@ -93,8 +93,8 @@ def make_spawn_subagents_tool(
         Each subagent runs in isolation with its own memory and a filtered tool set.
         Results are returned as a labelled plain-text digest you can reason over.
 
-        Available agent types: explorer, planner, implementer, tester, reviewer,
-        documenter, verifier, researcher.
+        Available agent types: explorer, planner, implementer, executor, tester,
+        reviewer, documenter, verifier, researcher.
 
         Args:
             tasks: List of task objects. Each must have:
@@ -156,6 +156,7 @@ def make_spawn_subagents_tool(
                 "total": len(subagent_tasks),
                 "succeeded": len(subagent_tasks),
                 "failed": 0,
+                "error": "",
                 "results": cached,
             }
 
@@ -178,8 +179,10 @@ def make_spawn_subagents_tool(
         )
         result = await pool.run()
 
-        # Persist result for resume.
-        if conv_store is not None:
+        # Only a completely successful pool is a safe resume cache entry.
+        # Caching a partial result would make a resumed call silently reuse a
+        # failed/timeout outcome and report it as successful.
+        if conv_store is not None and result.failed == 0:
             conv_store.append_event(
                 "subagent_pool_result",
                 {
@@ -187,15 +190,17 @@ def make_spawn_subagents_tool(
                     "text": result.text,
                     "total": result.total,
                     "succeeded": result.succeeded,
+                    "failed": result.failed,
                 },
             )
 
         return {
-            "ok": True,
+            "ok": result.failed == 0,
             "pool_id": result.pool_id,
             "total": result.total,
             "succeeded": result.succeeded,
             "failed": result.failed,
+            "error": "" if result.failed == 0 else f"{result.failed} subagent(s) failed",
             "results": result.text,
         }
 
@@ -234,5 +239,19 @@ def _find_cached_result(conv_store: "ConversationStore | None", fingerprint: str
             if getattr(ev, "kind", "") == "subagent_pool_result":
                 payload = getattr(ev, "payload", {})
                 if payload.get("fingerprint") == fingerprint:
+                    # Pre-PRD-124 records did not include ``failed``.  For
+                    # those records, the legacy succeeded/total pair is the
+                    # next-best signal; records with an explicit failure are
+                    # never eligible for replay.
+                    if payload.get("failed", 0):
+                        continue
+                    total = payload.get("total")
+                    succeeded = payload.get("succeeded")
+                    if total is not None and succeeded is not None:
+                        try:
+                            if int(succeeded) < int(total):
+                                continue
+                        except (TypeError, ValueError):
+                            continue
                     return str(payload.get("text", ""))
     return None

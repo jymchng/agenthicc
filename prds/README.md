@@ -33,6 +33,7 @@ against the current source before implementing them.
 - [PRD-163 — Cache-Stable Workflow Prompts and Generated Workflows](prd-163-cache-stable-workflow-prompts-and-generated-workflows.md)
 - [PRD-164 — Suppress Repeated Idle TUI Status Frames](prd-164-repeated-idle-status-frames.md)
 - [PRD-165 — Suppress Approval-Wait Redraw Loops](prd-165-approval-wait-redraw-suppression.md)
+- [PRD-166 — Terminal-Safe Active Animation Rendering](prd-166-terminal-safe-active-animation.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -166,6 +167,11 @@ PRD-165 specifies the separate approval-wait redraw loop. It keeps the
 wall-clock activity duration available for telemetry while preventing paused
 `activity_elapsed_s` updates from repainting an unchanged Plan Review, tool
 approval, or Questions overlay every session tick.
+
+PRD-166 specifies the active-animation output policy. It preserves flower and
+Thinking animation for replacement-capable terminals while using append-safe
+snapshot behavior for captured or ANSI-insensitive clients, preventing active
+status frames from appearing as duplicate transcript history.
 
 ## Existing PRDs
 

@@ -99,6 +99,15 @@ _IMPLEMENTER_PROMPT = (
     "End your response with a brief summary of exactly what you changed and why."
 )
 
+_EXECUTOR_PROMPT = (
+    "You are a general execution agent. "
+    "Your job is to carry out the requested implementation or build task end to end. "
+    "Inspect the workspace before changing it, use the available filesystem and command tools, "
+    "and verify the result rather than claiming success from an unexecuted plan. "
+    "Keep changes scoped to the task and report commands, important output, and any remaining "
+    "failure clearly. End your response with a concise completion summary."
+)
+
 _TESTER_PROMPT = (
     "You are a test engineer. "
     "Your job is to write or run tests for the component described in your task. "
@@ -189,6 +198,21 @@ _IMPLEMENTER_TOOLS = frozenset(
     }
 )
 
+# ``executor`` is the subagent equivalent of the built-in workflow executor
+# role.  It deliberately has the implementer's write tools plus the command
+# tools required for build/compile tasks.  The parent session still supplies
+# the mode/capability-filtered tool list, so adding a name here cannot bypass
+# the active security ceiling.
+_EXECUTOR_TOOLS = _IMPLEMENTER_TOOLS | frozenset(
+    {
+        "shell",
+        "run_bash",
+        "run_command",
+        "run_python",
+        "run_tests",
+    }
+)
+
 _TESTER_TOOLS = frozenset(
     {
         "read_file",
@@ -274,6 +298,13 @@ _BUILTIN_SPECS: list[SubagentTypeSpec] = [
         max_turns=20,
         system_prompt=_IMPLEMENTER_PROMPT,
         max_turn_time_s=180.0,
+    ),
+    SubagentTypeSpec(
+        name="executor",
+        allowed_tools=_EXECUTOR_TOOLS,
+        max_turns=24,
+        system_prompt=_EXECUTOR_PROMPT,
+        max_turn_time_s=300.0,
     ),
     SubagentTypeSpec(
         name="tester",
@@ -379,5 +410,5 @@ def _build_default_registry() -> SubagentTypeRegistry:
     return reg
 
 
-#: Process-level default registry pre-loaded with all 8 built-in types.
+#: Process-level default registry pre-loaded with all 9 built-in types.
 DEFAULT_REGISTRY: SubagentTypeRegistry = _build_default_registry()

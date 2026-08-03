@@ -341,6 +341,19 @@ standard turn boundary must explicitly use `UsageLedger` and preserve the
 session `conversation_id`, or its provider calls are outside the automatic
 workflow accounting contract.
 
+### Delegating execution work
+
+The session-wide `spawn_subagents` tool accepts the same `executor` role name
+used by workflow phases. It is a write-capable, build-capable worker: its
+available command and filesystem tools are still intersected with the parent
+session's active mode and capability gate, so the role does not bypass Safe or
+Yolo policy. Use it for tasks such as compiling a generated book or running a
+build; use `implementer` for a narrower file-only change.
+
+Subagent timeouts and worker failures are returned as failed results. A partial
+pool is never reported as `ok: true` and is not placed in the resume cache;
+the parent agent can retry only the failed task or complete it directly.
+
 ### Checkpointing a custom runner
 
 The framework codecs cover `WorkflowContext`, `CodePlanContext`, and

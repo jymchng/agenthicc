@@ -82,6 +82,17 @@ class TestFindCachedResult:
         conv = self._store_with_result("fp123", "some result")
         assert _find_cached_result(conv, "fp999") is None
 
+    def test_does_not_reuse_partial_result(self) -> None:
+        conv = ConversationStore()
+        conv.begin_turn("a", "t1")
+        conv.append_event(
+            "subagent_pool_result",
+            {"fingerprint": "fp123", "text": "timed out", "total": 2, "succeeded": 1, "failed": 1},
+        )
+        conv.close_turn()
+
+        assert _find_cached_result(conv, "fp123") is None
+
     def test_returns_most_recent_match(self) -> None:
         conv = ConversationStore()
         conv.begin_turn("a", "t1")
@@ -139,3 +150,4 @@ class TestResumeCacheRoundTrip:
         assert result2["ok"]
         assert result2["results"] == fake_result.text
         assert result2["pool_id"] == "cached"
+        assert result2["error"] == ""

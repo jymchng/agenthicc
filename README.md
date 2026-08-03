@@ -90,6 +90,11 @@ Use `agenthicc config validate` before a run; secret values are never printed.
 For one-off credentials, use `--set-secret PATH=ENV_VAR`; it stores only an
 environment-variable reference and resolves the value at provider startup.
 
+The built-in `spawn_subagents` tool accepts the workflow-compatible `executor`
+role for build and compile tasks. Executor workers inherit the parent session's
+capability and approval policy; timeouts and partial failures are reported as
+failures and are not reused by resume.
+
 ## First run
 
 Create a project config if desired:
@@ -235,7 +240,8 @@ waiting, the status animation and cached active-work timer stay fixed; the
 wall-clock duration is retained for turn telemetry.
 Idle sessions do not publish animation frames or repaint the unchanged Live
 status at the session tick rate, preventing duplicate idle panels in captured
-terminal output.
+terminal output. Approval, plan-review, and question waits likewise retain
+their wall-clock telemetry without repainting an unchanged prompt every tick.
 
 Tool completions use the same operation-style header as file updates: reads,
 searches, commands, and other tools show a `● Operation(...)` header, a result

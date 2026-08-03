@@ -158,9 +158,10 @@ status bar changes from the animated Thinking state to a stable waiting label.
 The Thinking duration is the total wall-clock time for the outer user activity:
 it continues across internal LLM turns and workflow phases and ends only when
 the activity returns to IDLE. Resize redraws do not derive a new timestamp
-directly; the cached activity clock is refreshed by the shared tick. The older
-per-turn active-work clock remains available for turn-level telemetry and
-waiting-modal behavior. When the activity returns to IDLE, the scroll buffer
+directly; while a prompt owns the terminal, the tick retains the activity
+start point without publishing a timer redraw every 50 ms. The older per-turn
+active-work clock remains available for turn-level telemetry and waiting-modal
+behavior. When the activity returns to IDLE, the scroll buffer
 prints a final `✾ Total wall clock time since last IDLE: …` line after the per-turn
 `✾ Worked for …` line; the latter is separated from following output by a blank
 line.

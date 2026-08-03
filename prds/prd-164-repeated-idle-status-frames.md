@@ -19,6 +19,9 @@ tags:
 
 # PRD-164 — Suppress Repeated Idle TUI Status Frames
 
+> Approval-wait timer redraws are a separate issue covered by PRD-165. PRD-164
+> owns the static idle `frame` contract; it does not own prompt-wait timing.
+
 ## 1. Executive summary
 
 After an agent response completes, agenthicc can visibly append the same idle

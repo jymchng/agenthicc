@@ -229,7 +229,13 @@ class ConversationStore:
             self.display_elapsed_s.set(self.display_elapsed_s() + delta)
 
     def _advance_activity_clock(self, now: float) -> None:
-        """Refresh the total wall-clock duration of the outer agent activity."""
+        """Refresh the visible total wall-clock duration of outer activity.
+
+        Prompt waits deliberately do not call this helper from the periodic
+        tick.  The start timestamp remains authoritative, so callers such as
+        ``end_activity`` can still capture the complete wall-clock duration
+        once without publishing a visually unchanged value every 50 ms.
+        """
 
         if not self._activity_active:
             return
@@ -301,6 +307,11 @@ class ConversationStore:
         self._advance_display_clock(now)
         self._display_paused = paused
         self._last_display_tick = now
+        if not paused:
+            # Publish one current outer-activity value at the response
+            # boundary so the first non-waiting render is not stale. The
+            # workspace coalesces this with the pending-state redraw.
+            self._advance_activity_clock(now)
 
     def tick(self, *, paused: bool | None = None) -> None:
         """Advance active animation and cached active-work time.
@@ -314,10 +325,14 @@ class ConversationStore:
         if paused is not None:
             self.set_display_paused(paused)
         now = time.monotonic()
-        self._advance_activity_clock(now)
         self._advance_display_clock(now)
         if self._display_paused:
             return
+        # The activity start timestamp remains live while a prompt owns the
+        # terminal, but publishing its changing wall-clock value would redraw
+        # the same frozen waiting modal on every session tick. Capture the
+        # elapsed value again when the wait ends or the activity completes.
+        self._advance_activity_clock(now)
         # Idle/complete/error status is static. Publishing a frame on every
         # idle tick would cause Workspace to refresh the Live block at 20 Hz;
         # terminals or captured clients that do not interpret Rich's erase

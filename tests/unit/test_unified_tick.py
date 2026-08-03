@@ -173,6 +173,41 @@ class TestElapsedSProperty:
         conv.tick()
         assert conv.display_elapsed_s() == pytest.approx(2.0)
 
+    def test_paused_ticks_do_not_publish_activity_timer_updates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import agenthicc.tui.conversation_store as conversation_store_module  # noqa: PLC0415
+
+        now = 100.0
+        monkeypatch.setattr(conversation_store_module.time, "monotonic", lambda: now)
+        conv = ConversationStore()
+        conv.begin_turn("agent", "t1")
+
+        now = 101.0
+        conv.tick()
+        updates: list[float] = []
+        conv.activity_elapsed_s.subscribe(lambda: updates.append(conv.activity_elapsed_s()))
+
+        conv.set_display_paused(True)
+        now = 111.0
+        conv.tick()
+        now = 113.0
+        conv.tick()
+
+        assert updates == []
+        assert conv.activity_elapsed_s() == pytest.approx(1.0)
+        assert conv.display_elapsed_s() == pytest.approx(1.0)
+
+        # The first active tick publishes the complete wall-clock duration
+        # once, while the display clock resumes from its paused baseline.
+        conv.set_display_paused(False)
+        assert updates == [pytest.approx(13.0)]
+        now = 114.0
+        conv.tick()
+        assert updates == [pytest.approx(13.0), pytest.approx(14.0)]
+        assert conv.activity_elapsed_s() == pytest.approx(14.0)
+        assert conv.display_elapsed_s() == pytest.approx(2.0)
+
     def test_pending_signal_controls_display_pause_without_tick_override(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -243,10 +278,10 @@ class TestElapsedSProperty:
         assert conv.agent_state() != AgentState.IDLE
         now = 108.0
         conv.tick(paused=True)  # no turn, but outer activity continues through a wait
-        assert conv.activity_elapsed_s() == pytest.approx(8.0)
+        assert conv.activity_elapsed_s() == pytest.approx(3.0)
         now = 110.0
         conv.tick(paused=True)
-        assert conv.activity_elapsed_s() == pytest.approx(10.0)
+        assert conv.activity_elapsed_s() == pytest.approx(3.0)
 
         conv.begin_turn("agent", "phase-2")
         now = 111.0

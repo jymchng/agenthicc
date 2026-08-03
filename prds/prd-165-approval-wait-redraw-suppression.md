@@ -1,6 +1,6 @@
 ---
 title: "PRD-165: Suppress Approval-Wait Redraw Loops"
-status: Proposed
+status: Implemented
 version: 1.0.0
 created: 2026-08-03
 related_prds:
@@ -548,7 +548,31 @@ user answers, session identifiers, or provider credentials while diagnosing
 redraw reasons. Reducing repeated Live writes also reduces accidental exposure
 of transient prompt content in captured terminal output.
 
-## 14. Documentation updates required with implementation
+## 14. Implementation evidence
+
+The implementation is complete in the current source tree:
+
+- `ConversationStore.tick()` now retains the activity start timestamp while a
+  prompt is paused without publishing `activity_elapsed_s` on every tick.
+- `Workspace` routes activity timing through `_redraw_activity()`, which
+  ignores timer-only writes while `pending_approval` owns the terminal.
+- `tests/unit/test_unified_tick.py` verifies frozen activity/display/frame
+  signals during waits, one-time publication after resume, and final
+  wall-clock duration preservation.
+- `tests/unit/test_workspace_redraw.py` verifies the prompt guard and active
+  activity redraw path.
+- `tests/integration/test_approval_wait_redraw_integration.py` verifies the
+  real store-to-Live boundary for tool, plan-review, and question prompts.
+- `tests/e2e/test_approval_wait_redraw_e2e.py` verifies captured-console output
+  contains one prompt surface after repeated paused ticks.
+
+Validation run on 2026-08-03: `pytest tests/ -q` completed with 3,138 passed
+and 15 skipped; Ruff, formatting, type audit, and `git diff --check` passed.
+The repository-wide mypy command remains blocked by the pre-existing optional
+`name_that_ui` import and NumPy stub/Python-version mismatch; this change adds
+no new mypy diagnostic.
+
+## 15. Documentation updates required with implementation
 
 When implemented, update:
 
@@ -561,7 +585,7 @@ When implemented, update:
 - this PRD's status and implementation evidence with exact verification
   results.
 
-## 15. Verification commands
+## 16. Verification commands
 
 At minimum, run:
 
@@ -577,7 +601,7 @@ uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.
 git diff --check
 ```
 
-## 16. Open decisions
+## 17. Open decisions
 
 1. Whether to keep `activity_elapsed_s` as a public reactive signal that is
    merely silent while paused, or split its internal wall-clock accumulator

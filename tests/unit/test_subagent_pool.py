@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 import pytest
 
 from agenthicc.subagents.types import (
@@ -19,6 +21,7 @@ from agenthicc.subagents.pool import (
     _aggregate,
     _UnknownTypeWorker,
 )
+from agenthicc.subagents.tool import _find_cached_result, _tasks_fingerprint
 
 pytestmark = pytest.mark.unit
 
@@ -27,10 +30,10 @@ pytestmark = pytest.mark.unit
 
 
 class TestSubagentTypeRegistry:
-    def test_default_registry_has_eight_types(self) -> None:
+    def test_default_registry_has_nine_types(self) -> None:
         # Use a fresh registry to avoid pollution from plugin tests.
         fresh = _build_default_registry()
-        assert len(fresh.names()) == 8
+        assert len(fresh.names()) == 9
 
     def test_all_builtin_types_present(self) -> None:
         fresh = _build_default_registry()
@@ -38,6 +41,7 @@ class TestSubagentTypeRegistry:
             "explorer",
             "planner",
             "implementer",
+            "executor",
             "tester",
             "reviewer",
             "documenter",
@@ -100,6 +104,12 @@ class TestSubagentTypeSpec:
         assert spec is not None
         assert "write_file" in spec.allowed_tools
         assert "patch_file" in spec.allowed_tools
+
+    def test_executor_can_build_and_verify(self) -> None:
+        spec = DEFAULT_REGISTRY.get("executor")
+        assert spec is not None
+        assert {"write_file", "run_bash", "run_command", "run_tests"} <= spec.allowed_tools
+        assert spec.max_turn_time_s == 300.0
 
     def test_tester_has_execute_tools(self) -> None:
         spec = DEFAULT_REGISTRY.get("tester")
@@ -339,6 +349,39 @@ class TestUnknownTypeWorker:
         assert "#?" in w.label
 
 
+class TestSubagentWorkerTimeout:
+    async def test_timeout_is_a_failed_result_with_actionable_duration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from agenthicc.subagents import pool as pool_module
+
+        async def block(_worker: object) -> str:
+            await asyncio.sleep(0.05)
+            return "never reached"
+
+        monkeypatch.setattr(pool_module.SubagentWorker, "_execute", block)
+        spec = SubagentTypeSpec(
+            name="short",
+            allowed_tools=frozenset(),
+            max_turns=1,
+            system_prompt="",
+            max_turn_time_s=0.001,
+        )
+        worker = pool_module.SubagentWorker(
+            task=SubagentTask("t1", "short", "wait"),
+            spec=spec,
+            index=1,
+            parent_runner=object(),  # type: ignore[arg-type]
+            parent_model="model",
+            all_tools=[],
+        )
+
+        result = await worker.run()
+
+        assert result.ok is False
+        assert "timed out after" in result.error
+
+
 # ── spawn_subagents tool validation ──────────────────────────────────────────
 
 
@@ -362,6 +405,63 @@ class TestSpawnSubagentsTool:
         result = await fn(tasks=[{"type": "unicorn", "task": "do magic"}])
         assert not result["ok"]
         assert "unicorn" in result["error"]
+
+    async def test_executor_role_is_accepted(self) -> None:
+        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+
+        class FakeRunner:
+            _transport = None
+
+        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [])
+        fake_result = SimpleNamespace(
+            pool_id="pool-executor",
+            total=1,
+            succeeded=1,
+            failed=0,
+            text="compiled",
+        )
+        with patch(
+            "agenthicc.subagents.pool.SubagentPool.run",
+            new=AsyncMock(return_value=fake_result),
+        ):
+            result = await fn(tasks=[{"type": "executor", "task": "compile the project"}])
+
+        assert result["ok"] is True
+        assert result["succeeded"] == 1
+        assert result["results"] == "compiled"
+
+    async def test_failed_pool_is_not_reported_as_success_or_cached(self) -> None:
+        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+        from agenthicc.tui.conversation_store import ConversationStore  # noqa: PLC0415
+
+        class FakeRunner:
+            _transport = None
+
+        conv = ConversationStore()
+        conv.begin_turn("agent", "t1")
+        fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
+        fake_result = SimpleNamespace(
+            pool_id="pool-timeout",
+            total=1,
+            succeeded=0,
+            failed=1,
+            text="=== executor #1 (✗ timed out after 300s) ===",
+        )
+        with patch(
+            "agenthicc.subagents.pool.SubagentPool.run",
+            new=AsyncMock(return_value=fake_result),
+        ):
+            result = await fn(tasks=[{"type": "executor", "task": "compile the project"}])
+
+        assert result["ok"] is False
+        assert result["failed"] == 1
+        assert "failed" in result["error"]
+        assert (
+            _find_cached_result(
+                conv, _tasks_fingerprint([SubagentTask("t0", "executor", "compile the project")])
+            )
+            is None
+        )
 
     async def test_missing_type_returns_error(self) -> None:
         fn = self._make_tool()

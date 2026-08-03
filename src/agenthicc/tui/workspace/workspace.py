@@ -102,7 +102,6 @@ class Workspace:
             conv.agent_state,
             conv.active_tool,
             conv.model_name,
-            conv.activity_elapsed_s,
             conv.display_elapsed_s,
             conv.tokens_in,
             conv.tokens_out,
@@ -130,6 +129,11 @@ class Workspace:
             conv.terminal_running_count,
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
+        # Activity timing is a visible signal during active work, but its
+        # wall-clock value is intentionally not rendered while approval or
+        # question input owns the terminal. Keep this callback separate so a
+        # compatibility writer cannot repaint an unchanged waiting modal.
+        self._unsubs.append(conv.activity_elapsed_s.subscribe(self._redraw_activity))
         # Frame is an animation-only signal. Keep it behind an activity guard
         # so compatibility code that writes it while idle cannot repaint an
         # unchanged Live block into clients that do not interpret ANSI erase
@@ -311,7 +315,15 @@ class Workspace:
     def _redraw_frame(self) -> None:
         """Refresh only when a frame can change a visible animation."""
         conv = self._state.conversation
+        if self._state.pending_approval() is not None:
+            return
         if not conv.is_running() and not conv.compaction_active():
+            return
+        self._redraw()
+
+    def _redraw_activity(self) -> None:
+        """Refresh activity timing unless a prompt owns the terminal."""
+        if self._state.pending_approval() is not None:
             return
         self._redraw()
 

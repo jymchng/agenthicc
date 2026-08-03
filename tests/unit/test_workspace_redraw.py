@@ -48,6 +48,7 @@ def test_frame_redraw_is_suppressed_for_static_idle_state() -> None:
 
 def test_frame_redraw_is_forwarded_for_active_animation() -> None:
     state = MagicMock()
+    state.pending_approval.return_value = None
     state.conversation.is_running.return_value = True
     state.conversation.compaction_active.return_value = False
     workspace = Workspace(state, MagicMock())
@@ -60,12 +61,48 @@ def test_frame_redraw_is_forwarded_for_active_animation() -> None:
 
 def test_frame_redraw_is_forwarded_during_compaction() -> None:
     state = MagicMock()
+    state.pending_approval.return_value = None
     state.conversation.is_running.return_value = False
     state.conversation.compaction_active.return_value = True
     workspace = Workspace(state, MagicMock())
     workspace._redraw = MagicMock()
 
     workspace._redraw_frame()
+
+    workspace._redraw.assert_called_once_with()
+
+
+def test_frame_redraw_is_suppressed_while_prompt_is_pending() -> None:
+    state = MagicMock()
+    state.pending_approval.return_value = object()
+    state.conversation.is_running.return_value = True
+    state.conversation.compaction_active.return_value = False
+    workspace = Workspace(state, MagicMock())
+    workspace._redraw = MagicMock()
+
+    workspace._redraw_frame()
+
+    workspace._redraw.assert_not_called()
+
+
+def test_activity_redraw_is_suppressed_while_prompt_is_pending() -> None:
+    state = MagicMock()
+    state.pending_approval.return_value = object()
+    workspace = Workspace(state, MagicMock())
+    workspace._redraw = MagicMock()
+
+    workspace._redraw_activity()
+
+    workspace._redraw.assert_not_called()
+
+
+def test_activity_redraw_is_forwarded_when_prompt_is_not_pending() -> None:
+    state = MagicMock()
+    state.pending_approval.return_value = None
+    workspace = Workspace(state, MagicMock())
+    workspace._redraw = MagicMock()
+
+    workspace._redraw_activity()
 
     workspace._redraw.assert_called_once_with()
 
