@@ -73,6 +73,48 @@ class TestExpand:
         assert "".join(display) == f"prefix{ps.label}G"
         assert cursor == len(display)
 
+    def test_insert_before_condensed_paste_moves_hidden_range(self) -> None:
+        buf = InputBuffer()
+        ps = PasteState()
+        text = "a\nb\nc\nd"
+        ps.apply(buf, text, _COLS)
+
+        ps.move_home(buf)
+        ps.insert(buf, "G")
+
+        assert buf.text == "G" + text
+        assert buf.cursor == 1
+        assert (ps.start, ps.end) == (1, 1 + len(text))
+        display, cursor = ps._condensed_view(buf)
+        assert "".join(display) == "G" + ps.label
+        assert cursor == 1
+
+    def test_insert_inside_condensed_paste_is_placed_after_hidden_range(self) -> None:
+        buf = InputBuffer()
+        ps = PasteState()
+        text = "a\nb\nc\nd"
+        ps.apply(buf, text, _COLS)
+        buf.cursor = ps.start + 2
+
+        ps.insert(buf, "G")
+
+        assert buf.text == text + "G"
+        assert buf.cursor == len(text) + 1
+        display, cursor = ps._condensed_view(buf)
+        assert "".join(display) == ps.label + "G"
+        assert cursor == len(display)
+
+    def test_home_and_end_use_condensed_projection(self) -> None:
+        buf = InputBuffer()
+        ps = PasteState()
+        ps.apply(buf, "a\nb\nc\nd", _COLS)
+
+        ps.move_home(buf)
+        assert buf.cursor == ps.start
+
+        ps.move_end(buf)
+        assert buf.cursor == ps.end
+
 
 class TestBackspace:
     def test_backspace_deletes_one_character_from_condensed_paste(self) -> None:
@@ -100,6 +142,19 @@ class TestBackspace:
         display, cursor = ps._condensed_view(buf)
         assert "".join(display) == f"{ps.label} hello he"
         assert cursor == len(display)
+
+    def test_delete_condensed_preserves_suffix_and_boundary_cursor(self) -> None:
+        buf = InputBuffer(list("prefix"))
+        ps = PasteState()
+        ps.apply(buf, "a\nb\nc\nd", _COLS)
+        buf.insert("suffix")
+        buf.cursor = ps.end
+
+        ps.delete_condensed(buf)
+
+        assert buf.text == "prefixsuffix"
+        assert buf.cursor == len("prefix")
+        assert not ps.condensed
 
     def test_placeholder_disappears_after_hidden_content_is_exhausted(self) -> None:
         buf = InputBuffer()

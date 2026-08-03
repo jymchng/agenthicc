@@ -273,6 +273,47 @@ async def test_text_typed_after_condensed_paste_is_submitted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_home_then_typing_stays_before_condensed_paste() -> None:
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+
+    state = AppState()
+    session = UnifiedInputSession(state, CommandBus())
+    pasted = "a\nb\nc\nd"
+
+    await session._dispatch(Key.PASTE, pasted)
+    await session._dispatch(Key.HOME, "")
+
+    assert session._buf.cursor == 0
+    assert state.input.cursor() == 0
+
+    await session._dispatch(Key.CHAR, "G")
+
+    assert session._buf.text == "G" + pasted
+    assert state.input.cursor() == 1
+    assert "".join(state.input.buf()) == "G" + session._paste.label
+
+
+@pytest.mark.asyncio
+async def test_end_then_typing_stays_after_condensed_paste() -> None:
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+
+    state = AppState()
+    session = UnifiedInputSession(state, CommandBus())
+    pasted = "a\nb\nc\nd"
+
+    await session._dispatch(Key.PASTE, pasted)
+    await session._dispatch(Key.HOME, "")
+    await session._dispatch(Key.END, "")
+    await session._dispatch(Key.CHAR, "G")
+
+    assert session._buf.text == pasted + "G"
+    assert "".join(state.input.buf()) == session._paste.label + "G"
+    assert state.input.cursor() == len(session._paste.label) + 1
+
+
+@pytest.mark.asyncio
 async def test_backspace_keeps_condensed_paste_and_deletes_only_suffix() -> None:
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime.commands import CommandBus
@@ -291,6 +332,37 @@ async def test_backspace_keeps_condensed_paste_and_deletes_only_suffix() -> None
     assert state.input.paste_condensed()
     assert state.input.paste_label() in "".join(state.input.buf())
     assert "".join(state.input.buf()).endswith(" hello he")
+
+
+@pytest.mark.asyncio
+async def test_backspace_deletes_condensed_paste_at_placeholder_end() -> None:
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+
+    state = AppState()
+    session = UnifiedInputSession(state, CommandBus())
+    pasted = "a\nb\nc\nd"
+
+    await session._dispatch(Key.PASTE, pasted)
+    await session._dispatch(Key.BACKSPACE, "")
+
+    assert session._buf.text == ""
+    assert session._buf.cursor == 0
+    assert not state.input.paste_condensed()
+
+    # Moving left from a typed suffix places the cursor immediately after the
+    # hidden paste placeholder; Backspace still removes the whole paste and
+    # leaves that suffix editable.
+    state = AppState()
+    session = UnifiedInputSession(state, CommandBus())
+    await session._dispatch(Key.PASTE, pasted)
+    await session._dispatch(Key.CHAR, "G")
+    await session._dispatch(Key.LEFT, "")
+    await session._dispatch(Key.BACKSPACE, "")
+
+    assert session._buf.text == "G"
+    assert session._buf.cursor == 0
+    assert not state.input.paste_condensed()
 
 
 @pytest.mark.asyncio
@@ -342,6 +414,26 @@ async def test_unified_session_routes_escape_paste_delete_by_cursor_position() -
     assert not state.input.paste_condensed()
     assert session._buf.text == ""
     assert not interrupted
+
+
+@pytest.mark.asyncio
+async def test_cursor_navigation_remains_available_while_streaming() -> None:
+    from agenthicc.tui.input.unified_session import InputMode, UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+
+    state = AppState()
+    session = UnifiedInputSession(state, CommandBus())
+    session.set_text("hello")
+    session.set_mode(InputMode.STREAMING)
+
+    await session._dispatch(Key.HOME, "")
+    assert session._buf.cursor == 0
+    await session._dispatch(Key.RIGHT, "")
+    assert session._buf.cursor == 1
+    await session._dispatch(Key.END, "")
+    assert session._buf.cursor == 5
+    await session._dispatch(Key.LEFT, "")
+    assert session._buf.cursor == 4
 
 
 @pytest.mark.asyncio

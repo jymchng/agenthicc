@@ -206,7 +206,7 @@ class TriggerCapability:
         if can:
             await session._open_trigger_overlay(tch)
         else:
-            session._buf.insert(tch)
+            session._paste.insert(session._buf, tch)
             session._push()
         return _CONSUMED
 
@@ -286,7 +286,7 @@ class NewlineCapability:
     ) -> CapabilityResult:
         if key != Key.CTRL_ENTER:
             return _PASS
-        session._buf.insert("\n")
+        session._paste.insert(session._buf, "\n")
         session._push()
         return _CONSUMED
 
@@ -311,7 +311,13 @@ class BackspaceCapability:
         if key != Key.BACKSPACE:
             return _PASS
         if session._paste.condensed:
-            session._paste.backspace(session._buf)
+            if session._buf.cursor == session._paste.end:
+                # The rendered cursor is immediately after the paste's ``]``.
+                # Treat that boundary as an intentional whole-paste delete;
+                # suffix text to the right remains intact.
+                session._paste.delete_condensed(session._buf)
+            else:
+                session._paste.backspace(session._buf)
         elif session._buf.cursor == len(session._buf):
             tail = session._find_trigger_tail()
             if tail:
@@ -364,13 +370,13 @@ class CursorCapability:
     ) -> CapabilityResult:
         match key:
             case Key.LEFT:
-                session._buf.move_left()
+                session._paste.move_left(session._buf)
             case Key.RIGHT:
-                session._buf.move_right()
+                session._paste.move_right(session._buf)
             case Key.HOME:
-                session._buf.move_home()
+                session._paste.move_home(session._buf)
             case Key.END:
-                session._buf.move_end()
+                session._paste.move_end(session._buf)
             case _:
                 return _PASS
         session._push()
@@ -391,13 +397,15 @@ class HistoryCapability:
     ) -> CapabilityResult:
         match key:
             case Key.UP:
-                if not session._buf.move_up():
+                moved = session._paste.move_up(session._buf)
+                if not moved:
                     result = session._hist.up(session._buf.buf)
                     if result is not None:
                         session._buf.set(result)
                         session._paste.condensed = False
             case Key.DOWN:
-                if not session._buf.move_down():
+                moved = session._paste.move_down(session._buf)
+                if not moved:
                     result = session._hist.down(session._buf.buf)
                     if result is not None:
                         session._buf.set(result)
@@ -461,7 +469,7 @@ class InsertCapability:
                         list(tpre) + [tch] + list(tfrag) + [ch]
                     )
                     return _CONSUMED
-        session._buf.insert(ch)
+        session._paste.insert(session._buf, ch)
         session._push()
         return _CONSUMED
 
@@ -486,7 +494,7 @@ IDLE_CAPABILITIES: list[Capability] = [
     InsertCapability(),  # fallback — must be last
 ]
 
-#: Reduced set: queue messages, interrupt agent, paste, basic editing.
+#: Reduced set: queue messages, interrupt agent, paste, editing, cursor movement.
 STREAMING_CAPABILITIES: list[Capability] = [
     OverlayCapability(),
     CondensedPasteEscapeCapability(),
@@ -497,6 +505,7 @@ STREAMING_CAPABILITIES: list[Capability] = [
     NewlineCapability(),
     BackspaceCapability(),
     ClearCapability(),
+    CursorCapability(),  # Cursor movement remains available while queued input is edited.
     ModeCycleCapability(),  # Shift+Tab — mode switch takes effect on next tool call
     InsertCapability(),  # fallback — must be last
 ]

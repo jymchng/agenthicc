@@ -83,7 +83,8 @@ explicit switch and reports the canonical choices for an unknown name.
 `UnifiedInputSession` enters raw mode once and dispatches each key through the
 active capability list. IDLE supports triggers, history, cursor movement,
 paste, mode cycling, and submission. STREAMING reduces the capability set so
-the user can queue input or interrupt an active turn.
+the user can queue input or interrupt an active turn while retaining cursor
+movement and basic editing.
 
 ESC cancels the active turn and immediately returns the input pipeline to IDLE,
 even while asynchronous task cleanup is still finishing. This keeps the
@@ -100,12 +101,17 @@ Large bracketed pastes stay behind a single `[Pasted text #N ...]` composer
 placeholder while the user edits the input. Ordinary typing, whitespace,
 newlines, cursor movement, and history navigation do not expand the paste or
 redraw its full contents. Use `Ctrl+V` when the full pasted text should be
-shown. Backspace deletes one character at a time—typed suffix text first, then
-the hidden paste content—while keeping the placeholder condensed. Enter
-submits the remaining original contents and edits. `Esc` deletes the entire
-hidden paste only when the cursor is immediately after its placeholder; with
-typed suffix text or a different cursor position, `Esc` keeps its normal mode
-behavior.
+shown. Backspace deletes typed suffix text one character at a time. When the
+cursor is immediately after the pasted placeholder's closing `]`, Backspace
+deletes the entire hidden paste; at other cursor positions it deletes one
+hidden character at a time while keeping the placeholder condensed. Enter
+submits the remaining original contents and edits. `Esc` also deletes the
+entire hidden paste only when the cursor is immediately after its placeholder;
+with a different cursor position, `Esc` keeps its normal mode behavior.
+`Home` and `End` operate on the visible one-line projection rather than the
+hidden payload's internal newlines. Typing after `Home` inserts before the
+placeholder; typing after `End` inserts after it, without corrupting the
+payload-to-placeholder range.
 
 While the agent is responding, submitted input is classified before it enters
 the session queue. Local read-only commands and run controls can execute

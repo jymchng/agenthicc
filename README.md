@@ -265,6 +265,12 @@ Useful built-in slash commands include:
 `/config` opens its local configuration overlay immediately, including while a
 response is streaming.
 
+Large bracketed pastes stay condensed in the composer. Backspace removes the
+whole paste when the cursor is immediately after its closing `]`; elsewhere it
+keeps normal character-wise editing.
+Home and End navigate the visible, single-line placeholder, so typing at either
+side keeps the original pasted content intact.
+
 Use `Ctrl+C` according to the current input state; the input backend owns raw
 terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md)
 for modes, overlays, input, busy-run command policies, and platform rules. ESC

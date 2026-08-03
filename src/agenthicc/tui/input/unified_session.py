@@ -4,7 +4,7 @@ One session, one raw_mode context, capability-pipeline dispatch (PRD-74).
 
 Modes:
     IDLE      — full feature set: triggers, history, cursor movement, mode cycling
-    STREAMING — reduced: queue messages, interrupt agent, paste, basic editing
+    STREAMING — reduced: queue messages, interrupt agent, paste, editing, cursor movement
 
 Each mode is a declared list of Capability instances (see capabilities.py).
 Adding a new trigger char or a new mode requires no changes here.
