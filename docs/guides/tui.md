@@ -51,6 +51,14 @@ settles. The workspace clears Rich's pre-resize live geometry first, so an
 active Plan Review remains a single overlay instead of leaking duplicate
 frames into scrollback.
 
+The shared animation frame advances only while an animated status is active:
+thinking, tool execution, recovery, or compaction. Idle, complete, and error
+states do not publish frame ticks, and the workspace defensively ignores
+compatibility frame writes in those static states. This prevents captured
+terminals that do not interpret Rich's erase controls from accumulating
+identical `✿ Idle` panels while preserving active animation and ordinary state
+redraws.
+
 Tool results use the same operation-style block: `● Read(...)`, `● Run(...)`,
 `● Search(...)`, and similar headers are followed by a status summary and a
 bounded numbered output preview. File edits use the richer `● Update(...)`

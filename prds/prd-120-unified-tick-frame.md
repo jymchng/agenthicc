@@ -1,5 +1,9 @@
 # PRD-120 — Unified Tick Frame Counter
 
+> Status note: PRD-164 revises the original unconditional-tick contract. The
+> shared frame remains the animation counter, but idle/complete/error ticks no
+> longer publish frames when the visible status is static.
+
 ## Problem
 
 Animation state in `ConversationStore` grew organically into five separate

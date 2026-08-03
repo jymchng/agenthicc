@@ -34,6 +34,42 @@ async def test_redraw_coalesces_multiple_signal_callbacks() -> None:
     workspace._live.update.assert_called_once_with("frame", refresh=True)
 
 
+def test_frame_redraw_is_suppressed_for_static_idle_state() -> None:
+    state = MagicMock()
+    state.conversation.is_running.return_value = False
+    state.conversation.compaction_active.return_value = False
+    workspace = Workspace(state, MagicMock())
+    workspace._redraw = MagicMock()
+
+    workspace._redraw_frame()
+
+    workspace._redraw.assert_not_called()
+
+
+def test_frame_redraw_is_forwarded_for_active_animation() -> None:
+    state = MagicMock()
+    state.conversation.is_running.return_value = True
+    state.conversation.compaction_active.return_value = False
+    workspace = Workspace(state, MagicMock())
+    workspace._redraw = MagicMock()
+
+    workspace._redraw_frame()
+
+    workspace._redraw.assert_called_once_with()
+
+
+def test_frame_redraw_is_forwarded_during_compaction() -> None:
+    state = MagicMock()
+    state.conversation.is_running.return_value = False
+    state.conversation.compaction_active.return_value = True
+    workspace = Workspace(state, MagicMock())
+    workspace._redraw = MagicMock()
+
+    workspace._redraw_frame()
+
+    workspace._redraw.assert_called_once_with()
+
+
 def test_redraw_is_suppressed_until_resize_repaint() -> None:
     workspace = Workspace(MagicMock(), MagicMock())
     workspace._live = MagicMock()

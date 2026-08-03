@@ -31,6 +31,8 @@ against the current source before implementing them.
 - [PRD-161 — Exploratory Tool-Call Consolidation in the TUI](prd-161-exploratory-tool-call-consolidation.md)
 - [PRD-162 — Provider Connection Profiles and OpenAI-Compatible Endpoints](prd-162-provider-connection-profiles-and-modal-endpoints.md)
 - [PRD-163 — Cache-Stable Workflow Prompts and Generated Workflows](prd-163-cache-stable-workflow-prompts-and-generated-workflows.md)
+- [PRD-164 — Suppress Repeated Idle TUI Status Frames](prd-164-repeated-idle-status-frames.md)
+- [PRD-165 — Suppress Approval-Wait Redraw Loops](prd-165-approval-wait-redraw-suppression.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -154,6 +156,16 @@ artifacts, summaries, questions, and transition details remain dynamic. It
 also makes `CreateWorkflowRunner` teach, template, inspect, and validate
 cache-stable generated workflows so downstream workflows inherit the common
 runner behavior instead of implementing provider-specific caching.
+
+PRD-164 specifies the repeated-idle-status-frame defect reproduced in the TUI.
+It separates the animation frame clock from idle state, prevents redundant
+idle Live redraws, and preserves active animation, input responsiveness,
+transcript replay, and workflow notifications.
+
+PRD-165 specifies the separate approval-wait redraw loop. It keeps the
+wall-clock activity duration available for telemetry while preventing paused
+`activity_elapsed_s` updates from repainting an unchanged Plan Review, tool
+approval, or Questions overlay every session tick.
 
 ## Existing PRDs
 

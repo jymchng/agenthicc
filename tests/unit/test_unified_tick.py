@@ -16,15 +16,40 @@ class TestFrameSignal:
 
     def test_tick_increments_frame(self) -> None:
         conv = ConversationStore()
+        conv.begin_turn("agent", "t1")
         conv.tick()
         assert conv.frame() == 1
 
-    def test_tick_increments_unconditionally_when_idle(self) -> None:
+    def test_tick_does_not_increment_frame_when_idle(self) -> None:
         conv = ConversationStore()
         assert conv.agent_state() == AgentState.IDLE
         for _ in range(5):
             conv.tick()
-        assert conv.frame() == 5
+        assert conv.frame() == 0
+
+    @pytest.mark.parametrize("state", [AgentState.COMPLETE, AgentState.ERROR])
+    def test_tick_does_not_increment_frame_for_static_terminal_states(
+        self, state: AgentState
+    ) -> None:
+        conv = ConversationStore()
+        conv.agent_state.set(state)
+        changes: list[int] = []
+        conv.frame.subscribe(lambda: changes.append(conv.frame()))
+
+        conv.tick()
+
+        assert conv.frame() == 0
+        assert changes == []
+
+    def test_idle_tick_does_not_notify_frame_subscribers(self) -> None:
+        conv = ConversationStore()
+        changes: list[int] = []
+        conv.frame.subscribe(lambda: changes.append(conv.frame()))
+
+        conv.tick()
+        conv.tick()
+
+        assert changes == []
 
     def test_tick_increments_during_compaction(self) -> None:
         conv = ConversationStore()
@@ -33,15 +58,19 @@ class TestFrameSignal:
             conv.tick()
         assert conv.frame() == 3
 
-    def test_tick_increments_when_agent_running(self) -> None:
+    @pytest.mark.parametrize(
+        "state",
+        [AgentState.THINKING, AgentState.RUNNING, AgentState.RECOVERING],
+    )
+    def test_tick_increments_for_animated_agent_states(self, state: AgentState) -> None:
         conv = ConversationStore()
-        conv.begin_turn("agent", "t1")
-        for _ in range(4):
-            conv.tick()
-        assert conv.frame() == 4
+        conv.agent_state.set(state)
+        conv.tick()
+        assert conv.frame() == 1
 
     def test_tick_stays_stable_while_user_prompt_is_pending(self) -> None:
         conv = ConversationStore()
+        conv.begin_turn("agent", "t1")
         conv.tick()
         conv.tick(paused=True)
         conv.tick(paused=True)
@@ -49,6 +78,7 @@ class TestFrameSignal:
 
     def test_frame_monotonically_increases(self) -> None:
         conv = ConversationStore()
+        conv.begin_turn("agent", "t1")
         values: list[int] = []
         for _ in range(10):
             conv.tick()

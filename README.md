@@ -233,6 +233,9 @@ Rich's previous geometry before redrawing so an active Plan Review is not
 duplicated in the scrollback. While approvals, plan reviews, or questions are
 waiting, the status animation and cached active-work timer stay fixed; the
 wall-clock duration is retained for turn telemetry.
+Idle sessions do not publish animation frames or repaint the unchanged Live
+status at the session tick rate, preventing duplicate idle panels in captured
+terminal output.
 
 Tool completions use the same operation-style header as file updates: reads,
 searches, commands, and other tools show a `● Operation(...)` header, a result

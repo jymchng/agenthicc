@@ -105,11 +105,15 @@ class ConversationStore:
         self.agent_state: Signal[AgentState] = Signal(AgentState.IDLE)
         self.active_tool: Signal[str] = Signal("")
         self.frame: Signal[int] = Signal(0)
-        """Universal animation counter — normally increments every 50 ms (PRD-120).
-        The interactive session pauses it while a user approval/question owns
-        the terminal. All animated elements (flower, thinking, compact spinner)
-        derive their frame index from ``frame() % N``. The workspace subscribes
-        once for all animation redraws."""
+        """Shared animation counter for active status surfaces (PRD-120/164).
+
+        ``frame`` advances on active thinking/tool/recovery or compaction ticks.
+        It intentionally does not advance while the visible status is idle,
+        complete, or in an error state because those renderings are static.
+        All animated elements (flower, thinking, compaction spinner) derive
+        their frame index from ``frame() % N``. The workspace subscribes once
+        for animation redraws.
+        """
         self.tokens_in: Signal[int] = Signal(0)
         self.tokens_out: Signal[int] = Signal(0)
         self.cost_usd: Signal[float] = Signal(0.0)
@@ -299,7 +303,7 @@ class ConversationStore:
         self._last_display_tick = now
 
     def tick(self, *, paused: bool | None = None) -> None:
-        """Advance animation and cached active-work time.
+        """Advance active animation and cached active-work time.
 
         The session pauses this tick while an approval or question overlay is
         waiting for the user. That keeps the status bar and Live region stable
@@ -314,7 +318,12 @@ class ConversationStore:
         self._advance_display_clock(now)
         if self._display_paused:
             return
-        self.frame.set(self.frame() + 1)
+        # Idle/complete/error status is static. Publishing a frame on every
+        # idle tick would cause Workspace to refresh the Live block at 20 Hz;
+        # terminals or captured clients that do not interpret Rich's erase
+        # controls would then display duplicate idle panels (PRD-164).
+        if self.is_running() or self.compaction_active():
+            self.frame.set(self.frame() + 1)
 
     def set_terminal_wait(
         self,

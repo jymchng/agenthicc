@@ -76,7 +76,8 @@ The TUI has a second `AppState` in `tui/conversation_store.py`. It is a reactive
 container, not a replacement for the kernel model. It contains:
 
 - conversation turns and scroll events;
-- token/cost/frame signals;
+- token/cost/frame signals; the frame is published for active animation and is
+  intentionally quiet while idle;
 - input buffer and paste state;
 - active runtime mode;
 - overlay and approval state;

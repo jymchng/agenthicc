@@ -101,7 +101,6 @@ class Workspace:
         for sig in (
             conv.agent_state,
             conv.active_tool,
-            conv.frame,
             conv.model_name,
             conv.activity_elapsed_s,
             conv.display_elapsed_s,
@@ -131,6 +130,11 @@ class Workspace:
             conv.terminal_running_count,
         ):
             self._unsubs.append(sig.subscribe(self._redraw))
+        # Frame is an animation-only signal. Keep it behind an activity guard
+        # so compatibility code that writes it while idle cannot repaint an
+        # unchanged Live block into clients that do not interpret ANSI erase
+        # controls (PRD-164).
+        self._unsubs.append(conv.frame.subscribe(self._redraw_frame))
 
         # SIGWINCH handler
         try:
@@ -303,6 +307,13 @@ class Workspace:
             import traceback  # noqa: PLC0415
 
             traceback.print_exc(file=sys.stderr)
+
+    def _redraw_frame(self) -> None:
+        """Refresh only when a frame can change a visible animation."""
+        conv = self._state.conversation
+        if not conv.is_running() and not conv.compaction_active():
+            return
+        self._redraw()
 
     def _reset_live_after_resize(self) -> None:
         """Discard Rich's pre-resize cursor geometry before repainting.
