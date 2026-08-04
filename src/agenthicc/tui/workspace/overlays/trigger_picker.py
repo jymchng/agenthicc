@@ -215,6 +215,23 @@ class TriggerPickerOverlay(Overlay):
             case Key.CHAR if ch:
                 if self._trigger:
                     if ch == " ":
+                        # Most triggers use SPACE to commit the selected row,
+                        # but a trigger may declare SPACE to be ordinary input.
+                        # In that case restore the exact literal text and do
+                        # not call on_select: the highlighted row is only a
+                        # suggestion, never an implicit completion.
+                        space_inserts_literal = getattr(
+                            self._trigger.handler, "space_inserts_literal", None
+                        )
+                        if callable(space_inserts_literal) and space_inserts_literal(
+                            self._trigger.fragment
+                        ):
+                            literal = self._trigger.handler.on_cancel(
+                                self._trigger.fragment, self._buf.buf
+                            )
+                            self._complete(TriggerResult(buffer=literal + [" "]))
+                            return True
+
                         # Space commits the selected item so the user can type
                         # arguments without a second Enter.  Commands with an
                         # argument provider stay in this overlay and switch

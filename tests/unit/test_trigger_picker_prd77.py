@@ -223,6 +223,44 @@ def test_tab_with_match_does_not_submit():
     assert result.submit is False
 
 
+def test_space_inserts_literal_directory_and_not_child(tmp_path: Path, monkeypatch) -> None:
+    """SPACE preserves ``@directory/`` and does not choose a child row."""
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.trigger import TriggerManager
+    from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+
+    directory = tmp_path / "beyond-35-build-strength-that-lasts"
+    directory.mkdir()
+    (directory / "__pycache__").mkdir()
+    (directory / "assets").mkdir()
+    (directory / "README.md").write_text("book", encoding="utf-8")
+
+    registry = TriggerManager()
+    handler = AtMentionTrigger()
+    registry.register(handler)
+    completed = []
+    from agenthicc.tui.workspace.overlays.trigger_picker import TriggerPickerOverlay
+
+    def fail_on_select(item, fragment, buf):
+        raise AssertionError("SPACE must not select a mention completion")
+
+    monkeypatch.setattr(handler, "on_select", fail_on_select)
+
+    initial = ["@", *directory.name, "/"]
+    overlay = TriggerPickerOverlay(
+        initial_buf=initial,
+        registry=registry,
+        cwd=tmp_path,
+        on_complete=completed.append,
+    )
+
+    assert overlay._matches[0].value == f"{directory.name}/__pycache__/"
+    overlay.handle_key(Key.CHAR, " ")
+
+    assert len(completed) == 1
+    assert "".join(completed[0].buffer) == f"@{directory.name}/ "
+
+
 # ── End-to-end scenario: Bug 1 (select then type) ────────────────────────────
 
 
