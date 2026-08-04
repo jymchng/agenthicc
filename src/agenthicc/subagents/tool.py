@@ -8,7 +8,7 @@ Postponed evaluation (PEP 563) breaks that inspection.
 import hashlib
 import json
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from agenthicc.subagents.pool import SubagentTask
 from agenthicc.subagents.types import SubagentTypeRegistry
@@ -25,10 +25,28 @@ if TYPE_CHECKING:
 __all__ = ["make_spawn_subagents_tool"]
 
 
+BuiltinSubagentType = Literal[
+    "explorer",
+    "planner",
+    "implementer",
+    "executor",
+    "tester",
+    "reviewer",
+    "documenter",
+    "verifier",
+    "researcher",
+]
+
+# Models frequently shorten ``researcher`` to ``research``.  Keep the
+# registry's canonical names stable while accepting this unambiguous,
+# backwards-compatible spelling at the tool boundary.
+_SUBAGENT_TYPE_ALIASES: dict[str, str] = {"research": "researcher"}
+
+
 class _SpawnTaskInput(TypedDict):
     """Structured task input accepted by ``spawn_subagents``."""
 
-    type: str
+    type: BuiltinSubagentType
     task: str
 
 
@@ -112,15 +130,16 @@ def make_spawn_subagents_tool(
                     "error": f"tasks[{i}] must be a dict with 'type' and 'task' keys",
                 }
             raw_mapping: Mapping[str, object] = raw
-            agent_type = str(raw_mapping.get("type") or raw_mapping.get("agent_type") or "")
+            agent_type = str(raw_mapping.get("type") or raw_mapping.get("agent_type") or "").strip()
             task_desc = str(raw_mapping.get("task") or raw_mapping.get("task_description") or "")
             context = str(raw_mapping.get("context") or "")
             if not agent_type:
                 return {"ok": False, "error": f"tasks[{i}] missing 'type' field"}
+            agent_type = _SUBAGENT_TYPE_ALIASES.get(agent_type, agent_type)
             if not task_desc:
                 return {"ok": False, "error": f"tasks[{i}] missing 'task' field"}
             if agent_type not in _registry:
-                known = ", ".join(_registry.names())
+                known = ", ".join(_known_type_names(_registry))
                 return {
                     "ok": False,
                     "error": f"Unknown agent type {agent_type!r}. Known types: {known}",
@@ -204,6 +223,7 @@ def make_spawn_subagents_tool(
             "results": result.text,
         }
 
+    _augment_type_schema(spawn_subagents, _registry)
     return spawn_subagents
 
 
@@ -255,3 +275,64 @@ def _find_cached_result(conv_store: "ConversationStore | None", fingerprint: str
                             continue
                     return str(payload.get("text", ""))
     return None
+
+
+def _known_type_names(registry: SubagentTypeRegistry) -> list[str]:
+    """Return canonical registry names plus aliases that resolve in it."""
+
+    names = registry.names()
+    return [
+        *names,
+        *[
+            alias
+            for alias, canonical in _SUBAGENT_TYPE_ALIASES.items()
+            if canonical in registry and alias not in names
+        ],
+    ]
+
+
+def _augment_type_schema(tool: object, registry: SubagentTypeRegistry) -> None:
+    """Add dynamic/plugin names to the schema generated from ``Literal``.
+
+    ``Literal`` gives the static built-in contract to lauren-ai's schema
+    generator.  Plugin registries are runtime data, so their names cannot be
+    expressed in a static annotation; merge them into the generated enum
+    after decoration without replacing the annotation-based schema.
+    """
+
+    try:
+        metadata = object.__getattribute__(tool, "__lauren_ai_tool__")
+    except AttributeError:
+        return
+    try:
+        parameters = object.__getattribute__(metadata, "parameters")
+    except AttributeError:
+        return
+    if not isinstance(parameters, dict):
+        return
+    input_schema = parameters.get("input_schema")
+    if not isinstance(input_schema, dict):
+        return
+    properties = input_schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+    tasks = properties.get("tasks")
+    if not isinstance(tasks, dict):
+        return
+    item_schema = tasks.get("items")
+    if not isinstance(item_schema, dict):
+        return
+    item_properties = item_schema.get("properties")
+    if not isinstance(item_properties, dict):
+        return
+    type_schema = item_properties.get("type")
+    if not isinstance(type_schema, dict):
+        return
+    enum = type_schema.get("enum")
+    if not isinstance(enum, list):
+        return
+    known = _known_type_names(registry)
+    type_schema["enum"] = [
+        *[name for name in enum if name in known],
+        *[name for name in known if name not in enum],
+    ]

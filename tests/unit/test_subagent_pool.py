@@ -406,6 +406,65 @@ class TestSpawnSubagentsTool:
         assert not result["ok"]
         assert "unicorn" in result["error"]
 
+    async def test_research_alias_resolves_to_researcher(self) -> None:
+        from agenthicc.subagents.pool import SubagentPool  # noqa: PLC0415
+
+        fn = self._make_tool()
+        captured_tasks: list[list[SubagentTask]] = []
+        original_init = SubagentPool.__init__
+
+        def capture_init(pool: SubagentPool, *args: object, **kwargs: object) -> None:
+            raw_tasks = kwargs.get("tasks", args[0] if args else [])
+            captured_tasks.append(raw_tasks if isinstance(raw_tasks, list) else [])
+            original_init(pool, *args, **kwargs)
+
+        fake_result = SimpleNamespace(
+            pool_id="pool-research",
+            total=1,
+            succeeded=1,
+            failed=0,
+            text="research complete",
+        )
+        with (
+            patch.object(SubagentPool, "__init__", new=capture_init),
+            patch.object(SubagentPool, "run", new=AsyncMock(return_value=fake_result)),
+        ):
+            result = await fn(tasks=[{"type": "research", "task": "research Chapter 1"}])
+
+        assert result["ok"] is True
+        assert result["results"] == "research complete"
+        assert captured_tasks[0][0].agent_type == "researcher"
+
+    def test_tool_schema_advertises_builtin_and_alias_names(self) -> None:
+        fn = self._make_tool()
+        meta = getattr(fn, "__lauren_ai_tool__", None)
+        assert meta is not None
+        schema = meta.parameters["input_schema"]
+        type_schema = schema["properties"]["tasks"]["items"]["properties"]["type"]
+        assert "researcher" in type_schema["enum"]
+        assert "research" in type_schema["enum"]
+
+    def test_tool_schema_uses_dynamic_registry_names(self) -> None:
+        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+        from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec  # noqa: PLC0415
+
+        registry = SubagentTypeRegistry()
+        registry.register(
+            SubagentTypeSpec(
+                name="security_researcher",
+                allowed_tools=frozenset(),
+                max_turns=1,
+                system_prompt="research",
+            )
+        )
+        fn = make_spawn_subagents_tool(object(), "model", [], registry=registry)
+        meta = getattr(fn, "__lauren_ai_tool__", None)
+        assert meta is not None
+        type_schema = meta.parameters["input_schema"]["properties"]["tasks"]["items"]["properties"][
+            "type"
+        ]
+        assert type_schema["enum"] == ["security_researcher"]
+
     async def test_executor_role_is_accepted(self) -> None:
         from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
 
