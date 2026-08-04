@@ -630,6 +630,7 @@ class WorkflowRunner(BaseWorkflowRunner):
             "active_agent": spec.agent_type,
             "completed_turns": self._cfg.completed_turns,
             "approval_svc": self._cfg.approval_svc,
+            "workspace_access": self._cfg.workspace_access,
             "output_collector": output_buf,
             "command_outcomes": command_outcomes,
             "next_queued_message": self._cfg.next_queued_message,

@@ -1,4 +1,9 @@
-"""Sandbox primitives: filesystem workspace view and network guard (PRD-04)."""
+"""Sandbox primitives: filesystem workspace view and network guard (PRD-04).
+
+The mode-aware path policy lives in :mod:`agenthicc.tools.workspace_access`.
+This module keeps ``WorkspaceView`` as the low-level final path boundary and
+re-exports the session scope types so existing imports remain stable.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +11,34 @@ import asyncio
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
-from collections.abc import Awaitable, Iterator
+from collections.abc import Awaitable, Iterator, Mapping
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import urlparse
 
-__all__ = ["NetworkGuard", "ResourceLimits", "ToolSandbox", "WorkspaceView"]
+from agenthicc.tools.workspace_access import (  # noqa: E402
+    ResolvedWorkspacePath,
+    WorkspaceAccessMode,
+    WorkspaceAccessPolicy,
+    WorkspaceAccessRequest,
+    WorkspaceAccessResult,
+    WorkspacePathStatus,
+    WorkspaceScope,
+)
+
+__all__ = [
+    "NetworkGuard",
+    "ResourceLimits",
+    "ToolSandbox",
+    "WorkspaceView",
+    "WorkspaceScope",
+    "WorkspaceAccessMode",
+    "WorkspaceAccessPolicy",
+    "WorkspaceAccessRequest",
+    "WorkspaceAccessResult",
+    "WorkspacePathStatus",
+    "ResolvedWorkspacePath",
+]
 
 _T = TypeVar("_T")
 
@@ -25,8 +52,9 @@ class WorkspaceView:
     symlink escapes all raise :class:`PermissionError`.
     """
 
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, enforce_root: bool = True) -> None:
         self._root = Path(os.path.realpath(root))
+        self._enforce_root = enforce_root
 
     @property
     def root(self) -> Path:
@@ -39,7 +67,7 @@ class WorkspaceView:
         if not candidate.is_absolute():
             candidate = self._root / candidate
         resolved = Path(os.path.realpath(candidate))
-        if resolved != self._root and self._root not in resolved.parents:
+        if self._enforce_root and resolved != self._root and self._root not in resolved.parents:
             raise PermissionError(
                 f"Path escape attempt: {str(resolved)!r} is outside "
                 f"workspace root {str(self._root)!r}"
@@ -100,6 +128,7 @@ class ToolSandbox:
         allowed_paths: list[str | Path] | None = None,
         network_allow_list: list[str] | None = None,
         limits: ResourceLimits | None = None,
+        workspace_access: WorkspaceAccessPolicy | None = None,
     ) -> None:
         paths = list(allowed_paths or [])
         if root is not None and not paths:
@@ -107,6 +136,7 @@ class ToolSandbox:
         self._views = tuple(WorkspaceView(path) for path in paths)
         self._network = NetworkGuard(network_allow_list or [])
         self._limits = limits or ResourceLimits()
+        self._workspace_access = workspace_access
 
     @property
     def workspace(self) -> WorkspaceView | None:
@@ -121,8 +151,20 @@ class ToolSandbox:
     def limits(self) -> ResourceLimits:
         return self._limits
 
+    @property
+    def workspace_access(self) -> WorkspaceAccessPolicy | None:
+        """Session path policy, when this sandbox is mode-aware."""
+        return self._workspace_access
+
     def resolve(self, path: str | Path) -> Path:
         """Resolve a path against the configured allow-list."""
+        if self._workspace_access is not None:
+            resolved = self._workspace_access.scope.resolve(path)
+            if resolved.in_scope or self._workspace_access.mode is WorkspaceAccessMode.UNRESTRICTED:
+                return resolved.absolute
+            raise PermissionError(
+                "outside_workspace: asynchronous workspace approval is required for this path"
+            )
         if not self._views:
             return Path(os.path.realpath(path))
         for view in self._views:
@@ -131,6 +173,32 @@ class ToolSandbox:
             except PermissionError:
                 continue
         raise PermissionError(f"Path is outside the tool sandbox: {path!r}")
+
+    async def resolve_authorized(
+        self,
+        path: str | Path,
+        *,
+        operation: str = "read",
+        tool_name: str = "tool",
+        capabilities: frozenset[str] = frozenset(),
+        tool_input: Mapping[str, object] | None = None,
+    ) -> Path:
+        """Resolve *path* through the session policy when one is configured.
+
+        Synchronous ``resolve`` cannot wait for a Safe-mode approval.  Async
+        integrations should use this method so legacy sandbox callers retain
+        the same path policy as built-in tools and plugins.
+        """
+
+        if self._workspace_access is not None:
+            return await self._workspace_access.authorize(
+                path,
+                operation=operation,
+                tool_name=tool_name,
+                capabilities=capabilities,
+                tool_input=tool_input,
+            )
+        return self.resolve(path)
 
     def check_url(self, url: str) -> None:
         """Enforce the configured network allow-list."""

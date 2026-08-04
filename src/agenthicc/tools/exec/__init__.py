@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from agenthicc.tools.base import Tool, arg_bool, arg_str
+from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, current_workspace_access
 from agenthicc.tools.exec.outcome import (
     CommandKind,
     CommandOutcome,
@@ -290,13 +291,48 @@ def _timeout(
 
 
 def _cwd(args: Mapping[str, object], context: Mapping[str, object]) -> str:
+    """Legacy synchronous cwd resolver retained for adapter callers/tests."""
+
     requested = args.get("cwd")
     root = context.get("workspace_root", ".")
     base = (Path(root) if isinstance(root, str) else Path(".")).resolve()
-    if isinstance(requested, str) and requested:
-        path = Path(requested)
-        return str(path if path.is_absolute() else base / path)
-    return str(base)
+    requested_text = requested if isinstance(requested, str) and requested else "."
+    path = Path(requested_text)
+    return str(path if path.is_absolute() else base / path)
+
+
+async def _cwd_async(
+    args: Mapping[str, object],
+    context: Mapping[str, object],
+    *,
+    tool_name: str,
+) -> str:
+    requested = args.get("cwd")
+    root = context.get("workspace_root", ".")
+    base = (Path(root) if isinstance(root, str) else Path(".")).resolve()
+    requested_text = requested if isinstance(requested, str) and requested else "."
+    policy = context.get("workspace_access")
+    if not isinstance(policy, WorkspaceAccessPolicy):
+        policy = current_workspace_access()
+    if policy is not None:
+        result = await policy.authorize_tool(
+            tool_name,
+            {"cwd": requested_text},
+            frozenset({"execute"}),
+        )
+        if not result.allowed:
+            raise PermissionError(f"{result.code}: {result.error}")
+        return str(
+            await policy.authorize(
+                requested_text,
+                operation="execute_cwd",
+                tool_name=tool_name,
+                capabilities=frozenset({"execute"}),
+                tool_input={"cwd": requested_text},
+            )
+        )
+    path = Path(requested_text)
+    return str(path if path.is_absolute() else base / path)
 
 
 def _lifecycle(args: Mapping[str, object]) -> str:
@@ -337,7 +373,10 @@ class RunBashTool(Tool):
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
         command = arg_str(args, "command")
-        cwd = _cwd(args, context)
+        try:
+            cwd = await _cwd_async(args, context, tool_name=self.name)
+        except PermissionError as exc:
+            return {"ok": False, "error": str(exc), "code": "workspace_access"}
         timeout, invalid = _timeout(args, 30.0, CommandKind.SHELL)
         if invalid is not None:
             return invalid
@@ -419,7 +458,10 @@ class RunCommandTool(Tool):
     async def execute(
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        cwd = _cwd(args, context)
+        try:
+            cwd = await _cwd_async(args, context, tool_name=self.name)
+        except PermissionError as exc:
+            return {"ok": False, "error": str(exc), "code": "workspace_access"}
         timeout, invalid = _timeout(args, 30.0, CommandKind.EXEC)
         if invalid is not None:
             return invalid
@@ -489,7 +531,10 @@ class RunPythonTool(Tool):
     async def execute(
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        cwd = arg_str(context, "workspace_root", ".")
+        try:
+            cwd = await _cwd_async({}, context, tool_name=self.name)
+        except PermissionError as exc:
+            return {"ok": False, "error": str(exc), "code": "workspace_access"}
         code = arg_str(args, "code")
         timeout, invalid = _timeout(args, 30.0, CommandKind.EXEC)
         if invalid is not None:
@@ -526,7 +571,10 @@ class RunPythonExprTool(Tool):
     async def execute(
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
-        cwd = arg_str(context, "workspace_root", ".")
+        try:
+            cwd = await _cwd_async({}, context, tool_name=self.name)
+        except PermissionError as exc:
+            return {"ok": False, "error": str(exc), "code": "workspace_access"}
         expression = arg_str(args, "expression")
         timeout, invalid = _timeout(args, 10.0, CommandKind.EXEC)
         if invalid is not None:
@@ -561,7 +609,46 @@ class RunTestsTool(Tool):
         import re
         import uuid  # noqa: PLC0415
 
-        cwd = arg_str(context, "workspace_root", ".")
+        path = arg_str(args, "path", "tests/")
+        executable_path = path
+        policy = context.get("workspace_access")
+        if not isinstance(policy, WorkspaceAccessPolicy):
+            policy = current_workspace_access()
+        if policy is not None:
+            path_result = await policy.authorize_tool(
+                self.name,
+                {"cwd": args.get("cwd", ""), "path": path},
+                frozenset({"execute"}),
+            )
+            if not path_result.allowed:
+                return {
+                    "ok": False,
+                    "error": path_result.error,
+                    "code": path_result.code,
+                }
+
+        try:
+            # Carry the complete declared path input through the cwd
+            # authorization so an outside cwd and outside test target are
+            # presented as one scope decision and share one final grant.
+            cwd = await _cwd_async(args, context, tool_name=self.name)
+        except PermissionError as exc:
+            return {"ok": False, "error": str(exc), "code": "workspace_access"}
+        if policy is not None:
+            try:
+                canonical_path = await policy.authorize(
+                    path,
+                    operation="execute_path",
+                    tool_name=self.name,
+                    capabilities=frozenset({"execute"}),
+                    tool_input={"cwd": args.get("cwd", ""), "path": path},
+                )
+            except (OSError, PermissionError, ValueError) as exc:
+                return {"ok": False, "error": str(exc), "code": "workspace_access"}
+            # Use the revalidated canonical target in the subprocess argv.  A
+            # preflight on one spelling must not authorize a later symlink or
+            # relative-path interpretation of a different target.
+            executable_path = str(canonical_path)
         timeout, invalid = _timeout(args, 120.0, CommandKind.EXEC)
         if invalid is not None:
             return invalid
@@ -569,7 +656,6 @@ class RunTestsTool(Tool):
         if not isinstance(raw_extra, list) or not all(isinstance(item, str) for item in raw_extra):
             raise ValueError("tool argument 'args' must be a list of strings")
         extra = list(raw_extra)
-        path = arg_str(args, "path", "tests/")
         report_path = f"/tmp/pytest_report_{uuid.uuid4().hex}.json"
 
         if arg_str(args, "framework", "pytest") == "pytest":
@@ -577,14 +663,14 @@ class RunTestsTool(Tool):
                 sys.executable,
                 "-m",
                 "pytest",
-                path,
+                executable_path,
                 "--json-report",
                 f"--json-report-file={report_path}",
                 "-q",
                 *extra,
             ]
         else:
-            cmd = [sys.executable, "-m", "unittest", "discover", path, *extra]
+            cmd = [sys.executable, "-m", "unittest", "discover", executable_path, *extra]
 
         result = await _run_proc(
             cmd,

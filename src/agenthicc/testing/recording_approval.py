@@ -56,14 +56,17 @@ class RecordingApprovalService:
         remember_all: bool = False,
         message: str = "",
         mode: str | None = None,
+        scope_grant: str | None = None,
     ) -> None:
-        self._inner.respond(
-            allowed,
-            remember=remember,
-            remember_all=remember_all,
-            message=message,
-            mode=mode,
-        )
+        kwargs: dict[str, object] = {
+            "remember": remember,
+            "remember_all": remember_all,
+            "message": message,
+            "mode": mode,
+        }
+        if scope_grant is not None:
+            kwargs["scope_grant"] = scope_grant
+        self._inner.respond(allowed, **kwargs)
 
     def reset_turn_memory(self) -> None:
         self._inner.reset_turn_memory()
@@ -83,6 +86,20 @@ class RecordingApprovalService:
             "mode": response.mode,
             "remember": response.remember,
             "remember_all": response.remember_all,
+            "scope_grant": response.scope_grant,
+            "workspace_access": [
+                {
+                    "requested": item.requested,
+                    "canonical": str(item.canonical),
+                    "display": item.display,
+                    "operation": item.operation,
+                    "workspace_root": (
+                        str(item.workspace_root) if item.workspace_root is not None else None
+                    ),
+                    "mode": item.mode,
+                }
+                for item in req.workspace_access
+            ],
         }
         with self._path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

@@ -240,6 +240,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.runners.usage_ledger import UsageLedger, UsageRunTracker
     from agenthicc.runners.prompt_contract import PromptContract
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
 
 # ── formatting helper (module-level, unchanged) ───────────────────────────────
@@ -435,6 +436,30 @@ def _tool_output_preview(result: object) -> tuple[list[str], int]:
     return lines[:4], max(0, len(lines) - 4)
 
 
+def _workspace_result_projection(result: object) -> dict[str, object]:
+    """Extract bounded, non-content workspace diagnostics from a tool result."""
+
+    value: object = result
+    if not isinstance(value, Mapping):
+        try:
+            value = object.__getattribute__(result, "value")
+        except AttributeError:
+            value = None
+    if not isinstance(value, Mapping):
+        return {}
+
+    projection: dict[str, object] = {}
+    for key in ("path", "source", "destination", "cwd"):
+        item = value.get(key)
+        if isinstance(item, str):
+            projection[key] = item[:1024]
+    for key in ("ok", "code", "state", "returncode", "timed_out", "cancelled"):
+        item = value.get(key)
+        if isinstance(item, (bool, int, float, str)):
+            projection[key] = item
+    return projection
+
+
 class _ToolOutputCaptureHook(LifecycleHook):
     """Capture tool results for the scroll-buffer completion event."""
 
@@ -444,11 +469,13 @@ class _ToolOutputCaptureHook(LifecycleHook):
         command_outcomes: list[dict[str, object]] | None = None,
         command_states: dict[str, str] | None = None,
         command_ready: dict[str, bool] | None = None,
+        workspace_access: dict[str, dict[str, object]] | None = None,
     ) -> None:
         self._outputs = outputs
         self._command_outcomes = command_outcomes
         self._command_states = command_states
         self._command_ready = command_ready
+        self._workspace_access = workspace_access
 
     async def after_tool_call(
         self,
@@ -456,6 +483,13 @@ class _ToolOutputCaptureHook(LifecycleHook):
         ctx: ToolCallContext,
     ) -> AfterToolHookDecision:
         self._outputs[ctx.tool_use_id] = _tool_output_preview(result)
+        if self._workspace_access is not None:
+            metadata = ctx.get_metadata("workspace_access")
+            if isinstance(metadata, dict):
+                result_projection = _workspace_result_projection(result)
+                if result_projection:
+                    metadata["actual_result"] = result_projection
+                self._workspace_access[ctx.tool_use_id] = metadata
         if self._command_outcomes is not None and ctx.tool_name in {
             "run_bash",
             "run_command",
@@ -514,6 +548,7 @@ class AgentTurnRunner:
         self._exploratory_tools: set[str] = set()
         self._tool_states: dict[str, str] = {}
         self._tool_ready: dict[str, bool] = {}
+        self._workspace_access: dict[str, dict[str, object]] = {}
         self._file_snapshots: dict[str, tuple[str, str]] = {}
 
         # Content produced during the turn.
@@ -525,7 +560,30 @@ class AgentTurnRunner:
     # ── public entry point ────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        """Execute the full agent turn end-to-end."""
+        """Execute the full agent turn under its session workspace policy."""
+        ctx = self._ctx
+        workspace_access = ctx.workspace_access
+        if workspace_access is None:
+            from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+
+            workspace_access = current_workspace_access()
+        if workspace_access is not None:
+            workspace_access.reset_turn_memory()
+        policy_token: object | None = None
+        if ctx.workspace_access is not None:
+            from agenthicc.tools.workspace_access import set_current_workspace_access  # noqa: PLC0415
+
+            policy_token = set_current_workspace_access(ctx.workspace_access)
+        try:
+            await self._run_impl()
+        finally:
+            if policy_token is not None:
+                from agenthicc.tools.workspace_access import reset_current_workspace_access  # noqa: PLC0415
+
+                reset_current_workspace_access(policy_token)
+
+    async def _run_impl(self) -> None:
+        """Run the turn body after its task-local policy has been bound."""
         ctx = self._ctx
         reset_browser_budget = getattr(ctx.browser_manager, "reset_turn_budget", None)
         if callable(reset_browser_budget):
@@ -747,6 +805,9 @@ class AgentTurnRunner:
                     "output_lines": output_lines,
                     "output_more": output_more,
                 }
+                workspace_access = self._workspace_access.pop(tid, None)
+                if workspace_access is not None:
+                    payload["workspace_access"] = workspace_access
                 if name in self._exploratory_tools:
                     payload["presentation"] = _exploration_presentation(name, args)
                 conv.append_event("tool_complete", payload)
@@ -761,11 +822,21 @@ class AgentTurnRunner:
         )
 
         ctx = self._ctx
+        workspace_access = ctx.workspace_access
+        if workspace_access is None:
+            from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+
+            workspace_access = current_workspace_access()
         mention_cfg = InjectionConfig(
             mention_token_budget=getattr(ctx.exec_cfg, "mention_token_budget", 32_000),
             max_file_chars=getattr(ctx.exec_cfg, "mention_max_file_chars", 16_000),
             max_glob_files=getattr(ctx.exec_cfg, "mention_max_glob_files", 20),
-            cwd=Path(os.getcwd()),
+            cwd=(
+                workspace_access.scope.primary_root
+                if workspace_access is not None
+                else Path(os.getcwd())
+            ),
+            workspace_access=workspace_access,
         )
         prefix, injected = await build_context_prefix(
             ctx.text,
@@ -921,6 +992,7 @@ class AgentTurnRunner:
                 self._ctx.command_outcomes,
                 self._tool_states,
                 self._tool_ready,
+                self._workspace_access,
             )
         ]
         self._exploratory_tools = {
@@ -935,7 +1007,7 @@ class AgentTurnRunner:
             if ctx.approval_svc is not None:
                 from agenthicc.tools.approval import ApprovalGate  # noqa: PLC0415
 
-                hooks.append(ApprovalGate(ctx.app_state, ctx.approval_svc))
+                hooks.append(ApprovalGate(ctx.app_state, ctx.approval_svc, ctx.workspace_access))
 
         runner_class: type[AgentRunnerBase] = _RunnerBase
         next_queued_message = ctx.next_queued_message
@@ -1586,6 +1658,13 @@ class AgentTurnRunner:
             reset_fns.append(_ledger.promote)
         if ctx.approval_svc is not None:
             reset_fns.append(ctx.approval_svc.reset_turn_memory)
+        workspace_access = ctx.workspace_access
+        if workspace_access is None:
+            from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+
+            workspace_access = current_workspace_access()
+        if workspace_access is not None:
+            reset_fns.append(workspace_access.reset_turn_memory)
 
         await run_with_transport_retry(
             stream_once,
@@ -1685,6 +1764,7 @@ async def _run_agent_turn(
     next_queued_message: Callable[[], str | None] | None = None,
     usage_ledger: UsageLedger | None = None,
     browser_manager: object | None = None,
+    workspace_access: "WorkspaceAccessPolicy | None" = None,
 ) -> None:
     """Thin shim — constructs AgentTurnContext and delegates to AgentTurnRunner.
 
@@ -1708,6 +1788,7 @@ async def _run_agent_turn(
         active_agent=active_agent,
         completed_turns=completed_turns,
         approval_svc=approval_svc,
+        workspace_access=workspace_access,
         output_collector=output_collector,
         system_prompt_suffix=system_prompt_suffix,
         prompt_contract=prompt_contract,

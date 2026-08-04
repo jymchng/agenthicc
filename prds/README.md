@@ -34,6 +34,8 @@ against the current source before implementing them.
 - [PRD-164 — Suppress Repeated Idle TUI Status Frames](prd-164-repeated-idle-status-frames.md)
 - [PRD-165 — Suppress Approval-Wait Redraw Loops](prd-165-approval-wait-redraw-suppression.md)
 - [PRD-166 — Terminal-Safe Active Animation Rendering](prd-166-terminal-safe-active-animation.md)
+- [PRD-167 — Workspace-Scoped @Mentions and Cross-Repository Target Consistency](prd-167-workspace-scoped-mentions.md)
+- [PRD-168 — Mode-Aware Parent-Workspace Access](prd-168-mode-aware-parent-workspace-access.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -172,6 +174,21 @@ PRD-166 specifies the active-animation output policy. It preserves flower and
 Thinking animation for replacement-capable terminals while using append-safe
 snapshot behavior for captured or ANSI-insensitive clients, preventing active
 status frames from appearing as duplicate transcript history.
+
+PRD-167 specifies the cross-workspace @mention defect in which mention
+resolution can inspect a sibling repository while filesystem tools remain
+restricted to the current project, allowing the agent to substitute a local
+same-named file. It defines one canonical workspace resolver, fail-closed
+single-root behavior, explicitly configured multi-root access, exact-target
+prompting, and TUI/headless/tool parity.
+
+PRD-168 defines the implemented mode-aware policy for paths above or outside the current
+workspace. It revises PRD-167's default out-of-scope decision so Safe mode
+requests explicit approval before any outside-target I/O, while Yolo mode uses
+an explicit unrestricted workspace policy without an agenthicc boundary prompt.
+Plan remains read-only and blocked, OS/container permissions remain in force,
+and mentions, filesystem tools, commands, workflows, subagents, headless runs,
+resume, and replay all share the same resolver and policy decision.
 
 ## Existing PRDs
 

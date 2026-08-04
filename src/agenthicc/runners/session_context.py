@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from agenthicc.session_service import SessionService
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tools.cloakbrowser import BrowserSessionManager
+    from agenthicc.tools.workspace_access import WorkspaceScope, WorkspaceAccessPolicy
     from asyncio import Task
 
 
@@ -107,6 +108,13 @@ class SessionContext:
     # ── invocation configuration ────────────────────────────────────────────
     cfg_overrides: tuple[str, ...] = ()
     cfg_secret_overrides: tuple[str, ...] = ()
+
+    # ── workspace access (PRD-168) ──────────────────────────────────────────
+    #: Canonical roots shared by filesystem tools, commands, mentions, and
+    #: workflow turns.  The policy itself is also bound to the session task's
+    #: context so legacy tool wrappers cannot silently create a second scope.
+    workspace_scope: "WorkspaceScope | None" = None
+    workspace_access: "WorkspaceAccessPolicy | None" = None
 
     # ── visual resume (PRD-158) ──────────────────────────────────────────────
     #: True when this TUI was opened against an existing session and should

@@ -13,6 +13,10 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.tools.workspace_access import WorkspaceScope
 
 from agenthicc.commands.builtins import BUILTIN_COMMANDS as _CANONICAL_BUILTIN_COMMANDS
 from agenthicc.commands.command import Command
@@ -186,9 +190,11 @@ class AtMentionCompleter:
         self,
         base_path: str | Path = ".",
         recent_urls: list[str] | None = None,
+        workspace_scope: "WorkspaceScope | None" = None,
     ) -> None:
         self._base = Path(base_path).resolve()
         self._recent_urls: list[str] = recent_urls or []
+        self._workspace_scope = workspace_scope
 
     def completions(self, fragment: str) -> list[tuple[str, str]]:
         """Return [(display_path, meta), ...] matching *fragment*.
@@ -209,6 +215,16 @@ class AtMentionCompleter:
             dir_part = ""
             file_prefix = fragment
             search_dir = self._base
+
+        if self._workspace_scope is not None:
+            scoped = self._workspace_scope.resolve(search_dir, operation="list")
+            if not scoped.in_scope:
+                # Completion is a discovery operation, not an approval
+                # surface.  Do not enumerate a parent directory merely because
+                # the active mode is Yolo; actual injection/tool access makes
+                # the explicit mode-aware decision later.
+                return []
+            search_dir = scoped.absolute
 
         if not search_dir.is_dir():
             return []

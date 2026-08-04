@@ -248,6 +248,7 @@ async def _run_direct_turn(session: object, request: WorkerRequest) -> None:
         active_agent="default",
         completed_turns=0,
         approval_svc=getattr(session, "approval_svc"),
+        workspace_access=vars(session).get("workspace_access"),
         memory_router=getattr(session, "memory_router"),
         semantic_index=getattr(session, "semantic_index"),
         browser_manager=getattr(session, "browser_manager", None),
@@ -329,6 +330,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             if request.dangerously_skip_permissions
             else BackgroundApprovalService(store, request.session_id),
         )
+        if session.workspace_access is not None:
+            session.workspace_access.set_approval_service(session.approval_svc)
         processor_task = asyncio.create_task(session.processor.run(), name="background-processor")
         await asyncio.sleep(0)
 

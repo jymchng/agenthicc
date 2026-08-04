@@ -44,15 +44,48 @@ class MockApprovalService:
         if self._queue:
             entry = self._queue.popleft()
             self._consumed += 1
+            try:
+                request_access = object.__getattribute__(req, "workspace_access")
+            except AttributeError:
+                request_access = ()
+            if request_access:
+                recorded = {
+                    (item.get("canonical"), item.get("operation"))
+                    for item in entry.workspace_access
+                }
+                requested = {(str(item.canonical), item.operation) for item in request_access}
+                if recorded != requested:
+                    return ApprovalResponse(
+                        allowed=False,
+                        message="cassette workspace target did not match the requested target",
+                    )
+            elif entry.workspace_access:
+                return ApprovalResponse(
+                    allowed=False,
+                    message="cassette contained an unexpected workspace access decision",
+                )
             return ApprovalResponse(
                 allowed=entry.allowed,
                 message=entry.message,
                 remember=entry.remember,
                 remember_all=entry.remember_all,
                 mode=entry.mode,
+                scope_grant=entry.scope_grant,
             )
         # Queue exhausted — auto-approve so replay completes gracefully.
         self._consumed += 1
+        try:
+            request_access = object.__getattribute__(req, "workspace_access")
+        except AttributeError:
+            request_access = ()
+        if request_access:
+            # An outside-target approval is an exact security decision, not a
+            # generic capability prompt.  Never let a short/legacy cassette
+            # turn replay into an implicit workspace escape.
+            return ApprovalResponse(
+                allowed=False,
+                message="cassette has no exact recorded workspace access decision",
+            )
         return ApprovalResponse(
             allowed=True,
             message="(auto-approved: cassette exhausted)",

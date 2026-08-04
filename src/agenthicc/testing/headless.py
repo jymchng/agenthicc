@@ -116,6 +116,12 @@ async def run_headless_replay(
     from agenthicc.workflows.code_plan import CodePlanRunner  # noqa: PLC0415
     from agenthicc.workflows.config import WorkflowConfig  # noqa: PLC0415
     from agenthicc.plugins.discovery import PluginToolSet  # noqa: PLC0415
+    from agenthicc.tools.workspace_access import (
+        WorkspaceAccessPolicy,
+        WorkspaceScope,
+        reset_current_workspace_access,
+        set_current_workspace_access,
+    )
 
     run_intent: str = intent or cassette.intent
     if not run_intent:
@@ -146,6 +152,13 @@ async def run_headless_replay(
         agents_registry = None
 
     mention_cache = MentionCache()
+    workspace_scope = WorkspaceScope.create(Path.cwd(), allowed_paths=cfg.security.allowed_paths)
+    workspace_access = WorkspaceAccessPolicy(
+        workspace_scope,
+        mode_provider=app_state.active_mode,
+        approval_service=mock_approval,  # type: ignore[arg-type]
+    )
+    workspace_token = set_current_workspace_access(workspace_access)
 
     wf_config = WorkflowConfig(
         conv_store=app_state.conversation,
@@ -159,6 +172,8 @@ async def run_headless_replay(
         mcp_registry=None,
         mention_cache=mention_cache,
         agents_registry=agents_registry,  # type: ignore[arg-type]
+        workspace_scope=workspace_scope,
+        workspace_access=workspace_access,
     )
 
     # ── Collect tool_complete events from conv_store ──────────────────────────
@@ -189,6 +204,7 @@ async def run_headless_replay(
         error = repr(exc)
     finally:
         _unsub()
+        reset_current_workspace_access(workspace_token)
 
     # ── Collect phases from kernel events ────────────────────────────────────
     phases = [

@@ -485,6 +485,14 @@ class AgenthiccToolExecutor:
             if isinstance(tool, Tool):
                 result = tool.execute(dict(kwargs), _legacy_context(ctx))
             else:
+                from agenthicc.tools.workspace_access import (  # noqa: PLC0415
+                    current_workspace_access,
+                )
+
+                typed_extras = dict(ctx.extras)
+                policy = current_workspace_access()
+                if policy is not None:
+                    typed_extras["workspace_access"] = policy
                 typed_context = ToolCallContext(
                     agent_context=ctx.agent_context,
                     tool_use_id=ctx.tool_use_id,
@@ -493,7 +501,7 @@ class AgenthiccToolExecutor:
                     state=dict(ctx.state),
                     tool_state=dict(ctx.tool_state),
                     dependencies=dict(ctx.dependencies),
-                    extras=dict(ctx.extras),
+                    extras=typed_extras,
                     tool_name=ctx.tool_name,
                     tool_input=dict(kwargs),
                 )
@@ -753,6 +761,13 @@ def _legacy_context(ctx: ToolContext) -> dict[str, object]:
         "extras": ctx.extras,
     }
     context.update(ctx.extras)
+    from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+
+    policy = current_workspace_access()
+    if policy is not None:
+        # Session policy wins over caller-provided extras so a plugin cannot
+        # replace the parent scope with a private or unrestricted one.
+        context["workspace_access"] = policy
     return context
 
 
@@ -816,7 +831,14 @@ def _result_error_kind(error: str) -> ToolErrorKind:
     lowered = error.lower()
     if any(
         token in lowered
-        for token in ("permission", "denied", "forbidden", "outside workspace", "blocked in")
+        for token in (
+            "permission",
+            "denied",
+            "forbidden",
+            "outside workspace",
+            "outside_workspace",
+            "blocked in",
+        )
     ):
         return ToolErrorKind.denied
     if "timeout" in lowered or "timed out" in lowered:

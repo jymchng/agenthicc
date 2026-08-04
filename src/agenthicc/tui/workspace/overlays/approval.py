@@ -28,6 +28,17 @@ _OPTIONS: list[tuple[str, str, dict[str, bool]]] = [
     ("n", "Deny", dict(allowed=False)),
 ]
 
+_SCOPE_OPTIONS: list[tuple[str, str, dict[str, object]]] = [
+    ("y", "Allow this target once", {"allowed": True, "scope_grant": "target_once"}),
+    ("a", "Allow this target this turn", {"allowed": True, "scope_grant": "target_turn"}),
+    (
+        "A",
+        "Allow this target this session",
+        {"allowed": True, "scope_grant": "target_session"},
+    ),
+    ("n", "Deny", {"allowed": False}),
+]
+
 
 def _cap_str(capabilities: frozenset[str]) -> str:
     """Format capability set as a short human-readable string."""
@@ -72,36 +83,53 @@ class ApprovalOverlay(Overlay):
         cols = shutil.get_terminal_size((80, 24)).columns
         req = self._req
         cap_tags = _cap_str(req.capabilities)
+        scope_items = req.workspace_access
+        options = _SCOPE_OPTIONS if scope_items else _OPTIONS
 
         lines: list[RenderableType] = []
 
         # ── header ────────────────────────────────────────────────────────────
-        lines.append(
-            Text.from_markup(
-                f"[bold yellow]  ⚠  Tool Approval Required  [{_e(cap_tags)}][/bold yellow]"
-            )
-        )
+        header = "Workspace Access Approval" if scope_items else "Tool Approval Required"
+        suffix = f"  [{_e(cap_tags)}]" if cap_tags else ""
+        lines.append(Text.from_markup(f"[bold yellow]  ⚠  {header}{suffix}[/bold yellow]"))
         lines.append(Text(_BORDER_CHAR * min(cols, 66), style="dim"))
 
         # ── tool name ─────────────────────────────────────────────────────────
         lines.append(Text.from_markup(f"  [bold]{_e(req.tool_name)}[/bold]"))
 
-        # ── truncated args — up to 3 key/value pairs ─────────────────────────
-        inp = req.tool_input or {}
-        for key_name, val in list(inp.items())[:3]:
-            if isinstance(val, str):
-                display = val[:80] + ("…" if len(val) > 80 else "")
-            else:
-                try:
-                    display = json.dumps(val, ensure_ascii=False)[:80]
-                except Exception:  # noqa: BLE001
-                    display = repr(val)[:80]
-            lines.append(Text.from_markup(f"  [dim]{_e(key_name)}:[/dim] {_e(display)}"))
+        if scope_items:
+            for access in scope_items[:3]:
+                lines.append(
+                    Text.from_markup(f"  [dim]{_e(access.operation)}:[/dim] {_e(access.display)}")
+                )
+            root = scope_items[0].workspace_root
+            if root is not None:
+                lines.append(Text(f"  [dim]workspace:[/dim] {_e(str(root))}"))
+            lines.append(Text(f"  [dim]mode:[/dim] {_e(scope_items[0].mode)}"))
+            if len(scope_items) > 3:
+                lines.append(Text(f"  … and {len(scope_items) - 3} more targets", style="dim"))
+
+        # A workspace-scope request already has the exact path projection
+        # above.  Do not render the raw tool arguments in that branch: writes
+        # can contain file contents and commands can contain credentials or
+        # tokens.  Ordinary capability approvals retain the historical bounded
+        # argument preview.
+        if not scope_items:
+            inp = req.tool_input or {}
+            for key_name, val in list(inp.items())[:3]:
+                if isinstance(val, str):
+                    display = val[:80] + ("…" if len(val) > 80 else "")
+                else:
+                    try:
+                        display = json.dumps(val, ensure_ascii=False)[:80]
+                    except Exception:  # noqa: BLE001
+                        display = repr(val)[:80]
+                lines.append(Text.from_markup(f"  [dim]{_e(key_name)}:[/dim] {_e(display)}"))
 
         lines.append(Text(""))
 
         # ── selectable options ────────────────────────────────────────────────
-        n = len(_OPTIONS)
+        n = len(options)
         # Clamp scroll so selected is visible within a 6-line window.
         max_visible = 6
         if self._selected < self._scroll:
@@ -110,7 +138,7 @@ class ApprovalOverlay(Overlay):
             self._scroll = self._selected - max_visible + 1
 
         for idx in range(self._scroll, min(self._scroll + max_visible, n)):
-            hotkey, label_tmpl, _ = _OPTIONS[idx]
+            hotkey, label_tmpl, _ = options[idx]
             label = label_tmpl.format(caps=cap_tags)
             selected = idx == self._selected
             indicator = "▶" if selected else " "
@@ -132,7 +160,8 @@ class ApprovalOverlay(Overlay):
         return Group(*lines)
 
     def handle_key(self, key: Key, ch: str) -> bool:
-        n = len(_OPTIONS)
+        options = _SCOPE_OPTIONS if self._req.workspace_access else _OPTIONS
+        n = len(options)
 
         match key:
             case Key.UP:
@@ -146,7 +175,7 @@ class ApprovalOverlay(Overlay):
                 self._respond(dict(allowed=False))
             case Key.CHAR if ch:
                 # Hotkey fast-path
-                for idx, (hotkey, _, _) in enumerate(_OPTIONS):
+                for idx, (hotkey, _, _) in enumerate(options):
                     if ch == hotkey:
                         self._execute(idx)
                         break
@@ -158,13 +187,17 @@ class ApprovalOverlay(Overlay):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _execute(self, idx: int) -> None:
-        _, _, kwargs = _OPTIONS[idx]
+        options = _SCOPE_OPTIONS if self._req.workspace_access else _OPTIONS
+        _, _, kwargs = options[idx]
         self._respond(kwargs)
 
-    def _respond(self, kwargs: dict[str, bool]) -> None:
+    def _respond(self, kwargs: dict[str, object]) -> None:
         self._service.respond(
-            allowed=kwargs.get("allowed", False),
-            remember=kwargs.get("remember", False),
-            remember_all=kwargs.get("remember_all", False),
+            allowed=bool(kwargs.get("allowed", False)),
+            remember=bool(kwargs.get("remember", False)),
+            remember_all=bool(kwargs.get("remember_all", False)),
+            scope_grant=(
+                str(kwargs["scope_grant"]) if kwargs.get("scope_grant") is not None else None
+            ),
         )
         self._close()

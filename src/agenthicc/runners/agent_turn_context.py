@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillPermissionSet, SkillDef
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.runners.prompt_contract import PromptContract
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
 
 class AgentTurnOptions(TypedDict):
@@ -57,6 +58,7 @@ class AgentTurnOptions(TypedDict):
     prompt_contract: NotRequired["PromptContract | None"]
     excluded_capabilities: NotRequired[frozenset[str]]
     allowed_tool_names: NotRequired[frozenset[str] | None]
+    workspace_access: NotRequired["WorkspaceAccessPolicy | None"]
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,7 @@ class AgentTurnContext:
 
     # ── approval / hooks ──────────────────────────────────────────────────────
     approval_svc: "ApprovalService | None" = None
+    workspace_access: "WorkspaceAccessPolicy | None" = None
 
     # ── memory (PRD-101) ──────────────────────────────────────────────────────
     memory_router: "MemoryRouter | None" = None

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .cache import MentionCache
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
 from .parser import Mention, MentionKind
 
@@ -33,6 +34,7 @@ class InjectionConfig:
     max_glob_files: int = 20  # max files from one glob
     url_timeout_seconds: float = 10.0
     cwd: Path = field(default_factory=Path.cwd)
+    workspace_access: "WorkspaceAccessPolicy | None" = None
 
 
 @dataclass
@@ -111,6 +113,48 @@ def _format_dir_block(path: Path, path_str: str) -> str:
                 lines.append(f"{entry.name}  {size_kb:.1f} KB  {mtime}")
     except OSError as exc:
         lines.append(f"[error reading directory: {exc}]")
+    body = "\n".join(lines) or "(empty)"
+    return f'<dir path="{path_str}">\n{body}\n</dir>'
+
+
+async def _format_dir_block_with_policy(
+    path: Path,
+    path_str: str,
+    cfg: InjectionConfig,
+) -> str:
+    """Format a directory after authorizing each child metadata access."""
+
+    policy = cfg.workspace_access
+    if policy is None:
+        return _format_dir_block(path, path_str)
+    candidates = await asyncio.to_thread(lambda: list(path.iterdir()))
+    authorized: list[tuple[Path, Path]] = []
+    for entry in candidates:
+        try:
+            canonical = await policy.authorize(
+                str(entry),
+                operation="list",
+                tool_name="mention_list",
+                tool_input={"path": str(entry)},
+            )
+        except (OSError, PermissionError, ValueError):
+            continue
+        authorized.append((entry, canonical))
+
+    lines: list[str] = []
+    for entry, canonical in sorted(authorized, key=lambda item: (item[0].is_file(), item[0].name)):
+        if entry.name.startswith("."):
+            continue
+        try:
+            if canonical.is_dir():
+                lines.append(f"{entry.name}/  dir")
+            else:
+                stat = canonical.stat()
+                size_kb = stat.st_size / 1024
+                mtime = time.strftime("%Y-%m-%d", time.localtime(stat.st_mtime))
+                lines.append(f"{entry.name}  {size_kb:.1f} KB  {mtime}")
+        except OSError:
+            continue
     body = "\n".join(lines) or "(empty)"
     return f'<dir path="{path_str}">\n{body}\n</dir>'
 
@@ -199,21 +243,48 @@ async def _format_url_block(
 
 
 async def _resolve_glob(mention: Mention, cfg: InjectionConfig) -> InjectedContent:
+    if cfg.workspace_access is not None:
+        try:
+            await cfg.workspace_access.authorize(
+                mention.path,
+                operation="search",
+                tool_name="mention_search",
+                pattern=True,
+            )
+        except (OSError, PermissionError, ValueError) as exc:
+            return InjectedContent(
+                mention=mention,
+                block=f"[⚠ {mention.raw} unavailable: {exc}]",
+                error="outside_workspace" if "outside_workspace" in str(exc) else str(exc),
+            )
     pattern = str(cfg.cwd / mention.path)
-    all_matches = sorted(p for p in _glob.glob(pattern, recursive=True) if Path(p).is_file())
+    all_candidates = sorted(Path(p) for p in _glob.glob(pattern, recursive=True))
 
     included: list[str] = []
     omitted_budget: list[str] = []
     omitted_binary: list[str] = []
+    omitted_scope: list[str] = []
     blocks: list[str] = []
     total_chars = 0
 
-    for match in all_matches:
-        p = Path(match)
+    for p in all_candidates:
         try:
             rel = str(p.relative_to(cfg.cwd))
         except ValueError:
             rel = str(p)
+
+        if cfg.workspace_access is not None:
+            try:
+                await cfg.workspace_access.authorize(
+                    str(p),
+                    operation="read",
+                    tool_name="mention_read",
+                )
+            except (OSError, PermissionError, ValueError):
+                omitted_scope.append(rel)
+                continue
+        if not p.is_file():
+            continue
 
         if len(included) >= cfg.max_glob_files:
             omitted_budget.append(rel)
@@ -241,6 +312,8 @@ async def _resolve_glob(mention: Mention, cfg: InjectionConfig) -> InjectedConte
         summary_parts.append(f"{len(omitted_budget)} omitted (budget)")
     if omitted_binary:
         summary_parts.append(f"{len(omitted_binary)} binary skipped")
+    if omitted_scope:
+        summary_parts.append(f"{len(omitted_scope)} omitted (outside workspace)")
     header = f"<!-- {', '.join(summary_parts)} -->"
 
     if blocks:
@@ -272,6 +345,14 @@ async def resolve_mention(
             error="not_found",
         )
 
+    if mention.kind == MentionKind.OUT_OF_SCOPE and cfg.workspace_access is None:
+        return InjectedContent(
+            mention=mention,
+            block=f"[⚠ {mention.raw} denied: outside_workspace]",
+            chars_used=0,
+            error="outside_workspace",
+        )
+
     if mention.kind == MentionKind.URL:
         # Pass in-session URL cache from MentionCache if available
         session_url_cache: dict[str, str] | None = None
@@ -284,14 +365,88 @@ async def resolve_mention(
         )
         return InjectedContent(mention=mention, block=block, chars_used=len(block))
 
+    outside_preauthorized = False
     if mention.kind == MentionKind.DIRECTORY:
-        block = _format_dir_block(mention.resolved, mention.path)  # type: ignore[arg-type]
+        if mention.resolved is None:
+            return InjectedContent(
+                mention=mention,
+                block=f"[⚠ could not resolve {mention.raw}]",
+                error="not_found",
+            )
+        if cfg.workspace_access is not None:
+            try:
+                resolved_dir = await cfg.workspace_access.authorize(
+                    mention.path,
+                    operation="list",
+                    tool_name="mention_list",
+                )
+            except (OSError, PermissionError, ValueError) as exc:
+                return InjectedContent(
+                    mention=mention,
+                    block=f"[⚠ {mention.raw} denied: {exc}]",
+                    error="outside_workspace" if "outside_workspace" in str(exc) else str(exc),
+                )
+            mention.resolved = resolved_dir
+        block = await _format_dir_block_with_policy(mention.resolved, mention.path, cfg)
         return InjectedContent(mention=mention, block=block, chars_used=len(block))
+
+    if mention.kind == MentionKind.OUT_OF_SCOPE:
+        if mention.resolved is None or cfg.workspace_access is None:
+            return InjectedContent(
+                mention=mention,
+                block=f"[⚠ {mention.raw} denied: outside_workspace]",
+                error="outside_workspace",
+            )
+        try:
+            # The parser deliberately avoids stat-ing an outside target before
+            # approval. Authorize a read first, then classify the approved
+            # target and request list access only when it is actually a dir.
+            mention.resolved = await cfg.workspace_access.authorize(
+                mention.path,
+                operation="read",
+                tool_name="mention_read",
+            )
+            outside_preauthorized = True
+        except (OSError, PermissionError, ValueError) as exc:
+            return InjectedContent(
+                mention=mention,
+                block=f"[⚠ {mention.raw} denied: {exc}]",
+                error="outside_workspace" if "outside_workspace" in str(exc) else str(exc),
+            )
+        if mention.resolved.is_dir():
+            try:
+                mention.resolved = await cfg.workspace_access.authorize(
+                    mention.path,
+                    operation="list",
+                    tool_name="mention_list",
+                )
+            except (OSError, PermissionError, ValueError) as exc:
+                return InjectedContent(
+                    mention=mention,
+                    block=f"[⚠ {mention.raw} denied: {exc}]",
+                    error="outside_workspace" if "outside_workspace" in str(exc) else str(exc),
+                )
+            block = await _format_dir_block_with_policy(mention.resolved, mention.path, cfg)
+            return InjectedContent(mention=mention, block=block, chars_used=len(block))
 
     if mention.kind == MentionKind.GLOB:
         return await _resolve_glob(mention, cfg)
 
     # --- FILE ---
+
+    if cfg.workspace_access is not None and not outside_preauthorized:
+        try:
+            mention.resolved = await cfg.workspace_access.authorize(
+                mention.path,
+                operation="read",
+                tool_name="mention_read",
+            )
+        except (OSError, PermissionError, ValueError) as exc:
+            return InjectedContent(
+                mention=mention,
+                block=f"[⚠ {mention.raw} denied: {exc}]",
+                error="outside_workspace" if "outside_workspace" in str(exc) else str(exc),
+            )
 
     # Cache check: unchanged file → return cached reference
     if cache is not None and mention.resolved is not None:
@@ -360,7 +515,11 @@ async def build_context_prefix(
     from .parser import parse_mentions  # noqa: PLC0415
 
     cfg = cfg or InjectionConfig(cwd=cwd or Path.cwd())
-    mentions = parse_mentions(text, cwd=cfg.cwd)
+    mentions = parse_mentions(
+        text,
+        cwd=cfg.cwd,
+        workspace_scope=(cfg.workspace_access.scope if cfg.workspace_access is not None else None),
+    )
     if not mentions:
         return "", []
 

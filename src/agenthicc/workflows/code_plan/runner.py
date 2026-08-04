@@ -883,6 +883,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 active_agent="auto",
                 completed_turns=self._cfg.completed_turns,
                 approval_svc=self._cfg.approval_svc,
+                workspace_access=self._cfg.workspace_access,
                 output_collector=[],
                 command_outcomes=ctx.command_outcomes,
                 system_prompt_suffix=(

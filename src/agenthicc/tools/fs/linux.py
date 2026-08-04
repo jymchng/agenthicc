@@ -25,8 +25,8 @@ class LinuxFilesystemBackend:
     because it provides every method and property declared in the Protocol.
     """
 
-    def __init__(self, root: str | Path = ".") -> None:
-        self._view = WorkspaceView(root)
+    def __init__(self, root: str | Path = ".", *, enforce_root: bool = True) -> None:
+        self._view = WorkspaceView(root, enforce_root=enforce_root)
 
     # ------------------------------------------------------------------
     # Identity

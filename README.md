@@ -1,33 +1,54 @@
 # agenthicc
 
-`agenthicc` is a state-driven agent runtime for software-engineering work. It
-runs agent turns in the current project, exposes filesystem/git/command tools,
-supports configurable workflows and modes, and keeps durable session records
-for inspection and resume.
+**A state-driven agent operating system for autonomous software engineering.**
 
-The current product surfaces are:
+```
+pip install agenthicc   # or use uv — see Install below
+```
 
-- a Rich Live terminal workspace with approvals, overlays, modes, slash
-  commands, workflow progress, and a pinned composer;
-- a headless stdin interface that emits JSON-lines;
-- an event-sourced kernel with immutable domain state and JSONL persistence;
-- workflow, agent, tool, skill, mode, command, and MCP extension registries;
-- session, project, and global memory plus durable conversation journaling;
-- model-aware context budgeting, compaction, transport retries, and tool-result
-  replay for interrupted turns.
+![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
+![CI](https://img.shields.io/badge/CI-passing-brightgreen)
 
-The REST/WebSocket API and the older prompt-toolkit `tui.app` API are not part
-of the current source tree. They are tracked as product decisions in
-[`PRD-138`](./prds/prd-138-repository-improvement-roadmap.md), not as supported
-interfaces.
+---
 
-## Requirements
+## What it does
 
-- Python 3.11 or newer (`3.12` and `3.13` are exercised in CI)
+agenthicc runs **agent turns** inside your project with full filesystem, git, and command tooling. It keeps durable session records so you can inspect, resume, and replay work at any time.
+
+### Key capabilities
+
+| Feature | Description |
+|---|---|
+| **Terminal workspace** | Rich Live TUI with approvals, overlays, modes, slash commands, workflow progress, and a pinned composer |
+| **Headless mode** | Stdin-based JSON-lines interface for pipelines and CI |
+| **State-driven kernel** | Immutable domain state with JSONL persistence and event sourcing |
+| **Workflow system** | `code_plan`, `site_imitate`, and user-authored workflows with typed state machines |
+| **Extension registries** | Tools, agents, skills, modes, commands, and MCP servers |
+| **Memory** | Session, project, and global memory with durable conversation journaling |
+| **Context budgeting** | Model-aware compaction, transport retries, and tool-result replay for interrupted turns |
+| **Background sessions** | Detached long-running work with `/bg`, resume, retry, and cancellation |
+| **Session service** | HTTP/SSE attachment transport for programmatic session access |
+
+### Built-in workflows
+
+| Workflow | Purpose |
+|---|---|
+| `code_plan` | Plan-and-execute code changes with approval gates |
+| `create_workflow` | Author new workflows interactively |
+| `site_imitate` | Generate mobile-first responsive websites (viewport checks enforced) |
+
+---
+
+## Quick start
+
+### Requirements
+
+- Python 3.11 or newer (3.12 and 3.13 exercised in CI)
 - [`uv`](https://docs.astral.sh/uv/) for the recommended development workflow
-- An LLM provider: Anthropic, OpenAI, Ollama, or LiteLLM, as configured
+- An LLM provider: Anthropic (default), OpenAI, Ollama, or LiteLLM
 
-## Install from a checkout
+### Install
 
 ```bash
 git clone https://github.com/agenthicc/agenthicc.git
@@ -35,162 +56,37 @@ cd agenthicc
 uv sync --extra dev
 ```
 
-The package exposes both `agenthicc` and `python -m agenthicc` entry points:
+### Configure your provider
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-uv run agenthicc
-# equivalent:
-uv run python -m agenthicc
-```
-
-The package metadata currently declares `cloud` and `dev` extras. Do not use
-the undocumented `tui` or `api` extras from older documentation; dependency
-and packaging cleanup is tracked in PRD-138.
-
-## Provider configuration
-
-Anthropic is the default provider. Set one provider's credentials before
-starting a real agent turn:
-
-```bash
-# Anthropic
+# Anthropic (default)
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 # OpenAI
 export OPENAI_API_KEY="sk-..."
 uv run agenthicc --set execution.provider=openai --set execution.model=gpt-4o
 
-# Ollama needs no API key
+# Ollama (no API key needed)
 uv run agenthicc --set execution.provider=ollama --set execution.model=llama3.2
 ```
 
-You can set the provider, model, base URL, and execution options in
-`.agenthicc/agenthicc.toml`, `agenthicc.toml`, or a user config file. See the
-[configuration guide](./docs/guides/configuration.md) for precedence and the
-supported settings.
+You can also persist configuration in `.agenthicc/agenthicc.toml`, `agenthicc.toml`, or a user config file. See the [configuration guide](./docs/guides/configuration.md) for precedence rules.
 
-Named provider profiles also support OpenAI-compatible endpoints such as Modal
-without a provider-specific SDK. They carry endpoint headers, request options,
-sampling, retries, and environment-backed secrets through direct turns,
-workflows, subagents, and resume:
-
-```toml
-[execution]
-profile = "modal"
-
-[providers.modal]
-provider = "openai"
-model = "moonshotai/Kimi-K3"
-base_url = "https://your-endpoint.modal.run/v1"
-api_key_env = "MODAL_API_KEY"
-```
-
-Use `agenthicc config validate` before a run; secret values are never printed.
-For one-off credentials, use `--set-secret PATH=ENV_VAR`; it stores only an
-environment-variable reference and resolves the value at provider startup.
-
-The built-in `spawn_subagents` tool accepts the workflow-compatible `executor`
-role for build and compile tasks. Executor workers inherit the parent session's
-capability and approval policy; timeouts and partial failures are reported as
-failures and are not reused by resume.
-
-## First run
-
-Create a project config if desired:
+### Launch
 
 ```bash
-uv run agenthicc config init
+uv run agenthicc
 ```
 
-Bootstrap project-specific agent guidance with a reviewable local proposal:
-
-```bash
-uv run agenthicc init
-uv run agenthicc init --write
-```
-
-The first command previews an `AGENTS.md` diff. Existing guidance is preserved
-and requires `--write --force` for an explicit update. See the
-[project bootstrap guide](./docs/guides/project-bootstrap.md).
-
-Then launch the terminal workspace and enter a natural-language request:
+Enter a natural-language request:
 
 ```text
 > inspect the authentication module, propose a safe refactor, and run its tests
 ```
 
-The default session discovers built-in and project-local workflows, agents,
-tools, skills, modes, and MCP servers. New sessions start in Safe mode. Reads
-run directly; writes, command execution, git changes, network access, and
-unannotated tools ask for approval. Plan hard-blocks side effects, while Yolo
-is the unrestricted mode formerly named Auto. Access is enforced by mode
-restrictions, capability metadata, and approval settings. Review the
-[user-defined tools guide](./docs/guides/tools.md) before adding executable
-project plugins; it documents the current sandbox and trust boundaries.
+The default session discovers built-in and project-local workflows, agents, tools, skills, modes, and MCP servers. New sessions start in **Safe** mode — reads run directly; writes, command execution, git changes, network access, and unannotated tools ask for approval.
 
-To create a specialized workflow, select `/workflow create_workflow` and enter
-the intent in the next input. It runs `design → generate → validate → summarize`
-on the same state-machine pattern as `code_plan`: the design is presented for your
-approval, the generate phase writes a complete workflow package to
-`.agenthicc/workflows/<name>/runner.py` (with workflow-specific tools/helpers
-in sibling files) with a runtime prompt for every phase, and the
-validate phase imports that package and loops back to generate until it loads
-cleanly — an approval of a file that does not import is overridden. For
-non-trivial behavior the agent is guided to create a `code_plan`-style custom
-runner with typed states, context, per-state functions, explicit `match`
-transitions, and resumable execution; simple workflows can use declarative
-`PhaseSpec` values. Run `/workflows reload` and then `/workflow <name>` after
-authoring.
-
-Project tools and slash commands are authored separately through the
-`/create-tools` and `/create-commands` skills; they are not workflow selectors.
-
-The built-in `site_imitate` workflow always creates mobile-first responsive
-websites. Its planning, build, and verification phases enforce narrow/tablet/
-desktop viewport checks, responsive navigation, and no horizontal overflow.
-
-The generated workflow is expected to ship its own state-machine runner — typed
-state enum, typed context, one bounded method per state, an explicit
-`while not state.is_terminal` / `match` driver, `resume()`, and transitions that
-only ever happen on a tool call. Design turns inspect the real authoring API with
-the built-in `describe_phasespec`, `list_tool_capabilities`, `list_agent_roles`,
-`describe_runner_pattern`, `describe_transition_tool_pattern`, and
-`show_example_workflow` tools, which read from the running code rather than from
-prose. Each authoring phase has its own prompt and
-bounded multi-turn budget; tune the caps with
-`[execution].authoring_max_phase_turns` and
-`[execution].authoring_max_generation_attempts`. All workflow phases can use the
-existing `ask_user` tool to ask several focused clarification questions, including
-multiple rounds when requirements need to be refined.
-
-Generated custom runners also receive a cache-stability contract: immutable
-workflow policy and deterministic tool schemas stay in the reusable prefix,
-while phase state, artifacts, questions, answers, and summaries stay dynamic.
-The authoring agent is instructed to declare a literal `CACHE_CONTRACT`, pass it
-as `stable_system_prompt` to `CodePlanRunner.run_phase()`, and use `ask_user`
-instead of guessing over material ambiguity. Strict validation rejects runners
-that bypass this boundary or mutate the shared conversation history.
-
-Transition tools in generated runners must use the canonical bare
-`@tool_control` decorator imported from `agenthicc.tools.capabilities`, above
-`@tool()`. The authoring inspection tool `describe_transition_tool_pattern`
-shows the exact form, and strict validation catches factory-local import or
-decorator mistakes before the workflow is accepted.
-
-If a selected workflow still fails during startup, the TUI renders the
-exception as an error event, marks the workflow run failed, and discards the
-failed handle so the next message can retry it cleanly.
-
-Every session also carries five read-only tools for reading agenthicc itself —
-`list_agenthicc_docs`, `read_agenthicc_doc`, `search_agenthicc_docs`,
-`inspect_agenthicc_source`, and `search_agenthicc_source`. They serve the `docs/`
-tree plus `llms.txt`, `llms-full.txt`, and `README.md`, and resolve any
-`agenthicc` module or symbol (including private names) by parsing the file rather
-than importing it. All five are read-only, so they stay available in Plan mode.
-
-For a non-interactive process, use headless mode. It prints a ready record and
-one JSON line for each non-empty input line:
+### Headless mode
 
 ```bash
 printf '%s\n' 'summarise the repository' | uv run agenthicc --headless
@@ -199,65 +95,31 @@ uv run agenthicc workflows list
 uv run agenthicc workflows run code_plan --intent 'implement the feature' --json
 ```
 
-Headless mode is useful for smoke tests and pipelines. With `--workflow`, each
-stdin line becomes an actual workflow run and its JSON result is emitted after
-completion. Workflow execution uses the same lauren-ai runner, plugin registry,
-session persistence, capability checks, and approval boundary as the TUI. It
-does not imply a REST server.
-
-All clients can inspect the same client-neutral session projection. The new
-`session` commands use the shared snapshot, command, and replay contracts:
-
-```bash
-uv run agenthicc session list --json
-uv run agenthicc session show SESSION_ID --json
-uv run agenthicc session events SESSION_ID --after 12
-uv run agenthicc session export SESSION_ID --output session-export.json
-uv run agenthicc session send SESSION_ID --text 'continue the work'
-uv run agenthicc session control SESSION_ID cancel
-```
-
-The default session service is in-process and stores its projection under
-`~/.agenthicc/session-service/`. `agenthicc session serve` is an explicit
-loopback-only HTTP/SSE attachment transport; non-loopback binding requires a
-bearer token. It is an adapter over the existing session/kernel runtime, not a
-second agent server. See the [client-neutral session guide](./docs/guides/session-service.md).
+---
 
 ## Terminal workspace
 
 The current TUI is implemented by `tui/workspace/Workspace` and consists of:
 
-1. a scroll buffer for conversation, tool, workflow, and system events;
-2. a live status/composer/footer block owned by the workspace;
-3. overlays for help, command and skill listings, configuration, approvals,
-   questions, plans, and trigger completion;
-4. a single lifetime input session with POSIX and Windows terminal backends.
+1. A scroll buffer for conversation, tool, workflow, and system events
+2. A live status/composer/footer block owned by the workspace
+3. Overlays for help, command and skill listings, configuration, approvals, questions, plans, and trigger completion
+4. A single lifetime input session with POSIX and Windows terminal backends
 
-The workspace treats terminal resizing as one settled repaint, clearing
-Rich's previous geometry before redrawing so an active Plan Review is not
-duplicated in the scrollback. While approvals, plan reviews, or questions are
-waiting, the status animation and cached active-work timer stay fixed; the
-wall-clock duration is retained for turn telemetry.
-Idle sessions do not publish animation frames or repaint the unchanged Live
-status at the session tick rate, preventing duplicate idle panels in captured
-terminal output. Approval, plan-review, and question waits likewise retain
-their wall-clock telemetry without repainting an unchanged prompt every tick.
+The workspace treats terminal resizing as one settled repaint, clearing Rich's previous geometry before redrawing so an active Plan Review is not duplicated in the scrollback. While approvals, plan reviews, or questions are waiting, the status animation and cached active-work timer stay fixed; the wall-clock duration is retained for turn telemetry.
 
-Tool completions use the same operation-style header as file updates: reads,
-searches, commands, and other tools show a `● Operation(...)` header, a result
-summary, and a bounded numbered output preview. File changes retain their
-unified diff preview; long contiguous change blocks are abbreviated to six
-edge rows with a single `...` omission marker. Collapsed tool-group summaries
-are also flushed to the scroll buffer when an active agent is interrupted.
+Idle sessions do not publish animation frames or repaint the unchanged Live status at the session tick rate, preventing duplicate idle panels in captured terminal output. Approval, plan-review, and question waits likewise retain their wall-clock telemetry without repainting an unchanged prompt every tick.
 
-Useful built-in slash commands include:
+Tool completions use the same operation-style header as file updates: reads, searches, commands, and other tools show a `● Operation(...)` header, a result summary, and a bounded numbered output preview. File changes retain their unified diff preview; long contiguous change blocks are abbreviated to six edge rows with a single `...` omission marker. Collapsed tool-group summaries are also flushed to the scroll buffer when an active agent is interrupted.
+
+### Built-in slash commands
 
 | Command | Purpose |
 |---|---|
 | `/help`, `/commands` | Inspect available commands in an overlay |
 | `/tools [reload]`, `/workflows [reload]` | Inspect or reload tools/workflows; `/tools` labels each tool `builtin` or `plugin` |
 | `/status`, `/history` | Inspect runtime status and session events |
-| `/ps [terminal-id]`, `/stop [terminal-id|all]` | Inspect or stop owned background terminals; `/stop` stops all |
+| `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/stop` stops all |
 | `/mode [name]` | Show or change the operating mode |
 | `/workflow <name> \| reset` | Select a workflow (the interactive picker autocompletes registered names); use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
 | `/model [provider] [model]` | Inspect or switch the model selection |
@@ -271,47 +133,93 @@ Useful built-in slash commands include:
 | `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |
 
-`/config` opens its local configuration overlay immediately, including while a
-response is streaming.
+`/config` opens its local configuration overlay immediately, including while a response is streaming.
 
-Large bracketed pastes stay condensed in the composer. Backspace removes the
-whole paste when the cursor is immediately after its closing `]`; elsewhere it
-keeps normal character-wise editing.
-Home and End navigate the visible, single-line placeholder, so typing at either
-side keeps the original pasted content intact.
+Large bracketed pastes stay condensed in the composer. Backspace removes the whole paste when the cursor is immediately after its closing `]`; elsewhere it keeps normal character-wise editing. Home and End navigate the visible, single-line placeholder, so typing at either side keeps the original pasted content intact.
 
-Use `Ctrl+C` according to the current input state; the input backend owns raw
-terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md)
-for modes, overlays, input, busy-run command policies, and platform rules. ESC
-returns the input state to idle immediately after cancelling a run, so the
-double-Ctrl+C exit sequence remains responsive on Windows.
+Use `Ctrl+C` according to the current input state; the input backend owns raw terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md) for modes, overlays, input, busy-run command policies, and platform rules. ESC returns the input state to idle immediately after cancelling a run, so the double-Ctrl+C exit sequence remains responsive on Windows.
+
+---
+
+## Modes
+
+| Mode | Behavior |
+|---|---|
+| **Safe** (default) | Reads run directly; writes, command execution, git changes, network access, and unannotated tools ask for approval |
+| **Plan** | Hard-blocks side effects; requires explicit approval for all writes |
+| **Yolo** | Unrestricted mode formerly named Auto |
+
+Access is enforced by mode restrictions, capability metadata, and approval settings.
+
+---
+
+## Workflows
+
+Workflows are typed state machines with explicit transitions. The built-in `code_plan` workflow guides agents through design, generate, validate, and summarize phases with approval gates.
+
+### Authoring workflows
+
+Create a specialized workflow with `/workflow create_workflow`. It runs `design → generate → validate → summarize` on the same state-machine pattern as `code_plan`:
+
+1. The design is presented for your approval
+2. The generate phase writes a complete workflow package to `.agenthicc/workflows/<name>/runner.py` (with workflow-specific tools/helpers in sibling files) with a runtime prompt for every phase
+3. The validate phase imports that package and loops back to generate until it loads cleanly — an approval of a file that does not import is overridden
+
+For non-trivial behavior the agent is guided to create a `code_plan`-style custom runner with typed states, context, per-state functions, explicit `match` transitions, and resumable execution; simple workflows can use declarative `PhaseSpec` values. Run `/workflows reload` and then `/workflow <name>` after authoring.
+
+### Workflow inspection tools
+
+Each authoring phase has its own prompt and bounded multi-turn budget; tune the caps with `[execution].authoring_max_phase_turns` and `[execution].authoring_max_generation_attempts`. The agent inspects the real authoring API with built-in tools:
+
+- `describe_phasespec`
+- `list_tool_capabilities`
+- `list_agent_roles`
+- `describe_runner_pattern`
+- `describe_transition_tool_pattern`
+- `show_example_workflow`
+
+All five are read-only and available in Plan mode, so the agent can inspect the API without side effects.
+
+### Cache stability contract
+
+Generated custom runners receive a cache-stability contract: immutable workflow policy and deterministic tool schemas stay in the reusable prefix, while phase state, artifacts, questions, answers, and summaries stay dynamic. The authoring agent is instructed to declare a literal `CACHE_CONTRACT`, pass it as `stable_system_prompt` to `CodePlanRunner.run_phase()`, and use `ask_user` instead of guessing over material ambiguity. Strict validation rejects runners that bypass this boundary or mutate the shared conversation history.
+
+### Transition tools
+
+Transition tools in generated runners must use the canonical bare `@tool_control` decorator imported from `agenthicc.tools.capabilities`, above `@tool()`. The authoring inspection tool `describe_transition_tool_pattern` shows the exact form, and strict validation catches factory-local import or decorator mistakes before the workflow is accepted.
+
+If a selected workflow still fails during startup, the TUI renders the exception as an error event, marks the workflow run failed, and discards the failed handle so the next message can retry it cleanly.
+
+---
 
 ## Background sessions
 
-Long-running work can be detached from an active session with `/bg` or
-`/background`. Run `agenthicc agents` (or `agenthicc jobs`) to open the
-background-session manager, where you can inspect, follow, resume, retry,
-cancel, and safely delete sessions. `Ctrl+X` deletes the selected session only
-after confirmation; `u` restores it from recoverable trash. See the
-[background sessions guide](./docs/guides/background-sessions.md) for workflow
-support, approvals, input requests, retention, and privacy details.
+Long-running work can be detached from an active session with `/bg` or `/background`. Run `agenthicc agents` (or `agenthicc jobs`) to open the background-session manager, where you can inspect, follow, resume, retry, cancel, and safely delete sessions. `Ctrl+X` deletes the selected session only after confirmation; `u` restores it from recoverable trash. See the [background sessions guide](./docs/guides/background-sessions.md) for workflow support, approvals, input requests, retention, and privacy details.
 
-Execution tools remain foreground by default. Pass `background=true` to
-`run_bash` or `run_command` to receive an owned `term-...` handle, then call
-`wait_terminal` when the result is needed. While a wait is active, `/ps`,
-`/stop`, and `Esc` remain responsive; `/stop` stops all owned background
-terminals, while `Esc` stops the terminal currently being awaited. Terminal
-handles and bounded output are local-only and scoped to the originating
-session.
+Execution tools remain foreground by default. Pass `background=true` to `run_bash` or `run_command` to receive an owned `term-...` handle, then call `wait_terminal` when the result is needed. While a wait is active, `/ps`, `/stop`, and `Esc` remain responsive; `/stop` stops all owned background terminals, while `Esc` stops the terminal currently being awaited. Terminal handles and bounded output are local-only and scoped to the originating session.
 
-For finite builds, use an explicit `cwd` and a seconds-based `timeout`; a
-non-zero exit, timeout, cancellation, or spawn failure is always reported as a
-failed command. For development servers, use
-`lifecycle="service"` with a readiness probe rather than waiting for a process
-that is intended to remain alive. See the [command execution guide](./docs/guides/command-execution.md)
-for result states, readiness controls, workflow gates, and diagnostics.
+For finite builds, use an explicit `cwd` and a seconds-based `timeout`; a non-zero exit, timeout, cancellation, or spawn failure is always reported as a failed command. For development servers, use `lifecycle="service"` with a readiness probe rather than waiting for a process that is intended to remain alive. See the [command execution guide](./docs/guides/command-execution.md) for result states, readiness controls, workflow gates, and diagnostics.
 
-## Architecture in one picture
+---
+
+## Session service
+
+All clients can inspect the same client-neutral session projection. The new `session` commands use the shared snapshot, command, and replay contracts:
+
+```bash
+uv run agenthicc session list --json
+uv run agenthicc session show SESSION_ID --json
+uv run agenthicc session events SESSION_ID --after 12
+uv run agenthicc session export SESSION_ID --output session-export.json
+uv run agenthicc session send SESSION_ID --text 'continue the work'
+uv run agenthicc session control SESSION_ID cancel
+```
+
+The default session service is in-process and stores its projection under `~/.agenthicc/session-service/`. `agenthicc session serve` is an explicit loopback-only HTTP/SSE attachment transport; non-loopback binding requires a bearer token. It is an adapter over the existing session/kernel runtime, not a second agent server. See the [client-neutral session guide](./docs/guides/session-service.md).
+
+---
+
+## Architecture
 
 ```text
 user input
@@ -319,13 +227,13 @@ user input
     ▼
 TUISession / headless runner
     │  creates turns, selects workflow, injects tools
-    ├──────────────────────────────┐
-    ▼                              ▼
+    ├────────────────────────────────────┐
+    ▼                                    ▼
 reactive TUI AppState         kernel EventProcessor
     │                              │
 Workspace + input             Event → root_reducer → frozen kernel AppState
     │                              │
-    └──────────────┬───────────────┘
+    └────────────────────────────┬─┘
                    ▼
           workflow + agent turns
                    │
@@ -334,11 +242,64 @@ Workspace + input             Event → root_reducer → frozen kernel AppState
        session / project / global memory
 ```
 
-The kernel `AppState` and the reactive TUI `AppState` are different types with
-different responsibilities. The session runner currently owns the bridge
-between them. This boundary is documented in the [architecture guide](./docs/guides/architecture.md)
-and is a P0 design item in PRD-138. For the full evidence-backed checkout
-audit, see the [current repository state reference](./docs/reference/repository-state.md).
+The kernel `AppState` and the reactive TUI `AppState` are different types with different responsibilities. The session runner currently owns the bridge between them. This boundary is documented in the [architecture guide](./docs/guides/architecture.md) and is a P0 design item in [PRD-138](./prds/prd-138-repository-improvement-roadmap.md). For the full evidence-backed checkout audit, see the [current repository state reference](./docs/reference/repository-state.md).
+
+---
+
+## Extension points
+
+| Extension | Current location | Discovery |
+|---|---|---|
+| Tools | `.agenthicc/tools/`, `~/.agenthicc/tools/` | `TOOLS` export; capability metadata; review executable code manually |
+| Agents | `.agenthicc/agents/`, `~/.agenthicc/agents/` | `AgentPlugin` subclasses or `AGENTS` export |
+| Modes | `.agenthicc/modes/`, `~/.agenthicc/modes/` | Mode plugin loader |
+| Workflows | `.agenthicc/workflows/`, `~/.agenthicc/workflows/` | `WorkflowPlugin` subclasses |
+| Skills | `.agenthicc/skills/`, `~/.agenthicc/skills/` | `SKILL.md` directories |
+| Commands | `.agenthicc/commands/`, `~/.agenthicc/commands/` | `COMMAND`/`COMMANDS` exports; manual code review |
+| MCP | `[[tools.mcp_servers]]` | configured server bridge; structured results preserved |
+
+Explicit skills use the `$skill-name` or `$alias` trigger; `/` remains reserved for commands. `/commands` lists slash commands only; use `/skills` to inspect discovered skills. The former `/skill-name` spelling is not executed.
+
+In a registry overlay, press Enter on an entry to open its details. Press Enter again on the details page to place the invocation in the input panel: `/workflow <name>` for workflows, the command's canonical `/name` for commands, and `$<skill-name>` for skills. The text is prepared but not submitted.
+
+### Installing skills
+
+Install validated skills from a local path, direct HTTPS `SKILL.md` URL, or a generic GitHub repository with `agenthicc skills add SOURCE`. Both `https://github.com/owner/repo.git` and `owner/repo` sources are supported; repository sources discover and install all valid skills by default. Use `--skill NAME[,NAME]` to select specific skills, `--all` to make full installation explicit, and `--global` for user-global scope. Existing skill directories are never overwritten. Review downloaded instructions before invoking a newly installed skill.
+
+### Registering MCP servers
+
+Register an MCP server without hand-editing TOML with `agenthicc mcp add NAME URL`. Project scope is the default; use `--global` for the user configuration, `--transport` to select the existing bridge transport, and `--token-env ENV_VAR` to persist a token reference without exposing the secret to the CLI. A local Lauren MCP directory or `server.py` is also accepted for stdio servers and is converted to an `lmcp run ... --stdio` launcher. The command validates and appends configuration but does not connect to the server itself.
+
+Read the [extension guide](./docs/guides/plugins.md) and the [custom-command guide](./docs/guides/commands.md) before enabling project code or dependency installation. Project-local Python is executable code and must be reviewed deliberately.
+
+---
+
+## Persistence and resume
+
+Session artifacts live below `~/.agenthicc/sessions/`:
+
+| File | Purpose |
+|---|---|
+| `<session-id>.jsonl` | Kernel event log |
+| `<session-id>/conversation.jsonl` | Rendered conversation events; resumed TUI sessions replay the newest 20 complete turns |
+| `<session-id>/conversation-journal.jsonl` | Durable conversation-memory transitions used for crash recovery and tool replay |
+| `<session-id>/workflows/<run-id>/checkpoint.json` | Atomic, bounded workflow context checkpoints used by `/workflow resume` after an Esc pause |
+| Optional cassette files | Recorded transport and approval interactions |
+
+Direct chat, Plan mode, `code_plan`, and `create_workflow` share the session's stable conversation ID and journal-backed provider memory. Workflow phase state is checkpointed separately, while the reactive conversation store remains a UI projection.
+
+Export a portable, redacted support artifact with:
+
+```bash
+uv run agenthicc sessions inspect SESSION_ID
+uv run agenthicc sessions export SESSION_ID --output session-export.json
+```
+
+Inspection reports artifact health, corruption, token usage, workflow status, and whether a turn needs resume without printing conversation or tool payloads. The export includes valid records from the kernel, conversation, journal, and cassette stores. Credential-shaped values are redacted and malformed JSONL records are reported in the manifest. Review prompts, tool results, paths, and model output before sharing an export.
+
+Project memory and the workspace file cache live below `.agenthicc/`; global memory defaults to `~/.agenthicc/global.db`. See the [storage reference](./docs/reference/storage.md) before deleting session or project state.
+
+---
 
 ## Configuration example
 
@@ -378,21 +339,25 @@ allowed_domains = ["https://example.com"]
 allow_all_domains = false
 ```
 
-CloakBrowser is an optional dependency. Install it only when browser tools are
-needed with `pip install 'agenthicc[cloakbrowser]'` or `uv sync --extra
-cloakbrowser`; base installations do not import or require it.
+Filesystem access uses the active mode and the same canonical workspace scope
+across mentions, tools, commands, and workflows. Safe asks before an exact
+target outside `security.allowed_paths` is read, written, listed, searched, or
+used as a command working directory; Plan denies that access without prompting;
+Yolo permits the exact target subject to operating-system and runtime limits.
+`--dangerously-skip-permissions` does not bypass this workspace decision.
 
-Microsoft Playwright is an alternative backend. Select it explicitly and
-install its optional package and browser runtime:
+### Browser backends
+
+CloakBrowser is an optional dependency. Install it only when browser tools are needed with `pip install 'agenthicc[cloakbrowser]'` or `uv sync --extra cloakbrowser`; base installations do not import or require it.
+
+Microsoft Playwright is an alternative backend. Select it explicitly and install its optional package and browser runtime:
 
 ```bash
 uv sync --extra playwright
 uv run playwright install chromium
 ```
 
-From another uv project, such as a sibling `python-password-generator`
-checkout, use an editable requirement because `uv sync --extra` reads the
-consumer project's extras:
+From another uv project, such as a sibling `python-password-generator` checkout, use an editable requirement because `uv sync --extra` reads the consumer project's extras:
 
 ```bash
 uv run --no-project --with-editable '../agenthicc[playwright]' playwright install chromium
@@ -411,102 +376,60 @@ allowed_domains = ["example.com"]
 allow_all_domains = false
 ```
 
-Playwright exposes the same bounded browser operations with `playwright_*`
-names. Domain, DNS, private-address, artifact, quota, and checkpoint policies
-are shared with the CloakBrowser adapter. The two backends are mutually
-exclusive per session, and neither optional package is imported unless its
-backend is selected. Playwright permits any destination port and loopback
-preview servers such as `http://localhost:3000/`; the configured domain policy
-still controls which hosts may be reached.
+Playwright exposes the same bounded browser operations with `playwright_*` names. Domain, DNS, private-address, artifact, quota, and checkpoint policies are shared with the CloakBrowser adapter. The two backends are mutually exclusive per session, and neither optional package is imported unless its backend is selected. Playwright permits any destination port and loopback preview servers such as `http://localhost:3000/`; the configured domain policy still controls which hosts may be reached.
 
-Config layers are merged in this order: built-in defaults, user config,
-project config, environment variables, then repeated `--set key=value`
-overrides. Run `uv run agenthicc config show` to inspect the effective values;
-never print secrets in support logs.
+Config layers are merged in this order: built-in defaults, user config, project config, environment variables, then repeated `--set key=value` overrides. Run `uv run agenthicc config show` to inspect the effective values; never print secrets in support logs.
 
-## Extension points
+### Named provider profiles
 
-| Extension | Current location | Discovery |
-|---|---|---|
-| Tools | `.agenthicc/tools/`, `~/.agenthicc/tools/` | `TOOLS` export; capability metadata; review executable code manually |
-| Agents | `.agenthicc/agents/`, `~/.agenthicc/agents/` | `AgentPlugin` subclasses or `AGENTS` export |
-| Modes | `.agenthicc/modes/`, `~/.agenthicc/modes/` | Mode plugin loader |
-| Workflows | `.agenthicc/workflows/`, `~/.agenthicc/workflows/` | `WorkflowPlugin` subclasses |
-| Skills | `.agenthicc/skills/`, `~/.agenthicc/skills/` | `SKILL.md` directories |
-| Commands | `.agenthicc/commands/`, `~/.agenthicc/commands/` | `COMMAND`/`COMMANDS` exports; manual code review |
-| MCP | `[[tools.mcp_servers]]` | configured server bridge; structured results preserved |
+Named provider profiles also support OpenAI-compatible endpoints such as Modal without a provider-specific SDK. They carry endpoint headers, request options, sampling, retries, and environment-backed secrets through direct turns, workflows, subagents, and resume:
 
-Explicit skills use the `$skill-name` or `$alias` trigger; `/` remains reserved
-for commands. `/commands` lists slash commands only; use `/skills` to inspect
-discovered skills. The former
-`/skill-name` spelling is not executed.
+```toml
+[execution]
+profile = "modal"
 
-In a registry overlay, press Enter on an entry to open its details. Press Enter
-again on the details page to place the invocation in the input panel:
-`/workflow <name>` for workflows, the command's canonical `/name` for
-commands, and `$<skill-name>` for skills. The text is prepared but not
-submitted.
-
-Install validated skills from a local path, direct HTTPS `SKILL.md` URL, or a
-generic GitHub repository with `agenthicc skills add SOURCE`. Both
-`https://github.com/owner/repo.git` and `owner/repo` sources are supported;
-repository sources discover and install all valid skills by default. Use
-`--skill NAME[,NAME]` to select specific skills, `--all` to make full
-installation explicit, and `--global` for user-global scope. Existing skill
-directories are never overwritten. Review downloaded instructions before
-invoking a newly installed skill.
-
-Register an MCP server without hand-editing TOML with
-`agenthicc mcp add NAME URL`. Project scope is the default; use `--global` for
-the user configuration, `--transport` to select the existing bridge transport,
-and `--token-env ENV_VAR` to persist a token reference without exposing the
-secret to the CLI. A local Lauren MCP directory or `server.py` is also accepted
-for stdio servers and is converted to an `lmcp run ... --stdio` launcher. The
-command validates and appends configuration but does not connect to the server
-itself.
-
-Read the [extension guide](./docs/guides/plugins.md) and the
-[custom-command guide](./docs/guides/commands.md) before enabling project code
-or dependency installation. Project-local Python is executable code and must
-be reviewed deliberately.
-
-## Persistence and resume
-
-Session artifacts live below `~/.agenthicc/sessions/`:
-
-- `<session-id>.jsonl` — kernel event log;
-- `<session-id>/conversation.jsonl` — rendered conversation events; resumed
-  TUI sessions replay the newest 20 complete turns from this transcript through
-  the scroll appender without duplicating stored records. Configure the limit
-  with `[behaviour] resume_transcript_turns` or use `0` for the full replay;
-- `<session-id>/conversation-journal.jsonl` — durable conversation-memory
-  transitions used for crash recovery and tool replay;
-- `<session-id>/workflows/<run-id>/checkpoint.json` — atomic, bounded workflow
-  context checkpoints used by `/workflow resume` after an Esc pause;
-- optional cassette files — recorded transport and approval interactions.
-
-Direct chat, Plan mode, `code_plan`, and `create_workflow` share the session's
-stable conversation ID and journal-backed provider memory. Workflow phase state
-is checkpointed separately, while the reactive conversation store remains a UI
-projection.
-
-Export a portable, redacted support artifact with:
-
-```bash
-uv run agenthicc sessions inspect SESSION_ID
-uv run agenthicc sessions export SESSION_ID --output session-export.json
+[providers.modal]
+provider = "openai"
+model = "moonshotai/Kimi-K3"
+base_url = "https://your-endpoint.modal.run/v1"
+api_key_env = "MODAL_API_KEY"
 ```
 
-Inspection reports artifact health, corruption, token usage, workflow status,
-and whether a turn needs resume without printing conversation or tool payloads.
-The export includes valid records from the kernel, conversation, journal, and
-cassette stores. Credential-shaped values are redacted and malformed JSONL
-records are reported in the manifest. Review prompts, tool results, paths, and
-model output before sharing an export.
+Use `agenthicc config validate` before a run; secret values are never printed. For one-off credentials, use `--set-secret PATH=ENV_VAR`; it stores only an environment-variable reference and resolves the value at provider startup.
 
-Project memory and the workspace file cache live below `.agenthicc/`; global
-memory defaults to `~/.agenthicc/global.db`. See the [storage reference](./docs/reference/storage.md)
-before deleting session or project state.
+---
+
+## Provider configuration
+
+Anthropic is the default provider. Set one provider's credentials before starting a real agent turn:
+
+```bash
+# Anthropic
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# OpenAI
+export OPENAI_API_KEY="sk-..."
+uv run agenthicc --set execution.provider=openai --set execution.model=gpt-4o
+
+# Ollama needs no API key
+uv run agenthicc --set execution.provider=ollama --set execution.model=llama3.2
+```
+
+You can set the provider, model, base URL, and execution options in `.agenthicc/agenthicc.toml`, `agenthicc.toml`, or a user config file. See the [configuration guide](./docs/guides/configuration.md) for precedence and the supported settings.
+
+---
+
+## Subagents
+
+The built-in `spawn_subagents` tool accepts the workflow-compatible `executor` role for build and compile tasks. Executor workers inherit the parent session's capability and approval policy; timeouts and partial failures are reported as failures and are not reused by resume.
+
+---
+
+## Built-in documentation tools
+
+Every session carries five read-only tools for reading agenthicc itself — `list_agenthicc_docs`, `read_agenthicc_doc`, `search_agenthicc_docs`, `inspect_agenthicc_source`, and `search_agenthicc_source`. They serve the `docs/` tree plus `llms.txt`, `llms-full.txt`, and `README.md`, and resolve any `agenthicc` module or symbol (including private names) by parsing the file rather than importing it. All five are read-only, so they stay available in Plan mode.
+
+---
 
 ## Development
 
@@ -526,10 +449,9 @@ uv run pytest tests/e2e -q
 uv run pytest tests/ -q
 ```
 
-Nox contains the CI session definitions (`noxfile.py`), including the embedded
-`llms-full.txt` symbol check. Its dependency installation paths are being
-aligned with `pyproject.toml`; see [contributing](./docs/contributing.md) and
-PRD-138 before using the default all-session invocation on a clean checkout.
+Nox contains the CI session definitions (`noxfile.py`), including the embedded `llms-full.txt` symbol check. Its dependency installation paths are being aligned with `pyproject.toml`; see [contributing](./docs/contributing.md) and [PRD-138](./prds/prd-138-repository-improvement-roadmap.md) before using the default all-session invocation on a clean checkout.
+
+---
 
 ## Documentation map
 
@@ -553,9 +475,9 @@ PRD-138 before using the default all-session invocation on a clean checkout.
 - [Storage reference](./docs/reference/storage.md)
 - [Repository improvement PRD](./prds/prd-138-repository-improvement-roadmap.md)
 
-AI-assisted contributors should also read [`AGENTS.md`](./AGENTS.md),
-[`CLAUDE.md`](./CLAUDE.md), [`llms.txt`](./llms.txt), and
-[`llms-full.txt`](./llms-full.txt).
+AI-assisted contributors should also read [`AGENTS.md`](./AGENTS.md), [`CLAUDE.md`](./CLAUDE.md), [`llms.txt`](./llms.txt), and [`llms-full.txt`](./llms-full.txt).
+
+---
 
 ## License
 

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tools.cloakbrowser import BrowserSessionManager
+    from agenthicc.tools.workspace_access import WorkspaceScope, WorkspaceAccessPolicy
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,10 @@ class WorkflowConfig:
     """Session-owned browser lifecycle; live browser objects never enter checkpoints."""
     browser_tools: list["ToolLike"] = field(default_factory=list)
     """Session-bound CloakBrowser tools; empty when the optional feature is disabled."""
+    workspace_scope: "WorkspaceScope | None" = None
+    """Canonical filesystem roots for this workflow's parent session."""
+    workspace_access: "WorkspaceAccessPolicy | None" = None
+    """Mode-aware path policy shared with all phase turns and tools."""
 
     def all_plugin_tools(self) -> list["ToolLike"]:
         """Return project tools while accepting legacy list-based configs."""

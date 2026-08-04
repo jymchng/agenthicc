@@ -549,6 +549,7 @@ def _check_prompt_cache_contract(
     has_question_policy = all(
         marker in source.lower() for marker in ("clarifying", "ambiguous", "do not guess")
     )
+    has_workspace_policy = "workspace_access" in source
 
     _check_dynamic_stable_prompt_ast(source, errors)
     has_transition_decorator = _check_transition_tool_contract(
@@ -566,6 +567,11 @@ def _check_prompt_cache_contract(
             "custom workflows must use CodePlanRunner.run_phase() or "
             "build_workflow_prompt_contract(); direct _run_agent_turn calls bypass the "
             "cache/checkpoint contract."
+        )
+    if "WorkspaceScope.create" in source or "WorkspaceAccessPolicy(" in source:
+        errors.append(
+            "generated custom workflows must inherit the parent WorkflowConfig workspace "
+            "policy; do not construct a second WorkspaceScope or WorkspaceAccessPolicy."
         )
 
     if not strict:
@@ -595,6 +601,11 @@ def _check_prompt_cache_contract(
         errors.append(
             "CACHE_CONTRACT must instruct the workflow agent to ask clarifying questions "
             "for missing or ambiguous requirements and not guess."
+        )
+    if not has_workspace_policy:
+        errors.append(
+            "generated custom workflows must document and inherit WorkflowConfig.workspace_access "
+            "for every phase; use the standard run_phase() path instead of creating a second scope."
         )
     if not has_transition_decorator:
         errors.append(

@@ -16,6 +16,7 @@ from agenthicc.tools.capabilities import (
     tool_read_search,
     tool_exploratory,
 )
+from agenthicc.tools.workspace_access import current_workspace_access
 
 if TYPE_CHECKING:
     from agenthicc.tools.fs.backend import FilesystemBackend
@@ -49,7 +50,17 @@ __all__ = [
     "FS_AGENT_TOOLS",
 ]
 
-_CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
+
+def _CTX() -> dict[str, object]:
+    policy = current_workspace_access()
+    context: dict[str, object] = {
+        "workspace_root": (_router.default.root if _router is not None else os.getcwd())
+    }
+    if policy is not None:
+        context["workspace_access"] = policy
+        context["workspace_root"] = str(policy.scope.primary_root)
+    return context
+
 
 _router: "BackendRouter | None" = None
 
@@ -68,7 +79,20 @@ class _BatchMoveFile(TypedDict):
     destination: str
 
 
-def _get_backend(path: str = ".") -> "FilesystemBackend":
+def _get_backend(path: str = ".", context: dict[str, object] | None = None) -> "FilesystemBackend":
+    policy = (context or {}).get("workspace_access") or current_workspace_access()
+    if policy is not None:
+        # The mode-aware policy is the authoritative boundary for local
+        # session tools.  A legacy router may still point at a root-scoped
+        # backend and would therefore reject an explicitly approved parent
+        # path (or, worse, make routing decide access before the policy does).
+        if _router is not None:
+            routed = _router.resolve(path)
+            if routed is not _router.default:
+                return routed
+        from agenthicc.tools.fs.linux import LinuxFilesystemBackend  # noqa: PLC0415
+
+        return LinuxFilesystemBackend(policy.scope.primary_root, enforce_root=False)
     if _router is not None:
         return _router.resolve(path)
     from agenthicc.tools.fs.linux import LinuxFilesystemBackend  # noqa: PLC0415
@@ -320,9 +344,14 @@ async def grep_file(
         case_sensitive: Whether the match is case-sensitive (default True).
         context_lines: Number of surrounding lines to include with each match (default 0).
     """
+    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+
+    context = _CTX()
     try:
-        b = _get_backend(path)
-        text = b.read_text(path)
+        resolved = await _authorized_path(
+            context, path, operation="search", tool_name="grep_file", tool_input={"path": path}
+        )
+        text = resolved.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return {"ok": False, "error": f"file not found: {path}"}
     except PermissionError:
@@ -360,9 +389,19 @@ async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict[
         diff: Unified diff string (output of ``diff -u`` or similar).
         allow_partial: If True, apply successfully-matched hunks even when some fail (default False).
     """
+    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+
+    context = _CTX()
     try:
-        b = _get_backend(path)
-        original = b.read_text(path)
+        resolved = await _authorized_path(
+            context,
+            path,
+            operation="write",
+            tool_name="apply_diff",
+            capabilities=frozenset({"write"}),
+            tool_input={"path": path},
+        )
+        original = resolved.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return {"ok": False, "error": f"file not found: {path}"}
     except PermissionError:
@@ -421,7 +460,7 @@ async def apply_diff(path: str, diff: str, allow_partial: bool = False) -> dict[
         hunks_applied += 1
 
     new_content = "".join(result_lines)
-    b.write_text(path, new_content)
+    resolved.write_text(new_content, encoding="utf-8")
     return {
         "ok": True,
         "hunks_applied": hunks_applied,
@@ -440,9 +479,14 @@ async def checksum_file(path: str, algorithm: str = "sha256") -> dict[str, objec
         path: File path to checksum (relative to workspace root).
         algorithm: Hash algorithm name accepted by ``hashlib`` (default ``sha256``).
     """
+    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+
+    context = _CTX()
     try:
-        b = _get_backend(path)
-        data = b.read_bytes(path)
+        resolved = await _authorized_path(
+            context, path, operation="read", tool_name="checksum_file", tool_input={"path": path}
+        )
+        data = resolved.read_bytes()
     except FileNotFoundError:
         return {"ok": False, "error": f"file not found: {path}"}
     except PermissionError:
@@ -464,10 +508,21 @@ async def truncate_file(path: str, size: int = 0) -> dict[str, object]:
         path: File path to truncate (relative to workspace root).
         size: Target size in bytes (default 0 — empties the file).
     """
+    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+
+    context = _CTX()
     try:
-        b = _get_backend(path)
-        b.truncate(path, size)
-        new_size = b.stat(path).size
+        resolved = await _authorized_path(
+            context,
+            path,
+            operation="write",
+            tool_name="truncate_file",
+            capabilities=frozenset({"write"}),
+            tool_input={"path": path},
+        )
+        with resolved.open("r+b") as handle:
+            handle.truncate(size)
+        new_size = resolved.stat().st_size
     except FileNotFoundError:
         return {"ok": False, "error": f"file not found: {path}"}
     except PermissionError:
@@ -485,15 +540,27 @@ async def touch_file(path: str, create: bool = True) -> dict[str, object]:
         create: Create the file when it does not exist (default True).
                 If False and the file is missing, returns an error.
     """
+    from agenthicc.tools.fs import _authorized_path  # noqa: PLC0415
+
+    context = _CTX()
     try:
-        b = _get_backend(path)
-        existed = b.exists(path)
+        resolved = await _authorized_path(
+            context,
+            path,
+            operation="write",
+            tool_name="touch_file",
+            capabilities=frozenset({"write"}),
+            tool_input={"path": path},
+        )
+        existed = resolved.exists()
         if not existed and not create:
             return {"ok": False, "error": f"not found: {path}", "created": False}
         if not existed:
-            b.write_text(path, "")
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_text("", encoding="utf-8")
         else:
-            b.append_text(path, "")
+            with resolved.open("a", encoding="utf-8"):
+                pass
     except PermissionError:
         return {"ok": False, "error": "permission_denied"}
     return {"ok": True, "path": path, "created": not existed}
@@ -509,8 +576,18 @@ async def batch_read(paths: list[str], encoding: str = "utf-8") -> dict[str, obj
         paths: List of file paths to read (relative to workspace root).
         encoding: Text encoding for all files (default utf-8).
     """
-    b = _get_backend()
-    results = b.batch_read(paths, encoding)
+    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+
+    context = _CTX()
+    try:
+        authorized = await _authorize_tool(context, "batch_read", {"paths": paths})
+    except PermissionError as exc:
+        return {"ok": False, "error": str(exc), "results": [], "total": len(paths)}
+    b = _get_backend(context=context)
+    backend_paths = [str(path) for path in authorized] if authorized else paths
+    results = b.batch_read(backend_paths, encoding)
+    for original, result in zip(paths, results, strict=False):
+        result["path"] = original
     total_ok = sum(1 for r in results if r["ok"])
     return {
         "ok": total_ok == len(paths),
@@ -542,9 +619,23 @@ async def batch_write(
                 "succeeded": 0,
                 "failed": len(files),
             }
-    b = _get_backend()
+    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+
+    context = _CTX()
+    try:
+        authorized = await _authorize_tool(
+            context, "batch_write", {"files": files}, frozenset({"write"})
+        )
+    except PermissionError as exc:
+        return {"ok": False, "error": str(exc), "results": [], "total": len(files)}
+    b = _get_backend(context=context)
     backend_files: list[dict[str, object]] = [dict(item) for item in files]
+    if authorized:
+        for item, path in zip(backend_files, authorized, strict=False):
+            item["path"] = str(path)
     results = b.batch_write(backend_files, create_parents)
+    for original, result in zip(files, results, strict=False):
+        result["path"] = original["path"]
     total_ok = sum(1 for r in results if r["ok"])
     return {
         "ok": total_ok == len(files),
@@ -563,8 +654,20 @@ async def batch_delete(paths: list[str]) -> dict[str, object]:
     Args:
         paths: List of file paths to delete (relative to workspace root).
     """
-    b = _get_backend()
-    results = b.batch_delete(paths)
+    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+
+    context = _CTX()
+    try:
+        authorized = await _authorize_tool(
+            context, "batch_delete", {"paths": paths}, frozenset({"write"})
+        )
+    except PermissionError as exc:
+        return {"ok": False, "error": str(exc), "results": [], "total": len(paths)}
+    b = _get_backend(context=context)
+    backend_paths = [str(path) for path in authorized] if authorized else paths
+    results = b.batch_delete(backend_paths)
+    for original, result in zip(paths, results, strict=False):
+        result["path"] = original
     total_ok = sum(1 for r in results if r["ok"])
     return {
         "ok": total_ok == len(paths),
@@ -583,17 +686,38 @@ async def batch_move(moves: list[_BatchMoveFile]) -> dict[str, object]:
     Args:
         moves: List of ``{"source": str, "destination": str}`` dicts.
     """
-    b = _get_backend()
+    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+
+    context = _CTX()
+    try:
+        authorized = await _authorize_tool(
+            context, "batch_move", {"moves": moves}, frozenset({"write"})
+        )
+    except PermissionError as exc:
+        return {"ok": False, "error": str(exc), "results": [], "total": len(moves)}
+    b = _get_backend(context=context)
     results = []
     all_ok = True
-    for item in moves:
-        src = arg_str(item, "source", "")
-        dst = arg_str(item, "destination", "")
+    for index, item in enumerate(moves):
+        display_src = arg_str(item, "source", "")
+        display_dst = arg_str(item, "destination", "")
+        src = display_src
+        dst = display_dst
+        if authorized:
+            src = str(authorized[index * 2])
+            dst = str(authorized[index * 2 + 1])
         try:
             b.move(src, dst)
-            results.append({"source": src, "destination": dst, "ok": True})
+            results.append({"source": display_src, "destination": display_dst, "ok": True})
         except Exception as exc:
-            results.append({"source": src, "destination": dst, "ok": False, "error": str(exc)})
+            results.append(
+                {
+                    "source": display_src,
+                    "destination": display_dst,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
             all_ok = False
     succeeded = sum(1 for r in results if r["ok"])
     return {
@@ -612,17 +736,38 @@ async def batch_copy(copies: list[_BatchMoveFile]) -> dict[str, object]:
     Args:
         copies: List of ``{"source": str, "destination": str}`` dicts.
     """
-    b = _get_backend()
+    from agenthicc.tools.fs import _authorize_tool  # noqa: PLC0415
+
+    context = _CTX()
+    try:
+        authorized = await _authorize_tool(
+            context, "batch_copy", {"copies": copies}, frozenset({"write"})
+        )
+    except PermissionError as exc:
+        return {"ok": False, "error": str(exc), "results": [], "total": len(copies)}
+    b = _get_backend(context=context)
     results = []
     all_ok = True
-    for item in copies:
-        src = arg_str(item, "source", "")
-        dst = arg_str(item, "destination", "")
+    for index, item in enumerate(copies):
+        display_src = arg_str(item, "source", "")
+        display_dst = arg_str(item, "destination", "")
+        src = display_src
+        dst = display_dst
+        if authorized:
+            src = str(authorized[index * 2])
+            dst = str(authorized[index * 2 + 1])
         try:
             b.copy(src, dst)
-            results.append({"source": src, "destination": dst, "ok": True})
+            results.append({"source": display_src, "destination": display_dst, "ok": True})
         except Exception as exc:
-            results.append({"source": src, "destination": dst, "ok": False, "error": str(exc)})
+            results.append(
+                {
+                    "source": display_src,
+                    "destination": display_dst,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
             all_ok = False
     succeeded = sum(1 for r in results if r["ok"])
     return {

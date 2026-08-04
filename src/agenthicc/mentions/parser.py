@@ -4,6 +4,10 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.tools.workspace_access import WorkspaceScope
 
 __all__ = ["MentionKind", "Mention", "parse_mentions", "strip_mentions"]
 
@@ -14,6 +18,7 @@ class MentionKind(str, Enum):
     GLOB = "glob"
     URL = "url"
     UNRESOLVED = "unresolved"
+    OUT_OF_SCOPE = "out_of_scope"
 
 
 @dataclass
@@ -26,6 +31,8 @@ class Mention:
     resolved: Path | None  # absolute Path for file/directory/unresolved; None for url/glob
     start: int  # character offset of "@" in the original string
     end: int  # character offset after the last char of the token
+    scope_status: str = "unknown"
+    root_id: str | None = None
 
 
 # Regex: @ followed by non-whitespace / non-delimiter chars.
@@ -64,6 +71,7 @@ def _strip_existing_path_punctuation(path_str: str, base: Path) -> str:
 def parse_mentions(
     text: str,
     cwd: Path | None = None,
+    workspace_scope: "WorkspaceScope | None" = None,
 ) -> list[Mention]:
     """Extract and classify all @mention tokens from *text*.
 
@@ -85,7 +93,7 @@ def parse_mentions(
         # A terminal question mark is usually prose punctuation, but is also
         # a valid glob wildcard.  Prefer punctuation when the path without it
         # resolves to a real file or directory.
-        if not any(path_str.startswith(p) for p in _URL_PREFIXES):
+        if not any(path_str.startswith(p) for p in _URL_PREFIXES) and workspace_scope is None:
             path_str = _strip_existing_path_punctuation(path_str, base)
 
         end = start + 1 + len(path_str)
@@ -107,28 +115,62 @@ def parse_mentions(
 
         # Glob
         if any(c in path_str for c in _GLOB_CHARS):
+            scope_status = "unknown"
+            resolved_glob: Path | None = None
+            root_id: str | None = None
+            if workspace_scope is not None:
+                resolved_scope = workspace_scope.resolve_pattern(
+                    path_str,
+                    operation="search",
+                    probe_exists=False,
+                )
+                scope_status = resolved_scope.status.value
+                resolved_glob = resolved_scope.absolute
+                root_id = resolved_scope.root_id
             mentions.append(
                 Mention(
                     raw=raw,
                     path=path_str,
                     kind=MentionKind.GLOB,
-                    resolved=None,
+                    resolved=resolved_glob,
                     start=start,
                     end=end,
+                    scope_status=scope_status,
+                    root_id=root_id,
                 )
             )
             continue
 
-        # File system path — resolve relative to cwd
-        resolved = (base / path_str).resolve()
-        if resolved.is_file():
+        # File system path — resolve relative to cwd.  When a session scope is
+        # present, classify the canonical target before checking file type so
+        # an outside target cannot be silently treated as a normal mention.
+        scope_status = "unknown"
+        root_id: str | None = None
+        if workspace_scope is not None:
+            scoped = workspace_scope.resolve(
+                path_str,
+                operation="read",
+                probe_exists=False,
+            )
+            resolved = scoped.absolute
+            scope_status = scoped.status.value
+            root_id = scoped.root_id
+        else:
+            resolved = (base / path_str).resolve()
+        if scope_status == "outside_workspace":
+            kind = MentionKind.OUT_OF_SCOPE
+        elif resolved.is_file():
             kind = MentionKind.FILE
         elif resolved.is_dir():
             kind = MentionKind.DIRECTORY
         # Non-existent trailing-slash paths fall through to UNRESOLVED so that
         # resolve_mention returns a soft-error block instead of raising.
         else:
-            kind = MentionKind.UNRESOLVED
+            kind = (
+                MentionKind.OUT_OF_SCOPE
+                if scope_status == "outside_workspace"
+                else MentionKind.UNRESOLVED
+            )
 
         mentions.append(
             Mention(
@@ -138,6 +180,8 @@ def parse_mentions(
                 resolved=resolved,
                 start=start,
                 end=end,
+                scope_status=scope_status,
+                root_id=root_id,
             )
         )
 

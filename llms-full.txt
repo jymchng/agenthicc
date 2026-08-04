@@ -1055,11 +1055,23 @@ class ResourceLimits:
 class ToolSandbox:
     async def run(self, operation: Awaitable[T], timeout_s: float = 0.0) -> T: ...
     def resolve(self, path: str | Path) -> Path: ...
+    async def resolve_authorized(
+        self,
+        path: str | Path,
+        *,
+        operation: str = "read",
+        tool_name: str = "tool",
+        capabilities: frozenset[str] = frozenset(),
+        tool_input: Mapping[str, object] | None = None,
+    ) -> Path: ...
     def check_url(self, url: str) -> None: ...
 ```
 
 Shared timeout, path, network, and best-effort POSIX resource boundary passed
-to legacy and typed adapters. An empty network allow-list denies all hosts.
+to legacy and typed adapters. Async integrations with a session policy should
+use `resolve_authorized`; synchronous `resolve` fails closed for an outside
+Safe target because it cannot await approval. An empty network allow-list
+denies all hosts.
 
 ---
 
@@ -1071,6 +1083,28 @@ class WorkspaceView:
 ```
 
 Path-prefix sandbox. All operations are restricted to paths under `root`.
+
+### WorkspaceScope and WorkspaceAccessPolicy
+
+```python
+class WorkspaceScope: ...
+class WorkspaceAccessPolicy: ...
+current_workspace_access() -> WorkspaceAccessPolicy | None
+set_current_workspace_access(policy) -> token
+reset_current_workspace_access(token) -> None
+```
+
+`WorkspaceScope` canonicalizes the primary and explicitly configured
+`security.allowed_paths` roots and returns structured target identity and scope
+classification. `WorkspaceAccessPolicy` applies the live Safe/Plan/Yolo mode:
+Safe requests explicit approval for outside-scope targets, Plan denies them
+without I/O, and Yolo uses an explicit unrestricted workspace policy while
+retaining operating-system and runtime limits. The same session policy is
+inherited by mentions, tools, commands, workflows, subagents, and headless
+execution; temporary grants are not durable configuration. An outside Safe
+preflight canonicalizes the target without probing its existence; the request
+reports existence after approval/revalidation, preventing metadata disclosure
+before the scope decision.
 
 ---
 

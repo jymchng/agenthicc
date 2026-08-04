@@ -5,7 +5,23 @@ an allow decision at one layer does not bypass a stricter layer.
 
 ## Path boundaries
 
-`WorkspaceView` resolves real paths and rejects:
+`WorkspaceView` remains the low-level final path boundary. Session tools use the
+mode-aware `WorkspaceScope`/`WorkspaceAccessPolicy` boundary before it and
+revalidate the canonical target immediately before I/O. The shared resolver
+records the requested path, canonical target, configured root, operation, and
+scope status; it is inherited by mentions, filesystem/git tools, command
+working directories, workflow phases, and headless runs.
+
+In **Safe**, an exact target outside `[security].allowed_paths` is shown in the
+existing approval overlay before content, directory entries, or command output
+is accessed. The choices are target-once, target-this-turn, target-this-session,
+or deny. These grants never imply ordinary write/execute/network capability
+approval. **Plan** denies outside-scope access without prompting, while
+**Yolo** selects an explicit unrestricted workspace policy. Yolo still obeys OS,
+container, resource, network, and missing-path errors; it does not change the
+process working directory.
+
+All modes resolve real paths and reject or revalidate:
 
 - `..` traversal outside the workspace;
 - absolute paths outside the workspace;
@@ -60,7 +76,12 @@ cannot expand a parent.
 Destructive operations can require confirmation. The approval service is
 session-scoped; requests are rendered by the TUI overlays or replaced with
 mock/recording services in tests. `--dangerously-skip-permissions` is an
-explicit CLI escape hatch and cannot be stored in TOML.
+explicit CLI escape hatch and cannot be stored in TOML. It auto-approves
+ordinary capability prompts only; it does not turn Safe into Yolo or bypass an
+outside-workspace approval. Headless runs fail closed for outside-workspace
+requests unless a caller supplies an explicit scope-aware approval adapter.
+Recorded approvals include the canonical target and operation; cassette replay
+matches those fields exactly and rejects a different outside target.
 
 ## Plugin trust
 

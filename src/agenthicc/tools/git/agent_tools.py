@@ -6,6 +6,7 @@ NOTE: no ``from __future__ import annotations`` — @tool() inspects real annota
 import os
 from lauren_ai._tools import tool
 from agenthicc.tools.capabilities import tool_exploratory, tool_git_read, tool_git_write
+from agenthicc.tools.workspace_access import current_workspace_access
 
 __all__ = [
     "git_add",
@@ -22,7 +23,14 @@ __all__ = [
     "GIT_AGENT_TOOLS",
 ]
 
-_CTX = lambda: {"workspace_root": os.getcwd()}  # noqa: E731
+
+def _CTX() -> dict[str, object]:
+    policy = current_workspace_access()
+    context: dict[str, object] = {"workspace_root": os.getcwd()}
+    if policy is not None:
+        context["workspace_access"] = policy
+        context["workspace_root"] = str(policy.scope.primary_root)
+    return context
 
 
 @tool_exploratory

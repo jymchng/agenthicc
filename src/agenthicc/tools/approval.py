@@ -24,6 +24,7 @@ from agenthicc.tools.context import ToolCallContext
 
 if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceAccessRequest
 
 __all__ = [
     "ApprovalRequest",
@@ -43,6 +44,8 @@ class ApprovalRequest:
     kind: str = "tool"  # "tool" | "plan_review" — controls which overlay is shown
     mode_options: tuple[str, ...] = ()
     """Canonical execution modes offered by a plan-review overlay, if any."""
+    workspace_access: tuple["WorkspaceAccessRequest", ...] = ()
+    """Exact outside-workspace accesses that caused this approval request."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,7 @@ class ApprovalResponse:
     remember_all: bool = False  # allow all remaining calls of this capability this session
     message: str = ""  # user-typed feedback / instructions (plan_review only)
     mode: str | None = None  # selected execution mode for a plan-review handoff
+    scope_grant: str | None = None  # target_turn | target_session | target_once
 
 
 class ApprovalService:
@@ -69,6 +73,8 @@ class ApprovalService:
         self._response: ApprovalResponse | None = None
         self._remembered_turn: frozenset[str] = frozenset()
         self._remembered_all: frozenset[str] = frozenset()
+        self._scope_turn: set[tuple[str, str]] = set()
+        self._scope_session: set[tuple[str, str]] = set()
         self._lock = asyncio.Lock()
 
     async def request_approval(self, req: ApprovalRequest) -> ApprovalResponse:
@@ -77,10 +83,22 @@ class ApprovalService:
         # Important: empty capabilities must never match (frozenset() <= frozenset()
         # is True in Python, which would silently auto-approve plan reviews and
         # any other non-capability request before the overlay is shown).
-        if req.capabilities and req.capabilities <= self._remembered_all:
+        if (
+            not req.workspace_access
+            and req.capabilities
+            and req.capabilities <= self._remembered_all
+        ):
             return ApprovalResponse(allowed=True)
-        if req.capabilities and req.capabilities <= self._remembered_turn:
+        if (
+            not req.workspace_access
+            and req.capabilities
+            and req.capabilities <= self._remembered_turn
+        ):
             return ApprovalResponse(allowed=True)
+        if req.workspace_access:
+            keys = {(str(item.canonical), item.operation) for item in req.workspace_access}
+            if keys <= self._scope_session or keys <= self._scope_turn:
+                return ApprovalResponse(allowed=True, scope_grant="target_once")
 
         # Serialise concurrent approvals.
         async with self._lock:
@@ -94,6 +112,12 @@ class ApprovalService:
                     self._remembered_all = self._remembered_all | req.capabilities
                 elif response.remember:
                     self._remembered_turn = self._remembered_turn | req.capabilities
+                if req.workspace_access and response.allowed:
+                    keys = {(str(item.canonical), item.operation) for item in req.workspace_access}
+                    if response.scope_grant == "target_session":
+                        self._scope_session.update(keys)
+                    elif response.scope_grant == "target_turn":
+                        self._scope_turn.update(keys)
                 return response
             finally:
                 # Cancellation/error paths must release the modal and resume
@@ -110,6 +134,7 @@ class ApprovalService:
         remember_all: bool = False,
         message: str = "",
         mode: str | None = None,
+        scope_grant: str | None = None,
     ) -> None:
         """TUI-side (sync): called from ApprovalOverlay / PlanApprovalOverlay."""
         self._response = ApprovalResponse(
@@ -118,6 +143,7 @@ class ApprovalService:
             remember_all=remember_all,
             message=message,
             mode=mode,
+            scope_grant=scope_grant,
         )
         pending = self._app_state.pending_approval()
         if pending is not None:
@@ -126,6 +152,7 @@ class ApprovalService:
     def reset_turn_memory(self) -> None:
         """Clear per-turn blanket approvals at the start of each new agent turn."""
         self._remembered_turn = frozenset()
+        self._scope_turn.clear()
 
 
 class ApprovalGate:
@@ -135,9 +162,15 @@ class ApprovalGate:
     If ToolCapabilityGate aborts (hard block), this hook never runs.
     """
 
-    def __init__(self, app_state: AppState, service: ApprovalService) -> None:
+    def __init__(
+        self,
+        app_state: AppState,
+        service: ApprovalService,
+        workspace_access: "WorkspaceAccessPolicy | None" = None,
+    ) -> None:
         self._app_state = app_state
         self._service = service
+        self._workspace_access = workspace_access
 
     async def before_tool_call(self, ctx: ToolCallContext) -> object:
         from lauren_ai._tools._hooks import BeforeToolHookDecision  # noqa: PLC0415
@@ -146,19 +179,46 @@ class ApprovalGate:
             classify_tool_capabilities,
         )
 
-        # PRD-79: --dangerously-skip-permissions bypasses all approval prompts.
-        if getattr(self._app_state, "cli_flags", None) is not None:
-            if self._app_state.cli_flags.dangerously_skip_permissions:
-                return BeforeToolHookDecision.proceed()
-
         mode = self._app_state.active_mode()
         required = mode.approval_required
-        if not required:
-            return BeforeToolHookDecision.proceed()
-
         raw_caps = ctx.get_metadata(CAPABILITIES_KEY)
         tool_caps = classify_tool_capabilities(raw_caps)
         needs_approval = tool_caps & required
+
+        policy = self._workspace_access
+        if policy is None:
+            from agenthicc.tools.workspace_access import current_workspace_access  # noqa: PLC0415
+
+            policy = current_workspace_access()
+        if policy is not None:
+            path_result = await policy.authorize_tool(
+                ctx.tool_name,
+                ctx.tool_input,
+                frozenset(needs_approval),
+            )
+            metadata = ctx.metadata
+            if isinstance(metadata, dict) and path_result.decisions:
+                access_metadata = path_result.to_dict()
+                access_metadata["workspace_root"] = str(policy.scope.primary_root)
+                access_metadata["mode"] = policy.mode_name
+                metadata["workspace_access"] = access_metadata
+            if not path_result.allowed:
+                return BeforeToolHookDecision.abort(
+                    {
+                        "ok": False,
+                        "code": path_result.code,
+                        "error": f"{path_result.code}: {path_result.error}",
+                    }
+                )
+            if path_result.approval_handled:
+                return BeforeToolHookDecision.proceed()
+
+        # PRD-79: --dangerously-skip-permissions bypasses ordinary capability
+        # prompts, but deliberately cannot turn Safe into Yolo or bypass the
+        # workspace boundary approval above.
+        if self._app_state.cli_flags.dangerously_skip_permissions:
+            return BeforeToolHookDecision.proceed()
+
         if not needs_approval:
             return BeforeToolHookDecision.proceed()
 

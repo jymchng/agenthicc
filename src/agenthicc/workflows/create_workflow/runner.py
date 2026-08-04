@@ -108,18 +108,24 @@ _RUNNER_GUIDE: str = (
     "  10. run() and resume(context) must use config.session_memory when it is supplied "
     "and must never create a second conversation for a resumed run. Use "
     "config.workflow_handle to attach context and publish the current phase.\n"
+    "  11. inherit config.workspace_scope and config.workspace_access unchanged. Never "
+    "construct a second WorkspaceScope, bypass the policy with a raw filesystem call, "
+    "or treat a custom runner as permission to access a parent directory. Use the "
+    "standard CodePlanRunner.run_phase() path so every phase, retry, and subagent "
+    "turn receives the same live Safe/Plan/Yolo policy; custom path-aware tools must "
+    "use current_workspace_access() or an explicitly authorized adapter.\n"
     "Subclass CodePlanRunner for the session wiring and its public run_phase(intent=, "
     "text=, system_prompt=, mode=, max_turns=, shared_memory=, tools=) helper; use the "
     "injected session memory for every call (create a local fallback only when no session "
     "memory was supplied). Never "
     "call super().run() — that would execute code_plan's own phases.\n"
-    "  11. Add a module-level CACHE_CONTRACT stable system prompt to the generated "
+    "  12. Add a module-level CACHE_CONTRACT stable system prompt to the generated "
     "workflow. It MUST tell the workflow agent to ask the user clarifying questions "
     "through the existing ask_user tool whenever required information is missing, "
     "ambiguous, or materially changes the result, and to wait for the answer instead "
     "of guessing. Pass it as stable_system_prompt=CACHE_CONTRACT to run_phase(); keep "
     "phase instructions, artifacts, questions, and answers in the dynamic phase text.\n"
-    "  12. Keep stable tools separate from phase-local transition/write tools and use "
+    "  13. Keep stable tools separate from phase-local transition/write tools and use "
     "the deterministic tool ordering inherited from run_phase(). Never insert messages "
     "into the beginning of shared memory or put a rolling summary into CACHE_CONTRACT.\n"
     "Call describe_runner_pattern() and describe_transition_tool_pattern() for the "
@@ -144,6 +150,9 @@ _AUTHORING_GUIDE: str = (
     "  - phase prompts: each prompt must list its available transition tool(s), mark "
     "those callables with @tool_control, and state that only a successful call to one "
     "of them changes phase\n"
+    "  - workspace policy: inherit WorkflowConfig.workspace_scope and "
+    "WorkflowConfig.workspace_access unchanged; custom path-aware tools must use the "
+    "same policy and must never create a second scope or raw unrestricted sandbox\n"
     "  - build_params(): typed WorkflowParams when [workflows.<name>] config is needed\n\n"
     + _RUNNER_GUIDE
     + "\nUse describe_phasespec(), list_tool_capabilities(), list_agent_roles(), "
@@ -204,6 +213,13 @@ _GENERATE_PROMPT: str = (
     "the existing ask_user tool whenever a missing or ambiguous requirement could change "
     "the result; wait for the answer and do not guess. The current question and answer "
     "are dynamic context, not part of CACHE_CONTRACT.\n\n"
+    "The generated runner must inherit WorkflowConfig.workspace_scope and "
+    "WorkflowConfig.workspace_access unchanged. Every phase must call the public "
+    "CodePlanRunner.run_phase() helper so the same live Safe/Plan/Yolo policy reaches "
+    "all turns and subagents. Custom filesystem/Git/mention/command tools must use "
+    "current_workspace_access() or an authorized built-in adapter; never construct a "
+    "second scope, add an implicit parent root, parse around the policy, or use raw "
+    "filesystem I/O for a convenience check.\n\n"
     "Write the runner the design specified into runner.py — the state enum, the "
     "context dataclass, one bounded async method per state, the "
     "'while not state.is_terminal' + 'match state' driver in run(), resume(), the phase "
@@ -952,7 +968,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
     def _workspace_root(self) -> Path:
         """Return the directory generated workflow files must live inside."""
-        return Path.cwd()
+        scope = self._cfg.workspace_scope
+        return scope.primary_root if scope is not None else Path.cwd()
 
     def _target_path(self, workflow_name: str) -> str:
         """Return the conventional project-local path for *workflow_name*."""
@@ -1086,6 +1103,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 active_agent="auto",
                 completed_turns=self._cfg.completed_turns,
                 approval_svc=self._cfg.approval_svc,
+                workspace_access=self._cfg.workspace_access,
                 output_collector=[],
                 command_outcomes=ctx.command_outcomes,
                 system_prompt_suffix=(

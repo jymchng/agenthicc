@@ -12,6 +12,14 @@ journal-backed provider memory is reused across phase turns. The reactive
 in a typed workflow context and is checkpointed separately when the runner
 supports resumable state.
 
+Workflow runners also inherit the parent session's immutable
+`WorkspaceScope` and live `WorkspaceAccessPolicy`. A custom workflow does not
+need to reimplement Safe/Plan/Yolo path handling: filesystem, mention, and
+command tools receive the same policy, and a live mode change is evaluated at
+the next access. Generated or plugin workflows should pass the existing
+`WorkflowConfig` through to phase turns rather than reconstructing a root from
+`os.getcwd()`.
+
 There are two supported authoring levels:
 
 - A `WorkflowPlugin` with `PhaseSpec` values uses the generic
@@ -516,7 +524,11 @@ use the same runner contract as the TUI.
 
 Headless approvals fail closed. Approval-gated actions are denied unless the
 invocation explicitly supplies `--dangerously-skip-permissions`; this flag
-should only be used in a trusted automation environment.
+should only be used in a trusted automation environment. It does not bypass
+the workspace boundary: headless outside-workspace requests require an
+explicit scope-aware approval adapter. Recorded workflow approvals retain the
+canonical workspace target and operation, so replay cannot authorize a
+different parent path by position alone.
 
 ## Minimal plugin
 

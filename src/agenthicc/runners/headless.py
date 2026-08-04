@@ -60,6 +60,19 @@ class _HeadlessApprovalService:
     async def request_approval(self, req: object) -> object:
         from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
 
+        # A dangerous-permissions flag is an explicit capability approval for
+        # automation, not an implicit expansion of the workspace boundary.
+        # Outside-workspace access needs a caller-provided approval adapter so
+        # headless runs never silently exfiltrate or mutate parent paths.
+        try:
+            workspace_access = object.__getattribute__(req, "workspace_access")
+        except AttributeError:
+            workspace_access = None
+        if workspace_access:
+            return ApprovalResponse(
+                allowed=False,
+                message="headless workspace access is denied without an explicit scope policy",
+            )
         message = (
             "headless approval granted"
             if self._allow
@@ -115,6 +128,14 @@ async def execute_workflow(
             browser_manager=getattr(session, "browser_manager", None),
             provider_profile=session.cfg.execution.profile,
         )
+    try:
+        workspace_scope = session.workspace_scope
+        workspace_access = session.workspace_access
+    except AttributeError:
+        # Keep lightweight SessionContext test doubles and third-party callers
+        # compatible with the pre-PRD-168 shape.
+        workspace_scope = None
+        workspace_access = None
     workflow_config = WorkflowConfig(
         conv_store=session.app_state.conversation,
         app_state=session.app_state,
@@ -136,6 +157,8 @@ async def execute_workflow(
         workflow_handle=workflow_handle,
         browser_manager=getattr(session, "browser_manager", None),
         browser_tools=list(getattr(session, "browser_tools", [])),
+        workspace_scope=workspace_scope,
+        workspace_access=workspace_access,
         params=workflow_cls.build_params(session.cfg.workflows.get(workflow_name, {})),
         terminal_wait_policies={
             phase.name: phase.terminal_wait_policy for phase in workflow_cls.phases
@@ -230,6 +253,12 @@ async def run_headless_workflow(
     )
     session.app_state.cli_flags = ctx.flags
     session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)  # type: ignore[assignment]
+    try:
+        workspace_access = session.workspace_access
+    except AttributeError:
+        workspace_access = None
+    if workspace_access is not None:
+        workspace_access.set_approval_service(session.approval_svc)
     from agenthicc.background.terminals import (  # noqa: PLC0415
         reset_current_terminal_manager,
         set_current_terminal_manager,
@@ -267,6 +296,12 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
     )
     session.app_state.cli_flags = ctx.flags
     session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)  # type: ignore[assignment]
+    try:
+        workspace_access = session.workspace_access
+    except AttributeError:
+        workspace_access = None
+    if workspace_access is not None:
+        workspace_access.set_approval_service(session.approval_svc)
     from agenthicc.background.terminals import (  # noqa: PLC0415
         reset_current_terminal_manager,
         set_current_terminal_manager,

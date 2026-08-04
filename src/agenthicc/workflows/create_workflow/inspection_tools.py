@@ -84,8 +84,12 @@ CACHE_CONTRACT = """
 Keep this workflow contract unchanged across phases. Ask the user a focused
 clarifying question through the existing `ask_user` tool whenever required
 information is missing, ambiguous, or would materially change the result.
-Wait for the answer; do not guess. Actual questions and answers,
-phase state, and artifacts are dynamic context and do not belong here.
+Wait for the answer; do not guess. Use the parent session's
+`WorkflowConfig.workspace_access` policy for every filesystem, mention, Git,
+and command-working-directory access; never construct a second workspace
+scope, allow-list, or unrestricted sandbox inside this workflow. Actual
+questions and answers, phase state, and artifacts are dynamic context and do
+not belong here.
 """.strip()
 
 
@@ -788,6 +792,8 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                 "that only a successful transition-tool call changes phase; prose never "
                 "advances the workflow",
                 "build_runner() on the plugin returning the runner class",
+                "inherit WorkflowConfig.workspace_scope and WorkflowConfig.workspace_access; "
+                "never construct a second scope or bypass the parent policy in a custom tool",
             ],
             "turn_api": (
                 "Subclass CodePlanRunner and call the public "
@@ -883,6 +889,8 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                 "Pass CACHE_CONTRACT as stable_system_prompt=... to every run_phase() call.",
                 "Use the existing ask_user tool for material clarification and wait for its answer.",
                 "Keep actual questions, answers, phase state, and artifacts dynamic.",
+                "Inherit WorkflowConfig.workspace_scope/workspace_access for every phase and "
+                "custom path-aware tool; never construct a second scope or bypass authorization.",
                 "Never insert messages into the beginning of shared conversation history.",
                 "Never call _run_agent_turn directly from generated code.",
             ],
@@ -915,7 +923,9 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "required_call": "run_phase(..., stable_system_prompt=CACHE_CONTRACT, system_prompt=phase_prompt)",
             "note": (
                 "Copy the stable CACHE_CONTRACT literally, keep phase-specific data dynamic, "
-                "and use the existing ask_user tool for missing or ambiguous requirements."
+                "use the existing ask_user tool for missing or ambiguous requirements, and "
+                "inherit WorkflowConfig.workspace_scope/workspace_access instead of creating "
+                "a second scope or bypassing authorization."
             ),
         }
 

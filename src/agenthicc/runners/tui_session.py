@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.input.unified_session import UnifiedInputSession
     from agenthicc.tui.runtime import SendMessageCommand, InterruptAgentCommand
     from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceScope
     from agenthicc.commands.command import Command
     from agenthicc.commands.command import UsageSnapshot
     from agenthicc.commands.busy_policy import BusyDecision
@@ -389,6 +390,25 @@ async def _build_session_context(
         # future resumes never need to carry the legacy identity forward.
         update_session_mode(session_id, mode_manager.active_name)
 
+    # PRD-168: construct one immutable scope for the entire parent session.
+    # Every direct turn, workflow phase, mention resolver, and command receives
+    # this policy through SessionContext/WorkflowConfig; agent turns bind it
+    # task-locally for legacy tool wrappers without leaking across sessions.
+    from agenthicc.tools.workspace_access import (  # noqa: PLC0415
+        WorkspaceScope,
+        WorkspaceAccessPolicy,
+    )
+
+    workspace_scope = WorkspaceScope.create(
+        Path.cwd(),
+        allowed_paths=cfg.security.allowed_paths,
+    )
+    workspace_access = WorkspaceAccessPolicy(
+        workspace_scope,
+        mode_provider=app_state.active_mode,
+        approval_service=approval_svc,
+    )
+
     # ── skills / plugins ─────────────────────────────────────────────────────
     from agenthicc.skills.bootstrap import bootstrap_default_skills  # noqa: PLC0415
     from agenthicc.skills.loader import (  # noqa: PLC0415
@@ -653,6 +673,8 @@ async def _build_session_context(
         browser_tools=browser_tools,
         cfg_overrides=tuple(cli_overrides or ()),
         cfg_secret_overrides=tuple(cli_secret_overrides or ()),
+        workspace_scope=workspace_scope,
+        workspace_access=workspace_access,
         resumed=bool(resume_id),
     )
 
@@ -712,6 +734,10 @@ class TUISession:
             usage_ledger=getattr(ctx, "usage_ledger", None),
             browser_manager=getattr(ctx, "browser_manager", None),
             browser_tools=list(getattr(ctx, "browser_tools", [])),
+            workspace_scope=cast("WorkspaceScope | None", vars(ctx).get("workspace_scope")),
+            workspace_access=cast(
+                "WorkspaceAccessPolicy | None", vars(ctx).get("workspace_access")
+            ),
             next_queued_message=self._next_queued_message,
         )
         self._restore_paused_workflow()
@@ -1660,6 +1686,9 @@ class TUISession:
                     active_agent="default",
                     completed_turns=self._turn_count,
                     approval_svc=ctx.approval_svc,
+                    workspace_access=cast(
+                        "WorkspaceAccessPolicy | None", vars(ctx).get("workspace_access")
+                    ),
                     memory_router=ctx.memory_router,
                     semantic_index=ctx.semantic_index,
                     retry_deadline_monotonic=_deadline,

@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from agenthicc.tools.base import Tool, arg_bool, arg_int, arg_str
 from agenthicc.tools.sandbox import WorkspaceView
+from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, current_workspace_access
 
 __all__ = ["FsToolKit"]
 
@@ -74,6 +75,159 @@ def _view(context: Mapping[str, object]) -> WorkspaceView:
     return WorkspaceView(arg_str(context, "workspace_root", "."))
 
 
+def _policy(context: Mapping[str, object]) -> WorkspaceAccessPolicy | None:
+    value = context.get("workspace_access")
+    if isinstance(value, WorkspaceAccessPolicy):
+        return value
+    return current_workspace_access()
+
+
+async def _authorize_glob_pattern(
+    context: Mapping[str, object],
+    path: str,
+    pattern: str,
+    *,
+    operation: str,
+    tool_name: str,
+) -> None:
+    """Authorize a glob whose pattern itself contains an escape prefix."""
+
+    policy = _policy(context)
+    if policy is None:
+        return
+    from agenthicc.tools.workspace_access import (  # noqa: PLC0415
+        _combine_pattern_path,
+        _pattern_can_escape,
+    )
+
+    if not _pattern_can_escape(pattern):
+        return
+    combined = _combine_pattern_path(path, pattern)
+    await policy.authorize(
+        combined,
+        operation=operation,
+        tool_name=tool_name,
+        pattern=True,
+        tool_input={"path": path, "pattern": pattern},
+    )
+
+
+async def _resolve_path(
+    context: Mapping[str, object],
+    path: str,
+    *,
+    operation: str,
+    tool_name: str,
+    capabilities: frozenset[str] = frozenset(),
+) -> Path:
+    """Authorize and revalidate one path immediately before filesystem I/O."""
+
+    policy = _policy(context)
+    if policy is not None:
+        return await policy.authorize(
+            path,
+            operation=operation,
+            tool_name=tool_name,
+            capabilities=capabilities,
+        )
+    return _view(context).resolve(path)
+
+
+async def _authorized_path(
+    context: Mapping[str, object],
+    path: str,
+    *,
+    operation: str,
+    tool_name: str,
+    capabilities: frozenset[str] = frozenset(),
+    tool_input: Mapping[str, object] | None = None,
+) -> Path:
+    """Return the exact canonical target that the adapter must use."""
+
+    policy = _policy(context)
+    if policy is not None:
+        return await policy.authorize(
+            path,
+            operation=operation,
+            tool_name=tool_name,
+            capabilities=capabilities,
+            tool_input=tool_input,
+        )
+    return _view(context).resolve(path)
+
+
+async def _authorize_discovered_paths(
+    context: Mapping[str, object],
+    candidates: list[Path],
+    *,
+    operation: str,
+    tool_name: str,
+) -> list[tuple[Path, Path]]:
+    """Authorize each discovered path before metadata or content access.
+
+    Directory/search tools first authorize their root, then discover names.
+    A symlink or nested path can still resolve outside that root, so every
+    candidate gets its own canonical decision before the adapter calls
+    ``stat()``, ``is_file()``, or ``read_text()`` on it.  Denied candidates are
+    omitted from discovery results rather than leaking a decoy or causing a
+    batch search to fail open.
+    """
+
+    policy = _policy(context)
+    if policy is None:
+        return [(candidate, candidate) for candidate in candidates]
+    authorized: list[tuple[Path, Path]] = []
+    for candidate in candidates:
+        try:
+            canonical = await policy.authorize(
+                str(candidate),
+                operation=operation,
+                tool_name=tool_name,
+                tool_input={"path": str(candidate)},
+            )
+        except (OSError, PermissionError, ValueError):
+            continue
+        authorized.append((candidate, canonical))
+    return authorized
+
+
+async def _authorize_tool(
+    context: Mapping[str, object],
+    tool_name: str,
+    tool_input: Mapping[str, object],
+    capabilities: frozenset[str] = frozenset(),
+    *,
+    bind_current: bool = True,
+    finalize: bool = True,
+) -> list[Path]:
+    policy = _policy(context)
+    if policy is None:
+        return []
+    result = await policy.authorize_tool(
+        tool_name,
+        tool_input,
+        capabilities,
+        bind_current=bind_current,
+    )
+    if not result.allowed:
+        raise PermissionError(f"{result.code}: {result.error}")
+    authorized: list[Path] = []
+    if finalize:
+        for requested, operation in policy.requests_for_tool(tool_name, tool_input):
+            authorized.append(
+                await policy.authorize(
+                    requested,
+                    operation=operation,
+                    tool_name=tool_name,
+                    capabilities=capabilities,
+                    tool_input=tool_input,
+                )
+            )
+    elif not bind_current:
+        policy.clear_current_grant(tool_name)
+    return authorized
+
+
 def _safe_stat(path: Path) -> dict[str, object]:
     s = path.stat()
     return {
@@ -103,7 +257,7 @@ class ReadFileTool(Tool):
         path = arg_str(args, "path")
         encoding = arg_str(args, "encoding", "utf-8")
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(context, path, operation="read", tool_name=self.name)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():
@@ -168,7 +322,13 @@ class WriteFileTool(Tool):
         encoding = arg_str(args, "encoding", "utf-8")
         create_parents = arg_bool(args, "create_parents", True)
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(
+                context,
+                path,
+                operation="write",
+                tool_name=self.name,
+                capabilities=frozenset({"write"}),
+            )
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
@@ -199,7 +359,13 @@ class AppendFileTool(Tool):
         path = arg_str(args, "path")
         content = arg_str(args, "content")
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(
+                context,
+                path,
+                operation="write",
+                tool_name=self.name,
+                capabilities=frozenset({"write"}),
+            )
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
@@ -228,7 +394,13 @@ class DeleteFileTool(Tool):
     ) -> dict[str, object]:
         path = arg_str(args, "path")
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(
+                context,
+                path,
+                operation="delete",
+                tool_name=self.name,
+                capabilities=frozenset({"write"}),
+            )
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():
@@ -255,9 +427,28 @@ class MoveFileTool(Tool):
         source = arg_str(args, "source")
         destination = arg_str(args, "destination")
         try:
-            view = _view(context)
-            src = view.resolve(source)
-            dst = view.resolve(destination)
+            await _authorize_tool(
+                context,
+                self.name,
+                {"source": source, "destination": destination},
+                frozenset({"write"}),
+                bind_current=True,
+                finalize=False,
+            )
+            src = await _resolve_path(
+                context,
+                source,
+                operation="write",
+                tool_name=self.name,
+                capabilities=frozenset({"write"}),
+            )
+            dst = await _resolve_path(
+                context,
+                destination,
+                operation="write",
+                tool_name=self.name,
+                capabilities=frozenset({"write"}),
+            )
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
@@ -282,9 +473,28 @@ class CopyFileTool(Tool):
         source = arg_str(args, "source")
         destination = arg_str(args, "destination")
         try:
-            view = _view(context)
-            src = view.resolve(source)
-            dst = view.resolve(destination)
+            await _authorize_tool(
+                context,
+                self.name,
+                {"source": source, "destination": destination},
+                frozenset({"write"}),
+                bind_current=True,
+                finalize=False,
+            )
+            src = await _resolve_path(
+                context,
+                source,
+                operation="read",
+                tool_name=self.name,
+                capabilities=frozenset({"write"}),
+            )
+            dst = await _resolve_path(
+                context,
+                destination,
+                operation="write",
+                tool_name=self.name,
+                capabilities=frozenset({"write"}),
+            )
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
@@ -315,11 +525,28 @@ class ListDirectoryTool(Tool):
         recursive = arg_bool(args, "recursive", False)
         include_hidden = arg_bool(args, "include_hidden", False)
         try:
-            resolved = _view(context).resolve(path)
+            await _authorize_glob_pattern(
+                context,
+                path,
+                pattern,
+                operation="list",
+                tool_name=self.name,
+            )
+            resolved = await _resolve_path(context, path, operation="list", tool_name=self.name)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.is_dir():
             return {"ok": False, "error": f"not_a_directory: {path}"}
+
+        candidates = await asyncio.to_thread(
+            lambda: list((resolved.rglob if recursive else resolved.glob)(pattern))
+        )
+        authorized = await _authorize_discovered_paths(
+            context,
+            candidates,
+            operation="list",
+            tool_name=self.name,
+        )
 
         def _list() -> tuple[list[dict[str, object]], bool]:
             entries: list[dict[str, object]] = []
@@ -327,23 +554,22 @@ class ListDirectoryTool(Tool):
             # Recursive listings respect .gitignore via git ls-files; a flat
             # (non-recursive) listing shows the directory's literal contents.
             keep = _git_keep_filter(resolved) if recursive else None
-            glob_fn = resolved.rglob if recursive else resolved.glob
-            for p in glob_fn(pattern):
-                if not include_hidden and p.name.startswith("."):
+            for original, canonical in authorized:
+                if not include_hidden and original.name.startswith("."):
                     continue
-                rel = p.relative_to(resolved)
+                rel = original.relative_to(resolved)
                 if keep is not None and not keep(str(rel)):
                     continue
                 if len(entries) >= _MAX_LIST_ENTRIES:
                     truncated = True
                     break
                 try:
-                    s = p.stat()
+                    s = canonical.stat()
                     entries.append(
                         {
-                            "name": p.name,
+                            "name": original.name,
                             "path": str(rel),
-                            "type": "dir" if p.is_dir() else "file",
+                            "type": "dir" if canonical.is_dir() else "file",
                             "size_bytes": s.st_size,
                             "modified_at": datetime.datetime.fromtimestamp(s.st_mtime).isoformat(),
                         }
@@ -375,7 +601,13 @@ class MakeDirectoryTool(Tool):
     ) -> dict[str, object]:
         path = arg_str(args, "path")
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(
+                context,
+                path,
+                operation="write",
+                tool_name=self.name,
+                capabilities=frozenset({"write"}),
+            )
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         try:
@@ -399,7 +631,7 @@ class FileExistsTool(Tool):
     ) -> dict[str, object]:
         path = arg_str(args, "path")
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(context, path, operation="metadata", tool_name=self.name)
         except PermissionError:
             return {"exists": False, "path": path, "type": None}
         exists = resolved.exists()
@@ -429,19 +661,35 @@ class SearchFilesTool(Tool):
         pattern = arg_str(args, "pattern")
         recursive = arg_bool(args, "recursive", True)
         try:
-            resolved = _view(context).resolve(path)
+            await _authorize_glob_pattern(
+                context,
+                path,
+                pattern,
+                operation="search",
+                tool_name=self.name,
+            )
+            resolved = await _resolve_path(context, path, operation="search", tool_name=self.name)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
+
+        candidates = await asyncio.to_thread(
+            lambda: list((resolved.rglob if recursive else resolved.glob)(pattern))
+        )
+        authorized = await _authorize_discovered_paths(
+            context,
+            candidates,
+            operation="search",
+            tool_name=self.name,
+        )
 
         def _search() -> tuple[list[str], bool]:
             matches: list[str] = []
             truncated = False
             keep = _git_keep_filter(resolved)  # respect .gitignore; None → full walk
-            glob_fn = resolved.rglob if recursive else resolved.glob
-            for p in glob_fn(pattern):
-                if not p.is_file():
+            for original, canonical in authorized:
+                if not canonical.is_file():
                     continue
-                rel = str(p.relative_to(resolved))
+                rel = str(original.relative_to(resolved))
                 if keep is not None and not keep(rel):
                     continue
                 if len(matches) >= _MAX_LIST_ENTRIES:
@@ -481,29 +729,39 @@ class GrepFilesTool(Tool):
         max_results = arg_int(args, "max_results", 100)
         recursive = arg_bool(args, "recursive", True)
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(context, path, operation="search", tool_name=self.name)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
+
+        candidates = await asyncio.to_thread(
+            lambda: list((resolved.rglob if recursive else resolved.glob)("*"))
+        )
+        authorized = await _authorize_discovered_paths(
+            context,
+            candidates,
+            operation="search",
+            tool_name=self.name,
+        )
 
         def _grep() -> list[dict[str, object]]:
             compiled = re.compile(pattern)
             matches: list[dict[str, object]] = []
             keep = _git_keep_filter(resolved)  # respect .gitignore; None → full walk
-            glob_fn = resolved.rglob if recursive else resolved.glob
-            for p in sorted(glob_fn("*")):
-                if not p.is_file():
+            for original, canonical in sorted(authorized, key=lambda item: str(item[0])):
+                if not canonical.is_file():
                     continue
-                if keep is not None and not keep(str(p.relative_to(resolved))):
+                rel = str(original.relative_to(resolved))
+                if keep is not None and not keep(rel):
                     continue
                 try:
-                    text = p.read_text(encoding="utf-8", errors="strict")
+                    text = canonical.read_text(encoding="utf-8", errors="strict")
                 except (UnicodeDecodeError, OSError):
                     continue
                 for i, line in enumerate(text.splitlines(), 1):
                     if compiled.search(line):
                         matches.append(
                             {
-                                "file": str(p.relative_to(resolved)),
+                                "file": rel,
                                 "line_number": i,
                                 "line": line.rstrip(),
                             }
@@ -530,7 +788,7 @@ class GetFileInfoTool(Tool):
     ) -> dict[str, object]:
         path = arg_str(args, "path")
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(context, path, operation="metadata", tool_name=self.name)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():
@@ -561,7 +819,7 @@ class ReadLinesTool(Tool):
         end_value = args.get("end")
         end = arg_int(args, "end") if end_value is not None else None
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(context, path, operation="read", tool_name=self.name)
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():
@@ -621,7 +879,13 @@ class PatchFileTool(Tool):
         old = arg_str(args, "old_content")
         new = arg_str(args, "new_content")
         try:
-            resolved = _view(context).resolve(path)
+            resolved = await _resolve_path(
+                context,
+                path,
+                operation="write",
+                tool_name=self.name,
+                capabilities=frozenset({"write"}),
+            )
         except PermissionError as e:
             return {"ok": False, "error": f"permission_denied: {e}"}
         if not resolved.exists():

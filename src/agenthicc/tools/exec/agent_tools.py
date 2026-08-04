@@ -6,6 +6,7 @@ NOTE: no ``from __future__ import annotations`` — @tool() inspects real annota
 import os
 from lauren_ai._tools import tool
 from agenthicc.tools.capabilities import tool_execute
+from agenthicc.tools.workspace_access import current_workspace_access
 
 ReadinessValue = str | int | bool | dict[str, str | int | bool]
 
@@ -32,7 +33,11 @@ def _CTX() -> dict[str, object]:
         get_current_terminal_wait_policy,
     )
 
+    policy = current_workspace_access()
     context: dict[str, object] = {"workspace_root": os.getcwd()}
+    if policy is not None:
+        context["workspace_access"] = policy
+        context["workspace_root"] = str(policy.scope.primary_root)
     manager = get_current_terminal_manager()
     if manager is not None:
         context["terminal_manager"] = manager

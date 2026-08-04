@@ -83,10 +83,37 @@ class ApprovalEntry:
     remember: bool
     remember_all: bool
     mode: str | None = None
+    scope_grant: str | None = None
+    workspace_access: tuple[dict[str, str | None], ...] = ()
 
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> ApprovalEntry:
         raw_mode = d.get("mode")
+        raw_workspace = d.get("workspace_access", [])
+        workspace_access: list[dict[str, str | None]] = []
+        if isinstance(raw_workspace, list):
+            for item in raw_workspace:
+                if not isinstance(item, Mapping):
+                    continue
+                workspace_access.append(
+                    {
+                        "requested": (
+                            item.get("requested")
+                            if isinstance(item.get("requested"), str)
+                            else None
+                        ),
+                        "canonical": (
+                            item.get("canonical")
+                            if isinstance(item.get("canonical"), str)
+                            else None
+                        ),
+                        "operation": (
+                            item.get("operation")
+                            if isinstance(item.get("operation"), str)
+                            else None
+                        ),
+                    }
+                )
         return cls(
             index=_integer(d.get("index")),
             kind=str(d.get("kind", "tool")),
@@ -96,6 +123,8 @@ class ApprovalEntry:
             remember=bool(d.get("remember", False)),
             remember_all=bool(d.get("remember_all", False)),
             mode=raw_mode if isinstance(raw_mode, str) else None,
+            scope_grant=(d["scope_grant"] if isinstance(d.get("scope_grant"), str) else None),
+            workspace_access=tuple(workspace_access),
         )
 
 

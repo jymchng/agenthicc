@@ -28,7 +28,24 @@ from .hooks import (
     LifecycleHook,
     ToolHook,
 )
-from .sandbox import NetworkGuard, ResourceLimits, ToolSandbox, WorkspaceView
+from .sandbox import (
+    NetworkGuard,
+    ResourceLimits,
+    ResolvedWorkspacePath,
+    ToolSandbox,
+    WorkspaceAccessMode,
+    WorkspaceAccessPolicy,
+    WorkspaceAccessRequest,
+    WorkspaceAccessResult,
+    WorkspacePathStatus,
+    WorkspaceScope,
+    WorkspaceView,
+)
+from .workspace_access import (
+    current_workspace_access,
+    reset_current_workspace_access,
+    set_current_workspace_access,
+)
 
 __all__ = [
     "NetworkGuard",
@@ -43,6 +60,16 @@ __all__ = [
     "arg_int",
     "arg_str",
     "WorkspaceView",
+    "WorkspaceScope",
+    "WorkspaceAccessMode",
+    "WorkspaceAccessPolicy",
+    "WorkspaceAccessRequest",
+    "WorkspaceAccessResult",
+    "WorkspacePathStatus",
+    "ResolvedWorkspacePath",
+    "current_workspace_access",
+    "set_current_workspace_access",
+    "reset_current_workspace_access",
     "AgenthiccToolExecutor",
     "ApprovalDecision",
     "ToolCallContext",

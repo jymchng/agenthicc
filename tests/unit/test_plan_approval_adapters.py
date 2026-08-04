@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -13,6 +14,7 @@ from agenthicc.testing.cassette import ApprovalEntry
 from agenthicc.testing.mock_approval import MockApprovalService
 from agenthicc.testing.recording_approval import RecordingApprovalService
 from agenthicc.tools.approval import ApprovalRequest, ApprovalResponse
+from agenthicc.tools.workspace_access import WorkspaceAccessRequest
 
 pytestmark = pytest.mark.unit
 
@@ -71,3 +73,61 @@ async def test_mock_approval_replays_mode_and_defaults_when_exhausted() -> None:
     assert selected.mode == "Yolo"
     assert exhausted.allowed is True
     assert exhausted.mode is None
+
+
+@pytest.mark.asyncio
+async def test_mock_approval_matches_scope_decisions_to_the_exact_target(tmp_path: Path) -> None:
+    target = tmp_path / "outside.txt"
+    access = WorkspaceAccessRequest(
+        requested="../outside.txt",
+        canonical=target,
+        display=str(target),
+        operation="read",
+        tool_name="read_file",
+    )
+    entry = ApprovalEntry(
+        0,
+        "tool",
+        "read_file",
+        True,
+        "",
+        False,
+        False,
+        workspace_access=(
+            {
+                "requested": "../outside.txt",
+                "canonical": str(target),
+                "operation": "read",
+            },
+        ),
+        scope_grant="target_once",
+    )
+    request = ApprovalRequest(
+        tool_name="read_file",
+        tool_use_id="read-1",
+        tool_input={"path": "../outside.txt"},
+        capabilities=frozenset(),
+        event=asyncio.Event(),
+        workspace_access=(access,),
+    )
+
+    matched = await MockApprovalService([entry]).request_approval(request)
+    mismatched = await MockApprovalService([entry]).request_approval(
+        replace(
+            request,
+            workspace_access=(
+                WorkspaceAccessRequest(
+                    requested="../other.txt",
+                    canonical=tmp_path / "other.txt",
+                    display=str(tmp_path / "other.txt"),
+                    operation="read",
+                    tool_name="read_file",
+                ),
+            ),
+        )
+    )
+
+    assert matched.allowed is True
+    assert mismatched.allowed is False
+    exhausted = await MockApprovalService([]).request_approval(request)
+    assert exhausted.allowed is False

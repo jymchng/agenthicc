@@ -8,10 +8,67 @@ from collections.abc import Mapping
 from typing import ClassVar
 
 from agenthicc.tools.base import Tool, arg_bool, arg_int, arg_str
+from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, current_workspace_access
 
 __all__ = ["GitToolKit"]
 
 _MAX_OUTPUT_BYTES = 64 * 1024  # 64 KB
+
+
+async def _authorize_git(
+    context: Mapping[str, object],
+    tool_name: str,
+    tool_input: Mapping[str, object],
+    capabilities: frozenset[str] = frozenset(),
+) -> str | None:
+    """Run the direct git adapter through the session workspace policy."""
+
+    error, _ = await _authorize_git_paths(context, tool_name, tool_input, capabilities)
+    return error
+
+
+async def _authorize_git_paths(
+    context: Mapping[str, object],
+    tool_name: str,
+    tool_input: Mapping[str, object],
+    capabilities: frozenset[str] = frozenset(),
+) -> tuple[str | None, dict[tuple[str, str], str]]:
+    """Authorize Git path arguments and return their canonical spellings.
+
+    Git receives paths as command-line arguments, so authorizing a request and
+    then passing the original relative/symlink spelling would leave a small
+    but important gap between policy revalidation and the actual I/O.  Keep
+    the public error-only helper above for older callers, while path-bearing
+    adapters use this helper to execute the exact canonical target that was
+    revalidated by the session policy.
+    """
+
+    policy = context.get("workspace_access")
+    if not isinstance(policy, WorkspaceAccessPolicy):
+        policy = current_workspace_access()
+    if policy is None:
+        return None, {}
+
+    root = arg_str(context, "workspace_root", ".")
+    authorized_input = dict(tool_input)
+    # This private field lets the shared resolver authorize the repository
+    # root even for Git commands whose model-facing schema has no path field.
+    authorized_input["__workspace_root"] = root
+    canonical: dict[tuple[str, str], str] = {}
+    for requested, operation in policy.requests_for_tool(tool_name, authorized_input):
+        try:
+            resolved = await policy.authorize(
+                requested,
+                operation=operation,
+                tool_name=tool_name,
+                capabilities=capabilities,
+                tool_input=authorized_input,
+            )
+        except (OSError, PermissionError, ValueError) as exc:
+            policy.clear_current_grant(tool_name)
+            return str(exc), {}
+        canonical[(requested, operation)] = str(resolved)
+    return None, canonical
 
 
 async def _run_git(
@@ -48,6 +105,10 @@ class GitStatusTool(Tool):
         self, args: Mapping[str, object], context: Mapping[str, object]
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
         rc, out, err = await _run_git(root, ["status", "--porcelain=v1", "-b"])
         if rc != 0:
             return {"ok": False, "error": err}
@@ -95,6 +156,11 @@ class GitDiffTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         path = arg_str(args, "path", "")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
+        canonical_path = canonical_paths.get((path, "read"), path)
         ref = arg_str(args, "ref", "")
         cmd = ["diff"]
         if arg_bool(args, "staged", False):
@@ -103,7 +169,7 @@ class GitDiffTool(Tool):
             cmd.append(ref)
         cmd += ["--stat", "--patch"]
         if path:
-            cmd += ["--", path]
+            cmd += ["--", canonical_path]
         rc, out, err = await _run_git(root, cmd)
         if rc not in (0, 1):  # git diff returns 1 when there are diffs
             return {"ok": False, "error": err}
@@ -136,10 +202,15 @@ class GitLogTool(Tool):
         root = arg_str(context, "workspace_root", ".")
         n = arg_int(args, "n", 10)
         path = arg_str(args, "path", "")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
+        canonical_path = canonical_paths.get((path, "read"), path)
         fmt = "%H\x1f%h\x1f%an\x1f%ai\x1f%s"
         cmd = ["log", f"-{n}", f"--format={fmt}"]
         if path:
-            cmd += ["--", path]
+            cmd += ["--", canonical_path]
         rc, out, err = await _run_git(root, cmd)
         if rc != 0:
             return {"ok": False, "error": err}
@@ -176,7 +247,12 @@ class GitAddTool(Tool):
         if not isinstance(raw_paths, list) or not all(isinstance(path, str) for path in raw_paths):
             raise ValueError("tool argument 'paths' must be a list of strings")
         paths = list(raw_paths)
-        rc, out, err = await _run_git(root, ["add", "--", *paths])
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
+        executable_paths = [canonical_paths.get((path, "write"), path) for path in paths]
+        rc, out, err = await _run_git(root, ["add", "--", *executable_paths])
         return {"ok": rc == 0, "staged": paths, "error": err if rc != 0 else None}
 
 
@@ -198,6 +274,10 @@ class GitCommitTool(Tool):
         root = arg_str(context, "workspace_root", ".")
         message = arg_str(args, "message")
         author = arg_str(args, "author", "")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
         cmd = ["commit", "-m", message]
         if author:
             cmd += ["--author", author]
@@ -226,6 +306,10 @@ class GitCheckoutTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         branch = arg_str(args, "branch")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
         cmd = ["checkout"]
         if arg_bool(args, "create", False):
             cmd.append("-b")
@@ -247,6 +331,10 @@ class GitBranchTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         pattern = arg_str(args, "pattern", "")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
         cmd = ["branch", "-a", "--format=%(refname:short)\x1f%(HEAD)\x1f%(upstream:short)"]
         if pattern:
             cmd.append(pattern)
@@ -285,6 +373,11 @@ class GitBlameTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         path = arg_str(args, "path")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
+        canonical_path = canonical_paths.get((path, "read"), path)
         cmd = ["blame", "--line-porcelain"]
         start = arg_int(args, "start_line", 1)
         end_value = args.get("end_line")
@@ -293,7 +386,7 @@ class GitBlameTool(Tool):
             cmd += [f"-L{start},{end}"]
         elif start > 1:
             cmd += [f"-L{start}"]
-        cmd += ["--", path]
+        cmd += ["--", canonical_path]
         rc, out, err = await _run_git(root, cmd)
         if rc != 0:
             return {"ok": False, "error": err}
@@ -336,6 +429,10 @@ class GitGrepTool(Tool):
         root = arg_str(context, "workspace_root", ".")
         pattern = arg_str(args, "pattern")
         ref = arg_str(args, "ref", "HEAD")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
         cmd = ["grep", "-n", "--line-number", pattern, ref]
         rc, out, err = await _run_git(root, cmd)
         if rc not in (0, 1):
@@ -376,6 +473,10 @@ class GitShowTool(Tool):
     ) -> dict[str, object]:
         root = arg_str(context, "workspace_root", ".")
         ref = arg_str(args, "ref", "HEAD")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
         fmt = "%H\x1f%an\x1f%ai\x1f%B"
         rc, out, err = await _run_git(root, ["show", f"--format={fmt}", ref])
         if rc != 0:
@@ -416,6 +517,10 @@ class GitStashTool(Tool):
         root = arg_str(context, "workspace_root", ".")
         action = arg_str(args, "action", "push")
         message = arg_str(args, "message", "")
+        access_error, canonical_paths = await _authorize_git_paths(context, self.name, args)
+        if access_error is not None:
+            return {"ok": False, "code": "workspace_access", "error": access_error}
+        root = canonical_paths.get((root, "git_root"), root)
         cmd = ["stash", action]
         if action == "push" and message:
             cmd += ["-m", message]
