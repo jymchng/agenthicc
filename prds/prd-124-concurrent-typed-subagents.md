@@ -995,8 +995,11 @@ to retry the specific task.
 
 ### Timeouts
 
-Each worker has a configurable `timeout_s` (default: 120 seconds, configurable
-per subagent type via `SubagentTypeSpec.max_turn_time_s`). When exceeded:
+Each `spawn_subagents` invocation has a configurable `timeout_s` in seconds
+(default: `3600`, one hour). The parent agent may override it directly, for
+example `spawn_subagents(tasks=[...], timeout_s=7200)`. Direct worker callers
+may continue to use `SubagentTypeSpec.max_turn_time_s` when no invocation
+override is supplied. When exceeded:
 
 1. Worker is cancelled.
 2. `SubagentFailed(error="timeout")` is emitted.

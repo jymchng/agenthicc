@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field, fields, replace
 from typing import TYPE_CHECKING, Protocol, cast
 
-from agenthicc.subagents.types import SubagentTypeSpec, SubagentTypeRegistry, DEFAULT_REGISTRY
+from agenthicc.subagents.types import (
+    DEFAULT_REGISTRY,
+    DEFAULT_SUBAGENT_TIMEOUT_S,
+    SubagentTypeRegistry,
+    SubagentTypeSpec,
+)
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -32,6 +38,19 @@ __all__ = [
 ]
 
 _MAX_RESULT_CHARS = 2_000
+
+
+def _validate_timeout_s(value: object) -> float:
+    """Validate a worker timeout expressed in seconds."""
+    if isinstance(value, bool):
+        raise ValueError("timeout_s must be a finite number greater than zero")
+    try:
+        timeout_s = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("timeout_s must be a finite number greater than zero") from exc
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError("timeout_s must be a finite number greater than zero")
+    return timeout_s
 
 
 class _TransportLike(Protocol):
@@ -234,6 +253,7 @@ class SubagentWorker:
         conversation_id: str = "",
         parent_run_id: str = "",
         provider_options: Mapping[str, object] | None = None,
+        timeout_s: float | None = None,
     ) -> None:
         self._task = task
         self._spec = spec
@@ -248,6 +268,7 @@ class SubagentWorker:
         self._conversation_id = conversation_id
         self._parent_run_id = parent_run_id
         self._provider_options = dict(provider_options or {})
+        self._timeout_s = None if timeout_s is None else _validate_timeout_s(timeout_s)
         self.label = f"{spec.name} #{index}"
         # Expand glob patterns once at construction time.
         self._effective_allowed: frozenset[str] = _expand_allowed(spec.allowed_tools, registry)
@@ -258,7 +279,9 @@ class SubagentWorker:
         try:
             text = await asyncio.wait_for(
                 self._execute(),
-                timeout=self._spec.max_turn_time_s,
+                timeout=(
+                    self._timeout_s if self._timeout_s is not None else self._spec.max_turn_time_s
+                ),
             )
             duration_ms = (time.monotonic() - t0) * 1_000
             return SubagentResult(
@@ -277,7 +300,10 @@ class SubagentWorker:
                 label=self.label,
                 ok=False,
                 text="",
-                error=f"timed out after {self._spec.max_turn_time_s:.0f}s",
+                error=(
+                    "timed out after "
+                    f"{self._timeout_s if self._timeout_s is not None else self._spec.max_turn_time_s:.0f}s"
+                ),
                 duration_ms=duration_ms,
             )
         except asyncio.CancelledError:
@@ -459,6 +485,7 @@ class SubagentPool:
         conversation_id: str = "",
         parent_run_id: str = "",
         provider_options: Mapping[str, object] | None = None,
+        timeout_s: float | None = None,
     ) -> None:
         self.pool_id = uuid.uuid4().hex
         self._tasks = tasks
@@ -476,6 +503,7 @@ class SubagentPool:
         self._conversation_id = conversation_id
         self._parent_run_id = parent_run_id
         self._provider_options = dict(provider_options or {})
+        self._timeout_s = None if timeout_s is None else _validate_timeout_s(timeout_s)
 
     async def run(self) -> AggregatedResult:
         """Execute all tasks concurrently; return aggregated plain-text result."""
@@ -508,6 +536,7 @@ class SubagentPool:
                 conversation_id=self._conversation_id,
                 parent_run_id=self._parent_run_id,
                 provider_options=self._provider_options,
+                timeout_s=self._timeout_s,
             )
             workers.append(w)
             worker_states.append(WorkerState(w.label, task.agent_type, "pending"))
@@ -527,6 +556,7 @@ class SubagentPool:
             {
                 "total": len(workers),
                 "workers": [{"label": ws.label, "type": ws.agent_type} for ws in worker_states],
+                "timeout_s": self._timeout_s or DEFAULT_SUBAGENT_TIMEOUT_S,
             },
         )
 
@@ -623,6 +653,7 @@ class SubagentPool:
                         for t in self._tasks
                     ],
                     "max_concurrent": self._max_concurrent,
+                    "timeout_s": self._timeout_s or DEFAULT_SUBAGENT_TIMEOUT_S,
                 },
             )
         )
@@ -769,6 +800,7 @@ async def run_pool(
     conversation_id: str = "",
     parent_run_id: str = "",
     provider_options: Mapping[str, object] | None = None,
+    timeout_s: float | None = None,
 ) -> AggregatedResult:
     """Create a SubagentPool and run it.  Convenience wrapper."""
     pool = SubagentPool(
@@ -786,5 +818,6 @@ async def run_pool(
         conversation_id=conversation_id,
         parent_run_id=parent_run_id,
         provider_options=provider_options,
+        timeout_s=timeout_s,
     )
     return await pool.run()

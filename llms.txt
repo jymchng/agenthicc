@@ -65,6 +65,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints |
 | `PromptContract` / `build_workflow_prompt_contract` | `agenthicc.runners.prompt_contract` | Cache-stable system/tool prefix plus append-only dynamic workflow context; emits redacted cache diagnostics |
 | `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
+| `DEFAULT_SUBAGENT_TIMEOUT_S` / `SubagentTypeSpec` / `SubagentPool` | `agenthicc.subagents` | Typed concurrent workers; `spawn_subagents(timeout_s=...)` defaults to one hour |
 | `execute_workflow` | `agenthicc.runners.headless` | Execute a registered workflow in a session |
 | `run_headless_workflow` | `agenthicc.runners.headless` | Build, run, and close one headless workflow session |
 | `Workspace` | `agenthicc.tui.workspace` | Rich Live UI root |

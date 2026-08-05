@@ -360,7 +360,12 @@ build; use `implementer` for a narrower file-only change.
 
 Subagent timeouts and worker failures are returned as failed results. A partial
 pool is never reported as `ok: true` and is not placed in the resume cache;
-the parent agent can retry only the failed task or complete it directly.
+the parent agent can retry only the failed task or complete it directly. The
+`spawn_subagents` call accepts `timeout_s` in seconds for the worker wall-clock
+deadline; it defaults to `3600` (one hour), for example
+`spawn_subagents(tasks=[...], timeout_s=7200)`. Direct `SubagentWorker` users
+may still rely on `SubagentTypeSpec.max_turn_time_s` when no invocation override
+is supplied.
 
 ### Checkpointing a custom runner
 

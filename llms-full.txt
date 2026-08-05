@@ -23,6 +23,19 @@ duplicate, empty, or non-adjacent history is rejected before network I/O. The
 runtime requires the transaction-capable lauren-ai API and fails closed when
 an older installation does not expose it.
 
+## Concurrent subagents
+
+`spawn_subagents` runs typed workers concurrently under the parent capability
+policy. Its `timeout_s` argument is a finite wall-clock deadline in seconds for
+each worker and defaults to `DEFAULT_SUBAGENT_TIMEOUT_S` (`3600`, one hour).
+The parent agent can choose a shorter or longer deadline per invocation; a
+timed-out worker is returned as a failed result and is never reused by resume.
+
+### DEFAULT_SUBAGENT_TIMEOUT_S
+
+`3600.0`, the default finite worker timeout in seconds used by
+`spawn_subagents`.
+
 ---
 
 ## Kernel — `agenthicc.kernel`

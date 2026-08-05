@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from agenthicc.subagents.types import (
+    DEFAULT_SUBAGENT_TIMEOUT_S,
     SubagentTypeSpec,
     SubagentAggregator,
     SubagentTypeRegistry,
@@ -19,6 +20,7 @@ from agenthicc.subagents.pool import (
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 
 __all__ = [
+    "DEFAULT_SUBAGENT_TIMEOUT_S",
     "SubagentTypeSpec",
     "SubagentAggregator",
     "SubagentTypeRegistry",

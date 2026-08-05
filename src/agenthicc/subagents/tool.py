@@ -95,16 +95,25 @@ def make_spawn_subagents_tool(
     registry:
         ``SubagentTypeRegistry`` to look up type specs.  Defaults to
         ``DEFAULT_REGISTRY`` when ``None``.
+    timeout_s:
+        Default wall-clock timeout in seconds for each worker in this
+        invocation. Defaults to one hour and may be overridden per call.
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.subagents.pool import SubagentPool, SubagentTask  # noqa: PLC0415
-    from agenthicc.subagents.types import DEFAULT_REGISTRY  # noqa: PLC0415
+    from agenthicc.subagents.pool import (  # noqa: PLC0415
+        SubagentPool,
+        SubagentTask,
+        _validate_timeout_s,
+    )
+    from agenthicc.subagents.types import DEFAULT_REGISTRY, DEFAULT_SUBAGENT_TIMEOUT_S  # noqa: PLC0415
 
     _registry = registry if registry is not None else DEFAULT_REGISTRY
 
     @_tool()
     async def spawn_subagents(
-        tasks: list[_SpawnTaskInput], max_concurrent: int = max_concurrent
+        tasks: list[_SpawnTaskInput],
+        max_concurrent: int = max_concurrent,
+        timeout_s: float = DEFAULT_SUBAGENT_TIMEOUT_S,
     ) -> dict[str, object]:
         """Spawn multiple specialized subagents concurrently and return their aggregated results.
 
@@ -120,7 +129,14 @@ def make_spawn_subagents_tool(
                    - task (str): Description of what this subagent should do.
                    - context (str, optional): Additional background context.
             max_concurrent: Maximum number of subagents running at once (default 4).
+            timeout_s: Maximum wall-clock seconds for each worker in this call
+                       (default 3600, or one hour).
         """
+        try:
+            effective_timeout_s = _validate_timeout_s(timeout_s)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
         # Validate and convert task dicts into SubagentTask dataclasses.
         subagent_tasks: list[SubagentTask] = []
         for i, raw in enumerate(tasks):
@@ -195,6 +211,7 @@ def make_spawn_subagents_tool(
             conversation_id=conversation_id,
             parent_run_id=parent_run_id,
             provider_options=provider_options,
+            timeout_s=effective_timeout_s,
         )
         result = await pool.run()
 

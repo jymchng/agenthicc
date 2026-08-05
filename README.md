@@ -428,7 +428,7 @@ You can set the provider, model, base URL, and execution options in `.agenthicc/
 
 ## Subagents
 
-The built-in `spawn_subagents` tool accepts the workflow-compatible `executor` role for build and compile tasks. Executor workers inherit the parent session's capability and approval policy; timeouts and partial failures are reported as failures and are not reused by resume.
+The built-in `spawn_subagents` tool accepts the workflow-compatible `executor` role for build and compile tasks. Executor workers inherit the parent session's capability and approval policy; timeouts and partial failures are reported as failures and are not reused by resume. Each call accepts `timeout_s` in seconds for the worker wall-clock deadline; it defaults to `3600` (one hour), so long research/build batches can set a larger or smaller finite value explicitly.
 
 ---
 

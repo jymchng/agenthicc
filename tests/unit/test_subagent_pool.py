@@ -137,7 +137,7 @@ class TestSubagentTypeSpec:
 
     def test_max_turn_time_default(self) -> None:
         spec = SubagentTypeSpec("t", frozenset(), 5, "")
-        assert spec.max_turn_time_s == 120.0
+        assert spec.max_turn_time_s == 3_600.0
 
 
 # ── SubagentTask ──────────────────────────────────────────────────────────────
@@ -365,7 +365,6 @@ class TestSubagentWorkerTimeout:
             allowed_tools=frozenset(),
             max_turns=1,
             system_prompt="",
-            max_turn_time_s=0.001,
         )
         worker = pool_module.SubagentWorker(
             task=SubagentTask("t1", "short", "wait"),
@@ -374,6 +373,7 @@ class TestSubagentWorkerTimeout:
             parent_runner=object(),  # type: ignore[arg-type]
             parent_model="model",
             all_tools=[],
+            timeout_s=0.001,
         )
 
         result = await worker.run()
@@ -443,6 +443,53 @@ class TestSpawnSubagentsTool:
         type_schema = schema["properties"]["tasks"]["items"]["properties"]["type"]
         assert "researcher" in type_schema["enum"]
         assert "research" in type_schema["enum"]
+
+    def test_tool_schema_exposes_one_hour_default_timeout(self) -> None:
+        fn = self._make_tool()
+        meta = getattr(fn, "__lauren_ai_tool__", None)
+        assert meta is not None
+        timeout_schema = meta.parameters["input_schema"]["properties"]["timeout_s"]
+        assert timeout_schema["default"] == 3_600.0
+
+    async def test_timeout_override_is_forwarded_to_pool(self) -> None:
+        from agenthicc.subagents.pool import SubagentPool  # noqa: PLC0415
+
+        fn = self._make_tool()
+        captured: dict[str, object] = {}
+        original_init = SubagentPool.__init__
+
+        def capture_init(pool: SubagentPool, *args: object, **kwargs: object) -> None:
+            captured.update(kwargs)
+            original_init(pool, *args, **kwargs)
+
+        fake_result = SimpleNamespace(
+            pool_id="pool-timeout",
+            total=1,
+            succeeded=1,
+            failed=0,
+            text="done",
+        )
+        with (
+            patch.object(SubagentPool, "__init__", new=capture_init),
+            patch.object(SubagentPool, "run", new=AsyncMock(return_value=fake_result)),
+        ):
+            result = await fn(
+                tasks=[{"type": "researcher", "task": "research the chapters"}],
+                timeout_s=7_200,
+            )
+
+        assert result["ok"] is True
+        assert captured["timeout_s"] == 7_200
+
+    @pytest.mark.parametrize("timeout_s", [0, -1, float("inf"), float("nan"), True])
+    async def test_invalid_timeout_is_rejected(self, timeout_s: object) -> None:
+        fn = self._make_tool()
+        result = await fn(
+            tasks=[{"type": "researcher", "task": "research the chapters"}],
+            timeout_s=timeout_s,
+        )
+        assert result["ok"] is False
+        assert "timeout_s" in result["error"]
 
     def test_tool_schema_uses_dynamic_registry_names(self) -> None:
         from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415

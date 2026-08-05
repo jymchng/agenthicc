@@ -9,11 +9,17 @@ if TYPE_CHECKING:
     from agenthicc.subagents.pool import SubagentResult
 
 __all__ = [
+    "DEFAULT_SUBAGENT_TIMEOUT_S",
     "SubagentTypeSpec",
     "SubagentAggregator",
     "SubagentTypeRegistry",
     "DEFAULT_REGISTRY",
 ]
+
+# Research and build tasks can legitimately take longer than a normal agent
+# turn. The spawn_subagents tool exposes this as its default invocation
+# timeout; callers can still request a shorter or longer finite deadline.
+DEFAULT_SUBAGENT_TIMEOUT_S = 3_600.0
 
 # ── type specifications ───────────────────────────────────────────────────────
 
@@ -60,14 +66,14 @@ class SubagentTypeSpec:
         Must be a self-contained instruction — the task description is appended
         as the first user message, not here.
     max_turn_time_s:
-        Wall-clock timeout per worker execution.  Default: 120 seconds.
+        Wall-clock timeout per worker execution.  Default: one hour.
     """
 
     name: str
     allowed_tools: frozenset[str]
     max_turns: int
     system_prompt: str
-    max_turn_time_s: float = 120.0
+    max_turn_time_s: float = DEFAULT_SUBAGENT_TIMEOUT_S
 
 
 # ── system prompts ────────────────────────────────────────────────────────────
