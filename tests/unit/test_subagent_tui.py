@@ -144,6 +144,20 @@ class TestScrollBufferRenderers:
         assert "explorer #1" in out
         assert "1/3" in out
 
+    def test_worker_done_success_shows_changed_paths(self) -> None:
+        out = self._render_event(
+            "subagent_worker_done",
+            {
+                "label": "implementer #1",
+                "ok": True,
+                "done": 1,
+                "total": 1,
+                "duration_ms": 1200,
+                "changed_paths": ["chapters/01.md"],
+            },
+        )
+        assert "Modified chapters/01.md" in out
+
     def test_worker_done_failure_shows_error(self) -> None:
         out = self._render_event(
             "subagent_worker_done",

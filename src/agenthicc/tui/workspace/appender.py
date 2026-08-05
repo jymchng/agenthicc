@@ -728,8 +728,16 @@ def _render_subagent_worker_done(self: ScrollBufferAppender, ev: ConversationEve
     ms = _number(ev.payload, "duration_ms")
     dur = f"  [dim]{ms / 1_000:.1f}s[/dim]"
     if ok:
+        changed_paths = ev.payload.get("changed_paths", [])
+        if isinstance(changed_paths, list) and changed_paths:
+            detail = "  Modified " + ", ".join(_e(str(path)) for path in changed_paths[:3])
+            if len(changed_paths) > 3:
+                detail += f" (+{len(changed_paths) - 3} more)"
+        else:
+            summary = str(ev.payload.get("summary", "")).strip().splitlines()[0:1]
+            detail = f"  {_e(summary[0][:120])}" if summary else ""
         self._console.print(
-            f"  [green]✓[/green] [{done}/{total}] [cyan]{label}[/cyan]{dur}",
+            f"  [green]✓[/green] [{done}/{total}] [cyan]{label}[/cyan]{dur}{detail}",
             markup=True,
             highlight=False,
         )

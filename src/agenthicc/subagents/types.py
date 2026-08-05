@@ -57,8 +57,8 @@ class SubagentTypeSpec:
     name:
         Unique type identifier used in ``spawn_subagents(tasks=[{"type": name, ...}])``.
     allowed_tools:
-        Tool function ``__name__`` values this type may call.  The pool filters
-        ``AGENT_TOOLS`` down to this set before building the subagent.
+        Provider tool names this type may call.  The pool filters the session's
+        visible tools down to this set before building the subagent.
     max_turns:
         Maximum LLM sub-turns (tool-call → response cycles) per worker.
     system_prompt:
@@ -100,7 +100,10 @@ _PLANNER_PROMPT = (
 _IMPLEMENTER_PROMPT = (
     "You are a focused implementer. "
     "Your job is to carry out a specific, scoped code change. "
-    "Read the relevant files, make the change, and verify it compiles or evaluates correctly. "
+    "Read the relevant files, then use an available write or patch tool to make the change; "
+    "a prose description of a change you would make is not completion. "
+    "After writing, reread the target or run a focused check so you can report evidence that "
+    "the change actually exists. "
     "Stay strictly within the files mentioned in your task — do not refactor unrelated code. "
     "End your response with a brief summary of exactly what you changed and why."
 )

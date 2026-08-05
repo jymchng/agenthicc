@@ -7,7 +7,7 @@ import math
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol, cast
 
 from agenthicc.subagents.types import (
@@ -19,9 +19,9 @@ from agenthicc.subagents.types import (
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
+    from lauren_ai._transport import TokenUsage
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.plugins.registry import ToolRegistry
-    from agenthicc.tools.capability_gate import ToolCapabilityGate
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.runners.retry import RetryConfig
     from agenthicc.runners.usage_ledger import UsageLedger
@@ -43,6 +43,8 @@ _MAX_RESULT_CHARS = 2_000
 def _validate_timeout_s(value: object) -> float:
     """Validate a worker timeout expressed in seconds."""
     if isinstance(value, bool):
+        raise ValueError("timeout_s must be a finite number greater than zero")
+    if not isinstance(value, (int, float, str)):
         raise ValueError("timeout_s must be a finite number greater than zero")
     try:
         timeout_s = float(value)
@@ -93,23 +95,21 @@ def _usage_field(usage: object | None, name: str, default: object = 0) -> object
         return default
 
 
-def _normalise_usage(usage: object | None) -> object:
+def _normalise_usage(usage: object | None) -> TokenUsage:
     """Convert a provider's nullable usage object to Lauren's numeric type."""
     from lauren_ai._transport import TokenUsage  # noqa: PLC0415
 
-    available = {item.name for item in fields(TokenUsage)}
-    values: dict[str, object] = {
-        "input_tokens": _token_count(_usage_field(usage, "input_tokens")),
-        "output_tokens": _token_count(_usage_field(usage, "output_tokens")),
-        "cache_read_tokens": _token_count(_usage_field(usage, "cache_read_tokens")),
-        "cache_write_tokens": _token_count(_usage_field(usage, "cache_write_tokens")),
-        "reasoning_tokens": _token_count(_usage_field(usage, "reasoning_tokens")),
-        "audio_input_tokens": _token_count(_usage_field(usage, "audio_input_tokens")),
-        "audio_output_tokens": _token_count(_usage_field(usage, "audio_output_tokens")),
-    }
     metadata = _usage_field(usage, "provider_metadata", {})
-    values["provider_metadata"] = dict(metadata) if isinstance(metadata, Mapping) else {}
-    return TokenUsage(**{name: value for name, value in values.items() if name in available})
+    return TokenUsage(
+        input_tokens=_token_count(_usage_field(usage, "input_tokens")),
+        output_tokens=_token_count(_usage_field(usage, "output_tokens")),
+        cache_read_tokens=_token_count(_usage_field(usage, "cache_read_tokens")),
+        cache_write_tokens=_token_count(_usage_field(usage, "cache_write_tokens")),
+        reasoning_tokens=_token_count(_usage_field(usage, "reasoning_tokens")),
+        audio_input_tokens=_token_count(_usage_field(usage, "audio_input_tokens")),
+        audio_output_tokens=_token_count(_usage_field(usage, "audio_output_tokens")),
+        provider_metadata=dict(metadata) if isinstance(metadata, Mapping) else {},
+    )
 
 
 def _normalise_completion(value: object) -> object:
@@ -193,9 +193,11 @@ class SubagentResult:
     agent_type: str
     label: str  # "explorer #1", "tester #2", …
     ok: bool
-    text: str  # AgentResponse.content verbatim (plain text)
+    text: str  # AgentResponse.content or a tool-evidence fallback (plain text)
     error: str = ""
     duration_ms: float = 0.0
+    tool_calls: tuple[str, ...] = ()  # Provider tools actually dispatched
+    changed_paths: tuple[str, ...] = ()  # Paths supplied to mutation tools
 
 
 @dataclass
@@ -207,6 +209,84 @@ class AggregatedResult:
     succeeded: int
     failed: int
     text: str  # labelled concatenation delivered to parent as tool result
+
+
+_MUTATING_TOOL_NAMES = frozenset(
+    {
+        "append_file",
+        "apply_diff",
+        "batch_copy",
+        "batch_delete",
+        "batch_move",
+        "batch_write",
+        "copy_file",
+        "delete_file",
+        "make_directory",
+        "move_file",
+        "patch_file",
+        "touch_file",
+        "truncate_file",
+        "write_file",
+    }
+)
+
+
+def _tool_name(tool: object) -> str:
+    """Return a callable or Agenthicc tool object's provider name."""
+    name = getattr(tool, "__name__", "")
+    if isinstance(name, str) and name:
+        return name
+    name = type(tool).__dict__.get("name", "")
+    return name if isinstance(name, str) else ""
+
+
+def _is_mutating_tool(tool: object) -> bool:
+    """Return whether *tool* is known to change workspace state.
+
+    Capability metadata is authoritative for decorated tools.  The name
+    fallback preserves the contract for legacy Tool objects and for callers
+    that pass a compatible callable without Agenthicc metadata.
+    """
+    if _tool_name(tool) in _MUTATING_TOOL_NAMES:
+        return True
+    try:
+        from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
+
+        return ToolCapability.WRITE in get_tool_capabilities(tool)
+    except (ImportError, AttributeError):
+        return False
+
+
+def _paths_from_tool_input(tool_name: str, value: Mapping[str, object]) -> list[str]:
+    """Extract bounded, human-readable path hints from a write call."""
+    paths: list[str] = []
+    for key in ("path", "source", "destination"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and candidate:
+            paths.append(candidate)
+    if tool_name == "batch_write":
+        entries = value.get("files")
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, Mapping):
+                    candidate = entry.get("path")
+                    if isinstance(candidate, str) and candidate:
+                        paths.append(candidate)
+    return paths
+
+
+def _tool_call_summary(
+    tool_calls: tuple[str, ...],
+    changed_paths: tuple[str, ...],
+) -> str:
+    """Build a useful fallback when a provider returns no final prose."""
+    if not tool_calls:
+        return ""
+    calls = ", ".join(tool_calls)
+    summary = f"Executed tool call(s): {calls}."
+    if changed_paths:
+        summary += " Affected path(s): " + ", ".join(changed_paths) + "."
+    return summary
 
 
 # ── worker ────────────────────────────────────────────────────────────────────
@@ -225,7 +305,7 @@ def _expand_allowed(
 
     :param allowed_tools: Raw frozenset from ``SubagentTypeSpec.allowed_tools``.
     :param registry: ``ToolRegistry`` used for group-name lookups.
-    :return: Expanded frozenset of concrete tool ``__name__`` values.
+    :return: Expanded frozenset of concrete provider tool names.
     """
     if registry is None:
         return allowed_tools
@@ -270,12 +350,18 @@ class SubagentWorker:
         self._provider_options = dict(provider_options or {})
         self._timeout_s = None if timeout_s is None else _validate_timeout_s(timeout_s)
         self.label = f"{spec.name} #{index}"
+        self._tool_calls: list[str] = []
+        self._successful_tool_calls: list[str] = []
+        self._changed_paths: list[str] = []
         # Expand glob patterns once at construction time.
         self._effective_allowed: frozenset[str] = _expand_allowed(spec.allowed_tools, registry)
 
     async def run(self) -> SubagentResult:
         """Execute the task; return SubagentResult regardless of success/failure."""
         t0 = time.monotonic()
+        self._tool_calls.clear()
+        self._successful_tool_calls.clear()
+        self._changed_paths.clear()
         try:
             text = await asyncio.wait_for(
                 self._execute(),
@@ -284,6 +370,44 @@ class SubagentWorker:
                 ),
             )
             duration_ms = (time.monotonic() - t0) * 1_000
+            tool_calls = tuple(self._tool_calls)
+            successful_tool_calls = tuple(self._successful_tool_calls)
+            changed_paths = tuple(dict.fromkeys(self._changed_paths))
+
+            # An implementer is a mutation-capable role, not a planning role.
+            # A provider can return a valid prose completion without ever
+            # calling a write tool; treating that as success is what made pools
+            # report completed work while files remained unchanged.
+            if self._spec.name == "implementer" and not successful_tool_calls:
+                return SubagentResult(
+                    task_id=self._task.task_id,
+                    agent_type=self._task.agent_type,
+                    label=self.label,
+                    ok=False,
+                    text=text,
+                    error=(
+                        "implementer completed without a successful mutating tool call; "
+                        "the task was reported but no mutation was recorded"
+                    ),
+                    duration_ms=duration_ms,
+                    tool_calls=tool_calls,
+                    changed_paths=changed_paths,
+                )
+
+            if not text.strip():
+                text = _tool_call_summary(tool_calls, changed_paths)
+            if not text.strip():
+                return SubagentResult(
+                    task_id=self._task.task_id,
+                    agent_type=self._task.agent_type,
+                    label=self.label,
+                    ok=False,
+                    text="",
+                    error="agent returned no final summary and executed no tools",
+                    duration_ms=duration_ms,
+                    tool_calls=tool_calls,
+                    changed_paths=changed_paths,
+                )
             return SubagentResult(
                 task_id=self._task.task_id,
                 agent_type=self._task.agent_type,
@@ -291,6 +415,8 @@ class SubagentWorker:
                 ok=True,
                 text=text,
                 duration_ms=duration_ms,
+                tool_calls=tool_calls,
+                changed_paths=changed_paths,
             )
         except asyncio.TimeoutError:
             duration_ms = (time.monotonic() - t0) * 1_000
@@ -305,6 +431,8 @@ class SubagentWorker:
                     f"{self._timeout_s if self._timeout_s is not None else self._spec.max_turn_time_s:.0f}s"
                 ),
                 duration_ms=duration_ms,
+                tool_calls=tuple(self._tool_calls),
+                changed_paths=tuple(dict.fromkeys(self._changed_paths)),
             )
         except asyncio.CancelledError:
             duration_ms = (time.monotonic() - t0) * 1_000
@@ -316,6 +444,8 @@ class SubagentWorker:
                 text="",
                 error="cancelled",
                 duration_ms=duration_ms,
+                tool_calls=tuple(self._tool_calls),
+                changed_paths=tuple(dict.fromkeys(self._changed_paths)),
             )
         except Exception as exc:  # noqa: BLE001
             duration_ms = (time.monotonic() - t0) * 1_000
@@ -327,6 +457,8 @@ class SubagentWorker:
                 text="",
                 error=str(exc),
                 duration_ms=duration_ms,
+                tool_calls=tuple(self._tool_calls),
+                changed_paths=tuple(dict.fromkeys(self._changed_paths)),
             )
 
     async def _execute(self) -> str:
@@ -334,13 +466,19 @@ class SubagentWorker:
         from lauren_ai._agents import agent as agent_decorator, use_tools  # noqa: PLC0415
         from lauren_ai._agents._runner import AgentRunnerBase as _RunnerBase  # noqa: PLC0415
         from lauren_ai._memory import ShortTermMemory  # noqa: PLC0415
+        from lauren_ai import AfterToolHookDecision, ToolCallContext, ToolHook  # noqa: PLC0415
+        from lauren_ai._signals import SignalBus, ToolCallStarted  # noqa: PLC0415
         from agenthicc.runners.tool_populator import populate_agent_tools  # noqa: PLC0415
 
         # Filter the full tool list to the expanded allowed set.
         # _effective_allowed already has glob patterns resolved to concrete names.
-        filtered = [
-            t for t in self._all_tools if getattr(t, "__name__", "") in self._effective_allowed
-        ]
+        filtered = [t for t in self._all_tools if _tool_name(t) in self._effective_allowed]
+        mutating_tools = frozenset(_tool_name(tool) for tool in filtered if _is_mutating_tool(tool))
+        if self._spec.name == "implementer" and not mutating_tools:
+            raise RuntimeError(
+                "implementer has no write-capable tools after session filtering; "
+                "the parent mode or phase did not expose a file mutation tool"
+            )
 
         # Build the system prompt: type prompt + optional context.
         system = self._spec.system_prompt
@@ -355,17 +493,46 @@ class SubagentWorker:
         agent_instance = _SubAgent()
         populate_agent_tools(agent_instance, filtered)
 
-        hooks: list[ToolCapabilityGate] = []
+        hooks: list[object] = []
         if self._app_state is not None:
             from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
 
             hooks.append(ToolCapabilityGate(self._app_state))
+
+        worker = self
+
+        class _MutationEvidenceHook(ToolHook):
+            """Record only mutation calls whose callable returned success."""
+
+            async def after_tool_call(
+                self,
+                result: object,
+                ctx: ToolCallContext,
+            ) -> AfterToolHookDecision:
+                if ctx.tool_name not in mutating_tools:
+                    return AfterToolHookDecision.proceed()
+                if isinstance(result, Mapping) and result.get("ok") is False:
+                    return AfterToolHookDecision.proceed()
+                worker._successful_tool_calls.append(ctx.tool_name)
+                return AfterToolHookDecision.proceed()
+
+        hooks.append(_MutationEvidenceHook())
+
+        signals = SignalBus()
+
+        @signals.on(ToolCallStarted)
+        async def _record_tool_started(event: ToolCallStarted) -> None:
+            name = str(event.tool_name)
+            self._tool_calls.append(name)
+            if name in mutating_tools:
+                self._changed_paths.extend(_paths_from_tool_input(name, event.input))
 
         runner = _RunnerBase(
             # OpenAI-compatible endpoints may return nullable usage fields.
             # Lauren's non-streaming runner adds those fields directly, so
             # isolate each worker behind the normalising proxy.
             transport=_UsageNormalisingTransport(self._parent_runner._transport),
+            signals=signals,
             global_hooks=hooks or None,
         )
 
@@ -579,6 +746,9 @@ class SubagentPool:
                         "ok": result.ok,
                         "error": result.error,
                         "duration_ms": result.duration_ms,
+                        "summary": result.text[:_MAX_RESULT_CHARS],
+                        "tool_calls": list(result.tool_calls),
+                        "changed_paths": list(result.changed_paths),
                         "done": pool_state.done,
                         "total": pool_state.total,
                     },
@@ -693,6 +863,8 @@ class SubagentPool:
                     "text": result.text[:_MAX_RESULT_CHARS],
                     "error": result.error,
                     "duration_ms": result.duration_ms,
+                    "tool_calls": list(result.tool_calls),
+                    "changed_paths": list(result.changed_paths),
                 },
             )
         )
@@ -769,7 +941,12 @@ def _aggregate(
         dur = f"{r.duration_ms / 1_000:.1f}s"
         status = f"✓ {dur}" if r.ok else f"✗ {r.error or 'failed'}"
         header = f"=== {r.label} ({status}) ==="
-        body = r.text[:_MAX_RESULT_CHARS] if r.ok else f"[failed: {r.error}]"
+        if r.ok:
+            body = r.text[:_MAX_RESULT_CHARS]
+        elif r.text:
+            body = f"[failed: {r.error}]\n{r.text[:_MAX_RESULT_CHARS]}"
+        else:
+            body = f"[failed: {r.error}]"
         sections.append(f"{header}\n{body}")
 
     text = "\n\n".join(sections)
