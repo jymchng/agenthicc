@@ -223,8 +223,8 @@ def test_tab_with_match_does_not_submit():
     assert result.submit is False
 
 
-def test_space_inserts_literal_directory_and_not_child(tmp_path: Path, monkeypatch) -> None:
-    """SPACE preserves ``@directory/`` and does not choose a child row."""
+def test_space_is_inserted_without_selecting_a_directory_child(tmp_path: Path, monkeypatch) -> None:
+    """SPACE updates the fragment and never commits the highlighted row."""
     from agenthicc.tui.cbreak_reader import Key
     from agenthicc.tui.trigger import TriggerManager
     from agenthicc.tui.triggers.at_mention import AtMentionTrigger
@@ -257,8 +257,55 @@ def test_space_inserts_literal_directory_and_not_child(tmp_path: Path, monkeypat
     assert overlay._matches[0].value == f"{directory.name}/__pycache__/"
     overlay.handle_key(Key.CHAR, " ")
 
-    assert len(completed) == 1
-    assert "".join(completed[0].buffer) == f"@{directory.name}/ "
+    assert completed == []
+    assert overlay._trigger is not None
+    assert overlay._trigger.fragment == f"{directory.name}/ "
+    assert overlay._matches == []
+
+
+def test_space_is_inserted_without_selecting_a_command() -> None:
+    """A highlighted slash-command suggestion is not committed by SPACE."""
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.trigger import MatchItem, TriggerManager, TriggerResult
+    from agenthicc.tui.workspace.overlays.trigger_picker import TriggerPickerOverlay
+
+    class Handler:
+        char = "/"
+        label = "Command"
+
+        def get_matches(self, fragment, ctx):
+            return [MatchItem(display="/build", value="build")] if fragment == "b" else []
+
+        def on_select(self, item, fragment, buf):
+            raise AssertionError("SPACE must not select a completion")
+
+        def on_cancel(self, fragment, buf):
+            return buf + ["/"] + list(fragment)
+
+        def can_activate(self, buf):
+            return not buf
+
+        def get_hint(self, item):
+            return None
+
+        def get_lines(self, item, available_width):
+            return [item.display]
+
+    manager = TriggerManager()
+    manager.register(Handler())
+    completed: list[TriggerResult | None] = []
+    overlay = TriggerPickerOverlay(
+        initial_buf=list("/b"),
+        registry=manager,
+        cwd=Path("."),
+        on_complete=completed.append,
+    )
+
+    overlay.handle_key(Key.CHAR, " ")
+
+    assert completed == []
+    assert overlay._trigger is not None
+    assert overlay._trigger.fragment == "b "
 
 
 # ── End-to-end scenario: Bug 1 (select then type) ────────────────────────────

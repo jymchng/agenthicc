@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -27,6 +28,8 @@ from agenthicc.tools.hooks import (
     ToolCallContext,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def _config_value(config: object | None, name: str, default: object) -> object:
     """Read an optional execution setting from real configs and test doubles."""
@@ -38,6 +41,37 @@ def _config_value(config: object | None, name: str, default: object) -> object:
         return default
 
 
+def _require_tool_transaction_api(memory: object | None) -> None:
+    """Fail closed when an unsafe lauren-ai runtime is installed.
+
+    PRD-169 deliberately does not keep a second result-correlation
+    implementation in agenthicc. A missing shared contract is therefore an
+    actionable compatibility error, not a reason to silently use the legacy
+    serializer path.
+    """
+    required = (
+        "validate_tool_history",
+        "repair_tool_history",
+        "begin_tool_exchange",
+        "commit_tool_exchange",
+        "abort_tool_exchange",
+    )
+    missing = [name for name in required if not callable(getattr(memory, name, None))]
+    if missing:
+        try:
+            import lauren_ai  # noqa: PLC0415
+
+            installed = getattr(lauren_ai, "__version__", "unknown")
+        except ImportError:
+            installed = "not installed"
+        missing_text = ", ".join(missing)
+        raise RuntimeError(
+            "agenthicc requires a transaction-capable lauren-ai release for "
+            f"PRD-169; installed={installed!r}, missing={missing_text}. "
+            "Upgrade lauren-ai before starting an agent turn."
+        )
+
+
 def _read_text_if_exists(path: str) -> str:
     """Read a file for the edit-preview adapter, returning empty when absent."""
     if not os.path.exists(path):
@@ -46,7 +80,7 @@ def _read_text_if_exists(path: str) -> str:
         return handle.read()
 
 
-def _preserve_interrupted_memory(memory: object | None) -> None:
+def _preserve_interrupted_memory(memory: object | None) -> bool:
     """Keep valid completed context while healing an interrupted tool tail.
 
     Cancelling a turn must not roll the shared session conversation back to its
@@ -56,14 +90,21 @@ def _preserve_interrupted_memory(memory: object | None) -> None:
     persists that repair in the session journal.
     """
     if memory is None:
-        return
+        return False
+    before = list(getattr(memory, "_messages", ()))
     persist_heal = getattr(memory, "ensure_valid_and_persist", None)
     if callable(persist_heal):
-        persist_heal()
-        return
+        changed = persist_heal()
+        return (
+            bool(changed)
+            if isinstance(changed, bool)
+            else before != list(getattr(memory, "_messages", ()))
+        )
     ensure_valid = getattr(memory, "ensure_valid", None)
     if callable(ensure_valid):
         ensure_valid()
+        return before != list(getattr(memory, "_messages", ()))
+    return False
 
 
 # ── Permanent-error detection (PRD-117) ───────────────────────────────────────
@@ -170,6 +211,14 @@ def _is_permanent_error(exc: BaseException) -> bool:
         )
     except ImportError:
         AgentContextOverflowError = None
+
+    try:
+        from lauren_ai._exceptions import ToolConversationIntegrityError  # noqa: PLC0415
+
+        if isinstance(exc, ToolConversationIntegrityError):
+            return True
+    except ImportError:
+        pass
 
     if AgentContextOverflowError is not None and isinstance(exc, AgentContextOverflowError):
         return True
@@ -519,6 +568,36 @@ class _ToolOutputCaptureHook(LifecycleHook):
         return ErrorToolHookDecision.reraise()
 
 
+class _ToolRecoveryEventSink:
+    """Translate shared recovery signals into headless/session events."""
+
+    def __init__(self, conv_store: object) -> None:
+        self._conv_store = conv_store
+
+    async def on_signal(self, signal: object) -> None:
+        if type(signal).__name__ != "ToolExchangeRepaired":
+            return
+        append_event = getattr(self._conv_store, "append_event", None)
+        if not callable(append_event):
+            return
+        append_event(
+            "tool_exchange_repaired",
+            {
+                "exchange_id": getattr(signal, "exchange_id", ""),
+                "call_count": int(getattr(signal, "call_count", 0) or 0),
+            },
+        )
+        append_event(
+            "system",
+            {
+                "text": (
+                    "Tool execution was interrupted; incomplete tool results were "
+                    "recorded so the session can continue safely."
+                )
+            },
+        )
+
+
 # ── AgentTurnRunner ───────────────────────────────────────────────────────────
 
 
@@ -599,6 +678,7 @@ class AgentTurnRunner:
         self._resolve_model()
         await self._emit_intent_created()
         self._begin_conv_turn()
+        _require_tool_transaction_api(ctx.session_memory)
         self._register_signal_handlers()
 
         agent_text = await self._inject_mentions()
@@ -711,6 +791,7 @@ class AgentTurnRunner:
         from lauren_ai._signals import (  # noqa: PLC0415
             ToolCallStarted as _TCS,
             ToolCallComplete as _TCC,
+            ToolExchangeRepaired as _TER,
         )
 
         signal_decorator = cast(
@@ -743,6 +824,27 @@ class AgentTurnRunner:
             if not self._turn_active:
                 return
             await self._handle_tool_complete(sig)
+
+        @signal_decorator(_TER)
+        async def _on_tool_exchange_repaired(sig: object) -> None:
+            if self._ctx.conv_store is None:
+                return
+            self._ctx.conv_store.append_event(
+                "tool_exchange_repaired",
+                {
+                    "exchange_id": getattr(sig, "exchange_id", ""),
+                    "call_count": int(getattr(sig, "call_count", 0) or 0),
+                },
+            )
+            self._ctx.conv_store.append_event(
+                "system",
+                {
+                    "text": (
+                        "Tool execution was interrupted; incomplete tool results were "
+                        "recorded so the session can continue safely."
+                    )
+                },
+            )
 
     async def _snapshot_file(self, tid: str, rel_path: str) -> None:
         full = os.path.join(os.getcwd(), rel_path) if not os.path.isabs(rel_path) else rel_path
@@ -1045,7 +1147,16 @@ class AgentTurnRunner:
                     queued = claim_queued_message()
                     if queued is None:
                         return results
-                    ctx.memory.add_tool_results(results)
+                    from lauren_ai._agents._runner import _complete_tool_results  # noqa: PLC0415
+
+                    complete_results = _complete_tool_results(tool_calls, results)
+                    exchange = getattr(ctx.memory, "active_tool_exchange", None)
+                    if exchange is not None and callable(
+                        getattr(ctx.memory, "commit_tool_exchange", None)
+                    ):
+                        ctx.memory.commit_tool_exchange(exchange, complete_results)
+                    else:
+                        ctx.memory.add_tool_results(complete_results)
                     ctx.memory.add_user(queued)
                     return []
 
@@ -1306,14 +1417,6 @@ class AgentTurnRunner:
             )
             self._usage_tracker = usage_tracker
 
-        # Heal any dangling tool_calls left by an interrupted previous turn
-        # (e.g. a plan-approval that was cancelled while awaiting the user's
-        # second review).  ensure_valid() is unconditional — unlike messages()
-        # it does not wait for a subsequent user message to confirm the turn
-        # is complete, making it safe to call right before run_stream().
-        if ctx.session_memory is not None:
-            ctx.session_memory.ensure_valid()
-
         turn_completed = False
 
         # PRD-135: auto-compaction is driven *inside* the run loop by lauren-ai's
@@ -1465,6 +1568,11 @@ class AgentTurnRunner:
 
             if usage_tracker is not None:
                 usage_tracker.ensure_call()
+            event_sinks: list[object] = []
+            if usage_tracker is not None:
+                event_sinks.append(usage_tracker.sink)
+            if getattr(ctx.runner, "_signals", None) is None and ctx.conv_store is not None:
+                event_sinks.append(_ToolRecoveryEventSink(ctx.conv_store))
             stream = await active_runner.run_stream(
                 agent_instance,
                 agent_text,
@@ -1473,7 +1581,7 @@ class AgentTurnRunner:
                 memory=ctx.session_memory,
                 idempotency_ledger=turn_ledger,
                 config_override=config_kwargs,
-                event_sinks=[usage_tracker.sink] if usage_tracker is not None else None,
+                event_sinks=event_sinks or None,
             )
             async for chunk in stream:
                 if chunk.delta:
@@ -1559,7 +1667,26 @@ class AgentTurnRunner:
             # message can ask what was in progress. Only an unanswered final
             # tool call is healed; rolling back to ``turn_base_count`` would
             # erase the useful context from the shared session conversation.
-            _preserve_interrupted_memory(ctx.session_memory)
+            try:
+                repaired = _preserve_interrupted_memory(ctx.session_memory)
+            except Exception:  # noqa: BLE001
+                # Cancellation must retain its original identity. The next
+                # resume attempt will surface a typed invariant diagnostic if
+                # the malformed history was not deterministically repairable.
+                logger.warning(
+                    "agenthicc: interrupted tool history could not be repaired", exc_info=True
+                )
+                repaired = False
+            if repaired and ctx.conv_store:
+                ctx.conv_store.append_event(
+                    "system",
+                    {
+                        "text": (
+                            "Tool execution was interrupted; incomplete tool results were "
+                            "recorded so the session can continue safely."
+                        )
+                    },
+                )
             if ctx.conv_store:
                 ctx.conv_store.close_turn()
             raise  # must propagate so task.cancel() terminates the workflow runner
@@ -1570,7 +1697,8 @@ class AgentTurnRunner:
             # message), compact once, and retry the same turn exactly once.
             # This prevents the previous behaviour: the phase loop retried an
             # identical oversized request until the user had to intervene.
-            if _auto_compact and _is_context_overflow_error(exc) and turn_snapshot is not None:
+            overflow_error = _auto_compact and _is_context_overflow_error(exc)
+            if overflow_error and turn_snapshot is not None:
                 memory = ctx.session_memory
                 if memory is not None and hasattr(memory, "restore"):
                     memory.restore(turn_snapshot)
@@ -1589,6 +1717,32 @@ class AgentTurnRunner:
                         exc = retry_exc
                     else:
                         turn_completed = True
+
+            # A non-overflow failure may arrive after Lauren has appended an
+            # assistant tool batch but before the result exchange is durable.
+            # Repair it before exposing the error or allowing a phase loop to
+            # retry. Context-overflow retries intentionally restore the clean
+            # pre-request snapshot instead, so they do not journal a synthetic
+            # exchange that was never executed.
+            repaired = False
+            if not overflow_error:
+                try:
+                    repaired = _preserve_interrupted_memory(ctx.session_memory)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "agenthicc: tool conversation could not be repaired after turn failure",
+                        exc_info=True,
+                    )
+            if repaired and ctx.conv_store:
+                ctx.conv_store.append_event(
+                    "system",
+                    {
+                        "text": (
+                            "Tool execution was interrupted; incomplete tool results were "
+                            "recorded so the session can continue safely."
+                        )
+                    },
+                )
 
             if turn_completed:
                 return
@@ -1770,6 +1924,11 @@ async def _run_agent_turn(
 
     All existing call sites continue to work without modification.
     """
+    if session_memory is None:
+        from lauren_ai._memory import ShortTermMemory as _ShortTermMemory  # noqa: PLC0415
+
+        session_memory = _ShortTermMemory()
+
     ctx = AgentTurnContext(
         text=text,
         runner=runner,

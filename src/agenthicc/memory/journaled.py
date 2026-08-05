@@ -7,16 +7,22 @@ journal: on construction it folds any existing journal content back into memory
 (transparent resume), and thereafter every transition is durably recorded
 before the next LLM call.
 
-Only the append/reset mutation surface is journaled.  ``trim_to_fit`` and
-``ensure_valid`` mutate the in-RAM buffer (sliding-window trimming and
-tool-call healing) but are deliberately *not* journaled — the journal keeps the
-full history, and those operations are deterministically re-derived from it on
-the next read, so recording them would be redundant.
+The append/reset mutation surface and tool-exchange lifecycle are journaled.
+``trim_to_fit`` is an in-RAM projection operation and is deliberately not
+journaled because the full history remains durable.  Explicit
+``ensure_valid_and_persist`` recovery is journaled: a repaired interrupted
+tool-call tail is part of the next turn's durable context and must survive a
+process restart.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from lauren_ai._memory import ShortTermMemory
+
+if TYPE_CHECKING:
+    from lauren_ai._memory import ToolExchange, ToolResultRecord
 
 from agenthicc.memory.journal import ConversationJournal
 
@@ -35,6 +41,10 @@ class JournaledShortTermMemory(ShortTermMemory):
         if msgs or summary is not None:
             self._messages = list(msgs)
             self._summary = summary
+        # A crash can leave an assistant tool batch appended without its
+        # result exchange. Repair the in-memory projection before the first
+        # resumed provider request and make that repair durable immediately.
+        self.ensure_valid_and_persist()
 
     # ── append surface — record every newly-added message ────────────────────
 
@@ -81,7 +91,7 @@ class JournaledShortTermMemory(ShortTermMemory):
         self._messages = self._messages[:count]
         self._journal.reset(self._messages, self._summary)
 
-    def ensure_valid_and_persist(self) -> None:
+    def ensure_valid_and_persist(self) -> bool:
         """Heal an interrupted provider tail and persist the healed state.
 
         ``ShortTermMemory.ensure_valid()`` inserts synthetic interruption
@@ -93,8 +103,48 @@ class JournaledShortTermMemory(ShortTermMemory):
         """
         before = list(self._messages)
         self.ensure_valid()
-        if self._messages != before:
+        changed = self._messages != before
+        if changed:
             self._journal.reset(self._messages, self._summary)
+        return changed
+
+    def on_tool_exchange_started(self, exchange: ToolExchange) -> None:
+        """Persist safe lifecycle metadata for an in-flight exchange."""
+        self._journal.tool_exchange_started(
+            exchange.exchange_id,
+            run_id=exchange.run_id,
+            call_count=len(exchange.call_ids),
+            call_ids=list(exchange.call_ids),
+        )
+
+    def on_tool_exchange_committed(self, exchange: ToolExchange) -> None:
+        """Persist the exchange commit after its message projection is durable."""
+        synthetic_count = sum(1 for outcome in exchange.outcomes if outcome.synthetic)
+        self._journal.tool_exchange_committed(
+            exchange.exchange_id,
+            call_count=len(exchange.call_ids),
+            completed_count=len(exchange.outcomes),
+            synthetic_count=synthetic_count,
+        )
+
+    def on_tool_exchange_result_recorded(
+        self, exchange: ToolExchange, outcome: ToolResultRecord
+    ) -> None:
+        """Persist one safe result outcome after its message is journaled."""
+        self._journal.tool_exchange_result_recorded(
+            exchange.exchange_id,
+            tool_use_id=outcome.tool_use_id,
+            status=outcome.status,
+            synthetic=outcome.synthetic,
+        )
+
+    def on_tool_exchange_aborted(self, exchange: ToolExchange, *, repaired: bool) -> None:
+        """Persist interruption/recovery without exposing tool payloads."""
+        self._journal.tool_exchange_aborted(
+            exchange.exchange_id,
+            call_count=len(exchange.call_ids),
+            repaired=repaired,
+        )
 
     @property
     def journal(self) -> ConversationJournal:

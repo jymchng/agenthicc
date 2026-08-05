@@ -104,14 +104,6 @@ class TriggerHandlerBase:
         """No hint by default."""
         return None
 
-    def space_inserts_literal(self, fragment: str) -> bool:
-        """Whether SPACE should preserve the typed text instead of selecting a row.
-
-        This is an optional trigger-specific policy.  The default preserves
-        the historical behavior of committing the selected dropdown item.
-        """
-        return False
-
     def get_lines(self, item: MatchItem, available_width: int) -> list[str]:
         """Single-line display, clipped to available_width."""
         return [item.display[:available_width]]

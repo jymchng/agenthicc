@@ -36,6 +36,7 @@ against the current source before implementing them.
 - [PRD-166 — Terminal-Safe Active Animation Rendering](prd-166-terminal-safe-active-animation.md)
 - [PRD-167 — Workspace-Scoped @Mentions and Cross-Repository Target Consistency](prd-167-workspace-scoped-mentions.md)
 - [PRD-168 — Mode-Aware Parent-Workspace Access](prd-168-mode-aware-parent-workspace-access.md)
+- [PRD-169 — Transaction-Safe Tool-Call Conversations Across agenthicc and lauren-ai](prd-169-tool-call-transaction-integrity.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -189,6 +190,12 @@ an explicit unrestricted workspace policy without an agenthicc boundary prompt.
 Plan remains read-only and blocked, OS/container permissions remain in force,
 and mentions, filesystem tools, commands, workflows, subagents, headless runs,
 resume, and replay all share the same resolver and policy decision.
+
+PRD-169 specifies the cross-layer tool-call transaction invariant exposed by the
+parallel `Read` regression. It makes lauren-ai validate and atomically commit
+every assistant tool-call batch, makes provider adapters fail before sending
+malformed history, and integrates durable repair, interruption, queued input,
+workflow resume, and safe TUI/headless diagnostics in agenthicc.
 
 ## Existing PRDs
 

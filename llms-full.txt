@@ -10,6 +10,19 @@ workspace under `agenthicc.tui.workspace`, with reactive presentation state in
 `agenthicc.tui.conversation_store`. Historical sections are labeled below so
 agents do not copy them into new code.
 
+## Transaction-safe tool-call memory
+
+`AgentTurnRunner` uses lauren-ai's canonical tool-exchange transaction API for
+direct turns, workflows, headless runs, resume, and generated workflows.
+`JournaledShortTermMemory` persists exchange start, per-result, commit, and
+abort/repair lifecycle records while keeping diagnostics bounded and hashing
+tool IDs. Before every provider request, canonical history must contain a
+non-empty unique ID and exactly one adjacent result for each assistant call.
+Interrupted or denied calls receive stable synthetic error results; unknown,
+duplicate, empty, or non-adjacent history is rejected before network I/O. The
+runtime requires the transaction-capable lauren-ai API and fails closed when
+an older installation does not expose it.
+
 ---
 
 ## Kernel — `agenthicc.kernel`

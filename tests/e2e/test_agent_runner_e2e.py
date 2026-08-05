@@ -29,7 +29,8 @@ from lauren_ai._signals import (
     ToolCallStarted,
 )
 from lauren_ai._tools import tool
-from lauren_ai._transport import Completion, TokenUsage
+from lauren_ai._memory import ShortTermMemory
+from lauren_ai._transport import Completion, TokenUsage, ToolCall
 from lauren_ai._transport._mock import MockTransport
 from lauren_ai.testing import _build_runner_for_agent
 
@@ -237,6 +238,104 @@ async def test_queued_message_is_sent_after_tool_results_before_next_model_call(
         )
         for message in second_messages
     )
+
+    proc_task.cancel()
+    await asyncio.gather(proc_task, return_exceptions=True)
+
+
+async def test_two_parallel_reads_are_serialized_as_one_valid_exchange(kernel):
+    """The reported two-Read journey never sends a partial result batch."""
+    proc_task = asyncio.create_task(kernel.run())
+    reads: list[str] = []
+
+    @tool()
+    async def Read(path: str) -> dict:
+        """Read one named asset."""
+        reads.append(path)
+        return {"path": path, "content": f"contents of {path}"}
+
+    @agent(model="mock-model")
+    @use_tools(Read)
+    class AssetAgent: ...
+
+    mock = MockTransport()
+    mock.queue_response(
+        Completion(
+            id="parallel-read",
+            model="mock-model",
+            content="",
+            tool_calls=[
+                ToolCall(tool_use_id="read-cover", name="Read", input={"path": "cover.png"}),
+                ToolCall(tool_use_id="read-back", name="Read", input={"path": "back.png"}),
+            ],
+            stop_reason="tool_use",
+            usage=TokenUsage(input_tokens=10, output_tokens=10),
+        )
+    )
+    mock.queue_response(_completion("Both assets were read.", n=2))
+    memory = ShortTermMemory()
+    runner = AgentRunnerBase(transport=mock, signals=SignalBus())
+
+    from agenthicc.runners.agent_turn import _run_agent_turn
+
+    await _run_agent_turn(
+        "Use both image assets",
+        runner,
+        kernel,
+        session_memory=memory,
+        project_plugin_tools=[Read],
+    )
+
+    assert reads == ["cover.png", "back.png"]
+    assert memory.validate_tool_history().ok
+    second_request = mock.calls[1].messages
+
+    def _role(message: object) -> str:
+        return (
+            str(message.get("role", ""))
+            if isinstance(message, dict)
+            else str(getattr(message, "role", ""))
+        )
+
+    def _tool_calls(message: object) -> list[object]:
+        if isinstance(message, dict):
+            calls = message.get("tool_calls")
+            if isinstance(calls, list):
+                return calls
+            content = message.get("content")
+        else:
+            calls = getattr(message, "tool_calls", None)
+            if isinstance(calls, list):
+                return calls
+            content = getattr(message, "content", None)
+        return [
+            block
+            for block in content or []
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        ]
+
+    assistant_index = next(
+        index
+        for index, message in enumerate(second_request)
+        if _role(message) == "assistant" and _tool_calls(message)
+    )
+    result_ids: set[str] = set()
+    for message in second_request[assistant_index + 1 :]:
+        if _role(message) == "tool":
+            result_ids.add(
+                message.get("tool_call_id")
+                if isinstance(message, dict)
+                else getattr(message, "tool_call_id", "")
+            )
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        for block in content or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                result_ids.add(str(block.get("tool_use_id", "")))
+    assert result_ids == {"read-cover", "read-back"}
 
     proc_task.cancel()
     await asyncio.gather(proc_task, return_exceptions=True)

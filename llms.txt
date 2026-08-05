@@ -61,6 +61,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `SearchWebTool` / `FetchPageTool` | `agenthicc.skills.web_search` | Native lauren-ai tools for Brave search and visible page-text extraction |
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
 | `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
+| `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory with transactional tool-exchange recovery |
 | `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints |
 | `PromptContract` / `build_workflow_prompt_contract` | `agenthicc.runners.prompt_contract` | Cache-stable system/tool prefix plus append-only dynamic workflow context; emits redacted cache diagnostics |
 | `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
@@ -167,6 +168,12 @@ the current API instead of remembering it:
 - Use `WorkspaceView` for filesystem paths and the shared HTTP client for tools.
 - Child capability scopes can only restrict their parent.
 - Durable tool results must be replay-safe across a transport retry or resume.
+- Tool-call histories are validated by lauren-ai before provider I/O. Each
+  assistant call has exactly one result; cancellation/approval filtering records
+  synthetic error results for unresolved calls, while unknown/duplicate/empty or
+  non-adjacent IDs fail closed with a safe diagnostic. The shared lifecycle
+  signals are `ToolExchangeStarted`, `ToolExchangeResultRecorded`,
+  `ToolExchangeCommitted`, `ToolExchangeAborted`, and `ToolExchangeRepaired`.
 - Direct turns and workflows in one session reuse one `conversation_id` and one
   journal-backed provider memory; custom runner contexts must provide paired
   checkpoint codecs (generated workflows are rejected without them), while

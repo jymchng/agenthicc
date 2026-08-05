@@ -288,6 +288,13 @@ Session artifacts live below `~/.agenthicc/sessions/`:
 
 Direct chat, Plan mode, `code_plan`, and `create_workflow` share the session's stable conversation ID and journal-backed provider memory. Workflow phase state is checkpointed separately, while the reactive conversation store remains a UI projection.
 
+Tool-call batches are transaction-safe at the shared `lauren-ai` boundary.
+Every assistant call is paired with exactly one result before the next provider
+request; interrupted or denied calls receive a bounded synthetic error result
+and the repair is persisted in the conversation journal. If history is
+ambiguous, the request is blocked locally with a safe invariant diagnostic
+instead of sending a malformed provider payload.
+
 Export a portable, redacted support artifact with:
 
 ```bash

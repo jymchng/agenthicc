@@ -214,57 +214,15 @@ class TriggerPickerOverlay(Overlay):
 
             case Key.CHAR if ch:
                 if self._trigger:
-                    if ch == " ":
-                        # Most triggers use SPACE to commit the selected row,
-                        # but a trigger may declare SPACE to be ordinary input.
-                        # In that case restore the exact literal text and do
-                        # not call on_select: the highlighted row is only a
-                        # suggestion, never an implicit completion.
-                        space_inserts_literal = getattr(
-                            self._trigger.handler, "space_inserts_literal", None
-                        )
-                        if callable(space_inserts_literal) and space_inserts_literal(
-                            self._trigger.fragment
-                        ):
-                            literal = self._trigger.handler.on_cancel(
-                                self._trigger.fragment, self._buf.buf
-                            )
-                            self._complete(TriggerResult(buffer=literal + [" "]))
-                            return True
-
-                        # Space commits the selected item so the user can type
-                        # arguments without a second Enter.  Commands with an
-                        # argument provider stay in this overlay and switch
-                        # the active fragment to the argument portion; this is
-                        # what makes `/workflow ` immediately show workflow
-                        # names instead of losing the picker.
-                        item = self._matches[self._selected] if self._matches else None
-                        has_argument_completions = getattr(
-                            self._trigger.handler, "has_argument_completions", None
-                        )
-                        if item is not None and callable(has_argument_completions):
-                            if has_argument_completions(item):
-                                result = self._trigger.handler.on_select(
-                                    item, self._trigger.fragment, self._buf.buf
-                                )
-                                selected = result.buffer[len(self._trigger.pre_buf) :]
-                                self._trigger.fragment = "".join(selected).lstrip("/") + " "
-                                self._update_matches()
-                                return True
-
-                        result = self._trigger.handler.on_select(
-                            item, self._trigger.fragment, self._buf.buf
-                        )
-                        spaced = TriggerResult(
-                            buffer=result.buffer + [" "],
-                            submit=result.submit,
-                            cursor=result.cursor,
-                        )
-                        self._complete(spaced)
-                    else:
-                        # Any char (including "@", "#", etc.) extends the fragment.
-                        self._trigger.fragment += ch
-                        self._update_matches()
+                    # Space is ordinary input.  It must never implicitly
+                    # select the highlighted suggestion, invoke on_select(),
+                    # submit, or close the picker.  This also keeps the
+                    # behavior consistent for @mentions, slash commands, and
+                    # plugin-provided triggers.  Argument completion remains
+                    # available because the handler receives the updated
+                    # fragment (for example, ``workflow ``).
+                    self._trigger.fragment += ch
+                    self._update_matches()
 
         return True  # overlay always consumes all keys
 

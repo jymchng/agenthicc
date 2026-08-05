@@ -20,6 +20,17 @@ The session runner currently places the kernel log beside the session directory
 and the conversation stores inside the directory. Keep these names distinct in
 support tooling.
 
+Conversation-memory journals also contain bounded tool-exchange lifecycle
+records. `tool_exchange_started`, `tool_exchange_result_recorded`,
+`tool_exchange_committed`, and `tool_exchange_aborted` describe transaction
+state without storing tool arguments or output in diagnostics; call IDs are
+stored as short hashes. The canonical message append/reset records remain the
+source used to rebuild memory. If a crash leaves an assistant tool batch with
+missing results, `JournaledShortTermMemory` inserts deterministic interruption
+results, writes one durable reset, and then the shared validator must pass
+before provider I/O. Invalid unknown/duplicate/empty/non-adjacent exchanges
+fail closed rather than being silently rewritten.
+
 ## Client-neutral session projection
 
 The service projection is stored separately at

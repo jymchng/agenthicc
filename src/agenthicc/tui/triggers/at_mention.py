@@ -119,15 +119,6 @@ class AtMentionTrigger(TriggerHandlerBase):
             return TriggerResult(buffer=buf + ["@"] + list(fragment))
         return TriggerResult(buffer=buf + list("@" + item.value))
 
-    def space_inserts_literal(self, fragment: str) -> bool:
-        """Keep the typed mention literal when SPACE closes the picker.
-
-        The rows are suggestions only.  SPACE is ordinary input for mentions;
-        it must not select or resolve the highlighted path (especially a
-        directory child such as ``__pycache__/``).
-        """
-        return True
-
     def can_activate(self, buf: list[str]) -> bool:
         # Activate at position 0 or immediately after whitespace.
         # Prevents '@' mid-word (e.g. in an email address) from opening the picker.

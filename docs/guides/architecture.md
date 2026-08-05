@@ -103,6 +103,15 @@ behaves. Consolidating or formalizing this boundary is PRD-138 P0.3.
 7. Completion, rejection, error, or interruption determines the next phase or
    resume plan.
 
+At the provider boundary, `AgentTurnRunner` passes one memory instance through
+the shared `lauren-ai` transaction API. `run()` and `run_stream()` validate
+before every provider request, execute a full assistant call batch, commit one
+canonical result exchange, and validate again. Cancellation, queued input,
+workflow checkpoints, headless execution, and generated workflows use this
+same boundary; agenthicc does not maintain a second provider-specific result
+correlator. Journaled memory persists repair before control returns to the TUI,
+and malformed history is reported as a safe structured diagnostic.
+
 For workflow turns, `AgentTurnRunner` also applies the shared prompt contract:
 the stable system policy and deterministic stable-tool schemas form the reusable
 prefix, while phase instructions, artifacts, questions, answers, and summaries

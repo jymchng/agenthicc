@@ -53,6 +53,32 @@ compacted once, and the turn is retried rather than submitting the same
 oversized request again. If an OpenAI-compatible endpoint returns an empty
 summary, a bounded local recent-history fallback is applied before retrying.
 
+### Tool-exchange transactions
+
+The provider conversation has one canonical transaction boundary for each
+assistant tool-call batch. `lauren-ai` validates the history before every
+provider request and after every result exchange. A batch must contain
+non-empty, unique call IDs and exactly one immediately-following result for
+each call. Approval filters and parallel execution therefore cannot leave a
+missing result behind: omitted calls are recorded as explicit error results,
+while a cancellation preserves completed results and synthesizes stable
+interruption results for the rest.
+
+`JournaledShortTermMemory` persists the exchange lifecycle (`started`, each
+result recorded, `committed`, and `aborted/repaired`) using bounded metadata;
+tool IDs are hashed in lifecycle records and prompts, arguments, outputs, and
+credentials are never copied into diagnostics. On startup, journal replay
+rehydrates the message projection and repairs a deterministic incomplete tail
+before the first provider request. Repeating recovery is idempotent. Unknown,
+duplicate, empty, or non-adjacent IDs are not guessed at: the shared runner
+raises `ToolConversationIntegrityError` before network I/O.
+
+The minimum supported integration is the transaction-capable `lauren-ai`
+release exposing `ShortTermMemory.validate_tool_history()`,
+`repair_tool_history()`, `begin_tool_exchange()`,
+`commit_tool_exchange()`, and `abort_tool_exchange()`. Agenthicc fails closed
+with an upgrade message when that contract is absent.
+
 The manual `/compact` command uses the bounded map-reduce summarizer and
 records a reset in the journal so the durable projection remains aligned with
 the live messages. Automatic and manual compaction both emit a visible

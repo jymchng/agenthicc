@@ -232,6 +232,95 @@ class ConversationJournal:
             }
         )
 
+    # ── PRD-169: tool-exchange lifecycle ────────────────────────────────────
+
+    def tool_exchange_started(
+        self,
+        exchange_id: str,
+        *,
+        run_id: str | None,
+        call_count: int,
+        call_ids: list[str],
+    ) -> None:
+        """Persist the start of a provider-neutral tool exchange.
+
+        IDs are hashed before they enter diagnostics so a journal cannot be
+        used as a second source of provider correlation data. The canonical
+        messages remain in the normal journal projection.
+        """
+        import hashlib
+
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "tool_exchange_started",
+                "exchange_id": exchange_id,
+                "run_id": run_id,
+                "call_count": call_count,
+                "call_ids": [hashlib.sha256(value.encode()).hexdigest()[:12] for value in call_ids],
+            }
+        )
+
+    def tool_exchange_committed(
+        self,
+        exchange_id: str,
+        *,
+        call_count: int,
+        completed_count: int,
+        synthetic_count: int,
+    ) -> None:
+        """Persist a successful or synthesized exchange commit."""
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "tool_exchange_committed",
+                "exchange_id": exchange_id,
+                "call_count": call_count,
+                "completed_count": completed_count,
+                "synthetic_count": synthetic_count,
+            }
+        )
+
+    def tool_exchange_result_recorded(
+        self,
+        exchange_id: str,
+        *,
+        tool_use_id: str,
+        status: str,
+        synthetic: bool,
+    ) -> None:
+        """Record safe, hashed metadata for one committed exchange result."""
+        import hashlib
+
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "tool_exchange_result_recorded",
+                "exchange_id": exchange_id,
+                "tool_use_id_hash": hashlib.sha256(tool_use_id.encode("utf-8")).hexdigest()[:12],
+                "status": status,
+                "synthetic": synthetic,
+            }
+        )
+
+    def tool_exchange_aborted(
+        self,
+        exchange_id: str,
+        *,
+        call_count: int,
+        repaired: bool,
+    ) -> None:
+        """Persist an interrupted exchange and whether it was repaired."""
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "tool_exchange_aborted",
+                "exchange_id": exchange_id,
+                "call_count": call_count,
+                "repaired": repaired,
+            }
+        )
+
     def append_usage_record(self, record: Mapping[str, object]) -> None:
         """Durably append one PRD-157 provider-usage record.
 
