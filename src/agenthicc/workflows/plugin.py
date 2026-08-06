@@ -357,6 +357,8 @@ class WorkflowContext:
     phase_outputs: dict[str, PhaseOutput] = field(default_factory=dict)
     current_phase: str | None = None
     phase_iteration: int = 0
+    phase_iterations: dict[str, int] = field(default_factory=dict)
+    next_phase: str | None = None
 
     def as_system_block(self) -> str:
         if not self.phase_outputs:

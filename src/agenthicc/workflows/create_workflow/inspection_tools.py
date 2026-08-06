@@ -782,7 +782,8 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                 "one bounded async method per non-terminal state, returning the next state",
                 "run(intent): build the context, then "
                 "'while not state.is_terminal' + 'match state' dispatch",
-                "resume(context): restore and re-enter the same dispatch path",
+                "resume(context): restore and re-enter the same dispatch path; never call "
+                "run(context.intent) for a recoverable checkpoint",
                 "checkpoint_context_to_payload(context) and "
                 "checkpoint_context_from_payload(payload, memory=None) on the plugin; "
                 "omit session memory from JSON and reattach the supplied memory on restore",

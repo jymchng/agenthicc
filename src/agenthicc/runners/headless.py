@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -127,6 +128,9 @@ async def execute_workflow(
             checkpoint_store=WorkflowCheckpointStore(session.session_id),
             browser_manager=getattr(session, "browser_manager", None),
             provider_profile=session.cfg.execution.profile,
+            workspace_root=str(
+                getattr(getattr(session, "workspace_scope", None), "primary_root", "") or ""
+            ),
         )
     try:
         workspace_scope = session.workspace_scope
@@ -173,16 +177,28 @@ async def execute_workflow(
             kind="workflow_started",
             payload={"workflow": workflow_name, "intent": intent},
         )
+    if workflow_handle is not None:
+        # Headless execution is another durable owner of the same run
+        # namespace as the TUI. Claim only after construction and the startup
+        # projection succeed so setup errors cannot strand a lease.
+        workflow_handle.claim(f"headless:{os.getpid()}:{workflow_handle.run_id}")
     error: str | None = None
     runner_result: object | None = None
     try:
         runner_result = await runner.run(intent)
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        if workflow_handle is not None:
+            workflow_handle.release_claim()
         raise
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"
 
-    await session.processor.drain()
+    try:
+        await session.processor.drain()
+    except BaseException:
+        if workflow_handle is not None:
+            workflow_handle.release_claim()
+        raise
     workflow_run = session.app_state.workflow_run()
     status = str(getattr(workflow_run, "status", "failed") or "failed")
     if error is None and status == "failed":
@@ -219,18 +235,27 @@ async def execute_workflow(
         phase_metadata=phase_metadata,
     )
     if session_service is not None:
-        await session_service.publish(
-            session.session_id,
-            source="headless",
-            kind="workflow_run_failed" if result.status == "failed" else "workflow_run_completed",
-            payload={
-                "workflow": result.workflow_name,
-                "run_id": result.run_id,
-                "status": result.status,
-                "phases": list(result.phases),
-                "error": result.error,
-            },
-        )
+        try:
+            await session_service.publish(
+                session.session_id,
+                source="headless",
+                kind="workflow_run_failed"
+                if result.status == "failed"
+                else "workflow_run_completed",
+                payload={
+                    "workflow": result.workflow_name,
+                    "run_id": result.run_id,
+                    "status": result.status,
+                    "phases": list(result.phases),
+                    "error": result.error,
+                },
+            )
+        except BaseException:
+            if workflow_handle is not None:
+                workflow_handle.release_claim()
+            raise
+    if workflow_handle is not None:
+        workflow_handle.release_claim()
     return result
 
 

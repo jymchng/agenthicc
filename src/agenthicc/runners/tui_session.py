@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.workflows.plugin import WorkflowPlugin
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.tools.base import ToolLike
 
 
@@ -704,6 +705,12 @@ class TUISession:
         self._pending_replay_id: str | None = None
         self._workflow_override: str | None = None  # PRD-114: /workflow command
         self._workflow_handle: WorkflowRunHandle | None = None
+        from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: PLC0415
+
+        self._workflow_recovery = WorkflowRecoveryCoordinator(ctx.session_id)
+        self._workflow_recovery_records: dict[str, WorkflowRecoveryRecord] = {}
+        self._workflow_recovery_errors: dict[str, WorkflowRecoveryRecord] = {}
+        self._workflow_owner_prefix = f"tui:{os.getpid()}:{uuid.uuid4().hex[:12]}"
         terminal_manager = getattr(ctx, "terminal_manager", None)
         if terminal_manager is not None:
             self._terminal_unsub = terminal_manager.changed.subscribe(self._sync_terminal_status)
@@ -774,6 +781,8 @@ class TUISession:
         """
         handle = self._workflow_handle
         if handle is None or handle.lifecycle in {"complete", "failed", "discarded"}:
+            if handle is not None:
+                self._release_workflow_claim(handle)
             return
         workflow_run = self._ctx.app_state.workflow_run()
         status = getattr(workflow_run, "status", None)
@@ -787,6 +796,7 @@ class TUISession:
                 handle.save_checkpoint(reason=terminal)
             except Exception:  # noqa: BLE001 — lifecycle cleanup must not mask the result
                 handle.checkpoint_supported = False
+        self._release_workflow_claim(handle)
 
     def _fail_workflow_run(self, error: str) -> None:
         """Publish and finalize a workflow failure that escaped its runner.
@@ -826,59 +836,104 @@ class TUISession:
         # A failed handle must not be reused when the user sends the next
         # message to the same selected workflow.
         if handle.lifecycle in {"complete", "failed", "discarded"}:
+            self._release_workflow_claim(handle)
             self._workflow_handle = None
 
     def _restore_paused_workflow(self) -> None:
-        """Rehydrate the newest paused workflow checkpoint for this session."""
+        """Discover recoverable workflow checkpoints for this session.
+
+        Startup never claims or invokes a run.  It only validates checkpoints
+        and attaches the sole valid candidate so `/workflow resume` can use the
+        same path for Esc pauses and process-interrupted runs.
+        """
         conversation = getattr(self._ctx, "session_conversation", None)
         if conversation is None:
             return
-        from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore  # noqa: PLC0415
-        from agenthicc.runners.workflow_handle import WorkflowRunHandle  # noqa: PLC0415
-
-        store = WorkflowCheckpointStore(self._ctx.session_id)
-        candidates = []
-        for run_id in store.list_run_ids():
-            try:
-                checkpoint = store.load(run_id)
-            except Exception as exc:  # noqa: BLE001
-                self._ctx.app_state.conversation.notify_transient(
-                    f"⚠ Ignoring invalid workflow checkpoint {run_id}: {exc}"
-                )
-                continue
-            if checkpoint is not None and checkpoint.status in {"paused", "pausing"}:
-                candidates.append(checkpoint)
+        active_profile = getattr(self._ctx.cfg.execution, "profile", "")
+        workspace_scope = getattr(self._ctx, "workspace_scope", None)
+        workspace_root = str(getattr(workspace_scope, "primary_root", "") or "")
+        records = self._workflow_recovery.inspect(
+            workflow_registry=self._ctx.workflow_registry,
+            conversation=conversation,
+            provider_profile=active_profile,
+            workspace_root=workspace_root,
+        )
+        self._workflow_recovery_records = {
+            record.run_id: record for record in records if record.recoverable
+        }
+        self._workflow_recovery_errors = {
+            record.run_id: record for record in records if not record.recoverable
+        }
+        candidates = list(self._workflow_recovery_records.values())
+        self._publish_session_event(
+            "workflow_recovery_available",
+            {
+                "count": len(candidates),
+                "run_ids": [record.run_id for record in candidates],
+                "invalid_run_ids": list(self._workflow_recovery_errors),
+            },
+        )
         if not candidates:
-            return
-        checkpoint = max(candidates, key=lambda item: item.created_at)
-        definition = self._ctx.workflow_registry.get(checkpoint.workflow_name)
-        if definition is None:
-            self._ctx.app_state.conversation.notify_transient(
-                f"⚠ Cannot resume '{checkpoint.workflow_name}': workflow is not loaded"
-            )
-            return
-        try:
-            active_profile = self._ctx.cfg.execution.profile
-            if checkpoint.provider_profile and checkpoint.provider_profile != active_profile:
-                raise ValueError(
-                    "checkpoint requires provider profile "
-                    f"{checkpoint.provider_profile!r}, but the current session uses "
-                    f"{active_profile or '<legacy execution settings>'!r}"
+            for record in self._workflow_recovery_errors.values():
+                self._ctx.app_state.conversation.notify_transient(
+                    f"⚠ Workflow recovery unavailable for {record.run_id}: {record.display_error}"
                 )
-            self._workflow_handle = WorkflowRunHandle.from_checkpoint(
-                checkpoint,
-                workflow=definition,
-                conversation=conversation,
-                checkpoint_store=store,
-                browser_manager=getattr(self._ctx, "browser_manager", None),
-            )
+            return
+        if len(candidates) != 1:
+            choices = ", ".join(record.run_id[:12] for record in candidates[:5])
+            suffix = " …" if len(candidates) > 5 else ""
             self._ctx.app_state.conversation.notification.set(
-                f"Workflow '{checkpoint.workflow_name}' is paused. Use /workflow resume or send a message to continue."
+                f"{len(candidates)} workflows can be resumed ({choices}{suffix}). "
+                "Use /workflow resume <run-id>."
+            )
+            return
+
+        record = candidates[0]
+        try:
+            self._workflow_handle = self._rehydrate_workflow_record(record, claim=False)
+            checkpoint = record.checkpoint
+            assert checkpoint is not None
+            disposition = "interrupted" if record.interrupted else "paused"
+            self._ctx.app_state.conversation.notification.set(
+                f"Workflow '{checkpoint.workflow_name}' is {disposition} at "
+                f"{checkpoint.current_phase or 'its saved state'}. "
+                f"Use /workflow resume {record.run_id} to continue."
             )
         except Exception as exc:  # noqa: BLE001
             self._ctx.app_state.conversation.notify_transient(
-                f"⚠ Cannot restore workflow '{checkpoint.workflow_name}': {exc}"
+                f"⚠ Cannot restore workflow '{record.run_id}': {type(exc).__name__}: {exc}"
             )
+
+    def _rehydrate_workflow_record(
+        self,
+        record: "WorkflowRecoveryRecord",
+        *,
+        claim: bool,
+    ) -> "WorkflowRunHandle":
+        """Restore one validated record and optionally claim it for this TUI."""
+        conversation = getattr(self._ctx, "session_conversation", None)
+        if conversation is None or record.checkpoint is None:
+            raise ValueError(record.display_error)
+        workflow = self._ctx.workflow_registry.get(record.workflow_name)
+        if workflow is None:
+            raise ValueError(f"workflow {record.workflow_name!r} is not loaded")
+        owner_id = f"{self._workflow_owner_prefix}:{record.run_id}" if claim else None
+        return self._workflow_recovery.rehydrate(
+            record,
+            workflow=workflow,
+            conversation=conversation,
+            browser_manager=getattr(self._ctx, "browser_manager", None),
+            owner_id=owner_id,
+        )
+
+    def _release_workflow_claim(self, handle: "WorkflowRunHandle | None") -> None:
+        """Release a terminal run's durable lease without masking cleanup errors."""
+        if handle is None:
+            return
+        try:
+            handle.release_claim()
+        except Exception:  # noqa: BLE001 — terminal cleanup must not mask the result
+            pass
 
     def _publish_session_event(
         self,
@@ -1345,14 +1400,75 @@ class TUISession:
         if name == "resume" or name.startswith("resume "):
             run_id = name.partition(" ")[2].strip() or None
             return self._handle_workflow_resume(run_id)
-        if not name or name == "reset":
+        if not name or name == "reset" or name.startswith("reset "):
+            requested_reset_id = name.partition(" ")[2].strip() or None
             handle = self._workflow_handle
+            if requested_reset_id is not None and (
+                handle is None or handle.run_id != requested_reset_id
+            ):
+                if handle is not None and handle.lifecycle in {"paused", "pausing"}:
+                    conv.notify_transient(
+                        f"⚠ '{handle.workflow_name}' is already paused. Reset it first "
+                        "before selecting another workflow."
+                    )
+                    return True
+                record = self._workflow_recovery_records.get(requested_reset_id)
+                if record is None:
+                    record = self._workflow_recovery_errors.get(requested_reset_id)
+                if record is None:
+                    conv.notify_transient(
+                        f"⚠ run_not_found: no recoverable workflow with run id {requested_reset_id!r}"
+                    )
+                    return True
+                if not record.recoverable:
+                    owner_id = f"{self._workflow_owner_prefix}:{record.run_id}"
+                    try:
+                        discarded = self._workflow_recovery.discard(
+                            record,
+                            owner_id=owner_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        conv.notify_transient(
+                            f"⚠ Cannot reset workflow {requested_reset_id!r}: "
+                            f"{record.error_code or 'checkpoint_corrupt'}: {exc}"
+                        )
+                        return True
+                    self._workflow_recovery_errors.pop(record.run_id, None)
+                    self._publish_session_event(
+                        "workflow_discarded",
+                        {
+                            "run_id": record.run_id,
+                            "workflow": discarded.workflow_name,
+                            "status": discarded.status,
+                        },
+                    )
+                    conv.notify_transient(
+                        f"↩ Workflow '{discarded.workflow_name}' reset; incompatible checkpoint discarded"
+                    )
+                    return True
+                try:
+                    handle = self._rehydrate_workflow_record(record, claim=True)
+                    self._workflow_handle = handle
+                except Exception as exc:  # noqa: BLE001
+                    conv.notify_transient(
+                        f"⚠ Cannot restore workflow {requested_reset_id!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    return True
+            if handle is None and self._workflow_recovery_records:
+                choices = ", ".join(self._workflow_recovery_records)
+                conv.notify_transient(
+                    "⚠ Select a recoverable workflow explicitly before resetting: "
+                    f"/workflow reset <run-id> ({choices})"
+                )
+                return True
             if handle is not None and handle.lifecycle in {"paused", "pausing"}:
                 handle.mark_terminal("discarded", error="reset by user")
                 if handle.checkpoint_supported:
                     try:
                         handle.save_checkpoint(reason="reset")
                     except Exception as exc:  # noqa: BLE001
+                        self._release_workflow_claim(handle)
                         conv.notify_transient(f"⚠ Could not persist workflow reset: {exc}")
                         return True
                     from agenthicc.kernel import Event  # noqa: PLC0415
@@ -1368,6 +1484,11 @@ class TUISession:
                             )
                         )
                     )
+                self._release_workflow_claim(handle)
+                self._publish_session_event(
+                    "workflow_discarded",
+                    {"run_id": handle.run_id, "workflow": handle.workflow_name},
+                )
                 self._workflow_handle = None
                 conv.notify_transient("↩ Paused workflow discarded; workflow reset to mode default")
                 self._workflow_override = None
@@ -1397,25 +1518,116 @@ class TUISession:
         return True
 
     def _handle_workflow_resume(self, run_id: str | None) -> bool:
-        """Resume the paused workflow attached to this session."""
+        """Claim and resume one paused or process-interrupted workflow."""
         conv = self._ctx.app_state.conversation
         if self._agent_task is not None and not self._agent_task.done():
             conv.notify_transient("⚠ Cannot resume a workflow while another run is active")
             return True
         handle = self._workflow_handle
         if run_id is not None and (handle is None or handle.run_id != run_id):
-            conv.notify_transient(f"⚠ No paused workflow with run id {run_id!r}")
-            return True
+            if handle is not None and handle.lifecycle in {"paused", "pausing"}:
+                conv.notify_transient(
+                    f"⚠ '{handle.workflow_name}' is already paused. Resume or reset it "
+                    "before selecting another workflow."
+                )
+                return True
+            record = self._workflow_recovery_records.get(run_id)
+            if record is None:
+                invalid = self._workflow_recovery_errors.get(run_id)
+                if invalid is not None:
+                    conv.notify_transient(
+                        f"⚠ Cannot resume {run_id!r}: {invalid.error_code}: {invalid.display_error}"
+                    )
+                else:
+                    conv.notify_transient(
+                        f"⚠ run_not_found: no recoverable workflow with run id {run_id!r}"
+                    )
+                return True
+            try:
+                handle = self._rehydrate_workflow_record(record, claim=False)
+                self._workflow_handle = handle
+            except Exception as exc:  # noqa: BLE001
+                conv.notify_transient(
+                    f"⚠ Cannot restore workflow {run_id!r}: {type(exc).__name__}: {exc}"
+                )
+                return True
+
+        if handle is None:
+            candidates = list(self._workflow_recovery_records.values())
+            if len(candidates) == 1:
+                try:
+                    handle = self._rehydrate_workflow_record(candidates[0], claim=False)
+                    self._workflow_handle = handle
+                except Exception as exc:  # noqa: BLE001
+                    conv.notify_transient(
+                        f"⚠ Cannot restore workflow {candidates[0].run_id!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    return True
+            elif candidates:
+                choices = ", ".join(record.run_id for record in candidates[:8])
+                suffix = " …" if len(candidates) > 8 else ""
+                conv.notify_transient(
+                    "⚠ Multiple workflows can be resumed. Choose one explicitly: "
+                    f"/workflow resume <run-id> ({choices}{suffix})"
+                )
+                return True
+
         if handle is None or handle.lifecycle not in {"paused", "pausing"}:
             conv.notify_transient(
-                "⚠ No paused workflow is available to resume; create_workflow writes directly to the workspace."
+                "⚠ no_recoverable_workflow: no saved workflow is available to resume. "
+                "Use /workflow reset only if you want to discard the saved run."
+            )
+            return True
+        if not handle.checkpoint_supported:
+            conv.notify_transient(
+                "⚠ custom_context_codec_missing: this workflow cannot safely resume its "
+                "saved context; update the workflow or use /workflow reset."
             )
             return True
         definition = self._ctx.workflow_registry.get(handle.workflow_name)
         if definition is None or handle.context is None:
             conv.notify_transient(f"⚠ Workflow '{handle.workflow_name}' is not available to resume")
             return True
+        if handle.claim_owner_id is None:
+            try:
+                handle.claim(f"{self._workflow_owner_prefix}:{handle.run_id}")
+            except Exception as exc:  # noqa: BLE001
+                from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError  # noqa: PLC0415
+
+                code = (
+                    "run_already_claimed"
+                    if isinstance(exc, WorkflowClaimError)
+                    else "resume_transition_failed"
+                )
+                conv.notify_transient(
+                    f"⚠ {code}: cannot claim workflow {handle.run_id!r}: {type(exc).__name__}: {exc}"
+                )
+                return True
+        try:
+            # Move to RESUMING before creating the task. This closes the small
+            # race where Esc arrives after the command claims the run but
+            # before the task reaches its first await; request_pause() can
+            # then convert RESUMING to PAUSING instead of misclassifying the
+            # cancellation as a failure.
+            handle.mark_resuming()
+            handle.persist_checkpoint(reason="resuming")
+        except Exception as exc:  # noqa: BLE001
+            self._release_workflow_claim(handle)
+            conv.notify_transient(
+                f"⚠ resume_transition_failed: cannot start workflow {handle.run_id!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return True
         self._activate_streaming_input()
+        self._publish_session_event(
+            "workflow_resume_started",
+            {
+                "run_id": handle.run_id,
+                "workflow": handle.workflow_name,
+                "phase": handle.current_phase or "",
+            },
+        )
         self._agent_task = asyncio.create_task(
             self._resume_workflow_task(definition, handle.context),
             name=f"resume-workflow-{handle.run_id}",
@@ -1511,9 +1723,44 @@ class TUISession:
                 f"⚠ Workflow '{handle.workflow_name}' is not available to resume"
             )
             return True
+        if handle.claim_owner_id is None:
+            try:
+                handle.claim(f"{self._workflow_owner_prefix}:{handle.run_id}")
+            except Exception as exc:  # noqa: BLE001
+                from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError
+
+                code = (
+                    "run_already_claimed"
+                    if isinstance(exc, WorkflowClaimError)
+                    else "resume_transition_failed"
+                )
+                self._ctx.app_state.conversation.notify_transient(
+                    f"⚠ {code}: cannot continue workflow {handle.run_id!r}: {exc}"
+                )
+                self._msg_queue.insert(0, text)
+                return True
+        try:
+            handle.mark_resuming()
+            handle.persist_checkpoint(reason="resuming")
+        except Exception as exc:  # noqa: BLE001
+            self._release_workflow_claim(handle)
+            self._ctx.app_state.conversation.notify_transient(
+                f"⚠ resume_transition_failed: cannot continue workflow {handle.run_id!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self._msg_queue.insert(0, text)
+            return True
         turn_id = f"turn_{uuid.uuid4().hex}"
         self._publish_session_event(
             "turn_queued", {"text": text, "client_id": "tui"}, turn_id=turn_id
+        )
+        self._publish_session_event(
+            "workflow_resume_started",
+            {
+                "run_id": handle.run_id,
+                "workflow": handle.workflow_name,
+                "phase": handle.current_phase or "",
+            },
         )
         self._activate_streaming_input()
         self._agent_task = asyncio.create_task(
@@ -1615,7 +1862,7 @@ class TUISession:
 
                     session_conversation = getattr(ctx, "session_conversation", None)
                     if session_conversation is not None:
-                        self._workflow_handle = WorkflowRunHandle.create(
+                        new_handle = WorkflowRunHandle.create(
                             run_id=uuid.uuid4().hex,
                             workflow=_plugin_cls,
                             conversation=session_conversation,
@@ -1623,7 +1870,13 @@ class TUISession:
                             checkpoint_store=WorkflowCheckpointStore(ctx.session_id),
                             browser_manager=getattr(ctx, "browser_manager", None),
                             provider_profile=ctx.cfg.execution.profile,
+                            workspace_root=str(
+                                getattr(getattr(ctx, "workspace_scope", None), "primary_root", "")
+                                or ""
+                            ),
                         )
+                        new_handle.claim(f"{self._workflow_owner_prefix}:{new_handle.run_id}")
+                        self._workflow_handle = new_handle
                 _wf_config = _dc.replace(
                     self._wf_config_base,
                     completed_turns=self._turn_count,
@@ -1822,11 +2075,28 @@ class TUISession:
                     },
                 )
             )
+            self._publish_session_event(
+                "workflow_resume_paused",
+                {
+                    "run_id": handle.run_id,
+                    "workflow": handle.workflow_name,
+                    "phase": handle.current_phase or "",
+                    "revision": checkpoint.revision,
+                },
+            )
             conv.notify_transient(
                 f"⏸ Workflow '{handle.workflow_name}' paused at {handle.current_phase or 'current phase'}. "
                 "Send a message or use /workflow resume to continue."
             )
         except Exception as exc:  # noqa: BLE001
+            self._publish_session_event(
+                "workflow_pause_failed",
+                {
+                    "run_id": handle.run_id,
+                    "workflow": handle.workflow_name,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
             conv.notify_transient(f"⚠ Workflow pause could not be checkpointed: {exc}")
 
     async def handle_send(self, cmd: "SendMessageCommand") -> None:
@@ -1941,10 +2211,32 @@ class TUISession:
     def _notify_incomplete_workflow(self) -> None:
         """If the kernel state has an unfinished workflow, notify the user.
 
-        Does NOT auto-start the workflow.  On --resume the user should decide
-        whether to continue — sending a message in Plan mode will start a fresh
-        workflow run with their new intent.
+        Does NOT auto-start the workflow.  A durable workflow recovery record
+        takes precedence over the kernel's coarse projection so the user is
+        directed to `/workflow resume` instead of accidentally starting a new
+        run with the next message.
         """
+        if self._workflow_handle is not None and self._workflow_handle.lifecycle in {
+            "paused",
+            "pausing",
+        }:
+            return
+        recovery_records = getattr(self, "_workflow_recovery_records", {})
+        if recovery_records:
+            if len(recovery_records) == 1:
+                record = next(iter(recovery_records.values()))
+                self._ctx.app_state.conversation.notification.set(
+                    f"Workflow '{record.workflow_name}' can be resumed at "
+                    f"{record.current_phase or 'its saved state'}. "
+                    f"Use /workflow resume {record.run_id}."
+                )
+            else:
+                ids = ", ".join(recovery_records)
+                self._ctx.app_state.conversation.notification.set(
+                    f"{len(recovery_records)} workflows can be resumed. "
+                    f"Use /workflow resume <run-id>: {ids}"
+                )
+            return
         from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415
 
         k_state = self._ctx.processor.get_state()
@@ -1955,7 +2247,8 @@ class TUISession:
                 continue
             self._ctx.app_state.conversation.notification.set(
                 f"Session had an in-progress '{wf.name}' workflow. "
-                "Send a message to start a new run."
+                "No durable resume checkpoint is available; use /workflow reset "
+                "or start a new run explicitly."
             )
             return
 
@@ -1979,7 +2272,12 @@ class TUISession:
         """
         ctx = self._ctx
         plan = ctx.pending_resume
-        if plan is None or self._has_incomplete_workflow():
+        if (
+            plan is None
+            or self._has_incomplete_workflow()
+            or self._workflow_recovery_records
+            or self._workflow_recovery_errors
+        ):
             return
         mem = ctx.session_memory
         rollback = getattr(mem, "rollback_to", None)
@@ -2025,7 +2323,16 @@ class TUISession:
                 await conversation.acquire(owner_id)
                 acquired = True
             if handle is not None:
-                handle.mark_resuming()
+                # The command marks the handle RESUMING before task creation.
+                # Esc can change that to PAUSING while the conversation lock is
+                # being acquired; never overwrite that request when control
+                # returns to this task.
+                if handle.lifecycle == "paused":
+                    handle.mark_resuming()
+                if handle.checkpoint_supported and handle.lifecycle in {"resuming", "pausing"}:
+                    handle.persist_checkpoint(
+                        reason="resuming" if handle.lifecycle == "resuming" else "pause_requested"
+                    )
                 from agenthicc.kernel import Event  # noqa: PLC0415
 
                 await self._ctx.processor.emit(
@@ -2121,6 +2428,20 @@ class TUISession:
                 )
             self._agent_task = None
             if handle is not None and handle.lifecycle in {"complete", "failed", "discarded"}:
+                self._publish_session_event(
+                    "workflow_resume_completed"
+                    if handle.lifecycle == "complete"
+                    else "workflow_resume_failed"
+                    if handle.lifecycle == "failed"
+                    else "workflow_discarded",
+                    {
+                        "run_id": handle.run_id,
+                        "workflow": handle.workflow_name,
+                        "status": handle.lifecycle,
+                        "error": handle.last_error,
+                    },
+                )
+                self._release_workflow_claim(handle)
                 self._workflow_handle = None
             self.advance()
 
@@ -2318,6 +2639,9 @@ async def _run_tui_session_impl(
         await session.run()
     finally:
         reset_current_terminal_manager(terminal_context_token)
+        # A clean TUI exit releases the process claim while leaving a running
+        # or paused checkpoint available for the next --resume invocation.
+        session._release_workflow_claim(session._workflow_handle)
         session._terminal_unsub()
         ctx.session_log.close()
         # PRD-129 Phase 2: close the durable conversation journal handle.

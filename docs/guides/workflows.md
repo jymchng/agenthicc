@@ -12,6 +12,41 @@ journal-backed provider memory is reused across phase turns. The reactive
 in a typed workflow context and is checkpointed separately when the runner
 supports resumable state.
 
+### Pause, crash recovery, and `/workflow resume`
+
+Workflow checkpoints live under the session directory and point to the same
+journal-backed `SessionConversation`; they do not copy provider messages. A
+checkpoint is written before the first phase turn, on every phase/state entry,
+after a transition/artifact boundary, during pause finalization, and at the
+terminal boundary. If the process disappears while a checkpoint is `running` or
+`resuming`, the next `--resume <session-id>` marks it interrupted, validates the
+plugin fingerprint, profile, workspace, journal cursor, and typed context, and
+offers it without invoking the model.
+
+Use `/workflow resume` when exactly one recoverable run exists, or
+`/workflow resume <run-id>` when the notification lists more than one. An
+ordinary message continues the selected paused run using the same policy as an
+Esc pause; it never silently creates a fresh phase-one run. Use
+`/workflow reset <run-id>` to write a terminal discarded checkpoint. A live
+claim prevents two TUI/headless owners from executing one run at once, while a
+claim from a provably dead local process can be reclaimed.
+
+The recovery data flow is:
+
+```text
+checkpoint.conversation_id
+  → SessionConversation.open()
+  → fold conversation-journal.jsonl + repair incomplete tool tail
+  → context_from_payload(..., memory=session.memory)
+  → claim WorkflowRunHandle
+  → WorkflowConfig(session_memory=session.memory, conversation_id=session.id)
+  → runner.resume(typed_context)
+```
+
+Corrupt checkpoints, incompatible plugins/profiles/workspaces, cursor drift,
+and unrecoverable tool tails stay on disk for diagnosis and produce a stable
+error plus a reset/reload action. They are never replaced by a new run.
+
 Workflow runners also inherit the parent session's immutable
 `WorkspaceScope` and live `WorkspaceAccessPolicy`. A custom workflow does not
 need to reimplement Safe/Plan/Yolo path handling: filesystem, mention, and
@@ -336,7 +371,10 @@ Parse the requested Facebook page and summarize the results.
 The active session keeps the conversation ID and provider memory while the
 generated workflow is selected. Built-in and generic workflow contexts can be
 checkpointed; `create_workflow` resumes its typed outer-loop state rather than
-silently restarting DESIGN. Use `/workflow resume` to continue a paused run,
+silently restarting DESIGN. This includes generated custom workflows that
+pass codec validation and re-enter their saved dispatch loop; a generated
+`resume()` that calls `run(intent)` is rejected. Use `/workflow resume` to
+continue a paused or interrupted run,
 or `/workflow reset` to write a terminal discarded record and return to the
 active mode's default workflow.
 
@@ -435,12 +473,14 @@ should contain:
 4. a `run(intent)` driver that initializes the context and advances it with
    `while not state.is_terminal` and `match state` dispatch; and
 5. a `resume(context)` implementation that uses the same state functions and
-   transitions; and
+   transitions, never `return await self.run(context.intent)`; and
 6. `checkpoint_context_to_payload()` and
    `checkpoint_context_from_payload(payload, memory=None)` methods on the
    plugin. They must serialize the state and resumable artefacts, exclude live
    resources such as session memory/events/locks, and reattach the supplied
-   session memory during restore.
+   session memory during restore. Every phase prompt must also tell the agent
+   to ask focused questions through `ask_user` when requirements are missing or
+   materially ambiguous instead of guessing.
 
 Each state function should return the next state explicitly after handling its
 success, retry, rejection, and failure paths. It should update phase events and

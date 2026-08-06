@@ -63,6 +63,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
 | `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory with transactional tool-exchange recovery |
 | `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints |
+| `WorkflowRecoveryCoordinator` / `WorkflowRecoveryRecord` | `agenthicc.runners.workflow_recovery` | Fail-closed interrupted-run discovery, validation, claims, and typed rehydration |
 | `PromptContract` / `build_workflow_prompt_contract` | `agenthicc.runners.prompt_contract` | Cache-stable system/tool prefix plus append-only dynamic workflow context; emits redacted cache diagnostics |
 | `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
 | `DEFAULT_SUBAGENT_TIMEOUT_S` / `SubagentTypeSpec` / `SubagentPool` | `agenthicc.subagents` | Typed concurrent workers; `spawn_subagents(timeout_s=...)` defaults to one hour |

@@ -89,15 +89,11 @@ class WorkflowRunner(BaseWorkflowRunner):
         self._run_id = run_id
 
         context = WorkflowContext(intent=intent, run_id=run_id, workflow_name=self._plugin.name)
+        first_phase = self._plugin.first_phase()
         if handle is not None:
             handle.attach_context(context)
-            from agenthicc.workflows.checkpoint import CheckpointValidationError  # noqa: PLC0415
-
-            try:
-                handle.save_checkpoint(reason="started")
-            except CheckpointValidationError:
-                handle.checkpoint_supported = False
-        first_phase = self._plugin.first_phase()
+            if first_phase is not None:
+                handle.update_phase(first_phase.name, 0, 0)
         wf_run = WorkflowRun(
             run_id=run_id,
             workflow_name=self._plugin.name,
@@ -218,7 +214,7 @@ class WorkflowRunner(BaseWorkflowRunner):
         from agenthicc.workflows.plugin import PhaseRunRecord  # noqa: PLC0415
         from agenthicc.kernel import Event  # noqa: PLC0415
 
-        iteration_counts: dict[str, int] = {}
+        iteration_counts: dict[str, int] = dict(context.phase_iterations)
         _processed_parallel: set[str] = set()
         phase_name = start_phase
 
@@ -293,6 +289,8 @@ class WorkflowRunner(BaseWorkflowRunner):
                 self._cfg.app_state.workflow_run.set(wf_run)
                 context.current_phase = phase_name
                 context.phase_iteration = iteration_counts[phase_name]
+                context.phase_iterations[phase_name] = context.phase_iteration
+                context.next_phase = None
                 handle = self._cfg.workflow_handle
                 if handle is not None:
                     handle.attach_context(context)
@@ -346,6 +344,10 @@ class WorkflowRunner(BaseWorkflowRunner):
                         self._cfg.app_state.workflow_run.set(wf_run)
                         return
                     phase_name = spec.next
+                    context.next_phase = phase_name
+                    if handle is not None:
+                        handle.attach_context(context)
+                        handle.persist_checkpoint(reason="phase_transition")
                     continue
 
                 await self._cfg.processor.emit(
@@ -402,6 +404,13 @@ class WorkflowRunner(BaseWorkflowRunner):
                 )
 
                 phase_name = self._determine_transition(spec, output)
+                context.next_phase = phase_name
+                if handle is not None:
+                    # Persist the output and selected graph edge before the
+                    # next phase is entered. A crash here resumes the chosen
+                    # edge rather than replaying or guessing.
+                    handle.attach_context(context)
+                    handle.persist_checkpoint(reason="phase_transition")
                 if command_gate_error is not None:
                     wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
                     self._cfg.app_state.workflow_run.set(wf_run)
@@ -455,6 +464,8 @@ class WorkflowRunner(BaseWorkflowRunner):
 
     def _find_resume_phase(self, context: WorkflowContext) -> str | None:
         """Walk the phase-transition graph to find the first incomplete phase."""
+        if context.next_phase is not None and self._plugin.get_phase(context.next_phase):
+            return context.next_phase
         if (
             context.current_phase is not None
             and context.current_phase not in context.phase_outputs

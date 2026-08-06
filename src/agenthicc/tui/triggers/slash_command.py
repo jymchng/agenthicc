@@ -97,8 +97,15 @@ class SlashCommandTrigger(TriggerHandlerBase):
             # complete command that TUISession.route() can execute.
             prefix = argument_part.strip()
             if " " in prefix:
+                # Run IDs are intentionally not inferred from arbitrary
+                # text.  The recovery coordinator presents an explicit list
+                # when more than one run exists; users can paste the selected
+                # ID after the discoverable ``resume``/``reset`` command.
+                command_name = prefix.split(None, 1)[0]
+                if command_name in {"resume", "reset"}:
+                    return []
                 return []
-            completions = [
+            completions = [name for name in ("resume", "reset") if name.startswith(prefix)] + [
                 name for name in self._workflow_registry.names() if name.startswith(prefix)
             ]
         elif command.completions_factory is not None:
@@ -125,10 +132,20 @@ class SlashCommandTrigger(TriggerHandlerBase):
             value = f"{command.name} {completion}"
             workflow = (
                 self._workflow_registry.get(completion)
-                if command.name == "/workflow" and self._workflow_registry is not None
+                if command.name == "/workflow"
+                and completion not in {"resume", "reset"}
+                and self._workflow_registry is not None
                 else None
             )
-            detail = workflow.description if workflow is not None else f"Use {value}"
+            detail = (
+                "Continue a paused or interrupted workflow"
+                if completion == "resume"
+                else "Discard a recoverable workflow"
+                if completion == "reset"
+                else workflow.description
+                if workflow is not None
+                else f"Use {value}"
+            )
             results.append(
                 MatchItem(
                     display=f"{value:<{_NAME_COL}} {detail}",

@@ -181,6 +181,11 @@ def context_from_payload(
             if isinstance(raw_outputs, dict)
             else {}
         )
+        raw_iterations = fields.get("phase_iterations", {})
+        phase_iterations: dict[str, int] = {}
+        if isinstance(raw_iterations, dict):
+            for name, iteration in raw_iterations.items():
+                phase_iterations[str(name)] = _as_int(iteration, 0)
         return WorkflowContext(
             intent=str(fields.get("intent", "")),
             run_id=str(fields.get("run_id", "")),
@@ -190,6 +195,10 @@ def context_from_payload(
                 str(fields["current_phase"]) if fields.get("current_phase") is not None else None
             ),
             phase_iteration=_as_int(fields.get("phase_iteration"), 0),
+            phase_iterations=phase_iterations,
+            next_phase=(
+                str(fields["next_phase"]) if fields.get("next_phase") is not None else None
+            ),
         )
     if kind == "CodePlanContext":
         raw_state = fields.get("state", {"__enum__": "PLAN"})
@@ -295,6 +304,9 @@ class WorkflowCheckpoint:
     # Non-secret identity only. The named profile is resolved from the
     # current environment when the owning session is rebuilt.
     provider_profile: str = ""
+    # Canonical workspace root used for the run. It is an identity boundary,
+    # not a list of files or a permission grant.
+    workspace_root: str = ""
     # Redacted prompt-cache metadata (PRD-163). These fields never contain
     # prompt text, conversation contents, credentials, or provider cache tokens.
     cache_contract_version: str = ""
@@ -325,6 +337,7 @@ class WorkflowCheckpoint:
             "reason": self.reason,
             "browser": self.browser,
             "provider_profile": self.provider_profile,
+            "workspace_root": self.workspace_root,
             "cache_contract_version": self.cache_contract_version,
             "cache_epoch": self.cache_epoch,
             "stable_prompt_fingerprint": self.stable_prompt_fingerprint,
@@ -397,6 +410,9 @@ class WorkflowCheckpoint:
         provider_profile = raw.get("provider_profile", "")
         if not isinstance(provider_profile, str):
             raise CheckpointValidationError("provider_profile must be a string")
+        workspace_root = raw.get("workspace_root", "")
+        if not isinstance(workspace_root, str):
+            raise CheckpointValidationError("workspace_root must be a string")
         cache_fields = (
             "cache_contract_version",
             "cache_epoch",
@@ -434,6 +450,7 @@ class WorkflowCheckpoint:
             if isinstance(raw.get("browser", {}), dict)
             else {},
             provider_profile=provider_profile,
+            workspace_root=workspace_root,
             cache_contract_version=str(raw.get("cache_contract_version", "")),
             cache_epoch=str(raw.get("cache_epoch", "")),
             stable_prompt_fingerprint=str(raw.get("stable_prompt_fingerprint", "")),

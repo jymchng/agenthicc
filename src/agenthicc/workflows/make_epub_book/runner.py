@@ -645,6 +645,10 @@ class MakeEpubBookRunner(CodePlanRunner):
                     state = await self._back_matter(ctx, memory)
                 case MakeEpubBookState.COMPILE:
                     state = await self._compile(ctx, memory)
+            if handle is not None:
+                ctx.state = state
+                handle.attach_context(ctx)
+                handle.persist_context_transition()
             log.info("make_epub_book → %s", state.name)
 
         ctx.state = state
@@ -697,6 +701,10 @@ class MakeEpubBookRunner(CodePlanRunner):
                     state = await self._back_matter(context, memory)
                 case MakeEpubBookState.COMPILE:
                     state = await self._compile(context, memory)
+            if handle is not None:
+                context.state = state
+                handle.attach_context(context)
+                handle.persist_context_transition()
         context.state = state
         if handle is not None:
             handle.attach_context(context)

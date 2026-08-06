@@ -87,7 +87,8 @@ _RUNNER_GUIDE: str = (
     "  3. one bounded async method per non-terminal state, returning the next state\n"
     "  4. run(intent): build the context, then drive "
     "'while not state.is_terminal' + 'match state'\n"
-    "  5. resume(context): re-enter the same dispatch path\n"
+    "  5. resume(context): re-enter the same dispatch path; never implement a "
+    "checkpoint resume as `return await self.run(context.intent)` or any fresh-run restart\n"
     "  6. phase tool factories whose @tool() closures set an asyncio.Event, and whose "
     "transition callables are also marked @tool_control — the state method checks the "
     "event after the turn and NEVER parses the agent's prose. Import `tool` from "
@@ -359,12 +360,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         )
         if handle is not None:
             handle.attach_context(ctx)
-            from agenthicc.workflows.checkpoint import CheckpointValidationError  # noqa: PLC0415
-
-            try:
-                handle.save_checkpoint(reason="started")
-            except CheckpointValidationError:
-                handle.checkpoint_supported = False
+            # Record DESIGN before the first authoring turn. The phase helper
+            # will increment the iteration when the phase actually begins.
+            handle.update_phase("design", 0, 0)
 
         wf_run: WorkflowRun = WorkflowRun(
             run_id=run_id,
@@ -413,6 +411,16 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
                 state = await self._dispatch(state, ctx)
                 ctx.state = state
+                if handle is not None and not state.is_terminal:
+                    # Persist the selected state immediately after the
+                    # transition tool returns and before the next phase turn.
+                    next_phase = state.name.lower()
+                    handle.attach_context(ctx)
+                    handle.update_phase(
+                        next_phase,
+                        _PHASE_INDEX.get(next_phase, 0),
+                        ctx.phase_iteration,
+                    )
 
                 next_label: str | None = state.name.lower() if not state.is_terminal else None
                 artifact = ctx.artifacts.get(phase_name)
@@ -501,19 +509,22 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             ctx.shared_memory = session_memory
             state = ctx.state
         elif isinstance(context, WorkflowContext):
-            # Generic contexts predate typed checkpoints and have no durable
-            # state. Keep their documented restart semantics; typed
-            # CreateWorkflowContext resumes from its exact outer-loop state.
-            return await self.run(context.intent)
+            # A generic context contains phase outputs but not the state-machine
+            # cursor that makes recovery safe. Restarting from DESIGN here would
+            # duplicate writes and silently discard the durable continuation.
+            # Old callers must explicitly start a new run instead.
+            raise TypeError(
+                "create_workflow resume requires CreateWorkflowContext; "
+                "the legacy generic context has no recoverable phase state"
+            )
         else:
             raise TypeError("workflow resume requires a WorkflowContext")
 
         self._run_id = ctx.run_id
         if handle is not None:
             handle.attach_context(ctx)
-        # Re-enter the same outer dispatch loop.  The typed state is the durable
-        # continuation point; a legacy context has no state and therefore starts
-        # at DESIGN for backwards compatibility.
+        # Re-enter the same outer dispatch loop. The typed state is the durable
+        # continuation point; no resume path silently restarts at DESIGN.
         from agenthicc.kernel import Event  # noqa: PLC0415
         from agenthicc.workflows.plugin import WorkflowRun  # noqa: PLC0415
 
@@ -547,6 +558,14 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 )
                 state = await self._dispatch(state, ctx)
                 ctx.state = state
+                if handle is not None and not state.is_terminal:
+                    handle.attach_context(ctx)
+                    next_phase = state.name.lower()
+                    handle.update_phase(
+                        next_phase,
+                        _PHASE_INDEX.get(next_phase, 0),
+                        ctx.phase_iteration,
+                    )
 
             final_status = self._final_status(state)
             wf_run = dataclasses.replace(wf_run, status=final_status, current_phase=None)

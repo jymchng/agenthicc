@@ -509,10 +509,12 @@ async def test_workflow_startup_failure_is_visible_when_no_agent_turn_exists() -
 
 
 @pytest.mark.asyncio
-async def test_tui_workflow_resume_explains_direct_write_contract() -> None:
+async def test_tui_workflow_resume_reports_no_recoverable_run() -> None:
     session, ctx, _workspace, _input = _make_session()
     assert session.route("/workflow resume") is True
-    assert "directly" in (ctx.app_state.conversation.notification() or "")
+    notification = ctx.app_state.conversation.notification() or ""
+    assert "no_recoverable_workflow" in notification
+    assert "directly" not in notification
 
 
 @pytest.mark.asyncio

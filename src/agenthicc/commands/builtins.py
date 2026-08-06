@@ -897,7 +897,7 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/workflow",
         description="Switch the active workflow within the current mode",
-        argument_hint="<name> | reset",
+        argument_hint="<name> | resume [run-id] | reset [run-id]",
         group="Built-in",
         # No handler: /workflow is intercepted in TUISession.route() before
         # dispatch_slash() so it can access session-local state.  The entry

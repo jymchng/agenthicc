@@ -13,7 +13,8 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>/metadata.json` | `tui.runtime.session_log` | cwd, model, timestamps | Session discovery/index |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
 | `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, turn markers, tool records, versioned usage records | Rebuild memory, restore usage, and resume interrupted turns |
-| `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase, plugin fingerprint, journal cursor, and non-secret provider profile identity | Rehydrate an acknowledged paused workflow |
+| `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase/branch cursor, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
+| `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner only) | Prevent duplicate resume; reclaim only provably dead local claims |
 | `<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
 
 The session runner currently places the kernel log beside the session directory
@@ -53,11 +54,15 @@ user prompts and tool results and must be reviewed before sharing.
 
 Workflow checkpoints deliberately do not duplicate provider messages or
 credentials. They store typed workflow state, the cursor into the session
-journal, and at most the selected provider profile name; the resumed session
-resolves current environment secrets during startup. Writes use a
+journal, and only non-secret provider profile/workspace identity; the resumed
+session resolves current environment secrets during startup. Writes use a
 flushed temporary file followed by an atomic replacement, and checkpoint files
 are kept under the session directory with restrictive permissions. Corrupt,
-oversized, stale, or plugin-mismatched checkpoints fail closed.
+oversized, stale, or plugin-mismatched checkpoints fail closed. Active
+`running`, `pausing`, and `resuming` records are classified as interrupted on
+startup and are never executed automatically. `/workflow resume` claims one
+record atomically, rehydrates it into the existing `SessionConversation`, and
+releases the claim on pause, terminal completion, failure, or clean shutdown.
 
 ## Project and global stores
 

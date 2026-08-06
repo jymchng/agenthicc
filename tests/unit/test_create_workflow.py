@@ -726,6 +726,45 @@ class BadWorkflow(WorkflowPlugin):
     assert any("ask_user" in error for error in report.errors)
 
 
+def test_generated_runner_validation_rejects_resume_restart(tmp_path: Path) -> None:
+    source = """
+from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+
+CACHE_CONTRACT = "stable ask_user clarifying ambiguous do not guess workspace_access"
+
+class RestartRunner(CodePlanRunner):
+    async def run(self, intent):
+        return None
+    async def resume(self, context):
+        return await self.run(context.intent)
+
+class RestartWorkflow(WorkflowPlugin):
+    name = "restart_workflow"
+    description = "restart test"
+    phases = [PhaseSpec(name="one")]
+    @classmethod
+    def build_runner(cls, config, mode_manager):
+        return RestartRunner(config, mode_manager)
+    @classmethod
+    def checkpoint_context_to_payload(cls, context):
+        return {}
+    @classmethod
+    def checkpoint_context_from_payload(cls, payload, memory=None):
+        return None
+"""
+    path = tmp_path / "restart_workflow.py"
+    path.write_text(source, encoding="utf-8")
+    report = validate_workflow_file(
+        str(path),
+        expected_name="restart_workflow",
+        root=tmp_path,
+        strict_cache_contract=False,
+    )
+    assert not report.ok
+    assert any("silently restarts" in error for error in report.errors)
+
+
 async def test_describe_runner_pattern_lists_every_required_element() -> None:
     result = await _call(make_inspection_tools(), "describe_runner_pattern")
     assert isinstance(result, dict)
@@ -2127,17 +2166,9 @@ async def test_resume_rejects_a_foreign_context() -> None:
         await runner.resume({"intent": "x"})
 
 
-async def test_resume_restarts_the_state_machine_with_the_original_intent() -> None:
+async def test_resume_rejects_a_legacy_generic_context_instead_of_restarting() -> None:
     runner = _runner()
-    seen: list[str] = []
-
-    async def run(intent: str) -> CreateWorkflowContext:
-        seen.append(intent)
-        return _ctx(intent)
-
-    runner.run = run  # type: ignore[method-assign]
-    ctx = await runner.resume(
-        WorkflowContext(intent="author a workflow", run_id="r", workflow_name="create_workflow")
-    )
-    assert seen == ["author a workflow"]
-    assert ctx.intent == "author a workflow"
+    with pytest.raises(TypeError, match="legacy generic context"):
+        await runner.resume(
+            WorkflowContext(intent="author a workflow", run_id="r", workflow_name="create_workflow")
+        )

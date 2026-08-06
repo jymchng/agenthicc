@@ -15,7 +15,7 @@ from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.code_plan.phase_tools import make_executor_tools
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.config import WorkflowConfig
-from agenthicc.workflows.plugin import PhaseOutput, WorkflowContext
+from agenthicc.workflows.plugin import WorkflowContext
 
 pytestmark = pytest.mark.unit
 
@@ -265,35 +265,36 @@ async def test_run_and_resume_failure_and_completed_phase_paths() -> None:
     assert result.fail_reason == ""
     assert runner._cfg.app_state.workflow_run().status == "failed"
 
-    context = WorkflowContext("intent", "resume", runner.workflow_name)
-    context.add_output(PhaseOutput("plan", "planner", "saved plan"))
-    context.add_output(PhaseOutput("execute", "executor", "saved execution"))
-    context.add_output(PhaseOutput("review", "reviewer", "saved review", approved=True))
-
     async def summarize(_ctx: CodePlanContext) -> CodePlanState:
         return CodePlanState.COMPLETE
 
     runner._summarize = summarize  # type: ignore[method-assign]
-    await runner.resume(context)
+    await runner.resume(
+        CodePlanContext(
+            "intent",
+            "resume",
+            state=CodePlanState.SUMMARIZE,
+            shared_memory=MagicMock(),
+        )
+    )
     assert runner._cfg.app_state.workflow_run().status == "complete"
 
     empty = WorkflowContext("intent", "empty", runner.workflow_name)
     runner.run = AsyncMock(return_value=CodePlanContext("intent", "empty"))  # type: ignore[method-assign]
-    await runner.resume(empty)
-    runner.run.assert_awaited_once_with("intent")
+    with pytest.raises(TypeError, match="exact recoverable state"):
+        await runner.resume(empty)
+    runner.run.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_resume_restores_execute_mode_from_plan_metadata() -> None:
     runner = _runner()
-    context = WorkflowContext("intent", "resume-mode", runner.workflow_name)
-    context.add_output(
-        PhaseOutput(
-            "plan",
-            "planner",
-            "saved plan",
-            metadata={"execute_mode": "Yolo"},
-        )
+    context = CodePlanContext(
+        "intent",
+        "resume-mode",
+        state=CodePlanState.EXECUTE,
+        execute_mode="Yolo",
+        shared_memory=MagicMock(),
     )
 
     seen: list[str] = []

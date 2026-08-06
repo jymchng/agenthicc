@@ -364,6 +364,10 @@ class MakeToolRunner(CodePlanRunner):
                     state = await self._validate(ctx, memory)
                 case MakeToolState.FINALIZE:
                     state = await self._finalize(ctx, memory)
+            if handle is not None:
+                ctx.state = state
+                handle.attach_context(ctx)
+                handle.persist_context_transition()
             log.info("make_agenthicc_tool → %s", state.name)
 
         ctx.state = state
@@ -408,6 +412,10 @@ class MakeToolRunner(CodePlanRunner):
                     state = await self._validate(context, memory)
                 case MakeToolState.FINALIZE:
                     state = await self._finalize(context, memory)
+            if handle is not None:
+                context.state = state
+                handle.attach_context(context)
+                handle.persist_context_transition()
         context.state = state
         if handle is not None:
             handle.attach_context(context)

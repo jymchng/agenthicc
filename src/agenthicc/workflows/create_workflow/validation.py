@@ -404,6 +404,38 @@ def _check_runner(
     _check_checkpoint_contract(plugin, errors)
 
 
+def _check_resume_does_not_restart(source: str, errors: list[str]) -> None:
+    """Reject a generated resume method that calls the fresh-run entry point.
+
+    This is deliberately an AST check rather than a substring search: comments,
+    documentation, and a helper with a similarly named local method must not
+    trigger it. A custom runner's ``resume`` method must dispatch its restored
+    typed context through the same phase loop; ``return await self.run(...)``
+    would silently restart at phase one after a crash.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name != "resume":
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call) or not isinstance(child.func, ast.Attribute):
+                continue
+            receiver = child.func.value
+            if (
+                isinstance(receiver, ast.Name)
+                and receiver.id == "self"
+                and child.func.attr == "run"
+            ):
+                errors.append(
+                    f"{node.name}() must resume the restored typed context through its phase "
+                    "dispatch loop; calling self.run() silently restarts the workflow at phase one."
+                )
+                break
+
+
 def _check_dynamic_stable_prompt_ast(source: str, errors: list[str]) -> None:
     """Reject changing expressions embedded in stable prompt constants."""
 
@@ -810,6 +842,8 @@ def validate_workflow_file(
 
     phase_names = _check_phases(target, errors, warnings)
     _check_runner(target, namespace, errors, warnings, len(phase_names))
+    if _has_custom_runner(target):
+        _check_resume_does_not_restart("\n".join(sources.values()), errors)
     cache_contract = _check_prompt_cache_contract(
         sources,
         target,

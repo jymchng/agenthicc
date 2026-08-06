@@ -1753,6 +1753,14 @@ journal-backed provider memory shared by direct turns and workflow phases.
 `WorkflowRunHandle` owns workflow-specific context, lifecycle, phase cursor, and
 checkpoint identity without duplicating provider messages.
 
+`WorkflowRecoveryCoordinator` and `WorkflowRecoveryRecord` provide the
+session-owned, fail-closed recovery boundary for `/workflow resume`. They scan
+running/pausing/paused/resuming checkpoints, validate plugin/profile/workspace,
+conversation cursor, typed context, and tool-tail state, atomically claim one
+run, and rehydrate its context with the existing `SessionConversation` memory.
+They never start an LLM turn during discovery and never fall back to a fresh
+phase-one run when a recoverable checkpoint is incompatible.
+
 ### CodePlanRunner
 
 The specialized `code_plan` runner evolves `CodePlanState` through

@@ -54,6 +54,7 @@ class WorkflowRunHandle:
     created_at: float = field(default_factory=time.time)
     browser_manager: object | None = None
     provider_profile: str = ""
+    workspace_root: str = ""
     cache_contract_version: str = ""
     cache_epoch: str = ""
     stable_prompt_fingerprint: str = ""
@@ -61,6 +62,7 @@ class WorkflowRunHandle:
     cache_provider_capability: str = ""
     cache_status: str = ""
     cache_invalidation_reason: str = ""
+    claim_owner_id: str | None = field(default=None, repr=False)
 
     @classmethod
     def create(
@@ -73,6 +75,7 @@ class WorkflowRunHandle:
         checkpoint_store: WorkflowCheckpointStore,
         browser_manager: object | None = None,
         provider_profile: str = "",
+        workspace_root: str = "",
     ) -> "WorkflowRunHandle":
         """Create a handle for a new workflow run."""
         return cls(
@@ -85,17 +88,46 @@ class WorkflowRunHandle:
             workflow=workflow,
             browser_manager=browser_manager,
             provider_profile=provider_profile,
+            workspace_root=workspace_root,
         )
 
     def attach_context(self, context: object) -> None:
         """Attach the typed context created by a runner."""
         self.context = context
 
-    def update_phase(self, phase: str | None, index: int = 0, iteration: int = 0) -> None:
-        """Publish the current phase for UI and checkpoint snapshots."""
+    def update_phase(
+        self,
+        phase: str | None,
+        index: int = 0,
+        iteration: int = 0,
+        *,
+        persist: bool = True,
+    ) -> None:
+        """Publish and, by default, durably persist the current phase.
+
+        Phase entry is the minimum safe recovery boundary.  Every built-in
+        runner attaches its typed context before calling this method, so a
+        process that disappears inside the phase can resume that exact state
+        instead of falling back to the first phase.
+        """
         self.current_phase = phase
         self.phase_index = index
         self.phase_iteration = iteration
+        if persist and self.context is not None and self.checkpoint_supported:
+            self.persist_checkpoint(reason="phase_started")
+
+    def claim(self, owner_id: str) -> None:
+        """Acquire the durable run lease for this process."""
+        self.checkpoint_store.acquire_claim(self.run_id, owner_id)
+        self.claim_owner_id = owner_id
+
+    def release_claim(self) -> None:
+        """Release this handle's durable run lease, if it owns one."""
+        owner_id = self.claim_owner_id
+        if owner_id is None:
+            return
+        self.checkpoint_store.release_claim(self.run_id, owner_id)
+        self.claim_owner_id = None
 
     def record_prompt_contract(self, contract: PromptContract) -> None:
         """Record redacted cache metadata for the next workflow checkpoint."""
@@ -124,7 +156,7 @@ class WorkflowRunHandle:
 
     def request_pause(self) -> bool:
         """Request a cooperative pause exactly once."""
-        if self.lifecycle != "running":
+        if self.lifecycle not in {"running", "resuming"}:
             return False
         self.pause_requested = True
         self.lifecycle = "pausing"
@@ -193,6 +225,7 @@ class WorkflowRunHandle:
             reason=reason or self.last_error,
             browser=browser_payload,
             provider_profile=self.provider_profile,
+            workspace_root=self.workspace_root,
             cache_contract_version=self.cache_contract_version,
             cache_epoch=self.cache_epoch,
             stable_prompt_fingerprint=self.stable_prompt_fingerprint,
@@ -209,6 +242,50 @@ class WorkflowRunHandle:
         self.checkpoint_revision = checkpoint.revision
         return checkpoint
 
+    def persist_checkpoint(self, *, reason: str = "") -> WorkflowCheckpoint | None:
+        """Persist a recoverable boundary, disabling unsupported codecs safely."""
+        if self.context is None or not self.checkpoint_supported:
+            return None
+        try:
+            return self.save_checkpoint(reason=reason)
+        except Exception as exc:
+            from agenthicc.workflows.checkpoint import CheckpointValidationError
+
+            if isinstance(exc, CheckpointValidationError):
+                self.checkpoint_supported = False
+                return None
+            raise
+
+    def persist_context_transition(self, *, reason: str = "phase_transition") -> None:
+        """Persist a typed context's newly selected non-terminal state.
+
+        Specialized runners often return the next enum value from a phase
+        method before their next loop iteration. This helper closes that small
+        crash window without serializing live resources or making the handle a
+        second workflow state machine.
+        """
+        context = self.context
+        state = getattr(context, "state", None)
+        state_name = getattr(state, "name", None)
+        if not isinstance(state_name, str) or state_name.lower() in {
+            "complete",
+            "exited",
+            "failed",
+        }:
+            return
+        phase = state_name.lower()
+        phases = getattr(self.workflow, "phases", ())
+        index = next(
+            (i for i, candidate in enumerate(phases) if getattr(candidate, "name", "") == phase),
+            self.phase_index,
+        )
+        self.current_phase = phase
+        self.phase_index = index
+        iteration = getattr(context, "phase_iteration", self.phase_iteration)
+        if isinstance(iteration, int) and iteration >= 0:
+            self.phase_iteration = iteration
+        self.persist_checkpoint(reason=reason)
+
     @classmethod
     def from_checkpoint(
         cls,
@@ -218,6 +295,7 @@ class WorkflowRunHandle:
         conversation: SessionConversation,
         checkpoint_store: WorkflowCheckpointStore,
         browser_manager: object | None = None,
+        recover_interrupted: bool = False,
     ) -> "WorkflowRunHandle":
         """Rehydrate a handle and typed context from a validated checkpoint."""
         expected = workflow_fingerprint(workflow)
@@ -227,6 +305,10 @@ class WorkflowRunHandle:
             raise ValueError("workflow checkpoint belongs to a different session conversation")
         if conversation.cursor < checkpoint.conversation_cursor:
             raise ValueError("session conversation is older than the workflow checkpoint")
+        restored_lifecycle: WorkflowLifecycle = checkpoint.status  # type: ignore[assignment]
+        interrupted = recover_interrupted and checkpoint.status in {"running", "resuming"}
+        if interrupted:
+            restored_lifecycle = "paused"
         handle = cls(
             run_id=checkpoint.run_id,
             workflow_name=checkpoint.workflow_name,
@@ -235,15 +317,18 @@ class WorkflowRunHandle:
             plugin_fingerprint=checkpoint.plugin_fingerprint,
             checkpoint_store=checkpoint_store,
             workflow=workflow,
-            lifecycle="paused" if checkpoint.status in {"paused", "pausing"} else checkpoint.status,  # type: ignore[arg-type]
+            lifecycle=(
+                "paused" if checkpoint.status in {"paused", "pausing"} else restored_lifecycle
+            ),
             current_phase=checkpoint.current_phase,
             phase_index=checkpoint.phase_index,
             phase_iteration=checkpoint.phase_iteration,
             checkpoint_revision=checkpoint.revision,
-            pause_requested=checkpoint.status in {"paused", "pausing"},
-            last_error=checkpoint.reason,
+            pause_requested=checkpoint.status in {"paused", "pausing"} or interrupted,
+            last_error=checkpoint.reason or ("process_interrupted" if interrupted else ""),
             browser_manager=browser_manager,
             provider_profile=checkpoint.provider_profile,
+            workspace_root=checkpoint.workspace_root,
             cache_contract_version=checkpoint.cache_contract_version,
             cache_epoch=checkpoint.cache_epoch,
             stable_prompt_fingerprint=checkpoint.stable_prompt_fingerprint,

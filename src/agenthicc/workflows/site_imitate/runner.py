@@ -560,6 +560,10 @@ class SiteImitateRunner(CodePlanRunner):
                     state = await self._verify_component(ctx, memory)
                 case SiteImitateState.FINAL_VERIFY:
                     state = await self._final_verify(ctx, memory)
+            if handle is not None:
+                ctx.state = state
+                handle.attach_context(ctx)
+                handle.persist_context_transition()
             log.info("site_imitate -> %s", state.name)
 
         ctx.state = state
@@ -611,6 +615,10 @@ class SiteImitateRunner(CodePlanRunner):
                     state = await self._verify_component(context, memory)
                 case SiteImitateState.FINAL_VERIFY:
                     state = await self._final_verify(context, memory)
+            if handle is not None:
+                context.state = state
+                handle.attach_context(context)
+                handle.persist_context_transition()
         context.state = state
         if handle is not None:
             handle.attach_context(context)

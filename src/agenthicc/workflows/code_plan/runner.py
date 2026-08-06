@@ -175,12 +175,10 @@ class CodePlanRunner(BaseWorkflowRunner):
         )
         if handle is not None:
             handle.attach_context(ctx)
-            from agenthicc.workflows.checkpoint import CheckpointValidationError  # noqa: PLC0415
-
-            try:
-                handle.save_checkpoint(reason="started")
-            except CheckpointValidationError:
-                handle.checkpoint_supported = False
+            # Record the first durable phase before the first provider/tool
+            # turn. The phase helper will advance the iteration when it enters
+            # PLAN for real.
+            handle.update_phase("plan", 0, 0)
 
         wf_run: WorkflowRun = WorkflowRun(
             run_id=run_id,
@@ -236,6 +234,18 @@ class CodePlanRunner(BaseWorkflowRunner):
                     case CodePlanState.SUMMARIZE:
                         state = await self._summarize(ctx)
                 ctx.state = state
+                if handle is not None and not state.is_terminal:
+                    # The transition tool and its resulting typed state are a
+                    # durable boundary. Save the next state before entering
+                    # its provider turn so a crash cannot replay the prior
+                    # phase's side effects.
+                    next_phase = state.name.lower()
+                    handle.attach_context(ctx)
+                    handle.update_phase(
+                        next_phase,
+                        _PHASE_INDEX.get(next_phase, 0),
+                        ctx.phase_iteration,
+                    )
 
                 next_label: str | None = state.name.lower() if not state.is_terminal else None
                 await self._cfg.processor.emit(
@@ -327,36 +337,15 @@ class CodePlanRunner(BaseWorkflowRunner):
         if isinstance(context, CodePlanContext):
             ctx = context
             ctx.shared_memory = session_memory
-            completed: set[str] = set()
             state = ctx.state
         elif isinstance(context, WorkflowContext):
-            completed = set(context.phase_outputs.keys())
-            if not completed:
-                # Preserve the historical generic-context contract.  Durable
-                # PRD-156 checkpoints use CodePlanContext and resume in place;
-                # an old caller that only supplied WorkflowContext has no typed
-                # state to rehydrate and therefore starts a fresh run.
-                await self.run(context.intent)
-                return
-            ctx = CodePlanContext(
-                intent=context.intent,
-                run_id=context.run_id,
-                shared_memory=session_memory,
+            # WorkflowContext predates the typed state/checkpoint contract.
+            # Its phase-output projection is insufficient to restore rejection
+            # branches, iterations, command outcomes, and the exact cursor.
+            raise TypeError(
+                "code_plan resume requires CodePlanContext; the legacy generic "
+                "context has no exact recoverable state"
             )
-            if "plan" in completed:
-                plan_output = context.phase_outputs.get("plan")
-                if plan_output is not None:
-                    ctx.plan = plan_output.full_text
-                    raw_mode = plan_output.metadata.get("execute_mode")
-                    if isinstance(raw_mode, str) and raw_mode in {"Safe", "Yolo"}:
-                        ctx.execute_mode = raw_mode
-            resume_map: dict[frozenset[str], CodePlanState] = {
-                frozenset(): CodePlanState.PLAN,
-                frozenset({"plan"}): CodePlanState.EXECUTE,
-                frozenset({"plan", "execute"}): CodePlanState.REVIEW,
-                frozenset({"plan", "execute", "review"}): CodePlanState.SUMMARIZE,
-            }
-            state = resume_map.get(frozenset(completed), CodePlanState.PLAN)
         else:
             raise TypeError("workflow resume requires a WorkflowContext")
         self._run_id = ctx.run_id
@@ -384,6 +373,14 @@ class CodePlanRunner(BaseWorkflowRunner):
                     case CodePlanState.SUMMARIZE:
                         state = await self._summarize(ctx)
                 ctx.state = state
+                if handle is not None and not state.is_terminal:
+                    handle.attach_context(ctx)
+                    next_phase = state.name.lower()
+                    handle.update_phase(
+                        next_phase,
+                        _PHASE_INDEX.get(next_phase, 0),
+                        ctx.phase_iteration,
+                    )
         except (asyncio.CancelledError, KeyboardInterrupt):
             if handle is not None and handle.is_pause_requested():
                 handle.attach_context(ctx)

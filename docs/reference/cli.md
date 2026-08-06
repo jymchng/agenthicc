@@ -111,9 +111,10 @@ your approval, the generate phase writes a complete package directly to
 `.agenthicc/workflows/<name>/runner.py` (with workflow-specific helpers in the
 same directory), and the validate phase imports that package and
 loops back to generate until it loads cleanly. There is no staging directory or
-publish phase. Run `/workflows reload` after the run completes. `/workflow resume`
-is not used for this direct-write authoring flow; run `/workflow create_workflow`
-again if the run is interrupted.
+publish phase. Run `/workflows reload` after the run completes. The authoring
+run uses the same durable checkpoint contract as every other workflow:
+`/workflow resume [run-id]` continues its typed state after a pause or process
+restart, while `/workflow reset [run-id]` explicitly discards it.
 
 Project tools and commands remain available through the `/create-tools` and
 `/create-commands` skills and their respective reload commands; they are not
