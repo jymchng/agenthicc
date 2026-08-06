@@ -202,6 +202,29 @@ def test_discover_project_tools_loads_valid_file(tmp_path):
     assert ts.all_tools[0].__name__ == "greet"
 
 
+def test_scan_directory_continues_after_unexpected_plugin_failure(tmp_path, monkeypatch):
+    """One loader exception must not prevent later plugin files from loading."""
+    from agenthicc.plugins import discovery
+
+    first = tmp_path / "01_broken.py"
+    second = tmp_path / "02_usable.py"
+    first.write_text("# broken\n")
+    second.write_text("# usable\n")
+
+    def load(path, auto_install=False):
+        if path == first:
+            raise RuntimeError("loader exploded")
+        return LoadResult(path=path, tools=[lambda: None])
+
+    monkeypatch.setattr(discovery, "_load_plugin_file", load)
+
+    results = discovery._scan_directory(tmp_path)
+
+    assert len(results) == 2
+    assert results[0].error == "RuntimeError: loader exploded"
+    assert len(results[1].tools) == 1
+
+
 def test_discover_agent_tools_loads_valid_file(tmp_path):
     """discover_agent_tools finds tools scoped to the named agent."""
     agent_tools_dir = tmp_path / ".agenthicc" / "agents" / "writer" / "tools"

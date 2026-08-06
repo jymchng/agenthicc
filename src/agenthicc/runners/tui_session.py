@@ -1248,7 +1248,13 @@ class TUISession:
         return discovery
 
     def _reload_tools(self) -> tuple[bool, str]:
-        """Rescan project/user tool plugins and publish them atomically."""
+        """Rescan plugins and publish all tools that loaded successfully.
+
+        Tool files are independent load units. A broken or dependency-missing
+        file is reported, but must not hide tools from healthy files. If no
+        file can be loaded at all because discovery returned failures, retain
+        the current registry rather than replacing it with an empty one.
+        """
         from agenthicc.plugins.discovery import discover_project_tools, warn_conflicts
 
         try:
@@ -1259,11 +1265,14 @@ class TUISession:
         except Exception as exc:  # noqa: BLE001
             return False, f"Tool reload failed; existing tools kept: {type(exc).__name__}: {exc}"
 
-        if discovered.failed:
-            failures: list[str] = []
-            for result in discovered.failed:
-                reason = result.error or ("missing dependencies: " + ", ".join(result.missing_deps))
-                failures.append(f"{result.path}: {reason}")
+        failures: list[str] = []
+        for result in discovered.failed:
+            reason = result.error or ("missing dependencies: " + ", ".join(result.missing_deps))
+            failures.append(f"{result.path}: {reason}")
+
+        # Publish partial discovery results. The discovery layer attempts
+        # every file, so a broken optional plugin must not hide healthy ones.
+        if failures and not discovered.all_tools:
             return False, "Tool reload failed; existing tools kept:\n" + "\n".join(failures)
 
         old_count = len(self._ctx.project_plugins.all_tools)
@@ -1279,7 +1288,13 @@ class TUISession:
             plugin_tools=discovered,
         )
         new_count = len(discovered.all_tools)
-        return True, f"Tools reloaded — {new_count} tool(s) available (was {old_count})."
+        message = f"Tools reloaded — {new_count} tool(s) available (was {old_count})."
+        if failures:
+            message += (
+                f" Skipped {len(failures)} plugin(s) that could not be loaded:\n"
+                + "\n".join(failures)
+            )
+        return True, message
 
     def _reload_workflows(self) -> tuple[bool, str]:
         """Rebuild workflows and replace the live registry in place."""

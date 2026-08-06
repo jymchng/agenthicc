@@ -145,10 +145,12 @@ Project-wide commands are loaded when the session is constructed.
 `/commands reload` rescans both command directories and updates the existing
 registry in place. Added, updated, and removed command names are reported.
 `/skills reload` refreshes skill-owned dollar triggers only, not Python command
-plugins. `/tools reload` rescans project and user-global tool plugins, while
-`/workflows reload` rebuilds the workflow registry in place. Reload failures
-keep the previous live registry. Explicit skills use `$skill-name`; slash-
-prefixed skill names are not accepted.
+plugins. `/tools reload` rescans project and user-global tool plugins and
+publishes the successfully loaded subset even when another plugin fails; the
+failure details are reported. If no tool plugin loads successfully, the
+previous live tool registry is kept. `/workflows reload` rebuilds the workflow
+registry in place. Explicit skills use `$skill-name`; slash-prefixed skill
+names are not accepted.
 
 ## Picker and submission journey
 

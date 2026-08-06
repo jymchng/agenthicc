@@ -238,7 +238,18 @@ def _scan_directory(root: Path, auto_install: bool = False) -> list[LoadResult]:
     for py_file in sorted(root.rglob("*.py")):
         if py_file.name.startswith("_"):
             continue
-        result = _load_plugin_file(py_file, auto_install=auto_install)
+        # A plugin is an isolation boundary. An unexpected loader failure
+        # must not prevent later files from being attempted; the caller can
+        # publish successful results and report this file as failed.
+        try:
+            result = _load_plugin_file(py_file, auto_install=auto_install)
+        except Exception as exc:  # noqa: BLE001
+            result = LoadResult(path=py_file, error=f"{type(exc).__name__}: {exc}")
+            log.error(
+                "Tool plugin load failed: %s — %s (continuing scan)",
+                py_file,
+                result.error,
+            )
         if result.missing_deps:
             deps_str = " ".join(result.missing_deps)
             log.warning(

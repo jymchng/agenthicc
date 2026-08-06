@@ -133,6 +133,10 @@ Tool completions use the same operation-style header as file updates: reads, sea
 | `/create-tools <instructions>` | Ask the agent to create lauren-ai tools |
 | `/create-commands <instructions>` | Ask the agent to create slash commands |
 
+`/tools reload` loads every tool plugin that can be loaded and reports any
+broken or dependency-missing plugins. If none can be loaded, the existing
+tool registry is kept active.
+
 `/config` opens its local configuration overlay immediately, including while a response is streaming.
 
 Large bracketed pastes stay condensed in the composer. Backspace removes the whole paste when the cursor is immediately after its closing `]`; elsewhere it keeps normal character-wise editing. Home and End navigate the visible, single-line placeholder, so typing at either side keeps the original pasted content intact.

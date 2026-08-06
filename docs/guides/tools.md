@@ -103,7 +103,9 @@ or `/tools reload` to rescan project and user-global tool plugins without
 restarting. The listing includes a `Source` column with `builtin` or `plugin`;
 MCP tools are shown as plugins because they are integrations loaded into the
 session. Press Enter on a tool to see its source category, capabilities, and
-runtime type. Reload failures leave the previous tool registry active.
+runtime type. `/tools reload` publishes every plugin that loads successfully
+and reports broken or dependency-missing plugins in the result. If no plugin
+loads successfully, the previous tool registry remains active.
 
 User-global tools use the same shape below `~/.agenthicc/tools/` and are
 available to projects run by that user. Agent-specific tools use:

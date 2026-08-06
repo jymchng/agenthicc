@@ -183,6 +183,61 @@ def test_tui_reload_tools_replaces_session_tools_and_workflow_config(
     assert session._wf_config_base.plugin_tools is discovered
 
 
+def test_tui_reload_tools_publishes_successes_and_reports_failed_plugins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.plugins.discovery import LoadResult, PluginToolSet
+
+    session, ctx, _workspace, _input = _make_session()
+
+    async def usable_tool() -> dict[str, object]:
+        return {"name": "usable"}
+
+    discovered = PluginToolSet(
+        [
+            LoadResult(path=Path(".agenthicc/tools/broken.py"), error="ImportError: optional_pkg"),
+            LoadResult(path=Path(".agenthicc/tools/usable.py"), tools=[usable_tool]),
+        ]
+    )
+    monkeypatch.setattr(
+        "agenthicc.plugins.discovery.discover_project_tools",
+        lambda **_: discovered,
+    )
+
+    ok, message = session._reload_tools()
+
+    assert ok is True
+    assert ctx.project_plugins is discovered
+    assert session._wf_config_base.plugin_tools is discovered
+    assert ctx.project_plugins.all_tools == [usable_tool]
+    assert "1 tool(s) available" in message
+    assert "Skipped 1 plugin(s)" in message
+    assert "broken.py" in message
+
+
+def test_tui_reload_tools_keeps_existing_tools_when_every_plugin_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agenthicc.plugins.discovery import LoadResult, PluginToolSet
+
+    session, ctx, _workspace, _input = _make_session()
+    old_plugins = ctx.project_plugins
+    discovered = PluginToolSet(
+        [LoadResult(path=Path(".agenthicc/tools/broken.py"), error="syntax error")]
+    )
+    monkeypatch.setattr(
+        "agenthicc.plugins.discovery.discover_project_tools",
+        lambda **_: discovered,
+    )
+
+    ok, message = session._reload_tools()
+
+    assert ok is False
+    assert ctx.project_plugins is old_plugins
+    assert session._wf_config_base.plugin_tools is old_plugins
+    assert "existing tools kept" in message
+
+
 def test_tui_reload_workflows_preserves_registry_identity_and_resets_removed_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
