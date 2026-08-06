@@ -13,14 +13,19 @@ lauren-ai helper that may move between releases.
 
 Public API
 ----------
-compact_memory(memory, transport, *, model, conv_store, max_input_tokens) -> int
+compact_memory(
+    memory, transport, *, model, conv_store, max_input_tokens,
+    max_completion_tokens, request_options,
+) -> int
 """
 
 from __future__ import annotations
 
 __all__ = ["compact_memory"]
 
+import inspect
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,8 +39,9 @@ log = logging.getLogger(__name__)
 _ACK = "Understood. Continuing from the summary."
 # Conservative chars→tokens used to size each map-reduce chunk's input.
 _SUMMARY_INPUT_CHARS_PER_TOKEN: float = 3.0
-_SUMMARY_OUTPUT_RESERVE_TOKENS: int = 1_024
 _SUMMARY_PROMPT_RESERVE_TOKENS: int = 2_000
+_SUMMARY_MAX_COMPLETION_TOKENS: int = 1_024
+_SUMMARY_RETRY_MAX_COMPLETION_TOKENS: int = 2_048
 
 
 async def compact_memory(
@@ -48,6 +54,8 @@ async def compact_memory(
     usage_ledger: UsageLedger | None = None,
     session_id: str = "",
     run_id: str = "",
+    max_completion_tokens: int | None = None,
+    request_options: object | None = None,
 ) -> int:
     """Summarise *memory* in-place into a ``[COMPACT SUMMARY]`` / ack pair.
 
@@ -72,9 +80,10 @@ async def compact_memory(
         had_transcript = bool(transcript.strip())
         max_input_chars = 0
         if max_input_tokens > 0:
-            usable = (
-                max_input_tokens - _SUMMARY_OUTPUT_RESERVE_TOKENS - _SUMMARY_PROMPT_RESERVE_TOKENS
-            )
+            # Size map chunks for the largest completion budget that may be
+            # used by the empty-response retry, not just the first attempt.
+            output_reserve = _summary_output_limit(max_completion_tokens, retry=True)
+            usable = max_input_tokens - output_reserve - _SUMMARY_PROMPT_RESERVE_TOKENS
             max_input_chars = max(2_000, int(usable * _SUMMARY_INPUT_CHARS_PER_TOKEN))
         summary = await _summarize_text(
             transport,
@@ -84,6 +93,8 @@ async def compact_memory(
             usage_ledger=usage_ledger,
             session_id=session_id,
             run_id=run_id,
+            max_completion_tokens=max_completion_tokens,
+            request_options=request_options,
         )
 
         if summary:
@@ -185,6 +196,8 @@ async def _summarize_text(
     usage_ledger: UsageLedger | None = None,
     session_id: str = "",
     run_id: str = "",
+    max_completion_tokens: int | None = None,
+    request_options: object | None = None,
 ) -> str:
     """Summarise text using lauren-ai's stable transport contract.
 
@@ -206,7 +219,8 @@ async def _summarize_text(
             for index in range(0, len(transcript), max_input_chars)
         ]
 
-    async def summarize_chunk(chunk: str) -> str:
+    async def summarize_chunk_call(chunk: str, *, retry: bool) -> str:
+        """Make one bounded summary call and return only final answer text."""
         usage_call = None
         if usage_ledger is not None:
             usage_call = usage_ledger.begin_call(
@@ -214,22 +228,50 @@ async def _summarize_text(
                 model=model,
                 category="compaction",
             )
-        try:
-            result = await transport.complete(  # type: ignore[attr-defined]
-                [Message.user(prompt_prefix + chunk)],
-                model=model,
-                system="You are a conversation summariser. Be concise and factual.",
-                max_tokens=512,
-                temperature=0.0,
-                stream=False,
+        output_limit = _summary_output_limit(
+            max_completion_tokens,
+            retry=retry,
+        )
+        prompt = prompt_prefix + chunk
+        if retry:
+            prompt = (
+                "The previous summarisation response contained no final text. "
+                "Return a non-empty summary in the final response now. Do not emit "
+                "reasoning only, do not call tools, and output only the concise "
+                "conversation summary.\n\n" + prompt
             )
+        try:
+            kwargs: dict[str, object] = {
+                "model": model,
+                "system": (
+                    "You are a conversation summariser. Be concise and factual. "
+                    "Return the summary as final answer text; never leave the final "
+                    "answer empty."
+                ),
+                # Keep the legacy argument populated for older transports.  New
+                # OpenAI-compatible transports use max_completion_tokens below,
+                # which includes reasoning-token budgets where supported.
+                "max_tokens": output_limit,
+                "temperature": 0.0,
+                "stream": False,
+            }
+            complete = getattr(transport, "complete")
+            if _accepts_keyword(complete, "max_completion_tokens"):
+                kwargs["max_completion_tokens"] = output_limit
+            if request_options is not None and _accepts_keyword(complete, "request_options"):
+                kwargs["request_options"] = _resolve_request_options(request_options)
+            result = await complete(
+                [Message.user(prompt)],
+                **{**kwargs, "stream": retry},
+            )
+            text, result_usage = await _completion_text_async(result)
             if usage_ledger is not None and usage_call is not None:
                 usage_ledger.complete(
                     usage_call,
-                    getattr(result, "usage", None),
-                    cost_usd=_provider_cost(getattr(result, "usage", None), model),
+                    result_usage,
+                    cost_usd=_provider_cost(result_usage, model),
                 )
-            return str(getattr(result, "content", "") or "")
+            return text
         except BaseException:
             if usage_ledger is not None and usage_call is not None:
                 usage_ledger.complete(
@@ -238,6 +280,13 @@ async def _summarize_text(
                     lifecycle="failed",
                 )
             raise
+
+    async def summarize_chunk(chunk: str) -> str:
+        """Summarise once, then retry an empty final response once."""
+        summary = await summarize_chunk_call(chunk, retry=False)
+        if summary:
+            return summary
+        return await summarize_chunk_call(chunk, retry=True)
 
     partials = [await summarize_chunk(chunk) for chunk in chunks]
     while len(partials) > 1:
@@ -250,6 +299,135 @@ async def _summarize_text(
         ]
         partials = [await summarize_chunk(chunk) for chunk in chunks]
     return partials[0] if partials else ""
+
+
+def _summary_output_limit(configured: int | None, *, retry: bool) -> int:
+    """Choose a useful completion budget without inheriting an unbounded cap."""
+    floor = _SUMMARY_RETRY_MAX_COMPLETION_TOKENS if retry else _SUMMARY_MAX_COMPLETION_TOKENS
+    if not isinstance(configured, int) or configured <= 0:
+        return floor
+    # A summary does not need the full turn budget.  Cap an unusually large
+    # session setting so a provider cannot spend an excessive reasoning budget
+    # on a bounded maintenance operation.
+    return min(max(floor, configured), 4_096)
+
+
+def _accepts_keyword(callable_obj: object, name: str) -> bool:
+    """Return whether a transport method can receive an optional keyword."""
+    try:
+        parameters = inspect.signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _resolve_request_options(value: object) -> object:
+    """Resolve config-shaped request options without coupling transports to config."""
+    try:
+        from agenthicc.config import RequestOptionSettings  # noqa: PLC0415
+
+        if isinstance(value, RequestOptionSettings):
+            return value.resolve()
+    except (ImportError, ValueError):
+        pass
+    return value
+
+
+def _field(value: object, name: str, default: object = None) -> object:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _completion_text(result: object) -> str:
+    """Extract final answer text across canonical and provider-shaped results.
+
+    The canonical lauren-ai ``Completion`` intentionally keeps reasoning
+    blocks separate from ``content``.  Reasoning-only output is not a valid
+    conversation summary, so it is never used as a substitute.  Raw provider
+    content is considered only when the transport explicitly retained it.
+    """
+    candidates: list[object] = [
+        _field(result, "content"),
+        _field(result, "output_text"),
+    ]
+    raw = _field(result, "raw_response")
+    if raw is not None:
+        candidates.append(_field(raw, "output_text"))
+        choices = _field(raw, "choices", [])
+        if isinstance(choices, (list, tuple)) and choices:
+            message = _field(choices[0], "message")
+            if message is not None:
+                candidates.append(_field(message, "content"))
+            candidates.append(_field(choices[0], "text"))
+        candidates.append(_field(raw, "content"))
+    for candidate in candidates:
+        text = _content_text(candidate)
+        if text:
+            return text
+    return ""
+
+
+async def _completion_text_async(result: object) -> tuple[str, object | None]:
+    """Extract text and usage from either a completion or stream.
+
+    Some OpenAI-compatible reasoning endpoints return an empty canonical
+    ``content`` field when ``stream=False`` even though the streamed response
+    contains the final answer after the reasoning deltas.  Compaction uses a
+    streamed retry for that case.  Only ``delta`` is accumulated here;
+    ``thinking_delta`` and tool-call deltas are intentionally not summary
+    prose.
+    """
+    if not hasattr(result, "__aiter__"):
+        return _completion_text(result), _field(result, "usage")
+
+    parts: list[str] = []
+    usage: object | None = None
+    override: str | None = None
+    async for chunk in result:
+        candidate_override = _field(chunk, "guardrail_override")
+        if isinstance(candidate_override, str):
+            override = candidate_override
+        delta = _field(chunk, "delta", "")
+        if isinstance(delta, str) and delta:
+            parts.append(delta)
+        candidate_usage = _field(chunk, "usage")
+        if candidate_usage is not None:
+            usage = candidate_usage
+
+    if override is not None:
+        return _content_text(override), usage
+    return _content_text("".join(parts)), usage
+
+
+def _content_text(value: object) -> str:
+    """Flatten text blocks without treating reasoning/tool metadata as prose."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        parts = [_content_text(item) for item in value]
+        return "\n".join(part for part in parts if part).strip()
+    if isinstance(value, Mapping):
+        block_type = str(value.get("type", ""))
+        if block_type in {"thinking", "redacted_thinking", "tool_use", "tool_result"}:
+            return ""
+        for key in ("text", "output_text", "content"):
+            if key in value:
+                return _content_text(value[key])
+        return ""
+    if value is None:
+        return ""
+    block_type = str(getattr(value, "type", ""))
+    if block_type in {"thinking", "redacted_thinking", "tool_use", "tool_result"}:
+        return ""
+    for key in ("text", "output_text", "content"):
+        candidate = getattr(value, key, None)
+        if candidate is not None:
+            return _content_text(candidate)
+    return ""
 
 
 def _provider_cost(usage: object | None, model: str) -> float | None:

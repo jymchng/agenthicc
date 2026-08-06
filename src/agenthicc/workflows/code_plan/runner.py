@@ -99,6 +99,27 @@ _SUMMARIZE_PROMPT: str = (
     "Write a concise summary of what was planned, implemented, and verified."
 )
 
+# Immutable workflow policy.  Phase instructions, the user intent, tool
+# results, review feedback, and retry reminders are supplied through the
+# dynamic context block by ``PromptContract``.  Keeping this policy separate
+# means the built-in code-plan phases and callers that use the default
+# ``run_phase`` path do not turn changing phase state into stable prompt text.
+CACHE_CONTRACT: str = """
+[CODE_PLAN CACHE CONTRACT]
+Keep the code-plan workflow policy, safety rules, capability rules, and
+transition semantics unchanged across PLAN, EXECUTE, REVIEW, and SUMMARIZE.
+The current phase, user request, plan, execution results, review feedback,
+questions, answers, and retry details are dynamic context. Do not put those
+changing values into this stable contract, prepend messages to shared history,
+rewrite old conversation entries, or place rolling summaries here.
+
+Ask the user a focused clarifying question through the existing ask_user tool
+whenever a missing or ambiguous requirement could materially change the result;
+wait for the answer instead of guessing. The question policy is stable, while
+each actual question and answer remains dynamic. Prompt caching never replaces
+capability filtering, approval, or tool authorization.
+""".strip()
+
 _PHASE_INDEX: dict[str, int] = {
     "plan": 0,
     "execute": 1,
@@ -849,7 +870,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 (phase_tools if is_transition else stable_tools).append(tool)
             prompt_contract = build_workflow_prompt_contract(
                 workflow_name=self.workflow_name,
-                stable_system_prefix=stable_system_prompt,
+                stable_system_prefix=stable_system_prompt or CACHE_CONTRACT,
                 phase_prompt=(
                     f"{system_prompt}\n\n"
                     f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"

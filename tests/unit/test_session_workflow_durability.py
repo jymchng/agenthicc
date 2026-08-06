@@ -106,11 +106,18 @@ def test_create_workflow_context_checkpoint_preserves_artifacts() -> None:
                 metadata={"approved": True},
             )
         },
+        cache_diagnostic={
+            "contract_version": "agenthicc.prompt-cache.v1",
+            "regions": ["stable_system_prefix", "dynamic_context"],
+            "stable_fingerprint": "stable",
+            "dynamic_fingerprint": "dynamic",
+        },
     )
     restored = context_from_payload(context_to_payload(context))
     assert isinstance(restored, CreateWorkflowContext)
     assert restored.state is CreateWorkflowState.VALIDATE
     assert restored.artifacts["design"].metadata == {"approved": True}
+    assert restored.cache_diagnostic == context.cache_diagnostic
 
 
 def test_checkpoint_store_round_trip_and_tamper_detection(tmp_path: Path) -> None:

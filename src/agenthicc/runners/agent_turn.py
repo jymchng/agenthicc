@@ -1283,6 +1283,8 @@ class AgentTurnRunner:
             usage_ledger=ctx.usage_ledger,
             session_id=ctx.conversation_id,
             run_id=self._intent_id,
+            max_completion_tokens=_config_value(ctx.exec_cfg, "max_completion_tokens", None),
+            request_options=_config_value(ctx.exec_cfg, "request_options", None),
         )
         after = getattr(memory, "token_estimate", before)
         if isinstance(after, int) and after < before:

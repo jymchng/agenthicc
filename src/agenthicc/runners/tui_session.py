@@ -1679,6 +1679,8 @@ class TUISession:
             usage_ledger=getattr(ctx, "usage_ledger", None),
             session_id=ctx.session_id,
             run_id=f"compaction:{ctx.session_id}:{uuid.uuid4().hex[:12]}",
+            max_completion_tokens=getattr(ctx.cfg.execution, "max_completion_tokens", None),
+            request_options=getattr(ctx.cfg.execution, "request_options", None),
         )
         conv.notify_transient("⎋ Compacted")
 

@@ -167,7 +167,9 @@ async def test_context_overflow_compacts_then_retries_without_duplicate_user_mes
     await runner._stream(object(), "continue", active_runner)  # type: ignore[arg-type]
 
     assert active_runner.run_stream.await_count == 2
-    assert len(transport.calls) == 1
+    # The first empty completion is retried with a larger completion budget
+    # before the final local fallback is allowed.
+    assert len(transport.calls) == 2
     assert "COMPACT FALLBACK" in memory._messages[0]["content"]
     assert (
         sum(

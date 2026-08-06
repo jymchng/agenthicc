@@ -109,6 +109,10 @@ class CreateWorkflowContext:
     shared_memory: ShortTermMemory | None = None  # shared across all phases
     state: CreateWorkflowState = CreateWorkflowState.DESIGN
     phase_iteration: int = 0
+    # Redacted prompt-cache metadata from the latest phase turn.  It is safe to
+    # checkpoint because it contains fingerprints and region names only, never
+    # prompt text, conversation contents, secrets, or tool arguments.
+    cache_diagnostic: dict[str, object] = dataclasses.field(default_factory=dict)
 
     def add_artifact(self, artifact: PhaseArtifact) -> None:
         """Record *artifact*, keyed by its phase (latest write for a phase wins)."""

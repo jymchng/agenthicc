@@ -265,6 +265,13 @@ available; OpenAI-compatible providers rely on stable-prefix reuse; providers
 without a supported cache contract use the compatibility path without claiming
 a cache hit.
 
+The built-in `code_plan` runner supplies its immutable workflow policy to the
+stable prefix by default, and `create_workflow` does the same for its authoring,
+checkpoint, and question-asking policy. The latter also retains a redacted
+`cache_diagnostic` in its phase context and checkpoint (contract version,
+regions, fingerprints, and provider capability only). The diagnostic contains
+no prompt text, conversation content, secrets, or tool arguments.
+
 ### Generation writes the workflow package directly
 
 `generate` runs with `mode_override="Yolo"` so the write tools are available. The

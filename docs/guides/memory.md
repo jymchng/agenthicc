@@ -50,8 +50,11 @@ older lauren-ai transport cannot provide that guard, agenthicc runs the same
 bounded map-reduce fallback at the turn boundary. If the provider still
 returns a context-length 400, the pre-turn memory snapshot is restored,
 compacted once, and the turn is retried rather than submitting the same
-oversized request again. If an OpenAI-compatible endpoint returns an empty
-summary, a bounded local recent-history fallback is applied before retrying.
+oversized request again. If a provider returns an empty final summary (common
+when a reasoning endpoint spends the initial output budget on hidden
+reasoning), agenthicc retries the summary with a larger completion budget and
+the configured provider request options. Only when that retry still produces
+no usable final text is a bounded local recent-history fallback applied.
 
 ### Tool-exchange transactions
 
@@ -79,9 +82,10 @@ release exposing `ShortTermMemory.validate_tool_history()`,
 `commit_tool_exchange()`, and `abort_tool_exchange()`. Agenthicc fails closed
 with an upgrade message when that contract is absent.
 
-The manual `/compact` command uses the bounded map-reduce summarizer and
-records a reset in the journal so the durable projection remains aligned with
-the live messages. Automatic and manual compaction both emit a visible
+The manual `/compact` command uses the bounded map-reduce summarizer, retries
+empty final responses before falling back locally, and records a reset in the
+journal so the durable projection remains aligned with the live messages.
+Automatic and manual compaction both emit a visible
 `⎋ Compacting conversation…` event.
 
 ## Context budgeting

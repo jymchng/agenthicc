@@ -36,6 +36,7 @@ from agenthicc.workflows.create_workflow.phase_tools import (
     validate_workflow_name,
 )
 from agenthicc.workflows.create_workflow.runner import (
+    CACHE_CONTRACT,
     _PHASE_INDEX,
     _PHASE_NAMES,
     CreateWorkflowRunner,
@@ -1578,13 +1579,14 @@ async def test_run_turn_appends_the_design_transition_instruction(
         captured.update(kwargs)
 
     monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", fake_turn)
+    context = _ctx()
     await runner._run_turn(
         "design a workflow",
         tools=tools,
         mode=None,
         system_prompt="Design the workflow.",
         max_turns=2,
-        ctx=_ctx(),
+        ctx=context,
         phase_name="design",
     )
 
@@ -1597,6 +1599,17 @@ async def test_run_turn_appends_the_design_transition_instruction(
     assert "only after a transition tool call succeeds" in suffix
     assert "[REQUIREMENTS CLARIFICATION]" in suffix
     assert "multiple focused questions" in suffix
+
+    prompt_contract = captured["prompt_contract"]
+    assert CACHE_CONTRACT in prompt_contract.stable_system_prefix
+    assert context.cache_diagnostic["contract_version"] == "agenthicc.prompt-cache.v1"
+    assert context.cache_diagnostic["regions"] == [
+        "stable_system_prefix",
+        "dynamic_context",
+        "stable_tools",
+        "phase_tools",
+    ]
+    assert "Design the workflow." not in repr(context.cache_diagnostic)
 
 
 async def test_design_prompt_requires_the_workflow_to_ship_its_own_runner() -> None:

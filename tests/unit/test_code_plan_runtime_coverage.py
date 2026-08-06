@@ -11,7 +11,7 @@ import pytest
 from agenthicc.config import AgenthiccConfig
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.runtime.mode_manager import ModeManager
-from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.code_plan.runner import CACHE_CONTRACT, CodePlanRunner
 from agenthicc.workflows.code_plan.phase_tools import make_executor_tools
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.config import WorkflowConfig
@@ -227,6 +227,9 @@ async def test_run_turn_appends_the_phase_transition_tool_instruction(
     assert "prose" in suffix
     assert "[REQUIREMENTS CLARIFICATION]" in suffix
     assert "multiple focused questions" in suffix
+    prompt_contract = captured["prompt_contract"]
+    assert CACHE_CONTRACT in prompt_contract.stable_system_prefix
+    assert "Execute the approved work." not in prompt_contract.stable_system_prefix
 
 
 @pytest.mark.asyncio

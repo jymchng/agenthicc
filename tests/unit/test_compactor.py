@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 
 from lauren_ai._memory import ShortTermMemory
 from agenthicc.memory.compactor import compact_memory, _format_transcript
@@ -36,6 +37,90 @@ class _MockTransport:
             content = self._summary
 
         return _Completion()
+
+
+class _RetryingTransport:
+    """Return an empty final answer once, then a usable summary."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def complete(
+        self,
+        messages,
+        *,
+        model,
+        system,
+        max_tokens,
+        temperature,
+        stream,
+        max_completion_tokens=None,
+        request_options=None,
+    ):
+        self.calls.append(
+            {
+                "messages": messages,
+                "model": model,
+                "max_tokens": max_tokens,
+                "max_completion_tokens": max_completion_tokens,
+                "request_options": request_options,
+            }
+        )
+        return SimpleNamespace(
+            content="" if len(self.calls) == 1 else "Recovered conversation summary."
+        )
+
+
+class _RawContentTransport:
+    """Expose final text only through an explicitly retained raw response."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, messages, *, model, system, max_tokens, temperature, stream):
+        self.calls += 1
+        return SimpleNamespace(
+            content="",
+            raw_response=SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="Raw summary text."))]
+            ),
+        )
+
+
+class _StreamingRetryTransport:
+    """Return final text only in the streamed retry response."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def complete(
+        self,
+        messages,
+        *,
+        model,
+        system,
+        max_tokens,
+        temperature,
+        stream,
+        max_completion_tokens=None,
+        request_options=None,
+    ):
+        self.calls.append(
+            {
+                "stream": stream,
+                "max_completion_tokens": max_completion_tokens,
+            }
+        )
+        if len(self.calls) == 1:
+            return SimpleNamespace(content="")
+
+        async def chunks():
+            yield SimpleNamespace(thinking_delta="hidden reasoning")
+            yield SimpleNamespace(delta="Recovered ")
+            yield SimpleNamespace(delta="from stream.")
+            yield SimpleNamespace(usage=SimpleNamespace(input_tokens=10, output_tokens=4))
+
+        return chunks()
 
 
 @pytest.mark.unit
@@ -154,6 +239,52 @@ class TestCompactMemory:
             for event in events
         )
         assert not any(event.payload.get("text") == "⎋ Nothing to compact" for event in events)
+
+    async def test_empty_final_response_is_retried_before_reporting_failure(self) -> None:
+        from agenthicc.tui.conversation_store import ConversationStore
+
+        conv = ConversationStore()
+        events = []
+        conv.on_event(events.append)
+        mem = self._make_mem()
+        transport = _RetryingTransport()
+
+        await compact_memory(
+            mem,
+            transport,
+            model="m",
+            conv_store=conv,
+            max_completion_tokens=128,
+            request_options=SimpleNamespace(option="preserved"),
+        )
+
+        assert len(transport.calls) == 2
+        assert transport.calls[0]["max_completion_tokens"] == 1_024
+        assert transport.calls[1]["max_completion_tokens"] == 2_048
+        assert transport.calls[0]["request_options"].option == "preserved"
+        assert mem._messages[0]["content"].endswith("Recovered conversation summary.")
+        assert any(event.payload.get("text", "").startswith("⎋ Compacted →") for event in events)
+        assert not any("empty summary" in event.payload.get("text", "") for event in events)
+
+    async def test_raw_provider_content_is_used_without_using_reasoning_blocks(self) -> None:
+        mem = self._make_mem()
+        transport = _RawContentTransport()
+
+        await compact_memory(mem, transport, model="m")
+
+        assert transport.calls == 1
+        assert "Raw summary text." in mem._messages[0]["content"]
+
+    async def test_empty_response_retries_as_stream_and_accumulates_final_deltas(self) -> None:
+        mem = self._make_mem()
+        transport = _StreamingRetryTransport()
+
+        await compact_memory(mem, transport, model="m")
+
+        assert [call["stream"] for call in transport.calls] == [False, True]
+        assert transport.calls[1]["max_completion_tokens"] == 2_048
+        assert "Recovered from stream." in mem._messages[0]["content"]
+        assert "hidden reasoning" not in mem._messages[0]["content"]
 
 
 # ── _format_transcript ─────────────────────────────────────────────────────────

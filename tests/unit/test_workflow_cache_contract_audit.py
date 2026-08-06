@@ -53,3 +53,13 @@ def test_every_builtin_workflow_turn_uses_the_cache_contract_boundary() -> None:
             assert "prompt_contract" in source, (
                 f"{path}: direct agent turns must pass/retain prompt-contract state"
             )
+
+        if path.parent.name in {"default", "code_plan", "create_workflow"}:
+            assert "build_workflow_prompt_contract" in source, (
+                f"{path}: built-in runner must use the shared prompt composer"
+            )
+
+        if path.parent.name == "code_plan":
+            assert "stable_system_prefix=stable_system_prompt or CACHE_CONTRACT" in source
+        elif path.parent.name == "create_workflow":
+            assert "stable_system_prefix=CACHE_CONTRACT" in source

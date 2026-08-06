@@ -254,6 +254,7 @@ def context_from_payload(
             shared_memory=memory,
             state=state,
             phase_iteration=_as_int(fields.get("phase_iteration"), 0),
+            cache_diagnostic=_as_metadata(fields.get("cache_diagnostic")),
         )
     if kind == "CustomContext" and workflow is not None:
         codec = getattr(workflow, "checkpoint_context_from_payload", None)

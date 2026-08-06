@@ -72,6 +72,30 @@ _PHASE_MODEL_ATTR: dict[str, str] = {
 #: Conventional directory for project-local workflow plugins.
 _WORKFLOW_DIR: str = ".agenthicc/workflows"
 
+# Stable authoring policy for the meta-workflow itself.  The design, approved
+# artifacts, generated paths, validation reports, rejection feedback, and
+# retry state are all dynamic phase context and must never be interpolated into
+# this string.  ``_run_turn`` passes it through the same structured composer
+# used by every other workflow.
+CACHE_CONTRACT: str = """
+[CREATE_WORKFLOW CACHE CONTRACT]
+Keep this workflow's authoring, safety, capability, checkpoint, and transition
+policies unchanged across DESIGN, GENERATE, VALIDATE, and SUMMARIZE. The user
+request, current phase, approved design, generated artifacts, validation
+reports, questions, answers, rejection feedback, and retry details are dynamic
+context. Do not put changing values into this stable contract, prepend
+messages to shared history, rewrite old conversation entries, or place rolling
+summaries here.
+
+Ask the user a focused clarifying question through the existing ask_user tool
+whenever required information is missing, ambiguous, or could materially change
+the generated workflow. Wait for the answer instead of guessing. The question
+policy is stable; each actual question and answer remains dynamic. Prompt
+caching never replaces capability filtering, approval, workspace policy, or
+tool authorization. Provider TTL expiry, connection changes, stable-contract
+changes, and history compaction may intentionally invalidate reuse.
+""".strip()
+
 # ── system prompts ────────────────────────────────────────────────────────────
 
 _RUNNER_GUIDE: str = (
@@ -1092,6 +1116,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 (phase_tools if is_transition else stable_tools).append(tool)
             prompt_contract = build_workflow_prompt_contract(
                 workflow_name="create_workflow",
+                stable_system_prefix=CACHE_CONTRACT,
                 phase_prompt=(
                     f"{system_prompt}\n\n"
                     f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
@@ -1101,6 +1126,14 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 phase_tools=phase_tools,
                 execution=exec_cfg,
             )
+            diagnostic = prompt_contract.diagnostics()
+            diagnostic["regions"] = [
+                "stable_system_prefix",
+                "dynamic_context",
+                "stable_tools",
+                "phase_tools",
+            ]
+            ctx.cache_diagnostic = diagnostic
             record_contract = getattr(self._cfg.workflow_handle, "record_prompt_contract", None)
             if callable(record_contract):
                 record_contract(prompt_contract)
