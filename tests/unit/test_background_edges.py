@@ -590,7 +590,9 @@ async def test_background_cli_manager_attach_and_handler_errors(
     store = BackgroundStore(tmp_path / "background")
     session = _record(tmp_path, "attach-edge")
     store.create(session)
+    handoffs: list[str] = []
     supervisor = SimpleNamespace(
+        attach_foreground=lambda sid: handoffs.append(str(sid)) or session,
         cancel=lambda sid: session,
         resume=lambda sid: session,
         retry=lambda sid: session,
@@ -604,14 +606,15 @@ async def test_background_cli_manager_attach_and_handler_errors(
         "agenthicc.tui.workspace.background_manager.run_background_manager",
         lambda *args, **kwargs: asyncio.sleep(0, result=ManagerResult("attach", "attach-edge")),
     )
-    attached: list[str] = []
+    attached: list[tuple[str, str]] = []
 
     async def resume(**kwargs: object) -> None:
-        attached.append(str(kwargs["resume_id"]))
+        attached.append((str(kwargs["resume_id"]), str(kwargs["cwd"])))
 
     monkeypatch.setattr("agenthicc.runners.tui_session._run_tui_session", resume)
     await background._open_manager(CLIContext())
-    assert attached == ["attach-edge"]
+    assert attached == [("attach-edge", str(session.cwd))]
+    assert handoffs == ["attach-edge"]
 
     def fail(*args: object, **kwargs: object) -> object:
         raise RuntimeError("handler failure")
@@ -640,6 +643,27 @@ async def test_background_cli_manager_attach_and_handler_errors(
         with pytest.raises(SystemExit):
             handler(ctx, "attach-edge")
     assert "Unable to" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_foreground_tui_wrapper_uses_recorded_cwd_and_restores_process_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import os
+
+    import agenthicc.runners.tui_session as tui_session
+
+    original_cwd = os.getcwd()
+    observed: list[str] = []
+
+    async def impl(**kwargs: object) -> None:
+        observed.append(os.getcwd())
+
+    monkeypatch.setattr(tui_session, "_run_tui_session_impl", impl)
+    await tui_session._run_tui_session(resume_id="same-session", cwd=str(tmp_path))
+
+    assert observed == [str(tmp_path)]
+    assert os.getcwd() == original_cwd
 
 
 def test_foreground_handoff_extracts_latest_user_request_and_handles_missing_request(

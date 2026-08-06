@@ -30,7 +30,7 @@ Useful keys:
 | Key | Action |
 |---|---|
 | `↑`/`k`, `↓`/`j` | Move selection |
-| `Enter` | Attach/follow the selected session |
+| `Enter` | Foreground the selected session |
 | `r` | Refresh |
 | `PageUp`/`[` and `PageDown`/`]` | Scroll the selected transcript |
 | `c` | Cancel the selected worker |
@@ -42,6 +42,14 @@ Useful keys:
 | `u` | Restore a selected deleted session |
 | `?` | Show help |
 | `q`/`Esc` | Leave the manager without stopping workers |
+
+Foregrounding is an ownership handoff, not a second observer. For an active
+session the manager stops that session's worker and owned terminals, verifies
+the worker lease has ended, and then opens the normal TUI with the same
+`session_id`, project directory, and durable journals. This lets the user send
+new directions without concurrent writers or duplicated tool calls. Completed,
+failed, cancelled, and orphaned sessions open directly through the same resume
+path; leaving that TUI does not relaunch a background worker.
 
 Delete is deliberately two-stage. Active work is cancelled first, then only
 the exact session directory and its sibling kernel journal are moved to

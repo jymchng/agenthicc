@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json as json_module
-import inspect
 from pathlib import Path
 
 from agenthicc.background import (
@@ -87,26 +86,28 @@ async def _open_manager(ctx: CLIContext) -> None:
     if result.action == "attach" and result.session_id:
         from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
 
-        # A background worker already owns execution.  Only a future runner
-        # that explicitly advertises read-only attachment may be called here;
-        # the current runner would otherwise start a duplicate worker.
-        params = inspect.signature(_run_tui_session).parameters
-        if "background_read_only" in params or any(
-            item.kind is inspect.Parameter.VAR_KEYWORD for item in params.values()
-        ):
+        # Release the worker before constructing the normal TUI.  Both runtimes
+        # use the same session journal, so starting the TUI first would create
+        # concurrent writers and duplicate tool execution.
+        try:
+            foreground = supervisor.attach_foreground(result.session_id)
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            Console(highlight=False).print(
+                f"Unable to foreground session {result.session_id}: {exc}"
+            )
+            return
+        try:
             await _run_tui_session(
                 resume_id=result.session_id,
                 cli_overrides=list(ctx.set_overrides),
                 cli_secret_overrides=list(ctx.set_secret_overrides),
                 config_path=ctx.config_path,
-                background_read_only=True,  # type: ignore[call-arg]
+                cwd=foreground.cwd,
             )
-        else:
-            session = store.get(result.session_id, include_deleted=True)
+        except Exception as exc:  # noqa: BLE001
             Console(highlight=False).print(
-                f"Read-only follow: {session.session_id}\n"
-                f"State: {session.status.value}\n"
-                f"Activity: {session.latest_activity}"
+                f"Unable to open foreground session {result.session_id}: "
+                f"{type(exc).__name__}: {exc}"
             )
 
 

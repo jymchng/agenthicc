@@ -283,6 +283,83 @@ class BackgroundSupervisor:
     def retry(self, session_id: str) -> BackgroundSession:
         return self.resume(session_id)
 
+    def attach_foreground(self, session_id: str) -> BackgroundSession:
+        """Stop background execution and release *session_id* to the TUI.
+
+        A foreground TUI uses the same durable session journal as a background
+        worker.  Starting it while the worker still owns the session would
+        allow two agent runtimes to append turns, checkpoints, and tool results
+        concurrently.  This operation therefore makes the ownership handoff
+        explicit: active work is moved through ``cancelling``, the worker and
+        its session-owned terminals are stopped, and only then is the record
+        left in a resumable terminal state.
+
+        The method deliberately does not launch another worker.  The caller may
+        safely construct a normal TUI with ``resume_id=session_id`` after this
+        method returns.  If the worker cannot be stopped within the configured
+        grace period, the record remains ``cancelling`` and an exception is
+        raised so the caller cannot accidentally create a duplicate runtime.
+        """
+
+        session = self.store.get(session_id, include_deleted=True)
+        if session.status == SessionStatus.DELETED:
+            raise InvalidSessionTransition("Deleted background sessions cannot be foregrounded")
+        if session.status not in ACTIVE_STATUSES:
+            return session
+
+        if session.status != SessionStatus.CANCELLING:
+            try:
+                session = self.store.transition(
+                    session_id,
+                    SessionStatus.CANCELLING,
+                    cancellation_reason="foreground handoff requested",
+                    latest_activity="Stopping background worker for foreground handoff",
+                )
+            except InvalidSessionTransition:
+                # A short-lived worker can finish between the initial read and
+                # this transition.  Re-read before reporting failure; a
+                # terminal record is already safe to open in the foreground.
+                session = self.store.get(session_id, include_deleted=True)
+                if session.status in ACTIVE_STATUSES:
+                    raise
+                return session
+
+        pid = session.worker_pid
+        if pid is not None:
+            self._terminate(pid)
+            deadline = time.monotonic() + self.cancel_grace_s
+            while time.monotonic() < deadline and self._alive(pid):
+                time.sleep(0.05)
+            if self._alive(pid):
+                raise RuntimeError(
+                    f"Background worker {pid} did not stop; foreground handoff aborted"
+                )
+
+        # Detached terminal tools use their own process groups, so stopping
+        # the worker group alone is not sufficient to release this session.
+        from .terminals import stop_persisted_session_terminals  # noqa: PLC0415
+
+        stop_persisted_session_terminals(
+            session_id,
+            store_root=self.store.root / "terminals",
+            grace_s=self.cancel_grace_s,
+        )
+        current = self.store.get(session_id, include_deleted=True)
+        if current.status == SessionStatus.CANCELLING:
+            return self.store.transition(
+                session_id,
+                SessionStatus.CANCELLED,
+                cancellation_reason="foreground handoff requested",
+                latest_activity="Background worker stopped; ready for foreground",
+                worker_pid=None,
+                lease_token="",
+            )
+        if current.status in ACTIVE_STATUSES:
+            raise RuntimeError(
+                f"Background session {session_id} is still active; foreground handoff aborted"
+            )
+        return current
+
     def provide_input(self, session_id: str, value: str) -> BackgroundSession:
         """Deliver explicit user input to a session paused at ``waiting_input``."""
 
@@ -329,7 +406,11 @@ class BackgroundSupervisor:
         current = self.store.get(session_id, include_deleted=True)
         if current.status == SessionStatus.CANCELLING:
             return self.store.transition(
-                session_id, SessionStatus.CANCELLED, latest_activity="Cancelled"
+                session_id,
+                SessionStatus.CANCELLED,
+                latest_activity="Cancelled",
+                worker_pid=None,
+                lease_token="",
             )
         return current
 
@@ -338,6 +419,19 @@ class BackgroundSupervisor:
             os.kill(pid, 0)
         except (OSError, ProcessLookupError):
             return False
+        # ``kill(pid, 0)`` also succeeds for a zombie until its parent reaps
+        # it.  A zombie cannot execute tools, so treating it as alive would
+        # unnecessarily block a safe foreground handoff (and can leave the
+        # lifecycle stuck in ``cancelling`` in short-lived worker tests).
+        if os.name != "nt":
+            try:
+                stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+                end_comm = stat.rfind(")")
+                fields = stat[end_comm + 2 :].split()
+                if fields and fields[0] == "Z":
+                    return False
+            except (OSError, UnicodeError):
+                pass
         return True
 
     def _terminate(self, pid: int) -> None:

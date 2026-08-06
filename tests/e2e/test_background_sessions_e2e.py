@@ -76,6 +76,59 @@ def test_owned_worker_process_persists_completion(tmp_path: Path, monkeypatch) -
     assert BackgroundStore(store.root).get(session.session_id).status is SessionStatus.COMPLETED
 
 
+def test_foreground_takeover_stops_owned_worker_before_resume(tmp_path: Path, monkeypatch) -> None:
+    """The manager handoff releases the worker before a resumed TUI can start."""
+
+    store = BackgroundStore(tmp_path / "background")
+    artifact = tmp_path / "sessions" / "foreground-session"
+    artifact.mkdir(parents=True)
+    session = BackgroundSession.create(
+        "foreground-session",
+        title="Foreground takeover",
+        cwd=str(tmp_path),
+        workflow_name="",
+        intent="continue directing",
+        artifact_dir=str(artifact),
+    )
+    store.create(session)
+    script = tmp_path / "long_worker.py"
+    script.write_text(
+        "import os, sys, time\n"
+        "from agenthicc.background import BackgroundStore\n"
+        "store = BackgroundStore(sys.argv[2])\n"
+        "store.claim(sys.argv[1], pid=os.getpid(), lease_token='e2e')\n"
+        "while True: time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    supervisor = BackgroundSupervisor(
+        store,
+        cancel_grace_s=1.0,
+        artifact_root=tmp_path / "sessions",
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_worker_command",
+        lambda request: [sys.executable, str(script), session.session_id, str(store.root)],
+    )
+    request = BackgroundRequest(
+        session_id=session.session_id,
+        workflow_name="",
+        intent=session.intent,
+        cwd=str(tmp_path),
+    )
+    supervisor._launch(request, session)
+    _wait_for_status(store, session.session_id, SessionStatus.RUNNING)
+    running = store.get(session.session_id)
+    assert running.worker_pid is not None
+    worker_pid = running.worker_pid
+
+    released = supervisor.attach_foreground(session.session_id)
+
+    assert released.status is SessionStatus.CANCELLED
+    assert released.worker_pid is None
+    assert not supervisor._alive(worker_pid)
+
+
 def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
     env = dict(os.environ)
     env["HOME"] = str(tmp_path)

@@ -237,7 +237,7 @@ class BackgroundManager:
         sessions = self.refresh()
         if self.help_visible:
             return Panel(
-                "↑/k previous   ↓/j next   Enter attach/follow   r refresh\n"
+                "↑/k previous   ↓/j next   Enter foreground   r refresh\n"
                 "c cancel   a archive   Ctrl+X delete   u restore   t trash\n"
                 "/ filter   v mark   C/A bulk cancel/archive   i input\n"
                 "PageUp/[ and PageDown/] scroll transcript\n"
@@ -330,7 +330,7 @@ class BackgroundManager:
             "\n".join(detail_lines) or "Select a session to inspect it.", title="Details"
         )
         footer = Text(
-            "Enter follow  c cancel  v mark  Ctrl+X delete  / filter  i input  ? help  q quit",
+            "Enter foreground  c cancel  v mark  Ctrl+X delete  / filter  i input  ? help  q quit",
             style="dim",
         )
         if self.new_activity:

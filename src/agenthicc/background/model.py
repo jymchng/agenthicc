@@ -198,6 +198,12 @@ class BackgroundSession:
             value = changes.get(name, current)
             return int(value) if isinstance(value, int) and not isinstance(value, bool) else current
 
+        def _optional_int(name: str, current: int | None) -> int | None:
+            value = changes.get(name, current)
+            if value is None:
+                return None
+            return int(value) if isinstance(value, int) and not isinstance(value, bool) else current
+
         def _optional_str(name: str, current: str | None) -> str | None:
             value = changes.get(name, current)
             return value if isinstance(value, str) or value is None else current
@@ -237,7 +243,7 @@ class BackgroundSession:
             approval_decision=_optional_bool("approval_decision", self.approval_decision),
             input_request=_str("input_request", self.input_request),
             input_value=_optional_str("input_value", self.input_value),
-            worker_pid=_int("worker_pid", self.worker_pid),
+            worker_pid=_optional_int("worker_pid", self.worker_pid),
             lease_token=_str("lease_token", self.lease_token),
             attempt=_int("attempt", self.attempt) or 0,
             retry_count=_int("retry_count", self.retry_count) or 0,

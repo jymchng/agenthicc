@@ -238,6 +238,49 @@ def test_supervisor_cancel_archive_delete_and_restore(tmp_path: Path, monkeypatc
     assert resumed.status is SessionStatus.STARTING
 
 
+def test_supervisor_foreground_attach_stops_worker_and_releases_lease(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+    store.create(_session(tmp_path))
+    store.transition("session-1", SessionStatus.STARTING)
+    store.transition(
+        "session-1",
+        SessionStatus.RUNNING,
+        worker_pid=4321,
+        lease_token="worker-lease",
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(supervisor, "_terminate", terminated.append)
+    monkeypatch.setattr(supervisor, "_alive", lambda pid: False)
+
+    released = supervisor.attach_foreground("session-1")
+
+    assert released.status is SessionStatus.CANCELLED
+    assert released.worker_pid is None
+    assert released.lease_token == ""
+    assert released.cancellation_reason == "foreground handoff requested"
+    assert "ready for foreground" in released.latest_activity
+    assert terminated == [4321]
+
+
+def test_supervisor_foreground_attach_refuses_live_worker_after_grace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    supervisor = BackgroundSupervisor(store, cancel_grace_s=0.1)
+    store.create(_session(tmp_path))
+    store.transition("session-1", SessionStatus.STARTING)
+    store.transition("session-1", SessionStatus.RUNNING, worker_pid=4321)
+    monkeypatch.setattr(supervisor, "_terminate", lambda pid: None)
+    monkeypatch.setattr(supervisor, "_alive", lambda pid: True)
+
+    with pytest.raises(RuntimeError, match="did not stop"):
+        supervisor.attach_foreground("session-1")
+    assert store.get("session-1").status is SessionStatus.CANCELLING
+
+
 def test_manager_keyboard_delete_restore_and_help(tmp_path: Path, capsys) -> None:
     from rich.console import Console
 

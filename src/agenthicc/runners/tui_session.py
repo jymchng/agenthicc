@@ -2223,6 +2223,42 @@ async def _run_tui_session(
     cli_flags: CLIFlags | None = None,
     config_path: str | None = None,
     cli_secret_overrides: list[str] | None = None,
+    cwd: str | None = None,
+) -> None:
+    """Run the reactive TUI, optionally from a resumed session's project."""
+    if cwd is None:
+        await _run_tui_session_impl(
+            resume_id=resume_id,
+            cli_overrides=cli_overrides,
+            record_cassette=record_cassette,
+            cli_flags=cli_flags,
+            config_path=config_path,
+            cli_secret_overrides=cli_secret_overrides,
+        )
+        return
+
+    previous_cwd = os.getcwd()
+    os.chdir(Path(cwd).expanduser().resolve())
+    try:
+        await _run_tui_session_impl(
+            resume_id=resume_id,
+            cli_overrides=cli_overrides,
+            record_cassette=record_cassette,
+            cli_flags=cli_flags,
+            config_path=config_path,
+            cli_secret_overrides=cli_secret_overrides,
+        )
+    finally:
+        os.chdir(previous_cwd)
+
+
+async def _run_tui_session_impl(
+    resume_id: str | None = None,
+    cli_overrides: list[str] | None = None,
+    record_cassette: str | None = None,
+    cli_flags: CLIFlags | None = None,
+    config_path: str | None = None,
+    cli_secret_overrides: list[str] | None = None,
 ) -> None:
     """Reactive TUI session — single entry point, no legacy branches."""
     from agenthicc.tui.workspace import Workspace  # noqa: PLC0415
