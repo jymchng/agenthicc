@@ -113,6 +113,30 @@ def test_playwright_tools_enforce_shared_policy_and_artifacts(tmp_path: Path) ->
     asyncio.run(check())
 
 
+def test_playwright_open_restarts_manager_after_close_session(tmp_path: Path) -> None:
+    async def check() -> None:
+        manager = _manager(tmp_path)
+        tools = {tool.__name__: tool for tool in make_playwright_tools(manager)}
+
+        first = await tools["playwright_open"](
+            "https://example.com/", operation_id="open-before-close"
+        )
+        assert first["ok"] is True
+
+        await manager.close_session()
+        assert (await manager.status())["status"] == BrowserErrorKind.CLOSED.value
+
+        # The closures are retained by the agent registry across cleanup. The
+        # public open tool must lazily reactivate the same manager and client.
+        reopened = await tools["playwright_open"](
+            "https://example.com/", operation_id="open-before-close"
+        )
+        assert reopened["ok"] is True
+        assert (await manager.status())["ok"] is True
+
+    asyncio.run(check())
+
+
 def test_playwright_config_is_optional_and_selectable(tmp_path: Path) -> None:
     config_path = tmp_path / "agenthicc.toml"
     config_path.write_text(
@@ -340,6 +364,9 @@ def test_playwright_client_launches_and_routes_subresources(
         assert allowed_route.continued is True
         await client.close_session("session")
         assert page.closed is True
+        reopened = await client.open_page("session", "https://example.com/")
+        assert reopened.page_id != ""
+        await client.close_session("session")
 
     asyncio.run(check())
 

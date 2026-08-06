@@ -367,6 +367,35 @@ def test_operation_id_replays_result_without_repeating_browser_action(tmp_path: 
     asyncio.run(check())
 
 
+def test_cloakbrowser_open_restarts_manager_after_close_session(tmp_path: Path) -> None:
+    async def check() -> None:
+        manager, client = _manager(tmp_path)
+        tools = {tool.__name__: tool for tool in make_cloakbrowser_tools(manager)}
+
+        first = await tools["cloakbrowser_open"](
+            "https://example.com/", operation_id="open-before-close"
+        )
+        assert first["ok"] is True
+        assert (await manager.click("page-1", "button.submit"))["ok"] is True
+        assert manager.actions_used == 1
+
+        await manager.close_session()
+        assert (await manager.status())["status"] == BrowserErrorKind.CLOSED.value
+        assert manager.actions_used == 0
+
+        # The closures are retained by the agent registry across cleanup. The
+        # public open tool must lazily reactivate the same manager and client.
+        reopened = await tools["cloakbrowser_open"](
+            "https://example.com/", operation_id="open-before-close"
+        )
+        assert reopened["ok"] is True
+        assert (await manager.status())["ok"] is True
+        assert (await manager.click("page-1", "button.submit"))["ok"] is True
+        assert [name for name, _args in client.calls].count("open") == 2
+
+    asyncio.run(check())
+
+
 def test_tools_have_expected_names_and_capabilities(tmp_path: Path) -> None:
     manager, _client = _manager(tmp_path)
     tools = make_cloakbrowser_tools(manager)

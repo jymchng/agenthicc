@@ -2,16 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from agenthicc.config import AgenthiccConfig, PlaywrightSettings
-from agenthicc.tools.cloakbrowser import BrowserPolicy
+from agenthicc.tools.cloakbrowser import BrowserPolicy, BrowserSessionManager
+from agenthicc.tools.cloakbrowser.client import BrowserHealth, PageState
 from agenthicc.tools.playwright import create_playwright_session, make_playwright_tools
 from agenthicc.workflows.config import WorkflowConfig
 
 pytestmark = pytest.mark.integration
+
+
+class _LifecycleClient:
+    async def health(self) -> BrowserHealth:
+        return BrowserHealth("ready", "local", "")
+
+    async def open_page(self, session_id: str, url: str) -> PageState:
+        return PageState("page-1", url, "Fixture")
+
+    async def close_page(self, session_id: str, page_id: str) -> None:
+        return None
+
+    async def close_session(self, session_id: str) -> None:
+        return None
 
 
 def test_selected_playwright_backend_exposes_one_session_tool_set(tmp_path: Path) -> None:
@@ -53,6 +69,25 @@ def test_selected_playwright_backend_exposes_one_session_tool_set(tmp_path: Path
         "playwright_screenshot",
         "playwright_close",
     ]
+
+
+def test_playwright_tools_reopen_after_session_cleanup(tmp_path: Path) -> None:
+    async def check() -> None:
+        manager = BrowserSessionManager(
+            PlaywrightSettings(enabled=True, allowed_domains=["example.com"]),
+            "conversation-1",
+            tmp_path,
+            client=_LifecycleClient(),
+            policy=BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+            backend_name="Playwright",
+        )
+        tools = {tool.__name__: tool for tool in make_playwright_tools(manager)}
+
+        assert (await tools["playwright_open"]("https://example.com/"))["ok"] is True
+        await manager.close_session()
+        assert (await tools["playwright_open"]("https://example.com/"))["ok"] is True
+
+    asyncio.run(check())
 
 
 class _ReadyClient:

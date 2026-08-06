@@ -252,6 +252,9 @@ authoring; strict validation rejects a generated custom runner that omits them.
 The built-in `make_agenthicc_tool` runner also passes one immutable contract to
 every analyze, generate, validate, and finalize turn, keeping its tool plan,
 generated source path, validation report, and retry state in dynamic context.
+The same boundary is used by every built-in workflow, including `code_plan`,
+`create_workflow`, `site_imitate`, `make_agenthicc_tool`, `make_pdf_book`, and
+`make_epub_book`.
 
 The runtime records only redacted contract fingerprints and cache epochs in the
 conversation journal and workflow checkpoint. A phase change does not change

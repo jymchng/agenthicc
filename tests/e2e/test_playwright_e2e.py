@@ -53,3 +53,6 @@ async def test_playwright_agent_journey_open_observe_interact_capture_close(
     assert str(screenshot["artifact"]["path"]).startswith(".agenthicc/browser-artifacts/")
     assert (await tools["playwright_close"](page_id))["ok"] is True
     await manager.close_session()
+    reopened = await tools["playwright_open"]("https://example.com/")
+    assert reopened["ok"] is True
+    await manager.close_session()

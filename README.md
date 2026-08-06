@@ -193,6 +193,9 @@ its analyze, generate, validate, and finalize phases; tool plans, generated
 paths, validation reports, and retry state remain dynamic rather than changing
 the reusable system prefix.
 
+All built-in workflow runners use this boundary: `code_plan`, `create_workflow`,
+`site_imitate`, `make_agenthicc_tool`, `make_pdf_book`, and `make_epub_book`.
+
 ### Transition tools
 
 Transition tools in generated runners must use the canonical bare `@tool_control` decorator imported from `agenthicc.tools.capabilities`, above `@tool()`. The authoring inspection tool `describe_transition_tool_pattern` shows the exact form, and strict validation catches factory-local import or decorator mistakes before the workflow is accepted.
@@ -393,6 +396,9 @@ allow_all_domains = false
 ```
 
 Playwright exposes the same bounded browser operations with `playwright_*` names. Domain, DNS, private-address, artifact, quota, and checkpoint policies are shared with the CloakBrowser adapter. The two backends are mutually exclusive per session, and neither optional package is imported unless its backend is selected. Playwright permits any destination port and loopback preview servers such as `http://localhost:3000/`; the configured domain policy still controls which hosts may be reached.
+After orderly session cleanup, the existing injected browser tool closures can
+be used again: the next `*_open` lazily creates a fresh context and clears
+stale page and operation state. Live pages are intentionally not restored.
 
 Config layers are merged in this order: built-in defaults, user config, project config, environment variables, then repeated `--set key=value` overrides. Run `uv run agenthicc config show` to inspect the effective values; never print secrets in support logs.
 

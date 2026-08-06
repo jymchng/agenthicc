@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,11 +14,26 @@ from agenthicc.tools.cloakbrowser import (
     BrowserPolicy,
     make_cloakbrowser_tools,
 )
+from agenthicc.tools.cloakbrowser.client import BrowserHealth, PageState
 from agenthicc.workflows.config import WorkflowConfig
 from agenthicc.workflows.create_workflow.inspection_tools import make_inspection_tools
 from agenthicc.workflows.create_workflow.runner import CreateWorkflowRunner
 
 pytestmark = pytest.mark.integration
+
+
+class _LifecycleClient:
+    async def health(self) -> BrowserHealth:
+        return BrowserHealth("ready", "local", "")
+
+    async def open_page(self, session_id: str, url: str) -> PageState:
+        return PageState("page-1", url, "Fixture")
+
+    async def close_page(self, session_id: str, page_id: str) -> None:
+        return None
+
+    async def close_session(self, session_id: str) -> None:
+        return None
 
 
 def test_workflow_config_exposes_session_browser_tools_once(tmp_path: Path) -> None:
@@ -45,6 +61,24 @@ def test_workflow_config_exposes_session_browser_tools_once(tmp_path: Path) -> N
     )
     names = [tool.__name__ for tool in config.all_plugin_tools()]
     assert names.count("cloakbrowser_open") == 1
+
+
+def test_cloakbrowser_tools_reopen_after_session_cleanup(tmp_path: Path) -> None:
+    async def check() -> None:
+        manager = BrowserSessionManager(
+            CloakBrowserSettings(enabled=True, allowed_domains=["example.com"]),
+            "conversation-1",
+            tmp_path,
+            client=_LifecycleClient(),
+            policy=BrowserPolicy(("example.com",), resolver=lambda _host: _addresses()),
+        )
+        tools = {tool.__name__: tool for tool in make_cloakbrowser_tools(manager)}
+
+        assert (await tools["cloakbrowser_open"]("https://example.com/"))["ok"] is True
+        await manager.close_session()
+        assert (await tools["cloakbrowser_open"]("https://example.com/"))["ok"] is True
+
+    asyncio.run(check())
 
 
 async def _addresses() -> list[str]:

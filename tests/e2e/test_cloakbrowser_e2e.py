@@ -130,3 +130,6 @@ async def test_browser_agent_journey_open_observe_interact_capture_close(tmp_pat
     assert str(screenshot["artifact"]["path"]).startswith(".agenthicc/browser-artifacts/")
     assert (await tools["cloakbrowser_close"](page_id))["ok"] is True
     await manager.close_session()
+    reopened = await tools["cloakbrowser_open"]("https://example.com/")
+    assert reopened["ok"] is True
+    await manager.close_session()

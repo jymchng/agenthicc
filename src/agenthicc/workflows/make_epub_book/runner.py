@@ -47,6 +47,25 @@ log = logging.getLogger(__name__)
 #: Bounded retries per phase — never loop forever waiting for a tool call.
 _MAX_ATTEMPTS = 5
 
+# Stable workflow policy. Book metadata, research notes, chapter content,
+# artifact paths, and validation results remain dynamic phase context.
+CACHE_CONTRACT = """
+[MAKE EPUB BOOK CACHE CONTRACT]
+Keep this book-authoring policy unchanged across TOC, RESEARCH, CHAPTER,
+ASSETS, FRONT_MATTER, BACK_MATTER, and COMPILE. Ask the user a focused
+clarifying question through the existing ask_user tool whenever a missing or
+ambiguous requirement could materially change the book; wait for the answer
+instead of guessing. Actual questions and answers are dynamic context.
+
+Keep the title, author, audience, chapter list, research notes, written
+content, asset paths, validation reports, retry details, and phase state in
+dynamic context. Do not insert changing book data into this stable contract,
+rewrite the beginning of shared conversation history, or put rolling summaries
+here. Use the shared run_phase API so stable tools remain ordered before
+phase-local transition tools and the session's capability, approval,
+workspace, and memory policies remain authoritative.
+""".strip()
+
 
 #: MathJax node renderer template injected into the compile prompt. It replaces
 #: pandoc's MathML <math> elements with self-contained SVG images (glyphs inline
@@ -804,6 +823,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "becomes one chapter phase, so include ALL chapters now.\n\n"
                     "Do NOT write any chapter content yet. This phase plans the structure only."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=10,
                 shared_memory=memory,
                 tools=_make_toc_tools(event, data),
@@ -919,6 +939,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "  - summary: a short overview of the research\n\n"
                     "Do NOT write any chapter content. This phase gathers material only."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
                 max_turns=20,
                 shared_memory=memory,
@@ -1060,6 +1081,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "word_count=..., assets=[...]) with the exact index you were assigned "
                     "and the list of asset files (images) the chapter references."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
                 max_turns=25,
                 shared_memory=memory,
@@ -1124,6 +1146,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "file paths you produced (figures + cover). These are handed to the "
                     "chapter phases so they can reference them by name."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
                 max_turns=25,
                 shared_memory=memory,
@@ -1173,6 +1196,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "Then call confirm_front_matter_ready(summary, files) with a summary "
                     "and the list of files you created."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
                 max_turns=15,
                 shared_memory=memory,
@@ -1216,6 +1240,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "Then call confirm_back_matter_ready(summary, files) with a summary "
                     "and the index file(s) you created."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
                 max_turns=15,
                 shared_memory=memory,
@@ -1377,6 +1402,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "include the zero-based chapter_index that needs rewriting (or -1 to "
                     "revisit the whole book). You MUST call one of them."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
                 max_turns=15,
                 shared_memory=memory,

@@ -355,6 +355,15 @@ class BrowserSessionManager:
 
     async def open(self, url: str, operation_id: str | None = None) -> dict[str, object]:
         async def operation() -> dict[str, object]:
+            # ``close_session`` tears down the live browser context, but the
+            # agent-facing open tool is also the lazy re-entry point. A
+            # session manager can therefore be reused after orderly cleanup
+            # without replacing the tool closures held by the agent registry.
+            if self._closed:
+                self._closed = False
+                self._pages.clear()
+                self._operation_in_flight.clear()
+                self._operation_results.clear()
             self._ensure_usable()
             await self._ensure_ready()
             if len(self._pages) >= self.settings.max_pages:
@@ -635,6 +644,9 @@ class BrowserSessionManager:
                 await self.client.close_session(self._browser_session_id)
         finally:
             self._pages.clear()
+            self._actions_used = 0
+            self._operation_in_flight.clear()
+            self._operation_results.clear()
             self._closed = True
 
 

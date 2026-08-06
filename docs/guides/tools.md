@@ -315,6 +315,11 @@ the same browser context. Page, profile, and artifact directories use opaque
 browser-session handles rather than the provider conversation ID. Browser calls
 accept an optional bounded `operation_id`; reusing it returns the original
 structured receipt and prevents a retry from repeating a mutation.
+The same injected tool closures remain usable after orderly session cleanup:
+`close_session()` tears down the live context and clears page/idempotency state,
+while the next `*_open` lazily creates a fresh context for the same session.
+This applies to both CloakBrowser and Playwright; live pages are intentionally
+not restored.
 
 The adapter enforces an operator domain/origin allow-list, HTTP(S)-only
 navigation, DNS/private-address checks, bounded pages/actions/snapshots/screenshots,
