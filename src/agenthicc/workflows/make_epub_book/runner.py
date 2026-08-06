@@ -47,10 +47,11 @@ log = logging.getLogger(__name__)
 #: Bounded retries per phase — never loop forever waiting for a tool call.
 _MAX_ATTEMPTS = 5
 
+
 # Stable workflow policy. Book metadata, research notes, chapter content,
 # artifact paths, and validation results remain dynamic phase context.
 CACHE_CONTRACT = """
-[MAKE EPUB BOOK CACHE CONTRACT]
+[MAKE_EPUB_BOOK CACHE CONTRACT]
 Keep this book-authoring policy unchanged across TOC, RESEARCH, CHAPTER,
 ASSETS, FRONT_MATTER, BACK_MATTER, and COMPILE. Ask the user a focused
 clarifying question through the existing ask_user tool whenever a missing or
@@ -182,6 +183,7 @@ class MakeEpubBookContext:
         default_factory=lambda: ["images", "equations", "code", "tables"]
     )
     assets_dir: str = ""
+    research_dir: str = ""
     images: list[str] = dataclasses.field(default_factory=list)
     chapters: list[ChapterInfo] = dataclasses.field(default_factory=list)
     current_chapter_index: int = 0
@@ -189,6 +191,7 @@ class MakeEpubBookContext:
     research_notes: dict[int, str] = dataclasses.field(default_factory=dict)
     research_sources: list[str] = dataclasses.field(default_factory=list)
     research_summary: str = ""
+    research_files: list[str] = dataclasses.field(default_factory=list)
     epub_path: str = ""
     compile_summary: str = ""
     front_matter_summary: str = ""
@@ -313,6 +316,7 @@ def _make_research_tools(
         notes: list[dict[str, object]],
         sources: list[str],
         summary: str,
+        files: list[str] | None = None,
     ) -> dict[str, object]:
         """Record extensive research for every chapter and advance to writing.
 
@@ -321,6 +325,9 @@ def _make_research_tools(
                 Must cover EVERY chapter (indices 0..N-1).
             sources: List of sources consulted (URLs, titles, references).
             summary: A concise overview of the research gathered.
+            files: Optional list of file paths written under the research/
+                directory (per-chapter notes, sources, summary) — the durable
+                copy of the material gathered in this phase.
         """
         if not notes:
             return {
@@ -355,13 +362,14 @@ def _make_research_tools(
         data["notes"] = {str(k): v for k, v in covered.items()}
         data["sources"] = [str(s) for s in sources if str(s).strip()]
         data["summary"] = summary.strip()
+        data["files"] = [str(f) for f in (files or []) if str(f).strip()]
         event.set()
         return {
             "ok": True,
             "message": (
                 f"Research recorded: {len(covered)} chapters covered, "
-                f"{len(sources)} sources. "
-                "The chapter phases start next."
+                f"{len(sources)} sources, {len(data['files'])} files stored "
+                "under the research/ directory. The chapter phases start next."
             ),
         }
 
@@ -426,10 +434,10 @@ def _make_assets_tools(
 
     @tool()
     async def confirm_assets_ready(assets: list[str]) -> dict[str, object]:
-        """Signal that all figure/diagram/cover assets were produced.
+        """Signal that all figure/diagram assets were produced.
 
         Args:
-            assets: Full list of asset file paths (figures + cover image).
+            assets: Full list of asset file paths (figures).
         """
         if not assets:
             return {
@@ -459,7 +467,7 @@ def _make_front_matter_tools(
         summary: str,
         files: list[str],
     ) -> dict[str, object]:
-        """Signal that the cover, preface, and contents pages are built.
+        """Signal that the preface and contents pages are built (the cover is user-supplied).
 
         Args:
             summary: What was created.
@@ -475,7 +483,7 @@ def _make_front_matter_tools(
             return {
                 "ok": False,
                 "error": "files must not be empty.",
-                "fix": "List the cover/preface/contents files you created.",
+                "fix": "List the preface/contents files you created.",
             }
         data["summary"] = summary.strip()
         data["files"] = [str(f) for f in files if str(f).strip()]
@@ -811,9 +819,9 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "   Default (user unspecified): all four.\n"
                     "10. Pick an output_dir (a folder derived from the book title); use the "
                     "11. Plan the book's FRONT AND BACK MATTER so the finished book looks beautiful and professional — every book gets all of these:\n"
-                    "   - COVER: a designed cover page — title, author, and (if 'images' is enabled) a cover image; plan a cover theme (colours, font) matching the subject.\n"
+                    "   - COVER: the cover page is supplied by the END USER (e.g. <output_dir>/assets/cover.png). Do NOT plan, design, or generate a cover \u2014 just plan that the user-supplied cover is set as the library cover / first spine page.\n"
                     "   - PREFACE: a short preface page (why this book, who it is for, what the reader will learn) placed before chapter 1.\n"
-                    "   - TABLE OF CONTENTS: a visible contents page listing every chapter and its sections, placed after the preface.\n"
+                    "   - TABLE OF CONTENTS: a visible contents page placed after the preface. NOTE: the contents listing itself is NOT written by hand \u2014 the compile toolchain auto-generates it (ebooklib nav/toc.ncx, pandoc --toc, or EPUB navigation). Plan only that the page exists after the preface.\n"
                     "   - INDEX: an index section at the end listing the key terms of the book (term -> chapter/section), so the book is navigable.\n"
                     "   - COLOURED HEADINGS: headings must be coloured (a consistent accent colour for h1/h2), not plain black — plan the accent colour here (e.g. a deep blue fitting the subject).\n"
                     "user's directory if given.\n\n"
@@ -854,6 +862,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "tables",
                 ]
                 ctx.assets_dir = f"{ctx.output_dir}/assets" if ctx.output_dir else "assets"
+                ctx.research_dir = f"{ctx.output_dir}/research" if ctx.output_dir else "research"
                 ctx.chapters = chapters
                 ctx.current_chapter_index = 0
                 self.total_phases = len(chapters) + 6
@@ -889,6 +898,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                 text=(
                     (
                         f"Research the technical book '{ctx.title}' extensively before writing.\n"
+                        f"Store ALL research material in: {ctx.research_dir or '<output_dir>/research'}\n"
                         f"Chapters to research:\n{chapter_titles}"
                     )
                     if attempt == 1
@@ -931,16 +941,27 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "for key formulas, accurate runnable code snippets (with language tags "
                     "and expected output), and the data for reference tables — all in "
                     "the chapter notes. (Visual assets are produced in a separate ASSETS "
-                    "phase after research, so do NOT generate images here.)\n\n"
-                    "Call submit_research(notes, sources, summary) where:\n"
+                    "phase after research, so do NOT generate images here.)\n"
+                    f"6. STORE THE RESEARCH MATERIAL IN FILES — create the research "
+                    f"directory {ctx.research_dir or '<output_dir>/research'} (the write "
+                    "tool creates parent directories) and write the durable research "
+                    "material there: one Markdown notes file per chapter (e.g. "
+                    "research/ch01-notes.md, research/ch02-notes.md, ...), a "
+                    "research/sources.md listing every source with URLs/DOIs, and a "
+                    "research/summary.md with the overview. Keep the per-chapter notes "
+                    "files dense — exact data, formulas, code, and index terms the writer "
+                    "can quote directly. The notes you pass to submit_research() must "
+                    "mirror these files.\n\n"
+                    "Call submit_research(notes, sources, summary, files) where:\n"
                     "  - notes: list of {'chapter_index': int, 'notes': str} — ONE entry "
                     "per chapter, indices 0..N-1\n"
                     "  - sources: list of source URLs/DOIs/standard numbers consulted\n"
-                    "  - summary: a short overview of the research\n\n"
+                    "  - summary: a short overview of the research\n"
+                    "  - files: the file paths you wrote under the research/ directory\n\n"
                     "Do NOT write any chapter content. This phase gathers material only."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=20,
                 shared_memory=memory,
                 tools=_make_research_tools(event, data, len(ctx.chapters)),
@@ -954,10 +975,13 @@ class MakeEpubBookRunner(CodePlanRunner):
                 }
                 ctx.research_sources = list(data.get("sources", []))
                 ctx.research_summary = str(data.get("summary", ""))
+                ctx.research_files = [str(f) for f in (data.get("files") or [])]
                 ctx.images = [str(a) for a in data.get("assets", [])]
                 ctx.artifacts["research"] = (
                     f"{len(ctx.research_notes)} chapters researched; "
-                    f"{len(ctx.research_sources)} sources; {len(ctx.images)} assets"
+                    f"{len(ctx.research_sources)} sources; "
+                    f"{len(ctx.research_files)} files under "
+                    f"{ctx.research_dir or '<output_dir>/research'}"
                 )
                 return MakeEpubBookState.ASSETS
 
@@ -1024,6 +1048,32 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "- Prefer dense, precise prose over vague generalities. Show, don't "
                     "tell: give the exact value, the exact step, the exact trade-off.\n"
                     "- Cover limitations, edge cases, and pitfalls honestly.\n\n"
+                    "WRITE LIKE A HUMAN (the most important instruction in this phase):\n"
+                    "- Write as ONE human author who knows this material cold and is "
+                    "explaining it to a specialist colleague - warm, confident, "
+                    "unhurried. Not documentation, not an essay, not a wiki page.\n"
+                    "- Vary sentence length and rhythm. Let short, declarative sentences "
+                    "punctuate longer explanations. Break up uniform runs of 'X is... "
+                    "Y is... Z is...' - no two consecutive sentences should share the "
+                    "same shape.\n"
+                    "- Open every section with a concrete hook - a scene, a question, a "
+                    "one-line insight - before the technical setup, so the reader knows "
+                    "why this section exists before reading how it works.\n"
+                    "- NO AI tells. Never open with 'It is important to note', 'In "
+                    "conclusion', 'Furthermore'/'Moreover'/'Additionally', or any "
+                    "formulaic transition. Never end a section by restating its opening. "
+                    "Vary every transition: forward hooks, open questions, concrete "
+                    "previews - never the same shape twice in a row.\n"
+                    "- Use concrete, local analogies that actually teach (a queue for "
+                    "Little's law, an envelope for a signed file share), and never carry "
+                    "an analogy beyond its point.\n"
+                    "- Prefer flowing prose over bullet-only walls: convert a list to a "
+                    "paragraph where the paragraph teaches better. Keep lists only where "
+                    "the shape earns them - numbered flow steps, comparison tables, "
+                    "reference data.\n"
+                    "- Read every paragraph aloud before writing it. If a sentence "
+                    "sounds assembled from a template, rewrite it until it sounds "
+                    "spoken.\n\n"
                     "BEAUTY & STRUCTURE (the finished book must look professional):\n"
                     "- Use a single '# ' chapter title and '## ' section headings — the typesetter colours these automatically with the accent colour planned in the TOC; never style headings with raw HTML or inline colours.\n"
                     "- Mark every key indexable term in **bold** on first use — the index section collects these, so consistent marking makes the index accurate.\n"
@@ -1035,6 +1085,11 @@ class MakeEpubBookRunner(CodePlanRunner):
                         "reference it with Markdown: ![Figure caption](assets/fig-NN-"
                         "name.png). Keep the caption descriptive. Include at least one "
                         "figure per chapter when 'images' is enabled.\n"
+                        "   EVERY image must be APPROPRIATELY SIZED for the EPUB "
+                        "reader: cap the inline width so an image occupies at most "
+                        "~80% of the reading width, and pre-resize or crop wider "
+                        "sources so figures fit the viewport; avoid images that are "
+                        "tiny (blurry when scaled) or wall-to-wall.\n"
                         if "images" in ctx.content_types
                         else ""
                     )
@@ -1081,8 +1136,8 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "word_count=..., assets=[...]) with the exact index you were assigned "
                     "and the list of asset files (images) the chapter references."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=25,
                 shared_memory=memory,
                 tools=_make_chapter_tools(event, data),
@@ -1121,7 +1176,7 @@ class MakeEpubBookRunner(CodePlanRunner):
             await self.run_phase(
                 intent=ctx.intent,
                 text=(
-                    f"Generate all figure, diagram, and cover assets for '{ctx.title}' "
+                    f"Generate all figure and diagram assets for '{ctx.title}' "
                     f"into {ctx.assets_dir or '<output_dir>/assets'}."
                     if attempt == 1
                     else "Call confirm_assets_ready(assets) now with the full asset list."
@@ -1133,21 +1188,61 @@ class MakeEpubBookRunner(CodePlanRunner):
                     f"Rich content: {', '.join(ctx.content_types)}\n"
                     f"Chapter outlines:\n{ctx.toc_summary or '(see plan)'}\n\n"
                     "Create the assets directory if missing, then generate:\n"
+                    "For PHOTOGRAPHIC / ILLUSTRATIVE images (real-world photos, "
+                    "scenery, product shots, case-study visuals), you may use the "
+                    "unsplash_images tool to download ready-made, high-quality photos "
+                    "from Unsplash into the assets directory.\n"
                     "1. Every figure the chapters need (per the research notes and "
                     "outlines): charts and plots with matplotlib (Agg backend), "
-                    "architecture/cloud diagrams with the 'diagrams' library "
-                    "(https://github.com/mingrammer/diagrams; pip install diagrams, "
-                    "needs Graphviz), or PIL for simple graphics. Name files clearly "
-                    "like fig-02-schema.png, fig-03-architecture.png.\n"
-                    "2. The COVER image: <output_dir>/assets/cover.png with the title, "
-                    "author, and a clean theme background (matplotlib or PIL).\n"
-                    "3. Keep every image bounded and PNG at a reasonable resolution.\n\n"
+                    "PIL for simple graphics, and STRUCTURAL/FLOW diagrams "
+                    "(architectures, state machines, flowcharts, sequence/ER "
+                    "diagrams) rendered with MATPLOTLIB (mandatory, not mermaid): "
+                    "write a reproducible script (e.g. assets/make_flowcharts.py) "
+                    "that draws rounded boxes with FancyBboxPatch, arrows with "
+                    "FancyArrowPatch, DejaVu Sans text, and saves high-DPI PNGs "
+                    "(2000px+ wide) under <output_dir>/assets/. Do NOT use "
+                    "mermaid-cli/mmdc or the 'diagrams' library for flowcharts \u2014 "
+                    "mermaid gives no control over per-box text colour and routinely "
+                    "renders white text on light fills (unreadable in print). Name "
+                    "files clearly like fig-02-schema.png, fig-03-architecture.png.\n"
+                    "   BEAUTIFUL MODERN CHARTS & DIAGRAMS (mandatory quality bar): every "
+                    "data chart and flowchart must look polished and contemporary, not "
+                    "like a default matplotlib output. For data charts (line/bar/area):\n"
+                    "   - Use a refined, cohesive palette (e.g. deep navy ink, modern blue, "
+                    "teal, coral, amber) with white or very light backgrounds; avoid "
+                    "default matplotlib colours and heavy gridlines.\n"
+                    "   - Keep the grid minimal: horizontal gridlines only (no vertical), "
+                    "thin baseline spines (bottom+left only), no top/right spines, and "
+                    "zero-length or hidden ticks.\n"
+                    "   - Add subtle gradient/soft area fills under curves, rounded "
+                    "callout panels with soft tinted backgrounds for key annotations, and "
+                    "clean legends without frames.\n"
+                    "   - Use clear, left-aligned bold titles and readable font sizes; "
+                    "never clip labels at the figure edge (test with tight bbox).\n"
+                    "   - Render charts via a small matplotlib script (e.g. "
+                    "assets/make_charts.py) so they are reproducible, then regenerate "
+                    "the PNGs.\n"
+                    "   TEXT CONTRAST (mandatory for EVERY box/panel label): every "
+                    "label must be readable against its fill. Compute the WCAG "
+                    "relative-luminance contrast ratio for every (text, fill) pair "
+                    "and require >= 4.5:1 (WCAG AA). Rules: dark text (e.g. #1F2A44) "
+                    "on light fills; white text ONLY on dark fills (e.g. navy or "
+                    "dark orange #CC450E/#B93B0D/#A93409 \u2014 deepen mid-tone fills "
+                    "until they pass). Never put white text on a light fill or light "
+                    "text on a mid-tone fill. Add a programmatic contrast check to "
+                    "the figure script (a verify() helper that computes the ratio "
+                    "for every (fill, text) pair and exits non-zero if any box is "
+                    "below 4.5:1) and run it before confirming the assets. Keep "
+                    "labels short and legible.\n"
+                    "2. Keep every image bounded and PNG at a reasonable resolution. "
+                    "NOTE: the COVER page is NOT generated here \u2014 the end user supplies "
+                    "<output_dir>/assets/cover.png themselves; do not create or design it.\n\n"
                     "Then call confirm_assets_ready(assets) with the FULL list of asset "
-                    "file paths you produced (figures + cover). These are handed to the "
+                    "file paths you produced (figures). These are handed to the "
                     "chapter phases so they can reference them by name."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=25,
                 shared_memory=memory,
                 tools=_make_assets_tools(event, data),
@@ -1165,15 +1260,14 @@ class MakeEpubBookRunner(CodePlanRunner):
         ctx: MakeEpubBookContext,
         memory: object,
     ) -> MakeEpubBookState:
-        """Build cover, preface, and table-of-contents pages; return BACK_MATTER or FAILED."""
+        """Build preface and table-of-contents pages (cover is user-supplied); return BACK_MATTER or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
             await self.run_phase(
                 intent=ctx.intent,
                 text=(
-                    f"Build the front-matter pages (cover, preface, table of contents) "
-                    f"for '{ctx.title}'."
+                    f"Build the front-matter pages (preface, table of contents) for '{ctx.title}'."
                     if attempt == 1
                     else "Call confirm_front_matter_ready(summary, files) now."
                 ),
@@ -1185,19 +1279,23 @@ class MakeEpubBookRunner(CodePlanRunner):
                     f"Chapters: {ctx.toc_summary or '(see plan)'}\n\n"
                     "Create these pages (as Markdown in the project for PDF, or XHTML "
                     "items for EPUB):\n"
-                    "1. COVER: title, author, and the cover image "
-                    "(<output_dir>/assets/cover.png) if it exists.\n"
-                    "2. PREFACE: a short preface (why this book, who it is for, what the "
+                    "NOTE: the COVER page is supplied by the END USER (e.g. "
+                    "<output_dir>/assets/cover.png). Do NOT build, generate, or design "
+                    "a cover page \u2014 the compile phase sets the user-supplied cover as "
+                    "the library cover / first spine page.\n"
+                    "1. PREFACE: a short preface (why this book, who it is for, what the "
                     "reader will learn).\n"
-                    "3. TABLE OF CONTENTS: a visible contents page listing every chapter "
-                    "and its sections.\n"
+                    "2. TABLE OF CONTENTS: create ONLY the contents page container \u2014 "
+                    "the heading and the page break. Do NOT hand-write the chapter/section "
+                    "listing: the compile toolchain auto-generates the real EPUB navigation "
+                    "(ebooklib nav/toc.ncx) and fills this page.\n"
                     "Use a clean, consistent style. The compile phase will assemble "
-                    "these in order: cover, preface, contents, then chapters.\n\n"
+                    "these in order: preface, contents, then chapters (the user-supplied cover is placed first by the compile phase).\n\n"
                     "Then call confirm_front_matter_ready(summary, files) with a summary "
                     "and the list of files you created."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_front_matter_tools(event, data),
@@ -1240,8 +1338,8 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "Then call confirm_back_matter_ready(summary, files) with a summary "
                     "and the index file(s) you created."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_back_matter_tools(event, data),
@@ -1274,7 +1372,7 @@ class MakeEpubBookRunner(CodePlanRunner):
                 f"Rich content: {', '.join(ctx.content_types)}\n"
                 f"Chapter files:\n{paths}\n"
                 + (
-                    "\nFront matter (cover/preface/contents):\n"
+                    "\nFront matter (preface/contents; cover is user-supplied):\n"
                     + "\n".join(f"  {f}" for f in ctx.front_matter_files)
                     + "\nBack matter (index):\n"
                     + "\n".join(f"  {f}" for f in ctx.back_matter_files)
@@ -1298,14 +1396,31 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "Asset files (images/figures the chapters reference):\n"
                     + ("\n".join(f"  {a}" for a in ctx.images) if ctx.images else "  (none)")
                     + "\n\n"
-                    "BOOK POLISH — the finished EPUB must look like a real published book. The front-matter pages (cover/preface/contents) and the index page were already built by the FRONT_MATTER and BACK_MATTER phases — use those files, do NOT rebuild them:\n"
-                    "  FRONT MATTER: add the front-matter XHTML items from the FRONT_MATTER phase (ctx.front_matter_files) FIRST in the spine (after 'nav'), in order: cover, preface, contents; set the cover as the library cover with book.set_cover('cover.png', open(...,'rb').read()) when the cover asset exists.\n"
+                    "BOOK POLISH — the finished EPUB must look like a real published book. The front-matter pages (preface/contents) and the index page were built by the FRONT_MATTER and BACK_MATTER phases — use those files, do NOT rebuild them. The COVER page is supplied by the END USER (e.g. <output_dir>/assets/cover.png) — set it as the library cover; do NOT generate, design, or rebuild it:\n"
+                    "  FRONT MATTER: add the front-matter XHTML items from the FRONT_MATTER phase (ctx.front_matter_files) FIRST in the spine (after 'nav'), in order: preface, contents; set the user-supplied cover as the library cover with book.set_cover('cover.png', open(...,'rb').read()) when the user has supplied <output_dir>/assets/cover.png — never generate a cover yourself.\n"
                     "  BACK MATTER: append the index item from the BACK_MATTER phase (ctx.back_matter_files) after the last chapter.\n"
                     "  COLOURED HEADINGS: extend the TRIGGER SNIPPET zip post-process to also inject a <style> into every chapter <head> (adjust to the planned accent):\n"
                     "        <style>h1{color:#1f4e79;border-bottom:2px solid #1f4e79;} h2{color:#2e74b5;} h3{color:#2e74b5;}</style>\n"
                     "     Inject both the MathJax trigger and the style in the same '<head>' replace pass.\n"
-                    "  TOC: the ebooklib nav/toc.ncx already provides navigation; the visible toc page mirrors it for in-book reading.\n"
-                    "  After building, verify: every chapter head contains both 'x-mathjax-config' and the <style> colour rule; the spine includes cover, preface, toc and index; and the cover title appears in the cover page.\n"
+                    "  TOC (mandatory): the EPUB table of contents MUST be generated by the toolchain itself \u2014 ebooklib nav/toc.ncx built from book.toc (or pandoc --toc). NEVER hand-write the TOC listing or a toc.xhtml by hand; the visible toc page mirrors the engine-generated navigation so page-less EPUB navigation stays accurate.\n"
+                    "  After building, verify: every chapter head contains both 'x-mathjax-config' and the <style> colour rule; the spine includes the user-supplied cover (if provided), preface, toc and index.\n"
+                    "BUILD SCRIPT & DIST DELIVERABLE (mandatory):\n"
+                    "Write a reusable build script <output_dir>/build_epub.py (Python 3; "
+                    "a build.sh is acceptable) that performs the END-TO-END assemble of "
+                    "the EPUB from the markdown sources (front matter, chapters, back "
+                    "matter, assets — same order as this compile), then RUN it so "
+                    "dist/ holds the deliverable:\n"
+                    "  1. The script regenerates the EPUB from sources (pandoc per "
+                    "chapter + ebooklib, or the tier you used), embedding every "
+                    "referenced image and preserving equations (TeX for calibre or SVG "
+                    "fallback).\n"
+                    "  2. It writes the finished file to <output_dir>/dist/<title-slug>"
+                    ".epub (create dist/).\n"
+                    "  3. It deletes ALL intermediate artifacts (book.tex, *.aux, "
+                    "*.log, *.toc, *.xhtml, .epub-work/, .math-render/, intermediate "
+                    "epubs) so only the sources, the build script, and dist/ remain.\n"
+                    "Call mark_book_complete() with the dist/ EPUB path, and name the "
+                    "build script + dist output in the summary.\n"
                     "Compile strategy — try in order until one produces a valid EPUB:\n"
                     "1. CALIBRE-NATIVE (preferred — math stays as TeX text, typeset by calibre's built-in MathJax):\n"
                     "   This is how calibre renders math in e-books: keep the mathematics as TeX notation in the HTML, and add the marker\n"
@@ -1395,15 +1510,16 @@ class MakeEpubBookRunner(CodePlanRunner):
                     "  - every EPUB/text/*.xhtml parses as well-formed XML (check with xml.dom.minidom), and\n"
                     "  - tier 1: 'x-mathjax-config' present in every chapter head AND no <math> anywhere; tier 2: no <math> and every equation is an <svg>.\n"
                     "If chapters reference images, also confirm those images are inside the EPUB (list the zip contents). Check these with the file tools / shell before confirming.\n"
-                    "Output path convention: <output_dir>/<title-slug>.epub (e.g. "
-                    "The-Art-of-Tea/The-Art-of-Tea.epub).\n\n"
+                    "Output path convention: <output_dir>/dist/<title-slug>.epub (e.g. "
+                    "The-Art-of-Tea/dist/The-Art-of-Tea.epub), produced by the build "
+                    "script.\n\n"
                     "On success call mark_book_complete(epub_path, summary) with the path "
                     "and a summary. On failure call reject_book(issue, chapter_index) — "
                     "include the zero-based chapter_index that needs rewriting (or -1 to "
                     "revisit the whole book). You MUST call one of them."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_compile_tools(event, data),
@@ -1486,7 +1602,9 @@ class MakeEpubBookWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the RESEARCH phase of make_epub_book. Gather extensive, "
                 "authoritative technical research for EVERY chapter topic (primary "
-                "sources, data, formulas, citations), then call submit_research()."
+                "sources, data, formulas, citations), STORE the research material as "
+                "files under the research/ directory (<output_dir>/research/), then "
+                "call submit_research()."
             ),
         ),
         PhaseSpec(
@@ -1498,9 +1616,23 @@ class MakeEpubBookWorkflow(WorkflowPlugin):
             on_reject="assets",
             system_prompt_override=(
                 "You are in the ASSETS phase of make_epub_book. Produce EVERY visual asset "
-                "the book needs (figures, architecture diagrams with the 'diagrams' "
-                "library, and the cover image) into the assets dir, then call "
-                "confirm_assets_ready()."
+                "the book needs (figures and flowcharts) into the "
+                "assets dir, then call confirm_assets_ready(). Render flowcharts and "
+                "structural/flow diagrams with MATPLOTLIB (mandatory, not mermaid): a "
+                "reproducible script with rounded FancyBboxPatch boxes, FancyArrowPatch "
+                "arrows, DejaVu Sans, high-DPI PNG output. Every data chart and "
+                "flowchart must look beautiful and modern: refined cohesive palette "
+                "(navy/blue/teal/coral/amber), minimal horizontal-only grid, thin "
+                "baseline spines, subtle gradient area fills, rounded callout panels, "
+                "clean frameless legends, no clipped labels; render charts via a "
+                "reproducible matplotlib script (e.g. assets/make_charts.py) and "
+                "flowcharts via assets/make_flowcharts.py. TEXT CONTRAST (mandatory): "
+                "every label vs its box fill must pass WCAG AA (contrast ratio >= 4.5:1) "
+                "\u2014 dark text on light fills, white text only on dark fills \u2014 enforced "
+                "by a programmatic contrast check inside the figure script. You may "
+                "also use the unsplash_images tool to fetch ready-made, high-quality "
+                "photos from Unsplash for photographic/illustrative content, saving "
+                "them under the assets dir."
             ),
         ),
         PhaseSpec(
@@ -1515,7 +1647,12 @@ class MakeEpubBookWorkflow(WorkflowPlugin):
                 "technical chapter in full as Markdown (precise terminology, data, "
                 "formulas, code snippets, tables, images with captions, and inline "
                 "citations grounded in the research), then call "
-                "confirm_chapter_complete()."
+                "confirm_chapter_complete(). Write it in a natural human authorial "
+                "voice - no formulaic AI prose: vary sentence rhythm, open sections "
+                "with a concrete hook, and never use mechanical transitions. Every "
+                "image you include must be appropriately sized for the reader - "
+                "cap the inline width at ~80% of the reading width and pre-resize "
+                "or crop wider sources; no wall-to-wall or tiny blurry images."
             ),
         ),
         PhaseSpec(
@@ -1526,9 +1663,11 @@ class MakeEpubBookWorkflow(WorkflowPlugin):
             next="back_matter",
             on_reject="front_matter",
             system_prompt_override=(
-                "You are in the FRONT_MATTER phase of make_epub_book. Build the cover page, "
-                "preface, and table-of-contents page, then call "
-                "confirm_front_matter_ready()."
+                "You are in the FRONT_MATTER phase of make_epub_book. Build the preface "
+                "and a table-of-contents page container (heading + page break only \u2014 "
+                "the compile toolchain auto-generates the EPUB TOC navigation via "
+                "ebooklib/pandoc, never by hand). Do NOT build a cover page \u2014 the "
+                "cover is supplied by the END USER; then call confirm_front_matter_ready()."
             ),
         ),
         PhaseSpec(
@@ -1555,7 +1694,9 @@ class MakeEpubBookWorkflow(WorkflowPlugin):
                 "into a valid .epub (calibre-native: pandoc --mathjax TeX + ebooklib + "
                 "MathJax-config trigger → SVG fallback → hand-written EPUB), preserve "
                 "images, equations (as TeX for calibre or SVG fallback), code, and tables, "
-                "validate it, and call mark_book_complete() or reject_book()."
+                "validate it, then write a reusable build_epub.py that rebuilds the EPUB "
+                "end-to-end into dist/ and cleans all intermediates, run it, and call "
+                "mark_book_complete() with the dist/ path or reject_book()."
             ),
         ),
     ]
@@ -1578,6 +1719,7 @@ class MakeEpubBookWorkflow(WorkflowPlugin):
             "output_dir": context.output_dir,
             "content_types": context.content_types,
             "assets_dir": context.assets_dir,
+            "research_dir": context.research_dir,
             "images": context.images,
             "chapters": [
                 {
@@ -1596,6 +1738,7 @@ class MakeEpubBookWorkflow(WorkflowPlugin):
             "research_notes": context.research_notes,
             "research_sources": context.research_sources,
             "research_summary": context.research_summary,
+            "research_files": context.research_files,
             "front_matter_summary": context.front_matter_summary,
             "front_matter_files": context.front_matter_files,
             "back_matter_summary": context.back_matter_summary,
@@ -1676,6 +1819,7 @@ class MakeEpubBookWorkflow(WorkflowPlugin):
                 "tables",
             ],
             assets_dir=str(payload.get("assets_dir", "")),
+            research_dir=str(payload.get("research_dir", "")),
             images=[str(i) for i in payload.get("images", [])]
             if isinstance(payload.get("images", []), list)
             else [],
@@ -1685,6 +1829,9 @@ class MakeEpubBookWorkflow(WorkflowPlugin):
             research_notes=research_notes,
             research_sources=research_sources,
             research_summary=str(payload.get("research_summary", "")),
+            research_files=[str(f) for f in payload.get("research_files", [])]
+            if isinstance(payload.get("research_files", []), list)
+            else [],
             front_matter_summary=str(payload.get("front_matter_summary", "")),
             front_matter_files=[str(f) for f in payload.get("front_matter_files", [])]
             if isinstance(payload.get("front_matter_files", []), list)

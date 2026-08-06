@@ -45,10 +45,11 @@ log = logging.getLogger(__name__)
 #: Bounded retries per phase — never loop forever waiting for a tool call.
 _MAX_ATTEMPTS = 5
 
+
 # Stable workflow policy. Book metadata, research notes, chapter content,
 # artifact paths, and validation results remain dynamic phase context.
 CACHE_CONTRACT = """
-[MAKE PDF BOOK CACHE CONTRACT]
+[MAKE_PDF_BOOK CACHE CONTRACT]
 Keep this book-authoring policy unchanged across TOC, RESEARCH, CHAPTER,
 ASSETS, FRONT_MATTER, BACK_MATTER, and COMPILE. Ask the user a focused
 clarifying question through the existing ask_user tool whenever a missing or
@@ -180,6 +181,7 @@ class MakePdfBookContext:
         default_factory=lambda: ["images", "equations", "code", "tables"]
     )
     assets_dir: str = ""
+    research_dir: str = ""
     images: list[str] = dataclasses.field(default_factory=list)
     chapters: list[ChapterInfo] = dataclasses.field(default_factory=list)
     current_chapter_index: int = 0
@@ -187,6 +189,7 @@ class MakePdfBookContext:
     research_notes: dict[int, str] = dataclasses.field(default_factory=dict)
     research_sources: list[str] = dataclasses.field(default_factory=list)
     research_summary: str = ""
+    research_files: list[str] = dataclasses.field(default_factory=list)
     pdf_path: str = ""
     compile_summary: str = ""
     front_matter_summary: str = ""
@@ -311,6 +314,7 @@ def _make_research_tools(
         notes: list[dict[str, object]],
         sources: list[str],
         summary: str,
+        files: list[str] | None = None,
     ) -> dict[str, object]:
         """Record extensive research for every chapter and advance to writing.
 
@@ -319,6 +323,9 @@ def _make_research_tools(
                 Must cover EVERY chapter (indices 0..N-1).
             sources: List of sources consulted (URLs, titles, references).
             summary: A concise overview of the research gathered.
+            files: Optional list of file paths written under the research/
+                directory (per-chapter notes, sources, summary) — the durable
+                copy of the material gathered in this phase.
         """
         if not notes:
             return {
@@ -353,13 +360,14 @@ def _make_research_tools(
         data["notes"] = {str(k): v for k, v in covered.items()}
         data["sources"] = [str(s) for s in sources if str(s).strip()]
         data["summary"] = summary.strip()
+        data["files"] = [str(f) for f in (files or []) if str(f).strip()]
         event.set()
         return {
             "ok": True,
             "message": (
                 f"Research recorded: {len(covered)} chapters covered, "
-                f"{len(sources)} sources. "
-                "The chapter phases start next."
+                f"{len(sources)} sources, {len(data['files'])} files stored "
+                "under the research/ directory. The chapter phases start next."
             ),
         }
 
@@ -424,10 +432,10 @@ def _make_assets_tools(
 
     @tool()
     async def confirm_assets_ready(assets: list[str]) -> dict[str, object]:
-        """Signal that all figure/diagram/cover assets were produced.
+        """Signal that all figure/diagram assets were produced.
 
         Args:
-            assets: Full list of asset file paths (figures + cover image).
+            assets: Full list of asset file paths (figures).
         """
         if not assets:
             return {
@@ -457,7 +465,7 @@ def _make_front_matter_tools(
         summary: str,
         files: list[str],
     ) -> dict[str, object]:
-        """Signal that the cover, preface, and contents pages are built.
+        """Signal that the preface and contents pages are built (the cover is user-supplied).
 
         Args:
             summary: What was created.
@@ -473,7 +481,7 @@ def _make_front_matter_tools(
             return {
                 "ok": False,
                 "error": "files must not be empty.",
-                "fix": "List the cover/preface/contents files you created.",
+                "fix": "List the preface/contents files you created.",
             }
         data["summary"] = summary.strip()
         data["files"] = [str(f) for f in files if str(f).strip()]
@@ -809,9 +817,9 @@ class MakePdfBookRunner(CodePlanRunner):
                     "   Default (user unspecified): all four.\n"
                     "10. Pick an output_dir (a folder derived from the book title); use the "
                     "11. Plan the book's FRONT AND BACK MATTER so the finished book looks beautiful and professional — every book gets all of these:\n"
-                    "   - COVER: a designed cover page — title, author, and (if 'images' is enabled) a cover image; plan a cover theme (colours, font) matching the subject.\n"
+                    "   - COVER: the cover page is supplied by the END USER (e.g. <output_dir>/assets/cover.png). Do NOT plan, design, or generate a cover \u2014 just plan that the user-supplied cover is used as page 1 / the library cover.\n"
                     "   - PREFACE: a short preface page (why this book, who it is for, what the reader will learn) placed before chapter 1.\n"
-                    "   - TABLE OF CONTENTS: a visible contents page listing every chapter and its sections, placed after the preface.\n"
+                    "   - TABLE OF CONTENTS: a visible contents page placed after the preface. NOTE: the contents listing itself is NOT written by hand \u2014 the compile toolchain auto-generates it (pandoc --toc, LaTeX \\tableofcontents, or typst #outline). Plan only that the page exists after the preface.\n"
                     "   - INDEX: an index section at the end listing the key terms of the book (term -> chapter/section), so the book is navigable.\n"
                     "   - COLOURED HEADINGS: headings must be coloured (a consistent accent colour for h1/h2), not plain black — plan the accent colour here (e.g. a deep blue fitting the subject).\n"
                     "user's directory if given.\n\n"
@@ -852,6 +860,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     "tables",
                 ]
                 ctx.assets_dir = f"{ctx.output_dir}/assets" if ctx.output_dir else "assets"
+                ctx.research_dir = f"{ctx.output_dir}/research" if ctx.output_dir else "research"
                 ctx.chapters = chapters
                 ctx.current_chapter_index = 0
                 self.total_phases = len(chapters) + 6
@@ -887,6 +896,7 @@ class MakePdfBookRunner(CodePlanRunner):
                 text=(
                     (
                         f"Research the technical book '{ctx.title}' extensively before writing.\n"
+                        f"Store ALL research material in: {ctx.research_dir or '<output_dir>/research'}\n"
                         f"Chapters to research:\n{chapter_titles}"
                     )
                     if attempt == 1
@@ -915,10 +925,13 @@ class MakePdfBookRunner(CodePlanRunner):
                     "   - Concrete worked examples or case studies the chapter can use\n"
                     "   - Known limitations, edge cases, and pitfalls in the field\n"
                     "   - Common misconceptions to explicitly correct\n"
-                    "2. Use the network/search tools to consult PRIMARY and authoritative "
-                    "technical sources: peer-reviewed papers, standards documents (RFCs, "
-                    "ISO/EN specs), official documentation, textbooks, and reputable "
-                    "technical references. Cross-check figures across sources.\n"
+                    "2. Use the network/search tools AND the Playwright browser tools "
+                    "(playwright_open, playwright_snapshot, playwright_click, "
+                    "playwright_wait_for) to visit websites directly and consult PRIMARY "
+                    "and authoritative technical sources: peer-reviewed papers, "
+                    "standards documents (RFCs, ISO/EN specs), official documentation, "
+                    "textbooks, and reputable technical references. Cross-check "
+                    "figures across sources.\n"
                     "3. Record the exact sources used (URLs, DOIs, standard numbers, titles) "
                     "so chapters can cite them.\n"
                     "4. Keep notes dense and organised — one block per chapter, with data "
@@ -929,16 +942,27 @@ class MakePdfBookRunner(CodePlanRunner):
                     "for key formulas, accurate runnable code snippets (with language tags "
                     "and expected output), and the data for reference tables — all in "
                     "the chapter notes. (Visual assets are produced in a separate ASSETS "
-                    "phase after research, so do NOT generate images here.)\n\n"
-                    "Call submit_research(notes, sources, summary) where:\n"
+                    "phase after research, so do NOT generate images here.)\n"
+                    f"6. STORE THE RESEARCH MATERIAL IN FILES — create the research "
+                    f"directory {ctx.research_dir or '<output_dir>/research'} (the write "
+                    "tool creates parent directories) and write the durable research "
+                    "material there: one Markdown notes file per chapter (e.g. "
+                    "research/ch01-notes.md, research/ch02-notes.md, ...), a "
+                    "research/sources.md listing every source with URLs/DOIs, and a "
+                    "research/summary.md with the overview. Keep the per-chapter notes "
+                    "files dense — exact data, formulas, code, and index terms the writer "
+                    "can quote directly. The notes you pass to submit_research() must "
+                    "mirror these files.\n\n"
+                    "Call submit_research(notes, sources, summary, files) where:\n"
                     "  - notes: list of {'chapter_index': int, 'notes': str} — ONE entry "
                     "per chapter, indices 0..N-1\n"
                     "  - sources: list of source URLs/DOIs/standard numbers consulted\n"
-                    "  - summary: a short overview of the research\n\n"
+                    "  - summary: a short overview of the research\n"
+                    "  - files: the file paths you wrote under the research/ directory\n\n"
                     "Do NOT write any chapter content. This phase gathers material only."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=20,
                 shared_memory=memory,
                 tools=_make_research_tools(event, data, len(ctx.chapters)),
@@ -952,10 +976,13 @@ class MakePdfBookRunner(CodePlanRunner):
                 }
                 ctx.research_sources = list(data.get("sources", []))
                 ctx.research_summary = str(data.get("summary", ""))
+                ctx.research_files = [str(f) for f in (data.get("files") or [])]
                 ctx.images = [str(a) for a in data.get("assets", [])]
                 ctx.artifacts["research"] = (
                     f"{len(ctx.research_notes)} chapters researched; "
-                    f"{len(ctx.research_sources)} sources; {len(ctx.images)} assets"
+                    f"{len(ctx.research_sources)} sources; "
+                    f"{len(ctx.research_files)} files under "
+                    f"{ctx.research_dir or '<output_dir>/research'}"
                 )
                 return MakePdfBookState.ASSETS
 
@@ -1022,17 +1049,57 @@ class MakePdfBookRunner(CodePlanRunner):
                     "- Prefer dense, precise prose over vague generalities. Show, don't "
                     "tell: give the exact value, the exact step, the exact trade-off.\n"
                     "- Cover limitations, edge cases, and pitfalls honestly.\n\n"
+                    "WRITE LIKE A HUMAN (the most important instruction in this phase):\n"
+                    "- Write as ONE human author who knows this material cold and is "
+                    "explaining it to a specialist colleague - warm, confident, "
+                    "unhurried. Not documentation, not an essay, not a wiki page.\n"
+                    "- Vary sentence length and rhythm. Let short, declarative sentences "
+                    "punctuate longer explanations. Break up uniform runs of 'X is... "
+                    "Y is... Z is...' - no two consecutive sentences should share the "
+                    "same shape.\n"
+                    "- Open every section with a concrete hook - a scene, a question, a "
+                    "one-line insight - before the technical setup, so the reader knows "
+                    "why this section exists before reading how it works.\n"
+                    "- NO AI tells. Never open with 'It is important to note', 'In "
+                    "conclusion', 'Furthermore'/'Moreover'/'Additionally', or any "
+                    "formulaic transition. Never end a section by restating its opening. "
+                    "Vary every transition: forward hooks, open questions, concrete "
+                    "previews - never the same shape twice in a row.\n"
+                    "- Use concrete, local analogies that actually teach (a queue for "
+                    "Little's law, an envelope for a signed file share), and never carry "
+                    "an analogy beyond its point.\n"
+                    "- Prefer flowing prose over bullet-only walls: convert a list to a "
+                    "paragraph where the paragraph teaches better. Keep lists only where "
+                    "the shape earns them - numbered flow steps, comparison tables, "
+                    "reference data.\n"
+                    "- Read every paragraph aloud before writing it. If a sentence "
+                    "sounds assembled from a template, rewrite it until it sounds "
+                    "spoken.\n\n"
                     "BEAUTY & STRUCTURE (the finished book must look professional):\n"
                     "- Use a single '# ' chapter title and '## ' section headings — the typesetter colours these automatically with the accent colour planned in the TOC; never style headings with raw HTML or inline colours.\n"
                     "- Mark every key indexable term in **bold** on first use — the index section collects these, so consistent marking makes the index accurate.\n"
                     "- Keep paragraphs, lists, and spacing clean; prefer short, scannable sections over dense walls of text.\n"
                     "RICH CONTENT — use every enabled content type where it adds value:\n"
                     + (
-                        "- IMAGES: for every figure the outline/research calls for, place "
-                        "an image under <output_dir>/assets/ (create the folder), then "
-                        "reference it with Markdown: ![Figure caption](assets/fig-NN-"
-                        "name.png). Keep the caption descriptive. Include at least one "
-                        "figure per chapter when 'images' is enabled.\n"
+                        "- IMAGES: create BOTH mermaid diagrams AND matplotlib graphs "
+                        "for the figures the outline/research calls for. For "
+                        "structural/flow diagrams write a .mmd source and render it "
+                        "to a PNG via mermaid-cli (npx -y @mermaid-js/mermaid-cli "
+                        "-i fig.mmd -o fig.png); for data charts write a small "
+                        "matplotlib script and run it to produce a PNG. Save the "
+                        "PNGs under <output_dir>/assets/ (create the folder), then "
+                        "reference them with Markdown: ![Figure caption]"
+                        "(assets/fig-NN-name.png). Keep the caption descriptive. "
+                        "Include at least one figure per chapter when 'images' is "
+                        "enabled.\n"
+                        "   EVERY image must be APPROPRIATELY SIZED for print: no "
+                        "full-bleed wall-to-wall images. Cap the inline width so an "
+                        "image occupies at most ~70-80% of the text column (the "
+                        "compiler's maxwidth guard already prevents overflow); for "
+                        "wider source images, pre-resize or crop them so the figure "
+                        "fits comfortably on the page next to the caption. Avoid "
+                        "images that are tiny (blurry when scaled up) or enormous "
+                        "(wasting page space).\n"
                         if "images" in ctx.content_types
                         else ""
                     )
@@ -1072,7 +1139,28 @@ class MakePdfBookRunner(CodePlanRunner):
                     "tables, images, and blockquotes.\n"
                     "4. Length: 2,000–4,000 words of substantive technical content for this "
                     "chapter (technical books run denser than general ones).\n"
-                    "5. End with a short transition that sets up the next chapter.\n"
+                    "5. PAGE BREAKS: Each chapter MUST begin on a new page. Put the page "
+                    "break IMMEDIATELY AFTER the '# ' title line of the chapter file. "
+                    "CRITICAL \u2014 use the page-break syntax that matches the COMPILE "
+                    "tier, because the wrong one renders as literal text in the PDF:\n"
+                    "   - LaTeX/pdflatex tier (the default for the PDF book): put a raw "
+                    "LaTeX line '\\newpage' (or '\\clearpage') on its own line. pandoc "
+                    "passes raw LaTeX through to the .tex, so this starts a new page. "
+                    "'#pagebreak()' is typst syntax ONLY \u2014 in the LaTeX tier pandoc "
+                    "renders it as literal '#pagebreak()' text on the page, it does NOT "
+                    "break the page. NEVER use '#pagebreak()' in the PDF-book chapter "
+                    "files.\n"
+                    "   - Typst tier (only if the compile actually lands on typst): use "
+                    "'#pagebreak()' after the title.\n"
+                    "   - HTML/epub: add '<hr class=\"pagebreak\">' or use CSS page-break.\n"
+                    "   Example structure (LaTeX tier):\n"
+                    "   ```\n"
+                    "   # Chapter 1: Title\n\n"
+                    "   \\newpage\n\n"
+                    "   ## Section 1\n\n"
+                    "   Content here...\n"
+                    "   ```\n"
+                    "6. End with a short transition that sets up the next chapter.\n"
                     "6. Do NOT include the book title or author in the file — just the "
                     "chapter content. The PDF metadata handles title/author.\n\n"
                     "Write the file with the write tool, then call "
@@ -1080,8 +1168,8 @@ class MakePdfBookRunner(CodePlanRunner):
                     "word_count=..., assets=[...]) with the exact index you were assigned "
                     "and the list of asset files (images) the chapter references."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=25,
                 shared_memory=memory,
                 tools=_make_chapter_tools(event, data),
@@ -1120,7 +1208,7 @@ class MakePdfBookRunner(CodePlanRunner):
             await self.run_phase(
                 intent=ctx.intent,
                 text=(
-                    f"Generate all figure, diagram, and cover assets for '{ctx.title}' "
+                    f"Generate all figure and diagram assets for '{ctx.title}' "
                     f"into {ctx.assets_dir or '<output_dir>/assets'}."
                     if attempt == 1
                     else "Call confirm_assets_ready(assets) now with the full asset list."
@@ -1131,22 +1219,67 @@ class MakePdfBookRunner(CodePlanRunner):
                     f"Book: {ctx.title}\nAssets dir: {ctx.assets_dir or '<output_dir>/assets'}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
                     f"Chapter outlines:\n{ctx.toc_summary or '(see plan)'}\n\n"
-                    "Create the assets directory if missing, then generate:\n"
-                    "1. Every figure the chapters need (per the research notes and "
-                    "outlines): charts and plots with matplotlib (Agg backend), "
-                    "architecture/cloud diagrams with the 'diagrams' library "
-                    "(https://github.com/mingrammer/diagrams; pip install diagrams, "
-                    "needs Graphviz), or PIL for simple graphics. Name files clearly "
-                    "like fig-02-schema.png, fig-03-architecture.png.\n"
-                    "2. The COVER image: <output_dir>/assets/cover.png with the title, "
-                    "author, and a clean theme background (matplotlib or PIL).\n"
-                    "3. Keep every image bounded and PNG at a reasonable resolution.\n\n"
+                    "Create the assets directory if missing, then generate BOTH kinds "
+                    "of visual assets \u2014 mermaid diagrams AND matplotlib graphs:\n"
+                    "For PHOTOGRAPHIC / ILLUSTRATIVE images (real-world photos, scenery, "
+                    "product shots, case-study visuals), you may use the unsplash_images "
+                    "tool to download ready-made, high-quality photos from Unsplash into "
+                    "the assets directory (e.g. unsplash_images(query='python', "
+                    "count=2, output_dir=<output_dir>/assets)). They are referenced from "
+                    "chapters exactly like the generated figures.\n"
+                    "1. MERMAID DIAGRAMS for STRUCTURAL/FLOW content (architectures, "
+                    "state machines, flowcharts, sequence/ER diagrams, network "
+                    "topologies): write one .mmd source per diagram (e.g. "
+                    "assets/fig-02-schema.mmd, assets/fig-03-architecture.mmd) and "
+                    "render each to a high-DPI PNG with mermaid-cli, e.g.: "
+                    "npx -y @mermaid-js/mermaid-cli -i assets/fig-02-schema.mmd "
+                    "-o assets/fig-02-schema.png. Use a light background and dark "
+                    "text in the diagram theme so labels stay readable in print. "
+                    "Keep the .mmd sources alongside the PNGs so they are "
+                    "reproducible.\n"
+                    "2. MATPLOTLIB GRAPHS for DATA content (line/bar/area charts, "
+                    "histograms, scatter plots): write a reproducible script (e.g. "
+                    "assets/make_charts.py) that draws them and saves high-DPI PNGs "
+                    "(2000px+ wide) under <output_dir>/assets/. "
+                    "Name files clearly like fig-02-schema.png, fig-03-architecture.png.\n"
+                    "   BEAUTIFUL MODERN CHARTS & DIAGRAMS (mandatory quality bar): every "
+                    "data chart and flowchart must look polished and contemporary, not "
+                    "like a default matplotlib output. For data charts (line/bar/area):\n"
+                    "   - Use a refined, cohesive palette (e.g. deep navy ink, modern blue, "
+                    "teal, coral, amber) with white or very light backgrounds; avoid "
+                    "default matplotlib colours and heavy gridlines.\n"
+                    "   - Keep the grid minimal: horizontal gridlines only (no vertical), "
+                    "thin baseline spines (bottom+left only), no top/right spines, and "
+                    "zero-length or hidden ticks.\n"
+                    "   - Add subtle gradient/soft area fills under curves, rounded "
+                    "callout panels with soft tinted backgrounds for key annotations, and "
+                    "clean legends without frames.\n"
+                    "   - Use clear, left-aligned bold titles and readable font sizes; "
+                    "never clip labels at the figure edge (test with tight bbox).\n"
+                    "   - Render charts via a small matplotlib script (e.g. "
+                    "assets/make_charts.py) so they are reproducible, then regenerate "
+                    "the PNGs.\n"
+                    "   TEXT CONTRAST (mandatory for EVERY box/panel label): every "
+                    "label must be readable against its fill. Compute the WCAG "
+                    "relative-luminance contrast ratio for every (text, fill) pair "
+                    "and require >= 4.5:1 (WCAG AA). Rules: dark text (e.g. #1F2A44) "
+                    "on light fills; white text ONLY on dark fills (e.g. navy or "
+                    "dark orange #CC450E/#B93B0D/#A93409 \u2014 deepen mid-tone fills "
+                    "until they pass). Never put white text on a light fill or light "
+                    "text on a mid-tone fill. Add a programmatic contrast check to "
+                    "the figure script (a verify() helper that computes the ratio "
+                    "for every (fill, text) pair and exits non-zero if any box is "
+                    "below 4.5:1) and run it before confirming the assets. Keep "
+                    "labels short and legible.\n"
+                    "3. Keep every image bounded and PNG at a reasonable resolution (1024x768 or similar). "
+                    "NOTE: the COVER page is NOT generated here \u2014 the end user supplies "
+                    "<output_dir>/assets/cover.png themselves; do not create or design it.\n\n"
                     "Then call confirm_assets_ready(assets) with the FULL list of asset "
-                    "file paths you produced (figures + cover). These are handed to the "
+                    "file paths you produced (figures). These are handed to the "
                     "chapter phases so they can reference them by name."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=25,
                 shared_memory=memory,
                 tools=_make_assets_tools(event, data),
@@ -1164,15 +1297,14 @@ class MakePdfBookRunner(CodePlanRunner):
         ctx: MakePdfBookContext,
         memory: object,
     ) -> MakePdfBookState:
-        """Build cover, preface, and table-of-contents pages; return BACK_MATTER or FAILED."""
+        """Build preface and table-of-contents pages (cover is user-supplied); return BACK_MATTER or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
             await self.run_phase(
                 intent=ctx.intent,
                 text=(
-                    f"Build the front-matter pages (cover, preface, table of contents) "
-                    f"for '{ctx.title}'."
+                    f"Build the front-matter pages (preface, table of contents) for '{ctx.title}'."
                     if attempt == 1
                     else "Call confirm_front_matter_ready(summary, files) now."
                 ),
@@ -1184,19 +1316,30 @@ class MakePdfBookRunner(CodePlanRunner):
                     f"Chapters: {ctx.toc_summary or '(see plan)'}\n\n"
                     "Create these pages (as Markdown in the project for PDF, or XHTML "
                     "items for EPUB):\n"
-                    "1. COVER: title, author, and the cover image "
-                    "(<output_dir>/assets/cover.png) if it exists.\n"
-                    "2. PREFACE: a short preface (why this book, who it is for, what the "
+                    "NOTE: the COVER page is supplied by the END USER (e.g. "
+                    "<output_dir>/assets/cover.png). Do NOT build, generate, or design "
+                    "a cover page \u2014 the compile phase places the user-supplied cover "
+                    "as page 1 / the library cover.\n"
+                    "1. PREFACE: a short preface (why this book, who it is for, what the "
                     "reader will learn).\n"
-                    "3. TABLE OF CONTENTS: a visible contents page listing every chapter "
-                    "and its sections.\n"
+                    "2. TABLE OF CONTENTS: create ONLY the contents page container \u2014 "
+                    "the heading and the page break. Do NOT hand-write the chapter/section "
+                    "listing: the compile toolchain auto-generates the real TOC there "
+                    "(pandoc --toc, LaTeX \\tableofcontents, or typst #outline) and fills "
+                    "this page.\n"
                     "Use a clean, consistent style. The compile phase will assemble "
-                    "these in order: cover, preface, contents, then chapters.\n\n"
+                    "these in order: preface, contents, then chapters (the user-supplied cover is placed before them by the compile phase).\n"
+                    "PAGE BREAKS: the user-supplied cover is page 1 and carries NO leading page "
+                    "break (it would create a blank first page); the preface and the contents "
+                    "page must EACH begin on a new page \u2014 put a raw '\\newpage' "
+                    "(LaTeX tier; pandoc passes it through) or '#pagebreak()' (typst "
+                    "tier) on its own line right after the '# ' title in the preface "
+                    "file and in the contents file.\n\n"
                     "Then call confirm_front_matter_ready(summary, files) with a summary "
                     "and the list of files you created."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_front_matter_tools(event, data),
@@ -1235,12 +1378,15 @@ class MakePdfBookRunner(CodePlanRunner):
                     "term (concepts, names, methods) plus the research-phase index-term "
                     "notes, then produce an INDEX page: an alphabetised list of terms "
                     "each pointing to its chapter (chapter number, or link to the "
-                    "chapter XHTML for EPUB).\n\n"
+                    "chapter XHTML for EPUB).\n"
+                    "The index page must begin on a NEW PAGE \u2014 put a raw "
+                    "'\\newpage' (LaTeX tier) or '#pagebreak()' (typst tier) on its "
+                    "own line right after the index title.\n\n"
                     "Then call confirm_back_matter_ready(summary, files) with a summary "
                     "and the index file(s) you created."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_back_matter_tools(event, data),
@@ -1273,7 +1419,7 @@ class MakePdfBookRunner(CodePlanRunner):
                 f"Rich content: {', '.join(ctx.content_types)}\n"
                 f"Chapter files:\n{paths}\n"
                 + (
-                    "\nFront matter (cover/preface/contents):\n"
+                    "\nFront matter (preface/contents; cover is user-supplied):\n"
                     + "\n".join(f"  {f}" for f in ctx.front_matter_files)
                     + "\nBack matter (index):\n"
                     + "\n".join(f"  {f}" for f in ctx.back_matter_files)
@@ -1297,8 +1443,8 @@ class MakePdfBookRunner(CodePlanRunner):
                     "Asset files (images/figures the chapters reference):\n"
                     + ("\n".join(f"  {a}" for a in ctx.images) if ctx.images else "  (none)")
                     + "\n\n"
-                    "BOOK POLISH — the finished PDF must look like a real published book. The front-matter pages (cover/preface/contents) and the index page were already built by the FRONT_MATTER and BACK_MATTER phases — use those files, do NOT rebuild them:\n"
-                    "  FRONT MATTER: the cover/preface/contents Markdown files from the FRONT_MATTER phase (ctx.front_matter_files) go FIRST, before the chapter list, in this order: cover, preface, contents, chapters.\n"
+                    "BOOK POLISH — the finished PDF must look like a real published book. The front-matter pages (preface/contents) and the index page were built by the FRONT_MATTER and BACK_MATTER phases — use those files, do NOT rebuild them. The COVER page is supplied by the END USER (e.g. <output_dir>/assets/cover.png) — place it as page 1; do NOT generate, design, or rebuild it:\n"
+                    "  FRONT MATTER: the preface/contents Markdown files from the FRONT_MATTER phase (ctx.front_matter_files) go FIRST, before the chapter list, in this order: preface, contents, chapters; the user-supplied cover image (<output_dir>/assets/cover.png) becomes page 1.\n"
                     "  BACK MATTER: append the index file from the BACK_MATTER phase (ctx.back_matter_files) after the last chapter.\n"
                     "  COLOURED HEADINGS:\n"
                     "   - TYPST tier: after the sed symbol fixes, prepend to book.typ a heading-colour rule and a clean page setup (adjust colours to the planned accent):\n"
@@ -1307,9 +1453,43 @@ class MakePdfBookRunner(CodePlanRunner):
                     '        #show heading.where(level: 2): set text(fill: rgb("#2e74b5"), size: 15pt)\n'
                     "     Prepend with: sed -i '1i #set page(paper: \"a4\", margin: 2.2cm)' book.typ (repeat per rule).\n"
                     "   - XELATEX tier: write a header.tex with \\usepackage{xcolor} \\usepackage{sectsty}, \\definecolor{accent}{HTML}{1F4E79}, \\allsectionsfont{\\color{accent}}, and pass pandoc -H header.tex.\n"
-                    "  TOC: the engine must emit a table of contents (pandoc --toc for typst/xelatex); the generated toc.md guarantees a visible one even if --toc is unavailable.\n"
+                    "  JUSTIFIED TEXT (mandatory): all body paragraph text must be justified \u2014 flush to BOTH the left and right margins.\n"
+                    "   - TYPST tier: add '#set par(justify: true)' to the prepended book.typ rules, in the same prepend step as the page setup and heading-colour rules above.\n"
+                    "   - XELATEX tier: pdflatex/xelatex justify body text by default; do not introduce '\\raggedright' or any left-alignment override.\n"
+                    "   Verify in the compiled PDF that multi-line body paragraphs reach the right margin on every line except the paragraph-final line (and short items such as list bullets and table cells, which stay short).\n"
+                    "  TOC (mandatory): the table of contents MUST be generated by the typesetting toolchain itself \u2014 pandoc --toc (typst/xelatex), LaTeX \\tableofcontents, or typst #outline \u2014 whichever the engine uses. NEVER hand-write the TOC or a toc.md listing; let the toolchain produce it so page numbers are accurate. If pandoc --toc places it before the cover, post-process (as described below) so it lands after the cover, but the listing itself is always engine-generated.\n"
                     "  INDEX: index.md lists the marked terms; for typst/xelatex use chapter numbers as references when page numbers are not known in advance.\n"
-                    "  After building, verify: the extracted text contains 'Preface', 'Contents' and 'Index'; the cover title appears; and the typst source contains a '#show heading' colour rule (grep 'show heading' book.typ).\n"
+                    "  PAGE BREAKS (mandatory): every chapter MUST begin on a new page, and the preface, the table of contents, any appendices, and the index must EACH begin on a new page. The cover is page 1 \u2014 it must NOT carry a leading page break (that would create a blank first page). Enforce every other break by placing a raw '\\newpage' (LaTeX tier; pandoc passes raw LaTeX through to the .tex) or '#pagebreak()' (typst tier) on its own line immediately after the '# ' title in each file: each chapter file, the preface file, the contents file, and the index file. NEVER use '#pagebreak()' in the LaTeX tier \u2014 pandoc renders it as literal '#pagebreak()' text there. VERIFY after compiling: use pypdf to extract per-page text and confirm that each chapter title and the preface/contents/index titles each start on their own page (no body text from the previous page shares it).\n"
+                    "  After building, verify: the extracted text contains 'Preface', 'Contents' and 'Index'; page 1 is the user-supplied cover (image-only page, no body text); and the typst source contains a '#show heading' colour rule (grep 'show heading' book.typ).\n"
+                    "BUILD SCRIPT & DIST DELIVERABLE (mandatory):\n"
+                    "Write a reusable build script <output_dir>/build_pdf.py (Python 3; a "
+                    "build.sh is acceptable) that performs the END-TO-END compile from the "
+                    "markdown sources to the final PDF, then RUN it so dist/ holds the "
+                    "deliverable:\n"
+                    "  1. Regenerate the intermediate TeX from sources (pandoc), then "
+                    "post-process it so the page order is Cover -> TOC -> Preface -> "
+                    "chapters: delete pandoc's auto-inserted \\maketitle and place "
+                    "\\tableofcontents AFTER the cover content and BEFORE the Preface "
+                    "heading (pandoc's --toc flag puts it before the cover, so do NOT "
+                    "rely on --toc).\n"
+                    "  2. Compile with pdflatex AT LEAST TWICE \u2014 TOC page numbers only "
+                    "resolve on the second pass; run a third pass if the log contains "
+                    "'Rerun to get cross-references right' / 'Label(s) may have "
+                    "changed'. Do NOT skip passes when pdflatex exits non-zero on "
+                    "Unicode warnings; the PDF is still produced, keep going.\n"
+                    "  3. Copy the final PDF into <output_dir>/dist/<title-slug>.pdf "
+                    "(create dist/).\n"
+                    "  4. Delete ALL intermediate artifacts (book.tex, book.typ, *.aux, "
+                    "*.log, *.toc, *.out, *.fls, .math-render/, .epub-work/, etc.) so "
+                    "only the sources, the build script, and dist/ remain.\n"
+                    "  5. Enforce PAGE BREAKS: every chapter plus the preface, contents, "
+                    "appendices and index must start on a new page (raw '\\newpage' in "
+                    "the LaTeX tier, '#pagebreak()' in the typst tier, placed right "
+                    "after the title in each markdown source; the cover is page 1 and "
+                    "carries no leading break). Verify with pypdf per-page text that "
+                    "no two of these share a page, and fix the sources if they do.\n"
+                    "Call mark_book_complete() with the dist/ PDF path, and name the "
+                    "build script + dist output in the summary.\n"
                     "Compile strategy — try in order until one produces a valid PDF:\n"
                     "1. TYPST (preferred — native typeset math, single static binary, "
                     "no system install):\n"
@@ -1436,8 +1616,9 @@ class MakePdfBookRunner(CodePlanRunner):
                     ".get('/Subtype') == '/Image': c += 1\n"
                     "        print('images:', c)\n"
                     "        PY\n"
-                    "Output path convention: <output_dir>/<title-slug>.pdf (e.g. "
-                    "Kalman-Filtering/Kalman-Filtering.pdf).\n\n"
+                    "Output path convention: <output_dir>/dist/<title-slug>.pdf (e.g. "
+                    "Kalman-Filtering/dist/Kalman-Filtering.pdf), produced by the "
+                    "build script.\n\n"
                     "RENDERER TEMPLATE (only needed for tiers 3–4) — write this exactly "
                     "to .math-render/render-math.js and run with node:\n"
                     + _MATHJAX_RENDERER_JS
@@ -1447,8 +1628,8 @@ class MakePdfBookRunner(CodePlanRunner):
                     "include the zero-based chapter_index that needs rewriting (or -1 to "
                     "revisit the whole book). You MUST call one of them."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_compile_tools(event, data),
@@ -1531,7 +1712,10 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the RESEARCH phase of make_pdf_book. Gather extensive, "
                 "authoritative technical research for EVERY chapter topic (primary "
-                "sources, data, formulas, citations), then call submit_research()."
+                "sources, data, formulas, citations; you may also use the Playwright "
+                "browser tools to visit websites directly during research), STORE the "
+                "research material as files under the research/ directory "
+                "(<output_dir>/research/), then call submit_research()."
             ),
         ),
         PhaseSpec(
@@ -1543,9 +1727,24 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             on_reject="assets",
             system_prompt_override=(
                 "You are in the ASSETS phase of make_pdf_book. Produce EVERY visual asset "
-                "the book needs (figures, architecture diagrams with the 'diagrams' "
-                "library, and the cover image) into the assets dir, then call "
-                "confirm_assets_ready()."
+                "the book needs (figures and flowcharts) into the "
+                "assets dir, then call confirm_assets_ready(). Create BOTH kinds of "
+                "assets: (1) MERMAID DIAGRAMS for structural/flow content "
+                "(architectures, state machines, flowcharts, sequence/ER diagrams, "
+                "network topologies) \u2014 write a .mmd source per diagram and render "
+                "each to PNG via mermaid-cli/mmdc, keeping the .mmd sources; "
+                "(2) MATPLOTLIB GRAPHS for data content \u2014 render charts via a "
+                "reproducible matplotlib script (e.g. assets/make_charts.py). Every "
+                "data chart must look beautiful and modern: refined cohesive palette "
+                "(navy/blue/teal/coral/amber), minimal horizontal-only grid, thin "
+                "baseline spines, subtle gradient area fills, rounded callout panels, "
+                "clean frameless legends, no clipped labels. TEXT CONTRAST (mandatory): "
+                "every label vs its box fill must pass WCAG AA (contrast ratio >= 4.5:1) "
+                "\u2014 dark text on light fills, white text only on dark fills \u2014 enforced "
+                "by a programmatic contrast check inside the figure script. You may "
+                "also use the unsplash_images tool to fetch ready-made, high-quality "
+                "photos from Unsplash for photographic/illustrative content, saving "
+                "them under the assets dir."
             ),
         ),
         PhaseSpec(
@@ -1559,8 +1758,18 @@ class MakePdfBookWorkflow(WorkflowPlugin):
                 "You are in the CHAPTER phase of make_pdf_book. Write exactly ONE "
                 "technical chapter in full as Markdown (precise terminology, data, "
                 "formulas, code snippets, tables, images with captions, and inline "
-                "citations grounded in the research), then call "
-                "confirm_chapter_complete()."
+                "citations grounded in the research). Where the chapter needs "
+                "figures, create BOTH mermaid diagrams (write a .mmd source and "
+                "render it to a PNG via mermaid-cli) AND matplotlib graphs (write a "
+                "matplotlib script and run it to produce a PNG), save them under "
+                "<output_dir>/assets/, and reference them in the chapter. Then call "
+                "confirm_chapter_complete(). Write it in a natural human authorial "
+                "voice - no formulaic AI prose: vary sentence rhythm, open sections "
+                "with a concrete hook, and never use mechanical transitions. Every "
+                "image you include must be appropriately sized for print - cap the "
+                "inline width at ~70-80% of the text column, and pre-resize or crop "
+                "wider sources so figures fit the page; no wall-to-wall or tiny "
+                "blurry images."
             ),
         ),
         PhaseSpec(
@@ -1571,9 +1780,11 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="back_matter",
             on_reject="front_matter",
             system_prompt_override=(
-                "You are in the FRONT_MATTER phase of make_pdf_book. Build the cover page, "
-                "preface, and table-of-contents page, then call "
-                "confirm_front_matter_ready()."
+                "You are in the FRONT_MATTER phase of make_pdf_book. Build the preface "
+                "and a table-of-contents page container (heading + page break only \u2014 "
+                "the compile toolchain auto-generates the TOC listing via pandoc/typst/"
+                "pdflatex, never by hand). Do NOT build a cover page \u2014 the cover is "
+                "supplied by the END USER; then call confirm_front_matter_ready()."
             ),
         ),
         PhaseSpec(
@@ -1600,8 +1811,11 @@ class MakePdfBookWorkflow(WorkflowPlugin):
                 "into a valid .pdf (pandoc -t typst + sed symbol fixes + typst compile "
                 "→ xelatex → chromium+MathJax → reportlab), preserve images, "
                 "native math, code, and tables, validate it (%PDF, page count, "
-                "pypdf chapter-title + no-leak + image-count checks), and call "
-                "mark_book_complete() or reject_book()."
+                "pypdf chapter-title + no-leak + image-count checks), then write a "
+                "reusable build_pdf.py that rebuilds the PDF end-to-end into dist/ "
+                "(compile at least twice so TOC page numbers resolve; user cover → TOC → "
+                "preface ordering; clean all intermediates), run it, and call "
+                "mark_book_complete() with the dist/ path or reject_book()."
             ),
         ),
     ]
@@ -1624,6 +1838,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             "output_dir": context.output_dir,
             "content_types": context.content_types,
             "assets_dir": context.assets_dir,
+            "research_dir": context.research_dir,
             "images": context.images,
             "chapters": [
                 {
@@ -1642,6 +1857,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             "research_notes": context.research_notes,
             "research_sources": context.research_sources,
             "research_summary": context.research_summary,
+            "research_files": context.research_files,
             "front_matter_summary": context.front_matter_summary,
             "front_matter_files": context.front_matter_files,
             "back_matter_summary": context.back_matter_summary,
@@ -1722,6 +1938,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
                 "tables",
             ],
             assets_dir=str(payload.get("assets_dir", "")),
+            research_dir=str(payload.get("research_dir", "")),
             images=[str(i) for i in payload.get("images", [])]
             if isinstance(payload.get("images", []), list)
             else [],
@@ -1731,6 +1948,9 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             research_notes=research_notes,
             research_sources=research_sources,
             research_summary=str(payload.get("research_summary", "")),
+            research_files=[str(f) for f in payload.get("research_files", [])]
+            if isinstance(payload.get("research_files", []), list)
+            else [],
             front_matter_summary=str(payload.get("front_matter_summary", "")),
             front_matter_files=[str(f) for f in payload.get("front_matter_files", [])]
             if isinstance(payload.get("front_matter_files", []), list)
