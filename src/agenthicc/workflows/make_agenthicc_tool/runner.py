@@ -48,6 +48,27 @@ log = logging.getLogger(__name__)
 #: Bounded retries per phase — never loop forever waiting for a tool call.
 _MAX_ATTEMPTS = 5
 
+# Stable workflow policy.  Request-specific tool plans, generated source,
+# validation output, and user answers remain dynamic phase context.  Passing
+# this unchanged on every ``run_phase`` call keeps the system prefix eligible
+# for provider prompt caching across retries and phase transitions.
+CACHE_CONTRACT = """
+[MAKE AGENTHICC TOOL CACHE CONTRACT]
+Keep this tool-authoring workflow policy unchanged across ANALYZE, GENERATE,
+VALIDATE, and FINALIZE. Ask the user a focused question through the existing
+ask_user tool whenever a missing or ambiguous requirement could materially
+change the tool; wait for the answer instead of guessing. The actual question
+and answer are dynamic context.
+
+Keep the tool request, plan, parameters, generated source path, artifacts,
+validation report, retry details, and phase state in dynamic context. Do not
+insert changing workflow data into this stable contract, rewrite the beginning
+of shared conversation history, or put rolling summaries here. Use the shared
+run_phase API so stable tools remain ordered before phase-local transition
+tools and the session's capability, approval, workspace, and memory policies
+remain authoritative.
+""".strip()
+
 
 class MakeToolState(Enum):
     """Every state this workflow can be in."""
@@ -476,6 +497,7 @@ class MakeToolRunner(CodePlanRunner):
                     "Be precise about capabilities — they drive the approval/safety "
                     "gates in the session."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=10,
                 shared_memory=memory,
                 tools=_make_analyze_tools(event, data),
@@ -600,6 +622,7 @@ class MakeToolRunner(CodePlanRunner):
                     "confirm_generation_complete(file_path, summary) with the exact "
                     "path you wrote and a one-line summary."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 mode="Yolo",
                 max_turns=25,
                 shared_memory=memory,
@@ -671,6 +694,7 @@ class MakeToolRunner(CodePlanRunner):
                     "loop back to generate for repairs.\n"
                     "You MUST call one of them."
                 ),
+                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=12,
                 shared_memory=memory,
                 tools=_make_validate_tools(event, data),
@@ -720,6 +744,7 @@ class MakeToolRunner(CodePlanRunner):
                 "4. The exact path written.\n\n"
                 "Keep it concise and actionable."
             ),
+            stable_system_prompt=CACHE_CONTRACT,
             max_turns=6,
             shared_memory=memory,
         )

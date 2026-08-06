@@ -249,6 +249,9 @@ requirements and to wait for answers instead of guessing. The
 `describe_prompt_cache_contract`, `show_workflow_template`, and
 `validate_workflow_cache_contract` inspection tools expose these rules during
 authoring; strict validation rejects a generated custom runner that omits them.
+The built-in `make_agenthicc_tool` runner also passes one immutable contract to
+every analyze, generate, validate, and finalize turn, keeping its tool plan,
+generated source path, validation report, and retry state in dynamic context.
 
 The runtime records only redacted contract fingerprints and cache epochs in the
 conversation journal and workflow checkpoint. A phase change does not change

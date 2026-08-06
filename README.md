@@ -188,6 +188,11 @@ All five are read-only and available in Plan mode, so the agent can inspect the 
 
 Generated custom runners receive a cache-stability contract: immutable workflow policy and deterministic tool schemas stay in the reusable prefix, while phase state, artifacts, questions, answers, and summaries stay dynamic. The authoring agent is instructed to declare a literal `CACHE_CONTRACT`, pass it as `stable_system_prompt` to `CodePlanRunner.run_phase()`, and use `ask_user` instead of guessing over material ambiguity. Strict validation rejects runners that bypass this boundary or mutate the shared conversation history.
 
+The built-in `make_agenthicc_tool` workflow follows the same boundary across
+its analyze, generate, validate, and finalize phases; tool plans, generated
+paths, validation reports, and retry state remain dynamic rather than changing
+the reusable system prefix.
+
 ### Transition tools
 
 Transition tools in generated runners must use the canonical bare `@tool_control` decorator imported from `agenthicc.tools.capabilities`, above `@tool()`. The authoring inspection tool `describe_transition_tool_pattern` shows the exact form, and strict validation catches factory-local import or decorator mistakes before the workflow is accepted.
