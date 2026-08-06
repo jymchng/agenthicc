@@ -606,14 +606,33 @@ async def test_background_cli_manager_attach_and_handler_errors(
         "agenthicc.tui.workspace.background_manager.run_background_manager",
         lambda *args, **kwargs: asyncio.sleep(0, result=ManagerResult("attach", "attach-edge")),
     )
-    attached: list[tuple[str, str]] = []
+    attached: list[dict[str, object]] = []
 
     async def resume(**kwargs: object) -> None:
-        attached.append((str(kwargs["resume_id"]), str(kwargs["cwd"])))
+        attached.append(kwargs)
 
     monkeypatch.setattr("agenthicc.runners.tui_session._run_tui_session", resume)
-    await background._open_manager(CLIContext())
-    assert attached == [("attach-edge", str(session.cwd))]
+    from agenthicc.cli.context import CLIFlags
+
+    ctx = CLIContext(
+        config_path=str(tmp_path / "agenthicc.toml"),
+        record_cassette=str(tmp_path / "cassette"),
+        flags=CLIFlags(dangerously_skip_permissions=True),
+        set_overrides=("execution.model=test",),
+        set_secret_overrides=("execution.api_key=TEST_KEY",),
+    )
+    await background._open_manager(ctx)
+    assert attached == [
+        {
+            "resume_id": "attach-edge",
+            "cwd": str(session.cwd),
+            "cli_overrides": ["execution.model=test"],
+            "cli_secret_overrides": ["execution.api_key=TEST_KEY"],
+            "record_cassette": str(tmp_path / "cassette"),
+            "cli_flags": CLIFlags(dangerously_skip_permissions=True),
+            "config_path": str(tmp_path / "agenthicc.toml"),
+        }
+    ]
     assert handoffs == ["attach-edge"]
 
     def fail(*args: object, **kwargs: object) -> object:

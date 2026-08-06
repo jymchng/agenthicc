@@ -26,7 +26,7 @@ based and implemented in `cli/registry.py`.
 | `config profiles` | List configured provider profiles without secret values |
 | `config validate` | Validate the selected provider profile and required secret references |
 | `config init [--force]` | Create `.agenthicc/agenthicc.toml` |
-| `sessions list` | List saved sessions for the current directory |
+| `sessions list [--page N] [--page-size N]` | Open the paginated saved-session selector; Enter resumes the selected session |
 | `sessions show SESSION_ID` | Print stored event summaries |
 
 Global configuration overrides include `--set KEY=VALUE` and the safer

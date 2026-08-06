@@ -66,6 +66,8 @@ _VK_RETURN = 0x0D
 _VK_ESCAPE = 0x1B
 _VK_END = 0x23
 _VK_HOME = 0x24
+_VK_PRIOR = 0x21
+_VK_NEXT = 0x22
 _VK_LEFT = 0x25
 _VK_UP = 0x26
 _VK_RIGHT = 0x27
@@ -77,6 +79,8 @@ _VK_KEYS: dict[int, Key] = {
     _VK_ESCAPE: Key.ESC,
     _VK_END: Key.END,
     _VK_HOME: Key.HOME,
+    _VK_PRIOR: Key.PAGE_UP,
+    _VK_NEXT: Key.PAGE_DOWN,
     _VK_LEFT: Key.LEFT,
     _VK_UP: Key.UP,
     _VK_RIGHT: Key.RIGHT,

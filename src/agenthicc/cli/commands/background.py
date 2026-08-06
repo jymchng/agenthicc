@@ -101,6 +101,8 @@ async def _open_manager(ctx: CLIContext) -> None:
                 resume_id=result.session_id,
                 cli_overrides=list(ctx.set_overrides),
                 cli_secret_overrides=list(ctx.set_secret_overrides),
+                record_cassette=ctx.record_cassette,
+                cli_flags=ctx.flags,
                 config_path=ctx.config_path,
                 cwd=foreground.cwd,
             )

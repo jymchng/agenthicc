@@ -50,6 +50,8 @@ def test_read_key_control_bytes(
         (b"1~", Key.HOME),
         (b"3~", Key.CHAR),
         (b"4~", Key.END),
+        (b"5~", Key.PAGE_UP),
+        (b"6~", Key.PAGE_DOWN),
         (b"13u", Key.ENTER),
     ],
 )

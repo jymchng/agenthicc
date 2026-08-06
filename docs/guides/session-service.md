@@ -31,9 +31,14 @@ agenthicc session control SESSION_ID cancel
 agenthicc session export SESSION_ID --output session.json
 ```
 
-The existing plural `sessions` commands remain compatibility tools for legacy
-kernel/conversation artifacts. The singular `session` group reads the
-client-neutral projection and is the path new adapters should use.
+The existing plural `sessions` commands remain compatibility tools for the
+kernel/conversation artifacts. `sessions list` opens a paginated interactive
+selector in a terminal; pressing Enter resumes the selected session and loads
+its transcript. When output is redirected, it prints a deterministic page
+instead. It merges the historical project-local index with the current
+user-wide TUI index, so it shows sessions created by both runtime generations.
+The singular `session` group reads the client-neutral projection and is the
+path new adapters should use.
 
 ## Local attachment
 

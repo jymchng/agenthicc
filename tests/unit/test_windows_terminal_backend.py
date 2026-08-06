@@ -27,6 +27,8 @@ from agenthicc.tui.terminal.windows_backend import (
     _VK_RIGHT,
     _VK_HOME,
     _VK_END,
+    _VK_PRIOR,
+    _VK_NEXT,
 )
 
 pytestmark = pytest.mark.unit
@@ -72,6 +74,8 @@ class TestDecodeKeyEvent:
             (_VK_RIGHT, Key.RIGHT),
             (_VK_HOME, Key.HOME),
             (_VK_END, Key.END),
+            (_VK_PRIOR, Key.PAGE_UP),
+            (_VK_NEXT, Key.PAGE_DOWN),
         ],
     )
     def test_navigation_keys(self, vk: int, expected: Key) -> None:

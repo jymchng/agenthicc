@@ -183,6 +183,42 @@ def test_manager_approval_action_updates_waiting_session(tmp_path: Path) -> None
     assert store.get("session-1").approval_decision is True
 
 
+def test_manager_paginates_sessions_and_enter_resumes_selected_record(tmp_path: Path) -> None:
+    from rich.console import Console
+
+    from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
+
+    store = BackgroundStore(tmp_path / "background")
+    for index in range(5):
+        session_id = f"session-{index}"
+        store.create(_session(tmp_path, session_id).evolve(title=session_id))
+
+    console = Console(record=True)
+    manager = BackgroundManager(
+        console,
+        store=store,
+        supervisor=SimpleNamespace(recover_stale=lambda: []),
+        page_size=2,
+    )
+    manager.refresh(force=True)
+
+    console.print(manager.render())
+    first_page = console.export_text()
+    assert "page 1/3" in first_page
+    assert "session-0" in first_page
+    assert "session-2" not in first_page
+
+    manager.handle_key("PAGE_DOWN")
+    console.print(manager.render())
+    second_page = console.export_text()
+    assert "page 2/3" in second_page
+    assert "session-2" in second_page
+
+    manager.handle_key("END")
+    result = manager.handle_key("ENTER")
+    assert result == ManagerResult("attach", "session-4")
+
+
 def test_supervisor_submit_writes_private_request_and_enforces_limit(
     tmp_path: Path, monkeypatch
 ) -> None:

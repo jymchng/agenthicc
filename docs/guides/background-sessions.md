@@ -29,10 +29,12 @@ Useful keys:
 
 | Key | Action |
 |---|---|
-| `↑`/`k`, `↓`/`j` | Move selection |
-| `Enter` | Foreground the selected session |
+| `↑`/`k`, `↓`/`j` | Move selection; moving across a boundary changes page |
+| `Home`/`End` | Select the first/last session |
+| `PageUp`/`PageDown` | Move one session page |
+| `Enter` | Resume the selected session in the normal foreground TUI, loading its transcript |
 | `r` | Refresh |
-| `PageUp`/`[` and `PageDown`/`]` | Scroll the selected transcript |
+| `[` and `]` | Scroll the selected transcript |
 | `c` | Cancel the selected worker |
 | `a` | Archive a terminal session |
 | `p` | Pin or unpin a session |

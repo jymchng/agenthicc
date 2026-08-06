@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
+from pathlib import Path
 
 from agenthicc.cli.context import CLIContext
 from agenthicc.cli.registry import command, group
@@ -12,12 +14,47 @@ from agenthicc.cli.registry import command, group
 def _() -> None: ...
 
 
-@command("sessions", "list", help="List all sessions for the current directory")
-def sessions_list(ctx: CLIContext) -> None:
-    """List saved sessions, most recent first. Sessions for the current directory are marked with *."""
+@command("sessions", "list", help="Open the paginated saved-session selector")
+def sessions_list(ctx: CLIContext, page: int = 1, page_size: int = 0) -> None:
+    """Open the session selector, or print a deterministic list when piped."""
     from agenthicc.sessions import _do_sessions  # noqa: PLC0415
 
-    _do_sessions()
+    from agenthicc.tui.terminal.backend import get_backend  # noqa: PLC0415
+
+    if not get_backend().is_interactive():
+        _do_sessions(page=page, page_size=page_size or 50)
+        return
+    asyncio.run(_open_selected_session(ctx, page=page, page_size=page_size))
+
+
+async def _open_selected_session(ctx: CLIContext, *, page: int, page_size: int) -> None:
+    from rich.console import Console  # noqa: PLC0415
+
+    from agenthicc.sessions import _load_all_session_indexes  # noqa: PLC0415
+    from agenthicc.tui.workspace.session_manager import run_session_manager  # noqa: PLC0415
+
+    result = await run_session_manager(
+        Console(highlight=False),
+        initial_page=page,
+        page_size=page_size or None,
+    )
+    if result.action != "open" or result.session_id is None:
+        return
+
+    record = _load_all_session_indexes().get(result.session_id, {})
+    cwd_value = record.get("cwd")
+    cwd = cwd_value if isinstance(cwd_value, str) and Path(cwd_value).is_dir() else None
+    from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+
+    await _run_tui_session(
+        resume_id=result.session_id,
+        cli_overrides=list(ctx.set_overrides),
+        record_cassette=ctx.record_cassette,
+        cli_flags=ctx.flags,
+        config_path=ctx.config_path,
+        cli_secret_overrides=list(ctx.set_secret_overrides),
+        cwd=cwd,
+    )
 
 
 @command("sessions", "show", help="Show detail for one session")

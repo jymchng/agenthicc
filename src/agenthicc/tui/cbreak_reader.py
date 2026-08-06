@@ -42,6 +42,8 @@ class Key(str, Enum):
     CTRL_D = "CTRL_D"
     CTRL_U = "CTRL_U"
     SHIFT_TAB = "SHIFT_TAB"
+    PAGE_UP = "PAGE_UP"
+    PAGE_DOWN = "PAGE_DOWN"
     AT = "AT"
     CHAR = "CHAR"
 
@@ -212,6 +214,10 @@ def read_key(fd: int) -> tuple[Key, str]:
             return (Key.CHAR, "")  # Delete — ignore
         if seq == b"4~":
             return (Key.END, "")
+        if seq == b"5~":
+            return (Key.PAGE_UP, "")
+        if seq == b"6~":
+            return (Key.PAGE_DOWN, "")
         # Kitty KP Ctrl+Enter: \x1b[13;5u or \x1b[13;1u (disambiguate mode)
         if seq in (b"13;5u", b"13;1u", b"13u"):
             return (Key.ENTER, "")

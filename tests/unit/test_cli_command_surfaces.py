@@ -40,8 +40,8 @@ def test_sessions_trust_and_inspection_handlers(
 
     monkeypatch.chdir(tmp_path)
     ctx = CLIContext()
-    monkeypatch.setattr(sessions, "_do_sessions", lambda: None, raising=False)
-    monkeypatch.setattr("agenthicc.sessions._do_sessions", lambda: None)
+    monkeypatch.setattr(sessions, "_do_sessions", lambda **_kwargs: None, raising=False)
+    monkeypatch.setattr("agenthicc.sessions._do_sessions", lambda **_kwargs: None)
     sessions.sessions_list(ctx)
     sessions.sessions_show(ctx, "missing")
     sessions.sessions_export(ctx, "missing")

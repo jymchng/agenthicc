@@ -26,6 +26,8 @@ def isolated_sessions(tmp_path, monkeypatch):
 
     monkeypatch.setattr(s, "_SESSION_INDEX", tmp_path / "sessions.json")
     monkeypatch.setattr(s, "_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(s, "_CANONICAL_SESSION_INDEX", tmp_path / "canonical" / "index.json")
+    monkeypatch.setattr(s, "_CANONICAL_SESSIONS_DIR", tmp_path / "canonical")
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +430,51 @@ class TestDoSessions:
         _do_sessions()
         captured = capsys.readouterr()
         assert " *" in captured.out
+
+    def test_sessions_list_is_paginated(self, capsys):
+        """A page contains only its slice and reports the complete total."""
+        from agenthicc.sessions import _do_sessions, _save_session_index
+
+        entries = {
+            f"session-{index:02d}": {
+                "cwd": f"/project/{index}",
+                "last_used": float(index),
+                "log_path": f"/sessions/session-{index:02d}.jsonl",
+            }
+            for index in range(5)
+        }
+        _save_session_index(entries)
+
+        _do_sessions(page=2, page_size=2)
+        output = capsys.readouterr().out
+        assert "Sessions (page 2/3; 5 total)" in output
+        assert "session-02" in output
+        assert "session-01" in output
+        assert "session-04" not in output
+        assert "session-00" not in output
+
+    def test_sessions_list_reads_current_user_wide_index(self, tmp_path, capsys):
+        """Current TUI sessions appear even without the legacy project index."""
+        import agenthicc.sessions as s
+
+        s._CANONICAL_SESSION_INDEX.parent.mkdir(parents=True, exist_ok=True)
+        s._CANONICAL_SESSION_INDEX.write_text(
+            json.dumps(
+                {
+                    "current-session": {
+                        "cwd": str(tmp_path),
+                        "last_active": 123.0,
+                        "model": "test-model",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        s._do_sessions()
+        output = capsys.readouterr().out
+        assert "current-sess" in output
+        assert "No saved sessions." not in output
 
 
 # ---------------------------------------------------------------------------

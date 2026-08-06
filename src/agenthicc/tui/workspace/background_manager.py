@@ -44,12 +44,14 @@ class BackgroundManager:
         supervisor: BackgroundSupervisor | None = None,
         refresh_s: float = 1.0,
         input_provider: Callable[[str], str] | None = None,
+        page_size: int | None = None,
     ) -> None:
         self.console = console
         self.store = store or BackgroundStore()
         self.supervisor = supervisor or BackgroundSupervisor(self.store)
         self.refresh_s = max(0.1, refresh_s)
         self.input_provider = input_provider
+        self._configured_page_size = page_size
         self.selected = 0
         self.query = ""
         self.include_archived = True
@@ -69,6 +71,37 @@ class BackgroundManager:
         self._sessions: list[BackgroundSession] = []
         self._seen_activity: dict[str, float] = {}
         self.activity_offset = 0
+
+    @property
+    def page_size(self) -> int:
+        """Return the number of session rows that fit on one manager page.
+
+        The manager also renders a detail panel and a footer, so reserve space
+        for those persistent sections.  Tests and embedding callers may pass a
+        fixed value to make pagination deterministic.
+        """
+
+        if self._configured_page_size is not None:
+            return max(1, self._configured_page_size)
+        try:
+            height = int(self.console.height)
+        except (AttributeError, TypeError, ValueError):
+            height = 25
+        return max(1, min(12, height - 14))
+
+    @property
+    def page_count(self) -> int:
+        """Return the number of pages in the currently filtered session list."""
+
+        count = len(self._sessions)
+        return max(1, (count + self.page_size - 1) // self.page_size)
+
+    def _page_bounds(self) -> tuple[int, int]:
+        """Return the half-open slice for the page containing the selection."""
+
+        page = self.selected // self.page_size
+        start = page * self.page_size
+        return start, min(len(self._sessions), start + self.page_size)
 
     @property
     def sessions(self) -> list[BackgroundSession]:
@@ -228,24 +261,27 @@ class BackgroundManager:
             SessionStatus.ARCHIVED: "dim",
         }.get(status, "white")
 
-    def render(self) -> RenderableType:
+    def render(self, *, all_sessions: bool = False) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
         from rich.panel import Panel  # noqa: PLC0415
         from rich.table import Table  # noqa: PLC0415
         from rich.text import Text  # noqa: PLC0415
 
-        sessions = self.refresh()
+        all_records = self.refresh()
         if self.help_visible:
             return Panel(
-                "↑/k previous   ↓/j next   Enter foreground   r refresh\n"
+                "↑/k previous   ↓/j next   Enter resume transcript   r refresh\n"
                 "c cancel   a archive   Ctrl+X delete   u restore   t trash\n"
                 "/ filter   v mark   C/A bulk cancel/archive   i input\n"
-                "PageUp/[ and PageDown/] scroll transcript\n"
+                "PageUp/PageDown change session page; [/ ] scroll transcript\n"
                 "p pin   Space pause refresh   q quit   ? close help",
                 title="Background Sessions — Keyboard Help",
                 border_style="cyan",
             )
-        table = Table(title="Background Sessions", expand=True)
+        start, end = self._page_bounds()
+        sessions = all_records if all_sessions else all_records[start:end]
+        page_label = "all" if all_sessions else f"{start // self.page_size + 1}/{self.page_count}"
+        table = Table(title=f"Background Sessions (page {page_label})", expand=True)
         table.add_column("", width=2)
         table.add_column("State", no_wrap=True)
         table.add_column("Title")
@@ -261,7 +297,8 @@ class BackgroundManager:
                 "",
                 "Start one with agenthicc run --background",
             )
-        for index, session in enumerate(sessions):
+        for local_index, session in enumerate(sessions):
+            index = local_index if all_sessions else start + local_index
             marker = "▸" if index == self.selected else " "
             if session.last_active > self._seen_activity.get(
                 session.session_id, session.last_active
@@ -330,9 +367,12 @@ class BackgroundManager:
             "\n".join(detail_lines) or "Select a session to inspect it.", title="Details"
         )
         footer = Text(
-            "Enter foreground  c cancel  v mark  Ctrl+X delete  / filter  i input  ? help  q quit",
+            "↑/k ↓/j select  PgUp/PgDn page  Enter resume  c cancel  v mark  "
+            "Ctrl+X delete  / filter  i input  ? help  q quit",
             style="dim",
         )
+        if not all_sessions and all_records:
+            footer.append(f"  • page {start // self.page_size + 1}/{self.page_count}", style="cyan")
         if self.new_activity:
             footer.append("  • new activity", style="yellow")
         return Group(table, detail, footer)
@@ -389,6 +429,16 @@ class BackgroundManager:
             self.refresh()
             self.selected = min(max(0, len(self._sessions) - 1), self.selected + 1)
             return None
+        if value == "HOME":
+            self.refresh()
+            self.selected = 0
+            self.activity_offset = 0
+            return None
+        if value == "END":
+            self.refresh()
+            self.selected = max(0, len(self._sessions) - 1)
+            self.activity_offset = 0
+            return None
         if value == "CTRL_X" or ch == "\x18":
             selected = self.selected_session
             marked = self.marked_sessions()
@@ -401,10 +451,20 @@ class BackgroundManager:
             selected = self.selected_session
             self.mark_selected_seen()
             return ManagerResult("attach", selected.session_id) if selected is not None else None
-        if value in {"PAGE_UP", "PAGEUP"} or ch == "[":
+        if value in {"PAGE_UP", "PAGEUP"}:
+            self.refresh()
+            self.selected = max(0, self.selected - self.page_size)
+            self.activity_offset = 0
+            return None
+        if ch == "[":
             self.activity_offset += 6
             return None
-        if value in {"PAGE_DOWN", "PAGEDOWN"} or ch == "]":
+        if value in {"PAGE_DOWN", "PAGEDOWN"}:
+            self.refresh()
+            self.selected = min(max(0, len(self._sessions) - 1), self.selected + self.page_size)
+            self.activity_offset = 0
+            return None
+        if ch == "]":
             self.activity_offset = max(0, self.activity_offset - 6)
             return None
         if value == "ESC" or ch.lower() == "q":
@@ -493,7 +553,9 @@ class BackgroundManager:
 
         backend = get_backend()
         if not backend.is_interactive():
-            self.console.print(self.render())
+            # A redirected manager is a diagnostic listing, not a viewport;
+            # retain the historical behavior of printing every record.
+            self.console.print(self.render(all_sessions=True))
             return ManagerResult("exit")
         with Live(self.render(), console=self.console, refresh_per_second=4) as live:
             with backend.enter_raw_mode():
