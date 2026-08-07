@@ -2,6 +2,10 @@
 
 **A state-driven agent operating system for autonomous software engineering.**
 
+<p align="center">
+  <img src="docs/assets/agenthicc-logo.png" alt="agenthicc logo" width="180" />
+</p>
+
 ```
 pip install agenthicc   # or use uv — see Install below
 ```
