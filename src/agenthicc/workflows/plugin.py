@@ -1,9 +1,14 @@
 """Workflow plugin types — phase topology, definitions, context (PRD-81, PRD-87).
 
-PhaseSpec describes WHERE and WHEN an agent runs in a workflow graph.
-HOW the agent behaves (system prompt, model) lives in AgentsRegistry.
-WHICH tools it receives is determined by PhaseSpec.resolved_allowed_caps
-intersected with the session mode's blocked_capabilities ceiling.
+``PhaseSpec`` describes where and when an agent runs in a workflow graph and,
+for the generic declarative runner, supplies the phase-specific prompt seed.
+The role prompt comes from ``AgentsRegistry`` unless
+``PhaseSpec.system_prompt_override`` is non-empty. A custom runner that
+implements its own phase methods is different: its explicit ``system_prompt``
+argument is the source of truth and it must opt into any ``PhaseSpec`` prompt
+it wants to use. Tool visibility is determined by
+``PhaseSpec.resolved_allowed_caps`` intersected with the session mode's
+blocked-capabilities ceiling.
 """
 
 from __future__ import annotations
@@ -207,7 +212,23 @@ class PhaseSpec:
     """Key into AgentsRegistry that selects the system prompt and allowed capabilities for this phase."""
 
     system_prompt_override: str = ""
-    """When non-empty, replaces the registry's system prompt for this phase entirely."""
+    """Prompt seed used by the generic declarative ``WorkflowRunner``.
+
+    When non-empty, this replaces the selected ``AgentsRegistry`` role prompt
+    for this phase; it does *not* replace the global/base system prompt and it
+    does not remove framework-owned requirements clarification or transition
+    instructions. The generic runner appends those framework instructions,
+    builds a ``PromptContract``, and places this phase-specific content in the
+    dynamic phase-context region so changing phases does not invalidate the
+    stable cache prefix.
+
+    Custom runners returned by ``WorkflowPlugin.build_runner()`` do not consume
+    this field automatically. Their phase methods must pass the desired
+    prompt explicitly to ``run_phase(system_prompt=...)`` or to their own turn
+    helper. In that path, the explicit argument is authoritative. A phase with
+    ``agent_type="human"`` does not invoke an agent turn, so this field is not
+    used for that phase.
+    """
 
     mode_override: str | None = None
     """RuntimeMode name to activate for this phase (e.g. 'Yolo' to allow writes)."""

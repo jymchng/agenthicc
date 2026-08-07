@@ -640,10 +640,73 @@ verify discovery with `uv run agenthicc workflows list --json`.
 | `allowed_capabilities_override` | Explicit capability ceiling taking precedence over the role default |
 | `parallel_with` | Other phases that may be launched together |
 | `output_schema` | Structured output extraction label |
-| `system_prompt_override` | Replaces the role's default system prompt for the phase |
+| `system_prompt_override` | Generic-runner phase prompt seed; replaces the selected role prompt, while the base system prompt and framework policies remain in force |
 | `require_explicit_completion` | Continue until `mark_execute_complete()` is called |
 | `require_plan_finalization` | Continue until `finalize_plan()` is called |
 | `require_explicit_review` | Continue until `approve_review()` or `reject_review()` is called |
+
+### Phase prompt precedence and cache placement
+
+`system_prompt_override` is singular and is a field on `PhaseSpec`. It applies
+automatically only when the plugin uses the inherited declarative
+`WorkflowRunner`. The generic runner resolves the phase prompt in this order:
+
+```text
+non-empty PhaseSpec.system_prompt_override
+    ↓ otherwise
+AgentsRegistry.get_role_system_prompt(PhaseSpec.agent_type)
+    ↓ then, for both branches
+requirements-clarification policy
+phase-transition-tool instructions
+```
+
+The override replaces only the role-specific prompt. It does not replace the
+global `base_system_prompt`, remove security/capability enforcement, or remove
+the framework instructions that tell the agent to ask questions and use
+transition tools. The current phase task, original intent, phase artifacts,
+and retry context are separate dynamic context supplied by the runner. A
+`human` phase does not invoke an agent turn, so there is no agent system prompt
+for `system_prompt_override` to affect.
+
+The cache-aware prompt contract makes an important distinction between the
+logical phase prompt and the provider request fields. For a contract-native
+workflow turn, the provider-facing request is organized as follows:
+
+| Request region | Contains | Cache behavior |
+|---|---|---|
+| Stable system prefix | Base system prompt, workflow identity, immutable workflow/cache policy | Stable across phase turns when the workflow/provider contract is unchanged |
+| Dynamic context | `system_prompt_override` or role prompt, question policy, transition instructions, tool descriptions, artifacts, summaries, and current task | Appended/rebuilt as phase context; not part of the stable cache prefix |
+| Tool list | Capability-filtered tools, ordered with stable tools before phase-local tools | Schemas and ordering are controlled by the prompt contract; authorization remains independent of caching |
+
+This means phase-specific instructions can change from `plan` to `execute`
+without deliberately invalidating the stable system prefix. Do not put phase
+state, rolling summaries, user answers, or per-phase artifacts into
+`stable_system_prompt`/the stable contract. The custom-runner cache contract
+is described in [Cache-stable workflow turns](../reference/code-plan.md#cache-stable-workflow-turns).
+
+### Custom runner boundary
+
+Plugins that override `build_runner()` and implement phase functions—such as
+`code_plan`, `create_workflow`, and the specialized book/site workflows—own
+their phase prompts. Their phase methods call the explicit turn API:
+
+```python
+await self.run_phase(
+    intent=context.intent,
+    text=current_phase_context,
+    system_prompt="You are in the VERIFY phase. Check the artifact and report blockers.",
+    stable_system_prompt=CACHE_CONTRACT,
+    shared_memory=context.shared_memory,
+    tools=phase_transition_tools,
+)
+```
+
+In this path, `system_prompt=` is authoritative and
+`PhaseSpec.system_prompt_override` is not read automatically. A custom runner
+may deliberately reuse the metadata, but it must fetch the phase spec and pass
+`spec.system_prompt_override` to `run_phase()` itself. The explicit prompt is
+still augmented by the shared requirements/question and transition policy at
+the turn boundary, and it remains dynamic for cache purposes.
 
 Inspect `workflows/plugin.py` before relying on a field. The code-plan runner
 has specialized state-machine behaviour and not every declarative field is

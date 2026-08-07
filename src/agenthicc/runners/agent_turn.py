@@ -1066,8 +1066,12 @@ class AgentTurnRunner:
             self._runtime_dynamic_blocks = []
         else:
             # Contract-native workflow turns keep only immutable policy in the
-            # system string.  Tool summaries and phase restrictions are dynamic
-            # context because the visible tool set may change between phases.
+            # system string. The generic runner's PhaseSpec override (or a
+            # custom runner's explicit system_prompt) arrives through the
+            # PromptContract's dynamic phase-instructions block; it must not be
+            # concatenated here or phase changes would invalidate the stable
+            # cache prefix. Tool summaries and phase restrictions are also
+            # dynamic because the visible tool set may change between phases.
             system = effective_base
             if prompt_contract.stable_system_prefix:
                 system += f"\n\n{prompt_contract.stable_system_prefix}"

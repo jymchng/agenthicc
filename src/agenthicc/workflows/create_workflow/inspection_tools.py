@@ -23,7 +23,12 @@ _PHASESPEC_PURPOSE: dict[str, str] = {
         "Registry key selecting the default prompt and allowed capabilities: "
         "auto, planner, executor, reviewer, explorer, verifier, human, custom."
     ),
-    "system_prompt_override": "Replaces the role's default system prompt entirely for this phase.",
+    "system_prompt_override": (
+        "Generic WorkflowRunner only: replaces the selected role prompt for this phase; "
+        "the base/framework policies remain active and the text stays dynamic for caching. "
+        "Custom runners must pass their explicit system_prompt to run_phase() themselves; "
+        "human phases do not invoke an agent turn."
+    ),
     "mode_override": "RuntimeMode to activate for this phase, e.g. 'Yolo' to unlock write tools.",
     "allowed_capabilities": "Optional capability allowlist for this phase (None = role default).",
     "allowed_capabilities_override": "Explicit per-phase capability override; wins over the field and role default.",

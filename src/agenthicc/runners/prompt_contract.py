@@ -342,7 +342,16 @@ def build_workflow_prompt_contract(
     execution: object | None = None,
     extra_blocks: Iterable[PromptBlock] = (),
 ) -> PromptContract:
-    """Build the standard contract used by built-in and generated workflows."""
+    """Build the standard contract used by built-in and generated workflows.
+
+    ``phase_prompt`` is deliberately recorded as a dynamic
+    ``PHASE INSTRUCTIONS`` block. It may contain a generic runner's
+    ``PhaseSpec.system_prompt_override`` or a custom runner's explicit
+    ``system_prompt``, but it is never folded into the stable system prefix or
+    stable fingerprint. Callers should put only immutable workflow policy in
+    ``stable_system_prefix`` and keep phase state, artifacts, questions,
+    answers, and rolling summaries dynamic.
+    """
 
     provider = str(getattr(execution, "provider", "unknown") or "unknown")
     model_value = getattr(execution, "effective_model", None)

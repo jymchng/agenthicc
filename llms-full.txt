@@ -1731,8 +1731,15 @@ dangerous-permissions flag.
 Declarative phase metadata for generic `WorkflowRunner` execution. It carries
 the phase name, role, turn budget, capability ceiling, next/rejection edges,
 model override, command lifecycle policy, and optional explicit completion or
-review gates. Validate `parallel_with`, retry, and resume behavior before
-shipping a custom workflow.
+review gates. `system_prompt_override`, when non-empty, replaces the selected
+role prompt only for the generic runner; the base system prompt and framework
+question/transition policies remain active. Under the cache contract it is
+dynamic phase context, not part of the stable system prefix. Specialized
+runners such as `CodePlanRunner` own their phase methods and use explicit
+`system_prompt=` arguments instead; they do not consume this field
+automatically. A `human` phase does not invoke an agent turn, so it has no
+agent system prompt for this field to affect. Validate `parallel_with`, retry,
+and resume behavior before shipping a custom workflow.
 
 ### WorkflowPlugin
 

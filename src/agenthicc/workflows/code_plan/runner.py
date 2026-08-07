@@ -686,6 +686,15 @@ class CodePlanRunner(BaseWorkflowRunner):
         runners.  It delegates to the private ``_run_turn()`` + ``_base_tools()``
         so that internal implementation details remain free to change.
 
+        ``system_prompt`` is the complete phase-specific prompt supplied by
+        the custom phase function. It is not automatically merged with or
+        replaced by ``PhaseSpec.system_prompt_override``: specialized runners
+        own their phase methods, so this explicit argument is authoritative.
+        If a custom runner wants to reuse a ``PhaseSpec`` override, it must
+        read that spec and pass its value here. The shared base system prompt,
+        requirements-clarification policy, transition instructions, and cache
+        contract are still added by the turn boundary.
+
         A custom runner drives its own state machine and calls this once per
         phase, passing that phase's transition tools through *tools*; after the
         call it checks whether its own ``asyncio.Event`` was set.  That keeps the
@@ -701,12 +710,16 @@ class CodePlanRunner(BaseWorkflowRunner):
             The user-turn text sent to the LLM for this phase.  Typically
             includes key outputs from prior phases (plan, execute summary, …).
         system_prompt:
-            Full system-prompt for this phase.  Replaces any role default.
+            Full phase-specific prompt for this custom phase. It replaces any
+            role default and is independent of ``PhaseSpec`` metadata unless
+            the custom runner explicitly reads that metadata.
         stable_system_prompt:
             Optional immutable workflow contract appended to the stable system
             prefix for prompt caching.  Phase-specific instructions belong in
-            ``system_prompt`` and remain dynamic.  The default workflow cache
-            and user-question policies are always included.
+            ``system_prompt`` and remain dynamic. Do not put phase state,
+            artifacts, questions, answers, or rolling summaries in this value.
+            The default workflow cache and user-question policies are always
+            included.
         mode:
             Optional mode name (e.g. ``"Yolo"``) to switch for this phase.
             Restored automatically on exit.

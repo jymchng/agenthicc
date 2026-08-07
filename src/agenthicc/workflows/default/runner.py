@@ -517,6 +517,32 @@ class WorkflowRunner(BaseWorkflowRunner):
     async def _run_phase(
         self, spec: PhaseSpec, intent: str, context: WorkflowContext
     ) -> PhaseOutput:
+        """Execute one declarative phase and assemble its prompt contract.
+
+        Prompt precedence is deliberately explicit:
+
+        1. A non-empty ``spec.system_prompt_override`` replaces the selected
+           ``AgentsRegistry`` role prompt.
+        2. An empty override falls back to
+           ``agents_registry.get_role_system_prompt(spec.agent_type)``.
+        3. The runner appends framework-owned requirements-clarification and
+           phase-transition instructions to that phase prompt.
+
+        The result is passed as ``phase_prompt`` to
+        ``build_workflow_prompt_contract``. For contract-native turns, the
+        immutable base/cache policy remains in the provider system message and
+        this phase prompt is rendered as dynamic append-only context. This
+        keeps phase changes, artifacts, and transition instructions out of the
+        stable cache prefix. The phase's ``phase_text`` is the current-turn
+        task/context and is separate from the phase prompt.
+
+        This method is only the execution source for plugins using the generic
+        runner. Specialized runners such as ``CodePlanRunner`` implement their
+        own phase methods and use explicit ``system_prompt=`` arguments instead
+        of reading ``PhaseSpec.system_prompt_override``. Human phases return
+        through the human-interaction path before any agent prompt is built, so
+        the override has no effect for ``agent_type="human"``.
+        """
         from agenthicc.workflows.plugin import (
             PhaseOutput,
             _parse_output_schema,
@@ -532,6 +558,9 @@ class WorkflowRunner(BaseWorkflowRunner):
 
         phase_text = self._build_phase_prompt(spec, intent, context)
         filtered = self._filter_tools(spec)
+        # Generic-runner precedence: the declarative phase override wins over
+        # the role registry prompt, but it is only the phase-specific seed.
+        # Framework policy and transition instructions are appended below.
         role_prompt = (
             spec.system_prompt_override
             or self._cfg.agents_registry.get_role_system_prompt(spec.agent_type)
@@ -576,6 +605,9 @@ class WorkflowRunner(BaseWorkflowRunner):
             expected_transition_tools = ("approve_review", "reject_review")
         else:
             expected_transition_tools = ()
+        # Keep framework-owned instructions outside the user-authored override
+        # itself. They apply to every declarative phase and ensure that asking
+        # questions and changing phases remain tool-controlled.
         role_prompt = (
             f"{role_prompt}\n\n"
             f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
@@ -612,6 +644,9 @@ class WorkflowRunner(BaseWorkflowRunner):
         # Keep the stable region empty here rather than accidentally treating a
         # phase-specific read/write tool as reusable across the whole workflow;
         # every visible tool remains deterministic in the phase-local region.
+        # ``phase_prompt`` is dynamic by design. The stable workflow/cache
+        # policy is supplied by build_workflow_prompt_contract(); do not move
+        # this phase-specific text into a custom stable prefix.
         prompt_contract = build_workflow_prompt_contract(
             workflow_name=self._plugin.name,
             phase_prompt=role_prompt,

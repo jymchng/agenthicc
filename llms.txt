@@ -62,6 +62,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `ToolMetadata` / `ToolErrorKind` | `agenthicc.tools` | Generated catalog metadata and stable error taxonomy |
 | `SearchWebTool` / `FetchPageTool` | `agenthicc.skills.web_search` | Native lauren-ai tools for Brave search and visible page-text extraction |
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
+| `PhaseSpec` | `agenthicc.workflows.plugin` | Declarative phase metadata; `system_prompt_override` replaces the role prompt only in the generic runner and remains dynamic under the cache contract |
 | `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
 | `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory with transactional tool-exchange recovery |
 | `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints |

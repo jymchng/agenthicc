@@ -94,6 +94,49 @@ that the generic phase runner does not provide. A custom parameter is only
 useful if the selected runner reads it; adding an arbitrary TOML key does not
 change runtime behaviour by itself.
 
+### Phase prompt semantics
+
+For this inherited generic runner, `system_prompt_override` is the phase's
+role-prompt override:
+
+```python
+PhaseSpec(
+    name="verify",
+    agent_type="reviewer",
+    system_prompt_override=(
+        "You are in VERIFY. Inspect the artifact, run the checks, and call "
+        "approve_review(summary) or reject_review(reason)."
+    ),
+)
+```
+
+The non-empty override replaces the `AgentsRegistry` prompt for the selected
+role. The runtime still adds the global/base system prompt, requirements
+clarification policy, transition-tool instructions, capability filtering, and
+the current phase context. With the prompt-cache contract enabled, the phase
+override is dynamic context rather than part of the stable system prefix.
+
+If you implement `build_runner()` and write phase functions yourself, the
+phase function is the prompt owner instead:
+
+```python
+await self.run_phase(
+    intent=context.intent,
+    text=phase_context,
+    system_prompt="You are in VERIFY. Check the generated artifact.",
+    stable_system_prompt=CACHE_CONTRACT,
+    shared_memory=context.shared_memory,
+    tools=phase_tools,
+)
+```
+
+`run_phase(system_prompt=...)` does not automatically consult
+`PhaseSpec.system_prompt_override`; the explicit argument wins. This prevents
+metadata from silently overriding a specialized state machine. If the custom
+runner wants one source of truth, it must explicitly read the spec and pass its
+override into `run_phase()`. Keep phase state, artifacts, questions, answers,
+and summaries in `text`/dynamic context, not in `CACHE_CONTRACT`.
+
 ## 3. Configure the workflow in TOML
 
 Create `.agenthicc/agenthicc.toml`:

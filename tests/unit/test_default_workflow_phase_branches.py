@@ -131,6 +131,45 @@ async def test_phase_specific_continuations_and_results(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_phase_prompt_override_precedence_and_cache_placement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The generic runner overrides the role prompt but keeps it dynamic."""
+    config, _app, mode = _config()
+    runner = WorkflowRunner(Branches, config, mode)
+    context = WorkflowContext("intent", "run", Branches.name)
+    seen: dict[str, object] = {}
+
+    async def fake_agent_turn(_text: str, **kwargs: object) -> None:
+        seen.update(kwargs)
+        collector = kwargs.get("output_collector")
+        if isinstance(collector, list):
+            collector.append("complete")
+
+    monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", fake_agent_turn)
+    output = await runner._run_phase(
+        PhaseSpec(
+            name="verify",
+            agent_type="planner",
+            system_prompt_override="The phase-specific verification instructions.",
+        ),
+        "intent",
+        context,
+    )
+
+    assert output.full_text == "complete"
+    suffix = seen["system_prompt_suffix"]
+    assert isinstance(suffix, str)
+    assert "The phase-specific verification instructions." in suffix
+    assert "role:planner" not in suffix
+
+    contract = seen["prompt_contract"]
+    assert contract.stable_system_prefix
+    assert "The phase-specific verification instructions." not in contract.stable_system_prefix
+    assert contract.dynamic_system_context[0].content == suffix
+
+
+@pytest.mark.asyncio
 async def test_phase_retry_incomplete_and_agent_error_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

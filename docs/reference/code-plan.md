@@ -151,6 +151,18 @@ transition gate: it catches a summary-agent error, logs it, and still returns
 the terminal `COMPLETE` state because summary prose cannot change the verified
 execution or review result.
 
+### Phase prompt ownership
+
+The phase methods are the executable prompt source for `code_plan`. They call
+`CodePlanRunner._run_turn()` with phase constants such as `_PLAN_PROMPT`,
+`_EXECUTE_PROMPT`, and `_REVIEW_PROMPT`; they do not obtain their runtime
+prompt from `CodePlan.phases[*].system_prompt_override`. Those `PhaseSpec`
+values remain useful metadata for registry inspection, authoring, display, and
+generic-runner-compatible descriptions, but the specialized
+`CodePlanRunner` is the executable source of truth. Composite runners should
+use the public `run_phase(system_prompt=...)` API and treat that explicit
+argument as authoritative.
+
 ## Phase-local transition tools
 
 The runner creates a fresh `asyncio.Event` and data dictionary for each phase
