@@ -105,6 +105,12 @@ Current triggers include:
 - `@` — project file/mention picker;
 - trigger selection may update the input buffer or submit immediately.
 
+The `@` picker accepts path-like fragments, including `./`, `../`, absolute
+paths, `~`-prefixed paths, and platform-native `/` or `\\` separators. A
+second `@` is a delimiter rather than part of the path, so accidental `@@`
+input remains ordinary text. The same boundary rule is used when submitted
+messages are parsed into file, directory, glob, URL, or unresolved mentions.
+
 Large bracketed pastes stay behind a single `[Pasted text #N ...]` composer
 placeholder while the user edits the input. Ordinary typing, whitespace,
 newlines, cursor movement, and history navigation do not expand the paste or

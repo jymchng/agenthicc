@@ -35,9 +35,14 @@ class Mention:
     root_id: str | None = None
 
 
-# Regex: @ followed by non-whitespace / non-delimiter chars.
-# Stops at whitespace, ,;)]'"  (common natural-language delimiters).
-_MENTION_RE = re.compile(r"@([^\s,;)\]'\"]+)")
+# Regex: a single @ followed by a non-delimited token.
+#
+# ``@`` is deliberately both a left-boundary guard and a token delimiter:
+# ``@@./agenthicc`` must remain ordinary text rather than becoming the invalid
+# mention ``@./agenthicc``.  The remaining delimiters preserve the existing
+# prose behavior for commas, brackets, quotes, and sentence punctuation.
+# Backslashes are not delimiters because they are path separators on Windows.
+_MENTION_RE = re.compile(r"(?<!@)@([^\s@,;)\]'\"]+)")
 
 _URL_PREFIXES = ("http://", "https://")
 _GLOB_CHARS = frozenset("*?[")

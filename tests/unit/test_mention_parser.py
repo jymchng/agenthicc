@@ -6,6 +6,26 @@ from agenthicc.mentions.parser import MentionKind, parse_mentions, strip_mention
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("@./agenthicc", ["./agenthicc"]),
+        ("@@./agenthicc", []),
+        ("@./agenthicc/.", ["./agenthicc/."]),
+        ("foo @src/main.py bar", ["src/main.py"]),
+        ("@../README.md", ["../README.md"]),
+        ("@/usr/local/bin", ["/usr/local/bin"]),
+        ("@~/project", ["~/project"]),
+        (r"@C:\Users\Bob", [r"C:\Users\Bob"]),
+        (r"@\\server\share\folder", [r"\\server\share\folder"]),
+        ("@foo@bar", ["foo", "bar"]),
+    ],
+)
+def test_path_like_mentions_use_single_at_delimiter(tmp_path, text, expected):
+    """Path-shaped tokens stop at another @ without rejecting separators."""
+    assert [mention.path for mention in parse_mentions(text, cwd=tmp_path)] == expected
+
+
 # ---------------------------------------------------------------------------
 # PRD-32 baseline tests
 # ---------------------------------------------------------------------------

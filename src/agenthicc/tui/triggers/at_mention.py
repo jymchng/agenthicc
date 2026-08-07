@@ -10,6 +10,8 @@ Matching behaviour
   ``mentions.matcher.filter_and_rank()``.
 * Path-segment matching: ``@read`` matches ``docs/README.md`` because
   ``README.md`` is a path segment.
+* Directory navigation preserves ``/`` and ``\\`` separators and expands
+  relative, absolute, and ``~``-prefixed directory prefixes.
 * Ranking: exact → filename prefix → path-segment prefix → filename
   substring → path substring → fuzzy.
 * Display and insertion always use the original filesystem casing.
@@ -43,6 +45,15 @@ class AtMentionTrigger(TriggerHandlerBase):
         except PermissionError:
             return []
 
+    @staticmethod
+    def _search_dir(cwd: Path, dir_part: str, separator: str) -> Path:
+        """Resolve a typed directory prefix without losing path semantics."""
+        # Include the separator when resolving.  This matters for a direct
+        # child of the filesystem root (``/etc``): resolving only ``dir_part``
+        # would otherwise turn the empty prefix into the session cwd.
+        expanded = Path(f"{dir_part}{separator}").expanduser()
+        return expanded if expanded.is_absolute() else cwd / expanded
+
     # ------------------------------------------------------------------
     # TriggerHandler protocol
     # ------------------------------------------------------------------
@@ -62,9 +73,12 @@ class AtMentionTrigger(TriggerHandlerBase):
         cwd = ctx.cwd
 
         # ── navigating into a subdirectory ──────────────────────────────────
-        if "/" in fragment:
-            dir_part, file_prefix = fragment.rsplit("/", 1)
-            search_dir = cwd / dir_part
+        separator_index = max(fragment.rfind("/"), fragment.rfind("\\"))
+        if separator_index >= 0:
+            dir_part = fragment[:separator_index]
+            separator = fragment[separator_index]
+            file_prefix = fragment[separator_index + 1 :]
+            search_dir = self._search_dir(cwd, dir_part, separator)
             if not search_dir.is_dir():
                 return []
             # Subdirectory navigation uses strict case-insensitive PREFIX matching
@@ -81,7 +95,7 @@ class AtMentionTrigger(TriggerHandlerBase):
                 if prefix_cf and not entry.name.casefold().startswith(prefix_cf):
                     continue
                 suffix = "/" if entry.is_dir() else ""
-                display_path = f"{dir_part}/{entry.name}{suffix}"
+                display_path = f"{dir_part}{separator}{entry.name}{suffix}"
                 results.append(MatchItem(display=display_path, value=display_path))
             return results
 

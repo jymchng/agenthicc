@@ -138,6 +138,20 @@ def test_trigger_handlers_and_picker_navigation(tmp_path: Path) -> None:
     assert mention.on_select(None, "x", []).buffer == list("@x")
     assert mention.on_cancel("x", ["text"])[-2:] == ["@", "x"]
 
+    nested = tmp_path / "workspace" / "edited"
+    nested.mkdir(parents=True)
+    (nested / "README.md").write_text("read", encoding="utf-8")
+    assert [
+        item.value
+        for item in mention.get_matches("./workspace/edited/README", TriggerContext(tmp_path))
+    ] == ["./workspace/edited/README.md"]
+    assert [
+        item.value
+        for item in mention.get_matches(
+            str(nested.parent / "edited" / "README"), TriggerContext(tmp_path)
+        )
+    ] == [str(nested.parent / "edited" / "README.md")]
+
     from agenthicc.commands.command import Command
     from agenthicc.commands.registry import UnifiedCommandRegistry
 
