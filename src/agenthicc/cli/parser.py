@@ -19,7 +19,16 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         metavar="NAME",
         default=None,
         dest="workflow_name",
-        help="Run NAME for each stdin line in headless mode.",
+        help=(
+            "Start the TUI with NAME selected, or run NAME for each stdin line in headless mode."
+        ),
+    )
+    parser.add_argument(
+        "--mode",
+        metavar="MODE",
+        default=None,
+        dest="mode_name",
+        help="Start with MODE selected (for example: Safe, Plan, or Yolo).",
     )
     parser.add_argument(
         "--config",
@@ -126,6 +135,7 @@ def _build_ctx(ns: argparse.Namespace) -> CLIContext:
         record_cassette=getattr(ns, "record_cassette", None),
         continue_session=getattr(ns, "continue_session", False),
         workflow_name=getattr(ns, "workflow_name", None),
+        mode_name=getattr(ns, "mode_name", None),
     )
 
 

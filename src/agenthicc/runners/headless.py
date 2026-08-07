@@ -274,6 +274,8 @@ async def run_headless_workflow(
         cassette_base,
         config_path=ctx.config_path,
         cli_secret_overrides=list(ctx.set_secret_overrides),
+        mode_name=ctx.mode_name,
+        workflow_name=workflow_name,
         headless=True,
     )
     session.app_state.cli_flags = ctx.flags
@@ -317,6 +319,8 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
         cassette_base,
         config_path=ctx.config_path,
         cli_secret_overrides=list(ctx.set_secret_overrides),
+        mode_name=ctx.mode_name,
+        workflow_name=workflow_name,
         headless=True,
     )
     session.app_state.cli_flags = ctx.flags

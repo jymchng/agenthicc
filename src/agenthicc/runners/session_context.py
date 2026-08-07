@@ -109,6 +109,11 @@ class SessionContext:
     cfg_overrides: tuple[str, ...] = ()
     cfg_secret_overrides: tuple[str, ...] = ()
 
+    # ── invocation selection ────────────────────────────────────────────────
+    #: Explicit ``--workflow`` selection for the initial TUI turn.  Headless
+    #: callers use CLIContext.workflow_name directly when dispatching lines.
+    initial_workflow: str | None = None
+
     # ── workspace access (PRD-168) ──────────────────────────────────────────
     #: Canonical roots shared by filesystem tools, commands, mentions, and
     #: workflow turns.  The policy itself is also bound to the session task's

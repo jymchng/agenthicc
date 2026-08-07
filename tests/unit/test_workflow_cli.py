@@ -202,7 +202,11 @@ async def test_headless_workflow_stream_runs_each_nonempty_stdin_line(monkeypatc
     monkeypatch.setattr("sys.stdin", io.StringIO("first task\n\nsecond task\n"))
 
     await headless._run_headless_workflow_stream(
-        CLIContext(workflow_name="demo", flags=CLIFlags(dangerously_skip_permissions=True))
+        CLIContext(
+            workflow_name="demo",
+            mode_name="Plan",
+            flags=CLIFlags(dangerously_skip_permissions=True),
+        )
     )
 
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
@@ -219,6 +223,8 @@ async def test_headless_workflow_stream_runs_each_nonempty_stdin_line(monkeypatc
 
 async def _async_session(session: SimpleNamespace, kwargs: dict[str, object]) -> SimpleNamespace:
     assert kwargs["headless"] is True
+    assert kwargs["mode_name"] == "Plan"
+    assert kwargs["workflow_name"] == "demo"
     return session
 
 
@@ -260,10 +266,11 @@ def test_workflows_cli_parser_supports_run_and_headless_workflow(monkeypatch) ->
 
     monkeypatch.setattr(
         "sys.argv",
-        ["agenthicc", "--headless", "--workflow", "demo"],
+        ["agenthicc", "--headless", "--mode", "Plan", "--workflow", "demo"],
     )
     args = _parse_args()
     assert args.headless is True
+    assert args.mode_name == "Plan"
     assert args.workflow_name == "demo"
 
 

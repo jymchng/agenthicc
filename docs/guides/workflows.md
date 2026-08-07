@@ -579,7 +579,10 @@ printf '%s\n' "Run the verification workflow" \
 
 `workflows run` emits a single result. `--headless --workflow NAME` emits a
 ready record followed by one JSON result per non-empty stdin line, reusing one
-durable session. Both paths construct the selected plugin through
+durable session. Add `--mode MODE` to choose the runtime policy supplied to
+the workflow runner. For the interactive TUI, the same flags select the
+initial mode and workflow; an explicit workflow overrides the mode default.
+Both paths construct the selected plugin through
 `WorkflowPlugin.build_runner`, so specialized built-ins and project workflows
 use the same runner contract as the TUI.
 

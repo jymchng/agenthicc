@@ -33,3 +33,4 @@ class CLIContext:
     record_cassette: str | None = None
     continue_session: bool = False
     workflow_name: str | None = None
+    mode_name: str | None = None

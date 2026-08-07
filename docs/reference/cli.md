@@ -8,7 +8,8 @@ based and implemented in `cli/registry.py`.
 | Option | Meaning |
 |---|---|
 | `--headless` | Read stdin and emit JSON-lines |
-| `--workflow NAME` | Run NAME for each non-empty stdin line in headless mode |
+| `--mode MODE` | Start with `MODE` selected; explicit CLI mode overrides a persisted session mode |
+| `--workflow NAME` | Select `NAME` at TUI startup, or run it for each non-empty stdin line in headless mode |
 | `--config PATH` | Select a configuration file |
 | `--version` | Print the package CLI version string |
 | `--continue` | Continue the latest session for the current directory |

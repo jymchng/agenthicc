@@ -156,6 +156,9 @@ async def _build_session_context(
     config_path: str | None = None,
     headless: bool = False,
     cli_secret_overrides: list[str] | None = None,
+    *,
+    mode_name: str | None = None,
+    workflow_name: str | None = None,
 ) -> SessionContext:
     """Construct all session-scoped singletons and return a SessionContext."""
     from rich.console import Console  # noqa: PLC0415
@@ -358,6 +361,16 @@ async def _build_session_context(
         project_dir=Path(".agenthicc"),
         user_dir=Path.home() / ".agenthicc",
     )
+    initial_workflow: str | None = None
+    if workflow_name is not None:
+        requested_workflow = workflow_name.strip()
+        if not requested_workflow:
+            raise ValueError("Workflow name must not be empty.")
+        workflow_cls = workflow_registry.get(requested_workflow)
+        if workflow_cls is None:
+            available = ", ".join(sorted(workflow_registry.names())) or "none"
+            raise ValueError(f"Unknown workflow {requested_workflow!r}. Available: {available}")
+        initial_workflow = workflow_cls.name
     agents_registry = build_agents_registry(
         project_dir=Path(".agenthicc"),
         user_dir=Path.home() / ".agenthicc",
@@ -374,7 +387,15 @@ async def _build_session_context(
     # is installed, so the persisted value is never overwritten prematurely.
     mode_manager.set_by_name("Safe")
     persisted_mode: str | None = None
-    if resume_id:
+    if mode_name is not None:
+        requested_mode = mode_name.strip()
+        selected_mode = mode_manager.set_by_name(requested_mode)
+        if selected_mode is None:
+            raise ValueError(
+                f"Unknown mode {requested_mode!r}. Choose one of: "
+                f"{', '.join(mode_manager.registry.selectable_names())}."
+            )
+    elif resume_id:
         persisted_mode = load_session_mode(resume_id)
         if persisted_mode is not None and mode_manager.set_by_name(persisted_mode) is None:
             raise ValueError(
@@ -389,7 +410,11 @@ async def _build_session_context(
             update_session_mode(session_id, name)
 
     mode_manager.set_change_callback(_persist_mode)
-    if resume_id and persisted_mode is not None:
+    if mode_name is not None:
+        # Explicit invocation state wins over the persisted mode and is itself
+        # persisted canonically for future --continue/--resume invocations.
+        update_session_mode(session_id, mode_manager.active_name)
+    elif resume_id and persisted_mode is not None:
         # Persist the canonical spelling after a successful alias migration;
         # future resumes never need to carry the legacy identity forward.
         update_session_mode(session_id, mode_manager.active_name)
@@ -677,6 +702,7 @@ async def _build_session_context(
         browser_tools=browser_tools,
         cfg_overrides=tuple(cli_overrides or ()),
         cfg_secret_overrides=tuple(cli_secret_overrides or ()),
+        initial_workflow=initial_workflow,
         workspace_scope=workspace_scope,
         workspace_access=workspace_access,
         resumed=bool(resume_id),
@@ -706,7 +732,11 @@ class TUISession:
         self._last_submitted_text: str = ""
         self._turn_count: int = 0
         self._pending_replay_id: str | None = None
-        self._workflow_override: str | None = None  # PRD-114: /workflow command
+        self._workflow_override: str | None = getattr(
+            ctx, "initial_workflow", None
+        )  # PRD-114: /workflow command
+        if self._workflow_override is not None:
+            ctx.app_state.conversation.workflow_override.set(self._workflow_override)
         self._workflow_handle: WorkflowRunHandle | None = None
         from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: PLC0415
 
@@ -2589,6 +2619,8 @@ async def _run_tui_session(
     config_path: str | None = None,
     cli_secret_overrides: list[str] | None = None,
     cwd: str | None = None,
+    mode_name: str | None = None,
+    workflow_name: str | None = None,
 ) -> None:
     """Run the reactive TUI, optionally from a resumed session's project."""
     if cwd is None:
@@ -2599,6 +2631,8 @@ async def _run_tui_session(
             cli_flags=cli_flags,
             config_path=config_path,
             cli_secret_overrides=cli_secret_overrides,
+            mode_name=mode_name,
+            workflow_name=workflow_name,
         )
         return
 
@@ -2612,6 +2646,8 @@ async def _run_tui_session(
             cli_flags=cli_flags,
             config_path=config_path,
             cli_secret_overrides=cli_secret_overrides,
+            mode_name=mode_name,
+            workflow_name=workflow_name,
         )
     finally:
         os.chdir(previous_cwd)
@@ -2624,6 +2660,8 @@ async def _run_tui_session_impl(
     cli_flags: CLIFlags | None = None,
     config_path: str | None = None,
     cli_secret_overrides: list[str] | None = None,
+    mode_name: str | None = None,
+    workflow_name: str | None = None,
 ) -> None:
     """Reactive TUI session — single entry point, no legacy branches."""
     from agenthicc.tui.workspace import Workspace  # noqa: PLC0415
@@ -2637,6 +2675,8 @@ async def _run_tui_session_impl(
         cassette_base,
         config_path=config_path,
         cli_secret_overrides=cli_secret_overrides,
+        mode_name=mode_name,
+        workflow_name=workflow_name,
     )
     # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
     if cli_flags is not None:
@@ -2776,6 +2816,8 @@ def _run_tui(ctx: CLIContext) -> None:
                 cli_flags=ctx.flags,
                 config_path=ctx.config_path,
                 cli_secret_overrides=list(ctx.set_secret_overrides),
+                mode_name=ctx.mode_name,
+                workflow_name=ctx.workflow_name,
             )
         )
     except Exception as exc:

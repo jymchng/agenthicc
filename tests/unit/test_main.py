@@ -191,6 +191,24 @@ class TestMainParseArgs:
             args = _parse_args()
         assert args.resume == "abc123"
 
+    def test_mode_flag(self):
+        with patch("sys.argv", ["agenthicc", "--mode", "Plan"]):
+            from agenthicc.cli.parser import _parse_args
+
+            args = _parse_args()
+        assert args.mode_name == "Plan"
+
+    def test_startup_selection_reaches_cli_context(self):
+        with patch(
+            "sys.argv",
+            ["agenthicc", "--mode", "Plan", "--workflow", "code_plan"],
+        ):
+            from agenthicc.cli.parser import parse_cli
+
+            ctx, _args = parse_cli()
+        assert ctx.mode_name == "Plan"
+        assert ctx.workflow_name == "code_plan"
+
     def test_version(self):
         with patch("sys.argv", ["agenthicc", "--version"]):
             from agenthicc.cli.parser import _parse_args
@@ -239,6 +257,7 @@ class TestMainParseArgs:
         assert args.headless is False
         assert args.continue_session is False
         assert args.resume is None
+        assert args.mode_name is None
         assert getattr(args, "_entry", None) is None
 
 
@@ -561,6 +580,28 @@ class TestRunTui:
                 ts._run_tui(ctx)
 
         assert resume_id_used == ["myresumeid"]
+
+    def test_tui_startup_selection_passes_mode_and_workflow(self, monkeypatch):
+        """CLI startup selections reach the real TUI session factory."""
+        import agenthicc.runners.tui_session as ts
+
+        captured: dict[str, object] = {}
+        ctx = self._make_ctx(mode_name="Plan", workflow_name="code_plan")
+
+        async def capturing_tui_session(**kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(ts, "_run_tui_session", capturing_tui_session)
+
+        with patch.dict("sys.modules", {"rich.console": MagicMock()}):
+            with patch(
+                "agenthicc.runners.tui_session.asyncio.run",
+                side_effect=lambda coro: asyncio.new_event_loop().run_until_complete(coro),
+            ):
+                ts._run_tui(ctx)
+
+        assert captured["mode_name"] == "Plan"
+        assert captured["workflow_name"] == "code_plan"
 
     def test_tui_exception_exits_with_code_1(self, monkeypatch, capsys):
         """If asyncio.run raises, _run_tui exits with code 1."""

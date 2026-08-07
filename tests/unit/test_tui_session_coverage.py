@@ -46,7 +46,9 @@ class _Input:
         self.modes.append(mode)
 
 
-def _make_session() -> tuple[object, SimpleNamespace, _Workspace, _Input]:
+def _make_session(
+    *, initial_workflow: str | None = None
+) -> tuple[object, SimpleNamespace, _Workspace, _Input]:
     from agenthicc.runners.tui_session import TUISession
 
     app = AppState.create()
@@ -88,10 +90,18 @@ def _make_session() -> tuple[object, SimpleNamespace, _Workspace, _Input]:
         session_memory=memory,
         pending_resume=None,
         command_plugin_names=set(),
+        initial_workflow=initial_workflow,
     )
     workspace = _Workspace(app)
     input_session = _Input()
     return TUISession(ctx, workspace, input_session), ctx, workspace, input_session
+
+
+def test_tui_initial_workflow_selection_is_visible_and_active() -> None:
+    session, ctx, _workspace, _input = _make_session(initial_workflow="demo")
+
+    assert session._workflow_override == "demo"
+    assert ctx.app_state.conversation.workflow_override() == "demo"
 
 
 def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -704,9 +714,11 @@ async def test_build_session_context_fresh_and_resume_paths(
     from agenthicc.runners import tui_session
     from agenthicc.skills import bootstrap, loader
     from agenthicc.workflows import registry as workflows_registry
+    from agenthicc.workflows.plugin import WorkflowPlugin
     from agenthicc.plugins.discovery import PluginToolSet
     from agenthicc.commands.plugin_loader import CommandPluginSet
     from agenthicc.skills.loader import SkillDiscoveryResult
+    from agenthicc.session_service import SessionService
 
     session_root = tmp_path / "sessions"
     monkeypatch.setattr(tui_session, "_SESSIONS_DIR", session_root)
@@ -715,14 +727,24 @@ async def test_build_session_context_fresh_and_resume_paths(
         "agenthicc.tui.runtime.session_log._SESSION_INDEX", session_root / "index.json"
     )
     monkeypatch.setattr(memory_journal, "_SESSIONS_DIR", session_root)
+    monkeypatch.setattr(
+        "agenthicc.session_service.SessionService",
+        lambda: SessionService(store_root=session_root / "service"),
+    )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tui_session, "_build_agent_runner", lambda *args, **kwargs: None)
     monkeypatch.setattr(bootstrap, "bootstrap_default_skills", lambda **kwargs: 0)
     monkeypatch.setattr(
         loader, "discover_skills_with_diagnostics", lambda **kwargs: SkillDiscoveryResult({}, ())
     )
+
+    class StartupWorkflow(WorkflowPlugin):
+        name = "startup_workflow"
+
+    workflow_registry = WorkflowRegistry()
+    workflow_registry.register(StartupWorkflow)
     monkeypatch.setattr(
-        workflows_registry, "build_workflow_registry", lambda **kwargs: WorkflowRegistry()
+        workflows_registry, "build_workflow_registry", lambda **kwargs: workflow_registry
     )
     monkeypatch.setattr(agents_registry, "build_agents_registry", lambda **kwargs: AgentsRegistry())
     monkeypatch.setattr(discovery, "discover_project_tools", lambda **kwargs: PluginToolSet())
@@ -745,11 +767,17 @@ async def test_build_session_context_fresh_and_resume_paths(
     from agenthicc.runners.tui_session import _build_session_context
 
     fresh = await _build_session_context(
-        None, [], record_cassette_dir=tmp_path / "cassettes", headless=True
+        None,
+        [],
+        record_cassette_dir=tmp_path / "cassettes",
+        headless=True,
+        mode_name="Plan",
+        workflow_name="startup_workflow",
     )
     assert fresh.session_id and fresh.agent_runner is None
-    assert fresh.mode_manager.active_name == "Safe"
-    assert fresh.app_state.active_mode().name == "Safe"
+    assert fresh.mode_manager.active_name == "Plan"
+    assert fresh.app_state.active_mode().name == "Plan"
+    assert fresh.initial_workflow == "startup_workflow"
     assert "playwright_open" in {tool.__name__ for tool in fresh.browser_tools}
     assert fresh.mode_manager.set_by_name("Yolo") is not None
     session_id = fresh.session_id
@@ -769,3 +797,13 @@ async def test_build_session_context_fresh_and_resume_paths(
     assert load_session_mode(session_id) == "Yolo"
     resumed.session_log.close()
     resumed.session_memory.close()
+
+    explicit_mode = await _build_session_context(
+        session_id,
+        [],
+        headless=True,
+        mode_name="Safe",
+    )
+    assert explicit_mode.mode_manager.active_name == "Safe"
+    explicit_mode.session_log.close()
+    explicit_mode.session_memory.close()

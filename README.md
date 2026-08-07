@@ -94,10 +94,15 @@ The default session discovers built-in and project-local workflows, agents, tool
 
 ```bash
 printf '%s\n' 'summarise the repository' | uv run agenthicc --headless
-printf '%s\n' 'run the workflow' | uv run agenthicc --headless --workflow code_plan
+printf '%s\n' 'run the workflow' | uv run agenthicc --headless --mode Plan --workflow code_plan
 uv run agenthicc workflows list
 uv run agenthicc workflows run code_plan --intent 'implement the feature' --json
 ```
+
+For an interactive session, `--mode MODE` selects the initial runtime mode and
+`--workflow NAME` selects the initial workflow. The explicit workflow overrides
+the mode's default; with `--headless`, the workflow is run for each non-empty
+stdin line.
 
 ---
 

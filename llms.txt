@@ -9,6 +9,8 @@
 The primary entry point is `agenthicc.__main__:main`.
 
 - `agenthicc` launches the Rich workspace and interactive `TUISession`.
+- `agenthicc --mode MODE --workflow NAME` starts the TUI with explicit mode and
+  workflow selections; `--workflow NAME` also selects the headless stdin workflow.
 - `agenthicc --headless` reads non-empty stdin lines and emits JSON-lines.
 - `agenthicc --headless --workflow NAME` executes NAME for each stdin line.
 - `kernel.AppState` is frozen domain state reduced from `Event` objects.

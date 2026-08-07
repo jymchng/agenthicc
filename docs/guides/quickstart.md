@@ -89,6 +89,13 @@ This runner is intentionally minimal. The interactive TUI session constructs
 the full workflow/agent/tool stack; headless mode is currently best treated as
 a deterministic stdin/kernel smoke interface.
 
+Use `--mode MODE` to choose the initial runtime mode (`Safe`, `Plan`, or
+`Yolo`; compatibility aliases are accepted) and `--workflow NAME` to select
+the initial TUI workflow. An explicit workflow takes precedence over the
+mode's default workflow. With `--headless`, `--workflow NAME` runs that
+workflow for each non-empty stdin line, while `--mode` controls the mode
+supplied to its runner.
+
 ## Create a project config
 
 ```bash
@@ -124,7 +131,7 @@ uv run agenthicc sessions inspect SESSION_ID
 uv run agenthicc sessions inspect SESSION_ID --json
 uv run agenthicc sessions export SESSION_ID --output session-export.json
 uv run agenthicc --continue
-uv run agenthicc --resume SESSION_ID
+uv run agenthicc --resume SESSION_ID --mode Yolo --workflow code_plan
 ```
 
 `--continue` resolves the latest session for the current directory. `--resume`
