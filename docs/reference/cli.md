@@ -114,7 +114,8 @@ loops back to generate until it loads cleanly. There is no staging directory or
 publish phase. Run `/workflows reload` after the run completes. The authoring
 run uses the same durable checkpoint contract as every other workflow:
 `/workflow resume [run-id]` continues its typed state after a pause or process
-restart, while `/workflow reset [run-id]` explicitly discards it.
+restart. `/workflow reset` returns to the active mode's default workflow, and
+`/workflow reset [run-id]` explicitly discards a saved run.
 
 Project tools and commands remain available through the `/create-tools` and
 `/create-commands` skills and their respective reload commands; they are not

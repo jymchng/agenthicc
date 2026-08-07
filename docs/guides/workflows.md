@@ -27,9 +27,12 @@ Use `/workflow resume` when exactly one recoverable run exists, or
 `/workflow resume <run-id>` when the notification lists more than one. An
 ordinary message continues the selected paused run using the same policy as an
 Esc pause; it never silently creates a fresh phase-one run. Use
-`/workflow reset <run-id>` to write a terminal discarded checkpoint. A live
-claim prevents two TUI/headless owners from executing one run at once, while a
-claim from a provably dead local process can be reclaimed.
+`/workflow reset` to always clear the session-local workflow override so
+subsequent turns use the active mode's default workflow. Use
+`/workflow reset <run-id>` to write a terminal discarded checkpoint for a
+saved run that is not currently attached. A live claim prevents two
+TUI/headless owners from executing one run at once, while a claim from a
+provably dead local process can be reclaimed.
 
 The recovery data flow is:
 
@@ -387,9 +390,9 @@ checkpointed; `create_workflow` resumes its typed outer-loop state rather than
 silently restarting DESIGN. This includes generated custom workflows that
 pass codec validation and re-enter their saved dispatch loop; a generated
 `resume()` that calls `run(intent)` is rejected. Use `/workflow resume` to
-continue a paused or interrupted run,
-or `/workflow reset` to write a terminal discarded record and return to the
-active mode's default workflow.
+continue a paused or interrupted run. `/workflow reset` returns subsequent
+turns to the active mode's default workflow; use `/workflow reset <run-id>`
+when an unattached saved run also needs an auditable discarded record.
 
 Usage accounting is inherited in the same way. The session supplies one
 `UsageLedger` through `WorkflowConfig`; the standard `_run_agent_turn()` phase

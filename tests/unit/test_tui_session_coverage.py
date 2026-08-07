@@ -122,7 +122,12 @@ def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.Monk
     ctx.workflow_registry.register(type("Demo", (), {"name": "demo", "mode_bindings": ()}))  # type: ignore[arg-type]
     assert session._handle_workflow_command("demo") is True
     assert session._workflow_override == "demo"
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
+
+    session._workflow_recovery_records["paused-run"] = WorkflowRecoveryRecord(run_id="paused-run")
     assert session._handle_workflow_command("reset") is True
+    assert session._workflow_override is None
+    assert ctx.app_state.conversation.workflow_override() is None
 
     skill = SkillDef("Coverage", "coverage", Path("."), description="test", aliases=("cov",))
     ctx.skills["old"] = skill

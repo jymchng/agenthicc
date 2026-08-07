@@ -762,6 +762,16 @@ class TUISession:
     def _set_pending_replay(self, session_id: str) -> None:
         self._pending_replay_id = session_id
 
+    def _reset_workflow_to_mode_default(self) -> None:
+        """Remove the session-local workflow override.
+
+        Reset is a selection operation: the next ordinary turn must resolve
+        its workflow from the active mode, even when recovery inspection has
+        found a saved run that still needs an explicit run-id decision.
+        """
+        self._workflow_override = None
+        self._ctx.app_state.conversation.workflow_override.set(None)
+
     def _activate_streaming_input(self) -> None:
         """Enable interruption before a newly created agent task can await.
 
@@ -1420,6 +1430,12 @@ class TUISession:
             return self._handle_workflow_resume(run_id)
         if not name or name == "reset" or name.startswith("reset "):
             requested_reset_id = name.partition(" ")[2].strip() or None
+            # `/workflow reset` must always clear the session-local selector.
+            # Recovery records are a separate durable-run decision and must
+            # not prevent the active workflow from returning to the mode
+            # default.
+            if requested_reset_id is None:
+                self._reset_workflow_to_mode_default()
             handle = self._workflow_handle
             if requested_reset_id is not None and (
                 handle is None or handle.run_id != requested_reset_id
@@ -1509,11 +1525,9 @@ class TUISession:
                 )
                 self._workflow_handle = None
                 conv.notify_transient("↩ Paused workflow discarded; workflow reset to mode default")
-                self._workflow_override = None
-                conv.workflow_override.set(None)
+                self._reset_workflow_to_mode_default()
                 return True
-            self._workflow_override = None
-            conv.workflow_override.set(None)
+            self._reset_workflow_to_mode_default()
             conv.notify_transient("↩ Workflow reset to mode default")
             return True
         defn = self._ctx.workflow_registry.get(name)
