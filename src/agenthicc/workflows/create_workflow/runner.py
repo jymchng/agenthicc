@@ -182,8 +182,9 @@ _AUTHORING_GUIDE: str = (
     + _RUNNER_GUIDE
     + "\nUse describe_phasespec(), list_tool_capabilities(), list_agent_roles(), "
     "describe_cloakbrowser_tools(), describe_playwright_tools(), "
-    "describe_runner_pattern(), describe_transition_tool_pattern(), and "
-    "show_example_workflow() to read the real API instead of "
+    "describe_runner_pattern(), describe_transition_tool_pattern(), "
+    "describe_prompt_cache_contract(), show_workflow_template(), "
+    "validate_workflow_cache_contract(), and show_example_workflow() to read the real API instead of "
     "guessing at it. inspect_agenthicc_source() and search_agenthicc_docs() read the "
     "installed agenthicc source and documentation directly."
 )
@@ -201,7 +202,9 @@ _DESIGN_PROMPT: str = (
     "one method per state, and the transition tool that ends each phase. For every phase "
     "name the exact transition tool(s) available to its agent and state that only a "
     "successful call changes phase; prose such as 'done' never advances the workflow. Call "
-    "describe_runner_pattern() and follow it. Only if every phase is a single "
+    "describe_runner_pattern() and follow it. Inspect describe_prompt_cache_contract() "
+    "and show_workflow_template() before writing the runner; use "
+    "validate_workflow_cache_contract(path) after generation. Only if every phase is a single "
     "unconditional turn may you propose a declarative graph with no runner — and then say "
     "so explicitly and justify it.\n\n"
     "Present the design with request_design_approval(design, workflow_name). If it is not "
@@ -786,9 +789,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             generate_event: asyncio.Event = asyncio.Event()
             generate_data: dict[str, object] = {}
 
-            tools: _ToolList = list(self._base_tools()) + list(
-                make_generation_tools(generate_event, generate_data)
+            from agenthicc.workflows.create_workflow.inspection_tools import (  # noqa: PLC0415
+                make_inspection_tools,
             )
+
+            tools: _ToolList = list(self._base_tools())
+            tools.extend(make_inspection_tools())
+            tools.extend(make_generation_tools(generate_event, generate_data))
             tools.extend(make_questions_tool(self._cfg.approval_svc))
             text: str = first_text if attempt == 1 else _GENERATE_REMINDER
 

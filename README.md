@@ -187,11 +187,16 @@ Each authoring phase has its own prompt and bounded multi-turn budget; tune the 
 - `describe_phasespec`
 - `list_tool_capabilities`
 - `list_agent_roles`
+- `describe_cloakbrowser_tools`
+- `describe_playwright_tools`
 - `describe_runner_pattern`
 - `describe_transition_tool_pattern`
 - `show_example_workflow`
+- `describe_prompt_cache_contract`
+- `show_workflow_template`
+- `validate_workflow_cache_contract`
 
-All five are read-only and available in Plan mode, so the agent can inspect the API without side effects.
+Ten are read-only and available in Plan mode. `validate_workflow_cache_contract` is execute-gated because it imports the target workflow; generation receives it after the package is written and must use it only with a trusted generated path. Browser descriptions report the live backend tool names and distinguish a configuration-enabled optional integration from a selected or installed backend.
 
 ### Cache stability contract
 

@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agenthicc.config import AgenthiccConfig
-from agenthicc.tools.capabilities import ToolCapability
+from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 from agenthicc.tui.conversation_store import AppState
 from agenthicc.tui.runtime.mode_manager import ModeManager
 from agenthicc.workflows.config import WorkflowConfig
@@ -551,6 +551,36 @@ async def test_list_agent_roles_covers_every_phase_role() -> None:
     assert set(result["agent_types"]) == expected  # type: ignore[arg-type]
 
 
+async def test_browser_inspection_matches_live_backend_contracts() -> None:
+    from agenthicc.config import CloakBrowserSettings, PlaywrightSettings, ToolSettings
+    from agenthicc.tools.cloakbrowser.agent_tools import CLOAKBROWSER_AGENT_TOOLS
+    from agenthicc.tools.playwright.agent_tools import PLAYWRIGHT_AGENT_TOOLS
+
+    tools = make_inspection_tools()
+    cloak = await _call(tools, "describe_cloakbrowser_tools")
+    playwright = await _call(tools, "describe_playwright_tools")
+    assert isinstance(cloak, dict)
+    assert isinstance(playwright, dict)
+
+    cloak_settings = CloakBrowserSettings()
+    playwright_settings = PlaywrightSettings()
+    default_backend = ToolSettings().browser_backend
+    assert cloak["tool_names"] == list(CLOAKBROWSER_AGENT_TOOLS)
+    assert playwright["tool_names"] == list(PLAYWRIGHT_AGENT_TOOLS)
+    assert cloak["enabled_by_default"] is cloak_settings.enabled
+    assert playwright["enabled_by_default"] is playwright_settings.enabled
+    assert cloak["selected_by_default"] is (default_backend == "cloakbrowser")
+    assert playwright["selected_by_default"] is (default_backend == "playwright")
+    assert cloak["dependency_optional"] is True
+    assert playwright["dependency_optional"] is True
+    assert "except *_status" in str(cloak["operation_id"])
+    assert "except *_status" in str(playwright["operation_id"])
+    assert any("loopback" in item for item in cloak["security"])  # type: ignore[union-attr]
+    assert any("loopback" in item for item in playwright["security"])  # type: ignore[union-attr]
+    validator = next(tool for tool in tools if tool.__name__ == "validate_workflow_cache_contract")
+    assert ToolCapability.EXECUTE in get_tool_capabilities(validator)
+
+
 async def test_show_example_workflow_defaults_to_the_custom_runner_shape(
     tmp_path: Path,
 ) -> None:
@@ -684,6 +714,15 @@ async def test_prompt_cache_inspection_describes_contract_and_template() -> None
     assert any("CACHE_CONTRACT" in str(rule) for rule in contract["authoring_rules"])
     assert "ask_user" in contract["required_policy"]
     assert "history_compacted" in contract["invalidation_reasons"]
+    ownership = contract["invalidation_reason_ownership"]
+    assert ownership["tracked_by_workflow_handle"] == [
+        "initial",
+        "phase_context_changed",
+        "stable_contract_changed",
+        "connection_changed",
+    ]
+    assert "provider_expired" in ownership["not_tracked_by_workflow_handle"]
+    assert "modal" in contract["provider_behavior"]
 
     template = await _call(tools, "show_workflow_template")
     assert isinstance(template, dict)
@@ -1556,8 +1595,14 @@ async def test_design_injects_inspection_and_question_tools() -> None:
         "describe_phasespec",
         "list_tool_capabilities",
         "list_agent_roles",
+        "describe_cloakbrowser_tools",
+        "describe_playwright_tools",
         "describe_runner_pattern",
+        "describe_transition_tool_pattern",
         "show_example_workflow",
+        "describe_prompt_cache_contract",
+        "show_workflow_template",
+        "validate_workflow_cache_contract",
         "request_design_approval",
         "finalize_design",
         "exit_create_workflow",
@@ -1715,6 +1760,8 @@ def test_definition_phase_prompts_name_the_runner_requirement() -> None:
     phases = {phase.name: phase for phase in CreateWorkflow.phases}
     assert "state-machine runner" in phases["design"].system_prompt_override
     assert "describe_runner_pattern()" in phases["design"].system_prompt_override
+    assert "describe_prompt_cache_contract()" in phases["design"].system_prompt_override
+    assert "validate_workflow_cache_contract(path)" in phases["design"].system_prompt_override
     assert "build_runner()" in phases["generate"].system_prompt_override
     assert "No stubs" in phases["generate"].system_prompt_override
 
@@ -1735,6 +1782,9 @@ async def test_design_prompt_carries_the_intent_and_authoring_guide() -> None:
     assert "build me a doc review workflow" in prompts[0]
     assert ".agenthicc/workflows/<name>/" in prompts[0]
     assert "describe_phasespec()" in prompts[0]
+    assert "describe_prompt_cache_contract()" in prompts[0]
+    assert "show_workflow_template()" in prompts[0]
+    assert "validate_workflow_cache_contract(path)" in prompts[0]
 
 
 # ── runner: generate phase ────────────────────────────────────────────────────
@@ -1764,6 +1814,28 @@ async def test_generate_transitions_to_validate_and_records_the_artifact() -> No
     artifact = ctx.artifacts["generate"]
     assert artifact.kind == "workflow_file"
     assert artifact.metadata["path"] == "x/demo"
+
+
+async def test_generate_injects_the_current_inspection_surface() -> None:
+    runner = _runner()
+    ctx = _ctx()
+    ctx.design = "the design"
+    ctx.workflow_name = "demo"
+    captured: set[str] = set()
+
+    async def turn(_text: str, **kwargs: object) -> None:
+        captured.update(_by_name(kwargs["tools"]))
+        await _call(kwargs["tools"], "mark_generation_complete", "wrote it", "x/demo")
+
+    runner._run_turn = turn  # type: ignore[method-assign]
+    assert await runner._generate(ctx) is CreateWorkflowState.VALIDATE
+    assert {
+        "describe_phasespec",
+        "describe_prompt_cache_contract",
+        "show_example_workflow",
+        "show_workflow_template",
+        "validate_workflow_cache_contract",
+    } <= captured
 
 
 async def test_generate_runs_in_yolo_mode_with_the_design_in_the_prompt() -> None:

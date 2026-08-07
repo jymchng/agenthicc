@@ -354,7 +354,7 @@ project tool set filtered by the active mode's blocked capabilities. The built-i
 tool registry supplies the workspace-guarded canonical `write_file` tool even when
 no project tool plugin exports it, so `generate` can always write its file.
 
-The design phase additionally receives five read-only inspection tools whose
+The authoring workflow receives eleven inspection tools whose
 content is read live from the running code, so the guidance cannot drift from the
 API:
 
@@ -363,11 +363,20 @@ API:
 | `describe_phasespec()` | every `PhaseSpec` field with its type, default, and purpose |
 | `list_tool_capabilities()` | every `ToolCapability` value with a description |
 | `list_agent_roles()` | every `PhaseRole` usable as `agent_type` |
+| `describe_cloakbrowser_tools()` | the optional CloakBrowser backend, live tool names, defaults, and security boundary |
+| `describe_playwright_tools()` | the optional Playwright backend, live tool names, defaults, and security boundary |
 | `describe_runner_pattern()` | the custom-runner checklist and when a runner is required |
 | `describe_transition_tool_pattern()` | the canonical import/decorator contract for phase handoff tools |
 | `show_example_workflow(style)` | a complete `runner.py` package entry point to adapt — `"runner"` (default) or `"declarative"` |
+| `describe_prompt_cache_contract()` | stable/dynamic prompt regions, cache policy, and invalidation ownership |
+| `show_workflow_template()` | the cache-stable custom-runner template and required `run_phase()` call |
+| `validate_workflow_cache_contract(path)` | execute-gated strict validation of a trusted generated runner's cache/question/tool contract |
 
-Every workflow phase gets the existing `ask_user` tool for clarifying questions.
+The ten non-executing inspection tools are available in Plan mode. The validator
+is execute-gated and is available to the Yolo generation phase after files are
+written, because validation imports the target package and executes its module
+top level just as the workflow loader does. Every workflow phase gets the existing
+`ask_user` tool for clarifying questions.
 The phase agent is explicitly reminded that it can ask multiple focused questions
 in one call, or across several rounds, whenever requirements are unclear. Every
 phase can additionally read the installed agenthicc source and documentation with the session-wide

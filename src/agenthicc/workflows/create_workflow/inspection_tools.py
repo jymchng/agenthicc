@@ -1,4 +1,4 @@
-"""Read-only inspection tools for the create_workflow design phase.
+"""Inspection tools for the create_workflow design and generation phases.
 
 These give the authoring agent *ground truth* about the workflow-plugin API —
 the ``PhaseSpec`` field list is read live from the dataclass and the capability
@@ -6,8 +6,10 @@ and role lists are read live from their enums, so the guidance can never drift
 from the real contract.  A canonical, known-valid example workflow is included
 so the agent has a correct template to adapt rather than one it hallucinates.
 
-All tools here are read-only: they take no session state and cause no side
-effects, so they are safe to inject into any phase.
+Most tools here are read-only and take no session state.  The cache-contract
+validator is intentionally different: it imports the target workflow through
+the same loader used at runtime, so its target must be a trusted generated path
+and its execution capability is gated separately.
 """
 
 from __future__ import annotations
@@ -547,13 +549,14 @@ class DocReviewWorkflow(WorkflowPlugin):
 
 
 def make_inspection_tools() -> list[Callable[..., object]]:
-    """Return the read-only authoring-surface inspection tools.
+    """Return the authoring-surface inspection tools.
 
-    ``[describe_phasespec, list_tool_capabilities, list_agent_roles,
-    describe_cloakbrowser_tools, show_example_workflow]``
+    The returned callables are the complete inspection surface used by the
+    design phase.  Keep this list in one place so the authoring prompt and its
+    tests cannot accidentally describe a stale subset of the tools.
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_read  # noqa: PLC0415
+    from agenthicc.tools.capabilities import tool_execute, tool_read  # noqa: PLC0415
 
     @tool_read
     @_tool()
@@ -635,21 +638,28 @@ def make_inspection_tools() -> list[Callable[..., object]]:
     @_tool()
     async def describe_cloakbrowser_tools() -> dict[str, object]:
         """Describe the optional, session-scoped browser tool contract."""
+        from agenthicc.config import CloakBrowserSettings, ToolSettings  # noqa: PLC0415
+        from agenthicc.tools.cloakbrowser.agent_tools import (  # noqa: PLC0415
+            CLOAKBROWSER_AGENT_TOOLS,
+        )
+
+        settings = CloakBrowserSettings()
         return {
             "optional_extra": "cloakbrowser",
-            "enabled_by_default": True,
+            # This is the configuration flag, not a claim that the optional
+            # package or its browser runtime is installed.
+            "enabled_by_default": settings.enabled,
+            "selected_by_default": ToolSettings().browser_backend == "cloakbrowser",
+            "dependency_optional": True,
+            "dependency_installed_by_default": False,
             "configuration": "[tools.cloakbrowser]",
-            "tool_names": [
-                "cloakbrowser_status",
-                "cloakbrowser_open",
-                "cloakbrowser_snapshot",
-                "cloakbrowser_click",
-                "cloakbrowser_fill",
-                "cloakbrowser_press",
-                "cloakbrowser_wait_for",
-                "cloakbrowser_screenshot",
-                "cloakbrowser_close",
-            ],
+            "tool_names": list(CLOAKBROWSER_AGENT_TOOLS),
+            "availability": (
+                "The integration flag is enabled by default, but the empty allow-list is "
+                "deny-all. Install the optional cloakbrowser extra and configure an allow-list "
+                "before navigation becomes available; without the extra, status reports "
+                "dependency_missing after a destination is configured."
+            ),
             "phase_guidance": (
                 "Declare NETWORK plus READ for observation phases and NETWORK plus WRITE "
                 "for interactions. Keep browser tools out of design/validation phases "
@@ -661,15 +671,17 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                 "ToolCapability.READ, ToolCapability.NETWORK}), max_turns=8, next='report')"
             ),
             "security": [
-                "navigation is restricted to operator-configured domains and public DNS results",
+                "navigation is restricted to configured domains (or explicit allow_all_domains) "
+                "and every DNS answer is checked",
+                "CloakBrowser rejects loopback, private, link-local, and reserved addresses",
                 "sensitive form fields, raw JavaScript, arbitrary CDP, cookies, and proxy settings are unavailable",
                 "snapshots and screenshots are bounded and screenshots are workspace artifacts",
                 "browser objects are not serialized into workflow checkpoints",
             ],
             "operation_id": (
-                "Every browser tool accepts an optional bounded operation_id. Reuse the same "
-                "id when safely retrying a call; the session manager returns the cached result "
-                "instead of repeating a mutation."
+                "Every browser operation tool except *_status accepts an optional bounded "
+                "operation_id. Reuse the same id when safely retrying a mutation; the session "
+                "manager returns the cached result instead of repeating it."
             ),
         }
 
@@ -677,38 +689,47 @@ def make_inspection_tools() -> list[Callable[..., object]]:
     @_tool()
     async def describe_playwright_tools() -> dict[str, object]:
         """Describe the optional, session-scoped Playwright browser contract."""
+        from agenthicc.config import PlaywrightSettings, ToolSettings  # noqa: PLC0415
+        from agenthicc.tools.playwright.agent_tools import (  # noqa: PLC0415
+            PLAYWRIGHT_AGENT_TOOLS,
+        )
+
+        settings = PlaywrightSettings()
         return {
             "optional_extra": "playwright",
-            "enabled_by_default": True,
+            # Playwright's setting is enabled by default, but CloakBrowser is
+            # the selected backend unless the operator opts into this one.
+            "enabled_by_default": settings.enabled,
+            "selected_by_default": ToolSettings().browser_backend == "playwright",
+            "dependency_optional": True,
+            "dependency_installed_by_default": False,
             "backend_selection": "Set [tools].browser_backend = 'playwright'.",
             "configuration": "[tools.playwright]",
-            "tool_names": [
-                "playwright_status",
-                "playwright_open",
-                "playwright_snapshot",
-                "playwright_click",
-                "playwright_fill",
-                "playwright_press",
-                "playwright_wait_for",
-                "playwright_screenshot",
-                "playwright_close",
-            ],
+            "tool_names": list(PLAYWRIGHT_AGENT_TOOLS),
             "browser_types": ["chromium", "firefox", "webkit"],
+            "availability": (
+                "The backend setting is enabled by default but is not selected by default. "
+                "Select it explicitly, install the optional playwright extra and its browser "
+                "runtime, then configure an allow-list; otherwise status reports the structured "
+                "unavailable result."
+            ),
             "phase_guidance": (
                 "Declare NETWORK plus READ for observation phases and NETWORK plus WRITE "
                 "for interactions. Keep browser tools out of design/validation phases "
                 "unless the workflow has a documented, intentional reason."
             ),
             "security": [
-                "navigation and subresource requests are restricted to operator-configured domains",
+                "navigation and subresource requests are restricted to configured domains "
+                "(or explicit allow_all_domains) and DNS rebinding is checked",
+                "loopback preview servers are supported; private non-loopback addresses remain blocked",
                 "sensitive form fields, raw JavaScript, arbitrary CDP, cookies, and proxy settings are unavailable",
                 "snapshots and screenshots are bounded and screenshots are workspace artifacts",
                 "browser objects are not serialized into workflow checkpoints",
             ],
             "operation_id": (
-                "Every browser tool accepts an optional bounded operation_id. Reuse the same "
-                "id when safely retrying a call; the session manager returns the cached result "
-                "instead of repeating a mutation."
+                "Every browser operation tool except *_status accepts an optional bounded "
+                "operation_id. Reuse the same id when safely retrying a mutation; the session "
+                "manager returns the cached result instead of repeating it."
             ),
         }
 
@@ -909,10 +930,25 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                 "connection_changed",
                 "provider_expired",
             ],
+            "invalidation_reason_ownership": {
+                "tracked_by_workflow_handle": [
+                    "initial",
+                    "phase_context_changed",
+                    "stable_contract_changed",
+                    "connection_changed",
+                ],
+                "not_tracked_by_workflow_handle": [
+                    "question_appended",
+                    "summary_updated",
+                    "history_compacted",
+                    "provider_expired",
+                ],
+            },
             "provider_behavior": {
                 "anthropic": "explicit stable system/tool prefix when supported",
                 "openai-compatible": "deterministic prefix for automatic provider caching",
-                "ollama/litellm": "logical contract preserved; cache may be unsupported",
+                "modal": "OpenAI-compatible automatic caching semantics when the endpoint supports them",
+                "ollama/litellm": "logical contract preserved; provider cache may be unsupported",
             },
         }
 
@@ -935,10 +971,15 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             ),
         }
 
-    @tool_read
+    @tool_execute
     @_tool()
     async def validate_workflow_cache_contract(path: str) -> dict[str, object]:
-        """Validate a generated workflow's cache and question-tool contract."""
+        """Validate a trusted generated workflow's cache/question contract.
+
+        Validation imports the target package exactly as the workflow loader
+        does.  Top-level code in that package therefore executes; the tool is
+        execute-gated even though its intended result is a read-only report.
+        """
 
         from pathlib import Path  # noqa: PLC0415
         from agenthicc.workflows.create_workflow.validation import validate_workflow_file  # noqa: PLC0415
@@ -955,6 +996,10 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "errors": list(report.errors),
             "warnings": list(report.warnings),
             "phase_names": list(report.phase_names),
+            "execution_note": (
+                "The target was imported through the workflow loader; call this only for a "
+                "trusted generated path because module-level code executes during validation."
+            ),
         }
 
     return [
