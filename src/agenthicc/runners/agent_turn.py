@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, cast
 
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.runners.prompt_contract import PromptBlock
+from agenthicc.memory.tool_history import repair_non_adjacent_tool_history
 from agenthicc.tools.hooks import (
     AfterToolHookDecision,
     ErrorToolHookDecision,
@@ -91,6 +92,8 @@ def _preserve_interrupted_memory(memory: object | None) -> bool:
     """
     if memory is None:
         return False
+    if repair_non_adjacent_tool_history(memory):
+        return True
     before = list(getattr(memory, "_messages", ()))
     persist_heal = getattr(memory, "ensure_valid_and_persist", None)
     if callable(persist_heal):
@@ -715,8 +718,16 @@ class AgentTurnRunner:
             _PROPAGATE_TOOL_CANCELLATION.reset(cancellation_token)
 
     async def _close_browser_after_failure(self) -> None:
-        """Release browser resources when the provider turn cannot continue."""
-        closer = getattr(self._ctx.browser_manager, "close_session", None)
+        """Release browser resources without ending the session-owned tool set."""
+        manager = self._ctx.browser_manager
+        # A failed provider turn is recoverable: the next turn may still use
+        # the same injected Playwright/CloakBrowser closures. Only the outer
+        # TUI/headless session owner should call terminal ``close_session()``.
+        closer = getattr(manager, "close_runtime", None)
+        if not callable(closer):
+            # Compatibility for third-party browser-manager implementations
+            # that predate the recoverable runtime-cleanup boundary.
+            closer = getattr(manager, "close_session", None)
         if not callable(closer):
             return
         try:
@@ -1147,15 +1158,22 @@ class AgentTurnRunner:
                     queued = claim_queued_message()
                     if queued is None:
                         return results
-                    from lauren_ai._agents._runner import _complete_tool_results  # noqa: PLC0415
-
-                    complete_results = _complete_tool_results(tool_calls, results)
                     exchange = getattr(ctx.memory, "active_tool_exchange", None)
                     if exchange is not None and callable(
                         getattr(ctx.memory, "commit_tool_exchange", None)
                     ):
-                        ctx.memory.commit_tool_exchange(exchange, complete_results)
+                        # ``tool_calls`` is the approved subset.  The active
+                        # transaction still owns the complete assistant batch;
+                        # commit against it so lauren-ai can synthesize stable
+                        # results for calls filtered out by approval.  Passing
+                        # only the subset through ``_complete_tool_results``
+                        # would leave a missing-result batch immediately before
+                        # the queued user message.
+                        ctx.memory.commit_tool_exchange(exchange, results)
                     else:
+                        from lauren_ai._agents._runner import _complete_tool_results  # noqa: PLC0415
+
+                        complete_results = _complete_tool_results(tool_calls, results)
                         ctx.memory.add_tool_results(complete_results)
                     ctx.memory.add_user(queued)
                     return []
@@ -1397,6 +1415,21 @@ class AgentTurnRunner:
         from lauren_ai._config import AgentConfig as _AgentConfig  # noqa: PLC0415
 
         ctx = self._ctx
+
+        # A cancellation/resume race can leave a result block behind a queued
+        # user message. Repair the persisted projection before Lauren-ai's
+        # preflight rejects the next provider request.
+        repaired_history = _preserve_interrupted_memory(ctx.session_memory)
+        if repaired_history and ctx.conv_store is not None:
+            ctx.conv_store.append_event(
+                "system",
+                {
+                    "text": (
+                        "Tool execution history was repaired before continuing; "
+                        "completed work was preserved."
+                    )
+                },
+            )
 
         contract = ctx.prompt_contract
         # Keep the caller-supplied turn text separate from the rendered

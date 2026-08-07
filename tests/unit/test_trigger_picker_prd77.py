@@ -98,6 +98,31 @@ def test_init_trigger_last_char_is_trigger():
     assert overlay._buf.buf == []
 
 
+def test_second_at_is_inserted_as_literal_fragment_text():
+    """A second ``@`` must not be consumed while the first picker is open."""
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.trigger import TriggerResult
+
+    registry, handlers = _make_registry("@")
+    handlers["@"].get_matches.return_value = []
+    overlay, completed = _make_overlay(["@"], registry)
+
+    overlay.handle_key(Key.AT, "")
+
+    assert overlay._trigger is not None
+    assert overlay._trigger.fragment == "@"
+    assert completed == []
+
+    # Enter with no matches commits the literal text, proving that the second
+    # character survived the overlay instead of merely changing its state.
+    overlay.handle_key(Key.ENTER, "")
+    assert len(completed) == 1
+    result = completed[0]
+    assert isinstance(result, TriggerResult)
+    assert "".join(result.buffer) == "@@"
+    assert result.submit is True
+
+
 def test_init_trigger_slash_not_activated_mid_word():
     """'/' mid-word (can_activate returns False) must be skipped; '@' found instead."""
     registry, handlers = _make_registry("@", "/")

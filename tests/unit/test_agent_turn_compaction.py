@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,6 +16,9 @@ from agenthicc.runners.agent_turn import (
     _is_context_overflow_error,
 )
 from agenthicc.runners.agent_turn_context import AgentTurnContext
+from agenthicc.tools.cloakbrowser import BrowserPolicy, BrowserSessionManager
+from agenthicc.config import CloakBrowserSettings
+from tests.unit.test_cloakbrowser_tools import FakeBrowserClient
 
 
 class _SmallExecutionConfig:
@@ -125,6 +129,30 @@ async def test_empty_summary_uses_a_bounded_local_fallback() -> None:
     ctx.conv_store.append_event.assert_any_call(  # type: ignore[union-attr]
         "system", {"text": "⎋ Compaction fallback: retained recent history"}
     )
+
+
+@pytest.mark.unit
+async def test_failed_turn_browser_cleanup_does_not_terminally_close_session(
+    tmp_path: Path,
+) -> None:
+    async def resolve(_host: str) -> list[str]:
+        return ["93.184.216.34"]
+
+    manager = BrowserSessionManager(
+        CloakBrowserSettings(enabled=True, allowed_domains=["example.com"]),
+        "session-1",
+        tmp_path,
+        client=FakeBrowserClient(),
+        policy=BrowserPolicy(("example.com",), resolver=resolve),
+    )
+    await manager.open("https://example.com/")
+
+    runner = object.__new__(AgentTurnRunner)
+    runner._ctx = SimpleNamespace(browser_manager=manager)
+    await runner._close_browser_after_failure()
+
+    assert (await manager.status())["status"] == "ready"
+    assert (await manager.open("https://example.com/"))["ok"] is True
 
 
 @pytest.mark.unit

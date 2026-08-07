@@ -212,6 +212,15 @@ class TriggerPickerOverlay(Overlay):
                 else:
                     self._complete(None)
 
+            case Key.AT:
+                # cbreak_reader reports every literal ``@`` as Key.AT rather
+                # than Key.CHAR.  Once a picker is open, another ``@`` is
+                # ordinary fragment text (for example ``@@user``), not a new
+                # trigger and not a key to silently discard.
+                if self._trigger:
+                    self._trigger.fragment += "@"
+                    self._update_matches()
+
             case Key.CHAR if ch:
                 if self._trigger:
                     # Space is ordinary input.  It must never implicitly

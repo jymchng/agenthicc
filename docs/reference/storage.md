@@ -29,8 +29,10 @@ stored as short hashes. The canonical message append/reset records remain the
 source used to rebuild memory. If a crash leaves an assistant tool batch with
 missing results, `JournaledShortTermMemory` inserts deterministic interruption
 results, writes one durable reset, and then the shared validator must pass
-before provider I/O. Invalid unknown/duplicate/empty/non-adjacent exchanges
-fail closed rather than being silently rewritten.
+before provider I/O. A known cancellation/queued-continuation race is also
+repaired by moving its matching late result back beside the assistant call and
+writing one durable reset. Invalid unknown, duplicate, empty, or ambiguous
+non-adjacent exchanges fail closed rather than being silently rewritten.
 
 ## Client-neutral session projection
 

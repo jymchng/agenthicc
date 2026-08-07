@@ -377,6 +377,31 @@ class BrowserSessionManager:
 
         return await self._safe(operation, operation_id=operation_id)
 
+    async def close_runtime(self) -> None:
+        """Release live browser resources while keeping the manager reusable.
+
+        A provider-turn failure must not permanently invalidate the browser
+        tool closures that are still installed in the session registry. This
+        differs from :meth:`close_session`, which is terminal cleanup used
+        when the owning TUI/headless session exits. The next ``*_open`` call
+        can create a fresh context without surfacing ``Browser session is
+        closed.``.
+        """
+        async with self._operation_lock:
+            # A terminal owner shutdown wins over a late provider-failure
+            # callback. The explicit ``*_open`` recovery path handles a later
+            # user request if one arrives on the retained closures.
+            if self._closed:
+                return
+            try:
+                await self.client.close_session(self._browser_session_id)
+            finally:
+                self._pages.clear()
+                self._actions_used = 0
+                self._operation_in_flight.clear()
+                self._operation_results.clear()
+                self._closed = False
+
     async def snapshot(self, page_id: str, operation_id: str | None = None) -> dict[str, object]:
         async def operation() -> dict[str, object]:
             self._ensure_usable()

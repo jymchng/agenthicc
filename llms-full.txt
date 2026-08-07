@@ -595,6 +595,9 @@ the cached receipt and prevents a transport retry from repeating a mutation.
 After orderly manager cleanup, the retained tool closures remain usable: the
 next `*_open` lazily creates a fresh context and clears stale page/idempotency
 state, while live pages are intentionally not restored.
+Provider-turn failure cleanup uses the recoverable `close_runtime()` boundary
+so it releases the live context without terminally closing the retained tool
+closures; `close_session()` remains the final TUI/headless shutdown operation.
 
 ### Optional Playwright integration — `agenthicc.tools.playwright`
 

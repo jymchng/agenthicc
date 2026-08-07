@@ -490,6 +490,37 @@ async def test_unified_input_session_dispatch_and_noninteractive_lifecycle(
     await session.run()
 
 
+@pytest.mark.asyncio
+async def test_unified_dispatch_preserves_second_at_in_trigger_picker(tmp_path: Path) -> None:
+    """The real Key.AT pipeline keeps a literal second ``@``."""
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+    from agenthicc.tui.trigger import TriggerManager
+    from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+    from agenthicc.tui.workspace.overlay import OverlayHost
+
+    state = AppState()
+    registry = TriggerManager()
+    registry.register(AtMentionTrigger())
+    overlays = OverlayHost(state)
+    session = UnifiedInputSession(
+        state,
+        CommandBus(),
+        trigger_registry=registry,
+        overlay_host=overlays,
+        cwd=tmp_path,
+    )
+
+    await session._dispatch(Key.AT, "")
+    assert overlays.active
+    await session._dispatch(Key.AT, "")
+
+    picker = overlays.widget
+    assert picker is not None
+    assert picker._trigger is not None
+    assert picker._trigger.fragment == "@"
+
+
 def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     session_id = "replay-session"
     root = tmp_path / session_id

@@ -320,6 +320,9 @@ The same injected tool closures remain usable after orderly session cleanup:
 while the next `*_open` lazily creates a fresh context for the same session.
 This applies to both CloakBrowser and Playwright; live pages are intentionally
 not restored.
+When an individual provider turn fails, agenthicc uses the manager's
+recoverable `close_runtime()` boundary instead: it releases the live context
+without putting the retained tool closures into the terminal `closed` state.
 
 The adapter enforces an operator domain/origin allow-list, HTTP(S)-only
 navigation, DNS/private-address checks, bounded pages/actions/snapshots/screenshots,

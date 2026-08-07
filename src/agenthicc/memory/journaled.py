@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from lauren_ai._memory import ToolExchange, ToolResultRecord
 
 from agenthicc.memory.journal import ConversationJournal
+from agenthicc.memory.tool_history import repair_non_adjacent_tool_history
 
 __all__ = ["JournaledShortTermMemory"]
 
@@ -41,7 +42,12 @@ class JournaledShortTermMemory(ShortTermMemory):
         if msgs or summary is not None:
             self._messages = list(msgs)
             self._summary = summary
-        # A crash can leave an assistant tool batch appended without its
+        # A queued continuation can be journaled before a late result from an
+        # interrupted tool task. Lauren-ai correctly rejects that shape as
+        # ambiguous; at this session boundary the tool IDs make the repair
+        # deterministic. Handle it before the normal missing-tail check.
+        repair_non_adjacent_tool_history(self)
+        # A crash can also leave an assistant tool batch appended without its
         # result exchange. Repair the in-memory projection before the first
         # resumed provider request and make that repair durable immediately.
         self.ensure_valid_and_persist()
@@ -73,6 +79,37 @@ class JournaledShortTermMemory(ShortTermMemory):
     def restore(self, data: object) -> None:
         super().restore(data)
         self._journal.reset(self._messages, self._summary)
+
+    def commit_tool_exchange(
+        self,
+        exchange: "ToolExchange",
+        results: list[object],
+        *,
+        on_unresolved: str = "synthesize_error_results",
+    ) -> "ToolExchange":
+        """Reject a late result from an exchange no longer owned by memory.
+
+        Lauren-ai validates the exchange payload, but 1.5.0 still permits a
+        started exchange to commit when ``restore()`` has already cleared the
+        active owner. That is unsafe after a cancellation/resume race: the
+        stale task would append its result after the queued continuation.
+        """
+        from lauren_ai import ToolConversationIntegrityError
+
+        current = self.active_tool_exchange
+        if current is None or current.exchange_id != exchange.exchange_id:
+            expected_count = len(current.call_ids) if current is not None else 0
+            raise ToolConversationIntegrityError(
+                "Tool exchange does not own the active transaction",
+                code="exchange_owner_mismatch",
+                expected_count=expected_count,
+                observed_count=len(exchange.call_ids),
+            )
+        return super().commit_tool_exchange(
+            exchange,
+            results,
+            on_unresolved=on_unresolved,
+        )
 
     def journal_reset(self) -> None:
         """Record the current full state.

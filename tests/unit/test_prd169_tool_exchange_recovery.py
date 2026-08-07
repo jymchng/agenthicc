@@ -86,6 +86,99 @@ def test_transaction_commit_orders_results_and_synthesizes_unresolved_call(tmp_p
     journal.close()
 
 
+def test_non_adjacent_result_is_moved_before_queued_user_message(tmp_path) -> None:
+    journal = ConversationJournal(tmp_path / "conversation.jsonl")
+    memory = JournaledShortTermMemory(journal)
+    memory.add_user("inspect the asset")
+    call = ToolCall(tool_use_id="asset-1", name="Read", input={"path": "asset.txt"})
+    memory.add_assistant(_completion(call))
+    # This is the invalid shape reported by the TUI: a continuation was
+    # appended before the result from the interrupted tool task arrived.
+    memory.add_user("continue from where you stopped")
+    memory._messages.append(
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "asset-1", "content": "done"}],
+        }
+    )
+
+    report = memory.validate_tool_history()
+    assert report.first_issue is not None
+    assert report.first_issue.code == "non_adjacent_results"
+
+    assert _preserve_interrupted_memory(memory) is True
+    assert memory.validate_tool_history().ok
+    assert memory._messages[2]["content"][0]["tool_use_id"] == "asset-1"
+    assert memory._messages[3]["content"] == "continue from where you stopped"
+    journal.close()
+
+
+def test_journal_resume_repairs_non_adjacent_result_before_constructor_returns(tmp_path) -> None:
+    path = tmp_path / "conversation.jsonl"
+    journal = ConversationJournal(path)
+    journal.append_message({"role": "user", "content": "inspect the asset"})
+    journal.append_message(
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "asset-1", "name": "Read", "input": {}}],
+        }
+    )
+    journal.append_message({"role": "user", "content": "continue from where you stopped"})
+    journal.append_message(
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "asset-1", "content": "done"}],
+        }
+    )
+    journal.close()
+
+    resumed_journal = ConversationJournal(path)
+    resumed = JournaledShortTermMemory(resumed_journal)
+    assert resumed.validate_tool_history().ok
+    assert resumed._messages[2]["content"][0]["tool_use_id"] == "asset-1"
+    assert resumed._messages[3]["content"] == "continue from where you stopped"
+    resumed_journal.close()
+
+
+def test_non_adjacent_duplicate_result_fails_closed() -> None:
+    from lauren_ai._memory import ShortTermMemory
+
+    memory = ShortTermMemory()
+    memory._messages = [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "same"}]},
+        {"role": "user", "content": "continue"},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "same"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "same"}]},
+    ]
+
+    with pytest.raises(ToolConversationIntegrityError) as caught:
+        _preserve_interrupted_memory(memory)
+    assert caught.value.code == "non_adjacent_results"
+
+
+def test_repaired_journal_rejects_late_commit_from_stale_exchange(tmp_path) -> None:
+    journal = ConversationJournal(tmp_path / "conversation.jsonl")
+    memory = JournaledShortTermMemory(journal)
+    memory.add_user("inspect")
+    call = ToolCall(tool_use_id="late-1", name="Read", input={})
+    memory.add_assistant(_completion(call))
+    exchange = memory.begin_tool_exchange([call], run_id="run-1")
+    memory.add_user("continue")
+    memory._messages.append(
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "late-1", "content": "done"}],
+        }
+    )
+
+    assert _preserve_interrupted_memory(memory) is True
+    with pytest.raises(ToolConversationIntegrityError) as caught:
+        memory.commit_tool_exchange(exchange, [ToolResult.ok("late", tool_use_id="late-1")])
+    assert caught.value.code == "exchange_owner_mismatch"
+    assert memory.validate_tool_history().ok
+    journal.close()
+
+
 def test_orphan_result_is_rejected_before_provider_io() -> None:
     from lauren_ai._memory import ShortTermMemory
 

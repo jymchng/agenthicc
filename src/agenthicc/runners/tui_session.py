@@ -133,7 +133,10 @@ from agenthicc.tui.runtime.session_log import (  # noqa: E402
     SessionEventLog,
     load_user_message_history,
 )
-from agenthicc.runners.agent_turn import _run_agent_turn  # noqa: E402
+from agenthicc.runners.agent_turn import (  # noqa: E402
+    _preserve_interrupted_memory,
+    _run_agent_turn,
+)
 from agenthicc.runners.session_context import SessionContext  # noqa: E402
 
 
@@ -2362,6 +2365,16 @@ class TUISession:
                     )
                 )
             if ctx.session_memory is not None:
+                if _preserve_interrupted_memory(ctx.session_memory):
+                    ctx.app_state.conversation.append_event(
+                        "system",
+                        {
+                            "text": (
+                                "Tool execution history was repaired before workflow resume; "
+                                "completed work was preserved."
+                            )
+                        },
+                    )
                 continuation_text = (
                     "[WORKFLOW RESUME]\n"
                     f"Workflow: {wf_defn.name}\n"

@@ -107,6 +107,22 @@ async def test_browser_session_safe_errors_status_and_page_lifecycle(tmp_path: P
     assert client.calls[-1][0] == "close_session"
 
 
+async def test_recoverable_runtime_cleanup_keeps_session_tools_usable(tmp_path: Path) -> None:
+    manager, client = _manager(tmp_path)
+
+    first = await manager.open("https://example.com/")
+    assert first["ok"] is True
+
+    await manager.close_runtime()
+
+    # Agent-turn failure cleanup releases the live context, but must not put
+    # the retained session tool closures into the terminal closed state.
+    assert (await manager.status())["status"] == "ready"
+    reopened = await manager.open("https://example.com/")
+    assert reopened["ok"] is True
+    assert [name for name, _args in client.calls].count("close_session") == 1
+
+
 async def test_unexpected_browser_error_is_structured_without_traceback_leak(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

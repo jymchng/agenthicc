@@ -72,9 +72,12 @@ result recorded, `committed`, and `aborted/repaired`) using bounded metadata;
 tool IDs are hashed in lifecycle records and prompts, arguments, outputs, and
 credentials are never copied into diagnostics. On startup, journal replay
 rehydrates the message projection and repairs a deterministic incomplete tail
-before the first provider request. Repeating recovery is idempotent. Unknown,
-duplicate, empty, or non-adjacent IDs are not guessed at: the shared runner
-raises `ToolConversationIntegrityError` before network I/O.
+before the first provider request. If cancellation raced with a queued
+continuation and left a known result behind that continuation, the session
+memory moves that result back beside its matching assistant call and journals
+one reset. Repeating recovery is idempotent. Unknown, duplicate, empty, or
+ambiguous result IDs remain fail-closed: the shared runner raises
+`ToolConversationIntegrityError` before network I/O.
 
 The minimum supported integration is the transaction-capable `lauren-ai`
 release exposing `ShortTermMemory.validate_tool_history()`,

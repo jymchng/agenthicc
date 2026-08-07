@@ -243,6 +243,45 @@ async def test_queued_message_is_sent_after_tool_results_before_next_model_call(
     await asyncio.gather(proc_task, return_exceptions=True)
 
 
+async def test_agent_turn_repairs_non_adjacent_history_before_provider_call(kernel):
+    """A live turn repairs a late result before lauren-ai serializes memory."""
+    proc_task = asyncio.create_task(kernel.run())
+    memory = ShortTermMemory()
+    memory._messages = [
+        {"role": "user", "content": "inspect the asset"},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "late-1", "name": "Read", "input": {}}],
+        },
+        {"role": "user", "content": "continue from where you stopped"},
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "late-1", "content": "done"}],
+        },
+    ]
+
+    mock = MockTransport()
+    mock.queue_response(_completion("Recovered safely.", n=2))
+    runner = AgentRunnerBase(transport=mock, signals=SignalBus())
+
+    from agenthicc.runners.agent_turn import _run_agent_turn
+
+    await _run_agent_turn(
+        "resume the interrupted request",
+        runner,
+        kernel,
+        session_memory=memory,
+    )
+
+    assert memory.validate_tool_history().ok
+    assert memory._messages[2]["content"][0]["tool_use_id"] == "late-1"
+    assert memory._messages[3]["content"] == "continue from where you stopped"
+    assert len(mock.calls) == 1
+
+    proc_task.cancel()
+    await asyncio.gather(proc_task, return_exceptions=True)
+
+
 async def test_two_parallel_reads_are_serialized_as_one_valid_exchange(kernel):
     """The reported two-Read journey never sends a partial result batch."""
     proc_task = asyncio.create_task(kernel.run())

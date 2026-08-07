@@ -26,7 +26,7 @@ agenthicc runs **agent turns** inside your project with full filesystem, git, an
 | **Workflow system** | `code_plan`, `site_imitate`, and user-authored workflows with typed state machines |
 | **Extension registries** | Tools, agents, skills, modes, commands, and MCP servers |
 | **Memory** | Session, project, and global memory with durable conversation journaling |
-| **Context budgeting** | Model-aware compaction, transport retries, and tool-result replay for interrupted turns |
+| **Context budgeting** | Model-aware compaction, transport retries, and tool-result replay for interrupted/resumed turns |
 | **Background sessions** | Detached long-running work with `/bg`, resume, retry, and cancellation |
 | **Session service** | HTTP/SSE attachment transport for programmatic session access |
 
@@ -398,7 +398,9 @@ allow_all_domains = false
 Playwright exposes the same bounded browser operations with `playwright_*` names. Domain, DNS, private-address, artifact, quota, and checkpoint policies are shared with the CloakBrowser adapter. The two backends are mutually exclusive per session, and neither optional package is imported unless its backend is selected. Playwright permits any destination port and loopback preview servers such as `http://localhost:3000/`; the configured domain policy still controls which hosts may be reached.
 After orderly session cleanup, the existing injected browser tool closures can
 be used again: the next `*_open` lazily creates a fresh context and clears
-stale page and operation state. Live pages are intentionally not restored.
+stale page and operation state. Provider-turn failure cleanup is recoverable
+and does not permanently close those retained tools. Live pages are
+intentionally not restored.
 
 Config layers are merged in this order: built-in defaults, user config, project config, environment variables, then repeated `--set key=value` overrides. Run `uv run agenthicc config show` to inspect the effective values; never print secrets in support logs.
 
