@@ -15,6 +15,7 @@ real annotations at decoration time.
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -41,6 +42,9 @@ from agenthicc.kernel import (
     SecurityPolicy,
     SystemSettings,
 )
+from agenthicc.memory.journal import ConversationJournal, fold_path
+from agenthicc.memory.journaled import JournaledShortTermMemory
+from agenthicc.subagents.tool import make_spawn_subagents_tool
 
 pytestmark = pytest.mark.e2e
 
@@ -117,7 +121,6 @@ async def test_agent_run_signals_land_in_kernel_event_log(kernel):
     response = await runner.run(PlainAgent(), "Say hello")
     assert response.content == "Hello from the agent."
     assert response.stop_reason == "end_turn"
-
     await kernel.drain()
     event_types = [e.event_type for e in kernel.event_log]
     assert "ModelCallStarted" in event_types
@@ -126,6 +129,65 @@ async def test_agent_run_signals_land_in_kernel_event_log(kernel):
 
     proc_task.cancel()
     await asyncio.gather(proc_task, return_exceptions=True)
+
+
+async def test_parent_provider_history_contains_complete_subagent_aggregate(tmp_path):
+    """The full worker artefact survives the parent tool-exchange commit."""
+    long_output = "CHAPTER-ARTEFACT\n" + ("rewritten prose\n" * 400)
+    journal_path = tmp_path / "conversation-journal.jsonl"
+    journal = ConversationJournal(journal_path)
+    memory = JournaledShortTermMemory(journal, max_tokens=40_000)
+
+    mock = MockTransport()
+    mock.queue_tool_use(
+        "spawn_subagents",
+        {
+            "tasks": [
+                {
+                    "type": "executor",
+                    "task": "Return the complete rewritten chapter content.",
+                }
+            ]
+        },
+        tool_use_id="spawn-1",
+    )
+    # The worker consumes this response; the parent consumes the following one.
+    mock.queue_response(_completion(long_output, n=2))
+    mock.queue_response(_completion("The chapter was returned and persisted.", n=3))
+    parent_runner = AgentRunnerBase(transport=mock)
+    spawn = make_spawn_subagents_tool(
+        parent_runner,
+        "mock-model",
+        [],
+        conversation_journal=journal,
+    )
+
+    @agent(model="mock-model", system="Delegate the chapter task.")
+    @use_tools(spawn)
+    class ParentAgent: ...
+
+    from agenthicc.runners.tool_populator import populate_agent_tools
+
+    parent = ParentAgent()
+    populate_agent_tools(parent, [spawn])
+    response = await parent_runner.run(
+        parent,
+        "Delegate this chapter rewrite.",
+        memory=memory,
+        run_id="parent-1",
+    )
+
+    assert response.content == "The chapter was returned and persisted."
+    messages, _ = fold_path(journal_path)
+    serialized = str(messages)
+    assert "CHAPTER-ARTEFACT" in serialized
+    aggregate = str(journal.fold_subagent_pool_results()[0]["text"])
+    assert long_output in aggregate
+    tool_message = messages[2]
+    tool_content = tool_message["content"][0]["content"]
+    assert isinstance(tool_content, str)
+    assert json.loads(tool_content)["results"] == aggregate
+    journal.close()
 
 
 async def test_tool_only_communication_spawns_agent_in_appstate(kernel):

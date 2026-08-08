@@ -6,6 +6,7 @@ import pytest
 
 from agenthicc.subagents.tool import _tasks_fingerprint, _find_cached_result
 from agenthicc.subagents.pool import SubagentTask
+from agenthicc.memory.journal import ConversationJournal
 from agenthicc.tui.conversation_store import ConversationStore
 
 pytestmark = pytest.mark.unit
@@ -109,6 +110,21 @@ class TestFindCachedResult:
         result = _find_cached_result(conv, "fp1")
         assert result == "new result"
 
+    def test_durable_journal_is_used_without_a_rehydrated_ui_store(self, tmp_path) -> None:
+        journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+        journal.subagent_pool_result(
+            pool_id="pool-1",
+            fingerprint="fp-durable",
+            total=1,
+            succeeded=1,
+            failed=0,
+            text="the complete durable artefact",
+        )
+        assert _find_cached_result(None, "fp-durable", journal=journal) == (
+            "the complete durable artefact"
+        )
+        journal.close()
+
 
 # ── end-to-end cache round-trip ───────────────────────────────────────────────
 
@@ -188,3 +204,53 @@ class TestResumeCacheRoundTrip:
         assert result1["results"] == "first context result"
         assert result2["results"] == "second context result"
         assert pool_run.await_count == 2
+
+    async def test_durable_cache_round_trip_survives_without_conversation_store(
+        self, tmp_path
+    ) -> None:
+        """A completed pool remains resumable when the TUI projection is absent."""
+        from types import SimpleNamespace  # noqa: PLC0415
+        from unittest.mock import AsyncMock, patch  # noqa: PLC0415
+        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+
+        class FakeRunner:
+            _transport = None
+
+        journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+        first = SimpleNamespace(
+            pool_id="pool-durable",
+            total=1,
+            succeeded=1,
+            failed=0,
+            text="=== explorer #1 ===\nfull result from disk",
+        )
+        fn = make_spawn_subagents_tool(
+            FakeRunner(),
+            "test-model",
+            [],
+            conversation_journal=journal,
+        )
+        with patch(
+            "agenthicc.subagents.pool.SubagentPool.run",
+            new=AsyncMock(return_value=first),
+        ) as pool_run:
+            result1 = await fn(tasks=[{"type": "explorer", "task": "Find the file."}])
+        assert result1["results"] == first.text
+        assert pool_run.await_count == 1
+        journal.close()
+
+        reopened = ConversationJournal(tmp_path / "conversation-journal.jsonl")
+        fn_resumed = make_spawn_subagents_tool(
+            FakeRunner(),
+            "test-model",
+            [],
+            conversation_journal=reopened,
+        )
+        with patch(
+            "agenthicc.subagents.pool.SubagentPool.run",
+            new=AsyncMock(side_effect=AssertionError("durable cache should be used")),
+        ):
+            result2 = await fn_resumed(tasks=[{"type": "explorer", "task": "Find the file."}])
+        assert result2["pool_id"] == "cached"
+        assert result2["results"] == first.text
+        reopened.close()

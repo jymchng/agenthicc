@@ -1,12 +1,13 @@
 """Build the session-bound ``spawn_subagents`` tool (PRD-124).
 
-The tool is deliberately a factory rather than a process-global callable.  A
+The tool is deliberately a factory rather than a process-global callable. A
 parent turn supplies the factory with the effective model, already-filtered
-visible tools, ConversationStore, retry/usage services, and approval policy.
-The resulting callable validates a list of typed task requests, checks the
-complete-pool resume cache, runs a :class:`~agenthicc.subagents.pool.SubagentPool`
-when necessary, and returns a bounded dictionary suitable for a provider tool
-result.
+visible tools, ConversationStore, retry/usage services, approval policy, and
+the session's durable conversation journal. The resulting callable validates a
+list of typed task requests, checks the complete-pool resume cache, runs a
+:class:`~agenthicc.subagents.pool.SubagentPool` when necessary, and returns a
+labelled aggregate suitable for a provider tool result. The aggregate retains
+complete worker output; only scroll/kernel presentation fields are bounded.
 
 The provider schema is part of this module's contract.  ``context`` is an
 optional task field, but it is included in the generated decorated metadata
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.runners.retry import RetryConfig
     from agenthicc.runners.usage_ledger import UsageLedger
+    from agenthicc.memory.journal import ConversationJournal
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
@@ -95,17 +97,21 @@ def make_spawn_subagents_tool(
     provider_options: Mapping[str, object] | None = None,
     approval_svc: "ApprovalService | None" = None,
     workspace_access: "WorkspaceAccessPolicy | None" = None,
+    conversation_journal: "ConversationJournal | None" = None,
 ) -> Callable[..., object]:
     """Return a ``spawn_subagents`` @tool()-decorated function.
 
     Closes over *parent_runner* and *parent_model* so the tool can build
     isolated subagent workers that share the parent's LLM transport.
 
-    The workers do not receive the parent's message history.  They receive
+    The workers do not receive the parent's message history. They receive
     their task description as a new user message and optional task context in
-    their role system prompt.  Their aggregate is the only value returned to
-    the parent turn.  This keeps concurrent workers isolated while preserving
-    one visible, resumable orchestration point.
+    their role system prompt. Their aggregate is the only value returned to
+    the parent turn. This keeps concurrent workers isolated while preserving
+    one visible, resumable orchestration point. In a real session, worker and
+    complete-pool records are also written to the shared conversation journal
+    before this callable returns, protecting output if the parent is cancelled
+    before it commits its tool exchange.
 
     Parameters
     ----------
@@ -146,6 +152,11 @@ def make_spawn_subagents_tool(
     workspace_access:
         The parent session's workspace policy, passed to child approval hooks
         for consistent path authorization.
+    conversation_journal:
+        The parent session's durable conversation journal. Worker results are
+        recorded there before completion events are emitted, and complete pool
+        results are used as the resume cache even when the reactive TUI store
+        was not restored.
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
     from agenthicc.subagents.pool import (  # noqa: PLC0415
@@ -229,7 +240,7 @@ def make_spawn_subagents_tool(
         # includes type, task, and context, while remaining order-insensitive.
         # The same logical set of tasks — even if re-ordered — hits the cache.
         fp = _tasks_fingerprint(subagent_tasks)
-        cached = _find_cached_result(conv_store, fp)
+        cached = _find_cached_result(conv_store, fp, journal=conversation_journal)
         if cached is not None:
             if conv_store is not None:
                 conv_store.append_event(
@@ -267,12 +278,27 @@ def make_spawn_subagents_tool(
             timeout_s=effective_timeout_s,
             approval_svc=approval_svc,
             workspace_access=workspace_access,
+            conversation_journal=conversation_journal,
+            task_fingerprint=fp,
         )
         result = await pool.run()
 
         # Only a completely successful pool is a safe resume cache entry.
         # Caching a partial result would make a resumed call silently reuse a
         # failed/timeout outcome and report it as successful.
+        if conversation_journal is not None and result.failed == 0:
+            # This write is deliberately separate from the parent tool
+            # exchange. The parent runner commits that exchange after this
+            # callable returns; persisting here closes the cancellation window
+            # and makes the result available to a resumed session.
+            conversation_journal.subagent_pool_result(
+                pool_id=result.pool_id,
+                fingerprint=fp,
+                total=result.total,
+                succeeded=result.succeeded,
+                failed=result.failed,
+                text=result.text,
+            )
         if conv_store is not None and result.failed == 0:
             conv_store.append_event(
                 "subagent_pool_result",
@@ -319,14 +345,28 @@ def _tasks_fingerprint(tasks: list[SubagentTask]) -> str:
     return hashlib.md5(json.dumps(entries, ensure_ascii=False).encode()).hexdigest()[:16]  # noqa: S324
 
 
-def _find_cached_result(conv_store: "ConversationStore | None", fingerprint: str) -> str | None:
-    """Scan conv_store turn events for a matching subagent_pool_result.
+def _find_cached_result(
+    conv_store: "ConversationStore | None",
+    fingerprint: str,
+    *,
+    journal: "ConversationJournal | None" = None,
+) -> str | None:
+    """Find a matching complete result in durable journal or UI projection.
 
     Returns the cached ``text`` string when found, or ``None``.
     This enables the resume path: when a session is restored and ``spawn_subagents``
     is called again with the same tasks, the previous result is reused instead of
     re-executing all workers.
     """
+    if journal is not None:
+        try:
+            for record in reversed(journal.fold_subagent_pool_results()):
+                if record.get("fingerprint") == fingerprint:
+                    return str(record.get("text", ""))
+        except (AttributeError, OSError, TypeError, ValueError):
+            # A legacy/lightweight journal double may not expose the auxiliary
+            # projection. Fall through to the reactive compatibility path.
+            pass
     if conv_store is None:
         return None
     turns = getattr(conv_store, "turns", None)

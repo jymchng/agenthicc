@@ -1,12 +1,21 @@
 """Concurrent typed subagent workers and deterministic aggregation (PRD-124).
 
 ``SubagentPool`` is the fan-out/fan-in boundary behind the
-``spawn_subagents`` tool.  It creates one isolated ``SubagentWorker`` per
+``spawn_subagents`` tool. It creates one isolated ``SubagentWorker`` per
 validated task, bounds active provider calls with a semaphore, emits progress
 events, converts worker exceptions into failed results, and aggregates in
-input order.  A worker receives only the parent's already-filtered tools and
-its role's allow-list intersection.  It owns a fresh short-term memory and
+input order. A worker receives only the parent's already-filtered tools and
+its role's allow-list intersection. It owns a fresh short-term memory and
 never appends its provider messages to the parent's memory.
+
+The worker's final response is the result boundary. Tool calls and tool output
+remain private to the worker unless the worker includes the requested result
+in its final response. Empty final completions receive one bounded
+finalisation turn; if that also fails, the result falls back to an explicit
+tool-call summary. The aggregate sent to the parent is complete (not the
+2,000-character UI preview). When a session journal is supplied, each worker
+result and each complete aggregate is fsync'd before the parent tool exchange
+is committed, so cancellation cannot erase already-produced output.
 
 When the parent session supplies them, the worker installs both
 ``ToolCapabilityGate`` and ``ApprovalGate``.  The former enforces the active
@@ -36,6 +45,7 @@ from agenthicc.subagents.types import (
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._transport import TokenUsage
+    from agenthicc.memory.journal import ConversationJournal
     from agenthicc.kernel.processor import EventProcessor
     from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.tui.conversation_store import AppState, ConversationStore
@@ -55,7 +65,20 @@ __all__ = [
     "run_pool",
 ]
 
-_MAX_RESULT_CHARS = 2_000
+# Only presentation projections are bounded. The provider-facing aggregate
+# and the durable journal retain the complete worker response so a worker that
+# was asked to return a chapter, source file, or other long artefact is not
+# silently reduced to an unusable fragment.
+_MAX_DISPLAY_RESULT_CHARS = 2_000
+
+_FINAL_RESPONSE_CONTRACT = (
+    "\n\n## FINAL RESPONSE CONTRACT\n"
+    "The parent agent can receive only your final response; it cannot inspect "
+    "your private worker memory or the raw results of your tool calls. Complete "
+    "the requested work before stopping. If the task asks for full, rewritten, "
+    "or verbatim content, include the complete content in your final response. "
+    "Do not finish with only a list such as 'Executed tool call(s): read_file'."
+)
 
 
 def _validate_timeout_s(value: object) -> float:
@@ -503,7 +526,11 @@ class SubagentWorker:
             )
 
         # Build the system prompt: type prompt + optional context.
-        system = self._spec.system_prompt
+        # The role prompt defines how the worker works; this contract defines
+        # how its result crosses the worker/parent boundary. Keeping the two
+        # explicit prevents a role's usual "brief summary" instruction from
+        # discarding a task that explicitly requests complete content.
+        system = self._spec.system_prompt + _FINAL_RESPONSE_CONTRACT
         if self._task.context:
             system = f"{system}\n\n[ADDITIONAL CONTEXT]\n{self._task.context}"
 
@@ -613,14 +640,14 @@ class SubagentWorker:
                 **config_options,
             )
 
-        async def _do_run() -> None:
+        async def _do_run(message: str) -> None:
             # Keep lightweight runner doubles and legacy integrations working
             # when accounting is disabled; production sessions always pass
             # the scoped correlation fields with the ledger sink.
             if usage_tracker is not None:
                 response = await runner.run(
                     agent_instance,
-                    self._task.task_description,
+                    message,
                     conversation_id=self._conversation_id or None,
                     run_id=f"{self._parent_run_id}:subagent:{self._task.task_id}",
                     memory=memory,
@@ -630,27 +657,52 @@ class SubagentWorker:
             else:
                 response = await runner.run(
                     agent_instance,
-                    self._task.task_description,
+                    message,
                     memory=memory,
                     config_override=_agent_config(),
                 )
             result["text"] = response.content or ""
+
+        async def _run_with_retry(message: str) -> None:
+            if self._retry_config is not None:
+                from agenthicc.runners.retry import run_with_transport_retry  # noqa: PLC0415
+
+                await run_with_transport_retry(
+                    lambda: _do_run(message),
+                    config=self._retry_config,
+                    memory=memory,
+                )
+            else:
+                await _do_run(message)
 
         # PRD-126 gap 3: subagents call runner.run() directly (not via _stream),
         # so they wrap it in the same snapshot-rollback retry.  The fresh per-call
         # memory is snapshotted (empty) before each attempt and restored on a
         # transient error so runner.run() re-adds the user message cleanly.
         try:
-            if self._retry_config is not None:
-                from agenthicc.runners.retry import run_with_transport_retry  # noqa: PLC0415
-
-                await run_with_transport_retry(
-                    _do_run,
-                    config=self._retry_config,
-                    memory=memory,
-                )
-            else:
-                await _do_run()
+            await _run_with_retry(self._task.task_description)
+            if not result["text"].strip():
+                # Some gateways finish a tool-using request with an empty
+                # assistant message. Give the worker one explicit
+                # finalisation turn while retaining its private tool history,
+                # rather than reducing the successful work to a tool-call
+                # inventory. This is deliberately a single bounded recovery
+                # turn, not an unbounded retry loop.
+                result["text"] = ""
+                try:
+                    await _run_with_retry(
+                        "Your previous response contained no final answer. Complete the task now. "
+                        "Return the requested work product in your final response. If the task "
+                        "asks for full or rewritten content, include it verbatim and completely; "
+                        "do not replace it with a tool-call summary."
+                    )
+                except Exception:
+                    # Finalisation is a recovery enhancement, not permission
+                    # to turn an otherwise useful tool result into a failed
+                    # worker when a gateway has no second response available.
+                    # The normal post-run fallback below still exposes the
+                    # executed tools and changed paths.
+                    result["text"] = ""
         finally:
             if usage_tracker is not None:
                 usage_tracker.finalize("completed" if result["text"] else "failed")
@@ -687,6 +739,8 @@ class SubagentPool:
         timeout_s: float | None = None,
         approval_svc: "ApprovalService | None" = None,
         workspace_access: "WorkspaceAccessPolicy | None" = None,
+        conversation_journal: "ConversationJournal | None" = None,
+        task_fingerprint: str = "",
     ) -> None:
         self.pool_id = uuid.uuid4().hex
         self._tasks = tasks
@@ -707,6 +761,8 @@ class SubagentPool:
         self._timeout_s = None if timeout_s is None else _validate_timeout_s(timeout_s)
         self._approval_svc = approval_svc
         self._workspace_access = workspace_access
+        self._journal = conversation_journal
+        self._task_fingerprint = task_fingerprint
 
     async def run(self) -> AggregatedResult:
         """Execute all tasks concurrently; return aggregated plain-text result."""
@@ -776,6 +832,10 @@ class SubagentPool:
                 result = await worker.run()
                 ws.status = "done" if result.ok else "failed"
                 self._set_pool_state(pool_state)
+                # Persist before publishing the user-facing completion event.
+                # The parent tool exchange is committed later by lauren-ai;
+                # this ordering closes the cancellation window in between.
+                self._persist_worker_result(result)
                 await self._emit_worker_done(result)
                 self._append_scroll_event(
                     "subagent_worker_done" if result.ok else "subagent_worker_done",
@@ -784,7 +844,7 @@ class SubagentPool:
                         "ok": result.ok,
                         "error": result.error,
                         "duration_ms": result.duration_ms,
-                        "summary": result.text[:_MAX_RESULT_CHARS],
+                        "summary": result.text[:_MAX_DISPLAY_RESULT_CHARS],
                         "tool_calls": list(result.tool_calls),
                         "changed_paths": list(result.changed_paths),
                         "done": pool_state.done,
@@ -839,6 +899,24 @@ class SubagentPool:
     def _append_scroll_event(self, kind: str, payload: dict[str, object]) -> None:
         if self._conv_store is not None and hasattr(self._conv_store, "append_event"):
             self._conv_store.append_event(kind, payload)
+
+    def _persist_worker_result(self, result: SubagentResult) -> None:
+        """Persist the complete result before exposing worker completion."""
+        if self._journal is None:
+            return
+        self._journal.subagent_worker_result(
+            pool_id=self.pool_id,
+            fingerprint=self._task_fingerprint,
+            task_id=result.task_id,
+            agent_type=result.agent_type,
+            label=result.label,
+            ok=result.ok,
+            text=result.text,
+            error=result.error,
+            duration_ms=result.duration_ms,
+            tool_calls=list(result.tool_calls),
+            changed_paths=list(result.changed_paths),
+        )
 
     # ── kernel event helpers ─────────────────────────────────────────────────
 
@@ -898,7 +976,7 @@ class SubagentPool:
                     "task_id": result.task_id,
                     "type": result.agent_type,
                     "label": result.label,
-                    "text": result.text[:_MAX_RESULT_CHARS],
+                    "text": result.text[:_MAX_DISPLAY_RESULT_CHARS],
                     "error": result.error,
                     "duration_ms": result.duration_ms,
                     "tool_calls": list(result.tool_calls),
@@ -980,9 +1058,9 @@ def _aggregate(
         status = f"✓ {dur}" if r.ok else f"✗ {r.error or 'failed'}"
         header = f"=== {r.label} ({status}) ==="
         if r.ok:
-            body = r.text[:_MAX_RESULT_CHARS]
+            body = r.text
         elif r.text:
-            body = f"[failed: {r.error}]\n{r.text[:_MAX_RESULT_CHARS]}"
+            body = f"[failed: {r.error}]\n{r.text}"
         else:
             body = f"[failed: {r.error}]"
         sections.append(f"{header}\n{body}")
@@ -1018,6 +1096,8 @@ async def run_pool(
     timeout_s: float | None = None,
     approval_svc: "ApprovalService | None" = None,
     workspace_access: "WorkspaceAccessPolicy | None" = None,
+    conversation_journal: "ConversationJournal | None" = None,
+    task_fingerprint: str = "",
 ) -> AggregatedResult:
     """Create a SubagentPool and run it.  Convenience wrapper."""
     pool = SubagentPool(
@@ -1038,5 +1118,7 @@ async def run_pool(
         timeout_s=timeout_s,
         approval_svc=approval_svc,
         workspace_access=workspace_access,
+        conversation_journal=conversation_journal,
+        task_fingerprint=task_fingerprint,
     )
     return await pool.run()

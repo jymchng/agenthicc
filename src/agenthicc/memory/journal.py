@@ -16,6 +16,11 @@ Entry format — one JSON object per line::
     {"seq": 3, "kind": "tool_recorded",  "turn_id": "...", "key": "...", "result": {...}}
     {"seq": 4, "kind": "turn_completed", "turn_id": "..."}
 
+Subagent worker and pool results are auxiliary records in this journal. They
+are ignored by the provider-message fold and projected separately by the
+subagent resume cache. This matters when a parent is cancelled after a pool
+finishes but before lauren-ai commits the parent tool exchange.
+
 :func:`fold_path` (Phase 2) replays ``append`` / ``reset`` to rebuild the message
 list, ignoring the Phase 3 markers.  :func:`fold_resume_state` (Phase 3) replays
 the turn markers + tool records to find an **incomplete** turn (a
@@ -320,6 +325,127 @@ class ConversationJournal:
                 "repaired": repaired,
             }
         )
+
+    # ── subagent output durability ──────────────────────────────────────────
+
+    def subagent_worker_result(
+        self,
+        *,
+        pool_id: str,
+        fingerprint: str,
+        task_id: str,
+        agent_type: str,
+        label: str,
+        ok: bool,
+        text: str,
+        error: str,
+        duration_ms: float,
+        tool_calls: list[str],
+        changed_paths: list[str],
+    ) -> None:
+        """Persist one worker result, including its complete final text.
+
+        Worker memory is deliberately isolated and short-lived. The worker
+        result is therefore the durable representation of work produced before
+        the parent tool exchange commits.
+        """
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "subagent_worker_result",
+                "schema_version": 1,
+                "pool_id": pool_id,
+                "fingerprint": fingerprint,
+                "task_id": task_id,
+                "agent_type": agent_type,
+                "label": label,
+                "ok": ok,
+                "text": text,
+                "error": error,
+                "duration_ms": duration_ms,
+                "tool_calls": list(tool_calls),
+                "changed_paths": list(changed_paths),
+            }
+        )
+
+    def subagent_pool_result(
+        self,
+        *,
+        pool_id: str,
+        fingerprint: str,
+        total: int,
+        succeeded: int,
+        failed: int,
+        text: str,
+    ) -> None:
+        """Persist a complete aggregate used by ``spawn_subagents`` resume.
+
+        Partial pools are intentionally not written through this method as
+        successful cache entries. Their individual worker records remain
+        available for diagnostics without hiding failed work on resume.
+        """
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "subagent_pool_result",
+                "schema_version": 1,
+                "pool_id": pool_id,
+                "fingerprint": fingerprint,
+                "total": total,
+                "succeeded": succeeded,
+                "failed": failed,
+                "text": text,
+            }
+        )
+
+    def fold_subagent_worker_results(self) -> list[dict[str, object]]:
+        """Return durable worker result records in journal order.
+
+        This projection is an audit/recovery view and does not enter the
+        provider-message fold. A corrupt trailing JSONL line is treated as an
+        interrupted write, matching the other journal projections.
+        """
+        return self._fold_subagent_kind("subagent_worker_result")
+
+    def fold_subagent_pool_results(self) -> list[dict[str, object]]:
+        """Return complete durable pool results in journal order."""
+        records = self._fold_subagent_kind("subagent_pool_result")
+        valid: list[dict[str, object]] = []
+        for record in records:
+            failed_value = record.get("failed", 1)
+            if isinstance(failed_value, bool) or not isinstance(failed_value, (int, float, str)):
+                continue
+            try:
+                failed = int(failed_value)
+            except (TypeError, ValueError):
+                continue
+            if (
+                failed == 0
+                and isinstance(record.get("fingerprint"), str)
+                and isinstance(record.get("text"), str)
+            ):
+                valid.append(record)
+        return valid
+
+    def _fold_subagent_kind(self, kind: str) -> list[dict[str, object]]:
+        """Fold one auxiliary subagent record kind, tolerating a bad tail."""
+        if not self._path.exists():
+            return []
+        records: list[dict[str, object]] = []
+        with self._path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    break
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("kind") == kind:
+                    records.append(entry)
+        return records
 
     def append_usage_record(self, record: Mapping[str, object]) -> None:
         """Durably append one PRD-157 provider-usage record.

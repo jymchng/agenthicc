@@ -201,12 +201,13 @@ class TestAggregate:
         agg = _aggregate("p", [r])
         assert "timeout after 120s" in agg.text
 
-    def test_text_truncated_at_2000_chars(self) -> None:
+    def test_text_preserves_complete_worker_output(self) -> None:
         long_text = "x" * 5_000
         results = [self._r(1, True, long_text)]
         agg = _aggregate("p", results)
-        # 2000 char limit per section
-        assert len(agg.text) < 5_000
+        # Only the TUI/kernel display projections are bounded. The parent
+        # receives the complete artefact so it can persist or apply it.
+        assert long_text in agg.text
 
     def test_pool_id_stored(self) -> None:
         agg = _aggregate("my-pool-id", [self._r(1, True)])

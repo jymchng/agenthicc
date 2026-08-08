@@ -2,9 +2,11 @@
 
 `spawn_subagents` is the session-wide delegation tool. It lets the current
 agent explicitly fan out independent pieces of work to typed workers, wait for
-all of them, and receive one bounded text digest. It is synchronous from the
+all of them, and receive one complete text digest. It is synchronous from the
 parent agent's point of view: the parent turn is suspended while the pool runs.
 The parent then gets another model turn with the aggregate as the tool result.
+The TUI and kernel projections still use bounded previews so a long chapter or
+source file does not make the screen unusable.
 
 This guide describes the implementation in the current source tree. The
 authoritative implementation is split across:
@@ -15,6 +17,7 @@ authoritative implementation is split across:
 | Worker lifecycle, filtering, retries, aggregation, and events | `src/agenthicc/subagents/pool.py` |
 | Built-in role prompts and allow-lists | `src/agenthicc/subagents/types.py` |
 | Per-turn injection into the parent agent | `src/agenthicc/runners/agent_turn.py` |
+| Durable worker/pool result records | `src/agenthicc/memory/journal.py` |
 | Reactive pool status | `src/agenthicc/tui/conversation_store.py` and `src/agenthicc/tui/workspace/` |
 | Usage accounting | `src/agenthicc/runners/usage_ledger.py` |
 
@@ -30,7 +33,8 @@ AgentTurnRunner._build_agent()
     │
     ├─ creates a session-bound spawn_subagents callable
     │      closes over the parent transport, model, ConversationStore,
-    │      retry/usage settings, approval service, and workspace policy
+    │      session journal, retry/usage settings, approval service,
+    │      and workspace policy
     │
     └─ registers it in the parent provider tool schema
            │
@@ -60,30 +64,47 @@ each SubagentWorker
   ├─ intersects role allow-list with the parent's already-filtered tools
   ├─ builds a fresh ShortTermMemory(max_tokens=8_000)
   ├─ builds role system prompt + optional [ADDITIONAL CONTEXT]
+  ├─ adds the final-response contract to the role prompt
   ├─ installs capability and, when supplied, approval/workspace gates
   ├─ calls AgentRunnerBase.run() on the parent's transport
+  ├─ asks once more for the final artefact if the provider returned empty prose
+  ├─ persists the complete worker result to the session journal
   └─ returns SubagentResult(ok, text, error, tool_calls, changed_paths)
            │
            ▼
 _aggregate()
   ├─ applies an optional type-specific aggregator
-  ├─ truncates each worker body to 2,000 characters
-  └─ creates a labelled plain-text digest
+  └─ creates a labelled plain-text digest without truncating worker bodies
            │
-           ├─ complete pool → append subagent_pool_result cache event
+           ├─ complete pool → append UI cache event and fsync durable cache record
            └─ partial/failed pool → return failure; never cache it
            │
            ▼
-parent LLM receives the digest as the tool result and decides what to do next
+parent LLM receives the complete digest as the tool result and decides what to do next
+           │
+           ▼
+lauren-ai commits the parent tool exchange into the shared provider journal
 ```
 
 The worker does not share the parent's short-term message history. The
 parent's task description and explicit `context` are value-passed into the
-worker; the worker's final text is value-passed back. `ConversationStore` is
-used for UI progress and resume-cache records, not as shared mutable worker
-memory. This isolation is what makes concurrent execution deterministic and
-prevents one worker from appending messages to another worker's provider
-conversation.
+worker; the worker's final text is value-passed back. `ConversationStore` is a
+reactive UI projection, not shared mutable worker memory. The worker result and
+complete aggregate are additionally written to the parent's
+`ConversationJournal`, which is the restart-safe persistence boundary. This
+isolation is what makes concurrent execution deterministic and prevents one
+worker from appending messages to another worker's provider conversation.
+
+There are therefore three different representations of a subagent result:
+
+| Representation | Contains | Purpose | Size policy |
+|---|---|---|---|
+| `SubagentResult.text` / `AggregatedResult.text` | Complete final worker prose | Parent tool result and provider memory | Not truncated by the pool |
+| `ConversationJournal` records | Complete worker and complete-pool prose | Crash recovery and durable resume | Fsync'd; subject to normal session-storage sensitivity |
+| `subagent_worker_done` and kernel completion payloads | Status plus a short preview | TUI/event observability | Preview limited to 2,000 characters |
+
+The last row is intentionally not the source of truth. Seeing a short preview
+in the TUI does not mean the full worker output was discarded.
 
 ## How the tool is exposed
 
@@ -294,11 +315,60 @@ worker converts cancellation into a failed result, the semaphore is released
 by its context manager, and the pool aggregates what it can. The parent turn
 still owns the final cancellation/transaction cleanup.
 
+## Why a worker can appear to return only `read_file`
+
+The transcript in the incident report is explained by this sequence:
+
+1. The parent asks a `documenter` worker to rewrite a chapter and return the
+   full content.
+2. The worker receives a fresh conversation, not the parent's transcript. It
+   calls `read_file` (and sometimes `list_directory`) to inspect its source.
+3. The provider ends the worker turn with empty `content`. Tool results are
+   present only in the worker's private memory; they are not automatically
+   copied into the parent response.
+4. Before this fix, `SubagentWorker.run()` converted that empty response into
+   `Executed tool call(s): read_file.` and `_aggregate()` truncated every
+   successful section to 2,000 characters. The parent consequently had neither
+   the requested chapter nor a durable worker transcript.
+
+The current contract addresses each step without sharing mutable histories:
+
+- The role and generic final-response prompts tell the worker that the parent
+  sees only final prose and that explicitly requested full content must be
+  returned verbatim.
+- An empty provider completion receives one bounded finalisation turn using
+  the worker's existing private tool history. A provider failure on that
+  recovery turn falls back to the explicit tool summary instead of hiding a
+  successful tool invocation.
+- The parent-facing aggregate preserves complete worker text. The
+  2,000-character limit remains only on TUI/kernel diagnostic projections.
+- Each worker result is fsync'd to `conversation-journal.jsonl` before its
+  completion event, and a complete aggregate is fsync'd before
+  `spawn_subagents` returns. The parent runner then commits the same aggregate
+  as the normal tool result in its shared provider memory.
+
+If the worker still returns only a tool summary after this contract, the
+provider did not produce the requested artefact even after the recovery turn;
+that is a model/task failure, not a persistence failure. The durable journal
+still contains the exact worker result and diagnostics for inspection.
+
+Filesystem writes have a separate rule: when `write_file` is present in both
+the parent-visible tool list and the role allow-list, the child invokes the
+same session filesystem tool and its write is immediately visible in the
+workspace (subject to mode approval and workspace authorization). A
+`documenter` task that only calls `read_file` has not written a chapter; it
+must either call `write_file`/`patch_file` or return the complete content for
+the parent to apply. Worker provider messages are isolated, but filesystem
+side effects are not rolled back merely because the worker's prose is short.
+
 ## Resume and cache behaviour
 
-Before creating a pool, the tool scans the current `ConversationStore` for a
-recent `subagent_pool_result` event with the same fingerprint. The fingerprint
-is an order-insensitive hash of every task's:
+Before creating a pool, the tool scans the durable `ConversationJournal` when
+available, then the restored `ConversationStore`, for a recent complete
+`subagent_pool_result` with the same fingerprint. The journal is authoritative
+for restart recovery; the reactive store remains a compatibility path for
+lightweight callers and already-restored TUI sessions. The fingerprint is an
+order-insensitive hash of every task's:
 
 ```text
 (agent_type, task_description, context)
@@ -312,15 +382,11 @@ stale result after the parent supplied new findings.
 Only a pool with `failed == 0` is cached. Partial results are deliberately not
 treated as successful on resume. A cached call returns `pool_id: "cached"`,
 does not call the provider, and appends a small “Resumed” system event for the
-TUI.
-
-The current implementation caches the complete aggregate, not individual
-worker results. Therefore it does not yet replay five completed workers and
-rerun only three from an interrupted eight-worker pool. If a process dies
-before the complete result event is written, the next call executes the full
-pool again. This distinction is important when diagnosing an apparent resume
-miss and is intentionally documented rather than implying the older PRD's
-per-worker replay design is already present.
+TUI. Every worker result—including failed and timed-out results—is retained in
+the journal for diagnostics, but only a complete aggregate is eligible for
+automatic replay. The system does not yet replay five completed workers and
+rerun only three from an interrupted eight-worker pool; an incomplete pool is
+rerun as a whole.
 
 ## TUI and kernel observability
 
@@ -332,7 +398,7 @@ it when aggregation finishes.
 The pool also appends scroll events:
 
 - `subagent_pool_started`;
-- `subagent_worker_done` for each worker, including bounded summary, duration,
+- `subagent_worker_done` for each worker, including a bounded display summary, duration,
   tool calls, and changed-path hints;
 - `subagent_pool_done`;
 - `system` for a cached “Resumed” result.
@@ -340,8 +406,10 @@ The pool also appends scroll events:
 When an `EventProcessor` is supplied, corresponding kernel events are emitted:
 `SubagentPoolStarted`, `SubagentStarted`, `SubagentCompleted` or
 `SubagentFailed`, and `SubagentPoolCompleted`. Event payloads contain bounded
-text and diagnostics; they are not a replacement for the worker's private
-short-term memory.
+text and diagnostics; they are not a replacement for the complete result or
+the durable journal. `subagent_pool_result` stores the complete aggregate in
+the reactive turn and durable journal, but has no verbose renderer because the
+parent tool result is the user-facing artefact.
 
 ## Custom roles and aggregators
 

@@ -1212,6 +1212,7 @@ class AgentTurnRunner:
                 usage_ledger=ctx.usage_ledger,
                 conversation_id=ctx.conversation_id,
                 parent_run_id=self._intent_id,
+                conversation_journal=getattr(ctx.session_memory, "journal", None),
                 tool_registry=registry,
                 retry_config=_subagent_retry,
                 provider_options={

@@ -233,6 +233,40 @@ async def test_empty_final_response_gets_a_tool_execution_summary() -> None:
     assert "Executed tool call(s): lookup_fact." in str(result["results"])
 
 
+async def test_empty_final_response_gets_one_finalization_turn() -> None:
+    """A gateway empty-final quirk must not discard the requested artefact."""
+    transport = MockTransport()
+    transport.queue_tool_use(
+        "lookup_fact",
+        {"topic": "chapter-10"},
+        tool_use_id="lookup-10",
+    )
+    transport.queue_response(_final("", "final-empty-10"))
+    transport.queue_response(
+        _final("The complete rewritten chapter-10 content.", "final-recovered-10")
+    )
+    runner = AgentRunnerBase(transport=transport)
+
+    @tool()
+    async def lookup_fact(topic: str) -> str:
+        return f"fact:{topic}"
+
+    spawn = make_spawn_subagents_tool(
+        runner,
+        "mock-model",
+        [lookup_fact],
+        registry=_registry("lookup_fact"),
+    )
+    result = await spawn(
+        tasks=[{"type": "researcher", "task": "Return the full rewritten chapter-10 content."}],
+        timeout_s=30,
+    )
+
+    assert result["ok"] is True
+    assert "The complete rewritten chapter-10 content." in str(result["results"])
+    assert len(transport.calls) == 3
+
+
 async def test_implementer_success_requires_a_successful_mutating_tool_call() -> None:
     """A successful implementer result records the mutation evidence."""
     changed: list[str] = []

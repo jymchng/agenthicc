@@ -83,6 +83,40 @@ class TestDurabilityAndCrash:
         messages, _ = fold_path(jp)
         assert messages == [_msg("user", "good")], "partial trailing line must be ignored"
 
+    def test_subagent_results_are_durable_and_not_provider_messages(self, tmp_path) -> None:
+        jp = tmp_path / "j.jsonl"
+        full_output = "chapter content\n" + ("x" * 5_000)
+        journal = ConversationJournal(jp)
+        journal.subagent_worker_result(
+            pool_id="pool-1",
+            fingerprint="fp-1",
+            task_id="task-1",
+            agent_type="documenter",
+            label="documenter #1",
+            ok=True,
+            text=full_output,
+            error="",
+            duration_ms=12.5,
+            tool_calls=["read_file"],
+            changed_paths=[],
+        )
+        journal.subagent_pool_result(
+            pool_id="pool-1",
+            fingerprint="fp-1",
+            total=1,
+            succeeded=1,
+            failed=0,
+            text=full_output,
+        )
+        assert fold_path(jp) == ([], None)
+        assert journal.fold_subagent_worker_results()[0]["text"] == full_output
+        assert journal.fold_subagent_pool_results()[0]["text"] == full_output
+        journal.close()
+
+        reopened = ConversationJournal(jp)
+        assert reopened.fold_subagent_pool_results()[0]["text"] == full_output
+        reopened.close()
+
 
 class TestPathHelper:
     def test_journal_path_for_structure(self) -> None:

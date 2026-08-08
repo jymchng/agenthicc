@@ -154,7 +154,10 @@ _DOCUMENTER_PROMPT = (
     "Your job is to write or update documentation for the module, function, or API "
     "described in your task. "
     "Read the source code to understand what to document, then write accurate docs. "
-    "End your response with a brief summary of what you documented and which files changed."
+    "If the task asks you to return full, rewritten, or verbatim content, that content "
+    "must be present in your final response in full; do not substitute a summary of the "
+    "read_file calls. Otherwise, end your response with a brief summary of what you "
+    "documented and which files changed."
 )
 
 _VERIFIER_PROMPT = (

@@ -12,7 +12,7 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>.jsonl` | kernel `EventProcessor` | Serialized domain events | `restore_from_log()` folds valid events |
 | `<id>/metadata.json` | `tui.runtime.session_log` | cwd, model, timestamps | Session discovery/index |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
-| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, turn markers, tool records, versioned usage records | Rebuild memory, restore usage, and resume interrupted turns |
+| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, turn markers, tool records, subagent worker/pool results, and versioned usage records | Rebuild memory, restore usage, resume interrupted turns, and recover complete subagent results |
 | `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase/branch cursor, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
 | `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner only) | Prevent duplicate resume; reclaim only provably dead local claims |
 | `<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
@@ -33,6 +33,31 @@ before provider I/O. A known cancellation/queued-continuation race is also
 repaired by moving its matching late result back beside the assistant call and
 writing one durable reset. Invalid unknown, duplicate, empty, or ambiguous
 non-adjacent exchanges fail closed rather than being silently rewritten.
+
+### Subagent result records
+
+Subagent workers use isolated, ephemeral `ShortTermMemory` instances. Their
+provider messages are not folded into the parent conversation. The durable
+result boundary is instead recorded in the same
+`conversation-journal.jsonl`:
+
+- `subagent_worker_result` is written after each worker finishes and contains
+  its complete final text, status, error, tool names, changed-path hints, and
+  pool/task identity;
+- `subagent_pool_result` is written only after every worker succeeds and
+  contains the complete labelled aggregate plus its task fingerprint;
+- `fold()` ignores both record kinds because they are not provider messages;
+  `fold_subagent_worker_results()` and `fold_subagent_pool_results()` project
+  them for diagnostics and complete-pool resume;
+- each record is flushed and fsync'd before the worker/pool completion reaches
+  the parent. This closes the interval in which a parent cancellation could
+  otherwise lose output before lauren-ai committed the parent tool result.
+
+The full result is intentionally stored here. TUI scroll events and kernel
+events expose only bounded previews, so a short `subagent_worker_done` line is
+not evidence that the full worker output was discarded. Session exports and
+journal files may contain user-provided prose, source code, paths, or secrets
+returned by a worker and must be handled as sensitive artifacts.
 
 ## Client-neutral session projection
 

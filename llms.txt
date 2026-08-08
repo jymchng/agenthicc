@@ -64,12 +64,12 @@ The primary entry point is `agenthicc.__main__:main`.
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
 | `PhaseSpec` | `agenthicc.workflows.plugin` | Declarative phase metadata; `system_prompt_override` replaces the role prompt only in the generic runner and remains dynamic under the cache contract |
 | `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
-| `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory with transactional tool-exchange recovery |
+| `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory, transactional tool-exchange recovery, and complete subagent-result persistence |
 | `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints |
 | `WorkflowRecoveryCoordinator` / `WorkflowRecoveryRecord` | `agenthicc.runners.workflow_recovery` | Fail-closed interrupted-run discovery, validation, claims, and typed rehydration |
 | `PromptContract` / `build_workflow_prompt_contract` | `agenthicc.runners.prompt_contract` | Cache-stable system/tool prefix plus append-only dynamic workflow context; emits redacted cache diagnostics |
 | `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
-| `DEFAULT_SUBAGENT_TIMEOUT_S` / `SubagentTypeSpec` / `SubagentPool` | `agenthicc.subagents` | Typed concurrent workers; `spawn_subagents(timeout_s=...)` defaults to one hour |
+| `DEFAULT_SUBAGENT_TIMEOUT_S` / `SubagentTypeSpec` / `SubagentPool` | `agenthicc.subagents` | Typed concurrent workers with complete-output aggregation; `spawn_subagents(timeout_s=...)` defaults to one hour |
 | `execute_workflow` | `agenthicc.runners.headless` | Execute a registered workflow in a session |
 | `run_headless_workflow` | `agenthicc.runners.headless` | Build, run, and close one headless workflow session |
 | `Workspace` | `agenthicc.tui.workspace` | Rich Live UI root |
@@ -118,12 +118,15 @@ See `docs/guides/configuration.md` for precedence and the full settings model.
 `spawn_subagents` is injected into the normal parent turn when the active
 workflow phase allows it. It accepts task objects with required `type` and
 `task` strings plus optional `context`, runs isolated typed workers under a
-`max_concurrent` semaphore, and returns one bounded labelled text digest.
+`max_concurrent` semaphore, and returns one complete labelled text digest.
 Workers receive the parent tool ceiling and capability/approval/workspace
 policy; they do not share parent message memory and cannot spawn recursively.
-Complete aggregates can be reused on resume using an order-insensitive key
-containing role, task, and context. See `docs/guides/subagents.md` for the
-source-level lifecycle, result contract, and failure semantics.
+Empty provider finals receive one bounded finalisation turn. Complete worker
+and pool results are fsync'd to the session conversation journal; only
+TUI/kernel previews are bounded. Complete aggregates can be reused on resume
+using an order-insensitive key containing role, task, and context. See
+`docs/guides/subagents.md` for the source-level lifecycle, result contract,
+and failure semantics.
 
 ## Persistence
 

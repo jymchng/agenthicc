@@ -8,12 +8,13 @@ from lauren_ai._transport._mock import MockTransport
 import pytest
 
 from agenthicc.subagents.tool import make_spawn_subagents_tool
+from agenthicc.memory.journal import ConversationJournal
 from agenthicc.tui.conversation_store import ConversationStore
 
 pytestmark = pytest.mark.integration
 
 
-async def test_spawn_executor_runs_through_real_pool_and_agent_runner() -> None:
+async def test_spawn_executor_runs_through_real_pool_and_agent_runner(tmp_path) -> None:
     """The workflow ``executor`` role is accepted by the real tool-to-pool path."""
     transport = MockTransport()
     transport.queue_response(
@@ -29,11 +30,13 @@ async def test_spawn_executor_runs_through_real_pool_and_agent_runner() -> None:
     parent_runner = AgentRunnerBase(transport=transport)
     conversation = ConversationStore()
     conversation.begin_turn("agent", "executor-turn")
+    journal = ConversationJournal(tmp_path / "conversation-journal.jsonl")
     spawn = make_spawn_subagents_tool(
         parent_runner,
         "mock-model",
         [],
         conv_store=conversation,
+        conversation_journal=journal,
     )
 
     result = await spawn(
@@ -50,3 +53,8 @@ async def test_spawn_executor_runs_through_real_pool_and_agent_runner() -> None:
     assert result["failed"] == 0
     assert "KDP compilation completed" in result["results"]
     assert len(transport.calls) == 1
+    worker_records = journal.fold_subagent_worker_results()
+    pool_records = journal.fold_subagent_pool_results()
+    assert worker_records[0]["text"] == "KDP compilation completed"
+    assert pool_records[0]["text"] == result["results"]
+    journal.close()

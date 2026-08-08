@@ -21,19 +21,25 @@ non-empty unique ID and exactly one adjacent result for each assistant call.
 Interrupted or denied calls receive stable synthetic error results; unknown,
 duplicate, empty, or non-adjacent history is rejected before network I/O. The
 runtime requires the transaction-capable lauren-ai API and fails closed when
-an older installation does not expose it.
+an older installation does not expose it. `ConversationJournal` also stores
+complete `subagent_worker_result` records and complete-pool
+`subagent_pool_result` records outside the provider-message fold, so worker
+output remains recoverable if the parent is cancelled before its tool exchange
+commits.
 
 ## Concurrent subagents
 
 `spawn_subagents` is the session-bound delegation tool described in
 `docs/guides/subagents.md`. The parent explicitly calls it with task objects
 containing required `type` and `task` strings plus optional `context`; the
-tool runs isolated typed workers concurrently and returns one bounded,
+tool runs isolated typed workers concurrently and returns one complete,
 labelled plain-text digest. Each worker receives the intersection of the
 parent-visible tool list and its role allow-list, the parent's capability
 gate, and—when supplied—the same approval service and workspace policy. It
 does not share the parent's short-term message memory and cannot recursively
-spawn workers.
+spawn workers. Empty provider finals receive one bounded finalisation turn.
+Worker and complete-pool results are fsync'd to the session conversation
+journal; only TUI/kernel diagnostic previews are bounded.
 
 Its `timeout_s` argument is a finite wall-clock deadline in seconds for each
 worker and defaults to `DEFAULT_SUBAGENT_TIMEOUT_S` (`3600`, one hour). A
