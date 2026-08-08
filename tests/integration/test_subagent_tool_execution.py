@@ -10,6 +10,8 @@ from lauren_ai._transport._mock import MockTransport
 
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
+from agenthicc.tui.conversation_store import AppState
+from agenthicc.tools.approval import ApprovalResponse
 from agenthicc.tools.capabilities import tool_write
 from agenthicc.tools.fs.agent_tools import write_file
 
@@ -266,6 +268,50 @@ async def test_implementer_success_requires_a_successful_mutating_tool_call() ->
     assert result["ok"] is True
     assert changed == ["chapters/01.md:expanded"]
     assert "Changed chapters/01.md." in str(result["results"])
+
+
+async def test_subagent_inherits_safe_mode_approval_gate() -> None:
+    """A child write pauses at the same approval boundary as its parent."""
+    approvals: list[str] = []
+    changed: list[str] = []
+
+    @tool_write
+    @tool()
+    async def approved_change(path: str, content: str) -> dict[str, object]:
+        """Record a deterministic approved change."""
+        changed.append(f"{path}:{content}")
+        return {"ok": True, "path": path}
+
+    class Approval:
+        async def request_approval(self, request: object) -> ApprovalResponse:
+            approvals.append(str(getattr(request, "tool_name", "")))
+            return ApprovalResponse(allowed=True)
+
+    transport = MockTransport()
+    transport.queue_tool_use(
+        "approved_change",
+        {"path": "chapters/01.md", "content": "expanded"},
+        tool_use_id="approved-1",
+    )
+    transport.queue_response(_final("Approved change completed.", "approved-final"))
+    runner = AgentRunnerBase(transport=transport)
+    spawn = make_spawn_subagents_tool(
+        runner,
+        "mock-model",
+        [approved_change],
+        registry=_implementer_registry("approved_change"),
+        app_state=AppState.create(),
+        approval_svc=Approval(),
+    )
+
+    result = await spawn(
+        tasks=[{"type": "implementer", "task": "Expand chapter 1."}],
+        timeout_s=30,
+    )
+
+    assert result["ok"] is True
+    assert changed == ["chapters/01.md:expanded"]
+    assert approvals == ["approved_change"]
 
 
 async def test_implementer_rejects_a_mutating_tool_error_result() -> None:

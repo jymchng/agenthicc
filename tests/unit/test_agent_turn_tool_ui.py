@@ -59,6 +59,31 @@ def test_phase_allowlist_builds_agent_with_write_file_but_not_shell() -> None:
     assert "path and complete content" in meta.system
 
 
+def test_default_turn_prompt_mentions_injected_spawn_subagents() -> None:
+    """The parent prompt and provider schema expose the session-bound tool."""
+    from lauren_ai._agents import AGENT_META
+
+    from agenthicc.runners.agent_turn_context import AgentTurnContext
+
+    context = AgentTurnContext(
+        text="delegate repository research",
+        runner=SimpleNamespace(_transport=MagicMock(), _signals=None),
+        processor=MagicMock(),
+        exec_cfg=SimpleNamespace(base_system_prompt=""),
+        active_agent="default",
+        project_plugin_tools=[],
+        mcp_registry=None,
+    )
+    runner = AgentTurnRunner(context)
+    runner._model_id = "mock-model"
+
+    agent, _active_runner = runner._build_agent()
+    meta = getattr(type(agent), AGENT_META)
+
+    assert "spawn_subagents" in meta.tools
+    assert "spawn_subagents" in meta.system
+
+
 def test_tool_output_preview_prefers_file_content_and_counts_omitted_lines() -> None:
     preview, omitted = _tool_output_preview({"content": "one\ntwo\nthree\nfour\nfive"})
 

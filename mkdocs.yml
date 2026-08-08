@@ -72,6 +72,7 @@ nav:
       - TUI: guides/tui.md
       - Background sessions: guides/background-sessions.md
       - Workflows: guides/workflows.md
+      - Subagents: guides/subagents.md
       - Custom workflows and TOML configuration: guides/custom-workflows-and-config.md
       - Command execution: guides/command-execution.md
       - Client-neutral sessions: guides/session-service.md

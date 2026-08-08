@@ -1,4 +1,13 @@
-"""SubagentTypeSpec and SubagentTypeRegistry — typed subagent catalogue (PRD-124)."""
+"""Role specifications and registries for concurrent subagent workers.
+
+``SubagentTypeSpec`` is intentionally declarative: it supplies a stable role
+name, system prompt, maximum turn count, timeout default, and provider tool
+allow-list.  The pool still intersects that allow-list with the parent
+session's visible tools and capability policy, so registering a name does not
+grant a new security capability.  Built-in prompts require workers to report
+evidence and keep their task scope; custom registries may add roles and plain
+text aggregators without changing the worker lifecycle.
+"""
 
 from __future__ import annotations
 
@@ -67,6 +76,12 @@ class SubagentTypeSpec:
         as the first user message, not here.
     max_turn_time_s:
         Wall-clock timeout per worker execution.  Default: one hour.
+
+    A role is not a separate conversation participant with access to the
+    parent's transcript.  The worker gets a fresh 8,000-token short-term
+    memory and receives task-specific context from ``spawn_subagents``.
+    ``allowed_tools`` is a ceiling that is applied after the parent phase and
+    mode have filtered the session tool list.
     """
 
     name: str

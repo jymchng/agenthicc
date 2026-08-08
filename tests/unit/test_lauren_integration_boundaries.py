@@ -68,6 +68,15 @@ def test_dynamic_session_tools_generate_warning_free_schemas(caplog):
         schemas["spawn_subagents"]["input_schema"]["properties"]["tasks"]["items"]["type"]
         == "object"
     )
+    # The model-facing metadata is the schema actually sent by the decorated
+    # tool.  Context is supported but optional; lauren-ai's standalone schema
+    # helper currently regenerates TypedDict fields and does not preserve that
+    # optionality, so assert the decorated contract directly.
+    spawn_tool = next(tool for tool in session_tools if tool.__name__ == "spawn_subagents")
+    spawn_input = spawn_tool.__lauren_ai_tool__.parameters["input_schema"]
+    task_schema = spawn_input["properties"]["tasks"]["items"]
+    assert "context" in task_schema["properties"]
+    assert task_schema["required"] == ["type", "task"]
 
 
 async def test_recording_transport_accepts_lauren_dict_tool_schemas(tmp_path: Path):

@@ -28,6 +28,11 @@ class TestTasksFingerprint:
         t2 = self._tasks([("explorer", "Find JWT")])
         assert _tasks_fingerprint(t1) != _tasks_fingerprint(t2)
 
+    def test_different_context_different_fingerprint(self) -> None:
+        t1 = [SubagentTask("t0", "explorer", "Find auth", context="src/auth.py")]
+        t2 = [SubagentTask("t0", "explorer", "Find auth", context="tests/auth.py")]
+        assert _tasks_fingerprint(t1) != _tasks_fingerprint(t2)
+
     def test_order_insensitive(self) -> None:
         t1 = self._tasks([("explorer", "Find auth"), ("tester", "Write tests")])
         t2 = self._tasks([("tester", "Write tests"), ("explorer", "Find auth")])
@@ -151,3 +156,35 @@ class TestResumeCacheRoundTrip:
         assert result2["results"] == fake_result.text
         assert result2["pool_id"] == "cached"
         assert result2["error"] == ""
+
+    async def test_changed_context_does_not_reuse_cached_result(self) -> None:
+        """Context changes alter the work request and must execute again."""
+        from unittest.mock import AsyncMock, MagicMock, patch  # noqa: PLC0415
+        from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+
+        conv = ConversationStore()
+        conv.begin_turn("agent", "t1")
+
+        class FakeRunner:
+            _transport = None
+
+        tool_fn = make_spawn_subagents_tool(FakeRunner(), "test-model", [], conv_store=conv)
+        first = MagicMock(
+            pool_id="pool-1", total=1, succeeded=1, failed=0, text="first context result"
+        )
+        second = MagicMock(
+            pool_id="pool-2", total=1, succeeded=1, failed=0, text="second context result"
+        )
+        pool_run = AsyncMock(side_effect=[first, second])
+
+        with patch("agenthicc.subagents.pool.SubagentPool.run", new=pool_run):
+            result1 = await tool_fn(
+                tasks=[{"type": "explorer", "task": "Find auth", "context": "src/"}]
+            )
+            result2 = await tool_fn(
+                tasks=[{"type": "explorer", "task": "Find auth", "context": "tests/"}]
+            )
+
+        assert result1["results"] == "first context result"
+        assert result2["results"] == "second context result"
+        assert pool_run.await_count == 2

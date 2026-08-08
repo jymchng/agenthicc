@@ -1,4 +1,19 @@
-"""spawn_subagents @tool() factory (PRD-124).
+"""Build the session-bound ``spawn_subagents`` tool (PRD-124).
+
+The tool is deliberately a factory rather than a process-global callable.  A
+parent turn supplies the factory with the effective model, already-filtered
+visible tools, ConversationStore, retry/usage services, and approval policy.
+The resulting callable validates a list of typed task requests, checks the
+complete-pool resume cache, runs a :class:`~agenthicc.subagents.pool.SubagentPool`
+when necessary, and returns a bounded dictionary suitable for a provider tool
+result.
+
+The provider schema is part of this module's contract.  ``context`` is an
+optional task field, but it is included in the generated decorated metadata
+because it becomes part of the worker prompt and resume fingerprint.  Keep
+the schema repair in :func:`_augment_type_schema` when changing the input
+shape; it accommodates the lauren-ai TypedDict schema walker used by the
+supported runtime.
 
 NOTE: intentionally no ``from __future__ import annotations`` — @tool()
 inspects type annotations at decoration time using ``get_type_hints()``.
@@ -21,6 +36,8 @@ if TYPE_CHECKING:
     from agenthicc.plugins.registry import ToolRegistry
     from agenthicc.runners.retry import RetryConfig
     from agenthicc.runners.usage_ledger import UsageLedger
+    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
 __all__ = ["make_spawn_subagents_tool"]
 
@@ -44,10 +61,21 @@ _SUBAGENT_TYPE_ALIASES: dict[str, str] = {"research": "researcher"}
 
 
 class _SpawnTaskInput(TypedDict):
-    """Structured task input accepted by ``spawn_subagents``."""
+    """Structured task input accepted by ``spawn_subagents``.
+
+    Lauren-ai builds the provider JSON schema from this TypedDict.  Keeping
+    ``context`` in the schema is important: the runtime has always accepted
+    it, and it is part of the worker's prompt, so omitting it made the
+    model-facing contract disagree with the actual validator.
+    """
 
     type: BuiltinSubagentType
     task: str
+    # ``str | None`` is intentional rather than ``NotRequired[str]``.  The
+    # lauren-ai schema generator treats Optional annotations as non-required,
+    # while its current TypedDict walker does not yet understand PEP 655's
+    # ``NotRequired`` marker.
+    context: str | None
 
 
 def make_spawn_subagents_tool(
@@ -65,11 +93,19 @@ def make_spawn_subagents_tool(
     conversation_id: str = "",
     parent_run_id: str = "",
     provider_options: Mapping[str, object] | None = None,
+    approval_svc: "ApprovalService | None" = None,
+    workspace_access: "WorkspaceAccessPolicy | None" = None,
 ) -> Callable[..., object]:
     """Return a ``spawn_subagents`` @tool()-decorated function.
 
     Closes over *parent_runner* and *parent_model* so the tool can build
     isolated subagent workers that share the parent's LLM transport.
+
+    The workers do not receive the parent's message history.  They receive
+    their task description as a new user message and optional task context in
+    their role system prompt.  Their aggregate is the only value returned to
+    the parent turn.  This keeps concurrent workers isolated while preserving
+    one visible, resumable orchestration point.
 
     Parameters
     ----------
@@ -95,9 +131,21 @@ def make_spawn_subagents_tool(
     registry:
         ``SubagentTypeRegistry`` to look up type specs.  Defaults to
         ``DEFAULT_REGISTRY`` when ``None``.
-    timeout_s:
-        Default wall-clock timeout in seconds for each worker in this
-        invocation. Defaults to one hour and may be overridden per call.
+    provider_options:
+        Provider sampling/request options copied into each worker call.
+    conversation_id / parent_run_id:
+        Correlation identifiers used for provider conversation continuity and
+        usage-ledger records.  They do not merge worker message histories.
+    timeout_s (returned tool argument):
+        Wall-clock timeout in seconds for each worker in one invocation.
+        Defaults to one hour and may be overridden by the parent model.
+    approval_svc:
+        The parent session's approval service.  Child workers install the
+        same approval gate when this is provided, so Safe-mode side effects
+        cannot bypass the parent approval boundary.
+    workspace_access:
+        The parent session's workspace policy, passed to child approval hooks
+        for consistent path authorization.
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
     from agenthicc.subagents.pool import (  # noqa: PLC0415
@@ -137,6 +185,11 @@ def make_spawn_subagents_tool(
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
 
+        if not isinstance(tasks, list):
+            return {"ok": False, "error": "tasks must be a list of task objects"}
+        if isinstance(max_concurrent, bool) or not isinstance(max_concurrent, int):
+            return {"ok": False, "error": "max_concurrent must be an integer"}
+
         # Validate and convert task dicts into SubagentTask dataclasses.
         subagent_tasks: list[SubagentTask] = []
         for i, raw in enumerate(tasks):
@@ -172,9 +225,9 @@ def make_spawn_subagents_tool(
         if not subagent_tasks:
             return {"ok": False, "error": "tasks list is empty"}
 
-        # PRD-124 Phase 4: check resume cache before spawning.
-        # The fingerprint is a hash of the sorted (type, task) pairs so the
-        # same logical set of tasks — even if re-ordered — hits the cache.
+        # PRD-124 Phase 4: check resume cache before spawning.  The fingerprint
+        # includes type, task, and context, while remaining order-insensitive.
+        # The same logical set of tasks — even if re-ordered — hits the cache.
         fp = _tasks_fingerprint(subagent_tasks)
         cached = _find_cached_result(conv_store, fp)
         if cached is not None:
@@ -212,6 +265,8 @@ def make_spawn_subagents_tool(
             parent_run_id=parent_run_id,
             provider_options=provider_options,
             timeout_s=effective_timeout_s,
+            approval_svc=approval_svc,
+            workspace_access=workspace_access,
         )
         result = await pool.run()
 
@@ -248,9 +303,20 @@ def make_spawn_subagents_tool(
 
 
 def _tasks_fingerprint(tasks: list[SubagentTask]) -> str:
-    """Return a short hash of the (type, task_description) pairs, order-insensitive."""
-    pairs = sorted((t.agent_type, t.task_description) for t in tasks)
-    return hashlib.md5(json.dumps(pairs, ensure_ascii=False).encode()).hexdigest()[:16]  # noqa: S324
+    """Hash complete task inputs in an order-insensitive form.
+
+    Context is part of a worker's effective prompt.  Ignoring it caused a
+    resumed call with the same short task but different parent findings to
+    reuse stale output.  The explicit object shape also makes future key
+    additions less error-prone than positional tuples.
+    """
+    entries = [
+        {"type": agent_type, "task": task, "context": context}
+        for agent_type, task, context in sorted(
+            (item.agent_type, item.task_description, item.context) for item in tasks
+        )
+    ]
+    return hashlib.md5(json.dumps(entries, ensure_ascii=False).encode()).hexdigest()[:16]  # noqa: S324
 
 
 def _find_cached_result(conv_store: "ConversationStore | None", fingerprint: str) -> str | None:
@@ -342,6 +408,13 @@ def _augment_type_schema(tool: object, registry: SubagentTypeRegistry) -> None:
     item_properties = item_schema.get("properties")
     if not isinstance(item_properties, dict):
         return
+    # Lauren-ai's current TypedDict schema walker marks every annotated key as
+    # required, even when the annotation is Optional.  ``context`` is a
+    # supported optional input, so repair that generated boundary here rather
+    # than forcing providers to send an empty context string.
+    required = item_schema.get("required")
+    if isinstance(required, list):
+        item_schema["required"] = [name for name in required if name != "context"]
     type_schema = item_properties.get("type")
     if not isinstance(type_schema, dict):
         return

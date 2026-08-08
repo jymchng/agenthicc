@@ -1220,6 +1220,8 @@ class AgentTurnRunner:
                     "max_completion_tokens": _config_value(_ec, "max_completion_tokens", None),
                     "request_options": _config_value(_ec, "request_options", None),
                 },
+                approval_svc=ctx.approval_svc,
+                workspace_access=ctx.workspace_access,
             )
             registry.register(spawn_tool, source="builtin")
             spawn_name = getattr(spawn_tool, "__name__", getattr(spawn_tool, "name", ""))
@@ -1228,6 +1230,32 @@ class AgentTurnRunner:
             ):
                 visible_tools.append(spawn_tool)
                 populate_agent_tools(agent_instance, visible_tools)
+
+                # The non-contract path embeds the available-tool catalogue
+                # directly in the system prompt.  That prompt was assembled
+                # before this session-bound tool was registered, so the model
+                # could receive a valid ``spawn_subagents`` provider schema
+                # while never seeing it in the human-readable tool list.
+                # Rebuild the dynamic catalogue after registration.  Contract
+                # turns update their append-only AVAILABLE TOOLS block below.
+                if prompt_contract is None:
+                    from lauren_ai._agents import AGENT_META  # noqa: PLC0415
+
+                    meta = getattr(type(agent_instance), AGENT_META)
+                    description = registry.describe(excluded_names=excluded_names)
+                    meta.system = (
+                        effective_base
+                        + (f"\n\n{ctx.system_prompt_suffix}" if ctx.system_prompt_suffix else "")
+                        + (self._skill_suffix or "")
+                        + (f"\n\n{description}" if description else "")
+                    )
+                    if allowed_tool_names is not None:
+                        meta.system += (
+                            "\n\n### Phase-local tool policy\n"
+                            "Only the tools listed above are available in this phase. Do not call shell, "
+                            "run_bash, run_command, or any other omitted tool. When calling write_file, "
+                            "provide both required arguments: path and complete content."
+                        )
 
         # The registry description is intentionally captured after all
         # session-bound tools (including spawn_subagents) have been registered.

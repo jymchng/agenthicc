@@ -25,11 +25,21 @@ an older installation does not expose it.
 
 ## Concurrent subagents
 
-`spawn_subagents` runs typed workers concurrently under the parent capability
-policy. Its `timeout_s` argument is a finite wall-clock deadline in seconds for
-each worker and defaults to `DEFAULT_SUBAGENT_TIMEOUT_S` (`3600`, one hour).
-The parent agent can choose a shorter or longer deadline per invocation; a
-timed-out worker is returned as a failed result and is never reused by resume.
+`spawn_subagents` is the session-bound delegation tool described in
+`docs/guides/subagents.md`. The parent explicitly calls it with task objects
+containing required `type` and `task` strings plus optional `context`; the
+tool runs isolated typed workers concurrently and returns one bounded,
+labelled plain-text digest. Each worker receives the intersection of the
+parent-visible tool list and its role allow-list, the parent's capability
+gate, and—when supplied—the same approval service and workspace policy. It
+does not share the parent's short-term message memory and cannot recursively
+spawn workers.
+
+Its `timeout_s` argument is a finite wall-clock deadline in seconds for each
+worker and defaults to `DEFAULT_SUBAGENT_TIMEOUT_S` (`3600`, one hour). A
+timed-out or otherwise failed worker is represented in the aggregate; a pool
+with any failure is not placed in the resume cache. Complete cache keys include
+role, task, and context, so changed context cannot reuse stale output.
 
 ### DEFAULT_SUBAGENT_TIMEOUT_S
 

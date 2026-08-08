@@ -584,6 +584,21 @@ class TestSpawnSubagentsTool:
         result = await fn(tasks=["not a dict"])  # type: ignore[arg-type]
         assert not result["ok"]
 
+    async def test_non_list_tasks_returns_error(self) -> None:
+        fn = self._make_tool()
+        result = await fn(tasks=None)  # type: ignore[arg-type]
+        assert not result["ok"]
+        assert "list" in result["error"]
+
+    async def test_non_integer_concurrency_returns_error(self) -> None:
+        fn = self._make_tool()
+        result = await fn(
+            tasks=[{"type": "explorer", "task": "inspect"}],
+            max_concurrent="2",  # type: ignore[arg-type]
+        )
+        assert not result["ok"]
+        assert "max_concurrent" in result["error"]
+
     def test_tool_has_correct_name(self) -> None:
         fn = self._make_tool()
         assert fn.__name__ == "spawn_subagents"  # type: ignore[union-attr]

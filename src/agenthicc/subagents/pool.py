@@ -1,4 +1,20 @@
-"""SubagentPool — concurrent worker execution (PRD-124)."""
+"""Concurrent typed subagent workers and deterministic aggregation (PRD-124).
+
+``SubagentPool`` is the fan-out/fan-in boundary behind the
+``spawn_subagents`` tool.  It creates one isolated ``SubagentWorker`` per
+validated task, bounds active provider calls with a semaphore, emits progress
+events, converts worker exceptions into failed results, and aggregates in
+input order.  A worker receives only the parent's already-filtered tools and
+its role's allow-list intersection.  It owns a fresh short-term memory and
+never appends its provider messages to the parent's memory.
+
+When the parent session supplies them, the worker installs both
+``ToolCapabilityGate`` and ``ApprovalGate``.  The former enforces the active
+mode on every child call; the latter preserves Safe-mode approval and
+workspace authorization inside the nested runner.  The pool itself remains
+agnostic about TUI rendering: it projects state/events into the supplied
+``ConversationStore`` and kernel ``EventProcessor`` boundaries.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +41,8 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.runners.retry import RetryConfig
     from agenthicc.runners.usage_ledger import UsageLedger
+    from agenthicc.tools.approval import ApprovalService
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy
 
 __all__ = [
     "WorkerState",
@@ -334,6 +352,8 @@ class SubagentWorker:
         parent_run_id: str = "",
         provider_options: Mapping[str, object] | None = None,
         timeout_s: float | None = None,
+        approval_svc: "ApprovalService | None" = None,
+        workspace_access: "WorkspaceAccessPolicy | None" = None,
     ) -> None:
         self._task = task
         self._spec = spec
@@ -349,6 +369,8 @@ class SubagentWorker:
         self._parent_run_id = parent_run_id
         self._provider_options = dict(provider_options or {})
         self._timeout_s = None if timeout_s is None else _validate_timeout_s(timeout_s)
+        self._approval_svc = approval_svc
+        self._workspace_access = workspace_access
         self.label = f"{spec.name} #{index}"
         self._tool_calls: list[str] = []
         self._successful_tool_calls: list[str] = []
@@ -498,6 +520,16 @@ class SubagentWorker:
             from agenthicc.tools.capability_gate import ToolCapabilityGate  # noqa: PLC0415
 
             hooks.append(ToolCapabilityGate(self._app_state))
+            if self._approval_svc is not None:
+                from agenthicc.tools.approval import ApprovalGate  # noqa: PLC0415
+
+                hooks.append(
+                    ApprovalGate(
+                        self._app_state,
+                        self._approval_svc,
+                        self._workspace_access,
+                    )
+                )
 
         worker = self
 
@@ -653,6 +685,8 @@ class SubagentPool:
         parent_run_id: str = "",
         provider_options: Mapping[str, object] | None = None,
         timeout_s: float | None = None,
+        approval_svc: "ApprovalService | None" = None,
+        workspace_access: "WorkspaceAccessPolicy | None" = None,
     ) -> None:
         self.pool_id = uuid.uuid4().hex
         self._tasks = tasks
@@ -671,6 +705,8 @@ class SubagentPool:
         self._parent_run_id = parent_run_id
         self._provider_options = dict(provider_options or {})
         self._timeout_s = None if timeout_s is None else _validate_timeout_s(timeout_s)
+        self._approval_svc = approval_svc
+        self._workspace_access = workspace_access
 
     async def run(self) -> AggregatedResult:
         """Execute all tasks concurrently; return aggregated plain-text result."""
@@ -704,6 +740,8 @@ class SubagentPool:
                 parent_run_id=self._parent_run_id,
                 provider_options=self._provider_options,
                 timeout_s=self._timeout_s,
+                approval_svc=self._approval_svc,
+                workspace_access=self._workspace_access,
             )
             workers.append(w)
             worker_states.append(WorkerState(w.label, task.agent_type, "pending"))
@@ -978,6 +1016,8 @@ async def run_pool(
     parent_run_id: str = "",
     provider_options: Mapping[str, object] | None = None,
     timeout_s: float | None = None,
+    approval_svc: "ApprovalService | None" = None,
+    workspace_access: "WorkspaceAccessPolicy | None" = None,
 ) -> AggregatedResult:
     """Create a SubagentPool and run it.  Convenience wrapper."""
     pool = SubagentPool(
@@ -996,5 +1036,7 @@ async def run_pool(
         parent_run_id=parent_run_id,
         provider_options=provider_options,
         timeout_s=timeout_s,
+        approval_svc=approval_svc,
+        workspace_access=workspace_access,
     )
     return await pool.run()

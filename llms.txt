@@ -113,6 +113,18 @@ network_allow_list = []
 Provider keys are `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or no key for Ollama.
 See `docs/guides/configuration.md` for precedence and the full settings model.
 
+## Concurrent subagents
+
+`spawn_subagents` is injected into the normal parent turn when the active
+workflow phase allows it. It accepts task objects with required `type` and
+`task` strings plus optional `context`, runs isolated typed workers under a
+`max_concurrent` semaphore, and returns one bounded labelled text digest.
+Workers receive the parent tool ceiling and capability/approval/workspace
+policy; they do not share parent message memory and cannot spawn recursively.
+Complete aggregates can be reused on resume using an order-insensitive key
+containing role, task, and context. See `docs/guides/subagents.md` for the
+source-level lifecycle, result contract, and failure semantics.
+
 ## Persistence
 
 Session artifacts are under `~/.agenthicc/sessions/`: kernel JSONL, conversation
