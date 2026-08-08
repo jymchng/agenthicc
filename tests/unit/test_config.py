@@ -212,6 +212,29 @@ class TestLoadConfig:
         assert config.execution.prompt_cache is False
         assert config.execution.file_cache is False
 
+    def test_newly_documented_execution_browser_and_plugin_options_load(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        project.write_text(
+            """
+            [execution]
+            turn_timeout_s = 12.5
+
+            [tools.playwright]
+            transport = "local"
+
+            [plugins]
+            auto_trust = true
+            strict_cli_shadow = true
+            """
+        )
+
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+
+        assert config.execution.turn_timeout_s == 12.5
+        assert config.tools.playwright.transport == "local"
+        assert config.plugins.auto_trust is True
+        assert config.plugins.strict_cli_shadow is True
+
     def test_prompt_cache_enables_llm_caching(self, tmp_path):
         from agenthicc.config import ExecutionSettings, build_llm_config
 

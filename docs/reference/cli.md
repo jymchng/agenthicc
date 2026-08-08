@@ -22,7 +22,7 @@ based and implemented in `cli/registry.py`.
 
 | Command | Purpose |
 |---|---|
-| `init [--write] [--force]` | Preview or explicitly write project guidance to `AGENTS.md` |
+| `init [--write] [--force]` | Create empty `AGENTS.md`, `.agenthicc/`, and a fully commented `.agenthicc/.agenthicc.toml` template |
 | `config show` | Print effective configuration |
 | `config profiles` | List configured provider profiles without secret values |
 | `config validate` | Validate the selected provider profile and required secret references |
@@ -130,6 +130,6 @@ workflow sources, phases, mode bindings, and whether the plugin provides a
 custom runner. Press Enter on a details page to place the selected command,
 skill, or workflow invocation in the input panel without submitting it.
 
-`/init` is a local project bootstrap command. It previews by default and uses
+`/init` is a local project guidance command. It previews by default and uses
 `/init write` or `/init write --force` for explicit writes; it does not invoke
 the model or inspect arbitrary source files.

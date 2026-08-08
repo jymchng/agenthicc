@@ -9,7 +9,7 @@ import pytest
 pytestmark = pytest.mark.integration
 
 
-def test_agenthicc_init_preview_then_write(tmp_path, monkeypatch, capsys):
+def test_agenthicc_init_creates_the_project_scaffold(tmp_path, monkeypatch, capsys):
     from agenthicc.__main__ import main
 
     monkeypatch.chdir(tmp_path)
@@ -17,27 +17,37 @@ def test_agenthicc_init_preview_then_write(tmp_path, monkeypatch, capsys):
 
     with patch("sys.argv", ["agenthicc", "init"]):
         main()
-    preview = capsys.readouterr().out
-    assert "integration-app" in preview
-    assert "Preview only" in preview
-    assert not (tmp_path / "AGENTS.md").exists()
+    output = capsys.readouterr().out
+    assert "Initialized" in output
+    assert (tmp_path / "AGENTS.md").read_text() == ""
+    config = tmp_path / ".agenthicc" / ".agenthicc.toml"
+    assert config.exists()
+    assert all(
+        not line.strip() or line.lstrip().startswith("#")
+        for line in config.read_text().splitlines()
+    )
 
-    with patch("sys.argv", ["agenthicc", "init", "--write"]):
+    with patch("sys.argv", ["agenthicc", "init"]):
         main()
-    written = capsys.readouterr().out
-    assert "Updated" in written
-    assert "integration-app" in (tmp_path / "AGENTS.md").read_text()
+    repeated = capsys.readouterr().out
+    assert "Preserved AGENTS.md" in repeated
+    assert "Preserved .agenthicc/.agenthicc.toml" in repeated
 
 
-def test_agenthicc_init_existing_file_requires_explicit_force(tmp_path, monkeypatch, capsys):
+def test_agenthicc_init_force_replaces_existing_scaffold_files(tmp_path, monkeypatch, capsys):
     from agenthicc.__main__ import main
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "AGENTS.md").write_text("# Team-owned guidance\n")
 
-    with patch("sys.argv", ["agenthicc", "init", "--write"]):
+    with patch("sys.argv", ["agenthicc", "init"]):
         main()
 
     output = capsys.readouterr().out
-    assert "Refusing to overwrite" in output
+    assert "Preserved AGENTS.md" in output
     assert (tmp_path / "AGENTS.md").read_text() == "# Team-owned guidance\n"
+
+    with patch("sys.argv", ["agenthicc", "init", "--force"]):
+        main()
+    assert (tmp_path / "AGENTS.md").read_text() == ""
+    assert "Overwrote AGENTS.md" in capsys.readouterr().out

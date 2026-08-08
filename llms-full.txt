@@ -2229,6 +2229,17 @@ class AgenthiccConfig:
     def redacted_dict(self) -> dict[str, object]: ...
 ```
 
+### build_commented_config_template
+
+```python
+def build_commented_config_template() -> str
+```
+
+Return a valid-but-empty TOML document whose every section and assignment is
+commented. The template is derived from the typed configuration settings and
+adds commented examples for dynamic provider, MCP, agent, workflow, hook,
+context-window, and storage-mount tables.
+
 Top-level typed configuration. `to_system_settings()` reflects execution settings
 into the kernel. `to_security_policy()` builds a `SecurityPolicy` from security
 settings via `build_policy_from_config`.
@@ -2826,6 +2837,22 @@ The marker constants delimit the section managed by the bootstrapper.
 `BootstrapError` reports unsafe inspection or planning, while
 `BootstrapWriteError` reports an unsafe or stale write attempt.
 
+### ProjectInitResult
+
+```python
+@dataclass(frozen=True)
+class ProjectInitResult:
+    root: Path
+    agents_path: Path
+    config_dir: Path
+    config_path: Path
+    created: tuple[Path, ...]
+    preserved: tuple[Path, ...]
+    overwritten: tuple[Path, ...]
+```
+
+Result of the idempotent top-level project scaffold operation.
+
 ### ProjectSnapshot
 
 ```python
@@ -2867,6 +2894,16 @@ def inspect_project(root: str | Path = ".") -> ProjectSnapshot
 
 Inspect bounded manifests and top-level names through `WorkspaceView` without
 network calls, shell execution, or arbitrary source-file reads.
+
+### initialize_project
+
+```python
+def initialize_project(root: str | Path = ".", *, force: bool = False) -> ProjectInitResult
+```
+
+Create an empty root `AGENTS.md`, `.agenthicc/`, and a fully commented
+`.agenthicc/.agenthicc.toml`. Existing regular files are preserved unless
+`force=True`; symlinks and non-regular targets are rejected.
 
 ### build_bootstrap_plan
 

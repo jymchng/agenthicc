@@ -1,9 +1,11 @@
-"""Safe project-guidance bootstrap for ``agenthicc init`` and ``/init``.
+"""Safe project scaffold and guidance bootstrap for ``agenthicc init`` and ``/init``.
 
-The bootstrapper is intentionally deterministic and local-only.  It inspects
-small, well-known project manifests and directory names, then proposes a
-managed section in ``AGENTS.md``.  User-authored content is preserved outside
-the managed markers, and writes are atomic and constrained to the project root.
+The top-level initializer creates an empty ``AGENTS.md`` and a fully
+commented project configuration template. The interactive ``/init`` guidance
+flow is intentionally deterministic and local-only: it inspects small,
+well-known project manifests and directory names, then proposes a managed
+section in ``AGENTS.md``. User-authored content is preserved outside the
+managed markers, and writes are atomic and constrained to the project root.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from pathlib import Path
 from typing import Final
 
 from agenthicc.tools.sandbox import WorkspaceView
+from agenthicc.config_template import build_commented_config_template
 
 __all__ = [
     "AGENTS_FILENAME",
@@ -27,10 +30,12 @@ __all__ = [
     "MANAGED_START",
     "BootstrapError",
     "BootstrapWriteError",
+    "ProjectInitResult",
     "ProjectBootstrapPlan",
     "ProjectSnapshot",
     "build_bootstrap_plan",
     "inspect_project",
+    "initialize_project",
     "write_bootstrap_plan",
 ]
 
@@ -69,6 +74,19 @@ class BootstrapError(RuntimeError):
 
 class BootstrapWriteError(BootstrapError):
     """Raised when a bootstrap plan cannot be written safely."""
+
+
+@dataclass(frozen=True)
+class ProjectInitResult:
+    """Artifacts created or preserved by the top-level ``agenthicc init``."""
+
+    root: Path
+    agents_path: Path
+    config_dir: Path
+    config_path: Path
+    created: tuple[Path, ...]
+    preserved: tuple[Path, ...]
+    overwritten: tuple[Path, ...]
 
 
 @dataclass(frozen=True)
@@ -141,6 +159,105 @@ def _read_small(view: WorkspaceView, relative: str) -> str | None:
         return path.read_text(encoding="utf-8")
     except (OSError, PermissionError, UnicodeError):
         return None
+
+
+def _validate_scaffold_target(path: Path) -> None:
+    """Reject symlinks and non-regular scaffold targets."""
+
+    if path.is_symlink():
+        raise BootstrapError(f"Refusing to use symlink target: {path}")
+    if path.exists() and not path.is_file():
+        raise BootstrapError(f"Scaffold target is not a regular file: {path}")
+
+
+def _write_scaffold_file(path: Path, content: str, *, force: bool) -> tuple[bool, bool]:
+    """Atomically create one scaffold file and return ``(written, replaced)``."""
+
+    _validate_scaffold_target(path)
+    existed = path.exists()
+    if existed and not force:
+        return False, False
+
+    mode = stat.S_IMODE(path.stat().st_mode) if existed else 0o644
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as temporary:
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.chmod(temporary_name, mode)
+        os.replace(temporary_name, path)
+    except OSError as exc:
+        try:
+            os.unlink(temporary_name)
+        except OSError:
+            pass
+        raise BootstrapWriteError(f"Could not write {path}: {exc}") from exc
+    return True, existed
+
+
+def initialize_project(root: str | Path = ".", *, force: bool = False) -> ProjectInitResult:
+    """Create the minimal project scaffold used by a fresh Agenthicc project.
+
+    The operation is intentionally idempotent.  Existing ``AGENTS.md`` and
+    ``.agenthicc/.agenthicc.toml`` files are preserved unless ``force=True``;
+    this prevents a routine initialization from destroying user guidance or
+    local configuration.  The generated TOML is exhaustive but inert: every
+    line is a comment, so initialization never silently changes runtime
+    settings.
+    """
+
+    candidate = Path(root).expanduser()
+    if not candidate.exists() or not candidate.is_dir():
+        raise BootstrapError(f"Project root is not a directory: {candidate}")
+    if candidate.is_symlink():
+        raise BootstrapError(f"Refusing to use symlink project root: {candidate}")
+    project_root = candidate.resolve()
+
+    config_dir = project_root / ".agenthicc"
+    if config_dir.is_symlink():
+        raise BootstrapError(f"Refusing to use symlink directory: {config_dir}")
+    if config_dir.exists() and not config_dir.is_dir():
+        raise BootstrapError(f"Project config path is not a directory: {config_dir}")
+    config_dir_existed = config_dir.exists()
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise BootstrapWriteError(f"Could not create {config_dir}: {exc}") from exc
+
+    agents_path = project_root / AGENTS_FILENAME
+    config_path = config_dir / ".agenthicc.toml"
+    created: list[Path] = []
+    preserved: list[Path] = []
+    overwritten: list[Path] = []
+    (preserved if config_dir_existed else created).append(config_dir)
+    for path, content in (
+        (agents_path, ""),
+        (config_path, build_commented_config_template()),
+    ):
+        try:
+            written, replaced = _write_scaffold_file(path, content, force=force)
+        except BootstrapError:
+            raise
+        if written:
+            (overwritten if replaced else created).append(path)
+        else:
+            preserved.append(path)
+
+    return ProjectInitResult(
+        root=project_root,
+        agents_path=agents_path,
+        config_dir=config_dir,
+        config_path=config_path,
+        created=tuple(created),
+        preserved=tuple(preserved),
+        overwritten=tuple(overwritten),
+    )
 
 
 def _parse_project_name(manifests: dict[str, str], fallback: str) -> str:

@@ -1,4 +1,4 @@
-"""Project guidance bootstrap command (PRD-139)."""
+"""Create the minimal project scaffold for a new Agenthicc project."""
 
 from __future__ import annotations
 
@@ -6,45 +6,29 @@ from pathlib import Path
 
 from agenthicc.cli.context import CLIContext
 from agenthicc.cli.registry import command
-from agenthicc.project_bootstrap import (
-    BootstrapError,
-    BootstrapWriteError,
-    build_bootstrap_plan,
-    write_bootstrap_plan,
-)
+from agenthicc.project_bootstrap import BootstrapError, initialize_project
 
 
-@command("init", help="Inspect the project and preview an AGENTS.md bootstrap")
+@command("init", help="Create AGENTS.md and a commented .agenthicc configuration template")
 def init_project(ctx: CLIContext, write: bool = False, force: bool = False) -> None:
-    """Preview or explicitly write a managed project-guidance section."""
+    """Create the project scaffold; preserve existing files unless forced.
+
+    ``--write`` remains accepted as a compatibility alias for callers of the
+    former preview/write command.  Initialization now writes by default.
+    """
 
     try:
-        plan = build_bootstrap_plan(Path.cwd())
+        result = initialize_project(Path.cwd(), force=force)
     except BootstrapError as exc:
         print(f"error: {exc}")
         return
 
-    preview = plan.preview()
-    if preview:
-        print(preview, end="" if preview.endswith("\n") else "\n")
-
-    if not plan.changed:
-        return
-    if not write:
-        print(
-            "Preview only. Review the diff, then run `agenthicc init --write` to create AGENTS.md."
-        )
-        return
-    if plan.exists and not force:
-        print(
-            "Refusing to overwrite existing AGENTS.md. Review the diff, then run "
-            "`agenthicc init --write --force`."
-        )
-        return
-
-    try:
-        target = write_bootstrap_plan(plan, force=force)
-    except BootstrapWriteError as exc:
-        print(f"error: {exc}")
-        return
-    print(f"Updated {target}")
+    print(f"Initialized {result.root}")
+    for path in result.created:
+        print(f"Created {path.relative_to(result.root)}")
+    for path in result.overwritten:
+        print(f"Overwrote {path.relative_to(result.root)}")
+    for path in result.preserved:
+        print(f"Preserved {path.relative_to(result.root)}")
+    if write:
+        print("Note: --write is retained for compatibility; init now writes by default.")

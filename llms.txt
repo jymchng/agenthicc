@@ -30,8 +30,9 @@ The primary entry point is `agenthicc.__main__:main`.
 - `session_service/` provides client-neutral snapshots, typed commands,
   versioned durable events, replay, bounded subscriptions, and an explicit
   loopback HTTP/SSE adapter shared by TUI, headless, CLI, web, and IDE clients.
-- `agenthicc init` and `/init` locally inspect bounded project metadata and
-  preview or explicitly write a managed `AGENTS.md` guidance section.
+- `agenthicc init` creates an empty `AGENTS.md`, `.agenthicc/`, and a fully
+  commented project configuration template; `/init` remains the managed
+  `AGENTS.md` guidance preview/write command.
 - Skills use validated `SKILL.md` frontmatter, canonical names, compatibility
   aliases, discovery diagnostics, per-agent allow/deny policies, and live
   `/skills reload` refresh in the interactive TUI.
@@ -87,8 +88,9 @@ The primary entry point is `agenthicc.__main__:main`.
 | `UsageLedger` / `UsageRecord` / `UsageSnapshot` | `agenthicc.runners.usage_ledger` | Session-scoped durable provider usage, quality, cost, and reconciliation |
 | `InProcessSessionClient` / `HttpSessionClient` | `agenthicc.session_service` | In-process and local HTTP client adapters |
 | `WebSessionAdapter` / `IdeSessionAdapter` | `agenthicc.session_service` | Transport adapters for future web and IDE/ACP clients |
-| `ProjectSnapshot` / `ProjectBootstrapPlan` | `agenthicc.project_bootstrap` | Bounded project inspection and reviewable `AGENTS.md` proposal |
-| `build_bootstrap_plan` / `inspect_project` / `write_bootstrap_plan` | `agenthicc.project_bootstrap` | Safe project-guidance bootstrap lifecycle |
+| `ProjectSnapshot` / `ProjectBootstrapPlan` / `ProjectInitResult` | `agenthicc.project_bootstrap` | Bounded inspection, guidance proposals, and safe project scaffold result |
+| `build_bootstrap_plan` / `inspect_project` / `initialize_project` / `write_bootstrap_plan` | `agenthicc.project_bootstrap` | Safe project-guidance and configuration bootstrap lifecycle |
+| `build_commented_config_template` | `agenthicc.config_template` | Exhaustive inert TOML configuration template |
 | `SkillDef` / `SkillDiscoveryResult` | `agenthicc.skills.loader` | Validated skill metadata and diagnostic discovery result |
 | `discover_skills_with_diagnostics` / `filter_skills_for_agent` | `agenthicc.skills.loader` | Skill discovery diagnostics and per-agent permission filtering |
 

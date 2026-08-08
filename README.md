@@ -133,7 +133,7 @@ Tool completions use the same operation-style header as file updates: reads, sea
 | `/workflow <name> \| reset` | Select a workflow (the interactive picker autocompletes registered names); use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
 | `/model [provider] [model]` | Inspect or switch the model selection |
 | `/config` | Open the configuration overlay |
-| `/init` | Preview or explicitly write project `AGENTS.md` guidance |
+| `/init` | Preview or explicitly write managed project `AGENTS.md` guidance |
 | `/compact` | Compact conversation memory |
 | `/replay [session-id]` | Replay a saved conversation |
 | `/cancel`, `/clear`, `/expand` | Control the current session or output |

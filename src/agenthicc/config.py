@@ -1986,6 +1986,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         authoring_max_generation_attempts=_as_int(ex.get("authoring_max_generation_attempts"), 20),
         authoring_max_phase_turns=_as_int(ex.get("authoring_max_phase_turns"), 20),
         max_output_tokens=_as_int(ex.get("max_output_tokens"), _DEFAULT_MAX_OUTPUT_TOKENS),
+        turn_timeout_s=_as_float(ex.get("turn_timeout_s"), 0.0),
         auto_compact=_as_bool(ex.get("auto_compact"), True),
         context_windows=_context_windows,
         prompt_cache=_as_bool(ex.get("prompt_cache"), True),
@@ -2093,6 +2094,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         ),
         playwright=PlaywrightSettings(
             enabled=_as_bool(_section(to.get("playwright")).get("enabled"), True),
+            transport=_as_str(_section(to.get("playwright")).get("transport"), "local"),
             browser_type=_as_str(_section(to.get("playwright")).get("browser_type"), "chromium"),
             browser_channel=_as_str(_section(to.get("playwright")).get("browser_channel"), ""),
             executable_path=_as_str(_section(to.get("playwright")).get("executable_path"), ""),
@@ -2183,6 +2185,19 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         resume_transcript_turns=max(0, _as_int(beh.get("resume_transcript_turns"), 20)),
     )
 
+    plugin_data = _section(data.get("plugins"))
+    plugins = PluginSettings(
+        auto_trust=_as_bool(plugin_data.get("auto_trust"), False),
+        auto_install=_as_bool(plugin_data.get("auto_install"), False),
+        install_target=_as_str(plugin_data.get("install_target"), "venv"),
+        allowed_modules=_as_string_list(plugin_data.get("allowed_modules")),
+        timeout_seconds=_as_float(plugin_data.get("timeout_seconds"), 30.0),
+        disabled=_as_string_list(plugin_data.get("disabled")),
+        trust_file=_as_str(plugin_data.get("trust_file"), ".agenthicc/trusted_plugins.json"),
+        audit_file=_as_str(plugin_data.get("audit_file"), ".agenthicc/plugin_audit.jsonl"),
+        strict_cli_shadow=_as_bool(plugin_data.get("strict_cli_shadow"), False),
+    )
+
     skill_data = _section(data.get("skills"))
     skills = SkillsSettings(
         install_default_skills=bool(skill_data.get("install_default_skills", True)),
@@ -2220,6 +2235,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         memory=memory,
         security=security,
         api=api,
+        plugins=plugins,
         storage=storage_settings,
         skills=skills,
         agents=agents,

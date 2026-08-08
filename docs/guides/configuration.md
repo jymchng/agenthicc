@@ -51,6 +51,25 @@ Review the source of `config.py` when adding a setting: a dataclass field is
 not automatically loaded from TOML until `_dict_to_config()` handles it. This
 is a known improvement item for tool and validation settings.
 
+## Generated project template
+
+`agenthicc init` creates `.agenthicc/.agenthicc.toml`. It is intentionally
+fully commented, so the file parses as an empty TOML document and cannot
+silently change runtime behavior. The template includes the typed scalar
+settings and commented examples for dynamic tables such as:
+
+- `[providers."profile-name"]` and its headers/request options;
+- `[[tools.mcp_servers]]`;
+- `[memory.context_windows]`;
+- `[agents."agent-name"]` and `[workflows."workflow-name"]`;
+- `[storage.s3.mounts."mount-name"]`; and
+- hook tables.
+
+Uncomment and edit only the settings needed by the project. Existing files are
+preserved by `agenthicc init`; pass `--force` only when replacement is
+intentional. The legacy `agenthicc config init` command remains available for
+projects that use the older active `.agenthicc/agenthicc.toml` path.
+
 ## Provider settings
 
 ```toml
@@ -135,6 +154,7 @@ the code rather than hard-coding them in support material.
 | `authoring_max_generation_attempts` | 20 | Maximum complete source-generation attempts for `create_*` authoring |
 | `authoring_max_phase_turns` | 20 | Maximum agent sub-turns in one `create_*` phase; phase definitions may request less |
 | `max_output_tokens` | 32768 | Completion-token ceiling for one LLM round-trip |
+| `turn_timeout_s` | 0 | Per-turn watchdog in seconds; zero disables it |
 | `auto_compact` | true | Enable proactive model-aware conversation compaction |
 | `context_windows` | `{}` | Model id → context window under `[memory.context_windows]` |
 | `prompt_cache` | true | Enable provider prompt-cache integration where supported |

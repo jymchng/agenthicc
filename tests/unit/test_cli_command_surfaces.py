@@ -22,15 +22,10 @@ def test_config_init_show_and_project_init(tmp_path: Path, monkeypatch: pytest.M
     config.config_init(ctx, force=True)
     config.config_show(ctx)
 
-    plan = SimpleNamespace(changed=False, exists=False, preview=lambda: "")
-    monkeypatch.setattr(init, "build_bootstrap_plan", lambda cwd: plan)
+    monkeypatch.chdir(tmp_path)
     init.init_project(ctx)
-    plan.changed = True
-    init.init_project(ctx)
-    plan.exists = True
-    init.init_project(ctx, write=True)
-    monkeypatch.setattr(init, "write_bootstrap_plan", lambda plan, force: tmp_path / "AGENTS.md")
-    init.init_project(ctx, write=True, force=True)
+    assert (tmp_path / "AGENTS.md").exists()
+    assert (tmp_path / ".agenthicc" / ".agenthicc.toml").exists()
 
 
 def test_sessions_trust_and_inspection_handlers(

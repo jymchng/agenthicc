@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+import tomllib
 
 import pytest
 
@@ -14,6 +15,7 @@ from agenthicc.project_bootstrap import (
     BootstrapWriteError,
     build_bootstrap_plan,
     inspect_project,
+    initialize_project,
     write_bootstrap_plan,
 )
 
@@ -196,7 +198,7 @@ class TestCliInit:
         assert args.write is True
         assert args.force is True
 
-    def test_cli_defaults_to_preview_without_writing(self, tmp_path, monkeypatch, capsys):
+    def test_cli_initializes_empty_agents_and_commented_config(self, tmp_path, monkeypatch, capsys):
         from agenthicc.cli.commands.init import init_project
         from agenthicc.cli.context import CLIContext
 
@@ -206,18 +208,102 @@ class TestCliInit:
         init_project(CLIContext())
 
         output = capsys.readouterr().out
-        assert "Preview only" in output
-        assert not (tmp_path / "AGENTS.md").exists()
+        assert "Initialized" in output
+        assert (tmp_path / "AGENTS.md").read_text() == ""
+        config = tmp_path / ".agenthicc" / ".agenthicc.toml"
+        assert config.exists()
+        assert all(
+            not line.strip() or line.lstrip().startswith("#")
+            for line in config.read_text().splitlines()
+        )
 
-    def test_cli_write_creates_guidance(self, tmp_path, monkeypatch, capsys):
+    def test_cli_force_replaces_scaffold_and_write_is_compatibility_alias(
+        self, tmp_path, monkeypatch, capsys
+    ):
         from agenthicc.cli.commands.init import init_project
         from agenthicc.cli.context import CLIContext
 
         monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("user guidance\n")
         init_project(CLIContext(), write=True)
+        assert (tmp_path / "AGENTS.md").read_text() == "user guidance\n"
+        assert "Preserved AGENTS.md" in capsys.readouterr().out
 
-        assert (tmp_path / "AGENTS.md").exists()
-        assert "Updated" in capsys.readouterr().out
+        init_project(CLIContext(), force=True)
+        assert (tmp_path / "AGENTS.md").read_text() == ""
+        assert "Overwrote AGENTS.md" in capsys.readouterr().out
+
+
+class TestProjectInit:
+    def test_template_is_valid_empty_toml_and_contains_all_static_sections(self):
+        from agenthicc.config_template import build_commented_config_template
+
+        template = build_commented_config_template()
+
+        assert tomllib.loads(template) == {}
+        assert all(
+            not line.strip() or line.lstrip().startswith("#") for line in template.splitlines()
+        )
+        for option in (
+            "turn_timeout_s",
+            "prompt_cache",
+            "file_cache",
+            "allow_all_domains",
+            "browser_backend",
+            "strict_cli_shadow",
+            "context_windows",
+            "request_options",
+            "mcp_servers",
+            "workflows",
+        ):
+            assert option in template
+
+    def test_initialization_is_idempotent_and_preserves_existing_files(self, tmp_path):
+        first = initialize_project(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("team-owned\n")
+        config = tmp_path / ".agenthicc" / ".agenthicc.toml"
+        original_config = config.read_text()
+
+        second = initialize_project(tmp_path)
+
+        assert first.created == (tmp_path / ".agenthicc", tmp_path / "AGENTS.md", config)
+        assert second.created == ()
+        assert set(second.preserved) == {tmp_path / ".agenthicc", tmp_path / "AGENTS.md", config}
+        assert (tmp_path / "AGENTS.md").read_text() == "team-owned\n"
+        assert config.read_text() == original_config
+
+    def test_rejects_symlinked_config_directory(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (tmp_path / ".agenthicc").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(BootstrapError, match="symlink directory"):
+            initialize_project(tmp_path)
+
+    def test_force_replaces_both_scaffold_files_atomically(self, tmp_path):
+        initialize_project(tmp_path)
+        config = tmp_path / ".agenthicc" / ".agenthicc.toml"
+        (tmp_path / "AGENTS.md").write_text("old guidance\n")
+        config.write_text('[execution]\nprovider = "openai"\n')
+
+        result = initialize_project(tmp_path, force=True)
+
+        assert set(result.overwritten) == {tmp_path / "AGENTS.md", config}
+        assert (tmp_path / "AGENTS.md").read_text() == ""
+        assert all(
+            line.startswith("#") or not line.strip() for line in config.read_text().splitlines()
+        )
+        assert not list(tmp_path.glob(".AGENTS.md.*.tmp"))
+        assert not list(config.parent.glob("..agenthicc.toml.*.tmp"))
+
+    def test_rejects_symlinked_agents_file(self, tmp_path):
+        outside = tmp_path / "outside-agents.md"
+        outside.write_text("do not overwrite\n")
+        (tmp_path / "AGENTS.md").symlink_to(outside)
+
+        with pytest.raises(BootstrapError, match="symlink target"):
+            initialize_project(tmp_path)
+        assert outside.read_text() == "do not overwrite\n"
 
 
 class TestTuiInit:
