@@ -34,6 +34,10 @@ saved run that is not currently attached. A live claim prevents two
 TUI/headless owners from executing one run at once, while a claim from a
 provably dead local process can be reclaimed.
 
+When multiple workflows are recoverable, the TUI recovery notice wraps the
+complete run IDs instead of ellipsizing them. Copy one into
+`/workflow resume <run-id>` to select the intended run.
+
 The recovery data flow is:
 
 ```text

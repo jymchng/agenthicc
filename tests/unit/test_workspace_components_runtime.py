@@ -99,3 +99,29 @@ def test_footer_notification_paste_hints_workflow_and_pool() -> None:
     state.input.paste_condensed.return_value = False
     state.conversation.agent_state.return_value = SimpleNamespace(name="ERROR")
     assert "Retry" in footer.render().renderables[1].plain
+
+
+def test_footer_wraps_complete_workflow_run_ids_instead_of_ellipsizing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state()
+    state.workflow_run.return_value = None
+    state.conversation.subagent_pool_state.return_value = None
+    run_ids = (
+        "542c8a3e-4f1b-4d2c-9a7e-123456789abc",
+        "7f6e5d4c-3b2a-1908-fedc-ba9876543210",
+    )
+    message = f"2 workflows can be resumed. Use /workflow resume <run-id>: {', '.join(run_ids)}"
+    state.conversation.notification.return_value = message
+    monkeypatch.setattr(components, "_get_cols", lambda: 40)
+
+    footer = components.FooterComponent(state)
+    rendered = footer.render()
+    notification_text = "\n".join(
+        renderable.plain for renderable in rendered.renderables[1:] if hasattr(renderable, "plain")
+    )
+
+    assert message in notification_text.replace("\n", "")
+    assert all(run_id in notification_text for run_id in run_ids)
+    assert "…" not in notification_text
+    assert footer.height(40) == len(components._wrap_notification(message, 40)) + 1

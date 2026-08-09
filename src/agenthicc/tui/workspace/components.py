@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
+    from rich.text import Text
     from agenthicc.tui.conversation_store import AppState
 
 # Flower icons that cycle during agent runs
@@ -422,13 +423,12 @@ class FooterComponent:
         # Multi-line notifications (from stacked notify_transient() calls or
         # explicit \n in the message) each get their own rendered row.
         notif = conv.notification()
+        hints_str: str | Text
         if notif:
-            notif_lines = notif.split("\n")
-            hints_str = _fit(f"[dim]{notif_lines[0]}[/dim]", cols)
+            notif_lines = _wrap_notification(notif, cols)
+            hints_str = notif_lines[0]
             # Extra lines rendered after Group — collected here, appended below.
-            _extra_notif_lines = [
-                Text.from_markup(_fit(f"[dim]{ln}[/dim]", cols)) for ln in notif_lines[1:]
-            ]
+            _extra_notif_lines = notif_lines[1:]
         elif self._state.input.paste_condensed():
             _extra_notif_lines = []
             hints_str = _build_hints(
@@ -440,6 +440,7 @@ class FooterComponent:
             state_name = conv.agent_state().name.lower()
             raw_hints = _HINTS.get(state_name, _HINTS["idle"])
             hints_str = _build_hints(raw_hints, cols)
+        hints_renderable = hints_str if isinstance(hints_str, Text) else Text.from_markup(hints_str)
 
         # PRD-81: optional workflow progress row
         extra: list[RenderableType] = []
@@ -470,7 +471,7 @@ class FooterComponent:
 
         return Group(
             Text.from_markup(mode_line),
-            Text.from_markup(hints_str),
+            hints_renderable,
             *extra,
         )
 
@@ -480,7 +481,7 @@ class FooterComponent:
         try:
             notif = self._state.conversation.notification()
             if notif and isinstance(notif, str):
-                extra += notif.count("\n")  # each \n adds one more row
+                extra += max(0, len(_wrap_notification(notif, cols)) - 1)
         except Exception:  # noqa: BLE001
             pass
         _wf = self._state.workflow_run()
@@ -542,3 +543,26 @@ def _build_hints(raw: str, cols: int) -> str:
         segs.pop()
     result = sep.join(segs)
     return _fit(result, cols)
+
+
+def _wrap_notification(message: str, cols: int) -> list["Text"]:
+    """Wrap a notification without discarding any of its text.
+
+    Notifications can contain workflow run IDs, which are long unbroken
+    strings. Passing them through :func:`_fit` loses the suffix and makes the
+    recovery command unusable. Rich's ``Text.wrap(..., overflow="fold")``
+    preserves every character, wrapping at spaces where possible and folding
+    long IDs when a single token is wider than the terminal.
+    """
+
+    from rich.console import Console  # noqa: PLC0415
+    from rich.text import Text  # noqa: PLC0415
+
+    width = max(1, cols)
+    return list(
+        Text(message, style="dim").wrap(
+            Console(width=width, color_system=None, force_terminal=False),
+            width=width,
+            overflow="fold",
+        )
+    )

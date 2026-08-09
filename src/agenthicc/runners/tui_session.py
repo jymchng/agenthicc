@@ -923,7 +923,9 @@ class TUISession:
                 )
             return
         if len(candidates) != 1:
-            choices = ", ".join(record.run_id[:12] for record in candidates[:5])
+            # The footer wraps long notifications. Keep the complete IDs here
+            # so an operator can copy an exact value into `/workflow resume`.
+            choices = ", ".join(record.run_id for record in candidates[:5])
             suffix = " …" if len(candidates) > 5 else ""
             self._ctx.app_state.conversation.notification.set(
                 f"{len(candidates)} workflows can be resumed ({choices}{suffix}). "

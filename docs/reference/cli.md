@@ -133,3 +133,7 @@ skill, or workflow invocation in the input panel without submitting it.
 `/init` is a local project guidance command. It previews by default and uses
 `/init write` or `/init write --force` for explicit writes; it does not invoke
 the model or inspect arbitrary source files.
+
+Workflow recovery notices wrap rather than truncate run IDs. When multiple
+runs are available, the complete IDs remain visible so one can be copied into
+`/workflow resume <run-id>`.

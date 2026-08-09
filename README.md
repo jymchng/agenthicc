@@ -314,6 +314,10 @@ Session artifacts live below `~/.agenthicc/sessions/`:
 
 Direct chat, Plan mode, `code_plan`, and `create_workflow` share the session's stable conversation ID and journal-backed provider memory. Workflow phase state is checkpointed separately, while the reactive conversation store remains a UI projection.
 
+If multiple workflow checkpoints are recoverable, the TUI wraps the complete
+run IDs in its recovery notice so an exact `/workflow resume <run-id>` command
+can be entered.
+
 Tool-call batches are transaction-safe at the shared `lauren-ai` boundary.
 Every assistant call is paired with exactly one result before the next provider
 request; interrupted or denied calls receive a bounded synthetic error result
