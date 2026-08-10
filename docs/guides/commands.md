@@ -105,17 +105,19 @@ TUI route may then report the command as having no usable handler.
 - the complete submitted `text` and the parsed `args` string;
 - the Rich `console`, live config, session id, and active-agent label;
 - the current command registry and mode manager;
-- callbacks for pending skills, menus, replay, overlay close, and skill reload.
+- callbacks for pending skills, menus, replay, overlay close, and skill reload;
+- session-provided workflow recovery callbacks used by `/workflows runs`.
 
 Handlers should use these fields rather than reaching into renderer or
 workspace internals. The current TUI constructs `active_agent` as `"default"`
 when dispatching slash commands, so a custom command must not assume that
 field identifies a dynamically selected agent.
 
-Commands needing workflow state, conversation memory, processor access, or
-other session-owned fields cannot obtain those from `CommandContext` today.
-They belong in a built-in command plus an explicit `TUISession` interception,
-or require extending the context contract and its tests.
+Commands needing conversation memory, processor access, or other session-owned
+fields still cannot obtain those from `CommandContext` implicitly. The
+workflow recovery callbacks are an explicit, narrow exception: they let the
+built-in `/workflows runs` command enumerate and resume records without
+exposing the session, conversation, or checkpoint store to arbitrary handlers.
 
 ## Discovery and startup behavior
 
@@ -184,17 +186,20 @@ source, arguments, aliases, and full description. `/skills` uses the same
 overlay pattern for discovered, permission-filtered skills and their explicit
 `$` invocation names. `/tools` lists the tools available to the current
 session, including MCP tools, and labels each one as `builtin` or `plugin`.
-`/workflows` lists loaded workflow plugins,
-their phase topology, source, and runner type. These listings stay in the
-live overlay instead of being appended to the conversation scroll buffer. On a
-details page, press Enter again to place the selected canonical command or
-skill invocation in the input panel without submitting it.
+`/workflows` lists loaded workflow plugins, their phase topology, source, and
+runner type. `/workflows runs` opens a paginated, newest-first selector of
+paused and process-interrupted workflow checkpoints. Arrow keys select a run;
+PageUp/PageDown, Home, and End navigate the pages; Enter immediately hands the
+selected run ID to the canonical guarded resume path. These listings stay in
+the live overlay instead of being appended to the conversation scroll buffer.
+On a registry details page, press Enter again to place the selected canonical
+command or skill invocation in the input panel without submitting it.
 
 ## Commands while an agent run is active
 
 The interactive session classifies a submitted command before it enters the
 normal FIFO queue. Reviewed local queries such as `/usage`, `/status`, `/ps`,
-`/commands`, `/tools`, `/workflows`, `/skills`, `/mcp status`, `/help`, `/history`, `/expand`, and
+`/commands`, `/tools`, `/workflows`, `/workflows runs`, `/skills`, `/mcp status`, `/help`, `/history`, `/expand`, and
 `/clear` run immediately. `/stop` is an immediate control command: with no
 arguments it stops every owned background terminal; `/stop <terminal-id>` targets
 one handle. The `/config` command also opens its local

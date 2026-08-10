@@ -22,6 +22,7 @@ from agenthicc.tui.workspace.overlays.registry_list import (
     SkillListOverlay,
     ToolListOverlay,
     WorkflowListOverlay,
+    WorkflowRunsOverlay,
 )
 from agenthicc.commands.command import Command
 from agenthicc.commands.registry import UnifiedCommandRegistry
@@ -252,3 +253,48 @@ def test_registry_detail_enter_inserts_commands_and_closes_overlay() -> None:
 
     assert selected == ["/deploy", "$review", "/workflow demo_workflow"]
     assert len(closed) == 3
+
+
+def test_workflow_runs_overlay_is_paginated_sorted_and_resumes_selected_run() -> None:
+    from rich.console import Console
+
+    records = [
+        SimpleNamespace(
+            run_id=f"run-{index}",
+            workflow_name="code_plan",
+            current_phase="implement",
+            status="paused",
+            intent=f"Intent {index}",
+            checkpoint=SimpleNamespace(created_at=1000.0 + index),
+        )
+        for index in range(17)
+    ]
+    resumed: list[str] = []
+    closed: list[bool] = []
+    overlay = WorkflowRunsOverlay(
+        records,
+        lambda: closed.append(True),
+        lambda run_id: resumed.append(run_id) or True,
+    )
+
+    output = Console(file=StringIO(), record=True, force_terminal=False)
+    output.print(overlay.render())
+    output_text = output.export_text()
+    assert "page 1/3" in output_text
+    assert "run-16" in output_text  # newest checkpoint is first
+
+    overlay.handle_key(Key.PAGE_DOWN, "")
+    assert overlay._selected == 8
+    overlay.handle_key(Key.PAGE_DOWN, "")
+    assert overlay._selected == 16
+    overlay.handle_key(Key.PAGE_UP, "")
+    assert overlay._selected == 8
+    overlay.handle_key(Key.HOME, "")
+    assert overlay._selected == 0
+    overlay.handle_key(Key.END, "")
+    assert overlay._selected == 16
+    overlay.handle_key(Key.HOME, "")
+    overlay.handle_key(Key.ENTER, "")
+
+    assert resumed == ["run-16"]
+    assert closed == [True]

@@ -19,6 +19,7 @@ from agenthicc.commands.builtins import (
     _mcp_busy_policy,
     _read_only_without_args,
     _reloadable_list_policy,
+    _workflows_busy_policy,
 )
 from agenthicc.commands.command import CommandContext, UsageSnapshot
 from agenthicc.commands.registry import UnifiedCommandRegistry
@@ -53,6 +54,9 @@ def test_builtin_busy_policy_helpers() -> None:
     assert _mcp_busy_policy("connect") is BusyPolicy.QUEUE
     assert _reloadable_list_policy("") is BusyPolicy.IMMEDIATE_READ_ONLY
     assert _reloadable_list_policy("reload") is BusyPolicy.QUEUE
+    assert _workflows_busy_policy("") is BusyPolicy.IMMEDIATE_READ_ONLY
+    assert _workflows_busy_policy("runs") is BusyPolicy.IMMEDIATE_READ_ONLY
+    assert _workflows_busy_policy("reload") is BusyPolicy.QUEUE
 
 
 def test_cancel_replay_and_tools_error_paths(
@@ -165,6 +169,38 @@ def test_workflow_reload_and_tool_metadata_rendering(tmp_path: Path) -> None:
     ctx.tools = [read_tool]
     ctx.tool_sources = {"read_tool": "plugin"}
     assert _cmd_tools(ctx)
+
+
+def test_workflow_runs_uses_recovery_callbacks_and_overlay(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.overlays.registry_list import WorkflowRunsOverlay
+
+    ctx = _ctx(tmp_path)
+    selected: list[str] = []
+    closed: list[bool] = []
+    ctx.args = "runs"
+    ctx.list_workflow_runs = lambda: [
+        SimpleNamespace(
+            run_id="paused-run",
+            workflow_name="code_plan",
+            current_phase="implement",
+            status="paused",
+            intent="Implement the change",
+            checkpoint=SimpleNamespace(created_at=10.0),
+        )
+    ]
+    ctx.resume_workflow = lambda run_id: selected.append(run_id) or True
+    ctx.set_pending_menu = lambda overlay: (closed.append(False), setattr(ctx, "_overlay", overlay))
+    ctx.close_overlay = lambda: closed.append(True)
+
+    assert _cmd_workflows(ctx)
+    overlay = getattr(ctx, "_overlay")
+    assert isinstance(overlay, WorkflowRunsOverlay)
+    overlay.handle_key(Key.ENTER, "")
+    assert selected == ["paused-run"]
+    assert closed[-1] is True
 
 
 def test_usage_command_renders_unavailable_and_available_snapshots(tmp_path: Path) -> None:

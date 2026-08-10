@@ -126,7 +126,7 @@ Tool completions use the same operation-style header as file updates: reads, sea
 | Command | Purpose |
 |---|---|
 | `/help`, `/commands` | Inspect available commands in an overlay |
-| `/tools [reload]`, `/workflows [reload]` | Inspect or reload tools/workflows; `/tools` labels each tool `builtin` or `plugin` |
+| `/tools [reload]`, `/workflows [runs\|reload]` | Inspect tools/workflows, or open the paginated paused-run selector; `/tools` labels each tool `builtin` or `plugin` |
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/stop` stops all |
 | `/mode [name]` | Show or change the operating mode |
@@ -147,6 +147,11 @@ broken or dependency-missing plugins. If none can be loaded, the existing
 tool registry is kept active.
 
 `/config` opens its local configuration overlay immediately, including while a response is streaming.
+
+`/workflows runs` opens a paginated list of paused and interrupted workflow
+checkpoints, newest first. Select a run with the arrow keys, then press Enter
+to rehydrate and resume it through the same validation and live-owner claim
+path as `/workflow resume <run-id>`.
 
 Large bracketed pastes stay condensed in the composer. Backspace removes the whole paste when the cursor is immediately after its closing `]`; elsewhere it keeps normal character-wise editing. Home and End navigate the visible, single-line placeholder, so typing at either side keeps the original pasted content intact.
 

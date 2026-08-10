@@ -135,6 +135,38 @@ async def test_tools_and_workflows_open_list_overlays_during_active_run() -> Non
 
 
 @pytest.mark.asyncio
+async def test_workflow_runs_overlay_enter_uses_session_resume_callback() -> None:
+    from types import SimpleNamespace
+
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.overlays.registry_list import WorkflowRunsOverlay
+
+    session, ctx, workspace, _input = _make_session()
+    command = build_builtin_registry().get("/workflows")
+    assert command is not None
+    ctx.cmd_registry.register(command)
+    record = SimpleNamespace(
+        run_id="tui-run",
+        workflow_name="code_plan",
+        current_phase="plan",
+        status="paused",
+        intent="TUI intent",
+        checkpoint=SimpleNamespace(created_at=1.0),
+    )
+    resumed: list[str] = []
+    session._list_workflow_runs = lambda: [record]  # type: ignore[method-assign]
+    session._resume_workflow_from_overlay = (  # type: ignore[method-assign]
+        lambda run_id: resumed.append(run_id) or True
+    )
+
+    await session.handle_send(SendMessageCommand(text="/workflows runs"))
+    assert isinstance(workspace.overlays.widget, WorkflowRunsOverlay)
+    workspace.overlays.handle_key(Key.ENTER, "")
+    assert resumed == ["tui-run"]
+    assert not workspace.overlays.active
+
+
+@pytest.mark.asyncio
 async def test_read_only_and_control_commands_are_immediate_but_messages_queue() -> None:
     session, ctx, _workspace, _input = _make_session()
     invoked: list[str] = []

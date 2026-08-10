@@ -566,6 +566,23 @@ discovery fails, the previous registry remains active. In the workflows
 overlay, press Enter on a workflow and then Enter again on its details page to
 place `/workflow <name>` in the input panel without submitting it.
 
+To resume from a visual list instead of copying a run ID, use:
+
+```text
+/workflows runs
+```
+
+The selector refreshes the durable checkpoint index when it opens and shows
+recoverable runs in descending checkpoint time order. It includes both
+explicitly paused runs and runs found in `running`/`resuming` state after an
+interruption. The table is paginated; use the arrow keys for adjacent rows,
+PageUp/PageDown for page jumps, and Home/End for the bounds. Enter resumes the
+selected run immediately. This invokes the same rehydration, compatibility
+validation, conversation/journal restoration, and atomic live-owner claim as
+`/workflow resume <run-id>`; the overlay never claims or starts a run itself.
+If another live agenthicc process owns the run, the normal
+`run_already_claimed` diagnostic is shown and no duplicate execution starts.
+
 ## How user workflows are discovered
 
 Workflow discovery happens when a TUI or headless session starts. The registry

@@ -60,6 +60,8 @@ class CommandDispatcher:
             set_input_text=ctx.set_input_text,
             usage_snapshot=ctx.usage_snapshot,
             cancel_active=ctx.cancel_active,
+            list_workflow_runs=ctx.list_workflow_runs,
+            resume_workflow=ctx.resume_workflow,
         )
 
         # Menu factory always takes precedence; factory receives args via ctx.args.

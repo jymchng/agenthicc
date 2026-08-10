@@ -77,6 +77,47 @@ def test_dispatch_unknown_returns_false():
     assert result is False
 
 
+def test_dispatch_workflow_runs_opens_paginated_resume_overlay(tmp_path):
+    """The shared dispatcher preserves recovery callbacks through context cloning."""
+    from types import SimpleNamespace
+
+    from rich.console import Console
+
+    from agenthicc.commands import CommandContext
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.overlays.registry_list import WorkflowRunsOverlay
+
+    pending: list[object] = []
+    resumed: list[str] = []
+    closed: list[bool] = []
+    record = SimpleNamespace(
+        run_id="integration-run",
+        workflow_name="code_plan",
+        current_phase="plan",
+        status="paused",
+        intent="Integration intent",
+        checkpoint=SimpleNamespace(created_at=1.0),
+    )
+    context = CommandContext(
+        text="",
+        args="",
+        model="test/model",
+        console=Console(record=True),
+        config=AgenthiccConfig(),
+        list_workflow_runs=lambda: [record],
+        resume_workflow=lambda run_id: resumed.append(run_id) or True,
+        set_pending_menu=pending.append,
+        close_overlay=lambda: closed.append(True),
+    )
+
+    assert CommandDispatcher(build_builtin_registry()).dispatch("/workflows runs", context)
+    assert isinstance(pending[-1], WorkflowRunsOverlay)
+    pending[-1].handle_key(Key.ENTER, "")
+    assert resumed == ["integration-run"]
+    assert closed == [True]
+
+
 # ---------------------------------------------------------------------------
 # 4. test_skill_appears_in_dollar_dropdown_after_registration
 # ---------------------------------------------------------------------------

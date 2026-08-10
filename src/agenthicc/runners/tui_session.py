@@ -963,6 +963,22 @@ class TUISession:
             record.run_id: record for record in records if not record.recoverable
         }
 
+    def _list_workflow_runs(self) -> list[WorkflowRecoveryRecord]:
+        """Return current recoverable runs in newest-checkpoint-first order."""
+        self._refresh_workflow_recovery_records()
+        records = list(self._workflow_recovery_records.values())
+        return sorted(
+            records,
+            key=lambda record: (
+                -(record.checkpoint.created_at if record.checkpoint is not None else 0.0),
+                record.run_id,
+            ),
+        )
+
+    def _resume_workflow_from_overlay(self, run_id: str) -> bool:
+        """Resume a selected run through the canonical guarded resume path."""
+        return self._handle_workflow_resume(run_id)
+
     def _known_workflow_run_ids(self) -> set[str]:
         """Return IDs currently known to this TUI, including an attached run."""
         known = set(self._workflow_recovery_records)
@@ -1161,6 +1177,8 @@ class TUISession:
             set_input_text=self._set_input_text,
             usage_snapshot=self._usage_snapshot,
             cancel_active=self._cancel_active_task,
+            list_workflow_runs=self._list_workflow_runs,
+            resume_workflow=self._resume_workflow_from_overlay,
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 

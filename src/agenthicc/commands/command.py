@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.workspace.overlay import Overlay
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.registry import WorkflowRegistry
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.background.terminals import TerminalManager
 
 __all__ = [
@@ -104,6 +105,11 @@ class CommandContext:
     set_input_text: "Callable[[str], None] | None" = None
     usage_snapshot: "Callable[[], UsageSnapshot] | None" = None
     cancel_active: "Callable[[], bool] | None" = None
+    # Workflow recovery callbacks are supplied by the interactive session.
+    # Keeping them on the context prevents command handlers and overlays from
+    # reaching into TUISession internals or constructing a second resume path.
+    list_workflow_runs: "Callable[[], list[WorkflowRecoveryRecord]] | None" = None
+    resume_workflow: "Callable[[str], bool] | None" = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

@@ -187,6 +187,13 @@ def _reloadable_list_policy(args: str) -> BusyPolicy:
     return BusyPolicy.IMMEDIATE_READ_ONLY if not args.strip() else BusyPolicy.QUEUE
 
 
+def _workflows_busy_policy(args: str) -> BusyPolicy:
+    """Keep recovery inspection immediate; defer registry mutation/typos."""
+    return (
+        BusyPolicy.IMMEDIATE_READ_ONLY if args.strip().lower() in {"", "runs"} else BusyPolicy.QUEUE
+    )
+
+
 def _present_registry_result(ctx: CommandContext, title: str, message: str) -> None:
     """Show registry command output in the live overlay when available."""
     if ctx.set_pending_menu is not None:
@@ -592,8 +599,71 @@ def _cmd_workflows(ctx: CommandContext) -> bool:
     """List workflows loaded into the current registry."""
     requested = ctx.args.strip().lower()
     if requested:
+        if requested == "runs":
+            if ctx.list_workflow_runs is None:
+                _present_registry_result(
+                    ctx,
+                    "Workflow Runs",
+                    "Workflow recovery is only available in an interactive session.",
+                )
+                return True
+            try:
+                records = ctx.list_workflow_runs()
+            except Exception as exc:  # noqa: BLE001
+                _present_registry_result(
+                    ctx,
+                    "Workflow Runs",
+                    f"Workflow recovery inspection failed: {type(exc).__name__}: {exc}",
+                )
+                return True
+            if ctx.set_pending_menu is not None:
+                from agenthicc.tui.workspace.overlays.registry_list import (  # noqa: PLC0415
+                    WorkflowRunsOverlay,
+                )
+
+                on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
+                on_resume = ctx.resume_workflow
+                if on_resume is None:
+                    _present_registry_result(
+                        ctx,
+                        "Workflow Runs",
+                        "Workflow recovery is not available in this session.",
+                    )
+                    return True
+                ctx.set_pending_menu(WorkflowRunsOverlay(records, on_close, on_resume))
+                return True
+
+            try:
+                from rich import box as _rbox  # noqa: PLC0415
+                from rich.table import Table  # noqa: PLC0415
+
+                table = Table(title="Paused Workflow Runs", box=_rbox.SIMPLE)
+                table.add_column("Workflow", style="bold cyan")
+                table.add_column("Phase")
+                table.add_column("Status", style="yellow")
+                table.add_column("Run ID", no_wrap=True)
+                for record in records:
+                    table.add_row(
+                        record.workflow_name or "—",
+                        record.current_phase or "saved state",
+                        record.status,
+                        record.run_id,
+                    )
+                if not records:
+                    table.add_row("—", "—", "—", "(no paused workflow runs)")
+                ctx.console.print(table)
+            except ImportError:
+                if not records:
+                    ctx.console.print("No paused workflow runs.")
+                for record in records:
+                    ctx.console.print(
+                        f"  {record.workflow_name or '—'}  "
+                        f"{record.current_phase or 'saved state'}  "
+                        f"[{record.status}]  {record.run_id}"
+                    )
+            return True
         if requested != "reload":
-            _present_registry_result(ctx, "Workflows", "Usage: /workflows [reload]")
+            _present_registry_result(ctx, "Workflows", "Usage: /workflows [runs|reload]")
             return True
         if ctx.reload_workflows is None:
             _present_registry_result(
@@ -787,10 +857,10 @@ BUILTIN_COMMANDS: list[Command] = [
     Command(
         name="/workflows",
         description="List all loaded workflows and their phases",
-        argument_hint="[reload]",
+        argument_hint="[runs|reload]",
         group="Built-in",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
-        busy_policy_resolver=_reloadable_list_policy,
+        busy_policy_resolver=_workflows_busy_policy,
         handler=_cmd_workflows,
     ),
     Command(

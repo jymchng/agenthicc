@@ -89,7 +89,7 @@ non-loopback bind is accepted.
 ## TUI slash commands
 
 TUI commands are a separate registry from CLI subcommands. Current built-ins
-include `/help`, `/commands`, `/tools [reload]`, `/workflows [reload]`, `/status`, `/history`,
+include `/help`, `/commands`, `/tools [reload]`, `/workflows [runs|reload]`, `/status`, `/history`,
 `/mode`, `/workflow`, `/init`, `/model`, `/models`, `/skills [reload]`, `/mcp`,
 `/config`, `/compact`, `/replay`, `/cancel`, `/clear`, and `/expand`.
 
@@ -122,7 +122,9 @@ Project tools and commands remain available through the `/create-tools` and
 `/create-commands` skills and their respective reload commands; they are not
 workflow selectors.
 
-`/tools` and `/workflows` are registry overlays; adding `reload` rescans their
+`/tools` and `/workflows` are registry overlays; `/workflows runs` opens the
+paginated newest-first paused-run selector and Enter resumes the selected run
+through the guarded `/workflow resume <run-id>` path. Adding `reload` rescans their
 respective live registries without restarting. `/tools` shows the effective
 built-in, project, and MCP tools for the session and labels each one
 `builtin` or `plugin`. `/workflows` shows loaded

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import math
+import time
 from typing import TYPE_CHECKING, Callable
 
 from agenthicc.tui.cbreak_reader import Key
@@ -16,6 +18,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.base import ToolLike
     from agenthicc.workflows.plugin import WorkflowPlugin
     from agenthicc.workflows.registry import WorkflowRegistry
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
 
 
 @dataclass(frozen=True)
@@ -345,3 +348,166 @@ class WorkflowListOverlay(_RegistryListOverlay):
                 )
             )
         super().__init__("Registered Workflows", rows, on_close, on_select)
+
+
+class WorkflowRunsOverlay(Overlay):
+    """Paginated selector for durable workflow runs that can be resumed.
+
+    Selecting a row and pressing Enter invokes the session's guarded resume
+    callback immediately. The callback owns rehydration, validation, and the
+    live-owner claim; this overlay is deliberately only a presentation and
+    selection layer.
+    """
+
+    name = "workflow-runs"
+    _PAGE_SIZE = 8
+
+    def __init__(
+        self,
+        records: list[WorkflowRecoveryRecord],
+        on_close: Callable[[], None],
+        on_resume: Callable[[str], bool],
+    ) -> None:
+        self._records = sorted(records, key=self._sort_key)
+        self._on_close = on_close
+        self._on_resume = on_resume
+        self._selected = 0
+
+    @staticmethod
+    def _sort_key(record: WorkflowRecoveryRecord) -> tuple[float, str]:
+        return (
+            -WorkflowRunsOverlay._created_at(record),
+            record.run_id,
+        )
+
+    @staticmethod
+    def _created_at(record: WorkflowRecoveryRecord) -> float:
+        checkpoint = record.checkpoint
+        value: object = checkpoint.created_at if checkpoint is not None else None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        try:
+            timestamp = float(value)
+        except OverflowError:
+            return 0.0
+        return timestamp if math.isfinite(timestamp) else 0.0
+
+    @property
+    def page_count(self) -> int:
+        return max(1, (len(self._records) + self._PAGE_SIZE - 1) // self._PAGE_SIZE)
+
+    @property
+    def selected_record(self) -> WorkflowRecoveryRecord | None:
+        if not self._records:
+            return None
+        self._selected = max(0, min(self._selected, len(self._records) - 1))
+        return self._records[self._selected]
+
+    def on_mount(self) -> None:
+        pass
+
+    def on_unmount(self) -> None:
+        pass
+
+    def render(self) -> "RenderableType":
+        from rich.console import Group  # noqa: PLC0415
+        from rich.panel import Panel  # noqa: PLC0415
+        from rich.table import Table  # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
+
+        separator = Text("─" * 84, style="dim")
+        page = self._selected // self._PAGE_SIZE + 1
+        table = Table(
+            title=f"Paused Workflow Runs (page {page}/{self.page_count}; {len(self._records)})",
+            expand=True,
+        )
+        table.add_column("", width=2)
+        table.add_column("Workflow", style="bold cyan", no_wrap=True)
+        table.add_column("Phase", no_wrap=True)
+        table.add_column("Status", style="yellow", no_wrap=True)
+        table.add_column("Saved", no_wrap=True)
+        table.add_column("Run ID", no_wrap=True)
+
+        start = (page - 1) * self._PAGE_SIZE
+        end = min(len(self._records), start + self._PAGE_SIZE)
+        for index in range(start, end):
+            record = self._records[index]
+            status = record.status
+            if status in {"running", "resuming"}:
+                status = "interrupted"
+            saved = self._format_time(record)
+            run_id = record.run_id
+            table.add_row(
+                "▸" if index == self._selected else "",
+                record.workflow_name or "—",
+                record.current_phase or "saved state",
+                status,
+                saved,
+                _shorten(run_id, 28),
+            )
+        if not self._records:
+            table.add_row("", "—", "—", "—", "—", "(no paused workflow runs)")
+
+        selected = self.selected_record
+        if selected is None:
+            detail_text = "No paused or interrupted workflow runs are available."
+        else:
+            status = selected.status
+            if status in {"running", "resuming"}:
+                status = "interrupted"
+            detail_text = (
+                f"[bold]Run ID[/bold] {selected.run_id}\n"
+                f"[bold]Workflow[/bold] {selected.workflow_name or '—'}\n"
+                f"[bold]Phase[/bold] {selected.current_phase or 'saved state'}\n"
+                f"[bold]Status[/bold] {status}\n"
+                f"[bold]Intent[/bold] {_shorten(selected.intent or '—', 180)}\n"
+                "Press Enter to resume this run and return to the conversation."
+            )
+        detail = Panel(detail_text, title="Selected Run", border_style="cyan")
+        footer = Text(
+            "↑↓/j/k select   PgUp/PgDn page   Home/End   Enter resume   Esc close",
+            style="dim",
+        )
+        return Group(separator, table, detail, separator, footer)
+
+    @staticmethod
+    def _format_time(record: WorkflowRecoveryRecord) -> str:
+        timestamp = WorkflowRunsOverlay._created_at(record)
+        if timestamp == 0.0:
+            return "unknown"
+        try:
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
+        except (OverflowError, OSError, ValueError):
+            return "unknown"
+
+    def _move(self, delta: int) -> None:
+        if not self._records:
+            return
+        self._selected = max(0, min(len(self._records) - 1, self._selected + delta))
+
+    def handle_key(self, key: Key, ch: str) -> bool:
+        match key:
+            case Key.ESC:
+                self._on_close()
+            case Key.UP:
+                self._move(-1)
+            case Key.DOWN:
+                self._move(1)
+            case Key.PAGE_UP:
+                self._move(-self._PAGE_SIZE)
+            case Key.PAGE_DOWN:
+                self._move(self._PAGE_SIZE)
+            case Key.HOME:
+                self._selected = 0
+            case Key.END:
+                self._selected = max(0, len(self._records) - 1)
+            case Key.CHAR if ch.lower() == "k":
+                self._move(-1)
+            case Key.CHAR if ch.lower() == "j":
+                self._move(1)
+            case Key.ENTER:
+                selected = self.selected_record
+                if selected is not None:
+                    self._on_resume(str(selected.run_id))
+                    self._on_close()
+        return True

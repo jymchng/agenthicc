@@ -104,6 +104,31 @@ def test_tui_initial_workflow_selection_is_visible_and_active() -> None:
     assert ctx.app_state.conversation.workflow_override() == "demo"
 
 
+def test_workflow_run_listing_is_newest_first_and_resume_delegates() -> None:
+    session, _ctx, _workspace, _input = _make_session()
+    records = [
+        SimpleNamespace(
+            run_id="older",
+            checkpoint=SimpleNamespace(created_at=10.0),
+        ),
+        SimpleNamespace(
+            run_id="newer",
+            checkpoint=SimpleNamespace(created_at=20.0),
+        ),
+    ]
+    session._workflow_recovery_records = {record.run_id: record for record in records}  # type: ignore[assignment]
+    session._refresh_workflow_recovery_records = lambda: None  # type: ignore[method-assign]
+
+    assert [record.run_id for record in session._list_workflow_runs()] == ["newer", "older"]
+
+    resumed: list[str] = []
+    session._handle_workflow_resume = (  # type: ignore[method-assign]
+        lambda run_id: resumed.append(run_id) or True
+    )
+    assert session._resume_workflow_from_overlay("newer") is True
+    assert resumed == ["newer"]
+
+
 def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.MonkeyPatch) -> None:
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.runners import tui_session
