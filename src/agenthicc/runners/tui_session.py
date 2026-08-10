@@ -889,24 +889,10 @@ class TUISession:
         and attaches the sole valid candidate so `/workflow resume` can use the
         same path for Esc pauses and process-interrupted runs.
         """
-        conversation = getattr(self._ctx, "session_conversation", None)
-        if conversation is None:
+        self._refresh_workflow_recovery_records()
+        if not self._workflow_recovery_records and not self._workflow_recovery_errors:
             return
-        active_profile = getattr(self._ctx.cfg.execution, "profile", "")
-        workspace_scope = getattr(self._ctx, "workspace_scope", None)
-        workspace_root = str(getattr(workspace_scope, "primary_root", "") or "")
-        records = self._workflow_recovery.inspect(
-            workflow_registry=self._ctx.workflow_registry,
-            conversation=conversation,
-            provider_profile=active_profile,
-            workspace_root=workspace_root,
-        )
-        self._workflow_recovery_records = {
-            record.run_id: record for record in records if record.recoverable
-        }
-        self._workflow_recovery_errors = {
-            record.run_id: record for record in records if not record.recoverable
-        }
+
         candidates = list(self._workflow_recovery_records.values())
         self._publish_session_event(
             "workflow_recovery_available",
@@ -948,6 +934,73 @@ class TUISession:
             self._ctx.app_state.conversation.notify_transient(
                 f"⚠ Cannot restore workflow '{record.run_id}': {type(exc).__name__}: {exc}"
             )
+
+    def _refresh_workflow_recovery_records(self) -> None:
+        """Reload durable workflow records before an explicit resume lookup.
+
+        Startup discovery is intentionally non-claiming, but it is only a
+        snapshot. A workflow may have written its first checkpoint after the
+        TUI was constructed, or another owner may have released a claim since
+        the last lookup. Explicit resume commands therefore refresh from the
+        checkpoint store before reporting ``run_not_found``.
+        """
+        conversation = getattr(self._ctx, "session_conversation", None)
+        if conversation is None:
+            return
+        active_profile = getattr(self._ctx.cfg.execution, "profile", "")
+        workspace_scope = getattr(self._ctx, "workspace_scope", None)
+        workspace_root = str(getattr(workspace_scope, "primary_root", "") or "")
+        records = self._workflow_recovery.inspect(
+            workflow_registry=self._ctx.workflow_registry,
+            conversation=conversation,
+            provider_profile=active_profile,
+            workspace_root=workspace_root,
+        )
+        self._workflow_recovery_records = {
+            record.run_id: record for record in records if record.recoverable
+        }
+        self._workflow_recovery_errors = {
+            record.run_id: record for record in records if not record.recoverable
+        }
+
+    def _known_workflow_run_ids(self) -> set[str]:
+        """Return IDs currently known to this TUI, including an attached run."""
+        known = set(self._workflow_recovery_records)
+        known.update(self._workflow_recovery_errors)
+        if self._workflow_handle is not None:
+            known.add(self._workflow_handle.run_id)
+        return known
+
+    def _resolve_workflow_run_id(self, value: str) -> str:
+        """Resolve a user-copied workflow ID to one canonical stored ID.
+
+        The exact ID always wins. For a unique match only, accept the owner
+        token printed in a claim diagnostic and common terminal-font confusions
+        (``O``/``0`` and ``l``/``1``). Ambiguous values remain unresolved so
+        this convenience can never select the wrong workflow.
+        """
+        requested = value.strip().strip("`'\"")
+        known = self._known_workflow_run_ids()
+        if requested in known:
+            return requested
+        case_matches = [
+            candidate for candidate in known if candidate.casefold() == requested.casefold()
+        ]
+        if len(case_matches) == 1:
+            return case_matches[0]
+
+        owner_tail = requested.rsplit(":", 1)[-1] if ":" in requested else ""
+        aliases = [owner_tail] if owner_tail else []
+        aliases.append(requested)
+        visual_aliases = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1"})
+        for alias in aliases:
+            normalized = alias.translate(visual_aliases).casefold()
+            if normalized == alias.casefold():
+                continue
+            matches = [candidate for candidate in known if candidate.casefold() == normalized]
+            if len(matches) == 1:
+                return matches[0]
+        return requested
 
     def _rehydrate_workflow_record(
         self,
@@ -1588,6 +1641,8 @@ class TUISession:
             conv.notify_transient("⚠ Cannot resume a workflow while another run is active")
             return True
         handle = self._workflow_handle
+        if run_id is not None:
+            run_id = self._resolve_workflow_run_id(run_id)
         if run_id is not None and (handle is None or handle.run_id != run_id):
             if handle is not None and handle.lifecycle in {"paused", "pausing"}:
                 conv.notify_transient(
@@ -1597,14 +1652,24 @@ class TUISession:
                 return True
             record = self._workflow_recovery_records.get(run_id)
             if record is None:
+                # The in-memory map is a startup snapshot. Refresh before
+                # declaring a durable run absent; this also covers a run ID
+                # copied from a claim diagnostic after a process handoff.
+                self._refresh_workflow_recovery_records()
+                run_id = self._resolve_workflow_run_id(run_id)
+                record = self._workflow_recovery_records.get(run_id)
+            if record is None:
                 invalid = self._workflow_recovery_errors.get(run_id)
                 if invalid is not None:
                     conv.notify_transient(
                         f"⚠ Cannot resume {run_id!r}: {invalid.error_code}: {invalid.display_error}"
                     )
                 else:
+                    known = sorted(self._known_workflow_run_ids())
+                    available = f" Available IDs: {', '.join(known[:8])}." if known else ""
                     conv.notify_transient(
-                        f"⚠ run_not_found: no recoverable workflow with run id {run_id!r}"
+                        f"⚠ run_not_found: no recoverable workflow with run id {run_id!r}."
+                        f"{available}"
                     )
                 return True
             try:

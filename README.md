@@ -324,6 +324,10 @@ process owns that workflow run. Close or resume it in that process before
 retrying; this guard prevents duplicate side effects from concurrent resumes.
 Claims are written atomically and carry a process-start identity where the
 platform supports it, so interrupted processes do not strand recoverable runs.
+Explicit resume refreshes the durable checkpoint index and can resolve a
+uniquely identifiable ID copied from the claim diagnostic, so a stale startup
+snapshot or terminal-font confusion does not turn the retry into
+`run_not_found`.
 
 Tool-call batches are transaction-safe at the shared `lauren-ai` boundary.
 Every assistant call is paired with exactly one result before the next provider

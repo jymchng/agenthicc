@@ -133,6 +133,52 @@ def test_workflow_claim_error_is_reported_without_repeating_exception_type() -> 
     assert "WorkflowClaimError:" not in notification
 
 
+def test_resume_refreshes_checkpoint_index_and_resolves_claim_diagnostic_id() -> None:
+    from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError
+
+    session, ctx, _workspace, _input = _make_session()
+    ctx.session_conversation = object()
+    expected_run_id = "00c0eebb9bd24f43b3a0f1fd756bf475"
+    record = SimpleNamespace(
+        run_id=expected_run_id,
+        recoverable=True,
+        workflow_name="demo",
+        checkpoint=SimpleNamespace(),
+    )
+
+    class Demo:
+        name = "demo"
+
+    class ClaimedHandle:
+        run_id = expected_run_id
+        workflow_name = "demo"
+        lifecycle = "paused"
+        checkpoint_supported = True
+        context = object()
+        claim_owner_id = None
+
+        def claim(self, _owner_id: str) -> None:
+            raise WorkflowClaimError(
+                f"workflow run {expected_run_id!r} is already claimed by another live owner"
+            )
+
+    handle = ClaimedHandle()
+    ctx.workflow_registry.register(Demo)  # type: ignore[arg-type]
+    session._workflow_recovery.inspect = lambda **_: [record]  # type: ignore[method-assign]
+    session._rehydrate_workflow_record = (  # type: ignore[method-assign]
+        lambda _record, claim: handle if not claim else handle
+    )
+
+    # This is the shape a user can accidentally copy from the diagnostic: the
+    # full owner token and terminal-font confusions are both present.
+    copied = "tui:3845622:254b70652281:00cOeebb9bd24f43b3aOf1fd756bf475"
+    assert session._handle_workflow_resume(copied) is True
+    notification = ctx.app_state.conversation.notification() or ""
+    assert "run_already_claimed" in notification
+    assert "run_not_found" not in notification
+    assert session._workflow_handle is handle
+
+
 @pytest.mark.asyncio
 async def test_session_cancellation_and_workflow_pause_branches() -> None:
     session, ctx, _workspace, input_session = _make_session()

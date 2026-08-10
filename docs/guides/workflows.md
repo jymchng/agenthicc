@@ -43,6 +43,15 @@ When multiple workflows are recoverable, the TUI recovery notice wraps the
 complete run IDs instead of ellipsizing them. Copy one into
 `/workflow resume <run-id>` to select the intended run.
 
+An explicit `/workflow resume <run-id>` refreshes the durable checkpoint index
+before reporting `run_not_found`; startup discovery is only a snapshot. The
+TUI also resolves a unique run ID copied from a claim diagnostic (including
+the trailing ID in `tui:...:<run-id>`) and common terminal-font substitutions
+such as `O`/`0` and `l`/`1`. It always resumes the canonical stored ID and never
+uses these substitutions when they would match more than one run. A claim
+conflict leaves the selected handle attached, so the same `/workflow resume`
+command can be retried after the live owner exits.
+
 The recovery data flow is:
 
 ```text
