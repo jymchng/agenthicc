@@ -244,6 +244,7 @@ class UnifiedInputSession:
             registry=self._registry,
             cwd=self._cwd,
             busy=self._mode is InputMode.STREAMING,
+            paste_state=self._paste,
             on_complete=on_complete,
         )
         self._overlay.show(overlay)

@@ -521,6 +521,55 @@ async def test_unified_dispatch_preserves_second_at_in_trigger_picker(tmp_path: 
     assert picker._trigger.fragment == "@"
 
 
+@pytest.mark.asyncio
+async def test_at_after_condensed_paste_keeps_picker_and_paste_compact(tmp_path: Path) -> None:
+    """Opening the @ picker must not implicitly expand the pasted payload."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+    from agenthicc.tui.trigger import TriggerManager
+    from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+    from agenthicc.tui.workspace.overlay import OverlayHost
+
+    state = AppState()
+    registry = TriggerManager()
+    registry.register(AtMentionTrigger())
+    overlays = OverlayHost(state)
+    session = UnifiedInputSession(
+        state,
+        CommandBus(),
+        trigger_registry=registry,
+        overlay_host=overlays,
+        cwd=tmp_path,
+    )
+    prefix = "@.agenthicc/workflows/reconstruct_site/ please enhance this:\n"
+    pasted = "a\nb\nc\n"
+
+    session.set_text(prefix)
+    await session._dispatch(Key.PASTE, pasted)
+    assert state.input.paste_condensed()
+    await session._dispatch(Key.AT, "")
+
+    assert overlays.active
+    output = Console(file=StringIO(), record=True, force_terminal=False)
+    output.print(overlays.render())
+    rendered = output.export_text(clear=False)
+    assert session._paste.label in rendered
+    assert pasted not in rendered
+    assert state.input.paste_condensed()
+
+    await session._dispatch(Key.ESC, "")
+    assert not overlays.active
+    assert state.input.paste_condensed()
+    assert session._buf.text == prefix + pasted + "@"
+
+    await session._dispatch(Key.CTRL_V, "")
+    assert not state.input.paste_condensed()
+
+
 def test_session_log_and_replay_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     session_id = "replay-session"
     root = tmp_path / session_id

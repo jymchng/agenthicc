@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
+    from agenthicc.tui.input.paste import PasteState
 
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.trigger import MatchItem, TriggerHandler, TriggerManager, TriggerResult
@@ -45,6 +46,7 @@ class TriggerPickerOverlay(Overlay):
         cwd: "Path",
         on_complete: Callable[[TriggerResult | None], None],
         busy: bool = False,
+        paste_state: "PasteState | None" = None,
     ) -> None:
         from agenthicc.tui.trigger import TriggerContext  # noqa: PLC0415
 
@@ -53,6 +55,7 @@ class TriggerPickerOverlay(Overlay):
         self._cwd = cwd
         self._complete = on_complete
         self._ctx = TriggerContext(cwd=cwd, busy=busy)
+        self._paste_state = paste_state
         self._trigger: _ActiveTrigger | None = None
         self._matches: list[MatchItem] = []
         self._selected: int = 0  # index into self._matches
@@ -117,9 +120,13 @@ class TriggerPickerOverlay(Overlay):
 
         frag = self._trigger.fragment if self._trigger else ""
         tchar = self._trigger.char if self._trigger else ""
+        prompt_buf = self._buf.buf
+        prompt_cursor = self._buf.cursor
+        if self._paste_state is not None:
+            prompt_buf, prompt_cursor = self._paste_state._condensed_view(self._buf)
         prompt = build_prompt(
-            self._buf.buf,
-            self._buf.cursor,
+            prompt_buf,
+            prompt_cursor,
             mention_suffix=tchar + frag if self._trigger else "",
             in_trigger=self._trigger is not None,
         )
