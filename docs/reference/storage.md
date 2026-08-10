@@ -14,7 +14,7 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
 | `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, turn markers, tool records, subagent worker/pool results, and versioned usage records | Rebuild memory, restore usage, resume interrupted turns, and recover complete subagent results |
 | `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase/branch cursor, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
-| `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner only) | Prevent duplicate resume; reclaim only provably dead local claims |
+| `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner/process-start identity only) | Prevent duplicate resume; reclaim only provably dead local claims |
 | `<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
 
 The session runner currently places the kernel log beside the session directory
@@ -90,6 +90,18 @@ oversized, stale, or plugin-mismatched checkpoints fail closed. Active
 startup and are never executed automatically. `/workflow resume` claims one
 record atomically, rehydrates it into the existing `SessionConversation`, and
 releases the claim on pause, terminal completion, failure, or clean shutdown.
+
+Workflow claims are published differently from ordinary checkpoints: the
+complete, fsynced JSON metadata is installed atomically, so a process killed
+while acquiring a claim cannot leave an empty or partially written `.claim`
+that blocks recovery forever. On platforms exposing `/proc`, the claim also
+stores the owner's process-start identity. A reused PID is therefore treated
+as the old owner being gone, and a zombie process is reclaimable because it
+cannot execute a workflow. A genuinely live owner remains protected; the
+`run_already_claimed` diagnostic includes bounded owner/PID/host metadata and
+instructs the user to close or resume the run in the other agenthicc process.
+Legacy claims without a process-start identity retain fail-closed PID
+behaviour.
 
 ## Project and global stores
 

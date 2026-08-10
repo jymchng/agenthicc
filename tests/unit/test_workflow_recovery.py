@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 from dataclasses import replace
 from pathlib import Path
@@ -108,9 +109,15 @@ def test_live_claim_prevents_duplicate_resume_and_release_is_owner_checked(
     store = WorkflowCheckpointStore("session-recovery", root=tmp_path)
     first = store.acquire_claim("run-1", "owner-a")
     assert first.owner_id == "owner-a"
+    payload = json.loads(store.claim_path_for("run-1").read_text(encoding="utf-8"))
+    assert isinstance(payload["process_start_token"], str)
     assert store.acquire_claim("run-1", "owner-a") == first
-    with pytest.raises(WorkflowClaimError, match="already claimed"):
+    with pytest.raises(WorkflowClaimError, match="already claimed") as caught:
         store.acquire_claim("run-1", "owner-b")
+    assert caught.value.run_id == "run-1"
+    assert caught.value.owner_id == "owner-a"
+    assert caught.value.pid is not None
+    assert caught.value.host == socket.gethostname()
     store.release_claim("run-1", "owner-b")
     assert store.claim_owner("run-1") == "owner-a"
     store.release_claim("run-1", "owner-a")
@@ -141,6 +148,70 @@ def test_dead_local_claim_can_be_reclaimed_but_malformed_claim_fails_closed(
     claim_path.write_text("not-json", encoding="utf-8")
     with pytest.raises(WorkflowClaimError):
         store.acquire_claim("run-1", "another-owner")
+
+
+def test_claim_reclaims_pid_reuse_using_process_start_identity(tmp_path: Path) -> None:
+    store = WorkflowCheckpointStore("session-recovery", root=tmp_path)
+    claim_path = store.claim_path_for("run-1")
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_path.write_text(
+        json.dumps(
+            {
+                "owner_id": "old-process",
+                "pid": os.getpid(),
+                "host": socket.gethostname(),
+                "process_start_token": "a-previous-process-start",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reclaimed = store.acquire_claim("run-1", "new-owner")
+    assert reclaimed.owner_id == "new-owner"
+    store.release_claim("run-1", "new-owner")
+
+
+def test_claim_reclaims_zombie_owner_even_when_pid_still_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = WorkflowCheckpointStore("session-recovery", root=tmp_path)
+    claim_path = store.claim_path_for("run-1")
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_path.write_text(
+        json.dumps(
+            {
+                "owner_id": "zombie-process",
+                "pid": os.getpid(),
+                "host": socket.gethostname(),
+                "process_start_token": "same-start-token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        WorkflowCheckpointStore,
+        "_process_identity",
+        staticmethod(lambda _pid: ("Z", "same-start-token")),
+    )
+
+    reclaimed = store.acquire_claim("run-1", "new-owner")
+    assert reclaimed.owner_id == "new-owner"
+    store.release_claim("run-1", "new-owner")
+
+
+def test_claim_is_published_as_complete_json_without_visible_temp_files(
+    tmp_path: Path,
+) -> None:
+    store = WorkflowCheckpointStore("session-recovery", root=tmp_path)
+
+    store.acquire_claim("run-1", "owner-a")
+    claim_dir = store.claim_path_for("run-1").parent
+    assert (
+        json.loads(store.claim_path_for("run-1").read_text(encoding="utf-8"))["owner_id"]
+        == "owner-a"
+    )
+    assert list(claim_dir.glob(".claim-*.tmp")) == []
 
 
 def test_recovery_rejects_phase_context_mismatch(tmp_path: Path) -> None:

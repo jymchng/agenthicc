@@ -20,7 +20,28 @@ __all__ = ["WorkflowClaim", "WorkflowClaimError", "WorkflowCheckpointStore"]
 
 
 class WorkflowClaimError(RuntimeError):
-    """Raised when another live owner already holds a workflow run claim."""
+    """Raised when another live owner already holds a workflow run claim.
+
+    ``owner_id``, ``pid``, and ``host`` are diagnostic metadata only.  They
+    never grant permission to take a claim and contain no prompt, tool, or
+    credential data.  Keeping them on the exception lets a TUI or API give an
+    actionable message without parsing the human-readable error string.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: str | None = None,
+        owner_id: str | None = None,
+        pid: int | None = None,
+        host: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.owner_id = owner_id
+        self.pid = pid
+        self.host = host
 
 
 @dataclass(frozen=True)
@@ -114,8 +135,9 @@ class WorkflowCheckpointStore:
 
         The claim is deliberately separate from ``checkpoint.json``.  A
         process may disappear between any two checkpoint writes; an atomic
-        ``O_EXCL`` file prevents two live TUI/session owners from resuming one
-        run while a dead process's claim can be recovered on the next start.
+        claim publication prevents two live TUI/session owners from resuming
+        one run while a dead process's claim can be recovered on the next
+        start.
         """
         self._validate_identifier(run_id, "run_id")
         self._validate_owner(owner_id)
@@ -131,11 +153,21 @@ class WorkflowCheckpointStore:
             "host": socket.gethostname(),
             "created_at": time.time(),
         }
+        process_identity = self._process_identity(os.getpid())
+        if process_identity is not None:
+            payload["process_start_token"] = process_identity[1]
         encoded = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
 
         for _attempt in range(2):
             try:
-                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                # Build the complete claim in a private temporary file and
+                # publish it with a hard link.  O_EXCL followed by a write
+                # leaves an empty/partial .claim if this process is killed in
+                # that interval; a later process cannot distinguish that file
+                # from a live owner and the run becomes permanently stranded.
+                # Linking a fully fsynced file makes the visible claim either
+                # absent or complete.
+                self._install_claim(path, encoded)
             except FileExistsError:
                 existing = self._read_claim(path)
                 if existing is None or not self._claim_owner_alive(existing):
@@ -147,30 +179,21 @@ class WorkflowCheckpointStore:
                 if existing.get("owner_id") == owner_id:
                     return WorkflowClaim(run_id, owner_id, path)
                 raise WorkflowClaimError(
-                    f"workflow run {run_id!r} is already claimed by another live owner"
+                    f"workflow run {run_id!r} is already claimed by another live owner "
+                    f"({self._claim_owner_description(existing)}); close that agenthicc "
+                    "process or resume the run there before retrying",
+                    run_id=run_id,
+                    owner_id=self._string_value(existing.get("owner_id")),
+                    pid=self._int_value(existing.get("pid")),
+                    host=self._string_value(existing.get("host")),
                 )
-            try:
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(encoded)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                try:
-                    dir_fd = os.open(path.parent, os.O_RDONLY)
-                    try:
-                        os.fsync(dir_fd)
-                    finally:
-                        os.close(dir_fd)
-                except OSError:
-                    pass
-            except Exception:
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass
-                raise
+            self._fsync_directory(path.parent)
             return WorkflowClaim(run_id, owner_id, path)
 
-        raise WorkflowClaimError(f"could not claim workflow run {run_id!r}")
+        raise WorkflowClaimError(
+            f"could not claim workflow run {run_id!r}",
+            run_id=run_id,
+        )
 
     def release_claim(self, run_id: str, owner_id: str) -> None:
         """Release a claim only when the caller owns it."""
@@ -238,6 +261,59 @@ class WorkflowCheckpointStore:
             raise ValueError("owner_id must be a non-empty bounded string")
 
     @staticmethod
+    def _string_value(value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _int_value(value: object) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @staticmethod
+    def _claim_owner_description(payload: dict[str, object]) -> str:
+        owner = WorkflowCheckpointStore._string_value(payload.get("owner_id")) or "unknown"
+        pid = WorkflowCheckpointStore._int_value(payload.get("pid"))
+        host = WorkflowCheckpointStore._string_value(payload.get("host")) or "unknown host"
+        return f"owner={owner!r}, pid={pid if pid is not None else 'unknown'}, host={host!r}"
+
+    @staticmethod
+    def _install_claim(path: Path, encoded: bytes) -> None:
+        """Publish a complete claim atomically, or raise ``FileExistsError``.
+
+        A unique temporary file may remain after a hard process kill, but it
+        is hidden and cannot block a future claim.  The visible destination is
+        installed only after its contents and file metadata are durable.
+        """
+        fd, temp_name = tempfile.mkstemp(
+            prefix=".claim-",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temp_name, path)
+        finally:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        try:
+            dir_fd = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            # Directory fsync is not available on every supported platform.
+            # The claim contents have already been fsynced before publication.
+            pass
+
+    @staticmethod
     def _read_claim(path: Path) -> dict[str, object] | None:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -266,4 +342,52 @@ class WorkflowCheckpointStore:
             return True
         except OSError:
             return False
+        identity = WorkflowCheckpointStore._process_identity(pid)
+        if identity is not None:
+            state, current_start_token = identity
+            # kill(pid, 0) succeeds for zombies.  A zombie cannot own an
+            # executing workflow, so it is safe to reclaim its claim.
+            if state == "Z":
+                return False
+            recorded_start_token = payload.get("process_start_token")
+            # New claims bind the PID to its process-start identity.  If the
+            # PID was reused, the old owner is provably gone even though the
+            # replacement process is alive.  Legacy claims without this field
+            # retain the old fail-closed behaviour.
+            if (
+                isinstance(recorded_start_token, str)
+                and recorded_start_token
+                and recorded_start_token != current_start_token
+            ):
+                return False
         return True
+
+    @staticmethod
+    def _process_identity(pid: int) -> tuple[str, str] | None:
+        """Return ``(state, start-token)`` for a local process when available.
+
+        Linux exposes both values in ``/proc/<pid>/stat``.  The boot ID keeps
+        the token meaningful across host reboots.  Other platforms fall back
+        to the conservative ``kill(pid, 0)`` check above.
+        """
+        if os.name == "nt":
+            return None
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+            end_comm = stat.rfind(")")
+            if end_comm < 0:
+                return None
+            fields = stat[end_comm + 2 :].split()
+            if len(fields) <= 19:
+                return None
+            state = fields[0]
+            start_time = fields[19]
+            try:
+                boot_id = (
+                    Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+                )
+            except (OSError, UnicodeError):
+                boot_id = ""
+            return state, f"{boot_id}:{start_time}" if boot_id else start_time
+        except (OSError, UnicodeError, ValueError):
+            return None

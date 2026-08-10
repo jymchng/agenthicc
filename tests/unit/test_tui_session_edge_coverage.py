@@ -103,6 +103,36 @@ def test_session_reload_failure_paths_and_workflow_resume_guards(
     assert session._handle_workflow_resume(None) is True
 
 
+def test_workflow_claim_error_is_reported_without_repeating_exception_type() -> None:
+    from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError
+
+    session, ctx, _workspace, _input = _make_session()
+
+    class Demo:
+        name = "demo"
+
+    class ClaimedHandle:
+        run_id = "run-1"
+        workflow_name = "demo"
+        lifecycle = "paused"
+        checkpoint_supported = True
+        context = object()
+        claim_owner_id = None
+
+        def claim(self, _owner_id: str) -> None:
+            raise WorkflowClaimError(
+                "workflow run 'run-1' is already claimed by another live owner"
+            )
+
+    ctx.workflow_registry.register(Demo)  # type: ignore[arg-type]
+    session._workflow_handle = ClaimedHandle()  # type: ignore[assignment]
+
+    assert session._handle_workflow_resume(None) is True
+    notification = ctx.app_state.conversation.notification() or ""
+    assert "run_already_claimed" in notification
+    assert "WorkflowClaimError:" not in notification
+
+
 @pytest.mark.asyncio
 async def test_session_cancellation_and_workflow_pause_branches() -> None:
     session, ctx, _workspace, input_session = _make_session()

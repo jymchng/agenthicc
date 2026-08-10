@@ -1664,9 +1664,15 @@ class TUISession:
                     if isinstance(exc, WorkflowClaimError)
                     else "resume_transition_failed"
                 )
-                conv.notify_transient(
-                    f"⚠ {code}: cannot claim workflow {handle.run_id!r}: {type(exc).__name__}: {exc}"
-                )
+                if isinstance(exc, WorkflowClaimError):
+                    conv.notify_transient(
+                        f"⚠ {code}: cannot claim workflow {handle.run_id!r}: {exc}"
+                    )
+                else:
+                    conv.notify_transient(
+                        f"⚠ {code}: cannot claim workflow {handle.run_id!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
                 return True
         try:
             # Move to RESUMING before creating the task. This closes the small
@@ -1800,9 +1806,14 @@ class TUISession:
                     if isinstance(exc, WorkflowClaimError)
                     else "resume_transition_failed"
                 )
-                self._ctx.app_state.conversation.notify_transient(
-                    f"⚠ {code}: cannot continue workflow {handle.run_id!r}: {exc}"
-                )
+                if isinstance(exc, WorkflowClaimError):
+                    message = f"⚠ {code}: cannot continue workflow {handle.run_id!r}: {exc}"
+                else:
+                    message = (
+                        f"⚠ {code}: cannot continue workflow {handle.run_id!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                self._ctx.app_state.conversation.notify_transient(message)
                 self._msg_queue.insert(0, text)
                 return True
         try:

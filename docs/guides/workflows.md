@@ -32,7 +32,12 @@ subsequent turns use the active mode's default workflow. Use
 `/workflow reset <run-id>` to write a terminal discarded checkpoint for a
 saved run that is not currently attached. A live claim prevents two
 TUI/headless owners from executing one run at once, while a claim from a
-provably dead local process can be reclaimed.
+provably dead local process can be reclaimed. Claim publication is atomic and
+records a process-start identity where the host supports it, so a half-written
+claim, zombie, or reused PID cannot strand a recoverable run. If the message
+contains `run_already_claimed`, another live agenthicc owner still has the run;
+close that process or resume the run there before retrying. The protection is
+intentional: forcibly taking a live claim could duplicate tool side effects.
 
 When multiple workflows are recoverable, the TUI recovery notice wraps the
 complete run IDs instead of ellipsizing them. Copy one into

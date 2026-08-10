@@ -310,6 +310,7 @@ Session artifacts live below `~/.agenthicc/sessions/`:
 | `<session-id>/conversation.jsonl` | Rendered conversation events; resumed TUI sessions replay the newest 20 complete turns |
 | `<session-id>/conversation-journal.jsonl` | Durable conversation-memory transitions used for crash recovery and tool replay |
 | `<session-id>/workflows/<run-id>/checkpoint.json` | Atomic, bounded workflow context checkpoints used by `/workflow resume` after an Esc pause |
+| `<session-id>/workflows/<run-id>/.claim` | Atomic live-owner lease; stale zombie/PID-reuse claims are recoverable, while live duplicate owners are rejected |
 | Optional cassette files | Recorded transport and approval interactions |
 
 Direct chat, Plan mode, `code_plan`, and `create_workflow` share the session's stable conversation ID and journal-backed provider memory. Workflow phase state is checkpointed separately, while the reactive conversation store remains a UI projection.
@@ -317,6 +318,12 @@ Direct chat, Plan mode, `code_plan`, and `create_workflow` share the session's s
 If multiple workflow checkpoints are recoverable, the TUI wraps the complete
 run IDs in its recovery notice so an exact `/workflow resume <run-id>` command
 can be entered.
+
+If `/workflow resume` reports `run_already_claimed`, another live agenthicc
+process owns that workflow run. Close or resume it in that process before
+retrying; this guard prevents duplicate side effects from concurrent resumes.
+Claims are written atomically and carry a process-start identity where the
+platform supports it, so interrupted processes do not strand recoverable runs.
 
 Tool-call batches are transaction-safe at the shared `lauren-ai` boundary.
 Every assistant call is paired with exactly one result before the next provider
