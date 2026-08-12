@@ -103,6 +103,7 @@ def test_load_builtin_workflows_returns_current_builtins() -> None:
     assert names == {
         "code_plan",
         "create_workflow",
+        "goal_flow",
         "make_agenthicc_tool",
         "make_epub_book",
         "make_pdf_book",

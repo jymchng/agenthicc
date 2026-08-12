@@ -26,6 +26,7 @@ def load_builtin_workflows() -> list[type[WorkflowPlugin]]:
     """Return every built-in :class:`WorkflowPlugin` definition."""
     from agenthicc.workflows.code_plan.definition import CodePlan  # noqa: PLC0415
     from agenthicc.workflows.create_workflow.definition import CreateWorkflow  # noqa: PLC0415
+    from agenthicc.workflows.goal_flow.runner import GoalFlowWorkflow  # noqa: PLC0415
     from agenthicc.workflows.make_agenthicc_tool.runner import (  # noqa: PLC0415
         MakeAgenthiccToolWorkflow,
     )
@@ -36,6 +37,7 @@ def load_builtin_workflows() -> list[type[WorkflowPlugin]]:
     return [
         CodePlan,
         CreateWorkflow,
+        GoalFlowWorkflow,
         MakeAgenthiccToolWorkflow,
         MakeEpubBookWorkflow,
         MakePdfBookWorkflow,

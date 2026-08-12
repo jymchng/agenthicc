@@ -33,6 +33,13 @@ from agenthicc.workflows.create_workflow import (
     CreateWorkflowState,
     PhaseArtifact,
 )
+from agenthicc.workflows.goal_flow import GoalFlowWorkflow
+from agenthicc.workflows.goal_flow.runner import (
+    GoalContext,
+    GoalFlowParams,
+    GoalFlowRunner,
+    GoalState,
+)
 from agenthicc.workflows.make_agenthicc_tool import (
     MakeAgenthiccToolWorkflow,
     MakeToolContext,
@@ -94,6 +101,11 @@ __all__ = [
     "CreateWorkflowRunner",
     "CreateWorkflowState",
     "PhaseArtifact",
+    "GoalContext",
+    "GoalFlowParams",
+    "GoalFlowRunner",
+    "GoalState",
+    "GoalFlowWorkflow",
     "MakeAgenthiccToolWorkflow",
     "MakeToolContext",
     "MakeToolParams",
