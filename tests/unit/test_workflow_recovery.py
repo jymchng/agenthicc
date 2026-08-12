@@ -103,6 +103,69 @@ def test_process_interrupted_checkpoint_is_rehydrated_at_exact_typed_state(
         conversation.close()
 
 
+def test_rehydrate_uses_latest_checkpoint_after_discovery_snapshot_is_stale(
+    tmp_path: Path,
+) -> None:
+    """A picker snapshot cannot resurrect an already-terminal run."""
+
+    conversation = _conversation(tmp_path)
+    try:
+        store, handle = _running_checkpoint(tmp_path, conversation)
+        coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
+        registry = WorkflowRegistry()
+        registry.register(CodePlan, source="builtin")
+
+        stale = coordinator.inspect(
+            workflow_registry=registry,
+            conversation=conversation,
+            provider_profile="default",
+        )[0]
+        assert stale.checkpoint_revision == 1
+
+        # Advance the durable record without refreshing ``stale``.  First
+        # convert the initially-running fixture into its first paused state;
+        # the following updates represent a resumed process and its next Esc
+        # pause.
+        assert handle.request_pause() is True
+        handle.save_checkpoint(reason="pause_requested")
+        handle.mark_paused(reason="escape")
+        handle.save_checkpoint(reason="escape")
+        handle.mark_resuming()
+        handle.save_checkpoint(reason="resuming")
+        handle.request_pause()
+        handle.save_checkpoint(reason="pause_requested")
+        handle.mark_paused(reason="escape")
+        latest = handle.save_checkpoint(reason="escape")
+        assert latest.revision > stale.checkpoint_revision
+
+        restored = coordinator.rehydrate(
+            stale,
+            workflow=CodePlan,
+            conversation=conversation,
+            owner_id="latest-owner",
+        )
+        assert restored.lifecycle == "paused"
+        assert restored.checkpoint_revision == latest.revision
+        assert restored.context is not None
+        restored.release_claim()
+
+        # A stale selector cannot bypass a terminal transition by restoring
+        # the old paused/running payload.
+        handle.mark_terminal("complete")
+        terminal = handle.save_checkpoint(reason="complete")
+        assert terminal.status == "complete"
+        with pytest.raises(ValueError, match="no longer recoverable"):
+            coordinator.rehydrate(
+                stale,
+                workflow=CodePlan,
+                conversation=conversation,
+                owner_id="terminal-owner",
+            )
+        assert store.claim_owner("run-1") is None
+    finally:
+        conversation.close()
+
+
 def test_live_claim_prevents_duplicate_resume_and_release_is_owner_checked(
     tmp_path: Path,
 ) -> None:

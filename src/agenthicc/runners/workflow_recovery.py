@@ -227,16 +227,40 @@ class WorkflowRecoveryCoordinator:
         browser_manager: object | None = None,
         owner_id: str | None = None,
     ) -> "WorkflowRunHandle":
-        """Claim and restore one checkpoint into the supplied session memory."""
+        """Claim and restore one checkpoint into the supplied session memory.
+
+        ``inspect()`` intentionally returns a snapshot so it can be used by a
+        picker without holding a filesystem lock.  A snapshot can therefore be
+        older than the checkpoint by the time the user selects it (for example,
+        after another client paused, completed, or reset the run).  Never
+        rehydrate the snapshot itself: acquire the run claim first, reload the
+        latest atomic checkpoint, and make the lifecycle decision from those
+        bytes.  This is what makes repeated resume attempts safe instead of a
+        one-shot operation tied to the first discovery pass.
+        """
+        # A record with a validation error remains fail-closed.  A valid
+        # record is still only a selection hint: its checkpoint bytes are
+        # reloaded below because the revision may have advanced since
+        # discovery.
         if not record.recoverable or record.checkpoint is None:
             raise ValueError(record.display_error)
-        checkpoint = record.checkpoint
-        if checkpoint.conversation_id != conversation.conversation_id:
-            raise ValueError("workflow checkpoint belongs to a different session conversation")
         if owner_id is not None:
             self.store.acquire_claim(record.run_id, owner_id)
         try:
             from agenthicc.runners.workflow_handle import WorkflowRunHandle
+
+            # The inspected record is only a selection hint.  The store's
+            # atomic load is the source of truth for every resume cycle.
+            checkpoint = self.store.load(record.run_id)
+            if checkpoint is None:
+                raise ValueError(f"workflow checkpoint {record.run_id!r} no longer exists")
+            if checkpoint.status not in RECOVERABLE_WORKFLOW_STATUSES:
+                raise ValueError(
+                    f"workflow run {record.run_id!r} is no longer recoverable "
+                    f"(status={checkpoint.status!r})"
+                )
+            if checkpoint.conversation_id != conversation.conversation_id:
+                raise ValueError("workflow checkpoint belongs to a different session conversation")
 
             # Reconcile the provider-facing message projection before the
             # workflow adds its resume instruction. Completed tool results are
@@ -264,7 +288,7 @@ class WorkflowRecoveryCoordinator:
                 conversation=conversation,
                 checkpoint_store=self.store,
                 browser_manager=browser_manager,
-                recover_interrupted=record.interrupted,
+                recover_interrupted=checkpoint.status in {"running", "resuming"},
             )
             if owner_id is not None:
                 handle.claim_owner_id = owner_id

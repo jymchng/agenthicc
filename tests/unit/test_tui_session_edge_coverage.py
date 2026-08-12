@@ -9,7 +9,13 @@ from types import SimpleNamespace
 import pytest
 
 from agenthicc.commands.command import UsageSnapshot
+from agenthicc.runners.session_conversation import SessionConversation
+from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
+from agenthicc.runners.workflow_handle import WorkflowRunHandle
 from agenthicc.tui.runtime import RuntimeMode
+from agenthicc.tui.runtime.commands import InterruptAgentCommand
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
+from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
 
 from .test_tui_session_coverage import _make_session
 
@@ -212,6 +218,90 @@ async def test_session_cancellation_and_workflow_pause_branches() -> None:
     from agenthicc.tui.input.unified_session import InputMode
 
     assert input_session.modes[-1] is InputMode.IDLE
+
+
+@pytest.mark.asyncio
+async def test_tui_can_pause_and_resume_the_same_workflow_run_repeatedly(
+    tmp_path: Path,
+) -> None:
+    """A second Esc pause uses the same handle, claim, and run ID."""
+
+    session, ctx, _workspace, _input = _make_session()
+    conversation = SessionConversation.open(
+        "tui-repeated-resume",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    ctx.session_conversation = conversation
+    ctx.session_memory = conversation.memory
+
+    async def emit(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    ctx.processor.emit = emit
+
+    class Demo(WorkflowPlugin):
+        name = "repeatable_tui_workflow"
+        phases = [PhaseSpec(name="work")]
+        resume_calls = 0
+
+        @classmethod
+        def build_runner(cls, _config: object, _mode: object) -> object:
+            class Runner:
+                async def resume(self, _context: object) -> None:
+                    Demo.resume_calls += 1
+                    await asyncio.Event().wait()
+
+            return Runner()
+
+    ctx.workflow_registry.register(Demo)
+    store = WorkflowCheckpointStore(
+        conversation.conversation_id,
+        root=tmp_path / "checkpoints",
+    )
+    session._workflow_recovery = WorkflowRecoveryCoordinator(
+        conversation.conversation_id,
+        checkpoint_store=store,
+    )
+    handle = WorkflowRunHandle.create(
+        run_id="repeatable-run",
+        workflow=Demo,
+        conversation=conversation,
+        intent="repeat the pause",
+        checkpoint_store=store,
+    )
+    context = WorkflowContext(
+        intent="repeat the pause",
+        run_id=handle.run_id,
+        workflow_name=Demo.name,
+        current_phase="work",
+        phase_iteration=1,
+    )
+    handle.attach_context(context)
+    handle.update_phase("work", 0, 1)
+    handle.request_pause()
+    handle.mark_paused()
+    handle.save_checkpoint(reason="initial")
+    session._workflow_handle = handle
+
+    try:
+        for _ in range(2):
+            assert session.route(f"/workflow resume {handle.run_id}") is True
+            await asyncio.sleep(0)
+            task = session._agent_task
+            assert task is not None
+            session.handle_interrupt(InterruptAgentCommand(source="escape", disposition="pause"))
+            await task
+            assert handle.lifecycle == "paused"
+            checkpoint = store.load(handle.run_id)
+            assert checkpoint is not None
+            assert checkpoint.status == "paused"
+            assert store.claim_owner(handle.run_id) is not None
+            assert session._workflow_handle is handle
+        assert Demo.resume_calls == 2
+    finally:
+        handle.release_claim()
+        conversation.close()
 
 
 def test_session_incomplete_workflow_notification_only_targets_active_runs() -> None:

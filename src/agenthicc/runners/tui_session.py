@@ -1723,6 +1723,14 @@ class TUISession:
             return True
         handle = self._workflow_handle
         if run_id is not None:
+            # Recovery records are a discovery snapshot.  If this command is
+            # selecting a run that is not the live in-memory handle, refresh
+            # before resolving the ID so a second pause/resume cycle cannot
+            # rehydrate an older context or a checkpoint that has since become
+            # terminal.  Keep the attached handle fast-path for same-process
+            # Esc pause/resume; it is already the authoritative live context.
+            if handle is None or handle.run_id != run_id:
+                self._refresh_workflow_recovery_records()
             run_id = self._resolve_workflow_run_id(run_id)
         if run_id is not None and (handle is None or handle.run_id != run_id):
             if handle is not None and handle.lifecycle in {"paused", "pausing"}:
@@ -1733,9 +1741,9 @@ class TUISession:
                 return True
             record = self._workflow_recovery_records.get(run_id)
             if record is None:
-                # The in-memory map is a startup snapshot. Refresh before
-                # declaring a durable run absent; this also covers a run ID
-                # copied from a claim diagnostic after a process handoff.
+                # This also covers a run ID copied from a claim diagnostic
+                # after a process handoff when the discovery snapshot did not
+                # contain the exact spelling.
                 self._refresh_workflow_recovery_records()
                 run_id = self._resolve_workflow_run_id(run_id)
                 record = self._workflow_recovery_records.get(run_id)
@@ -2311,6 +2319,14 @@ class TUISession:
                 f"⏸ Workflow '{handle.workflow_name}' paused at {handle.current_phase or 'current phase'}. "
                 "Send a message or use /workflow resume to continue."
             )
+            # Keep the picker/explicit-ID index aligned with the checkpoint
+            # just written.  The index is intentionally best-effort; the next
+            # explicit resume also reloads the store, so a projection failure
+            # must not turn a durable pause into a user-visible failure.
+            try:
+                self._refresh_workflow_recovery_records()
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as exc:  # noqa: BLE001
             self._publish_session_event(
                 "workflow_pause_failed",
@@ -2606,8 +2622,26 @@ class TUISession:
                 },
             )
             runner = wf_defn.build_runner(_wf_config, ctx.mode_manager)
-            await runner.resume(context)
-            self._finalize_returned_workflow()
+            # The task argument is normally the same object as the handle's
+            # context.  Prefer the handle reference when available so a
+            # rehydration or a runner-side context attachment cannot leave a
+            # later resume cycle using a stale object.
+            resume_context = (
+                handle.context if handle is not None and handle.context is not None else context
+            )
+            runner_result = await runner.resume(resume_context)
+            if handle is not None and runner_result is not None:
+                handle.attach_context(runner_result)
+
+            # A custom runner may catch cancellation internally and return
+            # while the session has already moved the handle to PAUSING.  A
+            # pause request always wins over the normal-return safety net;
+            # otherwise the first such interruption would be terminalized and
+            # a second ``/workflow resume`` could never reach the saved run.
+            if handle is not None and handle.is_pause_requested():
+                await self._finalize_workflow_pause(handle)
+            else:
+                self._finalize_returned_workflow()
             # PRD-155: completed workflow-bound runs return to Safe.
             _wf_result = ctx.app_state.workflow_run()
             if (

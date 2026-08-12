@@ -136,3 +136,79 @@ def test_process_restart_resume_calls_typed_runner_resume_once(tmp_path: Path) -
         restored.release_claim()
     finally:
         reopened.close()
+
+
+def test_process_restart_resume_supports_repeated_interruptions(tmp_path: Path) -> None:
+    """One durable run remains resumable across every pause/relaunch cycle."""
+
+    session_id = "e2e-repeated-recovery"
+    conversation = SessionConversation.open(
+        session_id,
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation-journal.jsonl",
+    )
+    try:
+        store = WorkflowCheckpointStore(session_id, root=tmp_path / "sessions")
+        from agenthicc.runners.workflow_handle import WorkflowRunHandle
+
+        handle = WorkflowRunHandle.create(
+            run_id="repeated-run",
+            workflow=E2EWorkflow,
+            conversation=conversation,
+            intent="pause me repeatedly",
+            checkpoint_store=store,
+        )
+        context = E2EContext(
+            intent="pause me repeatedly",
+            run_id="repeated-run",
+            workflow_name=E2EWorkflow.name,
+            current_phase="second",
+            phase_iteration=1,
+            shared_memory=conversation.memory,
+        )
+        handle.attach_context(context)
+        handle.update_phase("second", 1, 1)
+
+        registry = WorkflowRegistry()
+        registry.register(E2EWorkflow, source="project")
+        coordinator = WorkflowRecoveryCoordinator(
+            session_id,
+            checkpoint_store=WorkflowCheckpointStore(session_id, root=tmp_path / "sessions"),
+        )
+        revisions: list[int] = []
+
+        for cycle in range(3):
+            record = coordinator.inspect(
+                workflow_registry=registry,
+                conversation=conversation,
+            )[0]
+            restored = coordinator.rehydrate(
+                record,
+                workflow=E2EWorkflow,
+                conversation=conversation,
+                owner_id=f"restart-owner-{cycle}",
+            )
+            assert restored.lifecycle == "paused"
+            assert restored.context is not None
+            assert restored.context.run_id == "repeated-run"
+
+            # This is the durable portion of a process that was relaunched,
+            # resumed, and interrupted again.  Save PAUSING before PAUSED so
+            # a crash during pause cleanup remains recoverable too.
+            restored.mark_resuming()
+            restored.save_checkpoint(reason="resuming")
+            assert restored.request_pause() is True
+            restored.save_checkpoint(reason="pause_requested")
+            restored.mark_paused(reason="escape")
+            checkpoint = restored.save_checkpoint(reason="escape")
+            revisions.append(checkpoint.revision)
+            restored.release_claim()
+
+        assert revisions == sorted(revisions)
+        assert len(set(revisions)) == 3
+        latest = store.load("repeated-run")
+        assert latest is not None
+        assert latest.status == "paused"
+        assert latest.conversation_id == session_id
+    finally:
+        conversation.close()
