@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import sys
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, Literal, cast
+from typing import TYPE_CHECKING, Iterator, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.tools.base import ToolLike
+    from agenthicc.background.terminals import TerminalManager
 
 
 def _make_session_tools(
@@ -138,6 +140,13 @@ from agenthicc.runners.agent_turn import (  # noqa: E402
     _run_agent_turn,
 )
 from agenthicc.runners.session_context import SessionContext  # noqa: E402
+from agenthicc.runners.session_lease import (  # noqa: E402
+    SessionAlreadyActiveError,
+    SessionOpenCoordinator,
+    SessionOwnerLease,
+    SessionStorageError,
+    format_session_conflict,
+)
 
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
@@ -159,6 +168,57 @@ async def _build_session_context(
     *,
     mode_name: str | None = None,
     workflow_name: str | None = None,
+    owner_lease: SessionOwnerLease | None = None,
+) -> SessionContext:
+    """Acquire the session owner before constructing any durable resources."""
+
+    session_id = resume_id or (
+        owner_lease.session_id if owner_lease is not None else create_session_id()
+    )
+    try:
+        if owner_lease is None:
+            coordinator = SessionOpenCoordinator(_SESSIONS_DIR)
+            owner_lease = (
+                coordinator.acquire_existing(
+                    session_id,
+                    entrypoint="headless" if headless else "tui",
+                )
+                if resume_id
+                else coordinator.acquire_new(
+                    session_id,
+                    entrypoint="headless" if headless else "tui",
+                )
+            )
+        elif owner_lease.session_id != session_id:
+            raise SessionStorageError("provided session owner does not match resume ID")
+        return await _build_session_context_impl(
+            resume_id,
+            cli_overrides,
+            record_cassette_dir,
+            config_path=config_path,
+            headless=headless,
+            cli_secret_overrides=cli_secret_overrides,
+            mode_name=mode_name,
+            workflow_name=workflow_name,
+            owner_lease=owner_lease,
+        )
+    except BaseException:
+        if owner_lease is not None:
+            owner_lease.release()
+        raise
+
+
+async def _build_session_context_impl(
+    resume_id: str | None,
+    cli_overrides: list[str] | None,
+    record_cassette_dir: Path | None = None,
+    config_path: str | None = None,
+    headless: bool = False,
+    cli_secret_overrides: list[str] | None = None,
+    *,
+    mode_name: str | None = None,
+    workflow_name: str | None = None,
+    owner_lease: SessionOwnerLease,
 ) -> SessionContext:
     """Construct all session-scoped singletons and return a SessionContext."""
     from rich.console import Console  # noqa: PLC0415
@@ -178,7 +238,9 @@ async def _build_session_context(
     )
 
     # ── session ID ────────────────────────────────────────────────────────────
-    session_id = resume_id or create_session_id()
+    session_id = resume_id or owner_lease.session_id
+    if session_id != owner_lease.session_id:
+        raise SessionStorageError("session owner does not match session context")
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
     # PRD-150: every client observes the same session projection.  The TUI
@@ -706,6 +768,7 @@ async def _build_session_context(
         workspace_scope=workspace_scope,
         workspace_access=workspace_access,
         resumed=bool(resume_id),
+        owner_lease=owner_lease,
     )
 
 
@@ -2717,6 +2780,7 @@ async def _run_tui_session(
     cwd: str | None = None,
     mode_name: str | None = None,
     workflow_name: str | None = None,
+    owner_lease: SessionOwnerLease | None = None,
 ) -> None:
     """Run the reactive TUI, optionally from a resumed session's project."""
     if cwd is None:
@@ -2729,6 +2793,7 @@ async def _run_tui_session(
             cli_secret_overrides=cli_secret_overrides,
             mode_name=mode_name,
             workflow_name=workflow_name,
+            owner_lease=owner_lease,
         )
         return
 
@@ -2744,6 +2809,7 @@ async def _run_tui_session(
             cli_secret_overrides=cli_secret_overrides,
             mode_name=mode_name,
             workflow_name=workflow_name,
+            owner_lease=owner_lease,
         )
     finally:
         os.chdir(previous_cwd)
@@ -2758,6 +2824,7 @@ async def _run_tui_session_impl(
     cli_secret_overrides: list[str] | None = None,
     mode_name: str | None = None,
     workflow_name: str | None = None,
+    owner_lease: SessionOwnerLease | None = None,
 ) -> None:
     """Reactive TUI session — single entry point, no legacy branches."""
     from agenthicc.tui.workspace import Workspace  # noqa: PLC0415
@@ -2773,38 +2840,49 @@ async def _run_tui_session_impl(
         cli_secret_overrides=cli_secret_overrides,
         mode_name=mode_name,
         workflow_name=workflow_name,
+        owner_lease=owner_lease,
     )
-    # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
-    if cli_flags is not None:
-        ctx.app_state.cli_flags = cli_flags
-    replay_turns = ctx.cfg.behaviour.resume_transcript_turns
-    workspace = Workspace(
-        ctx.app_state,
-        ctx.console,
-        max_live_tool_calls=ctx.cfg.tools.max_live_tool_calls,
-        group_exploratory_calls=ctx.cfg.tools.group_exploratory_calls,
-    )
-    input_session = UnifiedInputSession(
-        app_state=ctx.app_state,
-        command_bus=ctx.command_bus,
-        trigger_registry=ctx.trigger_registry,
-        mode_manager=ctx.mode_manager,
-        overlay_host=workspace.overlays,
-        cwd=Path(os.getcwd()),
-        cfg=ctx.cfg,
-        history=(
-            load_user_message_history(ctx.session_id, last_turns=replay_turns or None)
-            if ctx.resumed
-            else None
-        ),
-    )
-    session = TUISession(ctx, workspace, input_session)
-    from agenthicc.background.terminals import (  # noqa: PLC0415
-        reset_current_terminal_manager,
-        set_current_terminal_manager,
-    )
+    try:
+        # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
+        if cli_flags is not None:
+            ctx.app_state.cli_flags = cli_flags
+        replay_turns = ctx.cfg.behaviour.resume_transcript_turns
+        workspace = Workspace(
+            ctx.app_state,
+            ctx.console,
+            max_live_tool_calls=ctx.cfg.tools.max_live_tool_calls,
+            group_exploratory_calls=ctx.cfg.tools.group_exploratory_calls,
+        )
+        input_session = UnifiedInputSession(
+            app_state=ctx.app_state,
+            command_bus=ctx.command_bus,
+            trigger_registry=ctx.trigger_registry,
+            mode_manager=ctx.mode_manager,
+            overlay_host=workspace.overlays,
+            cwd=Path(os.getcwd()),
+            cfg=ctx.cfg,
+            history=(
+                load_user_message_history(ctx.session_id, last_turns=replay_turns or None)
+                if ctx.resumed
+                else None
+            ),
+        )
+        session = TUISession(ctx, workspace, input_session)
+        from agenthicc.background.terminals import (  # noqa: PLC0415
+            set_current_terminal_manager,
+        )
 
-    terminal_context_token = set_current_terminal_manager(ctx.terminal_manager)
+        terminal_context_token = set_current_terminal_manager(ctx.terminal_manager)
+    except BaseException:
+        # Workspace/input construction can fail after the durable context has
+        # opened journals, providers, MCP/browser resources, or projection
+        # tasks.  Run the same idempotent close boundary used by a live TUI so
+        # partial startup cannot strand the session owner or its handles.
+        try:
+            await _close_tui_session_resources(ctx, None, None, None)
+        except BaseException:
+            pass
+        raise
     try:
         from agenthicc.tui.welcome import fetch_changelog, print_welcome  # noqa: PLC0415
 
@@ -2818,11 +2896,27 @@ async def _run_tui_session_impl(
         )
         await session.run()
     finally:
-        reset_current_terminal_manager(terminal_context_token)
-        # A clean TUI exit releases the process claim while leaving a running
+        await _close_tui_session_resources(ctx, session, terminal_context_token, cassette_base)
+
+
+async def _close_tui_session_resources(
+    ctx: "SessionContext",
+    session: TUISession | None,
+    terminal_context_token: contextvars.Token["TerminalManager | None"] | None,
+    cassette_base: Path | None,
+) -> None:
+    """Close TUI resources and release the outer session lease last."""
+
+    try:
+        from agenthicc.background.terminals import reset_current_terminal_manager  # noqa: PLC0415
+
+        if terminal_context_token is not None:
+            reset_current_terminal_manager(terminal_context_token)
+        # A clean TUI exit releases the workflow claim while leaving a running
         # or paused checkpoint available for the next --resume invocation.
-        session._release_workflow_claim(session._workflow_handle)
-        session._terminal_unsub()
+        if session is not None:
+            session._release_workflow_claim(session._workflow_handle)
+            session._terminal_unsub()
         ctx.session_log.close()
         # PRD-129 Phase 2: close the durable conversation journal handle.
         _close = getattr(ctx.session_memory, "close", None)
@@ -2852,6 +2946,10 @@ async def _run_tui_session_impl(
             await session_service.close()
         if cassette_base is not None:
             _write_cassette_meta(cassette_base / ctx.session_id, ctx.session_id)
+    finally:
+        owner_lease = cast(SessionOwnerLease | None, vars(ctx).get("owner_lease"))
+        if owner_lease is not None:
+            owner_lease.release()
 
 
 def _write_cassette_meta(cassette_dir: Path, session_id: str) -> None:
@@ -2868,6 +2966,28 @@ def _write_cassette_meta(cassette_dir: Path, session_id: str) -> None:
         (cassette_dir / "meta.json").write_text(_json.dumps(meta, indent=2), encoding="utf-8")
     except Exception:  # noqa: BLE001
         pass
+
+
+def _select_and_claim_latest_session() -> tuple[str, SessionOwnerLease] | None:
+    """Resolve `--continue` and claim the selected session before async startup."""
+
+    coordinator = SessionOpenCoordinator(_SESSIONS_DIR)
+    if _find_latest_session_for_cwd is not find_latest_session_for_cwd:
+        # Preserve the module-level test seam while keeping production on the
+        # atomic coordinator path.  A patched resolver is also useful for
+        # embedders that supply their own session index.
+        selected = _find_latest_session_for_cwd()
+        if selected is None:
+            return None
+        return selected, coordinator.acquire_existing(selected, entrypoint="tui")
+    return coordinator.select_latest_for_cwd(os.getcwd(), entrypoint="tui")
+
+
+def _exit_for_session_owner_conflict(exc: SessionAlreadyActiveError) -> NoReturn:
+    """Render the safe, actionable TUI conflict and terminate the invocation."""
+
+    print(format_session_conflict(exc), file=sys.stderr)
+    raise SystemExit(exc.exit_code)
 
 
 # ── sync entry point (unchanged) ─────────────────────────────────────────────
@@ -2898,8 +3018,17 @@ def _run_tui(ctx: CLIContext) -> None:
         pass  # Windows / non-TTY environments
 
     resume_id: str | None = ctx.resume_id
+    owner_lease: SessionOwnerLease | None = None
     if resume_id is None and ctx.continue_session:
-        resume_id = _find_latest_session_for_cwd()
+        try:
+            selected = _select_and_claim_latest_session()
+        except SessionAlreadyActiveError as exc:
+            _exit_for_session_owner_conflict(exc)
+        except SessionStorageError as exc:
+            print(f"error: {exc.code}: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        if selected is not None:
+            resume_id, owner_lease = selected
         if resume_id is None:
             print("No previous session found for this directory. Starting fresh.")
 
@@ -2914,8 +3043,14 @@ def _run_tui(ctx: CLIContext) -> None:
                 cli_secret_overrides=list(ctx.set_secret_overrides),
                 mode_name=ctx.mode_name,
                 workflow_name=ctx.workflow_name,
+                owner_lease=owner_lease,
             )
         )
+    except SessionAlreadyActiveError as exc:
+        _exit_for_session_owner_conflict(exc)
+    except SessionStorageError as exc:
+        print(f"error: {exc.code}: {exc}", file=sys.stderr)
+        sys.exit(1)
     except Exception as exc:
         print(f"TUI error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -2926,4 +3061,6 @@ def _run_tui(ctx: CLIContext) -> None:
         # a traceback or a half-reset terminal behind.
         pass
     finally:
+        if owner_lease is not None:
+            owner_lease.release()
         _reset_terminal_on_exit()

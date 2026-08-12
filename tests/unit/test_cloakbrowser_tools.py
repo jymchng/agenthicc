@@ -114,24 +114,35 @@ def _manager(
     return manager, client
 
 
-def test_default_is_enabled_but_empty_allow_list_denies_navigation() -> None:
+def test_default_is_enabled_with_liberal_browser_policy() -> None:
     manager = BrowserSessionManager(CloakBrowserSettings(), "s", Path.cwd())
     assert manager.enabled is True
-    assert manager.settings.allow_all_domains is False
+    assert manager.settings.allow_all_domains is True
+    assert manager.policy.allow_all_domains is True
+    assert manager.policy.allow_loopback is True
+    assert manager.policy.allow_private_addresses is True
+    assert 3000 in manager.policy.allowed_ports
     assert len(make_cloakbrowser_tools(manager)) == 9
-    status = asyncio.run(manager.status())
-    assert status["status"] == BrowserErrorKind.DISABLED.value
-    assert status["ok"] is False
+
+    async def check() -> None:
+        assert await manager.policy.validate_url("http://127.0.0.1:3000/") == (
+            "http://127.0.0.1:3000/"
+        )
+        assert await manager.policy.validate_url("http://10.0.0.1:8080/") == (
+            "http://10.0.0.1:8080/"
+        )
+
+    asyncio.run(check())
 
 
-def test_loaded_default_configuration_enables_deny_all_browser_surface(tmp_path: Path) -> None:
+def test_loaded_default_configuration_enables_liberal_browser_surface(tmp_path: Path) -> None:
     config = load_config(
         project_path=tmp_path / "missing.toml", user_path=tmp_path / "also-missing.toml"
     )
 
     assert config.tools.cloakbrowser.enabled is True
     assert config.tools.cloakbrowser.allowed_domains == []
-    assert config.tools.cloakbrowser.allow_all_domains is False
+    assert config.tools.cloakbrowser.allow_all_domains is True
 
 
 def test_empty_policy_denies_every_destination() -> None:
@@ -143,7 +154,7 @@ def test_empty_policy_denies_every_destination() -> None:
     asyncio.run(check())
 
 
-def test_allow_all_domains_supports_public_hosts_but_not_private_addresses() -> None:
+def test_explicit_browser_policy_can_remain_restrictive() -> None:
     async def resolve(host: str) -> list[str]:
         return ["127.0.0.1"] if host == "localhost" else ["93.184.216.34"]
 

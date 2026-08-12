@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tools.cloakbrowser import BrowserSessionManager
     from agenthicc.tools.workspace_access import WorkspaceScope, WorkspaceAccessPolicy
+    from agenthicc.runners.session_lease import SessionOwnerLease
     from asyncio import Task
 
 
@@ -125,3 +126,8 @@ class SessionContext:
     #: True when this TUI was opened against an existing session and should
     #: replay its persisted scroll transcript after the Live block mounts.
     resumed: bool = False
+
+    # ── process ownership (PRD-171) ─────────────────────────────────────────
+    #: The outer lease for every durable session attachment.  It is released
+    #: by the owning runner after all session resources have been closed.
+    owner_lease: "SessionOwnerLease | None" = None

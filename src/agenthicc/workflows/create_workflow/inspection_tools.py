@@ -655,10 +655,11 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "configuration": "[tools.cloakbrowser]",
             "tool_names": list(CLOAKBROWSER_AGENT_TOOLS),
             "availability": (
-                "The integration flag is enabled by default, but the empty allow-list is "
-                "deny-all. Install the optional cloakbrowser extra and configure an allow-list "
-                "before navigation becomes available; without the extra, status reports "
-                "dependency_missing after a destination is configured."
+                "The integration flag and allow-all policy are enabled by default for the "
+                "local VPS/sandbox profile: localhost, private addresses, arbitrary HTTP(S) "
+                "hosts, and all ports are reachable. Set allow_all_domains = false and provide "
+                "an allow-list for a narrower boundary. Install the optional cloakbrowser "
+                "extra; without it, status reports dependency_missing."
             ),
             "phase_guidance": (
                 "Declare NETWORK plus READ for observation phases and NETWORK plus WRITE "
@@ -671,9 +672,10 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                 "ToolCapability.READ, ToolCapability.NETWORK}), max_turns=8, next='report')"
             ),
             "security": [
-                "navigation is restricted to configured domains (or explicit allow_all_domains) "
-                "and every DNS answer is checked",
-                "CloakBrowser rejects loopback, private, link-local, and reserved addresses",
+                "navigation is unrestricted by default or restricted to configured domains when "
+                "allow_all_domains = false; every DNS answer is checked",
+                "the default local/VPS profile permits loopback and private addresses; set "
+                "allow_all_domains = false to restore those protections",
                 "sensitive form fields, raw JavaScript, arbitrary CDP, cookies, and proxy settings are unavailable",
                 "snapshots and screenshots are bounded and screenshots are workspace artifacts",
                 "browser objects are not serialized into workflow checkpoints",
@@ -708,10 +710,10 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "tool_names": list(PLAYWRIGHT_AGENT_TOOLS),
             "browser_types": ["chromium", "firefox", "webkit"],
             "availability": (
-                "The backend setting is enabled by default but is not selected by default. "
-                "Select it explicitly, install the optional playwright extra and its browser "
-                "runtime, then configure an allow-list; otherwise status reports the structured "
-                "unavailable result."
+                "The backend setting and allow-all policy are enabled by default but the backend "
+                "is not selected by default. Select it explicitly and install the optional "
+                "playwright extra and its browser runtime. Set allow_all_domains = false and "
+                "configure an allow-list when a narrower boundary is required."
             ),
             "phase_guidance": (
                 "Declare NETWORK plus READ for observation phases and NETWORK plus WRITE "
@@ -719,9 +721,10 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                 "unless the workflow has a documented, intentional reason."
             ),
             "security": [
-                "navigation and subresource requests are restricted to configured domains "
-                "(or explicit allow_all_domains) and DNS rebinding is checked",
-                "loopback preview servers are supported; private non-loopback addresses remain blocked",
+                "navigation and subresource requests are unrestricted by default or restricted "
+                "to configured domains when allow_all_domains = false; DNS rebinding is checked",
+                "the default profile permits loopback and private addresses; set "
+                "allow_all_domains = false to restore private-address protection",
                 "sensitive form fields, raw JavaScript, arbitrary CDP, cookies, and proxy settings are unavailable",
                 "snapshots and screenshots are bounded and screenshots are workspace artifacts",
                 "browser objects are not serialized into workflow checkpoints",

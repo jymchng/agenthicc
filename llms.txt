@@ -78,7 +78,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `ModeManager` / `ModeRegistry` / `RuntimeMode` | `agenthicc.tui.runtime` | Canonical Safe/Plan/Yolo selection, aliases, lifecycle state, and capability policy |
 | `ToolCapability` / `classify_tool_capabilities` | `agenthicc.tools.capabilities` | Capability taxonomy and fail-closed metadata classification |
 | `tool_exploratory` / `is_exploratory_tool` | `agenthicc.tools.capabilities` | Presentation-only marker and safe classification for derived TUI grouping |
-| `CloakBrowserSettings` / `PlaywrightSettings` | `agenthicc.config` | Optional browser backend configuration with fail-closed domain policy |
+| `CloakBrowserSettings` / `PlaywrightSettings` | `agenthicc.config` | Optional browser backend configuration; liberal all-address defaults with explicit restrictive opt-in |
 | `BrowserSessionManager` / `BrowserPolicy` | `agenthicc.tools.cloakbrowser` | Shared session-scoped browser lifecycle, allow-list, quotas, artifacts, and checkpoint metadata |
 | `make_cloakbrowser_tools` / `make_playwright_tools` | `agenthicc.tools.cloakbrowser` / `agenthicc.tools.playwright` | Nine capability-tagged agent-facing tools for either lazy optional backend |
 | `export_session` | `agenthicc.tui.runtime.session_export` | Redacted portable session export |
@@ -138,6 +138,14 @@ data lives under `.agenthicc/`; global memory defaults to
 `~/.agenthicc/global.db`.
 Owned terminal records are stored under `~/.agenthicc/background/terminals/`
 and remain separate from durable agent-session records.
+
+Durable session attachment is single-owner. `--continue`, `--resume`, the
+session picker, headless workflow execution, and explicit background attaches
+claim `<session-id>/.owner` before restoring journals or constructing providers,
+tools, or workflows. A live conflict is the typed `session_already_active`
+diagnostic with exit status 3; stale records are reclaimed only after local
+process death is proven. Workflow `<run-id>/.claim` remains a nested, separate
+guard.
 
 ## Invariants
 

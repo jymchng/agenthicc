@@ -335,12 +335,12 @@ screenshots are written only through `WorkspaceView` below
 workflow checkpoints retain only redacted page metadata and reattach the same
 session manager on resume.
 
-`allow_all_domains = true` is an explicit broad-access opt-in, not the default.
-For CloakBrowser it permits public HTTP(S) hosts on the configured ports but
-does not bypass DNS, loopback, or private-address protections. Playwright has
-no port ceiling and permits loopback preview servers such as
-`http://localhost:3000/`; its domain policy and private non-loopback checks
-still apply.
+Browser access is liberal by default because this deployment profile targets a
+local VPS/sandbox: `allow_all_domains = true` permits localhost, private
+addresses, arbitrary HTTP(S) hosts, and all destination ports for both
+backends. Set it to `false` and provide `allowed_domains` when a narrower
+boundary is required. HTTP(S)-only validation and DNS resolution checks still
+apply.
 
 Custom workflows receive these tools through `WorkflowConfig`. Their authoring
 and validation phases are browser-free by default. `create_workflow` exposes
@@ -360,9 +360,10 @@ Choose `browser_type = "chromium"`, `"firefox"`, or `"webkit"` in
 `[tools.playwright]`. The backend is lazy and returns `dependency_missing` when
 the Python package or its browser runtime is unavailable. It never imports
 Playwright or starts a browser when CloakBrowser is selected.
-Playwright has no port ceiling and permits loopback preview servers such as
-`http://localhost:3000/`; its configured domain policy, DNS rebinding checks,
-and private non-loopback protection remain active.
+Playwright has no port ceiling and, under the default liberal policy, permits
+loopback preview servers, private addresses, and arbitrary HTTP(S) hosts. Set
+`allow_all_domains = false` to restore configured-domain and private-address
+protection; DNS rebinding checks remain active in either mode.
 
 The upstream wrapper and binary have independent platform and licensing
 requirements; agenthicc does not download binaries or silently install the

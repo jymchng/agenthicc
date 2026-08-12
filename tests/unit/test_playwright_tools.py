@@ -165,6 +165,20 @@ def test_playwright_config_is_optional_and_selectable(tmp_path: Path) -> None:
     assert config.tools.playwright.max_pages == 2
 
 
+def test_playwright_default_policy_allows_loopback_and_private_addresses(
+    tmp_path: Path,
+) -> None:
+    settings = PlaywrightSettings()
+    manager = create_playwright_session(settings, "conversation-default", tmp_path)
+
+    assert settings.allow_all_domains is True
+    assert manager.policy is not None
+    assert manager.policy.allow_all_domains is True
+    assert manager.policy.allow_loopback is True
+    assert manager.policy.allow_private_addresses is True
+    assert 3000 in manager.policy.allowed_ports
+
+
 def test_playwright_config_rejects_invalid_browser_type() -> None:
     with pytest.raises(ValueError, match="browser_type"):
         PlaywrightSettings(browser_type="safari")

@@ -590,21 +590,23 @@ def make_cloakbrowser_tools(manager: BrowserSessionManager) -> list[ToolLike]: .
 ```
 
 The `cloakbrowser` package is an optional `cloakbrowser==0.5.3` extra and is
-loaded lazily. The feature is enabled by default but has an empty, deny-all
-allow-list until configured. A session manager owns one
-opaque browser context per stable conversation, enforces operator domain/origin
-and DNS policy and bounded limits, writes screenshots through `WorkspaceView`,
-and exports only redacted checkpoint metadata. The agent-facing tools are
+loaded lazily. The feature is enabled by default with a liberal all-address
+policy for local/VPS use: localhost, private addresses, arbitrary HTTP(S)
+hosts, and all ports are allowed. Set `allow_all_domains = false` and provide
+an allow-list for a narrower policy. A session manager owns one opaque browser
+context per stable conversation, enforces HTTP(S) and DNS validation and
+bounded limits, writes screenshots through `WorkspaceView`, and exports only
+redacted checkpoint metadata. The agent-facing tools are
 `cloakbrowser_status`, `cloakbrowser_open`, `cloakbrowser_snapshot`,
 `cloakbrowser_click`, `cloakbrowser_fill`, `cloakbrowser_press`,
 `cloakbrowser_wait_for`, `cloakbrowser_screenshot`, and `cloakbrowser_close`.
 No raw JavaScript, arbitrary CDP, proxy, cookie, storage, or sensitive-form
 field access is exposed.
-`allow_all_domains` is an explicit opt-in for broad public HTTP(S) host access;
-it defaults to `false` and does not bypass DNS, loopback, or private-address
-protections for CloakBrowser. Playwright uses the same domain/DNS boundary but
-allows any destination port and loopback preview servers such as
-`http://localhost:3000/`.
+`allow_all_domains` defaults to `true` for both backends. It bypasses hostname,
+loopback, and private-address restrictions while retaining HTTP(S)-only and
+DNS-resolution checks; set it to `false` to restore the restrictive policy.
+Playwright and CloakBrowser both allow arbitrary destination ports in the
+liberal mode.
 All browser tools accept an optional bounded `operation_id`; reusing one returns
 the cached receipt and prevents a transport retry from repeating a mutation.
 
@@ -634,10 +636,11 @@ browser binaries are installed explicitly with `playwright install`. Set
 Chromium, Firefox, and WebKit and exposes the same bounded operations using
 `playwright_*` names. It shares the session manager's origin/DNS policy,
 `allow_all_domains` behavior, quotas, redaction, artifacts, idempotency, and
-checkpoint metadata with CloakBrowser. Playwright intentionally has no port
-ceiling and permits loopback preview servers; private non-loopback and DNS
-rebinding checks remain active. Generated workflows must use injected
-tools rather than importing Playwright directly.
+checkpoint metadata with CloakBrowser. In the default liberal mode it permits
+loopback, private addresses, and all ports; `allow_all_domains = false`
+restores hostname and private-address restrictions. DNS resolution checks
+remain active. Generated workflows must use injected tools rather than
+importing Playwright directly.
 
 ### Tool
 
@@ -1707,6 +1710,58 @@ class WorkflowExecutionResult:
 
 JSON-safe result for one workflow execution. `to_dict()` returns the stable
 `WorkflowRunCompleted` result shape used by the CLI and stdin runner.
+
+## Durable session ownership — `agenthicc.runners.session_lease`
+
+### SessionOwnerLease
+
+```python
+class SessionOwnerLease:
+    @property
+    def session_id(self) -> str: ...
+    @property
+    def owner_id(self) -> str: ...
+    @property
+    def info(self) -> SessionOwnerInfo: ...
+    @property
+    def released(self) -> bool: ...
+    def release(self) -> None: ...
+```
+
+An idempotent reference to the durable `<session-id>/.owner` record. It is
+released by the session runner after journals, providers, tools, workflow
+claims, and UI resources close. Subagents and workflow phases inherit it; they
+do not claim a second session owner.
+
+### SessionOpenCoordinator
+
+```python
+class SessionOpenCoordinator:
+    def acquire_existing(self, session_id: str, *, entrypoint: str = "tui") -> SessionOwnerLease: ...
+    def acquire_new(self, session_id: str, *, entrypoint: str = "tui") -> SessionOwnerLease: ...
+    def select_latest_for_cwd(self, cwd: str | Path, *, entrypoint: str = "tui") -> tuple[str, SessionOwnerLease] | None: ...
+    def inspect(self, session_id: str) -> SessionLeaseInspection: ...
+```
+
+The single authority for `--continue`, explicit resume, picker Enter, and
+headless/background durable attachment. It claims before transcript or
+provider startup, reports a stable `session_already_active` conflict with exit
+status `3`, and never falls back from a busy newest session. A stale owner is
+reclaimed only when local process death or a process-start-token mismatch is
+proven; unknown and malformed records fail closed.
+
+### SessionAlreadyActiveError
+
+```python
+class SessionAlreadyActiveError(SessionLeaseError):
+    code = "session_already_active"
+    exit_code = 3
+    def to_dict(self) -> dict[str, object]: ...
+```
+
+Structured, bounded conflict metadata for human and JSON renderers. Its owner
+diagnostics contain only PID, host, entrypoint, acquisition time, and bounded
+age; they do not contain session content, prompts, tool arguments, or secrets.
 
 ### execute_workflow
 

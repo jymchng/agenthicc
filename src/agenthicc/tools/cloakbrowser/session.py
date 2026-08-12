@@ -34,6 +34,8 @@ __all__ = [
     "is_cloakbrowser_tool",
 ]
 
+_ALL_BROWSER_PORTS = frozenset(range(1, 65_536))
+
 
 class BrowserSettings(Protocol):
     """Structural settings contract shared by optional browser backends."""
@@ -123,11 +125,23 @@ class BrowserSessionManager:
         self._browser_session_id = uuid.uuid4().hex
         try:
             self.policy = policy or BrowserPolicy(
-                tuple(settings.allowed_domains), allow_all_domains=settings.allow_all_domains
+                tuple(settings.allowed_domains),
+                # The configured default is intentionally liberal for local
+                # VPS/sandbox use: all HTTP(S) hosts, ports, loopback, and
+                # private addresses are reachable.  Supplying an explicit
+                # ``BrowserPolicy`` remains the escape hatch for embedders
+                # that need a narrower boundary.
+                allowed_ports=(
+                    _ALL_BROWSER_PORTS if settings.allow_all_domains else frozenset({80, 443})
+                ),
+                allow_loopback=settings.allow_all_domains,
+                allow_private_addresses=settings.allow_all_domains,
+                allow_all_domains=settings.allow_all_domains,
             )
         except ValueError as exc:
-            # A malformed/empty allow-list must make browser operations
-            # unavailable, not prevent the rest of agenthicc from starting.
+            # A malformed allow-list must make browser operations unavailable,
+            # not prevent the rest of agenthicc from starting.  An empty list
+            # is valid when allow_all_domains is enabled (the default).
             self.policy = BrowserPolicy(("invalid.agenthicc.invalid",))
             self._policy_error = str(exc) if settings.enabled else None
         if client is not None:

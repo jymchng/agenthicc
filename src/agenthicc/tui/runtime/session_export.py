@@ -107,6 +107,7 @@ def _validate_session_id(session_id: str) -> str:
         or Path(cleaned).name != cleaned
         or Path(cleaned).is_absolute()
         or "\\" in cleaned
+        or not cleaned.isprintable()
     ):
         raise ValueError("session_id must be a single, relative session identifier")
     return cleaned
@@ -434,10 +435,27 @@ def inspect_session(
     conversation_records = loaded.jsonl_artifacts["conversation_events"][0]
     journal_records = loaded.jsonl_artifacts["conversation_journal"][0]
     usage_records = _usage_records_from_journal(journal_records)
+    from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
+
+    lease = SessionOpenCoordinator(source_dir).inspect(valid_id)
+    owner_summary: dict[str, object] = {"state": lease.state}
+    if lease.reason is not None:
+        owner_summary["reason"] = lease.reason
+    if lease.owner is not None:
+        owner_summary.update(
+            {
+                "pid": lease.owner.pid,
+                "host": lease.owner.host,
+                "entrypoint": lease.owner.entrypoint,
+                "acquired_at": lease.owner.acquired_at,
+                "age_seconds": lease.owner.age_seconds,
+            }
+        )
 
     return {
         "session_id": valid_id,
         "metadata": redactor.value(loaded.metadata),
+        "owner": owner_summary,
         "artifacts": _manifest(loaded),
         "kernel": {
             "events": len(kernel_records),

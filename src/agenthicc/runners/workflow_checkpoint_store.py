@@ -10,6 +10,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from agenthicc.runners.process_lease import (
+    atomic_publish,
+    directory_fsync,
+    owner_alive,
+    process_identity,
+    read_json_object,
+)
 from agenthicc.workflows.checkpoint import (
     MAX_CHECKPOINT_BYTES,
     CheckpointValidationError,
@@ -283,84 +290,25 @@ class WorkflowCheckpointStore:
         is hidden and cannot block a future claim.  The visible destination is
         installed only after its contents and file metadata are durable.
         """
-        fd, temp_name = tempfile.mkstemp(
-            prefix=".claim-",
-            suffix=".tmp",
-            dir=path.parent,
-        )
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(encoded)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.link(temp_name, path)
-        finally:
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
+        atomic_publish(path, encoded, prefix=".claim-")
 
     @staticmethod
     def _fsync_directory(path: Path) -> None:
-        try:
-            dir_fd = os.open(path, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            # Directory fsync is not available on every supported platform.
-            # The claim contents have already been fsynced before publication.
-            pass
+        directory_fsync(path)
 
     @staticmethod
     def _read_claim(path: Path) -> dict[str, object] | None:
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-        except (OSError, json.JSONDecodeError):
-            # A present but unreadable/malformed claim is not proof of a dead
-            # owner.  Returning an empty object makes the liveness check fail
-            # closed instead of allowing a second process to take the run.
-            return {}
-        return raw if isinstance(raw, dict) else {}
+        # A present but unreadable/malformed claim is not proof of a dead
+        # owner.  ``read_json_object`` represents that state as ``{}``, which
+        # makes the liveness check fail closed.
+        return read_json_object(path)
 
     @staticmethod
     def _claim_owner_alive(payload: dict[str, object]) -> bool:
-        host = payload.get("host")
-        pid = payload.get("pid")
-        if host != socket.gethostname() or not isinstance(pid, int) or pid <= 0:
-            # A claim from another host cannot be proven dead locally. Fail
-            # closed rather than allowing two machines to execute the run.
-            return True
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        except OSError:
-            return False
-        identity = WorkflowCheckpointStore._process_identity(pid)
-        if identity is not None:
-            state, current_start_token = identity
-            # kill(pid, 0) succeeds for zombies.  A zombie cannot own an
-            # executing workflow, so it is safe to reclaim its claim.
-            if state == "Z":
-                return False
-            recorded_start_token = payload.get("process_start_token")
-            # New claims bind the PID to its process-start identity.  If the
-            # PID was reused, the old owner is provably gone even though the
-            # replacement process is alive.  Legacy claims without this field
-            # retain the old fail-closed behaviour.
-            if (
-                isinstance(recorded_start_token, str)
-                and recorded_start_token
-                and recorded_start_token != current_start_token
-            ):
-                return False
-        return True
+        return owner_alive(
+            payload,
+            identity_resolver=WorkflowCheckpointStore._process_identity,
+        )
 
     @staticmethod
     def _process_identity(pid: int) -> tuple[str, str] | None:
@@ -370,24 +318,4 @@ class WorkflowCheckpointStore:
         the token meaningful across host reboots.  Other platforms fall back
         to the conservative ``kill(pid, 0)`` check above.
         """
-        if os.name == "nt":
-            return None
-        try:
-            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-            end_comm = stat.rfind(")")
-            if end_comm < 0:
-                return None
-            fields = stat[end_comm + 2 :].split()
-            if len(fields) <= 19:
-                return None
-            state = fields[0]
-            start_time = fields[19]
-            try:
-                boot_id = (
-                    Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
-                )
-            except (OSError, UnicodeError):
-                boot_id = ""
-            return state, f"{boot_id}:{start_time}" if boot_id else start_time
-        except (OSError, UnicodeError, ValueError):
-            return None
+        return process_identity(pid)

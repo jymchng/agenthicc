@@ -12,8 +12,8 @@ based and implemented in `cli/registry.py`.
 | `--workflow NAME` | Select `NAME` at TUI startup, or run it for each non-empty stdin line in headless mode |
 | `--config PATH` | Select a configuration file |
 | `--version` | Print the package CLI version string |
-| `--continue` | Continue the latest session for the current directory |
-| `--resume ID` | Resume a specific session |
+| `--continue` | Claim and continue the latest session for the current directory; a busy latest session fails with `session_already_active` |
+| `--resume ID` | Claim and resume a specific session; conflict exit status is `3` |
 | `--record-cassette [DIR]` | Record provider/approval interactions |
 | `--set KEY=VALUE` | Override a config field; repeatable |
 | `--dangerously-skip-permissions` | Disable session approval prompts; CLI-only escape hatch |
@@ -56,6 +56,13 @@ agenthicc --set-secret execution.default_headers.Modal-Key=MODAL_KEY config show
 | `whoami` | Show current authentication state |
 
 Run any command with `--help` for generated argument details.
+
+Session attachment is single-owner. The owner lease is acquired before
+transcript, journal, provider, tool, or workflow startup. The sessions picker
+shows `available`, `active`, `recoverable`, or `unknown` owner state without
+claiming a row; Enter uses the same coordinator as `--resume`. There is no
+force-unlock command. A crashed owner is reclaimed only when local process
+liveness proves it is dead.
 
 `agenthicc skills add SOURCE` installs into the current project's
 `.agenthicc/skills/` by default. Use `--global` for `~/.agenthicc/skills/` or

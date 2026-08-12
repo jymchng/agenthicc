@@ -58,6 +58,7 @@ def create_playwright_session(
             tuple(settings.allowed_domains),
             allowed_ports=_PLAYWRIGHT_ALLOWED_PORTS,
             allow_loopback=True,
+            allow_private_addresses=settings.allow_all_domains,
             allow_all_domains=settings.allow_all_domains,
         )
     except ValueError:

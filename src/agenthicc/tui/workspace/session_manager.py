@@ -114,7 +114,12 @@ class SessionManager:
         from rich.panel import Panel  # noqa: PLC0415
         from rich.table import Table  # noqa: PLC0415
         from rich.text import Text  # noqa: PLC0415
+        from agenthicc.runners.session_lease import (  # noqa: PLC0415
+            SessionLeaseInspection,
+            SessionOpenCoordinator,
+        )
 
+        owner_coordinator = SessionOpenCoordinator()
         self.refresh()
         if self.help_visible:
             return Panel(
@@ -134,23 +139,40 @@ class SessionManager:
         table.add_column("Last used", no_wrap=True)
         table.add_column("Project")
         table.add_column("Model")
+        table.add_column("Owner", no_wrap=True)
         if not records:
-            table.add_row("", "—", "", "No saved sessions", "")
+            table.add_row("", "—", "", "No saved sessions", "", "")
         for local_index, (session_id, data) in enumerate(records):
             index = local_index if all_records else start + local_index
             cwd_value = data.get("cwd")
             model_value = data.get("model")
             cwd = cwd_value if isinstance(cwd_value, str) else ""
             model = model_value if isinstance(model_value, str) else ""
+            try:
+                owner = owner_coordinator.inspect(session_id)
+            except ValueError:
+                # Legacy project-local indexes may contain an identifier that
+                # the durable owner namespace deliberately rejects.  The row
+                # remains visible, but it cannot be safely classified or
+                # opened through the ownership boundary.
+                owner = SessionLeaseInspection(
+                    session_id=str(session_id),
+                    state="unknown",
+                    reason="invalid_session_id",
+                )
             marker = "▸" if index == self.selected else " "
             if cwd == "":
                 cwd = "—"
             table.add_row(
                 marker,
                 session_id[:16],
-                time.strftime("%Y-%m-%d %H:%M", time.localtime(_timestamp(data.get("last_used")))),
+                time.strftime(
+                    "%Y-%m-%d %H:%M",
+                    time.localtime(_timestamp(data.get("last_used", data.get("last_active")))),
+                ),
                 cwd,
                 model or "—",
+                owner.state,
             )
 
         detail_lines: list[str] = []

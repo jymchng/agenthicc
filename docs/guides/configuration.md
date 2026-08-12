@@ -231,18 +231,19 @@ pip install 'agenthicc[cloakbrowser]'
 uv sync --extra cloakbrowser
 ```
 
-The feature is enabled at the configuration layer by default, but the empty
-allow-list denies every destination until an operator configures it. The
-package import is lazy, so a fresh configuration reports `not_configured`, and
-a base installation with an allow-list reports a safe `dependency_missing`
-status instead of failing session startup.
+The feature is enabled at the configuration layer by default and browser
+destinations are liberal by default for local VPS and sandbox use: localhost,
+private addresses, arbitrary HTTP(S) hosts, and all ports are allowed. Set
+`allow_all_domains = false` and provide an allow-list when a narrower policy
+is required. The package import is lazy, so a base installation still reports
+a safe `dependency_missing` status instead of failing session startup.
 
 ```toml
 [tools.cloakbrowser]
 enabled = true
 transport = "local"             # local or loopback-only cdp
-allowed_domains = ["example.com"]
-allow_all_domains = false     # explicit opt-in for all public HTTP(S) hosts
+allowed_domains = []
+allow_all_domains = true      # localhost, private addresses, all HTTP(S) hosts/ports
 headless = true
 max_pages = 4
 max_actions_per_turn = 20
@@ -264,10 +265,9 @@ A bare host such as `example.com` allows that host and its subdomains on the
 configured HTTP(S) ports. A full origin matches its scheme and port exactly;
 the leading `*.` form allows subdomains but not the root host. Paths,
 credentials, queries, fragments, and an unrestricted `*` are rejected. The
-DNS, loopback, and private-address checks still apply to every destination.
-Set `allow_all_domains = true` only when the project intentionally needs broad
-public-web access; it bypasses hostname matching but still permits only HTTP(S)
-on the configured ports and retains DNS, loopback, and private-address checks.
+DNS resolution and HTTP(S)-only validation still apply to every destination.
+With the default `allow_all_domains = true`, loopback and private-address
+checks are intentionally disabled for this local/sandbox deployment profile.
 
 ## Optional Playwright integration
 
@@ -307,8 +307,8 @@ browser_backend = "playwright"  # cloakbrowser, playwright, or none
 [tools.playwright]
 enabled = true
 browser_type = "chromium"        # chromium, firefox, or webkit
-allowed_domains = ["example.com"]
-allow_all_domains = false
+allowed_domains = []
+allow_all_domains = true
 headless = true
 max_pages = 4
 max_actions_per_turn = 20
@@ -319,11 +319,9 @@ allow_persistent_profiles = false
 
 Playwright supports the same bare-host and exact HTTP(S) origin formats as
 CloakBrowser, including wildcard subdomains and explicit ports. The default
-empty allow-list denies navigation. `allow_all_domains = true` bypasses
-hostname matching. Playwright does not impose a port allow-list, so local
-preview servers such as `http://localhost:3000/` work when their host is
-allowed; loopback is permitted for this backend while private non-loopback
-addresses remain protected. The browser executable and profile path are
+`allow_all_domains = true` permits localhost, private addresses, and every
+HTTP(S) host and port. Set it to `false` to enforce hostname matching and
+private-address protection. The browser executable and profile path are
 operator configuration; they are never supplied by the model.
 
 The browser tools remain available without Playwright installed, but return a

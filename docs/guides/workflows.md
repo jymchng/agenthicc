@@ -12,6 +12,32 @@ journal-backed provider memory is reused across phase turns. The reactive
 in a typed workflow context and is checkpointed separately when the runner
 supports resumable state.
 
+### Outer session ownership
+
+The workflow lease is nested inside the durable session owner lease. The TUI,
+headless workflow runner, session picker, and background attach path first
+claim `<session-id>/.owner`; only after that succeeds may they restore the
+conversation/journal or construct a workflow. A workflow phase and its tools do
+not acquire another session lease: they inherit the one held by the parent
+`SessionContext`. The existing `<run-id>/.claim` is still acquired separately
+before a resumable workflow executes.
+
+```text
+select --continue / --resume / picker
+  -> SessionOpenCoordinator claims session .owner
+  -> restore SessionConversation and workflow checkpoint
+  -> WorkflowRunHandle claims workflow .claim
+  -> execute turns, tools, and phase transitions
+  -> close resources, release workflow claim, release session .owner
+```
+
+This ordering prevents two terminals from replaying or writing one durable
+conversation. A busy newest session never silently falls back to an older
+session or starts a new one. The losing process receives the typed
+`session_already_active` diagnostic before TUI, LLM, tool, or transcript
+startup. Session owner records are reclaimed only after local process death is
+provable; timestamps are diagnostic, not a stale-lock timeout.
+
 ### Pause, crash recovery, and `/workflow resume`
 
 Workflow checkpoints live under the session directory and point to the same

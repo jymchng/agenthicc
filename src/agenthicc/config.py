@@ -1036,7 +1036,7 @@ class ExecutionSettings:
 
 @dataclass
 class CloakBrowserSettings:
-    """Optional, fail-closed browser automation settings.
+    """Optional browser automation settings.
 
     The Python package is deliberately not imported here.  This dataclass is
     safe to construct in a base installation where the ``cloakbrowser`` extra
@@ -1044,8 +1044,10 @@ class CloakBrowserSettings:
     check when a browser tool is actually used.
     """
 
-    # The integration is available by default, but the empty allow-list still
-    # denies every destination until an operator configures it explicitly.
+    # Browser automation is enabled and unrestricted by default for the
+    # operator's local sandbox/VPS.  ``enabled`` remains an independent
+    # switch, so deployments that need a deny-by-default browser can disable
+    # the backend explicitly.
     enabled: bool = True
     transport: str = "local"
     cdp_endpoint: str = "http://127.0.0.1:9222"
@@ -1060,7 +1062,7 @@ class CloakBrowserSettings:
     allow_persistent_profiles: bool = False
     profile_root: str = ".agenthicc/browser-profiles"
     license_key_env: str = "CLOAKBROWSER_LICENSE_KEY"
-    allow_all_domains: bool = False
+    allow_all_domains: bool = True
 
     def __post_init__(self) -> None:
         """Validate bounds before the settings reach a browser adapter."""
@@ -1148,7 +1150,7 @@ class PlaywrightSettings:
     max_screenshot_bytes: int = 10_000_000
     allow_persistent_profiles: bool = False
     profile_root: str = ".agenthicc/browser-profiles/playwright"
-    allow_all_domains: bool = False
+    allow_all_domains: bool = True
 
     def __post_init__(self) -> None:
         self.transport = self.transport.strip().lower()
@@ -2061,7 +2063,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
                 _section(to.get("cloakbrowser")).get("allowed_domains")
             ),
             allow_all_domains=_as_bool(
-                _section(to.get("cloakbrowser")).get("allow_all_domains"), False
+                _section(to.get("cloakbrowser")).get("allow_all_domains"), True
             ),
             headless=_as_bool(_section(to.get("cloakbrowser")).get("headless"), True),
             navigation_timeout_s=_as_float(
@@ -2100,7 +2102,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
             executable_path=_as_str(_section(to.get("playwright")).get("executable_path"), ""),
             allowed_domains=_as_string_list(_section(to.get("playwright")).get("allowed_domains")),
             allow_all_domains=_as_bool(
-                _section(to.get("playwright")).get("allow_all_domains"), False
+                _section(to.get("playwright")).get("allow_all_domains"), True
             ),
             headless=_as_bool(_section(to.get("playwright")).get("headless"), True),
             navigation_timeout_s=_as_float(

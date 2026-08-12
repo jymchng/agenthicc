@@ -7,13 +7,20 @@ import json
 import os
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from agenthicc.runners.session_lease import (
+    SessionAlreadyActiveError,
+    SessionOwnerLease,
+    SessionStorageError,
+)
 
 if TYPE_CHECKING:
     from agenthicc.cli.context import CLIContext
     from agenthicc.runners.session_context import SessionContext
+    from agenthicc.runners.session_lease import SessionOwnerLease
 
 __all__ = ["WorkflowExecutionResult", "execute_workflow", "run_headless_workflow"]
 
@@ -86,6 +93,21 @@ class _HeadlessApprovalService:
 
     def reset_turn_memory(self) -> None:
         return None
+
+
+def _resolve_headless_session(
+    ctx: "CLIContext",
+) -> tuple[str | None, "SessionOwnerLease | None"]:
+    """Resolve `--continue` and claim it before headless construction."""
+
+    if ctx.resume_id is not None or not ctx.continue_session:
+        return ctx.resume_id, None
+    from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
+
+    selected = SessionOpenCoordinator().select_latest_for_cwd(Path.cwd(), entrypoint="headless")
+    if selected is None:
+        return None, None
+    return selected
 
 
 async def execute_workflow(
@@ -268,8 +290,9 @@ async def run_headless_workflow(
     from agenthicc.runners.tui_session import _build_session_context  # noqa: PLC0415
 
     cassette_base = Path(ctx.record_cassette) if ctx.record_cassette else None
+    resume_id, owner_lease = _resolve_headless_session(ctx)
     session = await _build_session_context(
-        ctx.resume_id,
+        resume_id,
         list(ctx.set_overrides),
         cassette_base,
         config_path=ctx.config_path,
@@ -277,32 +300,41 @@ async def run_headless_workflow(
         mode_name=ctx.mode_name,
         workflow_name=workflow_name,
         headless=True,
+        owner_lease=owner_lease,
     )
-    session.app_state.cli_flags = ctx.flags
-    session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)  # type: ignore[assignment]
+    terminal_token = None
+    processor_task: asyncio.Task[object] | None = None
     try:
-        workspace_access = session.workspace_access
-    except AttributeError:
-        workspace_access = None
-    if workspace_access is not None:
-        workspace_access.set_approval_service(session.approval_svc)
-    from agenthicc.background.terminals import (  # noqa: PLC0415
-        reset_current_terminal_manager,
-        set_current_terminal_manager,
-    )
+        session.app_state.cli_flags = ctx.flags
+        session.approval_svc = _HeadlessApprovalService(  # type: ignore[assignment]
+            ctx.flags.dangerously_skip_permissions
+        )
+        try:
+            workspace_access = session.workspace_access
+        except AttributeError:
+            workspace_access = None
+        if workspace_access is not None:
+            workspace_access.set_approval_service(session.approval_svc)
+        from agenthicc.background.terminals import (  # noqa: PLC0415
+            reset_current_terminal_manager,
+            set_current_terminal_manager,
+        )
 
-    terminal_manager = getattr(session, "terminal_manager", None)
-    terminal_token = (
-        set_current_terminal_manager(terminal_manager) if terminal_manager is not None else None
-    )
-    processor_task = asyncio.create_task(session.processor.run(), name="headless-processor")
-    await asyncio.sleep(0)
-    try:
+        terminal_manager = getattr(session, "terminal_manager", None)
+        terminal_token = (
+            set_current_terminal_manager(terminal_manager) if terminal_manager is not None else None
+        )
+        processor_task = asyncio.create_task(session.processor.run(), name="headless-processor")
+        await asyncio.sleep(0)
         return await execute_workflow(session, workflow_name, intent)
     finally:
         if terminal_token is not None:
             reset_current_terminal_manager(terminal_token)
-        await _close_headless_session(session, processor_task, cassette_base)
+        await _close_headless_session(
+            session,
+            processor_task,
+            cassette_base,
+        )
 
 
 async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
@@ -313,8 +345,9 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
     if not workflow_name:
         raise ValueError("--workflow requires a workflow name")
     cassette_base = Path(ctx.record_cassette) if ctx.record_cassette else None
+    resume_id, owner_lease = _resolve_headless_session(ctx)
     session = await _build_session_context(
-        ctx.resume_id,
+        resume_id,
         list(ctx.set_overrides),
         cassette_base,
         config_path=ctx.config_path,
@@ -322,39 +355,44 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
         mode_name=ctx.mode_name,
         workflow_name=workflow_name,
         headless=True,
+        owner_lease=owner_lease,
     )
-    session.app_state.cli_flags = ctx.flags
-    session.approval_svc = _HeadlessApprovalService(ctx.flags.dangerously_skip_permissions)  # type: ignore[assignment]
+    terminal_token = None
+    processor_task: asyncio.Task[object] | None = None
     try:
-        workspace_access = session.workspace_access
-    except AttributeError:
-        workspace_access = None
-    if workspace_access is not None:
-        workspace_access.set_approval_service(session.approval_svc)
-    from agenthicc.background.terminals import (  # noqa: PLC0415
-        reset_current_terminal_manager,
-        set_current_terminal_manager,
-    )
+        session.app_state.cli_flags = ctx.flags
+        session.approval_svc = _HeadlessApprovalService(  # type: ignore[assignment]
+            ctx.flags.dangerously_skip_permissions
+        )
+        try:
+            workspace_access = session.workspace_access
+        except AttributeError:
+            workspace_access = None
+        if workspace_access is not None:
+            workspace_access.set_approval_service(session.approval_svc)
+        from agenthicc.background.terminals import (  # noqa: PLC0415
+            reset_current_terminal_manager,
+            set_current_terminal_manager,
+        )
 
-    terminal_manager = getattr(session, "terminal_manager", None)
-    terminal_token = (
-        set_current_terminal_manager(terminal_manager) if terminal_manager is not None else None
-    )
-    processor_task = asyncio.create_task(session.processor.run(), name="headless-processor")
-    await asyncio.sleep(0)
-    print(
-        json.dumps(
-            {
-                "status": "ready",
-                "mode": "headless",
-                "workflow": workflow_name,
-                "session_id": session.session_id,
-            }
-        ),
-        flush=True,
-    )
-    completed_turns = 0
-    try:
+        terminal_manager = getattr(session, "terminal_manager", None)
+        terminal_token = (
+            set_current_terminal_manager(terminal_manager) if terminal_manager is not None else None
+        )
+        processor_task = asyncio.create_task(session.processor.run(), name="headless-processor")
+        await asyncio.sleep(0)
+        print(
+            json.dumps(
+                {
+                    "status": "ready",
+                    "mode": "headless",
+                    "workflow": workflow_name,
+                    "session_id": session.session_id,
+                }
+            ),
+            flush=True,
+        )
+        completed_turns = 0
         while True:
             line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
             if not line:
@@ -383,65 +421,139 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
     finally:
         if terminal_token is not None:
             reset_current_terminal_manager(terminal_token)
-        await _close_headless_session(session, processor_task, cassette_base)
+        await _close_headless_session(
+            session,
+            processor_task,
+            cassette_base,
+        )
 
 
 async def _close_headless_session(
     session: "SessionContext",
-    processor_task: asyncio.Task[object],
+    processor_task: asyncio.Task[object] | None,
     cassette_base: Path | None,
 ) -> None:
     """Close durable handles and background services for a headless session."""
-    projection_task = getattr(session, "kernel_projection_task", None)
-    if projection_task is not None:
-        projection_task.cancel()
-        await asyncio.gather(projection_task, return_exceptions=True)
-    await session.processor.drain()
-    await session.processor.stop()
-    processor_task.cancel()
-    await asyncio.gather(processor_task, return_exceptions=True)
-    session.session_log.close()
-    close_memory = getattr(session.session_memory, "close", None)
-    if callable(close_memory):
-        close_memory()
-    if session.mcp_registry is not None:
-        await session.mcp_registry.shutdown()
-    browser_manager = getattr(session, "browser_manager", None)
-    if browser_manager is not None:
-        await browser_manager.close_session()
-    terminal_manager = getattr(session, "terminal_manager", None)
-    if terminal_manager is not None:
-        await terminal_manager.close()
-    session_service = getattr(session, "session_service", None)
-    if session_service is not None:
-        await session_service.close()
-    if cassette_base is not None:
-        from agenthicc.runners.tui_session import _write_cassette_meta  # noqa: PLC0415
+    try:
+        projection_task = getattr(session, "kernel_projection_task", None)
+        if projection_task is not None:
+            projection_task.cancel()
+            await asyncio.gather(projection_task, return_exceptions=True)
+        await session.processor.drain()
+        await session.processor.stop()
+        if processor_task is not None:
+            processor_task.cancel()
+            await asyncio.gather(processor_task, return_exceptions=True)
+        session.session_log.close()
+        close_memory = getattr(session.session_memory, "close", None)
+        if callable(close_memory):
+            close_memory()
+        if session.mcp_registry is not None:
+            await session.mcp_registry.shutdown()
+        browser_manager = getattr(session, "browser_manager", None)
+        if browser_manager is not None:
+            await browser_manager.close_session()
+        terminal_manager = getattr(session, "terminal_manager", None)
+        if terminal_manager is not None:
+            await terminal_manager.close()
+        session_service = getattr(session, "session_service", None)
+        if session_service is not None:
+            await session_service.close()
+        if cassette_base is not None:
+            from agenthicc.runners.tui_session import _write_cassette_meta  # noqa: PLC0415
 
-        _write_cassette_meta(cassette_base / session.session_id, session.session_id)
+            _write_cassette_meta(cassette_base / session.session_id, session.session_id)
+    finally:
+        owner_lease = cast(SessionOwnerLease | None, vars(session).get("owner_lease"))
+        if owner_lease is not None:
+            owner_lease.release()
 
 
 async def _run_headless(ctx: CLIContext | None = None) -> None:
     if ctx is not None and ctx.workflow_name:
-        await _run_headless_workflow_stream(ctx)
+        try:
+            await _run_headless_workflow_stream(ctx)
+        except SessionAlreadyActiveError as exc:
+            print(json.dumps(exc.to_dict(), sort_keys=True), flush=True)
+            raise SystemExit(exc.exit_code) from exc
+        except SessionStorageError as exc:
+            print(
+                json.dumps(
+                    {"status": "error", "code": exc.code, "message": str(exc)},
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            raise SystemExit(1) from exc
         return
 
     from agenthicc.kernel import AppState, Event, EventProcessor, SecurityPolicy, SystemSettings
 
+    # The client-neutral stdin runner historically did not construct a full
+    # TUI SessionContext, but it still creates a durable SessionService
+    # projection when callers supply --resume/--continue.  Claim that ID here
+    # so those flags cannot silently bypass the single-owner boundary.
+    owner_lease = None
+    durable_session_id: str | None = None
+    if ctx is not None and (ctx.resume_id is not None or ctx.continue_session):
+        try:
+            durable_session_id, owner_lease = _resolve_headless_session(ctx)
+            from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
+
+            coordinator = SessionOpenCoordinator()
+            if durable_session_id is None:
+                durable_session_id = uuid.uuid4().hex
+                owner_lease = coordinator.acquire_new(
+                    durable_session_id,
+                    entrypoint="headless",
+                )
+            elif owner_lease is None:
+                owner_lease = coordinator.acquire_existing(
+                    durable_session_id,
+                    entrypoint="headless",
+                )
+        except SessionAlreadyActiveError as exc:
+            print(json.dumps(exc.to_dict(), sort_keys=True), flush=True)
+            raise SystemExit(exc.exit_code) from exc
+        except SessionStorageError as exc:
+            print(
+                json.dumps(
+                    {"status": "error", "code": exc.code, "message": str(exc)},
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            raise SystemExit(1) from exc
+
     state = AppState.create(settings=SystemSettings(), policy=SecurityPolicy())
+    if durable_session_id is not None:
+        state = replace(state, session_id=durable_session_id)
 
     from agenthicc.session_service import SessionCommand, SessionService
 
-    session_service = SessionService()
-    await session_service.ensure_session(
-        state.session_id,
-        project_root=Path.cwd(),
-        capabilities=frozenset({"read", "control", "workspace"}),
-    )
-
-    processor = EventProcessor(initial_state=state, persist=False)
-    sub = processor.subscribe()
-    proc_task = asyncio.create_task(processor.run())
+    session_service: SessionService | None = None
+    proc_task: asyncio.Task[object] | None = None
+    try:
+        session_service = SessionService()
+        await session_service.ensure_session(
+            state.session_id,
+            project_root=Path.cwd(),
+            capabilities=frozenset({"read", "control", "workspace"}),
+        )
+        processor = EventProcessor(initial_state=state, persist=False)
+        sub = processor.subscribe()
+        proc_task = asyncio.create_task(processor.run())
+    except BaseException:
+        if proc_task is not None:
+            proc_task.cancel()
+            await asyncio.gather(proc_task, return_exceptions=True)
+        if session_service is not None:
+            await session_service.close()
+        if owner_lease is not None:
+            owner_lease.release()
+        raise
+    assert session_service is not None
+    assert proc_task is not None
     print(
         json.dumps({"status": "ready", "mode": "headless", "session_id": state.session_id}),
         flush=True,
@@ -495,3 +607,5 @@ async def _run_headless(ctx: CLIContext | None = None) -> None:
         await session_service.close()
         proc_task.cancel()
         await asyncio.gather(proc_task, return_exceptions=True)
+        if owner_lease is not None:
+            owner_lease.release()

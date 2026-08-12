@@ -13,13 +13,47 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>/metadata.json` | `tui.runtime.session_log` | cwd, model, timestamps | Session discovery/index |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
 | `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, turn markers, tool records, subagent worker/pool results, and versioned usage records | Rebuild memory, restore usage, resume interrupted turns, and recover complete subagent results |
+| `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
+| `<id>/.owner.lock` | `SessionOwnerLease` | Short per-session critical section for owner publication, stale replacement, and release | OS advisory lock; never held for the session lifetime |
 | `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase/branch cursor, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
 | `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner/process-start identity only) | Prevent duplicate resume; reclaim only provably dead local claims |
+| `index.lock` | `SessionOpenCoordinator` | Short session-index read/modify/write critical section | OS advisory lock; never held for a turn or TUI lifetime |
 | `<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
 
 The session runner currently places the kernel log beside the session directory
 and the conversation stores inside the directory. Keep these names distinct in
 support tooling.
+
+## Session ownership and resume races
+
+`<id>/.owner` is the authority for whether a process is attached to a durable
+session. It contains only a versioned schema, session ID, opaque owner token,
+PID, host, process-start token when available, acquisition time, and entrypoint;
+it never contains prompts, transcript text, tool arguments, credentials, or
+full command lines. The record is written to a private fsynced temporary file
+and atomically published with restrictive permissions.
+
+Every durable attach path acquires this lease before opening the session
+service, restoring the kernel or conversation journal, touching `last_active`,
+constructing providers/tools/workflows, or replaying the TUI transcript. This
+includes `--continue`, `--resume SESSION_ID`, sessions-list Enter, headless
+workflow execution, and background jobs that explicitly target a session.
+Subagents, phases, tools, and workflow runners inherit the parent lease. The
+workflow run's `<run-id>/.claim` remains a nested, separate guard for one
+workflow's resumable state.
+
+`--continue` selects and claims the newest matching session while holding the
+short-lived `index.lock`. If that selected session is already owned, the
+command reports `session_already_active` and does not fall back to an older
+session or create a fresh one. The conflict includes only bounded PID, host,
+entrypoint, and age diagnostics. The stable conflict exit status is `3`.
+
+An owner left by a crash is reclaimable only when the local PID is absent, a
+known zombie, or its process-start identity no longer matches. Unknown hosts,
+malformed records, permission failures, unsupported identity checks, and
+ambiguous OS errors fail closed. Release is idempotent and compares the opaque
+owner token before removing `.owner`, so late cleanup cannot delete a newer
+owner. A forced unlock is intentionally not provided.
 
 Conversation-memory journals also contain bounded tool-exchange lifecycle
 records. `tool_exchange_started`, `tool_exchange_result_recorded`,

@@ -23,6 +23,7 @@ from agenthicc.cli.context import CLIContext, CLIFlags
 
 if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
+    from agenthicc.runners.session_lease import SessionOwnerLease
 
 
 @dataclass(frozen=True)
@@ -260,6 +261,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
 
     lease = uuid.uuid4().hex
     session = None
+    owner_lease: SessionOwnerLease | None = None
     processor_task: asyncio.Task[object] | None = None
     heartbeat_task: asyncio.Task[None] | None = None
     terminal_token: contextvars.Token[TerminalManager | None] | None = None
@@ -292,6 +294,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             execute_workflow,
         )
         from agenthicc.runners.tui_session import _build_session_context  # noqa: PLC0415
+        from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
 
         ctx = CLIContext(
             resume_id=request.session_id,
@@ -299,6 +302,14 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             set_overrides=request.set_overrides,
             set_secret_overrides=request.set_secret_overrides,
             flags=CLIFlags(dangerously_skip_permissions=request.dangerously_skip_permissions),
+        )
+        # Claim the durable session before creating metadata or opening any
+        # journal.  The background registry lease and the session owner lease
+        # are separate layers: both must be held before execution.
+        owner_lease = SessionOpenCoordinator().acquire(
+            request.session_id,
+            entrypoint="background",
+            require_existing=False,
         )
         # A CLI-created job may be the first durable record for this session.
         # Register it only when no foreground metadata exists; resume must not
@@ -316,6 +327,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             config_path=request.config_path,
             cli_secret_overrides=list(request.set_secret_overrides),
             headless=True,
+            owner_lease=owner_lease,
         )
         session.app_state.cli_flags = ctx.flags
         from agenthicc.background.terminals import set_current_terminal_manager  # noqa: PLC0415
@@ -422,6 +434,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 await _close_headless_session(session, processor_task, None)
             except Exception:  # noqa: BLE001
                 pass
+        if owner_lease is not None:
+            owner_lease.release()
         try:
             os.chdir(original_cwd)
         except OSError:  # pragma: no cover - only an unrecoverable cwd teardown

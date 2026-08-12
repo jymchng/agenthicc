@@ -6,7 +6,8 @@ import json
 import os
 import time
 import uuid
-from collections.abc import Collection, Iterator
+from collections.abc import Callable, Collection, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import AppState
 
 from agenthicc.tui.conversation_store import ConversationEvent
+from agenthicc.runners.process_lease import InterProcessLock, atomic_replace
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 _SESSION_INDEX = _SESSIONS_DIR / "index.json"
@@ -57,38 +59,88 @@ def _load_index() -> dict[str, dict[str, object]]:
     return {}
 
 
-def _save_index(data: dict[str, dict[str, object]]) -> None:
+@contextmanager
+def _index_guard() -> Iterator[None]:
+    """Serialize canonical index read-modify-write operations."""
+
+    with InterProcessLock(_SESSION_INDEX.with_name("index.lock")):
+        yield
+
+
+def _save_index_unlocked(data: dict[str, dict[str, object]]) -> None:
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    _SESSION_INDEX.write_text(json.dumps(data, indent=2))
+    atomic_replace(
+        _SESSION_INDEX,
+        (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        prefix=".index-",
+    )
+
+
+def _save_index(data: dict[str, dict[str, object]]) -> None:
+    """Persist the index under its short cross-process critical section."""
+
+    with _index_guard():
+        _save_index_unlocked(data)
+
+
+def _mutate_index(
+    mutator: Callable[[dict[str, dict[str, object]]], None],
+) -> dict[str, dict[str, object]]:
+    """Apply one index mutation while holding the canonical lock."""
+
+    with _index_guard():
+        index = _load_index()
+        mutator(index)
+        _save_index_unlocked(index)
+        return index
+
+
+def _write_metadata(session_id: str, metadata: dict[str, object]) -> None:
+    session_dir = _SESSIONS_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(session_dir, 0o700)
+    except OSError:
+        pass
+    atomic_replace(
+        session_dir / "metadata.json",
+        (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        prefix=".metadata-",
+    )
 
 
 def register_session(session_id: str, cwd: str, model: str) -> None:
-    index = _load_index()
-    index[session_id] = {
-        "cwd": cwd,
+    metadata = {
+        "cwd": str(Path(cwd).expanduser().resolve()),
         "model": model,
         "mode": "Safe",
         "created_at": time.time(),
         "last_active": time.time(),
     }
-    _save_index(index)
-    session_dir = _SESSIONS_DIR / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "metadata.json").write_text(json.dumps(index[session_id], indent=2))
+
+    def _register(index: dict[str, dict[str, object]]) -> None:
+        index[session_id] = metadata
+
+    _mutate_index(_register)
+    _write_metadata(session_id, metadata)
 
 
 def update_session_mode(session_id: str, mode: str) -> None:
     """Persist the canonical active mode without recording transient internals."""
-    index = _load_index()
-    metadata = index.get(session_id)
-    if metadata is None:
-        return
-    metadata["mode"] = mode
-    metadata["last_active"] = time.time()
-    _save_index(index)
-    session_dir = _SESSIONS_DIR / session_id
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / "metadata.json").write_text(json.dumps(metadata, indent=2))
+    updated: dict[str, object] | None = None
+
+    def _update(index: dict[str, dict[str, object]]) -> None:
+        nonlocal updated
+        metadata = index.get(session_id)
+        if metadata is None:
+            return
+        metadata["mode"] = mode
+        metadata["last_active"] = time.time()
+        updated = dict(metadata)
+
+    _mutate_index(_update)
+    if updated is not None:
+        _write_metadata(session_id, updated)
 
 
 def load_session_mode(session_id: str) -> str | None:
@@ -105,19 +157,24 @@ def load_session_mode(session_id: str) -> str | None:
 
 
 def touch_session(session_id: str) -> None:
-    index = _load_index()
-    if session_id in index:
-        index[session_id]["last_active"] = time.time()
-        _save_index(index)
+    def _touch(index: dict[str, dict[str, object]]) -> None:
+        if session_id in index:
+            index[session_id]["last_active"] = time.time()
+
+    _mutate_index(_touch)
 
 
 def find_latest_session_for_cwd(cwd: str | None = None) -> str | None:
-    cwd = cwd or os.getcwd()
-    index = _load_index()
-    candidates = [(sid, meta) for sid, meta in index.items() if meta.get("cwd") == cwd]
+    canonical_cwd = str(Path(cwd or os.getcwd()).expanduser().resolve())
+    with _index_guard():
+        index = _load_index()
+    candidates = [(sid, meta) for sid, meta in index.items() if meta.get("cwd") == canonical_cwd]
     if not candidates:
         return None
-    latest = max(candidates, key=lambda x: _float_value(x[1].get("last_active")))
+    latest = max(
+        candidates,
+        key=lambda x: (_float_value(x[1].get("last_active")), x[0]),
+    )
     return latest[0]
 
 

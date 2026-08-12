@@ -40,17 +40,14 @@ shared HTTP client so connect and read timeout policy is consistent.
 
 Browser backends are optional and selected by `[tools].browser_backend`;
 `cloakbrowser` remains the backwards-compatible default and `playwright` is
-the Microsoft Playwright alternative. Both have an empty deny-all allow-list by
-default. CloakBrowser's CDP transport accepts only the configured loopback
-endpoint. Every navigation, redirect, and Playwright subresource request is
-checked against the configured domain allow-list. The explicit
-`allow_all_domains` setting defaults to `false`; enabling it bypasses hostname
-matching. CloakBrowser retains its configured-port and loopback protections.
-Playwright intentionally allows any destination port and loopback preview
-servers, while still applying HTTP(S), hostname, DNS, and private
-non-loopback checks.
-DNS results that resolve to loopback, private, link-local, or reserved
-addresses are denied by default. Browser tools cannot execute raw JavaScript,
+the Microsoft Playwright alternative. Both are enabled with a liberal
+allow-all policy by default for this local VPS/sandbox profile: localhost,
+private addresses, arbitrary HTTP(S) hosts, and all destination ports are
+reachable. Set `allow_all_domains = false` and configure `allowed_domains` to
+restore hostname and private-address restrictions. CloakBrowser's CDP
+transport still accepts only the configured loopback endpoint. Every
+navigation, redirect, and Playwright subresource request is checked for valid
+HTTP(S) syntax and DNS resolution. Browser tools cannot execute raw JavaScript,
 select a proxy, read cookies/storage, or fill password/token/card-like fields.
 Snapshots and screenshots are bounded, and screenshots cross the same
 `WorkspaceView` path boundary as other artifacts. Capability metadata remains

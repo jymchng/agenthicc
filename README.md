@@ -350,6 +350,12 @@ uv run agenthicc sessions export SESSION_ID --output session-export.json
 
 Inspection reports artifact health, corruption, token usage, workflow status, and whether a turn needs resume without printing conversation or tool payloads. The export includes valid records from the kernel, conversation, journal, and cassette stores. Credential-shaped values are redacted and malformed JSONL records are reported in the manifest. Review prompts, tool results, paths, and model output before sharing an export.
 
+Resumed sessions are single-owner. If another terminal is using the selected
+session, `--continue`, `--resume`, or session-picker Enter exits with
+`session_already_active` (status `3`) before transcript, tools, or the provider
+are initialized; it never falls back to another session. A crashed owner can
+be reclaimed only when local process liveness proves it is dead.
+
 Project memory and the workspace file cache live below `.agenthicc/`; global memory defaults to `~/.agenthicc/global.db`. See the [storage reference](./docs/reference/storage.md) before deleting session or project state.
 
 ---
@@ -385,11 +391,11 @@ max_live_tool_calls = 5
 group_exploratory_calls = true  # presentation-only grouping of marked reads
 browser_backend = "cloakbrowser"  # cloakbrowser, playwright, or none
 
-# Optional browser automation; enabled as a deny-all surface until configured.
+# Optional browser automation; enabled with liberal local/VPS access by default.
 [tools.cloakbrowser]
 enabled = true
-allowed_domains = ["https://example.com"]
-allow_all_domains = false
+allowed_domains = []
+allow_all_domains = true  # allow localhost, private addresses, and all HTTP(S) hosts
 ```
 
 Filesystem access uses the active mode and the same canonical workspace scope
@@ -425,11 +431,11 @@ browser_backend = "playwright"
 [tools.playwright]
 enabled = true
 browser_type = "chromium"
-allowed_domains = ["example.com"]
-allow_all_domains = false
+allowed_domains = []
+allow_all_domains = true  # allow localhost, private addresses, and all HTTP(S) hosts
 ```
 
-Playwright exposes the same bounded browser operations with `playwright_*` names. Domain, DNS, private-address, artifact, quota, and checkpoint policies are shared with the CloakBrowser adapter. The two backends are mutually exclusive per session, and neither optional package is imported unless its backend is selected. Playwright permits any destination port and loopback preview servers such as `http://localhost:3000/`; the configured domain policy still controls which hosts may be reached.
+Playwright exposes the same bounded browser operations with `playwright_*` names. Domain, DNS, artifact, quota, and checkpoint policies are shared with the CloakBrowser adapter. The two backends are mutually exclusive per session, and neither optional package is imported unless its backend is selected. Browser access is liberal by default: localhost, private addresses, arbitrary HTTP(S) hosts, and any destination port are permitted. Set `allow_all_domains = false` and provide an allow-list when a narrower policy is required.
 After orderly session cleanup, the existing injected browser tool closures can
 be used again: the next `*_open` lazily creates a fresh context and clears
 stale page and operation state. Provider-turn failure cleanup is recoverable

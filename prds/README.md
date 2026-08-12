@@ -38,6 +38,7 @@ against the current source before implementing them.
 - [PRD-168 — Mode-Aware Parent-Workspace Access](prd-168-mode-aware-parent-workspace-access.md)
 - [PRD-169 — Transaction-Safe Tool-Call Conversations Across agenthicc and lauren-ai](prd-169-tool-call-transaction-integrity.md)
 - [PRD-170 — Reliable `/workflow resume` and Durable Workflow Recovery](prd-170-workflow-resume-recovery.md)
+- [PRD-171 — Single Live Owner for Resumed Sessions](prd-171-single-owner-session-lease.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -203,6 +204,15 @@ resume`. It covers durable recovery of running or paused checkpoints after a
 process restart, exact phase/context and session-conversation rehydration,
 tool-transaction repair, command discovery and run selection, repeated pause /
 resume, and checkpoint-aware generated custom workflows.
+
+PRD-171 is implemented as the process-wide session ownership boundary missing
+from `--continue`. It prevents two terminals from opening the same durable
+conversation, requires acquisition before transcript/journal/provider startup,
+uses crash-recoverable PID/host/process-start identity, applies the same lease
+to explicit resume, headless, background, and session-picker entry points, and
+keeps the per-workflow claim as a nested defense-in-depth lease. Focused unit,
+multi-process integration, and CLI E2E evidence is in the PRD's implementation
+section.
 
 ## Existing PRDs
 

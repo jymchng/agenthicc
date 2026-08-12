@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
 from agenthicc.cli.context import CLIContext
 from agenthicc.cli.registry import command, group
+from agenthicc.runners.session_lease import (
+    SessionAlreadyActiveError,
+    SessionStorageError,
+    format_session_conflict,
+)
 
 
 @group("sessions", help="Manage saved sessions")
@@ -24,7 +30,14 @@ def sessions_list(ctx: CLIContext, page: int = 1, page_size: int = 0) -> None:
     if not get_backend().is_interactive():
         _do_sessions(page=page, page_size=page_size or 50)
         return
-    asyncio.run(_open_selected_session(ctx, page=page, page_size=page_size))
+    try:
+        asyncio.run(_open_selected_session(ctx, page=page, page_size=page_size))
+    except SessionAlreadyActiveError as exc:
+        print(format_session_conflict(exc), file=sys.stderr)
+        raise SystemExit(exc.exit_code) from exc
+    except SessionStorageError as exc:
+        print(f"error: {exc.code}: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 async def _open_selected_session(ctx: CLIContext, *, page: int, page_size: int) -> None:
@@ -182,6 +195,11 @@ def _print_session_inspection(summary: dict[str, object]) -> None:
         f"{_integer(workflows.get('failed'))} failed, "
         f"{_integer(workflows.get('incomplete'))} incomplete"
     )
+    owner = _mapping(summary.get("owner"))
+    owner_text = str(owner.get("state", "unknown"))
+    if "pid" in owner:
+        owner_text += f" (pid={owner.get('pid')}, host={owner.get('host', 'unknown')})"
+    print(f"Owner: {owner_text}")
     runs = workflows.get("runs", [])
     for run in runs if isinstance(runs, list) else []:
         run_summary = _mapping(run)

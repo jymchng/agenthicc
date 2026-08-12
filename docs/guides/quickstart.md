@@ -143,6 +143,14 @@ Inspection prints a safe operational summary of artifact health, corrupt lines,
 token/cost totals, workflow status, and any incomplete turn; `--json` emits the
 same summary for automation without including conversation or tool payloads.
 
+Only one local agenthicc process may own a session at a time. If another
+terminal is already using the selected session, `--continue`, `--resume`, or
+Enter in `sessions list` exits quickly with `session_already_active` (exit code
+3) before transcript or provider startup. Close or continue the session in the
+reported process. A crashed process may be reclaimed automatically only when
+its PID/process-start identity proves it is dead; an unknown or malformed
+owner is deliberately protected.
+
 ## Next steps
 
 - [TUI guide](tui.md)
