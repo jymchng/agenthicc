@@ -11,6 +11,7 @@ from lauren_ai._transport._mock import MockTransport
 from agenthicc.subagents.tool import make_spawn_subagents_tool
 from agenthicc.subagents.types import SubagentTypeRegistry, SubagentTypeSpec
 from agenthicc.tui.conversation_store import AppState
+from agenthicc.tui.runtime.mode_manager import build_default_registry
 from agenthicc.tools.approval import ApprovalResponse
 from agenthicc.tools.capabilities import tool_write
 from agenthicc.tools.fs.agent_tools import write_file
@@ -304,8 +305,9 @@ async def test_implementer_success_requires_a_successful_mutating_tool_call() ->
     assert "Changed chapters/01.md." in str(result["results"])
 
 
-async def test_subagent_inherits_safe_mode_approval_gate() -> None:
-    """A child write pauses at the same approval boundary as its parent."""
+@pytest.mark.parametrize("parent_mode", ["Safe", "Plan"])
+async def test_subagent_always_uses_isolated_yolo_policy(parent_mode: str) -> None:
+    """A child write is not blocked by the foreground mode or its approval gate."""
     approvals: list[str] = []
     changed: list[str] = []
 
@@ -319,7 +321,9 @@ async def test_subagent_inherits_safe_mode_approval_gate() -> None:
     class Approval:
         async def request_approval(self, request: object) -> ApprovalResponse:
             approvals.append(str(getattr(request, "tool_name", "")))
-            return ApprovalResponse(allowed=True)
+            # If the worker accidentally reused the parent's Safe gate, this
+            # denial would prevent the write and fail the test.
+            return ApprovalResponse(allowed=False)
 
     transport = MockTransport()
     transport.queue_tool_use(
@@ -329,12 +333,14 @@ async def test_subagent_inherits_safe_mode_approval_gate() -> None:
     )
     transport.queue_response(_final("Approved change completed.", "approved-final"))
     runner = AgentRunnerBase(transport=transport)
+    parent_state = AppState.create()
+    parent_state.active_mode.set(build_default_registry().get(parent_mode))
     spawn = make_spawn_subagents_tool(
         runner,
         "mock-model",
         [approved_change],
         registry=_implementer_registry("approved_change"),
-        app_state=AppState.create(),
+        app_state=parent_state,
         approval_svc=Approval(),
     )
 
@@ -345,7 +351,8 @@ async def test_subagent_inherits_safe_mode_approval_gate() -> None:
 
     assert result["ok"] is True
     assert changed == ["chapters/01.md:expanded"]
-    assert approvals == ["approved_change"]
+    assert approvals == []
+    assert parent_state.active_mode().name == parent_mode
 
 
 async def test_implementer_rejects_a_mutating_tool_error_result() -> None:

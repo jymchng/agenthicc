@@ -17,12 +17,14 @@ tool-call summary. The aggregate sent to the parent is complete (not the
 result and each complete aggregate is fsync'd before the parent tool exchange
 is committed, so cancellation cannot erase already-produced output.
 
-When the parent session supplies them, the worker installs both
-``ToolCapabilityGate`` and ``ApprovalGate``.  The former enforces the active
-mode on every child call; the latter preserves Safe-mode approval and
-workspace authorization inside the nested runner.  The pool itself remains
-agnostic about TUI rendering: it projects state/events into the supplied
-``ConversationStore`` and kernel ``EventProcessor`` boundaries.
+When the parent session supplies them, the worker installs a child-local
+``ToolCapabilityGate`` and ``ApprovalGate`` configured for Yolo.  This is
+intentional: implementation subagents must be able to mutate files even when
+the foreground TUI is in Safe or Plan, while the parent's mode signal remains
+unchanged.  The workspace scope is still inherited; only its mode provider is
+isolated and set to Yolo.  The pool itself remains agnostic about TUI
+rendering: it projects state/events into the supplied ``ConversationStore``
+and kernel ``EventProcessor`` boundaries.
 """
 
 from __future__ import annotations
@@ -241,6 +243,60 @@ class SubagentResult:
     changed_paths: tuple[str, ...] = ()  # Paths supplied to mutation tools
 
 
+def _make_yolo_app_state(parent: "AppState | None") -> "AppState | None":
+    """Build an isolated Yolo policy state for one child worker.
+
+    Subagents are autonomous implementation workers. They must not inherit
+    the foreground TUI's Safe/Plan capability gate, but changing the shared
+    ``AppState`` would also change the user's mode while the parent turn is
+    still running. A child-local state gives the worker the intended Yolo
+    policy without mutating or racing the parent state.
+
+    ``None`` remains ``None`` for headless callers that do not install runtime
+    capability hooks at all.
+    """
+    if parent is None:
+        return None
+
+    from agenthicc.tui.conversation_store import AppState  # noqa: PLC0415
+    from agenthicc.tui.runtime.mode_manager import build_default_registry  # noqa: PLC0415
+
+    child = AppState.create()
+    yolo = build_default_registry().get("Yolo")
+    if yolo is None:  # pragma: no cover - the built-in registry is invariant
+        raise RuntimeError("the built-in Yolo mode is unavailable for subagent execution")
+    child.active_mode.set(yolo)
+    return child
+
+
+def _make_yolo_workspace_access(
+    parent: "WorkspaceAccessPolicy | None",
+    child_app_state: "AppState | None",
+) -> "WorkspaceAccessPolicy | None":
+    """Bind a child workspace policy to the worker's isolated Yolo state.
+
+    The workspace scope is still inherited from the session, so the child
+    cannot silently switch projects. Only the mode provider changes: Yolo
+    allows the same path operations without the parent's Safe/Plan approval
+    behavior. A lightweight/headless caller without a scope keeps its
+    existing policy object for compatibility.
+    """
+    if parent is None or child_app_state is None:
+        return parent
+
+    scope = getattr(parent, "scope", None)
+    if scope is None:
+        return parent
+
+    from agenthicc.tools.workspace_access import WorkspaceAccessPolicy  # noqa: PLC0415
+
+    return WorkspaceAccessPolicy(
+        scope,
+        mode_provider=child_app_state.active_mode,
+        approval_service=None,
+    )
+
+
 @dataclass
 class AggregatedResult:
     """Concatenated result from all workers in one pool run."""
@@ -384,7 +440,10 @@ class SubagentWorker:
         self._parent_runner = parent_runner
         self._parent_model = parent_model
         self._all_tools = all_tools
-        self._app_state = app_state
+        # Child policy is deliberately isolated from the parent TUI state.
+        # Every subagent is autonomous/Yolo even when the foreground session is
+        # in Safe or Plan; the parent mode must not change as a side effect.
+        self._app_state = _make_yolo_app_state(app_state)
         self._registry = registry
         self._retry_config: RetryConfig | None = retry_config
         self._usage_ledger = usage_ledger
@@ -393,7 +452,10 @@ class SubagentWorker:
         self._provider_options = dict(provider_options or {})
         self._timeout_s = None if timeout_s is None else _validate_timeout_s(timeout_s)
         self._approval_svc = approval_svc
-        self._workspace_access = workspace_access
+        self._workspace_access = _make_yolo_workspace_access(
+            workspace_access,
+            self._app_state,
+        )
         self.label = f"{spec.name} #{index}"
         self._tool_calls: list[str] = []
         self._successful_tool_calls: list[str] = []

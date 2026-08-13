@@ -18,12 +18,68 @@ from agenthicc.subagents.pool import (
     SubagentResult,
     AggregatedResult,
     SubagentPool,
+    _make_yolo_app_state,
+    _make_yolo_workspace_access,
     _aggregate,
     _UnknownTypeWorker,
 )
+from agenthicc.tui.conversation_store import AppState
+from agenthicc.tui.runtime.mode_manager import build_default_registry
+from agenthicc.tools.workspace_access import WorkspaceAccessPolicy, WorkspaceScope
 from agenthicc.subagents.tool import _find_cached_result, _tasks_fingerprint
 
 pytestmark = pytest.mark.unit
+
+
+def test_subagent_policy_state_is_yolo_without_mutating_parent_mode() -> None:
+    parent = AppState.create()
+    parent.active_mode.set(build_default_registry().get("Plan"))
+
+    child = _make_yolo_app_state(parent)
+
+    assert child is not None
+    assert child is not parent
+    assert child.active_mode().name == "Yolo"
+    assert parent.active_mode().name == "Plan"
+
+
+def test_headless_subagent_policy_state_remains_absent() -> None:
+    assert _make_yolo_app_state(None) is None
+
+
+@pytest.mark.asyncio
+async def test_subagent_workspace_policy_uses_yolo_without_changing_parent(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    scope = WorkspaceScope.create(workspace)
+
+    parent = AppState.create()
+    parent.active_mode.set(build_default_registry().get("Safe"))
+
+    class DenyApproval:
+        async def request_approval(self, _request: object) -> object:
+            from agenthicc.tools.approval import ApprovalResponse
+
+            return ApprovalResponse(allowed=False)
+
+    parent_policy = WorkspaceAccessPolicy(
+        scope,
+        mode_provider=parent.active_mode,
+        approval_service=DenyApproval(),  # type: ignore[arg-type]
+    )
+    child = _make_yolo_app_state(parent)
+    child_policy = _make_yolo_workspace_access(parent_policy, child)
+
+    assert child is not None
+    assert child_policy is not None
+    result = await child_policy.authorize_tool("write_file", {"path": str(outside / "created.txt")})
+
+    assert result.allowed is True
+    assert result.code == "yolo_bypass"
+    assert child_policy.mode_name == "Yolo"
+    assert parent_policy.mode_name == "Safe"
 
 
 # ── SubagentTypeRegistry ──────────────────────────────────────────────────────

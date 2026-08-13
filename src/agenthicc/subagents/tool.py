@@ -126,8 +126,9 @@ def make_spawn_subagents_tool(
         Default semaphore bound.  May be overridden per call via the
         ``max_concurrent`` tool parameter.
     app_state:
-        ``AppState`` used to build a ``ToolCapabilityGate`` per worker.
-        ``None`` in headless / test contexts.
+        ``AppState`` used to derive each worker's isolated Yolo policy state.
+        The parent state is never mutated; ``None`` in headless / test
+        contexts leaves capability hooks disabled.
     processor:
         Kernel ``EventProcessor`` for emitting ``SubagentPool*`` events.
         ``None`` disables kernel event emission.
@@ -146,9 +147,10 @@ def make_spawn_subagents_tool(
         Wall-clock timeout in seconds for each worker in one invocation.
         Defaults to one hour and may be overridden by the parent model.
     approval_svc:
-        The parent session's approval service.  Child workers install the
-        same approval gate when this is provided, so Safe-mode side effects
-        cannot bypass the parent approval boundary.
+        The parent session's approval service.  It is retained for hook
+        compatibility, but child workers run with an isolated Yolo policy, so
+        they do not request foreground Safe-mode approval.  The parent TUI
+        mode is never changed by spawning workers.
     workspace_access:
         The parent session's workspace policy, passed to child approval hooks
         for consistent path authorization.
