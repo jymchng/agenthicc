@@ -68,6 +68,7 @@ nav:
       - Quickstart: guides/quickstart.md
       - Architecture: guides/architecture.md
       - Configuration: guides/configuration.md
+      - Connecting MCP servers: guides/mcp.md
       - Project bootstrap: guides/project-bootstrap.md
       - TUI: guides/tui.md
       - Background sessions: guides/background-sessions.md

@@ -19,6 +19,8 @@ capability-gated tools.
   reactive UI state, tools, and persistence.
 - [Configuration](guides/configuration.md) — config discovery, precedence,
   providers, security, memory, and MCP.
+- [Connecting MCP servers](guides/mcp.md) — install MCP support, register
+  local or remote servers, authenticate, diagnose, and manage connections.
 - [Project bootstrap](guides/project-bootstrap.md) — preview and safely write
   project-specific `AGENTS.md` guidance.
 - [TUI guide](guides/tui.md) — workspace layout, modes, input, overlays, and

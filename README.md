@@ -531,6 +531,7 @@ Nox contains the CI session definitions (`noxfile.py`), including the embedded `
 - [Quickstart](./docs/guides/quickstart.md)
 - [Architecture](./docs/guides/architecture.md)
 - [Configuration](./docs/guides/configuration.md)
+- [Connecting MCP servers](./docs/guides/mcp.md)
 - [Project bootstrap](./docs/guides/project-bootstrap.md)
 - [TUI](./docs/guides/tui.md)
 - [Background sessions](./docs/guides/background-sessions.md)
