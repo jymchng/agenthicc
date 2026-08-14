@@ -38,6 +38,11 @@ from typing import TYPE_CHECKING
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
+# Cache-contract boundary: the inherited ``run_phase`` calls
+# ``build_workflow_prompt_contract`` before every phase turn. This runner keeps
+# all phase state/artifacts in the dynamic region and supplies only its stable
+# contract constant to that boundary.
+
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.tui.runtime.mode_manager import ModeManager

@@ -110,6 +110,22 @@ def group(*path: str, help: str = "") -> Callable[[Handler | None], Handler | No
     return decorator
 
 
+def optional_positionals(*names: str) -> Callable[[Handler], Handler]:
+    """Mark defaulted string parameters as optional positional arguments.
+
+    Most CLI defaults intentionally become ``--option`` flags. A small number
+    of commands, such as ``mcp doctor [NAME]``, have a conventional optional
+    positional form, so they opt into it explicitly instead of changing the
+    inference rule for every existing command.
+    """
+
+    def decorator(fn: Handler) -> Handler:
+        setattr(fn, "_optional_positionals", frozenset(names))
+        return fn
+
+    return decorator
+
+
 # ── argparse wiring ────────────────────────────────────────────────────────────
 
 
@@ -119,6 +135,7 @@ def _add_params(parser: argparse.ArgumentParser, fn: Handler) -> None:
 
     hints = typing.get_type_hints(fn)
     sig = inspect.signature(fn)
+    optional: frozenset[str] = getattr(fn, "_optional_positionals", frozenset())
     for name, param in sig.parameters.items():
         ann = hints.get(name, inspect.Parameter.empty)
         default = param.default
@@ -129,6 +146,14 @@ def _add_params(parser: argparse.ArgumentParser, fn: Handler) -> None:
         # ``global_`` becomes the user-facing ``--global`` option.
         option_name = name[:-1] if name.endswith("_") else name
         option = f"--{option_name.replace('_', '-')}"
+        if name in optional:
+            parser.add_argument(
+                name,
+                nargs="?",
+                default=None if default is empty else default,
+                metavar=name.upper(),
+            )
+            continue
         if ann is bool:
             parser.add_argument(
                 option,

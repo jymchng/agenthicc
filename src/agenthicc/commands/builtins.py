@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import TYPE_CHECKING
 
 from .command import BusyPolicy, Command, CommandContext, CommandHandler, UsageSnapshot
@@ -164,7 +166,45 @@ def _cmd_init(ctx: CommandContext) -> bool:
 
 
 def _cmd_mcp(ctx: CommandContext) -> bool:
-    ctx.console.print("[dim]/mcp: no MCP servers configured or not available.[/dim]")
+    manager = ctx.mcp_manager
+    if manager is None:
+        ctx.console.print("[dim]/mcp: no MCP servers configured or not available.[/dim]")
+        return True
+    parts = ctx.args.strip().split()
+    action = parts[0].lower() if parts else "status"
+    name = parts[1] if len(parts) > 1 else None
+    if action in {"status", "list"}:
+        status = manager.status()
+        if not status:
+            ctx.console.print("[dim]/mcp: no MCP servers configured.[/dim]")
+        else:
+            ctx.console.print(json.dumps(status, sort_keys=True, indent=2), markup=False)
+        return True
+    if action not in {"connect", "disconnect", "refresh", "doctor"} or (action != "doctor" and not name):
+        ctx.console.print(
+            "Usage: /mcp [status|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
+            markup=False,
+        )
+        return True
+
+    async def _run() -> None:
+        try:
+            if action == "connect" and name is not None:
+                await manager.connect_server(name)
+            elif action == "disconnect" and name is not None:
+                await manager.disconnect_server(name)
+            elif action == "refresh" and name is not None:
+                await manager.refresh_server(name)
+            else:
+                result = await manager.doctor(name)
+                ctx.console.print(json.dumps(result, sort_keys=True, indent=2), markup=False)
+                return
+            ctx.console.print(f"/mcp {action} complete{f' for {name}' if name else ''}.", markup=False)
+        except Exception as exc:  # noqa: BLE001
+            ctx.console.print(f"/mcp {action} failed: {type(exc).__name__}: {exc}", markup=False)
+
+    asyncio.create_task(_run(), name=f"mcp-{action}")
+    ctx.console.print(f"/mcp {action} scheduled{f' for {name}' if name else ''}.", markup=False)
     return True
 
 
@@ -901,7 +941,7 @@ BUILTIN_COMMANDS: list[Command] = [
         name="/mcp",
         description="Show MCP server status",
         group="MCP",
-        argument_hint="[connect <url> [transport]]",
+        argument_hint="[status|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_mcp_busy_policy,
         handler=_cmd_mcp,

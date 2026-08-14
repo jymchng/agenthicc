@@ -133,12 +133,38 @@ approval, testing, or documentation work.
 
 ## MCP servers
 
-Configure MCP servers with `[[tools.mcp_servers]]`. The bridge supports stdio,
-WebSocket, and streamable HTTP forms, reconnects according to config, discovers
-schemas, and exposes namespaced tools. Treat remote MCP servers as external
-code execution and protect tokens with environment expansion and trust policy.
-Structured MCP results are preserved as native JSON values; JSON-encoded text
-results are decoded when possible, while ordinary text results remain strings.
+Configure MCP servers with `[[tools.mcp_servers]]`. A session owns one
+`McpSessionManager` shared by normal turns, workflows, subagents, and headless
+runs. It starts independent servers concurrently, keeps optional failures
+visible without blocking healthy servers, caches a deterministic tool catalog,
+and refreshes one server when its tool list changes. Streamable HTTP is the
+preferred remote transport; WebSocket and the old `streamable`/`http` spellings
+remain readable as compatibility aliases.
+
+New stdio entries should use an argv array and never a shell:
+
+```toml
+[[tools.mcp_servers]]
+name = "local-tools"
+transport = "stdio"
+command = ["python", "-m", "my_mcp_server"]
+cwd = "."
+startup_timeout_s = 10
+tool_timeout_s = 60
+required = false
+enabled_tools = ["read_file", "list_directory"]
+disabled_tools = ["write_file"]
+
+[tools.mcp_servers.env_headers]
+Authorization = "MCP_TOKEN"
+```
+
+Legacy `url = "python -m my_mcp_server"` stdio entries continue to load through
+the compatibility parser and are never passed to `shell=True`. Treat remote
+MCP servers as external code execution and protect tokens with environment
+expansion and trust policy. Structured MCP results are preserved as native JSON
+values; JSON-encoded text results are decoded when possible, while ordinary
+text results remain strings.
 
 For a safe, repeatable registration flow, add a server through the CLI:
 
@@ -168,6 +194,13 @@ launcher.
 5. For structured diagnostics, call
    `discover_skills_with_diagnostics(project_dir=..., user_dir=...)`.
 6. Test the loader directly in a focused unit/integration test.
+
+For MCP lifecycle diagnostics use `agenthicc mcp list`, `get`, `doctor`,
+`connect`, `refresh`, and `remove`. Inside a running TUI, `/mcp` shows server
+state, catalog revision, tool count, and redacted failures; `/mcp connect NAME`,
+`/mcp disconnect NAME`, and `/mcp refresh NAME` operate on the current
+session-scoped manager. `mcp doctor` never invokes a tool merely to test
+connectivity.
 
 The long-term extension SDK, generated catalog, and unified trust contract are
 PRD-138 P1.6/P2.4 work.

@@ -202,23 +202,56 @@ group_exploratory_calls = true  # presentation-only grouping of marked reads
 
 [[tools.mcp_servers]]
 name = "local-tools"
-url = "python -m my_mcp_server"
 transport = "stdio"
+command = ["python", "-m", "my_mcp_server"]
+cwd = "."
 auto_connect = true
 reconnect_attempts = 3
+startup_timeout_s = 10
+tool_timeout_s = 60
+enabled_tools = ["read_file", "list_directory"]
+disabled_tools = ["write_file"]
+
+[[tools.mcp_servers]]
+name = "remote-search"
+transport = "streamable_http"
+url = "https://mcp.example.test/mcp"
+auto_connect = false
+
+[tools.mcp_servers.env_headers]
+Authorization = "MCP_TOKEN"
 ```
 
-MCP tokens and URLs support `${ENV_VAR}` expansion. Available transports are
-validated by the MCP bridge; remote servers must also pass network and trust
-policy. Discovered MCP tools are adapted into callable agent tools with their
-advertised input schemas, so stdio and remote MCP tools can be invoked in the
-same agent turn as built-in tools. For the current user-defined Python tool
-journey, including which settings are and are not connected to direct TUI
-plugin execution, see the
+MCP tokens, command arguments, environment values, headers, and URLs support
+approved `${ENV_VAR}` references. New stdio entries use an argv array and never
+invoke a shell; legacy `url = "python -m my_mcp_server"` strings remain
+compatible and are split without `shell=True`. Available transports are
+validated by the MCP bridge; remote servers pass the configured network policy
+before connecting. Discovered tools are cached in one session-scoped catalog,
+filtered deterministically, and shared by normal chat, Plan mode, workflows,
+subagents, and headless runs. A list-change notification or `/mcp refresh NAME`
+replaces only the affected server's catalog. For the current user-defined
+Python tool journey, including which settings are and are not connected to
+direct TUI plugin execution, see the
 [user-defined tools guide](tools.md).
 The internal identity `mcp:<server>:<tool>` is retained for MCP routing;
 the provider-facing schema uses a valid equivalent such as
 `mcp_database-dev_create_row`.
+
+MCP support is optional. Install it only for projects that configure MCP
+servers. The extra includes the stdio client plus the optional HTTP/SSE and
+WebSocket transport adapters; it does not install MCP dependencies for a base
+agenthicc installation:
+
+```bash
+pip install 'agenthicc[mcp]'
+# or, in a uv checkout:
+uv sync --extra mcp
+```
+
+Without this extra, configured servers remain visible in diagnostics and fail
+with an actionable optional-dependency status; ordinary agenthicc sessions do
+not require the MCP client package.
 
 ## Optional CloakBrowser integration
 

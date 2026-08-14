@@ -187,6 +187,13 @@ class TriggerCapability:
     Uses resolve() which normalises Key.AT → "@" in one place.  This capability
     works identically in IDLE and STREAMING — fixing the bug where @ was silently
     dropped in streaming because Key.AT never matched `case Key.CHAR if ch:`.
+
+    The picker currently models a trigger as the suffix of the buffer and is
+    therefore only opened while the insertion cursor is at the end.  A trigger
+    typed while editing an earlier position is ordinary text: opening a picker
+    there would lose the character because the overlay cannot represent the
+    untouched suffix correctly.  This also makes Home/Left followed by ``/``
+    behave like every other literal character.
     """
 
     async def handle(
@@ -203,7 +210,7 @@ class TriggerCapability:
             return _PASS
         handler = registry.get(tch)
         can = handler.can_activate(session._buf.buf[: session._buf.cursor]) if handler else False
-        if can:
+        if can and session._buf.cursor == len(session._buf):
             await session._open_trigger_overlay(tch)
         else:
             session._paste.insert(session._buf, tch)

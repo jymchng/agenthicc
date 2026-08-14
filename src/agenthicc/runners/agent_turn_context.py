@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
+    from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.skills.loader import SkillPermissionSet, SkillDef
     from agenthicc.runners.usage_ledger import UsageLedger
@@ -45,7 +46,7 @@ class AgentTurnOptions(TypedDict):
     skill_permissions: "SkillPermissionSet | None"
     mention_cache: "MentionCache | None"
     project_plugin_tools: "list[ToolLike] | None"
-    mcp_registry: "McpToolRegistry | None"
+    mcp_registry: "McpToolRegistry | McpSessionManager | None"
     active_agent: str
     completed_turns: int
     approval_svc: "ApprovalService | None"
@@ -88,7 +89,7 @@ class AgentTurnContext:
     skill_permissions: "SkillPermissionSet | None" = None
     mention_cache: "MentionCache | None" = None
     project_plugin_tools: "list[ToolLike] | None" = None
-    mcp_registry: "McpToolRegistry | None" = None
+    mcp_registry: "McpToolRegistry | McpSessionManager | None" = None
 
     # ── agent identity ────────────────────────────────────────────────────────
     active_agent: "str | None" = None  # None → "default"

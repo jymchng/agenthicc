@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.mcp_config import McpConfigError, add_mcp_server
+from agenthicc.cli.mcp_config import McpConfigError, add_mcp_server, remove_mcp_server
 
 pytestmark = pytest.mark.unit
 
@@ -201,3 +201,30 @@ def test_mcp_add_parser_wires_positional_and_options() -> None:
     assert namespace.token_env == "MCP_TOKEN"
     assert namespace.no_auto_connect is True
     assert mcp.mcp_add is not None
+
+
+def test_remove_preserves_unrelated_toml_and_permissions(tmp_path: Path) -> None:
+    config_path = tmp_path / "agenthicc.toml"
+    config_path.write_text(
+        '[execution]\nmodel = "test"\n\n'
+        '[[tools.mcp_servers]]\nname = "first"\nurl = "one"\n\n'
+        '[[tools.mcp_servers]]\nname = "second"\nurl = "two"\n',
+        encoding="utf-8",
+    )
+    config_path.chmod(0o640)
+    result = remove_mcp_server(name="first", explicit_path=str(config_path))
+    assert result.name == "first"
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o640
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["execution"]["model"] == "test"
+    assert [item["name"] for item in data["tools"]["mcp_servers"]] == ["second"]
+
+
+def test_mcp_doctor_supports_optional_positional_name() -> None:
+    from agenthicc.cli import registry
+
+    parser = argparse.ArgumentParser()
+    registry._wire(parser, registry._as_tree())
+    namespace = parser.parse_args(["mcp", "doctor", "remote", "--json"])
+    assert namespace.name == "remote"
+    assert namespace.json_ is True

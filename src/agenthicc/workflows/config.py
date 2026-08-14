@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.conversation_store import ConversationStore, AppState
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.tools.mcp import McpToolRegistry
+    from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.mentions.cache import MentionCache
     from agenthicc.agents.registry import AgentsRegistry
     from agenthicc.config import AgenthiccConfig
@@ -45,7 +46,7 @@ class WorkflowConfig:
     cfg: "AgenthiccConfig"
     skills: "dict[str, SkillDef]"
     plugin_tools: "PluginToolSet | list[ToolLike]"
-    mcp_registry: "McpToolRegistry | None"
+    mcp_registry: "McpToolRegistry | McpSessionManager | None"
     mention_cache: "MentionCache"
     agents_registry: "AgentsRegistry"
     memory_router: "MemoryRouter | None" = field(default=None)

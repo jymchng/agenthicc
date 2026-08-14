@@ -65,6 +65,45 @@ def _config_path(
     return base / ".agenthicc" / "agenthicc.toml"
 
 
+def mcp_config_path(
+    *,
+    global_scope: bool = False,
+    project_scope: bool = False,
+    project_dir: Path | None = None,
+    user_dir: Path | None = None,
+    explicit_path: str | None = None,
+) -> Path:
+    """Return the selected MCP configuration path without modifying it."""
+    return _config_path(
+        global_scope=global_scope,
+        project_scope=project_scope,
+        project_dir=project_dir,
+        user_dir=user_dir,
+        explicit_path=explicit_path,
+    )
+
+
+def read_mcp_servers(path: Path) -> list[dict[str, object]]:
+    """Read and validate the MCP array from *path*.
+
+    The returned mappings are raw TOML values so CLI JSON output can retain
+    configuration intent without resolving bearer tokens.
+    """
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise McpConfigError(f"could not read {path}: {exc}") from exc
+    tools = data.get("tools", {})
+    if tools is None:
+        return []
+    if not isinstance(tools, Mapping):
+        raise McpConfigError("[tools] must be a TOML table")
+    raw_servers = tools.get("mcp_servers", [])
+    if not isinstance(raw_servers, list):
+        raise McpConfigError("tools.mcp_servers must be an array of tables")
+    return [dict(item) for item in raw_servers if isinstance(item, Mapping)]
+
+
 def _validate(
     *,
     name: str,
@@ -273,3 +312,68 @@ def add_mcp_server(
     )
     _append_config(path, block)
     return McpConfigResult(name=name, path=path, scope="global" if global_scope else "project")
+
+
+def remove_mcp_server(
+    *,
+    name: str,
+    global_scope: bool = False,
+    project_scope: bool = False,
+    project_dir: Path | None = None,
+    user_dir: Path | None = None,
+    explicit_path: str | None = None,
+) -> McpConfigResult:
+    """Remove one MCP stanza while preserving unrelated TOML text."""
+    clean_name = name.strip()
+    if not _SERVER_NAME_RE.fullmatch(clean_name):
+        raise McpConfigError("invalid MCP server name")
+    path = _config_path(
+        global_scope=global_scope,
+        project_scope=project_scope,
+        project_dir=project_dir,
+        user_dir=user_dir,
+        explicit_path=explicit_path,
+    )
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    servers = read_mcp_servers(path)
+    if not any(item.get("name") == clean_name for item in servers):
+        raise McpConfigError(f"MCP server not found: {clean_name}")
+
+    lines = existing.splitlines(keepends=True)
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == "[[tools.mcp_servers]]"
+    ]
+    remove_start = remove_end = None
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(lines)
+        block = "".join(lines[start:end])
+        try:
+            parsed = tomllib.loads(block)
+        except tomllib.TOMLDecodeError:
+            continue
+        item = parsed.get("tools", {}).get("mcp_servers", [{}])[0]
+        if isinstance(item, Mapping) and item.get("name") == clean_name:
+            remove_start, remove_end = start, end
+            break
+    if remove_start is None or remove_end is None:
+        raise McpConfigError(f"could not locate MCP stanza for {clean_name}")
+    updated = "".join(lines[:remove_start] + lines[remove_end:])
+    mode = stat.S_IMODE(path.stat().st_mode)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(updated)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except OSError as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise McpConfigError(f"could not write {path}: {exc}") from exc
+    return McpConfigResult(name=clean_name, path=path, scope="global" if global_scope else "project")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agenthicc.tools.mcp import (
@@ -12,6 +13,7 @@ from agenthicc.tools.mcp import (
     AgenthiccMcpTool,
     McpToolRegistry,
     McpToolCallError,
+    McpConfigurationError,
     _extract_tool_content,
 )
 
@@ -77,6 +79,16 @@ def test_from_dict_defaults_apply():
     assert cfg.transport == "stdio"
     assert cfg.auto_connect is True
     assert cfg.reconnect_attempts == 3
+
+
+def test_config_validation_requires_secret_headers_to_use_references():
+    with pytest.raises(McpConfigurationError, match="sensitive MCP headers"):
+        McpServerConfig(
+            name="remote",
+            url="https://example.test/mcp",
+            transport="streamable_http",
+            headers={"Authorization": "Bearer raw-secret"},
+        ).validate()
 
 
 # ── AgenthiccMcpTool ─────────────────────────────────────────────────────────
@@ -197,6 +209,31 @@ async def test_connect_retries_and_raises_after_exhaustion():
             await bridge.connect()
     # reconnect_attempts=1 means 2 total attempts
     assert mock_client.connect.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_connect_preserves_bounded_stderr_after_startup_failure():
+    """Failed stdio startup retains diagnostics after the client is discarded."""
+
+    class FailedClient:
+        stderr_tail = "server: missing API key"
+
+        async def connect(self) -> None:
+            raise RuntimeError("server exited")
+
+        async def close(self) -> None:
+            return None
+
+    cfg = McpServerConfig(name="s", url="u", transport="stdio", reconnect_attempts=0)
+    bridge = McpToolBridge(cfg)
+    with (
+        patch("agenthicc.tools.mcp._LAUREN_MCP_AVAILABLE", True),
+        patch.object(bridge, "_build_client", AsyncMock(return_value=FailedClient())),
+    ):
+        with pytest.raises(McpToolCallError, match="Failed to connect"):
+            await bridge.connect()
+
+    assert bridge.stderr_tail == "server: missing API key"
 
 
 @pytest.mark.asyncio
@@ -543,7 +580,13 @@ def test_extract_data_block_when_no_text():
 @pytest.mark.asyncio
 async def test_build_client_ws_transport():
     """_build_client uses McpServer.ws for ws/websocket transport."""
-    cfg = McpServerConfig(name="s", url="wss://example.com/mcp", transport="ws", token="tok")
+    cfg = McpServerConfig(
+        name="s",
+        url="wss://example.com/mcp",
+        transport="ws",
+        token="tok",
+        startup_timeout_s=4.0,
+    )
     bridge = McpToolBridge(cfg)
 
     mock_server_cls = MagicMock()
@@ -555,6 +598,7 @@ async def test_build_client_ws_transport():
     mock_server_cls.ws.assert_called_once()
     args, kwargs = mock_server_cls.ws.call_args
     assert args[0] == "wss://example.com/mcp"
+    assert kwargs["startup_timeout"] == 4.0
 
 
 @pytest.mark.asyncio
@@ -617,8 +661,15 @@ async def test_build_client_unknown_transport_raises():
 @pytest.mark.asyncio
 async def test_build_client_stdio_transport():
     """_build_client uses McpServer.stdio for stdio transport."""
-    cfg = McpServerConfig(name="s", url="npx run server", transport="stdio")
-    bridge = McpToolBridge(cfg)
+    cfg = McpServerConfig(
+        name="s",
+        command=("npx", "run", "server"),
+        cwd=".",
+        env={"MCP_MODE": "test"},
+        transport="stdio",
+        startup_timeout_s=4.0,
+    )
+    bridge = McpToolBridge(cfg, workspace_root=Path.cwd())
 
     mock_server_cls = MagicMock()
     mock_server_cls.stdio.return_value = MagicMock()
@@ -628,8 +679,10 @@ async def test_build_client_stdio_transport():
 
     mock_server_cls.stdio.assert_called_once()
     args, kwargs = mock_server_cls.stdio.call_args
-    # shlex.split("npx run server") → ["npx", "run", "server"]
     assert args[0] == ["npx", "run", "server"]
+    assert kwargs["cwd"] == str(Path.cwd().resolve())
+    assert kwargs["env"] == {"MCP_MODE": "test"}
+    assert kwargs["startup_timeout"] == 4.0
 
 
 # ── disconnect suppresses close() errors ──────────────────────────────────────
@@ -647,6 +700,18 @@ async def test_disconnect_suppresses_close_error():
     await bridge.disconnect()
     assert not bridge.is_connected
     assert bridge._client is None
+
+
+def test_change_callback_uses_lauren_mcp_notification_surface():
+    """Protocol list-change notifications are wired to catalog refreshes."""
+    bridge = McpToolBridge(McpServerConfig(name="s", url="u"))
+    client = MagicMock()
+    bridge._client = client
+    callback = MagicMock()
+
+    bridge.set_change_callback(callback)
+
+    client.on_list_changed.assert_called_once_with(callback)
 
 
 # ── McpCallError transparent re-raise path ───────────────────────────────────

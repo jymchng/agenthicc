@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from agenthicc.workflows.registry import WorkflowRegistry
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.background.terminals import TerminalManager
+    from agenthicc.tools.mcp_manager import McpSessionManager
 
 __all__ = [
     "Command",
@@ -92,6 +93,7 @@ class CommandContext:
     tools: "list[ToolLike] | None" = None
     tool_sources: "Mapping[str, str] | None" = None
     workflow_registry: "WorkflowRegistry | None" = None
+    mcp_manager: "McpSessionManager | None" = None
     mode_manager: "ModeManager | None" = None
     terminal_manager: "TerminalManager | None" = None
     set_pending_skill: "Callable[[str], None] | None" = None

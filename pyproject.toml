@@ -22,6 +22,10 @@ dependencies = [
 cloud = ["aiohttp>=3.9", "keyring>=25.0"]
 cloakbrowser = ["cloakbrowser==0.5.3"]
 playwright = ["playwright>=1.52,<2"]
+mcp = [
+    "lauren-ai[mcp]>=1.5.0,<2",
+    "lauren-mcp[http,ws]>=1.1.0,<2",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

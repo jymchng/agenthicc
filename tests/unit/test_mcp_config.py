@@ -132,3 +132,41 @@ def test_load_config_default_has_empty_mcp_servers(tmp_path):
 
     cfg = load_config(project_path=str(tmp_path / "nonexistent.toml"), env_overrides=False)
     assert cfg.tools.mcp_servers == []
+
+
+def test_mcp_servers_merge_by_stable_name_not_array_position() -> None:
+    from agenthicc.config import deep_merge
+
+    merged = deep_merge(
+        {
+            "tools": {
+                "mcp_servers": [
+                    {"name": "first", "url": "one"},
+                    {"name": "second", "url": "two"},
+                ]
+            }
+        },
+        {"tools": {"mcp_servers": [{"name": "second", "url": "updated"}] }},
+    )
+    assert merged["tools"]["mcp_servers"] == [
+        {"name": "first", "url": "one"},
+        {"name": "second", "url": "updated"},
+    ]
+
+
+def test_redacted_config_uses_mcp_safe_projection(tmp_path) -> None:
+    from agenthicc.config import load_config
+
+    path = tmp_path / "agenthicc.toml"
+    path.write_text(
+        "[[tools.mcp_servers]]\n"
+        'name = "remote"\n'
+        'transport = "streamable_http"\n'
+        'url = "https://example.test/mcp"\n'
+        'token = "${MCP_TOKEN}"\n',
+        encoding="utf-8",
+    )
+    config = load_config(project_path=path, env_overrides=False)
+    projection = config.redacted_dict()
+    assert projection["tools"]["mcp_servers"][0]["name"] == "remote"
+    assert "MCP_TOKEN" not in str(projection["tools"]["mcp_servers"][0].get("token", ""))

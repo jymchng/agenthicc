@@ -1581,6 +1581,11 @@ class AgenthiccConfig:
             # lauren-ai's immutable RequestOptions owns its own redacted
             # diagnostic representation; do not call repr on it here.
             execution["request_options"] = "<configured>"
+        tool_values = vars(self.tools).copy()
+        tool_values["mcp_servers"] = [
+            server.redacted() if hasattr(server, "redacted") else "<configured>"
+            for server in self.tools.mcp_servers
+        ]
         return {
             "execution": execution,
             "providers": {name: profile.redacted() for name, profile in self.providers.items()},
@@ -1588,7 +1593,7 @@ class AgenthiccConfig:
             "memory": vars(self.memory).copy(),
             "security": vars(self.security).copy(),
             "api": vars(self.api).copy(),
-            "tools": vars(self.tools).copy(),
+            "tools": tool_values,
             "plugins": vars(self.plugins).copy(),
         }
 
@@ -1598,7 +1603,12 @@ def _parse_mcp_servers(raw_list: list[dict[str, object]]) -> list[McpServerConfi
     try:
         from agenthicc.tools.mcp import McpServerConfig  # noqa: PLC0415
 
-        return [McpServerConfig.from_dict(d) for d in raw_list]
+        servers = [McpServerConfig.from_dict(d) for d in raw_list]
+        names = [server.name for server in servers]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError("duplicate MCP server name(s): " + ", ".join(duplicates))
+        return servers
     except ImportError:
         return []
 
@@ -1615,6 +1625,9 @@ def deep_merge(base: dict[str, object], override: dict[str, object]) -> dict[str
     result = dict(base)
     for key, value in override.items():
         base_value = result.get(key)
+        if key == "mcp_servers" and isinstance(base_value, list) and isinstance(value, list):
+            result[key] = _merge_named_mcp_servers(base_value, value)
+            continue
         if isinstance(base_value, dict) and isinstance(value, dict):
             result[key] = deep_merge(
                 _section(base_value),
@@ -1623,6 +1636,30 @@ def deep_merge(base: dict[str, object], override: dict[str, object]) -> dict[str
         else:
             result[key] = value
     return result
+
+
+def _merge_named_mcp_servers(
+    base: list[object], override: list[object]
+) -> list[object]:
+    """Merge MCP arrays by stable server name instead of array position."""
+    merged: list[object] = list(base)
+    positions = {
+        item.get("name"): index
+        for index, item in enumerate(merged)
+        if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+    }
+    for item in override:
+        if not isinstance(item, Mapping) or not isinstance(item.get("name"), str):
+            merged.append(item)
+            continue
+        name = item["name"]
+        index = positions.get(name)
+        if index is None:
+            positions[name] = len(merged)
+            merged.append(dict(item))
+        else:
+            merged[index] = dict(item)
+    return merged
 
 
 def _section(value: object) -> dict[str, object]:

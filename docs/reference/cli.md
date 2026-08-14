@@ -50,6 +50,14 @@ agenthicc --set-secret execution.default_headers.Modal-Key=MODAL_KEY config show
 | `workflows run NAME --intent TEXT [--json]` | Execute one workflow headlessly |
 | `skills add SOURCE [--project | --global] [--name NAME] [--skill NAME[,NAME]] [--all]` | Download and install validated skill(s) |
 | `mcp add NAME URL [--project | --global]` | Register an MCP server in TOML configuration |
+| `mcp list [--project | --global] [--json]` | List redacted MCP server configuration |
+| `mcp get NAME [--json]` | Show one redacted MCP server configuration |
+| `mcp remove NAME [--project | --global]` | Atomically remove one configured server |
+| `mcp connect NAME` | Connect, initialize, and inspect one server |
+| `mcp disconnect NAME` | Explain the session-scoped disconnect boundary |
+| `mcp refresh NAME` | Refresh one live server catalog |
+| `mcp auth NAME` / `mcp logout NAME` | Inspect or clear persisted auth state |
+| `mcp doctor [NAME] [--json]` | Run bounded, read-only MCP diagnostics |
 | `trust cli` | Trust project-local `.agenthicc/cli/` plugins |
 | `login` | Authenticate with agenthicc.ai |
 | `logout` | Revoke stored credentials |
@@ -86,6 +94,15 @@ only updates configuration; it does not start or connect to the server. When
 the stdio URL is an existing local directory (or `.py` server file), the CLI
 stores a `uv run --project ... lmcp run ... --stdio` launcher so Lauren MCP
 examples can be registered directly.
+
+Runtime lifecycle commands are intentionally bounded. `connect`, `refresh`,
+and `doctor` create a short-lived manager for CLI diagnostics and always close
+it; `/mcp connect NAME`, `/mcp disconnect NAME`, and `/mcp refresh NAME` control
+the manager owned by the active TUI session. `list`, `get`, and `doctor --json`
+never print bearer tokens, secret headers, environment values, or raw command
+secrets. `mcp auth` and `mcp logout` currently cover environment-backed and
+provider-supported credential references; they do not mutate the caller's
+environment.
 
 The singular `session` group is the canonical client-neutral surface. Its
 commands read the service projection and event cursor rather than writing

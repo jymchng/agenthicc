@@ -90,6 +90,7 @@ __all__ = [
 try:
     from .mcp import (  # noqa: F401
         AgenthiccMcpTool,
+        McpConfigurationError,
         McpServerConfig,
         McpToolBridge,
         McpToolCallError,
@@ -99,11 +100,33 @@ try:
 
     __all__ += [
         "AgenthiccMcpTool",
+        "McpConfigurationError",
         "McpServerConfig",
         "McpToolBridge",
         "McpToolCallError",
         "McpToolRegistry",
         "McpToolSchema",
+    ]
+except ImportError:
+    pass
+
+try:
+    from .mcp_manager import (  # noqa: F401
+        McpCatalogSnapshot,
+        McpRequiredServerError,
+        McpServerState,
+        McpServerStatus,
+        McpSessionManager,
+        McpStaleCatalogError,
+    )
+
+    __all__ += [
+        "McpCatalogSnapshot",
+        "McpRequiredServerError",
+        "McpServerState",
+        "McpServerStatus",
+        "McpSessionManager",
+        "McpStaleCatalogError",
     ]
 except ImportError:
     pass

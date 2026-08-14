@@ -39,6 +39,7 @@ against the current source before implementing them.
 - [PRD-169 — Transaction-Safe Tool-Call Conversations Across agenthicc and lauren-ai](prd-169-tool-call-transaction-integrity.md)
 - [PRD-170 — Reliable `/workflow resume` and Durable Workflow Recovery](prd-170-workflow-resume-recovery.md)
 - [PRD-171 — Single Live Owner for Resumed Sessions](prd-171-single-owner-session-lease.md)
+- [PRD-172 — Production MCP Integration for agenthicc](prd-172-mcp-integration-research-and-architecture.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

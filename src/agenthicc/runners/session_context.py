@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from agenthicc.plugins.discovery import PluginToolSet
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
+    from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.skills.loader import SkillDef
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.session_service import SessionService
@@ -69,7 +70,7 @@ class SessionContext:
     mention_cache: "MentionCache"
     skills: "dict[str, SkillDef]"
     project_plugins: "PluginToolSet"
-    mcp_registry: "McpToolRegistry | None"
+    mcp_registry: "McpToolRegistry | McpSessionManager | None"
     terminal_manager: "TerminalManager"
 
     # ── config ────────────────────────────────────────────────────────────────
@@ -79,6 +80,11 @@ class SessionContext:
 
     # ── ui ────────────────────────────────────────────────────────────────────
     console: "Console"
+
+    # PRD-172: compatibility alias points at the one session-scoped manager;
+    # no workflow or turn is allowed to create its own MCP registry.
+    mcp_manager: "McpSessionManager | None" = None
+
     session_conversation: "SessionConversation | None" = None
 
     # ── memory (PRD-101) ──────────────────────────────────────────────────────

@@ -272,6 +272,7 @@ def _is_context_overflow_error(exc: BaseException) -> bool:
 
 
 if TYPE_CHECKING:
+    from contextvars import Token
     from lauren_ai import AgentContext
     from lauren_ai._tools import ToolResult
     from collections.abc import Awaitable, Callable
@@ -289,6 +290,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.approval import ApprovalService
     from agenthicc.tools.base import ToolLike
     from agenthicc.tools.mcp import McpToolRegistry
+    from agenthicc.tools.mcp_manager import McpSessionManager
     from agenthicc.tui.conversation_store import AppState, ConversationStore
     from agenthicc.runners.usage_ledger import UsageLedger, UsageRunTracker
     from agenthicc.runners.prompt_contract import PromptContract
@@ -662,7 +664,9 @@ class AgentTurnRunner:
             if policy_token is not None:
                 from agenthicc.tools.workspace_access import reset_current_workspace_access  # noqa: PLC0415
 
-                reset_current_workspace_access(policy_token)
+                reset_current_workspace_access(
+                    cast("Token[WorkspaceAccessPolicy | None]", policy_token)
+                )
 
     async def _run_impl(self) -> None:
         """Run the turn body after its task-local policy has been bound."""
@@ -1045,6 +1049,11 @@ class AgentTurnRunner:
         # System prompt
         cfg_base = getattr(ctx.exec_cfg, "base_system_prompt", None) or ""
         effective_base = cfg_base or _BASE
+        mcp_prompt = getattr(ctx.mcp_registry, "prompt_instructions", None)
+        if callable(mcp_prompt):
+            prompt_text = mcp_prompt()
+            if isinstance(prompt_text, str) and prompt_text.strip():
+                effective_base += "\n\n### MCP server instructions (untrusted metadata)\n" + prompt_text
         if prompt_contract is None:
             system = (
                 effective_base
@@ -1325,6 +1334,12 @@ class AgentTurnRunner:
         before = estimate
         from agenthicc.memory.compactor import compact_memory  # noqa: PLC0415
 
+        max_completion_tokens = _config_value(
+            ctx.exec_cfg, "max_completion_tokens", None
+        )
+        if not isinstance(max_completion_tokens, int):
+            max_completion_tokens = None
+
         await compact_memory(
             memory,
             transport,
@@ -1334,7 +1349,7 @@ class AgentTurnRunner:
             usage_ledger=ctx.usage_ledger,
             session_id=ctx.conversation_id,
             run_id=self._intent_id,
-            max_completion_tokens=_config_value(ctx.exec_cfg, "max_completion_tokens", None),
+            max_completion_tokens=max_completion_tokens,
             request_options=_config_value(ctx.exec_cfg, "request_options", None),
         )
         after = getattr(memory, "token_estimate", before)
@@ -1967,7 +1982,7 @@ async def _run_agent_turn(
     skills: dict[str, SkillDef] | None = None,
     mention_cache: MentionCache | None = None,
     project_plugin_tools: list[ToolLike] | None = None,
-    mcp_registry: McpToolRegistry | None = None,
+    mcp_registry: McpToolRegistry | McpSessionManager | None = None,
     active_agent: str | None = None,
     completed_turns: int = 0,
     approval_svc: ApprovalService | None = None,

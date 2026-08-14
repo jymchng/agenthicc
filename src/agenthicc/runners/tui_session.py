@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import os
 import sys
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, Literal, NoReturn, cast
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -559,18 +562,46 @@ async def _build_session_context_impl(
     project_commands = command_plugins.all_commands
     command_plugin_names = {command.name for command in project_commands}
 
-    # ── MCP ───────────────────────────────────────────────────────────────────
+    # ── MCP (PRD-172) ─────────────────────────────────────────────────────────
+    # One manager is shared by normal turns, workflows, subagents, headless
+    # callers, and the TUI. ``mcp_registry`` remains an intentional compatibility
+    # alias because older runner code consumes its ``all_tools`` method.
+    mcp_manager = None
     mcp_registry = None
     if cfg.tools.mcp_servers:
-        try:
-            from agenthicc.tools.mcp import McpToolRegistry  # noqa: PLC0415
+        from agenthicc.tools.mcp_manager import (  # noqa: PLC0415
+            McpRequiredServerError,
+            McpSessionManager,
+        )
+        from agenthicc.tools.sandbox import NetworkGuard  # noqa: PLC0415
 
-            mcp_registry = McpToolRegistry(event_processor=processor)
-            for srv_cfg in cfg.tools.mcp_servers:
-                mcp_registry.register_server(srv_cfg)
-            await mcp_registry.discover_all()
-        except Exception:  # noqa: BLE001
-            pass
+        try:
+            mcp_manager = McpSessionManager(
+                (),
+                event_processor=processor,
+                workspace_root=Path.cwd(),
+                network_guard=(
+                    NetworkGuard(cfg.security.network_allow_list)
+                    if cfg.security.network_allow_list
+                    else None
+                ),
+            )
+            for mcp_config in cfg.tools.mcp_servers:
+                # Keep malformed optional entries visible in `/mcp` while
+                # allowing valid servers to start. Required entries still
+                # participate in the manager's fail-closed startup contract.
+                mcp_manager.register_server(mcp_config, allow_invalid=True)
+            await mcp_manager.start_all(raise_required=True)
+            mcp_registry = mcp_manager
+        except McpRequiredServerError:
+            if mcp_manager is not None:
+                await mcp_manager.shutdown()
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # Optional MCP failures are isolated and remain visible through
+            # the manager when possible; a missing optional dependency must not
+            # prevent a normal agenthicc session from starting.
+            log.warning("MCP startup unavailable: %s", exc)
 
     from agenthicc.mentions.cache import MentionCache  # noqa: PLC0415
 
@@ -752,6 +783,7 @@ async def _build_session_context_impl(
         cfg=cfg,
         session_id=session_id,
         model_label=model_label,
+        mcp_manager=mcp_manager,
         console=console,
         memory_router=_memory_router,
         semantic_index=_semantic_index,
@@ -1227,6 +1259,7 @@ class TUISession:
             tools=tool_registry.tools,
             tool_sources=tool_registry.sources,
             workflow_registry=ctx.workflow_registry,
+            mcp_manager=getattr(ctx, "mcp_manager", None),
             mode_manager=ctx.mode_manager,
             terminal_manager=getattr(ctx, "terminal_manager", None),
             set_pending_skill=self._set_pending_skill,

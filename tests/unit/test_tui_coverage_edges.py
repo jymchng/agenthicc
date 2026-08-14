@@ -460,6 +460,131 @@ async def test_trigger_capability_passes_or_opens_registered_trigger() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("initial", "cursor", "key", "char"),
+    [
+        ("hello", 0, Key.CHAR, "/"),
+        ("hello", 2, Key.CHAR, "/"),
+        ("hello", 0, Key.AT, ""),
+        ("hello", 2, Key.AT, ""),
+        ("https://example.test", 0, Key.CHAR, "/"),
+        ("first\nsecond", 6, Key.CHAR, "/"),
+    ],
+)
+async def test_registered_trigger_is_literal_when_cursor_is_not_at_buffer_end(
+    tmp_path: Path,
+    initial: str,
+    cursor: int,
+    key: Key,
+    char: str,
+) -> None:
+    """Home/Left followed by a trigger must not discard the typed character.
+
+    TriggerPickerOverlay represents the active trigger as the editable suffix
+    of the input.  When the user is editing an earlier position, the suffix
+    to the right must remain ordinary input, so the trigger is inserted as a
+    literal instead of being sent to an overlay that cannot preserve it.
+    """
+    from agenthicc.commands import UnifiedCommandRegistry
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+    from agenthicc.tui.trigger import TriggerManager
+    from agenthicc.tui.triggers.at_mention import AtMentionTrigger
+    from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+    from agenthicc.tui.workspace.overlay import OverlayHost
+
+    state = AppState.create()
+    registry = TriggerManager()
+    command_registry = UnifiedCommandRegistry()
+    registry.register(SlashCommandTrigger(command_registry))
+    registry.register(AtMentionTrigger())
+    overlays = OverlayHost(state)
+    session = UnifiedInputSession(
+        state,
+        CommandBus(),
+        trigger_registry=registry,
+        overlay_host=overlays,
+        cwd=tmp_path,
+    )
+    session.set_text(initial)
+    session._buf.cursor = cursor
+    session._push()
+
+    await session._dispatch(key, char)
+
+    expected = initial[:cursor] + ("@" if key is Key.AT else char) + initial[cursor:]
+    expected_cursor = cursor + 1
+    assert session._buf.text == expected
+    assert session._buf.cursor == expected_cursor
+    assert state.input.cursor() == expected_cursor
+    assert not overlays.active
+
+
+@pytest.mark.asyncio
+async def test_home_then_slash_inserts_at_the_start_of_existing_text(tmp_path: Path) -> None:
+    """Regression: the exact Home → ``/`` sequence must preserve ``/``."""
+    from agenthicc.commands import UnifiedCommandRegistry
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+    from agenthicc.tui.trigger import TriggerManager
+    from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+    from agenthicc.tui.workspace.overlay import OverlayHost
+
+    state = AppState.create()
+    registry = TriggerManager()
+    registry.register(SlashCommandTrigger(UnifiedCommandRegistry()))
+    overlays = OverlayHost(state)
+    session = UnifiedInputSession(
+        state,
+        CommandBus(),
+        trigger_registry=registry,
+        overlay_host=overlays,
+        cwd=tmp_path,
+    )
+    session.set_text("typed text")
+
+    await session._dispatch(Key.HOME, "")
+    await session._dispatch(Key.CHAR, "/")
+
+    assert session._buf.text == "/typed text"
+    assert session._buf.cursor == 1
+    assert state.input.buf() == list("/typed text")
+    assert state.input.cursor() == 1
+    assert not overlays.active
+
+
+@pytest.mark.asyncio
+async def test_slash_still_opens_picker_at_a_valid_end_position(tmp_path: Path) -> None:
+    """The literal-editing rule must not disable normal slash commands."""
+    from agenthicc.commands import UnifiedCommandRegistry
+    from agenthicc.tui.input.unified_session import UnifiedInputSession
+    from agenthicc.tui.runtime.commands import CommandBus
+    from agenthicc.tui.trigger import TriggerManager
+    from agenthicc.tui.triggers.slash_command import SlashCommandTrigger
+    from agenthicc.tui.workspace.overlay import OverlayHost
+
+    state = AppState.create()
+    registry = TriggerManager()
+    registry.register(SlashCommandTrigger(UnifiedCommandRegistry()))
+    overlays = OverlayHost(state)
+    session = UnifiedInputSession(
+        state,
+        CommandBus(),
+        trigger_registry=registry,
+        overlay_host=overlays,
+        cwd=tmp_path,
+    )
+
+    session.set_text("hello\n")
+    await session._dispatch(Key.CHAR, "/")
+
+    assert overlays.active
+    assert overlays.widget is not None
+    assert overlays.widget._trigger is not None
+    assert overlays.widget._trigger.char == "/"
+
+
+@pytest.mark.asyncio
 async def test_unified_input_session_dispatch_and_noninteractive_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
