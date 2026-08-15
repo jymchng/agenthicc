@@ -571,6 +571,94 @@ class McpSessionManager:
         finally:
             self._refresh_tasks.pop(name, None)
 
+    async def reload_all(self, *, raise_required: bool = True) -> list[AgenthiccMcpTool]:
+        """Reconnect every enabled configured server and republish its catalogs.
+
+        This is the session equivalent of restarting MCP discovery without
+        rebuilding the manager or losing the object shared by normal turns,
+        workflows, and subagents.  An explicit reload includes servers with
+        ``auto_connect = false``; that flag controls startup policy, whereas
+        this method is an explicit user request to reload *all* configured
+        servers.
+
+        Existing catalogs are removed before reconnecting, so tools from a
+        server that no longer advertises a tool cannot remain visible after a
+        successful reload.  Individual disconnect/start failures are isolated
+        so a broken optional server cannot prevent healthy servers from being
+        reloaded.  Required-server failures retain the same fail-closed
+        contract as :meth:`start_all`.
+        """
+        if not self._configs:
+            return []
+
+        # A previous shutdown is not the normal TUI path, but resetting this
+        # flag makes the lifecycle operation safe for callers that retain the
+        # manager while reopening a session.
+        self._closed = False
+
+        current = asyncio.current_task()
+        refresh_tasks = {
+            task
+            for task in self._refresh_tasks.values()
+            if task is not current and not task.done()
+        }
+        for task in refresh_tasks:
+            task.cancel()
+        if refresh_tasks:
+            await asyncio.gather(*refresh_tasks, return_exceptions=True)
+        self._refresh_tasks.clear()
+
+        self._required_failures.clear()
+        # Registration-time failures do not have a bridge to restart, but a
+        # required malformed server must remain fail-closed across reloads.
+        for name, error in self._registration_errors.items():
+            if self._configs[name].required:
+                self._required_failures[name] = error
+        names = sorted(self._configs)
+
+        async def _disconnect(name: str) -> None:
+            try:
+                await self.disconnect_server(name)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - isolate one bad bridge
+                log.warning("MCP server %r failed to disconnect during reload: %s", name, exc)
+                self._remove_server_catalog(name)
+                config = self._configs[name]
+                self._set_status(
+                    name,
+                    state=(
+                        McpServerState.DISABLED
+                        if not config.enabled
+                        else McpServerState.STOPPED
+                    ),
+                    tool_count=0,
+                    last_error=str(exc),
+                )
+
+        await asyncio.gather(*(_disconnect(name) for name in names))
+
+        candidates = [
+            name
+            for name in names
+            if self._configs[name].enabled and name not in self._registration_errors
+        ]
+        tasks = [
+            asyncio.create_task(self.start_server(name, explicit=True), name=f"mcp-reload-{name}")
+            for name in candidates
+        ]
+        self._lifecycle_tasks.update(cast(asyncio.Task[object], task) for task in tasks)
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._lifecycle_tasks.difference_update(
+                cast(asyncio.Task[object], task) for task in tasks
+            )
+
+        if raise_required and self._required_failures:
+            raise McpRequiredServerError(self._required_failures)
+        return self.all_tools()
+
     async def shutdown(self) -> None:
         """Cancel refreshes and close every bridge exactly once."""
         if self._closed:

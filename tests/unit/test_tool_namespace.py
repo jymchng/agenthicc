@@ -11,6 +11,7 @@ from agenthicc.agent_tools import (
     FS_GROUP,
     GIT_GROUP,
     INTROSPECT_GROUP,
+    MCP_GROUP,
     FS_AGENT_TOOLS,
     GIT_AGENT_TOOLS,
     INTROSPECT_AGENT_TOOLS,
@@ -40,12 +41,12 @@ class TestToolGroup:
 
 
 class TestBuiltinGroups:
-    def test_five_builtin_groups(self) -> None:
-        assert len(BUILTIN_GROUPS) == 5
+    def test_six_builtin_groups(self) -> None:
+        assert len(BUILTIN_GROUPS) == 6
 
     def test_group_names(self) -> None:
         names = {g.name for g in BUILTIN_GROUPS}
-        assert names == {"fs", "git", "exec", "outlook", "introspect"}
+        assert names == {"fs", "git", "exec", "outlook", "introspect", "mcp"}
 
     def test_fs_group_has_24_tools(self) -> None:
         assert len(FS_GROUP.tools) == len(FS_AGENT_TOOLS)
@@ -55,6 +56,10 @@ class TestBuiltinGroups:
 
     def test_introspect_group_has_the_self_inspection_tools(self) -> None:
         assert len(INTROSPECT_GROUP.tools) == len(INTROSPECT_AGENT_TOOLS) == 5
+
+    def test_mcp_group_has_the_connection_guidance_tool(self) -> None:
+        assert MCP_GROUP.tools
+        assert "mcp_connection_guide" in {tool.__name__ for tool in MCP_GROUP.tools}
 
     def test_priorities_are_distinct(self) -> None:
         priorities = [g.priority for g in BUILTIN_GROUPS]
@@ -255,7 +260,7 @@ class TestDescribe:
 class TestBuildRegistry:
     def test_build_registry_populates_groups(self) -> None:
         reg = build_registry()
-        assert len(reg._groups) == 5
+        assert len(reg._groups) == 6
 
     def test_build_registry_populates_tool_groups(self) -> None:
         reg = build_registry()
@@ -263,10 +268,11 @@ class TestBuildRegistry:
         assert reg._tool_groups.get("git_status") == "git"
         assert reg._tool_groups.get("run_bash") == "exec"
         assert reg._tool_groups.get("inspect_agenthicc_source") == "introspect"
+        assert reg._tool_groups.get("mcp_connection_guide") == "mcp"
 
     def test_build_registry_total_tool_count(self) -> None:
         reg = build_registry()
-        assert len(reg.tools) == 59
+        assert len(reg.tools) == 60
 
 
 # ── _expand_allowed glob helper ───────────────────────────────────────────────

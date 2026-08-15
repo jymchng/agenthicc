@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from rich.console import Console
 
 from agenthicc.commands.builtins import (
     _cmd_cancel,
+    _cmd_mcp,
     _cmd_ps,
     _cmd_replay,
     _cmd_skills,
@@ -52,11 +54,33 @@ def test_builtin_busy_policy_helpers() -> None:
     assert _read_only_without_args("reload") is BusyPolicy.QUEUE
     assert _mcp_busy_policy("status") is BusyPolicy.IMMEDIATE_READ_ONLY
     assert _mcp_busy_policy("connect") is BusyPolicy.QUEUE
+    assert _mcp_busy_policy("reload") is BusyPolicy.QUEUE
     assert _reloadable_list_policy("") is BusyPolicy.IMMEDIATE_READ_ONLY
     assert _reloadable_list_policy("reload") is BusyPolicy.QUEUE
     assert _workflows_busy_policy("") is BusyPolicy.IMMEDIATE_READ_ONLY
     assert _workflows_busy_policy("runs") is BusyPolicy.IMMEDIATE_READ_ONLY
     assert _workflows_busy_policy("reload") is BusyPolicy.QUEUE
+
+
+@pytest.mark.asyncio
+async def test_mcp_reload_schedules_a_session_wide_manager_reload() -> None:
+    calls: list[str] = []
+
+    class FakeMcpManager:
+        def status(self) -> dict[str, object]:
+            return {"demo": {"status": "ready"}}
+
+        async def reload_all(self) -> list[object]:
+            calls.append("reload")
+            return []
+
+    ctx = _ctx(Path("."))
+    ctx.mcp_manager = FakeMcpManager()  # type: ignore[assignment]
+    ctx.args = "reload"
+    assert _cmd_mcp(ctx)
+    await asyncio.sleep(0)
+    assert calls == ["reload"]
+    assert "/mcp reload complete" in ctx.console.export_text()
 
 
 def test_cancel_replay_and_tools_error_paths(

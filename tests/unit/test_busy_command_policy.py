@@ -71,6 +71,7 @@ def test_builtins_have_explicit_immediate_read_only_inventory() -> None:
         ("/config", BusyPolicy.IMMEDIATE_READ_ONLY),
         ("/mcp status", BusyPolicy.IMMEDIATE_READ_ONLY),
         ("/mcp connect https://example.test", BusyPolicy.QUEUE),
+        ("/mcp reload", BusyPolicy.QUEUE),
         ("/model", BusyPolicy.IMMEDIATE_READ_ONLY),
         ("/model openai gpt-5", BusyPolicy.QUEUE),
         ("/workflow demo", BusyPolicy.QUEUE),

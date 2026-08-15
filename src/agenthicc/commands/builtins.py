@@ -180,9 +180,17 @@ def _cmd_mcp(ctx: CommandContext) -> bool:
         else:
             ctx.console.print(json.dumps(status, sort_keys=True, indent=2), markup=False)
         return True
-    if action not in {"connect", "disconnect", "refresh", "doctor"} or (action != "doctor" and not name):
+    if action == "reload" and name is not None:
         ctx.console.print(
-            "Usage: /mcp [status|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
+            "Usage: /mcp [status|reload|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
+            markup=False,
+        )
+        return True
+    if action not in {"connect", "disconnect", "refresh", "doctor", "reload"} or (
+        action not in {"doctor", "reload"} and not name
+    ):
+        ctx.console.print(
+            "Usage: /mcp [status|reload|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
             markup=False,
         )
         return True
@@ -195,6 +203,8 @@ def _cmd_mcp(ctx: CommandContext) -> bool:
                 await manager.disconnect_server(name)
             elif action == "refresh" and name is not None:
                 await manager.refresh_server(name)
+            elif action == "reload":
+                await manager.reload_all()
             else:
                 result = await manager.doctor(name)
                 ctx.console.print(json.dumps(result, sort_keys=True, indent=2), markup=False)
@@ -941,7 +951,7 @@ BUILTIN_COMMANDS: list[Command] = [
         name="/mcp",
         description="Show MCP server status",
         group="MCP",
-        argument_hint="[status|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
+        argument_hint="[status|reload|connect NAME|disconnect NAME|refresh NAME|doctor [NAME]]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         busy_policy_resolver=_mcp_busy_policy,
         handler=_cmd_mcp,

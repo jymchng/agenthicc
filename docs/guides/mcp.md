@@ -138,10 +138,21 @@ Inside a running TUI, use the session-owned MCP manager:
 /mcp connect remote-tools
 /mcp refresh remote-tools
 /mcp disconnect remote-tools
+/mcp reload
 ```
 
 `/mcp` shows server state, catalog revision, tool count, and redacted
 failures. `/mcp refresh NAME` refreshes only that server's tool catalog.
+`/mcp reload` disconnects and reconnects every enabled configured server in the
+current session, including servers whose startup setting is
+`auto_connect = false`. It republishes each server's current tool catalog and
+isolates optional-server failures. It does not reread arbitrary configuration
+files or expose credentials; restart the session after adding a new server so
+the new server is registered first.
+
+Agents can call the read-only `mcp_connection_guide` tool for a copy-ready
+transport-specific setup, the correct project/global configuration path, and
+the session commands. The tool does not write files or resolve secrets.
 
 ## Restrict or troubleshoot tools
 

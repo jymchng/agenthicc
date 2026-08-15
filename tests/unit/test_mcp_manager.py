@@ -255,6 +255,50 @@ async def test_refresh_replaces_removed_tools_and_increments_revision() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reload_all_reconnects_every_enabled_server_and_republishes_catalogs() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    manager = McpSessionManager(
+        [_config("automatic"), _config("manual", auto_connect=False), _config("disabled", enabled=False)],
+        bridge_factory=_factory(bridges),
+    )
+    await manager.start_all()
+    assert manager.get_tool("mcp:automatic:ping") is not None
+    assert manager.get_tool("mcp:manual:ping") is None
+
+    bridges["automatic"].tools = [McpToolSchema("new", "New", {"type": "object"})]
+    bridges["manual"].tools = [McpToolSchema("manual_tool", "Manual", {"type": "object"})]
+    await manager.reload_all()
+
+    assert manager.get_tool("mcp:automatic:ping") is None
+    assert manager.get_tool("mcp:automatic:new") is not None
+    assert manager.get_tool("mcp:manual:manual_tool") is not None
+    assert manager.status("automatic")["status"] == McpServerState.READY.value
+    assert manager.status("manual")["status"] == McpServerState.READY.value
+    assert manager.status("disabled")["status"] == McpServerState.DISABLED.value
+    assert bridges["automatic"].disconnect_count == 1
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reload_all_isolates_optional_failure_and_reports_required_failure() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    manager = McpSessionManager(
+        [_config("required", required=True), _config("optional")],
+        bridge_factory=_factory(bridges),
+    )
+    await manager.start_all()
+    bridges["required"].fail = "required unavailable"
+    bridges["optional"].tools = [McpToolSchema("still_works", "Works", {"type": "object"})]
+
+    with pytest.raises(McpRequiredServerError, match="required"):
+        await manager.reload_all()
+    assert manager.status("required")["status"] == McpServerState.FAILED.value
+    assert manager.status("optional")["status"] == McpServerState.READY.value
+    assert manager.get_tool("mcp:optional:still_works") is not None
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_failed_refresh_retains_last_good_catalog() -> None:
     bridges: dict[str, FakeBridge] = {}
     manager = McpSessionManager([_config("server")], bridge_factory=_factory(bridges))

@@ -7,6 +7,7 @@ Tools are organised by domain and implemented in their respective sub-packages:
   tools/exec/agent_tools.py       — 10 shell/exec tools
   tools/outlook/agent_tools.py    — 9 Outlook/calendar tools (Win32 or Graph API)
   tools/introspect/agent_tools.py — 5 agenthicc docs/source self-inspection tools
+  tools/mcp_guidance.py           — MCP configuration and connection guidance
 
 This module re-exports all individual tools, the combined AGENT_TOOLS list,
 and the BUILTIN_GROUPS list used by ToolRegistry for structured system-prompt
@@ -88,6 +89,10 @@ from agenthicc.tools.introspect.agent_tools import (
     search_agenthicc_docs,
     search_agenthicc_source,
 )
+from agenthicc.tools.mcp_guidance import (
+    MCP_AGENT_TOOLS,
+    mcp_connection_guide,
+)
 
 from agenthicc.plugins.registry import ToolGroup
 from agenthicc.plugins.registry import PluginTool
@@ -148,12 +153,15 @@ __all__ = [
     "search_agenthicc_docs",
     "inspect_agenthicc_source",
     "search_agenthicc_source",
+    # MCP configuration guidance
+    "mcp_connection_guide",
     # aggregates
     "FS_AGENT_TOOLS",
     "GIT_AGENT_TOOLS",
     "EXEC_AGENT_TOOLS",
     "OUTLOOK_AGENT_TOOLS",
     "INTROSPECT_AGENT_TOOLS",
+    "MCP_AGENT_TOOLS",
     "AGENT_TOOLS",
     # namespace groups (PRD-125)
     "FS_GROUP",
@@ -161,6 +169,7 @@ __all__ = [
     "EXEC_GROUP",
     "OUTLOOK_GROUP",
     "INTROSPECT_GROUP",
+    "MCP_GROUP",
     "BUILTIN_GROUPS",
 ]
 
@@ -171,6 +180,7 @@ AGENT_TOOLS = [
     *EXEC_AGENT_TOOLS,
     *OUTLOOK_AGENT_TOOLS,
     *INTROSPECT_AGENT_TOOLS,
+    *MCP_AGENT_TOOLS,
 ]
 
 # ── Tool groups for structured system-prompt sections (PRD-125) ───────────────
@@ -220,6 +230,17 @@ INTROSPECT_GROUP = ToolGroup(
     priority=0,
 )
 
+MCP_GROUP = ToolGroup(
+    name="mcp",
+    label="MCP Configuration",
+    description=(
+        "Explain how to install, configure, connect, diagnose, and reload MCP "
+        "servers without exposing credentials."
+    ),
+    tools=cast(list[PluginTool], list(MCP_AGENT_TOOLS)),
+    priority=-1,
+)
+
 #: Ordered list of built-in ToolGroups used by ToolRegistry (PRD-125).
 BUILTIN_GROUPS: list[ToolGroup] = [
     FS_GROUP,
@@ -227,4 +248,5 @@ BUILTIN_GROUPS: list[ToolGroup] = [
     EXEC_GROUP,
     OUTLOOK_GROUP,
     INTROSPECT_GROUP,
+    MCP_GROUP,
 ]
