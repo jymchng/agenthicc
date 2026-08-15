@@ -33,6 +33,10 @@ dev = [
     "hypothesis>=6.100",
     "pyte>=0.8",
     "httpx>=0.27",
+    # Docs site (mkdocs build in CI)
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "pymdown-extensions>=10.0",
 ]
 
 [project.scripts]
