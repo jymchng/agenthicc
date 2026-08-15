@@ -64,6 +64,21 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Usage:
+      - Using agenthicc: usage/index.md
+      - Installation: usage/01-installation.md
+      - Configuration: usage/02-configuration.md
+      - Your first task: usage/03-first-task.md
+      - The TUI: usage/04-tui.md
+      - Modes: usage/05-modes.md
+      - Slash commands: usage/06-commands.md
+      - Sessions: usage/07-sessions.md
+      - Memory: usage/08-memory.md
+      - Tools: usage/09-tools.md
+      - Security: usage/10-security.md
+      - Background sessions: usage/11-background.md
+      - Troubleshooting: usage/12-troubleshooting.md
+      - FAQ: usage/13-faq.md
   - Guides:
       - Quickstart: guides/quickstart.md
       - Architecture: guides/architecture.md
