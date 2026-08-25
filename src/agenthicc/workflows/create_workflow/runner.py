@@ -153,6 +153,14 @@ _RUNNER_GUIDE: str = (
     "  13. Keep stable tools separate from phase-local transition/write tools and use "
     "the deterministic tool ordering inherited from run_phase(). Never insert messages "
     "into the beginning of shared memory or put a rolling summary into CACHE_CONTRACT.\n"
+    "  14. The framework creates a durable run identity before setup and attaches a "
+    "bootstrap context before build_params()/build_runner(). Attach the typed context "
+    "to config.workflow_handle before the first provider or tool call. Do not swallow "
+    "exceptions or mark a failed run complete; let the framework's failure finalizer "
+    "persist an error-paused checkpoint or a diagnostic-only fallback.\n"
+    "  15. A recoverable error must preserve the current state, phase iteration, "
+    "artefacts, and run_id. resume(context) must use the supplied context and the "
+    "same session memory, and must be safe to repeat after another error.\n"
     "Call describe_runner_pattern() and describe_transition_tool_pattern() for the "
     "full checklist and canonical decorator/import pattern, then "
     "show_example_workflow() for a complete working runner to adapt. Omit the runner ONLY "
@@ -502,8 +510,6 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 handle.attach_context(ctx)
             else:
                 wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
-                if handle is not None:
-                    handle.mark_terminal("failed", error="cancelled")
             self._cfg.app_state.workflow_run.set(wf_run)
             raise
         except Exception as exc:
@@ -517,10 +523,6 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 handle.mark_terminal("complete")
                 if handle.checkpoint_supported:
                     handle.save_checkpoint(reason=wf_run.status)
-            elif wf_run.status == "failed":
-                handle.mark_terminal("failed", error=ctx.fail_reason)
-                if handle.checkpoint_supported:
-                    handle.save_checkpoint(reason="failed")
         return ctx
 
     async def resume(self, context: object) -> CreateWorkflowContext:
@@ -617,16 +619,12 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 handle.attach_context(ctx)
             else:
                 wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
-                if handle is not None:
-                    handle.mark_terminal("failed", error="cancelled")
             self._cfg.app_state.workflow_run.set(wf_run)
             raise
         if handle is not None:
             if final_status in {"complete", "exited"}:
                 handle.mark_terminal("complete")
-            else:
-                handle.mark_terminal("failed", error=ctx.fail_reason)
-            if handle.checkpoint_supported:
+            if final_status in {"complete", "exited"} and handle.checkpoint_supported:
                 handle.save_checkpoint(reason=final_status)
         return ctx
 

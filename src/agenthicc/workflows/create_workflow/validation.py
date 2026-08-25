@@ -436,6 +436,60 @@ def _check_resume_does_not_restart(source: str, errors: list[str]) -> None:
                 break
 
 
+def _check_error_recovery_contract(source: str, errors: list[str], *, strict: bool) -> None:
+    """Validate the generated runner's handoff to framework error recovery."""
+    if not strict:
+        return
+    if "attach_context" not in source:
+        errors.append(
+            "custom workflow runners must attach their typed context to the workflow handle "
+            "before the first provider/tool call so workflow errors can be checkpointed."
+        )
+    if 'mark_terminal("failed"' in source or "mark_terminal('failed'" in source:
+        errors.append(
+            "generated runners must not independently terminalize ordinary errors with "
+            "mark_terminal('failed'); let the framework failure finalizer choose an "
+            "error-paused checkpoint or diagnostic-only failure."
+        )
+    if 'save_checkpoint(reason="failed"' in source or "save_checkpoint(reason='failed'" in source:
+        errors.append(
+            "generated runners must not write terminal failed checkpoints for ordinary phase "
+            "errors; the framework failure finalizer owns error persistence."
+        )
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in {"run", "resume"}:
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Try):
+                continue
+            for handler in child.handlers:
+                broad_exception = handler.type is None or (
+                    isinstance(handler.type, ast.Name)
+                    and handler.type.id in {"Exception", "BaseException"}
+                )
+                if not broad_exception:
+                    continue
+                has_raise = any(isinstance(item, ast.Raise) for item in ast.walk(handler))
+                calls_finalizer = any(
+                    isinstance(item, ast.Call)
+                    and isinstance(item.func, ast.Attribute)
+                    and item.func.attr == "finalize_failure"
+                    for item in ast.walk(handler)
+                )
+                if not has_raise and not calls_finalizer:
+                    errors.append(
+                        f"{node.name}() must re-raise workflow exceptions (or call "
+                        "finalize_failure()); silently returning from an exception handler "
+                        "prevents the framework from creating an error checkpoint."
+                    )
+
+
 def _check_dynamic_stable_prompt_ast(source: str, errors: list[str]) -> None:
     """Reject changing expressions embedded in stable prompt constants."""
 
@@ -844,6 +898,11 @@ def validate_workflow_file(
     _check_runner(target, namespace, errors, warnings, len(phase_names))
     if _has_custom_runner(target):
         _check_resume_does_not_restart("\n".join(sources.values()), errors)
+        _check_error_recovery_contract(
+            "\n".join(sources.values()),
+            errors,
+            strict=strict_cache_contract,
+        )
     cache_contract = _check_prompt_cache_contract(
         sources,
         target,

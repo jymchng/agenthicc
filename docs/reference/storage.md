@@ -16,6 +16,7 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
 | `<id>/.owner.lock` | `SessionOwnerLease` | Short per-session critical section for owner publication, stale replacement, and release | OS advisory lock; never held for the session lifetime |
 | `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase/branch cursor, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
+| `<id>/workflows/<run>/recovery-error.json` | `WorkflowCheckpointStore` | Bounded, redacted diagnostic for setup, context, or checkpoint-storage failures that cannot produce a typed checkpoint | Display diagnosis after restart; never resumable by itself |
 | `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner/process-start identity only) | Prevent duplicate resume; reclaim only provably dead local claims |
 | `index.lock` | `SessionOpenCoordinator` | Short session-index read/modify/write critical section | OS advisory lock; never held for a turn or TUI lifetime |
 | `<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
@@ -122,8 +123,22 @@ are kept under the session directory with restrictive permissions. Corrupt,
 oversized, stale, or plugin-mismatched checkpoints fail closed. Active
 `running`, `pausing`, and `resuming` records are classified as interrupted on
 startup and are never executed automatically. `/workflow resume` claims one
-record atomically, rehydrates it into the existing `SessionConversation`, and
-releases the claim on pause, terminal completion, failure, or clean shutdown.
+record atomically and rehydrates it into the existing `SessionConversation`.
+Error finalization releases the claim after durable persistence. A deliberate
+same-process Esc pause may retain its owner claim for the existing fast resume
+path; terminal completion, failure, reset, and clean shutdown release it.
+
+Workflow error checkpoints retain structured `pause_reason`, `failure_kind`,
+bounded sanitized failure text, the last safe phase boundary, and an error
+revision. A valid typed context is stored with `status="paused"`, making a
+provider, tool, phase, timeout, or unexpected-cancellation error recoverable
+without restarting phase one. During startup, a bootstrap checkpoint with
+`context_ready=false` is intentionally diagnostic-only. If context encoding or
+the primary checkpoint write fails, `recovery-error.json` records the safe run
+identity and error category atomically. Its record revision cannot move
+backward. It contains an intent digest rather than raw user intent, is capped
+and mode 600, and is removed by an explicit workflow reset; it is never used
+to fabricate a context for resume.
 
 Workflow claims are published differently from ordinary checkpoints: the
 complete, fsynced JSON metadata is installed atomically, so a process killed

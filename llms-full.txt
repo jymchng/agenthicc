@@ -1846,6 +1846,19 @@ run, and rehydrate its context with the existing `SessionConversation` memory.
 They never start an LLM turn during discovery and never fall back to a fresh
 phase-one run when a recoverable checkpoint is incompatible.
 
+`WorkflowRunHandle.finalize_failure()` is the common workflow error boundary.
+`WorkflowFailureKind` is the typed stable vocabulary used by that boundary
+(`provider_transient`, `tool_transient`, `phase_execution`, `timeout`,
+`user_cancelled`, `checkpoint_storage`, `workflow_invariant`, and related
+categories); unknown extension labels fail closed to `workflow_error`.
+Provider, tool, phase, timeout, cancellation, and setup failures with a valid
+typed context become structured `paused` checkpoints with a failure kind and
+monotonic error revision. Failures before typed context initialization, or
+checkpoint serialization/storage failures, write a bounded diagnostic-only
+`recovery-error.json` fallback when possible. `WorkflowPlugin.create_initial_context()`
+is an optional hook for custom plugins that can construct typed state before
+runner setup; the framework always creates a durable bootstrap identity first.
+
 ### CodePlanRunner
 
 The specialized `code_plan` runner evolves `CodePlanState` through

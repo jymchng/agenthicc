@@ -555,8 +555,20 @@ def make_inspection_tools() -> list[Callable[..., object]]:
     design phase.  Keep this list in one place so the authoring prompt and its
     tests cannot accidentally describe a stale subset of the tools.
     """
-    from lauren_ai._tools import tool as _tool  # noqa: PLC0415
-    from agenthicc.tools.capabilities import tool_execute, tool_read  # noqa: PLC0415
+    from lauren_ai._tools import set_metadata, tool as _tool  # noqa: PLC0415
+    from agenthicc.tools.capabilities import (  # noqa: PLC0415
+        CAPABILITIES_KEY,
+        ToolCapability,
+        tool_read,
+    )
+
+    # Validation reads a report but imports trusted Python and therefore also
+    # remains EXECUTE-gated. Keeping both labels preserves the read-only
+    # inspection contract without weakening the mode gate.
+    tool_read_execute = set_metadata(
+        CAPABILITIES_KEY,
+        frozenset({ToolCapability.READ, ToolCapability.EXECUTE}),
+    )
 
     @tool_read
     @_tool()
@@ -824,6 +836,11 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                 "build_runner() on the plugin returning the runner class",
                 "inherit WorkflowConfig.workspace_scope and WorkflowConfig.workspace_access; "
                 "never construct a second scope or bypass the parent policy in a custom tool",
+                "attach the typed context to config.workflow_handle before the first provider "
+                "or tool call; the framework persists setup failures as diagnostic-only and "
+                "typed phase errors as error-paused checkpoints",
+                "do not swallow phase exceptions or mark a failed run complete; let the "
+                "framework failure finalizer own error disposition and persistence",
             ],
             "turn_api": (
                 "Subclass CodePlanRunner and call the public "
@@ -974,7 +991,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             ),
         }
 
-    @tool_execute
+    @tool_read_execute
     @_tool()
     async def validate_workflow_cache_contract(path: str) -> dict[str, object]:
         """Validate a trusted generated workflow's cache/question contract.

@@ -11,8 +11,16 @@ import pytest
 
 from agenthicc.cli.context import CLIContext, CLIFlags
 from agenthicc.kernel import Event
+from agenthicc.runners.session_conversation import SessionConversation
+from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.tui.conversation_store import AppState as TUIAppState
-from agenthicc.workflows.plugin import PhaseRunRecord, PhaseSpec, WorkflowPlugin, WorkflowRun
+from agenthicc.workflows.plugin import (
+    PhaseRunRecord,
+    PhaseSpec,
+    WorkflowContext,
+    WorkflowPlugin,
+    WorkflowRun,
+)
 from agenthicc.workflows.registry import WorkflowRegistry
 
 pytestmark = pytest.mark.unit
@@ -156,6 +164,92 @@ async def test_execute_workflow_rejects_unknown_and_empty_intents() -> None:
         await execute_workflow(session, "missing", "task")
     with pytest.raises(ValueError, match="must not be empty"):
         await execute_workflow(session, "demo", " ")
+
+
+async def test_headless_setup_failure_persists_diagnostic_run(tmp_path, monkeypatch) -> None:
+    from agenthicc.runners.headless import execute_workflow
+
+    class BrokenWorkflow(WorkflowPlugin):
+        name = "broken_setup"
+        phases = [PhaseSpec(name="plan", agent_type="planner")]
+
+        @classmethod
+        def build_params(cls, _source):
+            raise RuntimeError("provider profile is invalid")
+
+    session = _make_session(BrokenWorkflow)
+    session.session_id = "headless-setup"
+    session.cfg.execution = SimpleNamespace(profile="default")
+    conversation = SessionConversation.open(
+        session.session_id,
+        max_tokens=2_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    store = WorkflowCheckpointStore(session.session_id, root=tmp_path / "sessions")
+    monkeypatch.setattr(
+        "agenthicc.runners.workflow_checkpoint_store.WorkflowCheckpointStore",
+        lambda _session_id: store,
+    )
+    session.session_conversation = conversation
+    try:
+        result = await execute_workflow(session, BrokenWorkflow.name, "run setup")
+        assert result.status == "failed"
+        assert result.run_id
+        fallback = store.load_recovery_error(result.run_id)
+        assert fallback is not None
+        assert fallback["diagnostic_only"] is True
+        assert fallback["resumable"] is False
+        assert fallback["failure_kind"] == "configuration"
+    finally:
+        conversation.close()
+
+
+async def test_headless_setup_failure_preserves_a_resumable_bootstrap_context(
+    tmp_path, monkeypatch
+) -> None:
+    from agenthicc.runners.headless import execute_workflow
+
+    class _SetupFailureWorkflow(WorkflowPlugin):
+        name = "setup_failure"
+        phases = [PhaseSpec(name="plan", agent_type="planner")]
+
+        @classmethod
+        def create_initial_context(cls, intent, run_id, memory=None):
+            return WorkflowContext(
+                intent=intent,
+                run_id=run_id,
+                workflow_name=cls.name,
+                current_phase="plan",
+            )
+
+        @classmethod
+        def build_params(cls, _source):
+            raise RuntimeError("provider configuration unavailable")
+
+    session = _make_session(_SetupFailureWorkflow)
+    session.cfg.execution = SimpleNamespace(profile="")
+    conversation = SessionConversation.open(
+        "session-1",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation-journal.jsonl",
+    )
+    store = WorkflowCheckpointStore("session-1", root=tmp_path / "sessions")
+    session.session_conversation = conversation
+    monkeypatch.setattr(
+        "agenthicc.runners.workflow_checkpoint_store.WorkflowCheckpointStore",
+        lambda _session_id: store,
+    )
+    try:
+        result = await execute_workflow(session, "setup_failure", "configure the workflow")
+        assert result.status == "paused"
+        assert result.run_id
+        checkpoint = store.load(result.run_id)
+        assert checkpoint is not None
+        assert checkpoint.context_ready is True
+        assert checkpoint.status == "paused"
+        assert checkpoint.failure_kind == "configuration"
+    finally:
+        conversation.close()
 
 
 async def test_headless_approval_defaults_to_deny() -> None:

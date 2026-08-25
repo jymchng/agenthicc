@@ -805,6 +805,34 @@ class RestartWorkflow(WorkflowPlugin):
     assert any("silently restarts" in error for error in report.errors)
 
 
+def test_generated_runner_validation_rejects_swallowed_exceptions(tmp_path: Path) -> None:
+    source = (
+        _RUNNER_SOURCE
+        + """
+
+class SwallowRunner(BaseWorkflowRunner):
+    async def run(self, intent):
+        try:
+            return intent
+        except Exception:
+            return None
+
+    async def resume(self, context):
+        return context
+"""
+    )
+    path = tmp_path / "swallow_workflow.py"
+    path.write_text(source, encoding="utf-8")
+    report = validate_workflow_file(
+        str(path),
+        expected_name="demo",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+    assert not report.ok
+    assert any("silently returning" in error for error in report.errors)
+
+
 async def test_describe_runner_pattern_lists_every_required_element() -> None:
     result = await _call(make_inspection_tools(), "describe_runner_pattern")
     assert isinstance(result, dict)

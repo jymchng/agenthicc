@@ -488,6 +488,25 @@ class WorkflowPlugin(abc.ABC):
         return WorkflowParams()
 
     @classmethod
+    def create_initial_context(
+        cls,
+        intent: str,
+        run_id: str,
+        memory: object | None = None,
+    ) -> object | None:
+        """Optionally create typed state before runner construction.
+
+        The session always creates a durable identity and an identity-only
+        bootstrap context before calling plugin setup. Custom workflows may
+        override this hook to provide their typed checkpoint context even when
+        ``build_params()`` or ``build_runner()`` fails. ``memory`` is the
+        already-open session memory; implementations must attach it to the
+        context without persisting the memory object itself.
+        """
+        del intent, run_id, memory
+        return None
+
+    @classmethod
     def checkpoint_context_to_payload(cls, context: object) -> dict[str, object] | None:
         """Encode a custom runner context for PRD-156 checkpoints.
 

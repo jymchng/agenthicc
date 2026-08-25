@@ -317,6 +317,16 @@ class WorkflowCheckpoint:
     cache_provider_capability: str = ""
     cache_status: str = ""
     cache_invalidation_reason: str = ""
+    # False is used during the short bootstrap window before a typed runner
+    # context is attached. It is durable, but not safe to offer as resumable.
+    context_ready: bool = True
+    # Structured failure metadata. A paused checkpoint with these fields is a
+    # recoverable error; terminal failed remains reserved for unsafe state.
+    pause_reason: str = "none"
+    failure_kind: str | None = None
+    failure_message: str | None = None
+    last_safe_boundary: str | None = None
+    error_revision: int = 0
     created_at: float = field(default_factory=time.time)
     schema_version: int = CHECKPOINT_SCHEMA_VERSION
 
@@ -346,6 +356,12 @@ class WorkflowCheckpoint:
             "cache_provider_capability": self.cache_provider_capability,
             "cache_status": self.cache_status,
             "cache_invalidation_reason": self.cache_invalidation_reason,
+            "context_ready": self.context_ready,
+            "pause_reason": self.pause_reason,
+            "failure_kind": self.failure_kind,
+            "failure_message": self.failure_message,
+            "last_safe_boundary": self.last_safe_boundary,
+            "error_revision": self.error_revision,
             "created_at": self.created_at,
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -425,6 +441,36 @@ class WorkflowCheckpoint:
         )
         if not all(isinstance(raw.get(key, ""), str) for key in cache_fields):
             raise CheckpointValidationError("cache metadata fields must be strings")
+        context_ready = raw.get("context_ready", True)
+        if not isinstance(context_ready, bool):
+            raise CheckpointValidationError("context_ready must be a boolean")
+        pause_reason = raw.get("pause_reason", "none")
+        if not isinstance(pause_reason, str):
+            raise CheckpointValidationError("pause_reason must be a string")
+        if len(pause_reason) > 64:
+            raise CheckpointValidationError("pause_reason is too long")
+        failure_kind = raw.get("failure_kind")
+        if failure_kind is not None and not isinstance(failure_kind, str):
+            raise CheckpointValidationError("failure_kind must be a string or null")
+        if isinstance(failure_kind, str) and len(failure_kind) > 64:
+            raise CheckpointValidationError("failure_kind is too long")
+        failure_message = raw.get("failure_message")
+        if failure_message is not None and not isinstance(failure_message, str):
+            raise CheckpointValidationError("failure_message must be a string or null")
+        if isinstance(failure_message, str) and len(failure_message) > 512:
+            raise CheckpointValidationError("failure_message is too long")
+        last_safe_boundary = raw.get("last_safe_boundary")
+        if last_safe_boundary is not None and not isinstance(last_safe_boundary, str):
+            raise CheckpointValidationError("last_safe_boundary must be a string or null")
+        if isinstance(last_safe_boundary, str) and len(last_safe_boundary) > 256:
+            raise CheckpointValidationError("last_safe_boundary is too long")
+        error_revision = raw.get("error_revision", 0)
+        if (
+            not isinstance(error_revision, int)
+            or isinstance(error_revision, bool)
+            or error_revision < 0
+        ):
+            raise CheckpointValidationError("error_revision must be a non-negative integer")
         numeric = ("phase_index", "phase_iteration", "conversation_cursor", "revision")
         if not all(isinstance(raw[key], int) and not isinstance(raw[key], bool) for key in numeric):
             raise CheckpointValidationError("checkpoint numeric fields must be integers")
@@ -459,5 +505,11 @@ class WorkflowCheckpoint:
             cache_provider_capability=str(raw.get("cache_provider_capability", "")),
             cache_status=str(raw.get("cache_status", "")),
             cache_invalidation_reason=str(raw.get("cache_invalidation_reason", "")),
+            context_ready=context_ready,
+            pause_reason=pause_reason,
+            failure_kind=failure_kind,
+            failure_message=failure_message,
+            last_safe_boundary=last_safe_boundary,
+            error_revision=error_revision,
             created_at=float(raw.get("created_at", time.time()) or time.time()),
         )

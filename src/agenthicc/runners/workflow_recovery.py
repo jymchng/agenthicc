@@ -47,16 +47,30 @@ class WorkflowRecoveryRecord:
     interrupted: bool = False
     tool_tail_needs_repair: bool = False
     session_id: str = ""
+    fallback_error: dict[str, object] | None = None
 
     @property
     def recoverable(self) -> bool:
         """Whether the record can be offered to a resume command."""
-        return self.checkpoint is not None and self.error_code is None
+        return (
+            self.checkpoint is not None
+            and self.checkpoint.status in RECOVERABLE_WORKFLOW_STATUSES
+            and self.checkpoint.context_ready
+            and self.error_code is None
+        )
+
+    @property
+    def diagnostic_only(self) -> bool:
+        """Whether this record explains a failure but cannot be resumed."""
+        return not self.recoverable
 
     @property
     def workflow_name(self) -> str:
         """Return a safe workflow name for UI diagnostics."""
-        return self.checkpoint.workflow_name if self.checkpoint is not None else ""
+        if self.checkpoint is not None:
+            return self.checkpoint.workflow_name
+        value = self.fallback_error.get("workflow_name") if self.fallback_error else None
+        return value if isinstance(value, str) else ""
 
     @property
     def conversation_id(self) -> str:
@@ -73,12 +87,18 @@ class WorkflowRecoveryRecord:
     @property
     def phase_index(self) -> int:
         """Return the last durably entered phase index."""
-        return self.checkpoint.phase_index if self.checkpoint is not None else 0
+        if self.checkpoint is not None:
+            return self.checkpoint.phase_index
+        value = self.fallback_error.get("phase_index") if self.fallback_error else None
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
     @property
     def checkpoint_revision(self) -> int:
         """Return the monotonic checkpoint revision."""
-        return self.checkpoint.revision if self.checkpoint is not None else 0
+        if self.checkpoint is not None:
+            return self.checkpoint.revision
+        value = self.fallback_error.get("record_revision") if self.fallback_error else None
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
     @property
     def journal_cursor(self) -> int:
@@ -88,7 +108,10 @@ class WorkflowRecoveryRecord:
     @property
     def plugin_fingerprint(self) -> str:
         """Return the saved plugin topology fingerprint."""
-        return self.checkpoint.plugin_fingerprint if self.checkpoint is not None else ""
+        if self.checkpoint is not None:
+            return self.checkpoint.plugin_fingerprint
+        value = self.fallback_error.get("plugin_fingerprint") if self.fallback_error else None
+        return value if isinstance(value, str) else ""
 
     @property
     def provider_profile(self) -> str:
@@ -103,18 +126,40 @@ class WorkflowRecoveryRecord:
     @property
     def current_phase(self) -> str | None:
         """Return the last durably entered phase, if available."""
-        return self.checkpoint.current_phase if self.checkpoint is not None else None
+        if self.checkpoint is not None:
+            return self.checkpoint.current_phase
+        value = self.fallback_error.get("phase") if self.fallback_error else None
+        return value if isinstance(value, str) else None
 
     @property
     def status(self) -> str:
         """Return the persisted status or ``invalid`` for corrupt records."""
-        return self.checkpoint.status if self.checkpoint is not None else "invalid"
+        return self.checkpoint.status if self.checkpoint is not None else "failed"
+
+    @property
+    def pause_reason(self) -> str:
+        """Return the structured pause disposition, if present."""
+        if self.checkpoint is not None:
+            return self.checkpoint.pause_reason
+        return "diagnostic_only" if self.fallback_error is not None else "none"
+
+    @property
+    def failure_kind(self) -> str | None:
+        """Return the structured failure kind, if present."""
+        if self.checkpoint is not None:
+            return self.checkpoint.failure_kind
+        value = self.fallback_error.get("failure_kind") if self.fallback_error else None
+        return value if isinstance(value, str) else None
 
     @property
     def display_error(self) -> str:
         """Return a bounded user-facing diagnostic without sensitive payloads."""
         if self.error:
             return self.error
+        if self.fallback_error is not None:
+            message = self.fallback_error.get("failure_message")
+            if isinstance(message, str) and message:
+                return message[:512]
         return "workflow checkpoint is not recoverable"
 
 
@@ -162,19 +207,76 @@ class WorkflowRecoveryCoordinator:
                 )
                 continue
             if checkpoint is None:
+                try:
+                    fallback = self.store.load_recovery_error(run_id)
+                except (CheckpointValidationError, ValueError) as exc:
+                    records.append(
+                        WorkflowRecoveryRecord(
+                            run_id=run_id,
+                            session_id=self.session_id,
+                            error_code="recovery_diagnostic_corrupt",
+                            error=str(exc),
+                        )
+                    )
+                    continue
+                if fallback is not None:
+                    records.append(
+                        WorkflowRecoveryRecord(
+                            run_id=run_id,
+                            session_id=self.session_id,
+                            error_code="recovery_diagnostic_only",
+                            fallback_error=fallback,
+                        )
+                    )
                 continue
             if not include_terminal and checkpoint.status not in RECOVERABLE_WORKFLOW_STATUSES:
+                # A terminal checkpoint may have a companion diagnostic from
+                # a failed terminal write. Keep that diagnostic visible even
+                # though the terminal checkpoint itself is not resumable.
+                try:
+                    fallback = self.store.load_recovery_error(run_id)
+                except (CheckpointValidationError, ValueError):
+                    fallback = None
+                if fallback is not None:
+                    records.append(
+                        WorkflowRecoveryRecord(
+                            run_id=run_id,
+                            checkpoint=checkpoint,
+                            session_id=self.session_id,
+                            error_code="recovery_diagnostic_only",
+                            fallback_error=fallback,
+                        )
+                    )
                 continue
 
             error_code: str | None = None
             error: str | None = None
             if checkpoint.status in RECOVERABLE_WORKFLOW_STATUSES:
-                error_code, error = self._validate_recovery(
-                    checkpoint,
-                    workflow_registry=workflow_registry,
-                    conversation=conversation,
-                    provider_profile=provider_profile,
-                    workspace_root=workspace_root,
+                if not checkpoint.context_ready:
+                    error_code = "context_not_ready"
+                    error = (
+                        "workflow failed before a typed checkpoint context was initialized; "
+                        "the saved diagnostic is not resumable"
+                    )
+                else:
+                    error_code, error = self._validate_recovery(
+                        checkpoint,
+                        workflow_registry=workflow_registry,
+                        conversation=conversation,
+                        provider_profile=provider_profile,
+                        workspace_root=workspace_root,
+                    )
+            try:
+                fallback = self.store.load_recovery_error(run_id)
+            except (CheckpointValidationError, ValueError):
+                fallback = None
+            if fallback is not None and fallback.get("resumable") is False:
+                error_code = "recovery_diagnostic_only"
+                fallback_message = fallback.get("failure_message")
+                error = (
+                    fallback_message[:512]
+                    if isinstance(fallback_message, str)
+                    else "the latest workflow failure could not be checkpointed"
                 )
             records.append(
                 WorkflowRecoveryRecord(
@@ -187,6 +289,7 @@ class WorkflowRecoveryCoordinator:
                     tool_tail_needs_repair=(
                         conversation is not None and conversation.journal.resume_state() is not None
                     ),
+                    fallback_error=fallback,
                 )
             )
 

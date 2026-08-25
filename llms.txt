@@ -66,8 +66,9 @@ The primary entry point is `agenthicc.__main__:main`.
 | `PhaseSpec` | `agenthicc.workflows.plugin` | Declarative phase metadata; `system_prompt_override` replaces the role prompt only in the generic runner and remains dynamic under the cache contract |
 | `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
 | `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory, transactional tool-exchange recovery, and complete subagent-result persistence |
-| `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints |
-| `WorkflowRecoveryCoordinator` / `WorkflowRecoveryRecord` | `agenthicc.runners.workflow_recovery` | Fail-closed interrupted-run discovery, validation, claims, and typed rehydration |
+| `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints, structured error pauses, and diagnostic fallback records |
+| `WorkflowFailureKind` | `agenthicc.runners.workflow_handle` | Typed stable categories for workflow failure finalization and diagnostics |
+| `WorkflowRecoveryCoordinator` / `WorkflowRecoveryRecord` | `agenthicc.runners.workflow_recovery` | Fail-closed interrupted/error-paused discovery, validation, claims, and typed rehydration |
 | `PromptContract` / `build_workflow_prompt_contract` | `agenthicc.runners.prompt_contract` | Cache-stable system/tool prefix plus append-only dynamic workflow context; emits redacted cache diagnostics |
 | `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
 | `DEFAULT_SUBAGENT_TIMEOUT_S` / `SubagentTypeSpec` / `SubagentPool` | `agenthicc.subagents` | Typed concurrent workers with complete-output aggregation; `spawn_subagents(timeout_s=...)` defaults to one hour |

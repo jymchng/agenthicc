@@ -124,10 +124,6 @@ class WorkflowRunner(BaseWorkflowRunner):
                 handle.mark_terminal("complete")
                 if handle.checkpoint_supported:
                     handle.save_checkpoint(reason="complete")
-            elif live_run is not None and live_run.status == "failed":
-                handle.mark_terminal("failed", error="workflow failed")
-                if handle.checkpoint_supported:
-                    handle.save_checkpoint(reason="failed")
         return context
 
     async def resume(self, context: object) -> None:
@@ -188,17 +184,13 @@ class WorkflowRunner(BaseWorkflowRunner):
         except (asyncio.CancelledError, KeyboardInterrupt):
             if handle is not None and handle.is_pause_requested():
                 handle.attach_context(context)
-            elif handle is not None:
-                handle.mark_terminal("failed", error="cancelled")
             raise
         if handle is not None:
             live_run = self._cfg.app_state.workflow_run()
             status = live_run.status if live_run is not None else "failed"
             if status == "complete":
                 handle.mark_terminal("complete")
-            elif status == "failed":
-                handle.mark_terminal("failed", error="workflow failed")
-            if handle.checkpoint_supported:
+            if status == "complete" and handle.checkpoint_supported:
                 handle.save_checkpoint(reason=status)
 
     # ── phase loop ────────────────────────────────────────────────────────────
@@ -448,8 +440,6 @@ class WorkflowRunner(BaseWorkflowRunner):
                 wf_run = dataclasses.replace(wf_run, status="paused")
             else:
                 wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
-                if handle is not None:
-                    handle.mark_terminal("failed", error="cancelled")
             self._cfg.app_state.workflow_run.set(wf_run)
             raise
         except Exception as exc:

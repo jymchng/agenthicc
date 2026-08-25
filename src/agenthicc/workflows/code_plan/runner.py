@@ -323,8 +323,6 @@ class CodePlanRunner(BaseWorkflowRunner):
                 handle.attach_context(ctx)
             else:
                 wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
-                if handle is not None:
-                    handle.mark_terminal("failed", error="cancelled")
             self._cfg.app_state.workflow_run.set(wf_run)
             raise
         except Exception as exc:
@@ -338,10 +336,6 @@ class CodePlanRunner(BaseWorkflowRunner):
                 handle.mark_terminal("complete")
                 if handle.checkpoint_supported:
                     handle.save_checkpoint(reason=wf_run.status)
-            elif wf_run.status == "failed":
-                handle.mark_terminal("failed", error=ctx.fail_reason)
-                if handle.checkpoint_supported:
-                    handle.save_checkpoint(reason="failed")
         return ctx  # PRD-114: subclasses receive typed context via super().run()
 
     async def resume(self, context: object) -> None:
@@ -408,8 +402,6 @@ class CodePlanRunner(BaseWorkflowRunner):
                 wf_run = dataclasses.replace(wf_run, status="paused")
             else:
                 wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
-                if handle is not None:
-                    handle.mark_terminal("failed", error="cancelled")
             self._cfg.app_state.workflow_run.set(wf_run)
             raise
 
@@ -424,9 +416,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         if handle is not None:
             if final in {"complete", "exited"}:
                 handle.mark_terminal("complete")
-            else:
-                handle.mark_terminal("failed", error=ctx.fail_reason)
-            if handle.checkpoint_supported:
+            if final in {"complete", "exited"} and handle.checkpoint_supported:
                 handle.save_checkpoint(reason=final)
 
     # ── phase methods ─────────────────────────────────────────────────────────

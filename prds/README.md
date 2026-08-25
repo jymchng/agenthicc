@@ -40,6 +40,7 @@ against the current source before implementing them.
 - [PRD-170 — Reliable `/workflow resume` and Durable Workflow Recovery](prd-170-workflow-resume-recovery.md)
 - [PRD-171 — Single Live Owner for Resumed Sessions](prd-171-single-owner-session-lease.md)
 - [PRD-172 — Production MCP Integration for agenthicc](prd-172-mcp-integration-research-and-architecture.md)
+- [PRD-173 — Recoverable Workflow Errors and Failure Checkpoints](prd-173-recoverable-workflow-errors.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -214,6 +215,14 @@ to explicit resume, headless, background, and session-picker entry points, and
 keeps the per-workflow claim as a nested defense-in-depth lease. Focused unit,
 multi-process integration, and CLI E2E evidence is in the PRD's implementation
 section.
+
+PRD-173 defines the remaining workflow error-recovery contract. It ensures
+setup failures, phase/provider/tool errors, timeouts, cancellations, and
+checkpoint failures are classified and durably recorded. Valid contexts become
+error-paused checkpoints that can be resumed from the exact phase and same
+conversation; failures before context creation receive an explicit
+diagnostic-only fallback record. It also makes `create_workflow` generate and
+validate custom workflows that inherit this contract.
 
 ## Existing PRDs
 

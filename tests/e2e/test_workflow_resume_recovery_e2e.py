@@ -212,3 +212,93 @@ def test_process_restart_resume_supports_repeated_interruptions(tmp_path: Path) 
         assert latest.conversation_id == session_id
     finally:
         conversation.close()
+
+
+def test_error_paused_run_survives_restart_and_keeps_one_revisioned_run(
+    tmp_path: Path,
+) -> None:
+    """A provider error resumes exactly, then a second error advances its revision."""
+
+    session_id = "e2e-error-recovery"
+    conversation = SessionConversation.open(
+        session_id,
+        max_tokens=10_000,
+        journal_path=tmp_path / "error-journal.jsonl",
+    )
+    store = WorkflowCheckpointStore(session_id, root=tmp_path / "error-sessions")
+    try:
+        from agenthicc.runners.workflow_handle import WorkflowRunHandle
+
+        handle = WorkflowRunHandle.create(
+            run_id="error-run",
+            workflow=E2EWorkflow,
+            conversation=conversation,
+            intent="recover after provider failure",
+            checkpoint_store=store,
+        )
+        context = E2EContext(
+            intent="recover after provider failure",
+            run_id="error-run",
+            workflow_name=E2EWorkflow.name,
+            current_phase="second",
+            phase_iteration=3,
+            shared_memory=conversation.memory,
+        )
+        handle.attach_context(context)
+        handle.update_phase("second", 1, 3)
+        first = handle.finalize_failure(
+            "provider timeout",
+            kind="provider_transient",
+        )
+        assert first is not None
+        assert first.status == "paused"
+        assert first.failure_kind == "provider_transient"
+    finally:
+        conversation.close()
+
+    reopened = SessionConversation.open(
+        session_id,
+        max_tokens=10_000,
+        journal_path=tmp_path / "error-journal.jsonl",
+    )
+    try:
+        registry = WorkflowRegistry()
+        registry.register(E2EWorkflow, source="project")
+        coordinator = WorkflowRecoveryCoordinator(
+            session_id,
+            checkpoint_store=WorkflowCheckpointStore(
+                session_id,
+                root=tmp_path / "error-sessions",
+            ),
+        )
+        record = coordinator.inspect(
+            workflow_registry=registry,
+            conversation=reopened,
+        )[0]
+        assert record.recoverable is True
+        assert record.failure_kind == "provider_transient"
+        assert record.current_phase == "second"
+
+        restored = coordinator.rehydrate(
+            record,
+            workflow=E2EWorkflow,
+            conversation=reopened,
+            owner_id="error-resume-owner",
+        )
+        runner = E2EWorkflow.build_runner(None, None)
+        asyncio.run(runner.resume(restored.context))
+        assert E2ERunner.resumed[-1].current_phase == "second"
+
+        restored.mark_resuming()
+        restored.attach_context(restored.context)
+        second = restored.finalize_failure(
+            "provider failed again",
+            kind="provider_transient",
+        )
+        assert second is not None
+        assert second.run_id == first.run_id
+        assert second.revision > first.revision
+        assert second.error_revision > first.error_revision
+        restored.release_claim()
+    finally:
+        reopened.close()

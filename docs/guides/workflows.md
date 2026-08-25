@@ -94,6 +94,55 @@ Corrupt checkpoints, incompatible plugins/profiles/workspaces, cursor drift,
 and unrecoverable tool tails stay on disk for diagnosis and produce a stable
 error plus a reset/reload action. They are never replaced by a new run.
 
+### Workflow errors are saved before the TUI returns to idle
+
+All workflow setup, phase, provider, tool, timeout, and unexpected-cancellation
+errors pass through one idempotent failure finalizer. The finalizer captures a
+bounded, redacted diagnostic and the latest safe typed context before it
+publishes the outcome:
+
+```text
+plugin/workflow setup
+  -> durable run_id + bootstrap checkpoint
+  -> typed context attached before first provider/tool call
+  -> phase/provider/tool/timeout error
+  -> classify error and capture phase/iteration/artifacts
+  -> typed checkpoint(status=paused, failure_kind=...)
+  -> release live claim after persistence
+  -> /workflow resume <run-id>
+  -> validate conversation/tool tail and call runner.resume(context)
+```
+
+Recoverable errors use `status="paused"` with `pause_reason`, `failure_kind`,
+the last safe boundary, and an incrementing error revision. They are listed by
+the recovery coordinator and can be resumed at the same phase. Timeouts are
+handled by this path too; they do not merely close the visible turn.
+`WorkflowFailureKind` supplies the stable category vocabulary; unknown custom
+labels are normalized to `workflow_error` rather than becoming ad hoc recovery
+states.
+
+If an error happens before a typed context exists, or encoding/storage fails,
+the store writes a mode-600 `recovery-error.json` diagnostic beside the run
+checkpoint when possible. This fallback contains only the run/workflow
+identity, an intent digest, phase location, and sanitized error metadata. It is
+diagnostic-only and is never offered as resumable. The TUI explicitly tells the
+user whether `/workflow resume` is safe instead of silently claiming that a
+failed run was saved.
+
+Error finalization releases the live claim after the checkpoint or fallback is
+durable. A deliberate same-process Esc pause may retain its in-memory owner
+claim for the existing fast resume path; terminal completion, failure, reset,
+and clean shutdown release it.
+
+The framework creates the durable run identity before `build_params()` and
+`build_runner()`. Custom plugins may implement
+`WorkflowPlugin.create_initial_context(intent, run_id, memory)` to provide
+typed state even earlier; the framework always supplies the already-open
+session memory and never serializes that object. Generated workflows are
+validated to attach typed context before their first provider/tool call, avoid
+terminalizing ordinary errors themselves, re-raise broad exception handlers
+instead of silently returning, and use a true `resume(context)` dispatch path.
+
 Workflow runners also inherit the parent session's immutable
 `WorkspaceScope` and live `WorkspaceAccessPolicy`. A custom workflow does not
 need to reimplement Safe/Plan/Yolo path handling: filesystem, mention, and
@@ -249,6 +298,13 @@ The design phase must state, and the generate phase must write:
    transition callable, name them in the phase prompt, and state that only a
    successful call changes phase. Never write `@tool_control()`;
 7. `build_runner()` on the plugin returning that runner.
+
+The framework owns error disposition. Generated runners should attach their
+typed context to `config.workflow_handle` before the first provider/tool call,
+let ordinary exceptions escape to the common failure finalizer, and never mark
+an ordinary failed phase complete or write a terminal failed checkpoint in
+place of a recoverable error pause. Setup failures without typed context are
+saved as diagnostic-only records.
 
 `describe_runner_pattern()` returns this checklist to the agent.
 `describe_transition_tool_pattern()` returns the canonical handoff-tool

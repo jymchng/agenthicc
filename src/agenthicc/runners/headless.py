@@ -7,7 +7,7 @@ import json
 import os
 import sys
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, is_dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -23,6 +23,20 @@ if TYPE_CHECKING:
     from agenthicc.runners.session_lease import SessionOwnerLease
 
 __all__ = ["WorkflowExecutionResult", "execute_workflow", "run_headless_workflow"]
+
+
+def _workflow_failure_kind(exc: BaseException) -> str:
+    """Map common headless workflow failures to stable recovery categories."""
+    text = f"{type(exc).__name__} {exc}".lower()
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if any(marker in text for marker in ("config", "profile")):
+        return "configuration"
+    if any(marker in text for marker in ("rate limit", "429", "provider", "transport")):
+        return "provider_transient"
+    if any(marker in text for marker in ("tool", "mcp", "browser", "subprocess")):
+        return "tool_transient"
+    return "phase_execution"
 
 
 @dataclass(frozen=True)
@@ -141,6 +155,7 @@ async def execute_workflow(
 
     workflow_handle = None
     session_conversation = getattr(session, "session_conversation", None)
+    session_service = getattr(session, "session_service", None)
     if session_conversation is not None:
         workflow_handle = WorkflowRunHandle.create(
             run_id=uuid.uuid4().hex,
@@ -154,71 +169,124 @@ async def execute_workflow(
                 getattr(getattr(session, "workspace_scope", None), "primary_root", "") or ""
             ),
         )
-    try:
-        workspace_scope = session.workspace_scope
-        workspace_access = session.workspace_access
-    except AttributeError:
-        # Keep lightweight SessionContext test doubles and third-party callers
-        # compatible with the pre-PRD-168 shape.
-        workspace_scope = None
-        workspace_access = None
-    workflow_config = WorkflowConfig(
-        conv_store=session.app_state.conversation,
-        app_state=session.app_state,
-        processor=session.processor,
-        agent_runner=session.agent_runner,
-        approval_svc=session.approval_svc,
-        cfg=session.cfg,
-        skills=session.skills,
-        plugin_tools=session.project_plugins,
-        mcp_registry=session.mcp_registry,
-        mention_cache=session.mention_cache,
-        agents_registry=session.agents_registry,
-        memory_router=session.memory_router,
-        semantic_index=session.semantic_index,
-        completed_turns=completed_turns,
-        session_memory=session.session_memory,
-        conversation_id=session.session_id,
-        usage_ledger=getattr(session, "usage_ledger", None),
-        workflow_handle=workflow_handle,
-        browser_manager=getattr(session, "browser_manager", None),
-        browser_tools=list(getattr(session, "browser_tools", [])),
-        workspace_scope=workspace_scope,
-        workspace_access=workspace_access,
-        params=workflow_cls.build_params(session.cfg.workflows.get(workflow_name, {})),
-        terminal_wait_policies={
-            phase.name: phase.terminal_wait_policy for phase in workflow_cls.phases
-        },
-    )
-    runner = workflow_cls.build_runner(workflow_config, session.mode_manager)
-    session_service = getattr(session, "session_service", None)
-    if session_service is not None:
-        await session_service.publish(
-            session.session_id,
-            source="headless",
-            kind="workflow_started",
-            payload={"workflow": workflow_name, "intent": intent},
-        )
-    if workflow_handle is not None:
-        # Headless execution is another durable owner of the same run
-        # namespace as the TUI. Claim only after construction and the startup
-        # projection succeed so setup errors cannot strand a lease.
-        workflow_handle.claim(f"headless:{os.getpid()}:{workflow_handle.run_id}")
     error: str | None = None
     runner_result: object | None = None
     try:
+        # Establish a durable identity before any plugin setup.  A generic
+        # bootstrap context is deliberately diagnostic-only until the runner
+        # attaches its typed context, but it lets build_params/build_runner
+        # failures retain a run id and a durable explanation.
+        if workflow_handle is not None:
+            from agenthicc.workflows.plugin import WorkflowContext  # noqa: PLC0415
+
+            _phase_specs = getattr(workflow_cls, "phases", ())
+            workflow_handle.attach_bootstrap_context(
+                WorkflowContext(
+                    intent=intent,
+                    run_id=workflow_handle.run_id,
+                    workflow_name=workflow_cls.name,
+                    current_phase=(
+                        getattr(_phase_specs[0], "name", None) if _phase_specs else None
+                    ),
+                )
+            )
+            workflow_handle.claim(f"headless:{os.getpid()}:{workflow_handle.run_id}")
+            if _phase_specs:
+                workflow_handle.update_phase(_phase_specs[0].name, 0, 0)
+            else:
+                workflow_handle.save_checkpoint(reason="started")
+            initializer = getattr(workflow_cls, "create_initial_context", None)
+            if callable(initializer):
+                initial_context = initializer(
+                    intent,
+                    workflow_handle.run_id,
+                    getattr(session, "session_memory", None),
+                )
+                if initial_context is not None:
+                    workflow_handle.attach_context(initial_context)
+                    if _phase_specs:
+                        workflow_handle.update_phase(_phase_specs[0].name, 0, 0)
+
+        try:
+            workspace_scope = session.workspace_scope
+            workspace_access = session.workspace_access
+        except AttributeError:
+            # Keep lightweight SessionContext test doubles and third-party callers
+            # compatible with the pre-PRD-168 shape.
+            workspace_scope = None
+            workspace_access = None
+        workflow_config = WorkflowConfig(
+            conv_store=session.app_state.conversation,
+            app_state=session.app_state,
+            processor=session.processor,
+            agent_runner=session.agent_runner,
+            approval_svc=session.approval_svc,
+            cfg=session.cfg,
+            skills=session.skills,
+            plugin_tools=session.project_plugins,
+            mcp_registry=session.mcp_registry,
+            mention_cache=session.mention_cache,
+            agents_registry=session.agents_registry,
+            memory_router=session.memory_router,
+            semantic_index=session.semantic_index,
+            completed_turns=completed_turns,
+            session_memory=session.session_memory,
+            conversation_id=session.session_id,
+            usage_ledger=getattr(session, "usage_ledger", None),
+            workflow_handle=workflow_handle,
+            browser_manager=getattr(session, "browser_manager", None),
+            browser_tools=list(getattr(session, "browser_tools", [])),
+            workspace_scope=workspace_scope,
+            workspace_access=workspace_access,
+            params=workflow_cls.build_params(session.cfg.workflows.get(workflow_name, {})),
+            terminal_wait_policies={
+                phase.name: phase.terminal_wait_policy for phase in workflow_cls.phases
+            },
+        )
+        runner = workflow_cls.build_runner(workflow_config, session.mode_manager)
+        if session_service is not None:
+            await session_service.publish(
+                session.session_id,
+                source="headless",
+                kind="workflow_started",
+                payload={"workflow": workflow_name, "intent": intent},
+            )
         runner_result = await runner.run(intent)
     except (asyncio.CancelledError, KeyboardInterrupt):
         if workflow_handle is not None:
+            workflow_handle.finalize_failure("cancelled", kind="user_cancelled")
             workflow_handle.release_claim()
         raise
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"
+        if workflow_handle is not None:
+            checkpoint = workflow_handle.finalize_failure(
+                error,
+                kind=_workflow_failure_kind(exc),
+            )
+            workflow_run = session.app_state.workflow_run()
+            if is_dataclass(workflow_run):
+                session.app_state.workflow_run.set(
+                    replace(
+                        workflow_run,
+                        status="paused" if checkpoint is not None else "failed",
+                        current_phase=workflow_handle.current_phase if checkpoint else None,
+                    )
+                )
 
     try:
         await session.processor.drain()
-    except BaseException:
+    except BaseException as exc:
         if workflow_handle is not None:
+            failure_kind = (
+                "user_cancelled"
+                if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt))
+                else "workflow_error"
+            )
+            workflow_handle.finalize_failure(
+                f"processor drain failed: {type(exc).__name__}: {exc}",
+                kind=failure_kind,
+            )
             workflow_handle.release_claim()
         raise
     workflow_run = session.app_state.workflow_run()
@@ -227,7 +295,24 @@ async def execute_workflow(
         fail_reason = getattr(runner_result, "fail_reason", "")
         if isinstance(fail_reason, str) and fail_reason:
             error = fail_reason
-    run_id = str(getattr(workflow_run, "run_id", "") or "")
+        else:
+            error = "workflow returned unsuccessfully"
+        if workflow_handle is not None:
+            checkpoint = workflow_handle.finalize_failure(error, kind="phase_execution")
+            status = "paused" if checkpoint is not None else "failed"
+            if is_dataclass(workflow_run):
+                session.app_state.workflow_run.set(
+                    replace(
+                        workflow_run,
+                        status=status,
+                        current_phase=workflow_handle.current_phase if checkpoint else None,
+                    )
+                )
+    if workflow_handle is not None and workflow_handle.lifecycle == "paused":
+        status = "paused"
+    run_id = str(
+        getattr(workflow_run, "run_id", "") or getattr(workflow_handle, "run_id", "") or ""
+    )
     phases: list[str] = []
     phase_metadata: dict[str, object] = {}
     for event in getattr(session.processor, "event_log", []):
@@ -258,11 +343,40 @@ async def execute_workflow(
     )
     if session_service is not None:
         try:
+            if result.status == "paused":
+                await session_service.publish(
+                    session.session_id,
+                    source="headless",
+                    kind="workflow_paused_after_error",
+                    payload={
+                        "workflow": result.workflow_name,
+                        "run_id": result.run_id,
+                        "phase": getattr(workflow_handle, "current_phase", None) or "",
+                        "failure_kind": getattr(workflow_handle, "failure_kind", None)
+                        or "workflow_error",
+                        "revision": getattr(workflow_handle, "checkpoint_revision", 0),
+                        "resumable": True,
+                    },
+                )
+            elif result.error is not None:
+                await session_service.publish(
+                    session.session_id,
+                    source="headless",
+                    kind="workflow_failure_diagnostic",
+                    payload={
+                        "workflow": result.workflow_name,
+                        "run_id": result.run_id,
+                        "phase": getattr(workflow_handle, "current_phase", None) or "",
+                        "failure_kind": getattr(workflow_handle, "failure_kind", None)
+                        or "workflow_error",
+                        "resumable": False,
+                    },
+                )
             await session_service.publish(
                 session.session_id,
                 source="headless",
                 kind="workflow_run_failed"
-                if result.status == "failed"
+                if result.status in {"failed", "paused"}
                 else "workflow_run_completed",
                 payload={
                     "workflow": result.workflow_name,
@@ -434,6 +548,7 @@ async def _close_headless_session(
     cassette_base: Path | None,
 ) -> None:
     """Close durable handles and background services for a headless session."""
+    session_service = getattr(session, "session_service", None)
     try:
         projection_task = getattr(session, "kernel_projection_task", None)
         if projection_task is not None:
@@ -456,7 +571,6 @@ async def _close_headless_session(
         terminal_manager = getattr(session, "terminal_manager", None)
         if terminal_manager is not None:
             await terminal_manager.close()
-        session_service = getattr(session, "session_service", None)
         if session_service is not None:
             await session_service.close()
         if cassette_base is not None:

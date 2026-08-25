@@ -9,7 +9,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Iterator, NoReturn, cast
 
 log = logging.getLogger(__name__)
 
@@ -77,6 +77,20 @@ def _fmt_exc(exc: BaseException) -> str:
     name = type(exc).__name__
     msg = str(exc).strip()
     return f"{name}: {msg}" if msg else name
+
+
+def _workflow_failure_kind(exc: BaseException) -> str:
+    """Map common workflow exception classes to stable recovery categories."""
+    text = f"{type(exc).__name__} {exc}".lower()
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if any(marker in text for marker in ("config", "profile")):
+        return "configuration"
+    if any(marker in text for marker in ("rate limit", "429", "provider", "transport")):
+        return "provider_transient"
+    if any(marker in text for marker in ("tool", "mcp", "browser", "subprocess")):
+        return "tool_transient"
+    return "phase_execution"
 
 
 def _build_skill_command(slug: str, skill: "SkillDef") -> "Command":
@@ -918,25 +932,80 @@ class TUISession:
         could accidentally reuse its run id and overwrite its checkpoint.
         """
         handle = self._workflow_handle
-        if handle is None or handle.lifecycle in {"complete", "failed", "discarded"}:
+        workflow_run = self._ctx.app_state.workflow_run()
+        if (
+            handle is None
+            or handle.lifecycle in {"complete", "discarded"}
+            or (handle.lifecycle == "failed" and getattr(workflow_run, "status", None) != "failed")
+        ):
             if handle is not None:
                 self._release_workflow_claim(handle)
             return
-        workflow_run = self._ctx.app_state.workflow_run()
         status = getattr(workflow_run, "status", None)
-        terminal: Literal["complete", "failed"] = "failed" if status == "failed" else "complete"
-        handle.mark_terminal(
-            terminal,
-            error="workflow returned unsuccessfully" if status == "failed" else "",
-        )
-        if handle.checkpoint_supported:
-            try:
-                handle.save_checkpoint(reason=terminal)
-            except Exception:  # noqa: BLE001 — lifecycle cleanup must not mask the result
-                handle.checkpoint_supported = False
+        if status == "failed":
+            # A runner can convert a provider/phase exception into its typed
+            # FAILED state and return normally. Keep a valid typed context
+            # resumable; only the handle decides whether that is safe.
+            context_error = (
+                getattr(handle.context, "fail_reason", "") or "workflow returned unsuccessfully"
+            )
+            finalize = getattr(handle, "finalize_failure", None)
+            checkpoint = (
+                finalize(context_error, kind="phase_execution", recoverable=True)
+                if callable(finalize)
+                else None
+            )
+            if not callable(finalize):
+                handle.mark_terminal("failed", error=context_error)
+            if checkpoint is not None:
+                if workflow_run is not None:
+                    import dataclasses as _dc  # noqa: PLC0415
+
+                    if _dc.is_dataclass(workflow_run):
+                        self._ctx.app_state.workflow_run.set(
+                            _dc.replace(
+                                workflow_run,
+                                status="paused",
+                                current_phase=handle.current_phase,
+                            )
+                        )
+                self._ctx.app_state.conversation.notify_transient(
+                    f"⚠ Workflow '{handle.workflow_name}' paused after an error at "
+                    f"{handle.current_phase or 'the current phase'}. Saved run "
+                    f"{handle.run_id}; use /workflow resume {handle.run_id}."
+                )
+                self._publish_session_event(
+                    "workflow_paused_after_error",
+                    {
+                        "run_id": handle.run_id,
+                        "workflow": handle.workflow_name,
+                        "phase": handle.current_phase or "",
+                        "failure_kind": handle.failure_kind or "phase_execution",
+                        "revision": checkpoint.revision,
+                    },
+                )
+                self._release_workflow_claim(handle)
+                return
+        else:
+            handle.mark_terminal("complete")
+            if handle.checkpoint_supported:
+                try:
+                    handle.save_checkpoint(reason="complete")
+                except Exception as exc:  # noqa: BLE001
+                    handle.checkpoint_supported = False
+                    handle._save_failure_diagnostic(  # noqa: SLF001
+                        error=f"completion checkpoint failed: {type(exc).__name__}",
+                        kind="checkpoint_storage",
+                    )
         self._release_workflow_claim(handle)
 
-    def _fail_workflow_run(self, error: str) -> None:
+    def _fail_workflow_run(
+        self,
+        error: str,
+        *,
+        kind: str = "workflow_error",
+        recoverable: bool = True,
+    ) -> None:
         """Publish and finalize a workflow failure that escaped its runner.
 
         A generated workflow can fail before ``run_phase()`` opens a
@@ -952,28 +1021,74 @@ class TUISession:
         else:
             conv.append_event("error", {"message": error})
 
+        handle = self._workflow_handle
+        if handle is None:
+            workflow_run = self._ctx.app_state.workflow_run()
+            if workflow_run is not None:
+                import dataclasses as _dc  # noqa: PLC0415
+
+                if _dc.is_dataclass(workflow_run):
+                    self._ctx.app_state.workflow_run.set(
+                        _dc.replace(workflow_run, status="failed", current_phase=None)
+                    )
+            return
+
+        finalize = getattr(handle, "finalize_failure", None)
+        if callable(finalize):
+            checkpoint = finalize(error, kind=kind, recoverable=recoverable)
+        else:
+            # Compatibility for third-party/in-test handles predating the
+            # structured finalizer. They remain terminal rather than being
+            # falsely advertised as resumable.
+            handle.mark_terminal("failed", error=error)
+            checkpoint = None
         workflow_run = self._ctx.app_state.workflow_run()
         if workflow_run is not None:
             import dataclasses as _dc  # noqa: PLC0415
 
             if _dc.is_dataclass(workflow_run):
                 self._ctx.app_state.workflow_run.set(
-                    _dc.replace(workflow_run, status="failed", current_phase=None)
+                    _dc.replace(
+                        workflow_run,
+                        status="paused" if checkpoint is not None else "failed",
+                        current_phase=handle.current_phase if checkpoint is not None else None,
+                    )
                 )
+        if checkpoint is not None:
+            self._ctx.app_state.conversation.notify_transient(
+                f"⚠ Workflow '{handle.workflow_name}' paused after an error at "
+                f"{handle.current_phase or 'the current phase'}. Saved run "
+                f"{handle.run_id}; use /workflow resume {handle.run_id}."
+            )
+            self._publish_session_event(
+                "workflow_paused_after_error",
+                {
+                    "run_id": handle.run_id,
+                    "workflow": handle.workflow_name,
+                    "phase": handle.current_phase or "",
+                    "failure_kind": handle.failure_kind or kind,
+                    "revision": checkpoint.revision,
+                },
+            )
+        else:
+            self._publish_session_event(
+                "workflow_failure_diagnostic",
+                {
+                    "run_id": getattr(handle, "run_id", ""),
+                    "workflow": getattr(handle, "workflow_name", ""),
+                    "phase": getattr(handle, "current_phase", None) or "",
+                    "failure_kind": getattr(handle, "failure_kind", None) or kind,
+                    "resumable": False,
+                },
+            )
 
-        handle = self._workflow_handle
-        if handle is None:
-            return
-        if handle.lifecycle not in {"complete", "failed", "discarded"}:
-            handle.mark_terminal("failed", error=error)
-            if handle.checkpoint_supported:
-                try:
-                    handle.save_checkpoint(reason="failed")
-                except Exception:  # noqa: BLE001 — failure reporting must not mask the cause
-                    pass
-        # A failed handle must not be reused when the user sends the next
-        # message to the same selected workflow.
-        if handle.lifecycle in {"complete", "failed", "discarded"}:
+        # A recoverably paused handle remains attached for same-process resume;
+        # terminal/diagnostic-only runs must not be reused by the next message.
+        if checkpoint is not None:
+            # The durable error disposition is complete; a later resume must
+            # reacquire the run lease just like a process-restart resume.
+            self._release_workflow_claim(handle)
+        elif handle.lifecycle in {"complete", "failed", "discarded"}:
             self._release_workflow_claim(handle)
             self._workflow_handle = None
 
@@ -2113,9 +2228,8 @@ class TUISession:
         async def _run_inner() -> None:
             if _plugin_cls is not None:
                 import dataclasses as _dc  # noqa: PLC0415
+                from agenthicc.workflows.plugin import WorkflowContext  # noqa: PLC0415
 
-                # PRD-116: build per-workflow params from merged TOML/CLI/env config.
-                _wf_params = _plugin_cls.build_params(ctx.cfg.workflows.get(_plugin_cls.name, {}))
                 _phase_specs = getattr(_plugin_cls, "phases", ())
                 if (
                     self._workflow_handle is None
@@ -2139,8 +2253,35 @@ class TUISession:
                                 or ""
                             ),
                         )
-                        new_handle.claim(f"{self._workflow_owner_prefix}:{new_handle.run_id}")
                         self._workflow_handle = new_handle
+                        bootstrap = WorkflowContext(
+                            intent=text,
+                            run_id=new_handle.run_id,
+                            workflow_name=_plugin_cls.name,
+                            current_phase=(
+                                getattr(_phase_specs[0], "name", None) if _phase_specs else None
+                            ),
+                        )
+                        new_handle.attach_bootstrap_context(bootstrap)
+                        new_handle.claim(f"{self._workflow_owner_prefix}:{new_handle.run_id}")
+                        if _phase_specs:
+                            new_handle.update_phase(_phase_specs[0].name, 0, 0)
+                        else:
+                            new_handle.save_checkpoint(reason="started")
+                        initializer = getattr(_plugin_cls, "create_initial_context", None)
+                        if callable(initializer):
+                            initial_context = initializer(
+                                text,
+                                new_handle.run_id,
+                                getattr(ctx, "session_memory", None),
+                            )
+                            if initial_context is not None:
+                                new_handle.attach_context(initial_context)
+                                if _phase_specs:
+                                    new_handle.update_phase(_phase_specs[0].name, 0, 0)
+                # PRD-116: build per-workflow params from merged TOML/CLI/env
+                # config only after a durable identity exists.
+                _wf_params = _plugin_cls.build_params(ctx.cfg.workflows.get(_plugin_cls.name, {}))
                 _wf_config = _dc.replace(
                     self._wf_config_base,
                     completed_turns=self._turn_count,
@@ -2222,6 +2363,11 @@ class TUISession:
             else:
                 await _run_inner()
         except asyncio.TimeoutError:
+            if self._workflow_handle is not None:
+                self._fail_workflow_run(
+                    f"TimeoutError: Turn timed out after {_timeout:.0f}s",
+                    kind="timeout",
+                )
             ctx.app_state.conversation.close_turn(
                 error=(
                     f"TimeoutError: Turn timed out after {_timeout:.0f}s — "
@@ -2265,11 +2411,7 @@ class TUISession:
                 workflow_paused = True
                 await self._finalize_workflow_pause(handle)
             elif handle is not None and handle.lifecycle in {"running", "resuming", "pausing"}:
-                handle.mark_terminal("failed", error="cancelled")
-                try:
-                    handle.save_checkpoint(reason="cancelled")
-                except Exception:  # noqa: BLE001
-                    pass
+                self._fail_workflow_run("cancelled", kind="user_cancelled")
             # close_turn() is idempotent — inner layers may have already called it.
             conv.close_turn()
             self._input_session.set_mode(InputMode.IDLE)
@@ -2279,7 +2421,7 @@ class TUISession:
             # Workflow startup can fail before an agent turn exists. Publish
             # that failure explicitly instead of silently returning to idle.
             if self._workflow_handle is not None:
-                self._fail_workflow_run(error)
+                self._fail_workflow_run(error, kind=_workflow_failure_kind(exc))
             elif conv.is_turn_active:
                 conv.close_turn(error=error)
             else:
@@ -2361,6 +2503,13 @@ class TUISession:
             except Exception:  # noqa: BLE001
                 pass
         except Exception as exc:  # noqa: BLE001
+            finalize = getattr(handle, "finalize_failure", None)
+            if callable(finalize):
+                finalize(
+                    f"workflow pause checkpoint failed: {type(exc).__name__}: {exc}",
+                    kind="checkpoint_storage",
+                    recoverable=False,
+                )
             self._publish_session_event(
                 "workflow_pause_failed",
                 {
@@ -2370,6 +2519,10 @@ class TUISession:
                 },
             )
             conv.notify_transient(f"⚠ Workflow pause could not be checkpointed: {exc}")
+            if handle.lifecycle in {"complete", "failed", "discarded"}:
+                self._release_workflow_claim(handle)
+                if self._workflow_handle is handle:
+                    self._workflow_handle = None
 
     async def handle_send(self, cmd: "SendMessageCommand") -> None:
         """Route user message: slash → command dispatcher, text → agent."""
@@ -2690,28 +2843,18 @@ class TUISession:
             if handle is not None and handle.is_pause_requested():
                 await self._finalize_workflow_pause(handle)
             elif handle is not None and handle.lifecycle in {"resuming", "running", "pausing"}:
-                handle.mark_terminal("failed", error="cancelled")
-                try:
-                    handle.save_checkpoint(reason="cancelled")
-                except Exception:  # noqa: BLE001
-                    pass
+                self._fail_workflow_run("cancelled", kind="user_cancelled")
             ctx.app_state.conversation.close_turn()
             self._input_session.set_mode(InputMode.IDLE)
         except Exception as exc:
             conv = ctx.app_state.conversation
             error = _fmt_exc(exc)
             if self._workflow_handle is not None:
-                self._fail_workflow_run(error)
+                self._fail_workflow_run(error, kind=_workflow_failure_kind(exc))
             elif conv.is_turn_active:
                 conv.close_turn(error=error)
             else:
                 conv.append_event("error", {"message": error})
-            if handle is not None and handle.lifecycle not in {"complete", "failed", "discarded"}:
-                handle.mark_terminal("failed", error=_fmt_exc(exc))
-                try:
-                    handle.save_checkpoint(reason="failed")
-                except Exception:  # noqa: BLE001
-                    pass
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             ctx.app_state.conversation.end_activity()
