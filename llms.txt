@@ -157,8 +157,10 @@ phase prompt receives a `[PHASE TRANSITION TOOLS]` block naming the available
 handoff tools; only a successful call advances state, never assistant prose.
 Custom handoff callables marked with `@tool_control` are discovered automatically.
 The workflow's four phases are design (human-approved, read-only), generate (`Yolo` mode, writes
-`.agenthicc/workflows/<name>/runner.py` plus optional local helper modules), validate
-(deterministic import-and-check, then the agent's vote), and summarize:
+a run-owned draft under `.agenthicc/workflows/.drafts/<run-id>/<name>/`), validate
+(deterministic import/check plus a bounded fake-provider smoke contract, then the agent's vote),
+and summarize. Approved drafts are atomically published to
+`.agenthicc/workflows/<name>/` only after all gates pass:
 
 `code_plan` plan approval presents explicit `Approve - Safe` and
 `Approve - YOLO` choices. The selected mode is carried into the execute phase
@@ -167,10 +169,13 @@ the fail-closed `Safe` default. `create_workflow` design approval remains on
 the legacy plan-review option set.
 
 | CreateWorkflowState | agenthicc.workflows.create_workflow.state | Design/generate/validate/summarize state machine with COMPLETE, EXITED, FAILED terminals |
-| CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, approved design, generated path, per-phase `PhaseArtifact`s, shared memory |
+| CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, approved design, draft/publication evidence, per-phase `PhaseArtifact`s, shared memory, and checkpoint provenance |
 | make_*_tools | agenthicc.workflows.create_workflow.phase_tools | Phase transition handoffs; rejected transitions return actionable `error`, `fix`, and `message` fields |
-| validate_workflow_file | agenthicc.workflows.create_workflow.validation | Imports the generated file or package like the loader does; a failing report overrides an agent approval |
-| make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only authoring-surface inspection read live from `PhaseSpec`, `ToolCapability`, `PhaseRole`; includes `describe_transition_tool_pattern()` and `show_example_workflow()` defaults to the custom-runner shape |
+| validate_workflow_file | agenthicc.workflows.create_workflow.validation | Imports and statically checks the generated draft like the loader does; structured categories/evidence and a failing report override agent approval |
+| make_inspection_tools | agenthicc.workflows.create_workflow.inspection_tools | Read-only authoring-surface inspection read live from `PhaseSpec`, `ToolCapability`, `PhaseRole`; with a snapshot, also exposes effective catalog/decision tools |
+| build_authoring_snapshot | agenthicc.workflows.create_workflow.catalog | Bounded, redacted live tool/dependency/policy snapshot used by authoring turns and checkpoint provenance |
+| scan_draft / publish_draft | agenthicc.workflows.create_workflow.draft | Exact manifest scanning and failure-safe atomic publication of a run-owned workflow draft |
+| run_generated_workflow_smoke | agenthicc.workflows.create_workflow.smoke | Fake-provider, no-network contract smoke for generated custom runners |
 
 A generated workflow is expected to ship its own state-machine runner in
 `<name>/runner.py` (typed state enum, typed context, one bounded async method per state,
@@ -209,6 +214,10 @@ the current API instead of remembering it:
   journal-backed provider memory; custom runner contexts must provide paired
   checkpoint codecs (generated workflows are rejected without them), while
   legacy unsupported plugins fail closed on Esc.
+- Generated plugins that use optional services declare
+  `required_integrations`, `optional_integrations`, and
+  `integration_fallbacks`; validation records redacted availability and rejects
+  unavailable required services without a usable fallback.
 
 The repository does not currently contain `agenthicc.api`, `tui.app`,
 `tui.transcript`, or `tui.events`; those are historical or unresolved product

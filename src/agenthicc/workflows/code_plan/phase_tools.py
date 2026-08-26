@@ -381,6 +381,7 @@ def _validate_questions(questions: object) -> list[str]:
 
 def make_questions_tool(
     approval_svc: ApprovalService | None,
+    metadata: dict[str, object] | None = None,
 ) -> list[Callable[..., object]]:
     """Return [ask_user] as a @tool()-decorated callable.
 
@@ -428,11 +429,26 @@ def make_questions_tool(
         Args:
             questions: list of {id, text, options} dicts.
         """
+        if metadata is not None and isinstance(questions, list):
+            previous_count = metadata.get("asked_count", 0)
+            asked_count = previous_count if isinstance(previous_count, int) else 0
+            metadata["asked_count"] = asked_count + 1
+            metadata["question_ids"] = [
+                str(item.get("id", ""))
+                for item in questions
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            ][:32]
+            metadata["question_count"] = len(questions)
+
         if approval_svc is None:
+            if metadata is not None:
+                metadata["status"] = "unavailable"
             return {"cancelled": True}
 
         problems = _validate_questions(questions)
         if problems:
+            if metadata is not None:
+                metadata["status"] = "invalid"
             return {
                 "error": "invalid questions format — fix the problems below and retry",
                 "problems": problems,
@@ -458,13 +474,22 @@ def make_questions_tool(
         )
         response = await approval_svc.request_approval(req)
         if not response.allowed:
+            if metadata is not None:
+                metadata["status"] = "cancelled"
             return {"cancelled": True}
         try:
             decoded = _json.loads(response.message)
             if isinstance(decoded, dict) and all(isinstance(key, str) for key in decoded):
+                if metadata is not None:
+                    metadata["status"] = "answered"
+                    metadata["answered_count"] = len(decoded)
                 return {key: value for key, value in decoded.items()}
+            if metadata is not None:
+                metadata["status"] = "invalid_answer"
             return {"error": "answers must be a JSON object"}
         except Exception:  # noqa: BLE001
+            if metadata is not None:
+                metadata["status"] = "invalid_answer"
             return {"error": "failed to parse answers"}
 
     return [ask_user]

@@ -180,8 +180,9 @@ Workflows are typed state machines with explicit transitions. The built-in `code
 Create a specialized workflow with `/workflow create_workflow`. It runs `design → generate → validate → summarize` on the same state-machine pattern as `code_plan`:
 
 1. The design is presented for your approval
-2. The generate phase writes a complete workflow package to `.agenthicc/workflows/<name>/runner.py` (with workflow-specific tools/helpers in sibling files) with a runtime prompt for every phase
-3. The validate phase imports that package and loops back to generate until it loads cleanly — an approval of a file that does not import is overridden
+2. The generate phase writes a complete workflow package to a run-owned draft under `.agenthicc/workflows/.drafts/<run-id>/<name>/` (with workflow-specific tools/helpers in sibling files) and records a manifest
+3. The validate phase imports the draft, runs a bounded fake-provider smoke check, and loops back to generate until it passes — an approval of a file that does not import or smoke-test is overridden
+4. Only after validation and approval does the framework atomically publish the package to `.agenthicc/workflows/<name>/`; failed publication leaves the draft and checkpoint recoverable
 
 For non-trivial behavior the agent is guided to create a `code_plan`-style custom runner with typed states, context, per-state functions, explicit `match` transitions, and resumable execution; simple workflows can use declarative `PhaseSpec` values. Run `/workflows reload` and then `/workflow <name>` after authoring.
 
@@ -200,12 +201,34 @@ Each authoring phase has its own prompt and bounded multi-turn budget; tune the 
 - `describe_prompt_cache_contract`
 - `show_workflow_template`
 - `validate_workflow_cache_contract`
+- `inspect_agenthicc_source`
+- `search_agenthicc_source`
+- `list_agenthicc_docs`
+- `read_agenthicc_doc`
+- `search_agenthicc_docs`
 
-Ten are read-only and available in Plan mode. `validate_workflow_cache_contract` is execute-gated because it imports the target workflow; generation receives it after the package is written and must use it only with a trusted generated path. Browser descriptions report the live backend tool names and distinguish a configuration-enabled optional integration from a selected or installed backend.
+Authoring turns also receive a bounded, redacted live snapshot of effective
+tool schemas, capability decisions, workspace/cache/checkpoint policy, and
+browser/MCP availability. `describe_authoring_session` returns the snapshot;
+`explain_authoring_tool_access` explains why an individual tool is available or
+blocked. Secrets, headers, prompt contents, and tool arguments are excluded.
+
+The catalog and inspection tools are read-only and available in Plan mode.
+`validate_workflow_cache_contract` is execute-gated because it imports the target
+workflow; generation receives it after the package is written and must use it
+only with a trusted generated path. Browser descriptions report the live
+backend tool names and distinguish a configuration-enabled optional integration
+from a selected or installed backend.
 
 ### Cache stability contract
 
 Generated custom runners receive a cache-stability contract: immutable workflow policy and deterministic tool schemas stay in the reusable prefix, while phase state, artifacts, questions, answers, and summaries stay dynamic. The authoring agent is instructed to declare a literal `CACHE_CONTRACT`, pass it as `stable_system_prompt` to `CodePlanRunner.run_phase()`, and use `ask_user` instead of guessing over material ambiguity. Strict validation rejects runners that bypass this boundary or mutate the shared conversation history.
+
+Generated custom runners must also use the parent session conversation and
+memory, inherit its workspace and browser/MCP policy, provide bounded JSON
+checkpoint codecs, resume the saved state, and re-raise ordinary errors to the
+framework failure finalizer. Simple unconditional graphs may use the generic
+runner.
 
 The built-in `make_agenthicc_tool` workflow follows the same boundary across
 its analyze, generate, validate, and finalize phases; tool plans, generated

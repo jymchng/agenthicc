@@ -113,6 +113,16 @@ class CreateWorkflowContext:
     # checkpoint because it contains fingerprints and region names only, never
     # prompt text, conversation contents, secrets, or tool arguments.
     cache_diagnostic: dict[str, object] = dataclasses.field(default_factory=dict)
+    # Bounded authoring provenance.  The runtime catalog itself remains an
+    # ephemeral session object; only its redacted reference is checkpointed.
+    authoring_snapshot: dict[str, object] = dataclasses.field(default_factory=dict)
+    selected_tools: list[str] = dataclasses.field(default_factory=list)
+    dependency_summary: dict[str, object] = dataclasses.field(default_factory=dict)
+    draft_manifest: dict[str, object] = dataclasses.field(default_factory=dict)
+    draft_fingerprint: str = ""
+    validation_evidence: dict[str, object] = dataclasses.field(default_factory=dict)
+    publication: dict[str, object] = dataclasses.field(default_factory=dict)
+    question_metadata: dict[str, object] = dataclasses.field(default_factory=dict)
 
     def add_artifact(self, artifact: PhaseArtifact) -> None:
         """Record *artifact*, keyed by its phase (latest write for a phase wins)."""

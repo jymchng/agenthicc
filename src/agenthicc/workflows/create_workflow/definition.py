@@ -111,7 +111,10 @@ class CreateWorkflow(WorkflowPlugin):
                 "WorkflowConfig.workspace_access unchanged; never create a second "
                 "workspace policy or bypass it with raw filesystem calls. "
                 "The generated runner must use ask_user for material ambiguity and must "
-                "not guess."
+                "not guess. The complete read-only self-inspection surface is "
+                "list_agenthicc_docs(), read_agenthicc_doc(), search_agenthicc_docs(), "
+                "inspect_agenthicc_source(), and search_agenthicc_source(); use these "
+                "exploratory tools when live source or documentation is required."
             ),
         ),
         PhaseSpec(

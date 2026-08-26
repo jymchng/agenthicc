@@ -226,7 +226,7 @@ async def test_e2e_authors_a_workflow_end_to_end(app_state, processor, tmp_path,
     assert ctx.workflow_name == "doc_review"
 
     # The generation phase really wrote the file through the real write tool.
-    written = tmp_path / _TARGET
+    written = tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py"
     assert written.exists()
     assert "class DocReview(WorkflowPlugin)" in written.read_text(encoding="utf-8")
 
@@ -305,7 +305,9 @@ async def test_e2e_authored_workflow_ships_and_runs_its_own_state_machine(
     assert ctx.artifacts["validate"].metadata["ok"] is True
     assert ctx.artifacts["validate"].metadata["warnings"] == []
 
-    source = (tmp_path / target).read_text(encoding="utf-8")
+    source = (tmp_path / ".agenthicc" / "workflows" / "release_check" / "runner.py").read_text(
+        encoding="utf-8"
+    )
     assert "class ReleaseState(Enum)" in source
     assert "while not state.is_terminal" in source
     assert "match state:" in source
@@ -397,7 +399,9 @@ async def test_e2e_broken_file_is_rejected_regenerated_and_accepted(
     assert ctx.repair_cycles == 1
     assert app_state.workflow_run().status == "complete"
     assert ctx.artifacts["validate"].metadata["ok"] is True
-    written = (tmp_path / _TARGET).read_text(encoding="utf-8")
+    written = (tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py").read_text(
+        encoding="utf-8"
+    )
     assert "reviewww" not in written
 
 

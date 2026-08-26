@@ -253,8 +253,10 @@ def make_generation_tools(
         """Signal that the workflow package has been fully written to disk.
 
         Call this ONLY after you have written the complete WorkflowPlugin package
-        to .agenthicc/workflows/<name>/ using the write tools. The directory must
-        contain runner.py; keep workflow-specific tools in sibling files inside it.
+        to the run-owned draft path provided by the generation prompt using the
+        write tools. The directory must contain runner.py; keep workflow-specific
+        tools in sibling files inside it. Publication happens later, after
+        deterministic validation and human approval.
         The validation phase will import and check the package automatically. Do not call it more
         than once, and do not call it before the file is written.
 

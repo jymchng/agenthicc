@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import dataclasses
 import ast
+import json
 import logging
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -39,6 +41,30 @@ _FORBIDDEN_BROWSER_IMPORTS: tuple[str, ...] = (
     "playwright",
     "agenthicc.tools.cloakbrowser",
     "agenthicc.tools.playwright",
+)
+# Generated workflow code must use the framework's capability-gated tools for
+# side effects. Besides making the no-network smoke deterministic, rejecting
+# these imports before import-time execution prevents a helper module from
+# bypassing the parent session's workspace/network policy.
+_FORBIDDEN_EXTERNAL_IMPORT_ROOTS: frozenset[str] = frozenset(
+    {
+        "socket",
+        "subprocess",
+        "requests",
+        "httpx",
+        "urllib",
+        "urllib3",
+        "aiohttp",
+        "websockets",
+        "ssl",
+        "dns",
+        "ftplib",
+        "telnetlib",
+        "webbrowser",
+        "playwright",
+        "cloakbrowser",
+        "lauren_mcp",
+    }
 )
 _KNOWN_BROWSER_TOOLS: frozenset[str] = frozenset(
     {
@@ -63,6 +89,26 @@ _KNOWN_BROWSER_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+_INTEGRATION_AVAILABLE_STATES: frozenset[str] = frozenset(
+    {"available", "connected", "enabled", "ok", "ready", "selected"}
+)
+_INTEGRATION_UNAVAILABLE_STATES: frozenset[str] = frozenset(
+    {
+        "binary_missing",
+        "disabled",
+        "disconnected",
+        "error",
+        "failed",
+        "missing",
+        "not_configured",
+        "not_installed",
+        "not_reported",
+        "not_selected",
+        "unavailable",
+    }
+)
+_INTEGRATION_NOT_PROBED_STATES: frozenset[str] = frozenset({"not_probed", "unknown", "unprobed"})
+
 
 def _check_browser_imports(source: str, errors: list[str]) -> None:
     """Reject generated code that bypasses the session-owned browser adapter."""
@@ -84,7 +130,7 @@ def _check_browser_imports(source: str, errors: list[str]) -> None:
             ):
                 errors.append(
                     f"Generated workflows must not import {module!r}; use the session-provided "
-                    "the session-provided browser_* tools so policy and checkpoint boundaries "
+                    "browser_* tools so policy and checkpoint boundaries "
                     "remain enforced."
                 )
         if isinstance(node, ast.Name) and (
@@ -106,6 +152,82 @@ def _check_browser_imports(source: str, errors: list[str]) -> None:
                 )
 
 
+def _check_external_imports(source: str, errors: list[str]) -> None:
+    """Reject direct network/process clients in generated workflow sources.
+
+    Workflow-local helpers are still imported by the loader, so checking every
+    package source—not only ``runner.py``—is important. Runtime side effects
+    belong in capability-gated tools supplied by the parent session; direct
+    imports would make validation and smoke execution non-deterministic.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        else:
+            modules = []
+        for module in modules:
+            root = module.split(".", 1)[0]
+            if root in _FORBIDDEN_EXTERNAL_IMPORT_ROOTS:
+                errors.append(
+                    f"Generated workflows must not import {module!r}; use the parent session's "
+                    "capability-gated tools so network, browser, MCP, process, and workspace "
+                    "policy remain enforced."
+                )
+
+
+def _check_direct_instruction_reads(source: str, errors: list[str]) -> None:
+    """Reject generated workflows that create a second AGENTS.md reader."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return
+
+    def literal_text(node: ast.AST) -> str:
+        """Return literal string content nested in a simple path expression."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr) and all(
+            isinstance(value, ast.Constant) and isinstance(value.value, str)
+            for value in node.values
+        ):
+            parts: list[str] = []
+            for value in node.values:
+                if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+                    return ""
+                parts.append(value.value)
+            return "".join(parts)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return literal_text(node.left) + literal_text(node.right)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id in {"str", "Path"} and node.args:
+                return literal_text(node.args[0])
+        return ""
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == "open":
+            values = node.args[:1]
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "read_text",
+            "read_bytes",
+        }:
+            values = [node.func.value]
+        else:
+            values = []
+        if any("AGENTS" in literal_text(value).upper() for value in values):
+            errors.append(
+                "generated workflows must use the framework-provided instruction context; "
+                "do not read AGENTS.md directly or create a second instruction loader."
+            )
+
+
 @dataclasses.dataclass(frozen=True)
 class ValidationReport:
     """Outcome of deterministically validating one generated workflow package.
@@ -125,6 +247,9 @@ class ValidationReport:
     plugin_names: tuple[str, ...] = ()
     phase_names: tuple[str, ...] = ()
     cache_contract: str = "legacy"
+    categories: dict[str, str] = dataclasses.field(default_factory=dict)
+    evidence: dict[str, object] = dataclasses.field(default_factory=dict)
+    skipped_checks: tuple[str, ...] = ()
 
     def render(self) -> str:
         """Render the report as the text block shown to the validating agent."""
@@ -136,6 +261,11 @@ class ValidationReport:
         if self.phase_names:
             lines.append(f"phases: {' → '.join(self.phase_names)}")
         lines.append(f"cache contract: {self.cache_contract}")
+        if self.categories:
+            lines.append(
+                "categories: "
+                + ", ".join(f"{name}={status}" for name, status in sorted(self.categories.items()))
+            )
         if self.errors:
             lines.append("")
             lines.append(f"errors ({len(self.errors)}) — these MUST be fixed:")
@@ -144,15 +274,59 @@ class ValidationReport:
             lines.append("")
             lines.append(f"warnings ({len(self.warnings)}):")
             lines.extend(f"  {i}. {warn}" for i, warn in enumerate(self.warnings, 1))
+        if self.skipped_checks:
+            lines.append("")
+            lines.append("skipped checks: " + ", ".join(self.skipped_checks))
+        if self.evidence:
+            lines.append("")
+            lines.append(
+                "evidence: " + json.dumps(self.evidence, sort_keys=True, separators=(",", ":"))
+            )
         if self.ok and not self.warnings:
             lines.append("")
             lines.append("The workflow imports cleanly and its phase graph is consistent.")
         return "\n".join(lines)
 
+    def to_dict(self) -> dict[str, object]:
+        """Return a JSON-compatible structured validation result."""
+        return {
+            "path": self.path,
+            "ok": self.ok,
+            "errors": list(self.errors),
+            "warnings": list(self.warnings),
+            "plugin_names": list(self.plugin_names),
+            "phase_names": list(self.phase_names),
+            "cache_contract": self.cache_contract,
+            "categories": dict(self.categories),
+            "evidence": dict(self.evidence),
+            "skipped_checks": list(self.skipped_checks),
+        }
+
 
 def _fail(path: str, *errors: str) -> ValidationReport:
     """Return a not-ok report carrying *errors* only."""
-    return ValidationReport(path=path, ok=False, errors=tuple(errors))
+    text = " ".join(errors).lower()
+    categories = {"source": "fail", "result": "fail"}
+    markers = (
+        ("browser", "browser"),
+        ("mcp", "mcp"),
+        ("workspace", "workspace"),
+        ("draft", "manifest"),
+        ("manifest", "manifest"),
+        ("symlink", "manifest"),
+        ("runner.py", "manifest"),
+        ("syntax", "source"),
+    )
+    for marker, category in markers:
+        if marker in text:
+            categories[category] = "fail"
+            break
+    return ValidationReport(
+        path=path,
+        ok=False,
+        errors=tuple(errors),
+        categories=categories,
+    )
 
 
 def _import_plugins(
@@ -280,6 +454,41 @@ def _check_phases(
             f"({names[0]!r}); no next/on_reject/on_error edge leads to it."
         )
     return tuple(names)
+
+
+def _check_phase_capabilities(
+    plugin: type[WorkflowPlugin],
+    errors: list[str],
+) -> None:
+    """Validate capability allowlists against the live capability taxonomy."""
+    from agenthicc.tools.capabilities import ToolCapability  # noqa: PLC0415
+
+    known = {capability.value for capability in ToolCapability}
+    phases = plugin.phases if isinstance(plugin.phases, list) else ()
+    for phase in phases:
+        if not hasattr(phase, "name"):
+            continue
+        for field_name in ("allowed_capabilities", "allowed_capabilities_override"):
+            raw = getattr(phase, field_name)
+            if raw is None:
+                continue
+            if not isinstance(raw, (set, frozenset)):
+                errors.append(
+                    f"phase {phase.name!r} {field_name} must be a set of ToolCapability values."
+                )
+                continue
+            unknown = sorted(
+                str(value.value if isinstance(value, ToolCapability) else value)
+                for value in raw
+                if not (
+                    isinstance(value, ToolCapability) or isinstance(value, str) and value in known
+                )
+            )
+            if unknown:
+                errors.append(
+                    f"phase {phase.name!r} {field_name} contains unknown capability values: "
+                    f"{unknown}. Use the live ToolCapability taxonomy."
+                )
 
 
 def _default_build_runner_func() -> object:
@@ -490,6 +699,188 @@ def _check_error_recovery_contract(source: str, errors: list[str], *, strict: bo
                     )
 
 
+def _string_values(value: object) -> tuple[str, ...]:
+    """Read a bounded string collection from generated plugin metadata."""
+    if isinstance(value, str):
+        values: Iterable[object] = (value,)
+    elif isinstance(value, Iterable) and not isinstance(value, (bytes, Mapping)):
+        values = value
+    else:
+        return ()
+    result = {
+        item.strip().lower()[:128] for item in values if isinstance(item, str) and item.strip()
+    }
+    return tuple(sorted(result))
+
+
+def _declared_integrations(
+    plugin: type[WorkflowPlugin],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Return required, optional, and fallback integration declarations.
+
+    These attributes are intentionally optional so existing plugins remain
+    compatible.  ``integration_fallbacks`` is normally a mapping whose keys
+    are required integration names; accepting a sequence as well keeps the
+    metadata easy to write and harmlessly ignores its descriptions.
+    """
+    required = _string_values(getattr(plugin, "required_integrations", ()))
+    optional = _string_values(getattr(plugin, "optional_integrations", ()))
+    fallback_value = getattr(plugin, "integration_fallbacks", ())
+    if isinstance(fallback_value, Mapping):
+        fallbacks = _string_values(tuple(fallback_value.keys()))
+    else:
+        fallbacks = _string_values(fallback_value)
+    legacy_fallbacks = _string_values(getattr(plugin, "fallback_integrations", ()))
+    return required, optional, tuple(sorted(set(fallbacks) | set(legacy_fallbacks)))
+
+
+def _availability_state(value: object) -> tuple[bool | None, str]:
+    """Normalize safe integration status data to ``(available, state)``."""
+    if isinstance(value, bool):
+        return value, "available" if value else "unavailable"
+    if isinstance(value, str):
+        state = value.strip().lower()[:64]
+        if state in _INTEGRATION_AVAILABLE_STATES:
+            return True, state
+        if state in _INTEGRATION_UNAVAILABLE_STATES:
+            return False, state
+        if state in _INTEGRATION_NOT_PROBED_STATES:
+            return None, state
+        return None, state or "unknown"
+    if isinstance(value, Mapping):
+        explicit = value.get("available")
+        if isinstance(explicit, bool):
+            return explicit, "available" if explicit else "unavailable"
+        for key in ("status", "state", "dependency_status", "connection_state"):
+            if key in value:
+                result = _availability_state(value[key])
+                if result[1] not in {"unknown", ""}:
+                    return result
+        if value.get("enabled") is False:
+            return False, "disabled"
+    return None, "unknown"
+
+
+def _integration_status(
+    integration: str,
+    statuses: Mapping[str, object] | None,
+) -> tuple[bool | None, str]:
+    """Resolve one declared integration from a redacted session summary."""
+    if statuses is None:
+        return None, "not_probed"
+    name = integration.strip().lower()
+    direct = {str(key).strip().lower(): value for key, value in statuses.items()}
+    if name in direct:
+        return _availability_state(direct[name])
+
+    if name in {"cloakbrowser", "playwright"}:
+        browser = direct.get("browser")
+        if not isinstance(browser, Mapping):
+            return False, "not_configured"
+        backend = (
+            str(
+                browser.get(
+                    "optional_dependency",
+                    browser.get("selected_backend", browser.get("backend", "")),
+                )
+            )
+            .strip()
+            .lower()
+        )
+        if backend and name not in backend:
+            return False, "backend_not_selected"
+        if browser.get("selected") is False or browser.get("configured") is False:
+            return False, "not_configured"
+        return _availability_state(browser)
+
+    if name == "mcp" or name.startswith("mcp:"):
+        raw_servers = direct.get("mcp")
+        if not isinstance(raw_servers, Iterable) or isinstance(raw_servers, (str, bytes, Mapping)):
+            return False, "not_configured"
+        requested_server = name.partition(":")[2]
+        found = False
+        for item in raw_servers:
+            if not isinstance(item, Mapping):
+                continue
+            server = str(item.get("server", "")).strip().lower()
+            if requested_server and server != requested_server:
+                continue
+            found = True
+            available, state = _availability_state(item)
+            if available is True:
+                return True, state
+            if available is False:
+                return False, state
+        return (False, "not_configured") if not found else (None, "not_probed")
+
+    # Once the caller supplied an explicit session summary, an undeclared
+    # integration is not evidence of availability.  Fail closed for required
+    # integrations rather than allowing generated code to assume an adapter
+    # exists merely because its name is unfamiliar to the current catalog.
+    return False, "not_reported"
+
+
+def _check_optional_integrations(
+    plugin: type[WorkflowPlugin],
+    errors: list[str],
+    warnings: list[str],
+    *,
+    available_integrations: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Validate declared optional integrations against a safe session summary."""
+    required, optional, fallbacks = _declared_integrations(plugin)
+    declarations = tuple(sorted(set(required) | set(optional) | set(fallbacks)))
+    evidence: dict[str, object] = {
+        "required": list(required),
+        "optional": list(optional),
+        "fallbacks": list(fallbacks),
+        "states": {},
+    }
+    if not declarations:
+        evidence["status"] = "not_declared"
+        return evidence
+
+    states: dict[str, str] = {}
+    degraded = False
+    not_probed = False
+    missing_required = False
+    for integration in declarations:
+        available, state = _integration_status(integration, available_integrations)
+        states[integration] = state
+        if available is False:
+            if integration in required and integration not in fallbacks:
+                missing_required = True
+                guidance = {
+                    "cloakbrowser": "run `uv sync --extra cloakbrowser` and configure a usable browser backend",
+                    "playwright": "run `uv sync --extra playwright` and install its browser runtime",
+                    "mcp": "configure and connect at least one MCP server",
+                }.get(integration, f"provide the '{integration}' integration")
+                errors.append(
+                    f"required integration {integration!r} is unavailable ({state}); {guidance}, "
+                    "or declare an explicit integration_fallbacks entry."
+                )
+            else:
+                degraded = True
+                warnings.append(
+                    f"optional integration {integration!r} is unavailable ({state}); "
+                    "the declared fallback/degraded path must remain usable."
+                )
+        elif available is None:
+            not_probed = True
+
+    evidence["states"] = states
+    evidence["status"] = (
+        "fail"
+        if missing_required
+        else "degraded"
+        if degraded
+        else "not_probed"
+        if not_probed
+        else "pass"
+    )
+    return evidence
+
+
 def _check_dynamic_stable_prompt_ast(source: str, errors: list[str]) -> None:
     """Reject changing expressions embedded in stable prompt constants."""
 
@@ -636,8 +1027,11 @@ def _check_prompt_cache_contract(
         marker in source.lower() for marker in ("clarifying", "ambiguous", "do not guess")
     )
     has_workspace_policy = "workspace_access" in source
+    has_conversation_identity = "conversation_id" in source
 
+    contract_error_start = len(errors)
     _check_dynamic_stable_prompt_ast(source, errors)
+    _check_direct_instruction_reads(source, errors)
     has_transition_decorator = _check_transition_tool_contract(
         source,
         errors,
@@ -693,13 +1087,18 @@ def _check_prompt_cache_contract(
             "generated custom workflows must document and inherit WorkflowConfig.workspace_access "
             "for every phase; use the standard run_phase() path instead of creating a second scope."
         )
+    if not has_conversation_identity:
+        errors.append(
+            "generated custom workflows must preserve the parent session's conversation_id "
+            "across every phase, retry, and resume; never create a second conversation."
+        )
     if not has_transition_decorator:
         errors.append(
             "generated custom workflows must mark every phase handoff callable with the "
             "bare @tool_control decorator imported from agenthicc.tools.capabilities. "
             "Use describe_transition_tool_pattern() for the exact pattern."
         )
-    if errors:
+    if len(errors) > contract_error_start:
         return "invalid"
     return "contract-native"
 
@@ -710,6 +1109,7 @@ def validate_workflow_file(
     expected_name: str = "",
     root: Path | None = None,
     strict_cache_contract: bool = False,
+    available_integrations: Mapping[str, object] | None = None,
 ) -> ValidationReport:
     """Deterministically validate a workflow file or package at *path*.
 
@@ -735,6 +1135,12 @@ def validate_workflow_file(
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
         candidate = base / candidate
+    if candidate.is_symlink():
+        return _fail(
+            str(candidate),
+            f"{candidate} is a symlink; generated workflow sources must be regular files "
+            "inside the authorized workspace.",
+        )
     try:
         resolved = candidate.resolve()
     except OSError as exc:
@@ -765,6 +1171,13 @@ def validate_workflow_file(
 
     source_paths: list[Path]
     if is_package:
+        for item in resolved.rglob("*"):
+            if item.is_symlink():
+                return _fail(
+                    shown,
+                    f"{item} is a symlink; generated workflow packages must not contain "
+                    "symlinked files or directories.",
+                )
         runner_path = resolved / "runner.py"
         if not runner_path.is_file():
             return _fail(
@@ -772,7 +1185,11 @@ def validate_workflow_file(
                 f"{shown} is a directory but has no runner.py workflow entry point. "
                 "Write the runner to .agenthicc/workflows/<name>/runner.py.",
             )
-        source_paths = sorted(resolved.glob("*.py"))
+        source_paths = sorted(
+            item
+            for item in resolved.rglob("*.py")
+            if item.is_file() and "__pycache__" not in item.parts
+        )
         if not source_paths:
             return _fail(shown, f"{shown} contains no Python source files.")
     else:
@@ -813,6 +1230,7 @@ def validate_workflow_file(
     source_errors: list[str] = []
     for source in sources.values():
         _check_browser_imports(source, source_errors)
+        _check_external_imports(source, source_errors)
     if source_errors:
         return _fail(shown, *source_errors)
 
@@ -895,6 +1313,7 @@ def validate_workflow_file(
             errors.append(f"{plugin.__name__}.build_runner is not callable.")
 
     phase_names = _check_phases(target, errors, warnings)
+    _check_phase_capabilities(target, errors)
     _check_runner(target, namespace, errors, warnings, len(phase_names))
     if _has_custom_runner(target):
         _check_resume_does_not_restart("\n".join(sources.values()), errors)
@@ -909,6 +1328,86 @@ def validate_workflow_file(
         errors,
         strict=strict_cache_contract,
     )
+    source_text = "\n".join(sources.values())
+    custom_runner = _has_custom_runner(target)
+    integration_evidence = _check_optional_integrations(
+        target,
+        errors,
+        warnings,
+        available_integrations=available_integrations,
+    )
+    error_text = " ".join(errors).lower()
+
+    def has_error(*markers: str) -> bool:
+        return any(marker in error_text for marker in markers)
+
+    categories = {
+        "source": "pass",
+        "plugin": "fail"
+        if has_error(
+            ".name",
+            ".description",
+            "mode_bindings",
+            "build_params",
+            "build_runner",
+            "builtin workflow",
+        )
+        else "pass"
+        if plugins
+        else "fail",
+        "phase_graph": "fail"
+        if has_error("phase ", "phases[", "phase graph", "phase name")
+        else "pass"
+        if phase_names
+        else "warning",
+        "runner": "fail"
+        if has_error("runner", "checkpoint codec", "resume(", "attach_context")
+        else "pass"
+        if custom_runner
+        else "generic",
+        "capability": "fail" if any("capability" in error.lower() for error in errors) else "pass",
+        "cache_contract": "pass"
+        if cache_contract in {"contract-native", "generic-runner"}
+        else cache_contract,
+        "question_policy": (
+            "pass"
+            if not custom_runner or "ask_user" in source_text
+            else "fail"
+            if strict_cache_contract
+            else "warning"
+        ),
+        "transition_tools": "fail"
+        if any("transition" in error.lower() for error in errors)
+        else "pass",
+        "workspace": "fail" if has_error("workspace") else "pass",
+        "browser": "fail" if has_error("browser") else "pass",
+        "mcp": "fail" if has_error("mcp") else "not_probed",
+        "checkpoint": "pass"
+        if not custom_runner
+        and not has_error("checkpoint")
+        or (
+            _overrides_plugin_method(target, "checkpoint_context_to_payload")
+            and _overrides_plugin_method(target, "checkpoint_context_from_payload")
+            and not has_error("checkpoint")
+        )
+        else "fail",
+        "resume": "fail"
+        if has_error("resume")
+        else "pass"
+        if not custom_runner or "async def resume" in source_text
+        else "fail",
+        "failure_recovery": "fail"
+        if has_error("failure", "swallow", "finalizer")
+        else "pass"
+        if not custom_runner or "attach_context" in source_text
+        else "fail",
+        "optional_dependencies": str(integration_evidence.get("status", "not_declared")),
+        "manifest": "package" if is_package else "legacy",
+    }
+    if errors:
+        categories["result"] = "fail"
+    else:
+        categories["result"] = "pass"
 
     return ValidationReport(
         path=shown,
@@ -918,4 +1417,33 @@ def validate_workflow_file(
         plugin_names=plugin_names,
         phase_names=phase_names,
         cache_contract=cache_contract,
+        categories=categories,
+        evidence={
+            "source_files": [str(item) for item in sorted(sources)],
+            "source_file_count": len(sources),
+            "plugin_count": len(plugins),
+            "phase_count": len(phase_names),
+            "custom_runner": custom_runner,
+            "phase_capabilities": [
+                {
+                    "name": phase.name,
+                    "allowed": [
+                        str(value.value if hasattr(value, "value") else value)
+                        for value in (phase.allowed_capabilities or ())
+                    ],
+                    "override": [
+                        str(value.value if hasattr(value, "value") else value)
+                        for value in (phase.allowed_capabilities_override or ())
+                    ],
+                }
+                for phase in (target.phases if isinstance(target.phases, list) else ())
+                if hasattr(phase, "name")
+            ],
+            "optional_integrations": integration_evidence,
+        },
+        skipped_checks=(
+            ("optional browser/MCP runtime health is not probed by static validation",)
+            if available_integrations is None
+            else ()
+        ),
     )

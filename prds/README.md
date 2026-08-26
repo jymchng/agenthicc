@@ -41,6 +41,8 @@ against the current source before implementing them.
 - [PRD-171 — Single Live Owner for Resumed Sessions](prd-171-single-owner-session-lease.md)
 - [PRD-172 — Production MCP Integration for agenthicc](prd-172-mcp-integration-research-and-architecture.md)
 - [PRD-173 — Recoverable Workflow Errors and Failure Checkpoints](prd-173-recoverable-workflow-errors.md)
+- [PRD-174 — Tool-Aware create_workflow Authoring and Safe Publication](prd-174-create-workflow-tool-aware-authoring.md)
+- [PRD-175 — Runtime AGENTS.md Integration](prd-175-agents-md-runtime-integration.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -223,6 +225,24 @@ error-paused checkpoints that can be resumed from the exact phase and same
 conversation; failures before context creation receive an explicit
 diagnostic-only fallback record. It also makes `create_workflow` generate and
 validate custom workflows that inherit this contract.
+
+PRD-174 records the current tool audit for `create_workflow`. The underlying
+capability, introspection, browser, MCP, cache, and checkpoint tools are mostly
+current and tested; the remaining gap is the authoring boundary's incomplete
+effective catalog and direct-to-published-directory generation path. It defines
+source-backed tool/session snapshots, capability decision traces, optional
+integration preflight, staged manifests, bounded generated-workflow smoke
+validation, atomic publication, and provenance that downstream workflows can
+inherit without weakening existing security, workspace, cache, conversation, or
+resume contracts.
+
+PRD-175 defines the runtime AGENTS.md integration. It connects the existing
+project bootstrap artifact to one session-scoped, bounded instruction snapshot
+that is injected into direct turns, workflows, subagents, and resume paths as a
+stable cacheable system-prompt region. It keeps project guidance separate from
+provider memory and the TUI transcript, records only redacted snapshot
+provenance in checkpoints, preserves runtime capability and workspace
+authority, and makes create_workflow-generated workflows inherit the contract.
 
 ## Existing PRDs
 

@@ -189,18 +189,57 @@ copy-ready configuration template in the module documentation.
 ```
 
 The design phase presents the workflow's name and phase graph for your approval
-and writes nothing. The generate phase then writes a complete workflow package
-to `.agenthicc/workflows/<name>/runner.py`, with workflow-specific tools/helpers
-in sibling files inside that directory, giving every phase a literal
-`system_prompt_override` so the runtime agent knows the objective, tools, inputs,
-outputs, verification, completion signal, and handoff. It uses the inherited
-generic runner when the phase graph is enough; `build_runner()` and a custom
-runner are reserved for genuine orchestration. The validate phase imports the
-written file the way the loader will and loops back to generate until it loads
-cleanly and its phase graph resolves; nothing is staged, published, or
-approved on your behalf. The generated TOML is a template for you to copy into
-`.agenthicc/agenthicc.toml`; the authoring workflow does not silently modify
-configuration files or write secrets.
+and writes nothing. The generate phase writes a complete package to a run-owned
+draft at `.agenthicc/workflows/.drafts/<run-id>/<name>/`, with
+`runner.py` and optional workflow-local helpers. It records a deterministic
+manifest (relative paths, sizes, line counts, and hashes), and repair cycles
+reuse that same draft. The normal registry ignores drafts, so partial source
+cannot become runnable accidentally.
+
+The authoring runner also gives the agent a live, bounded, redacted snapshot of
+the effective tool catalog, phase capabilities, mode filtering, workspace and
+cache contracts, and browser/MCP availability. The snapshot is fingerprinted
+for checkpoint provenance; secrets, headers, prompt contents, and tool
+arguments are not included. The inspection tools
+`describe_authoring_session()` and `explain_authoring_tool_access(name)` expose
+the same snapshot and its availability decisions.
+
+The validate phase first imports and checks the draft the way the loader will,
+then runs a bounded fake-provider smoke contract. For a custom runner this
+checks event-backed transitions, prose-only non-transition, checkpoint JSON
+round-tripping with memory reattachment, resume at the saved state, and error
+propagation without network/browser/MCP calls. Only after deterministic
+validation, smoke success, and `approve_workflow(summary)` does the framework
+atomically publish the package to `.agenthicc/workflows/<name>/`. Existing
+published packages are backed up and restored if publication fails; the draft
+and checkpoint remain recoverable.
+
+Every generated custom runner must use the cache-stable `CACHE_CONTRACT`, pass
+it as `stable_system_prompt` to `CodePlanRunner.run_phase()`, keep phase state
+and artifacts dynamic, use the parent session's `conversation_id`, memory,
+workspace policy, and browser/MCP tools, and ask the user focused questions for
+material ambiguity instead of guessing. It must provide JSON-bounded checkpoint
+codecs and re-raise ordinary errors to the framework failure finalizer. A
+simple unconditional graph may use the inherited generic runner. The generated
+TOML is a template for you to copy into `.agenthicc/agenthicc.toml`; the
+authoring workflow does not silently modify configuration files or write
+secrets.
+
+### Optional integration declarations
+
+If a generated plugin uses an optional service, declare its dependency on the
+plugin rather than relying on a prompt convention:
+
+```python
+required_integrations = ("playwright",)       # validation fails if unavailable
+optional_integrations = ("mcp",)             # unavailable is reported as degraded
+integration_fallbacks = {"playwright": "text-only report"}
+```
+
+Use `cloakbrowser`, `playwright`, `mcp`, or `mcp:<server>` as names. The
+validation report records safe integration states without URLs, headers, or
+credentials. A missing required integration must have a declared, usable
+fallback or the package is rejected with installation/configuration guidance.
 
 ## 4. Choose a provider
 

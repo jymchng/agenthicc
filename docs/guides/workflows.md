@@ -375,15 +375,27 @@ checkpoint, and question-asking policy. The latter also retains a redacted
 regions, fingerprints, and provider capability only). The diagnostic contains
 no prompt text, conversation content, secrets, or tool arguments.
 
-### Generation writes the workflow package directly
+### Generation uses a draft and an atomic publication boundary
 
-`generate` runs with `mode_override="Yolo"` so the write tools are available. The
-agent creates `.agenthicc/workflows/<name>/`, writes its entry point to
-`runner.py`, keeps workflow-specific tools/helpers in sibling modules inside the
-directory, and then calls `mark_generation_complete(summary, path)` with the
-exact directory path it wrote. The runner never copies assistant text into a
-file, never stages a copy, and never publishes: the package the agent wrote is
-the artifact.
+`generate` runs with `mode_override="Yolo"` so the workspace-guarded write tools
+are available, but it writes only to a run-owned draft under
+`.agenthicc/workflows/.drafts/<run-id>/<name>/`. The agent writes `runner.py`
+and any workflow-local helper modules there, then calls
+`mark_generation_complete(summary, path)` with the exact draft directory. The
+framework records an exact manifest containing relative paths, byte/line
+counts, and SHA-256 hashes. Repair cycles reuse that same draft and reject
+symlinks, traversal, undeclared files, stale siblings, and manifest changes.
+
+The normal workflow registry ignores `.drafts`, so a partial package can never
+be selected while it is being generated or validated. After design approval,
+manifest validation, deterministic import/contract validation, a bounded fake
+runtime smoke check, and validation-agent approval, the framework copies the
+verified draft to a temporary sibling and atomically renames it into
+`.agenthicc/workflows/<name>/`. Existing packages and legacy `<name>.py` files
+are moved to a run-specific `.backups/` directory and restored if publication
+fails. Publication evidence records the draft and published fingerprints,
+catalog snapshot, validation evidence, run ID, and timestamp. A failed
+publication leaves the draft and checkpoint recoverable.
 
 A workflow with its own runner is a few hundred lines, which does not fit in one
 tool call under a small completion ceiling — the truncated call is discarded and
@@ -413,6 +425,11 @@ the real `WorkflowPlugin` contract. `validate_workflow_file` reports:
 - phase-graph faults: duplicate or empty phase names, non-`PhaseSpec` entries,
   `max_turns` below 1, and `next` / `on_reject` / `on_error` edges that do not
   resolve.
+- direct network, process, browser, or MCP imports in package sources; generated
+  code must use the parent session's capability-gated tools instead;
+- missing custom-runner checkpoint codecs, unsafe resume/error handling, direct
+  instruction-file reads, cache-contract violations, and invalid transition
+  decorator/import order.
 
 Unreachable phases, unknown `agent_type` or `output_schema` values, and a
 filename that differs from the workflow name are reported as warnings.
@@ -454,9 +471,15 @@ project tool set filtered by the active mode's blocked capabilities. The built-i
 tool registry supplies the workspace-guarded canonical `write_file` tool even when
 no project tool plugin exports it, so `generate` can always write its file.
 
-The authoring workflow receives eleven inspection tools whose
-content is read live from the running code, so the guidance cannot drift from the
-API:
+The authoring workflow receives read-only inspection tools whose content is read
+live from the running code, so the guidance cannot drift from the API. Each
+authoring turn also receives a bounded, redacted effective-session snapshot:
+the available tool schemas and capabilities, phase/mode decisions, workspace,
+cache, checkpoint, browser, and MCP status. The snapshot is fingerprinted and
+cached; secrets, headers, prompt contents, and tool arguments are excluded.
+`describe_authoring_session()` returns the snapshot and
+`explain_authoring_tool_access(name)` explains an individual availability
+decision.
 
 | Tool | Returns |
 | --- | --- |
@@ -472,11 +495,13 @@ API:
 | `show_workflow_template()` | the cache-stable custom-runner template and required `run_phase()` call |
 | `validate_workflow_cache_contract(path)` | execute-gated strict validation of a trusted generated runner's cache/question/tool contract |
 
-The ten non-executing inspection tools are available in Plan mode. The validator
-is execute-gated and is available to the Yolo generation phase after files are
+The static inspection tools are available in Plan mode. The validator is
+execute-gated and is available to the Yolo generation phase after files are
 written, because validation imports the target package and executes its module
-top level just as the workflow loader does. Every workflow phase gets the existing
-`ask_user` tool for clarifying questions.
+top level just as the workflow loader does. Every workflow phase gets the
+existing `ask_user` tool for clarifying questions. Optional browser and MCP
+health is reported as unavailable/not-probed data rather than turning a valid
+fallback into a generated-code error.
 The phase agent is explicitly reminded that it can ask multiple focused questions
 in one call, or across several rounds, whenever requirements are unclear. Every
 phase can additionally read the installed agenthicc source and documentation with the session-wide

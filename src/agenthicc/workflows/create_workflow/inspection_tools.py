@@ -14,7 +14,12 @@ and its execution capability is gated separately.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from agenthicc.tools.base import ToolLike
+    from agenthicc.workflows.create_workflow.catalog import AuthoringSnapshot
 
 # Curated one-line purposes for PhaseSpec fields.  The field *names* come from
 # the live dataclass (see describe_phasespec); this mapping only supplies human
@@ -96,7 +101,9 @@ Wait for the answer; do not guess. Use the parent session's
 and command-working-directory access; never construct a second workspace
 scope, allow-list, or unrestricted sandbox inside this workflow. Actual
 questions and answers, phase state, and artifacts are dynamic context and do
-not belong here.
+not belong here. Use the parent session's `WorkflowConfig.conversation_id` and
+injected session memory unchanged across every phase, retry, and resume; never
+create a second conversation or replace the session memory.
 """.strip()
 
 
@@ -402,6 +409,11 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
     name = "release_check"
     description = "Plan release checks, run them, then report."
     mode_bindings = []  # manual only — invoke with /workflow release_check
+    # Optional integrations are explicit metadata.  This example needs none;
+    # generated workflows must declare browser/MCP requirements here.
+    required_integrations: tuple[str, ...] = ()
+    optional_integrations: tuple[str, ...] = ()
+    integration_fallbacks: dict[str, str] = {}
     # Declarative metadata for the registry and the TUI phase counter; the runner
     # above is what actually executes, and it follows exactly this graph.
     phases = [
@@ -548,7 +560,9 @@ class DocReviewWorkflow(WorkflowPlugin):
 '''
 
 
-def make_inspection_tools() -> list[Callable[..., object]]:
+def make_inspection_tools(
+    snapshot: "AuthoringSnapshot | None" = None,
+) -> list[Callable[..., object]]:
     """Return the authoring-surface inspection tools.
 
     The returned callables are the complete inspection surface used by the
@@ -569,6 +583,25 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         CAPABILITIES_KEY,
         frozenset({ToolCapability.READ, ToolCapability.EXECUTE}),
     )
+
+    def live_browser_schemas(
+        factory: Callable[..., Iterable[object]],
+    ) -> list[dict[str, object]]:
+        """Extract schemas from browser tool factories without starting a browser."""
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        from agenthicc.workflows.create_workflow.catalog import (  # noqa: PLC0415
+            build_tool_catalog,
+        )
+
+        # The factories only close over the manager; construction performs no
+        # launch, navigation, network access, or health probe.
+        fake_manager = SimpleNamespace(settings=SimpleNamespace(enabled=True))
+        try:
+            entries = build_tool_catalog(cast(Iterable["ToolLike"], factory(fake_manager)))
+        except Exception as exc:  # noqa: BLE001
+            return [{"error": f"schema extraction failed: {type(exc).__name__}"}]
+        return [entry.to_dict() for entry in entries]
 
     @tool_read
     @_tool()
@@ -599,7 +632,10 @@ def make_inspection_tools() -> list[Callable[..., object]]:
                     "purpose": _PHASESPEC_PURPOSE.get(spec_field.name, ""),
                 }
             )
-        return {"phasespec_fields": fields}
+        return {
+            "schema_version": "agenthicc.phasespec.v1",
+            "phasespec_fields": fields,
+        }
 
     @tool_read
     @_tool()
@@ -627,7 +663,10 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             {"value": cap.value, "description": descriptions.get(cap.value, "")}
             for cap in ToolCapability
         ]
-        return {"capabilities": caps}
+        return {
+            "schema_version": "agenthicc.tool-capabilities.v1",
+            "capabilities": caps,
+        }
 
     @tool_read
     @_tool()
@@ -637,6 +676,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         Returns the PhaseRole constants read live from the code.  Most phases use
         'auto'; the others map to role-specific default prompts and capabilities.
         """
+        from agenthicc.agents.plugin import ROLE_DEFAULT_ALLOWED  # noqa: PLC0415
         from agenthicc.workflows.plugin import PhaseRole  # noqa: PLC0415
 
         roles = [
@@ -644,7 +684,22 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             for name, value in vars(PhaseRole).items()
             if not name.startswith("_") and isinstance(value, str)
         ]
-        return {"agent_types": roles}
+        defaults: dict[str, list[str] | None] = {}
+        for role in roles:
+            role_capabilities = ROLE_DEFAULT_ALLOWED.get(role)
+            defaults[role] = (
+                None
+                if role_capabilities is None
+                else sorted(
+                    str(item.value if hasattr(item, "value") else item)
+                    for item in role_capabilities
+                )
+            )
+        return {
+            "schema_version": "agenthicc.phase-roles.v1",
+            "agent_types": roles,
+            "defaults": defaults,
+        }
 
     @tool_read
     @_tool()
@@ -653,6 +708,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         from agenthicc.config import CloakBrowserSettings, ToolSettings  # noqa: PLC0415
         from agenthicc.tools.cloakbrowser.agent_tools import (  # noqa: PLC0415
             CLOAKBROWSER_AGENT_TOOLS,
+            make_cloakbrowser_tools,
         )
 
         settings = CloakBrowserSettings()
@@ -666,6 +722,16 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "dependency_installed_by_default": False,
             "configuration": "[tools.cloakbrowser]",
             "tool_names": list(CLOAKBROWSER_AGENT_TOOLS),
+            "schema_version": "agenthicc.authoring-catalog.v1",
+            "tools": live_browser_schemas(make_cloakbrowser_tools),
+            "constraints": {
+                "url": "absolute http:// or https:// URL; bounded by the session network policy",
+                "page_id": "opaque page identifier returned by the open operation",
+                "selector": "one bounded CSS/text selector; sensitive fields are rejected",
+                "operation_id": "optional bounded id; reuse it for safe mutation retries",
+                "artifacts": "screenshots are written below the session workspace artifact directory",
+            },
+            "effective_session": dict(snapshot.browser) if snapshot is not None else {},
             "availability": (
                 "The integration flag and allow-all policy are enabled by default for the "
                 "local VPS/sandbox profile: localhost, private addresses, arbitrary HTTP(S) "
@@ -706,6 +772,7 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         from agenthicc.config import PlaywrightSettings, ToolSettings  # noqa: PLC0415
         from agenthicc.tools.playwright.agent_tools import (  # noqa: PLC0415
             PLAYWRIGHT_AGENT_TOOLS,
+            make_playwright_tools,
         )
 
         settings = PlaywrightSettings()
@@ -720,6 +787,16 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "backend_selection": "Set [tools].browser_backend = 'playwright'.",
             "configuration": "[tools.playwright]",
             "tool_names": list(PLAYWRIGHT_AGENT_TOOLS),
+            "schema_version": "agenthicc.authoring-catalog.v1",
+            "tools": live_browser_schemas(make_playwright_tools),
+            "constraints": {
+                "url": "absolute http:// or https:// URL; bounded by the session network policy",
+                "page_id": "opaque page identifier returned by the open operation",
+                "selector": "one bounded CSS/text selector; sensitive fields are rejected",
+                "operation_id": "optional bounded id; reuse it for safe mutation retries",
+                "artifacts": "screenshots are written below the session workspace artifact directory",
+            },
+            "effective_session": dict(snapshot.browser) if snapshot is not None else {},
             "browser_types": ["chromium", "firefox", "webkit"],
             "availability": (
                 "The backend setting and allow-all policy are enabled by default but the backend "
@@ -1016,13 +1093,16 @@ def make_inspection_tools() -> list[Callable[..., object]]:
             "errors": list(report.errors),
             "warnings": list(report.warnings),
             "phase_names": list(report.phase_names),
+            "categories": dict(report.categories),
+            "evidence": dict(report.evidence),
+            "skipped_checks": list(report.skipped_checks),
             "execution_note": (
                 "The target was imported through the workflow loader; call this only for a "
                 "trusted generated path because module-level code executes during validation."
             ),
         }
 
-    return [
+    tools: list[Callable[..., object]] = [
         describe_phasespec,
         list_tool_capabilities,
         list_agent_roles,
@@ -1035,3 +1115,45 @@ def make_inspection_tools() -> list[Callable[..., object]]:
         show_workflow_template,
         validate_workflow_cache_contract,
     ]
+
+    if snapshot is not None:
+        from agenthicc.workflows.create_workflow.catalog import explain_tool_access as _explain  # noqa: PLC0415
+
+        @tool_read
+        @_tool()
+        async def describe_authoring_session() -> dict[str, object]:
+            """Describe the bounded effective tool/session contract for this run."""
+            return snapshot.to_dict()
+
+        @tool_read
+        @_tool()
+        async def explain_authoring_tool_access(tool_name: str) -> dict[str, object]:
+            """Explain the mode/phase decision for one tool without executing it."""
+            entry = next((item for item in snapshot.tools if item.name == tool_name), None)
+            if entry is None:
+                return {
+                    "ok": False,
+                    "error": f"tool {tool_name!r} is not in this authoring snapshot",
+                    "available": False,
+                }
+            policy_constraints = [
+                f"workspace policy: {snapshot.workspace.get('policy', 'unknown')}",
+                "network/browser/MCP policy is session-owned and cannot be widened by the workflow",
+            ]
+            if entry.source == "browser":
+                policy_constraints.append(
+                    f"browser status: {snapshot.browser.get('dependency_status', 'unknown')}"
+                )
+            elif entry.source == "mcp":
+                policy_constraints.append("MCP server availability is session-owned")
+            decision = _explain(
+                entry,
+                active_mode=snapshot,
+                phase_capabilities=snapshot.phase_capabilities,
+                policy_constraints=policy_constraints,
+            )
+            return {"ok": True, **decision.to_dict()}
+
+        tools.extend([describe_authoring_session, explain_authoring_tool_access])
+
+    return tools

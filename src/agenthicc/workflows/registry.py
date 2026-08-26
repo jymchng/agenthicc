@@ -129,13 +129,29 @@ def _scan_workflow_dir(
         return
     from agenthicc.workflows.loader import load_python_workflows  # noqa: PLC0415
 
-    for path in sorted(directory.iterdir(), key=lambda item: item.name):
-        if path.name.startswith("_"):
+    paths = sorted(directory.iterdir(), key=lambda item: item.name)
+    # A newly published package may coexist with a legacy ``name.py`` path
+    # written by an older authoring turn. Scan files first and packages last so
+    # the atomic package publication remains the authoritative registry entry
+    # without breaking legacy files that have no package counterpart.
+    paths.sort(key=lambda item: item.is_dir())
+    for path in paths:
+        # Drafts, publication backups, and temporary rename directories are
+        # intentionally invisible to normal discovery.  A loader refresh must
+        # never execute a partially written package or even treat it as a
+        # candidate plugin.
+        if path.name.startswith(("_", ".")):
             continue
         is_python_file = path.is_file() and path.suffix == ".py"
         is_workflow_package = path.is_dir() and (path / "runner.py").is_file()
         if not is_python_file and not is_workflow_package:
             continue
+        if is_python_file:
+            log.warning(
+                "Legacy direct-published workflow %s is supported but not draft-managed; "
+                "migrate it through create_workflow for manifest validation and atomic publication.",
+                path,
+            )
         try:
             for plugin_cls in load_python_workflows(path, source):
                 registry.register(plugin_cls, source=source, path=str(path))

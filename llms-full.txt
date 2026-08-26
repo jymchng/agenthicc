@@ -1885,10 +1885,14 @@ workflows.
 
 The specialized `create_workflow` runner uses typed authoring state and phase
 artifacts for `design → generate → validate → summarize`. It writes generated
-workflow source directly to `.agenthicc/workflows/<name>/runner.py` (with
-optional workflow-local modules beside it), validates the exact package that
-the loader will import, and exposes read-only inspection tools to the
-authoring agent.
+workflow source to a run-owned draft under
+`.agenthicc/workflows/.drafts/<run-id>/<name>/` (with optional workflow-local
+modules beside it), records a hash/size/line manifest, validates the exact
+package that the loader will import, runs a bounded fake-provider smoke
+contract, and exposes read-only live-catalog inspection tools to the authoring
+agent. After all approval gates pass, publication atomically renames a verified
+copy into `.agenthicc/workflows/<name>/`; prior packages are backed up and
+restored if publication fails.
 
 `load_python_workflows()` accepts both legacy `.py` plugins and directory
 plugins containing `runner.py`. Directory plugins are loaded as temporary
@@ -1933,14 +1937,19 @@ Design is read-only and human-gated: `request_design_approval(design,
 workflow_name)` raises the plan-review overlay and `finalize_design(design,
 workflow_name)` refuses until it returned `approved=True`. Generate runs with
 `mode_override="Yolo"` so the write tools are available and the agent writes the
-plugin package to `.agenthicc/workflows/<name>/runner.py`, with optional
-workflow-local tools/helpers beside it. Validate imports that package
-deterministically before the agent votes, and routes `on_reject` back to
-generate. `mode_bindings` is empty, so the workflow is manual-only.
+plugin package to the run-owned draft
+`.agenthicc/workflows/.drafts/<run-id>/<name>/`, with optional workflow-local
+tools/helpers beside it. Validate imports that draft deterministically before
+the agent votes, runs a bounded fake-provider/no-network smoke contract, and
+routes `on_reject` back to `generate`. Only all gates followed by
+`approve_workflow(summary)` atomically publish to `.agenthicc/workflows/<name>/`.
+`mode_bindings` is empty, so the workflow is manual-only.
 
 Run `/workflows reload` (or restart the session) for the registry to discover the
-generated plugin. There is no staged manifest to resume: `resume()` restarts the
-state machine from `design` with the original intent.
+generated plugin. The typed context retains the exact draft manifest, catalog
+snapshot, validation evidence, and publication record. Its checkpoint codec
+omits runtime-only memory and reattaches the supplied session memory on resume;
+a failed publication leaves the draft and checkpoint recoverable.
 
 ### CreateWorkflowParams
 
@@ -2144,8 +2153,13 @@ class ValidationReport:
     warnings: tuple[str, ...] = ()
     plugin_names: tuple[str, ...] = ()
     phase_names: tuple[str, ...] = ()
+    cache_contract: str = "legacy"
+    categories: dict[str, str] = field(default_factory=dict)
+    evidence: dict[str, object] = field(default_factory=dict)
+    skipped_checks: tuple[str, ...] = ()
 
     def render(self) -> str
+    def to_dict(self) -> dict[str, object]
 ```
 
 `ok` is True only when `errors` is empty. `render()` returns the numbered report
@@ -2154,7 +2168,9 @@ block injected into the validating agent's system prompt.
 ### make_inspection_tools
 
 ```python
-def make_inspection_tools() -> list[ToolLike]
+def make_inspection_tools(
+    snapshot: AuthoringSnapshot | None = None,
+) -> list[ToolLike]
 ```
 
 Creates the read-only authoring-surface tools injected into the design
@@ -2166,11 +2182,36 @@ generated custom runner must satisfy, and when one is required),
 decorator contract), and `show_example_workflow(style="runner" | "declarative")` —
 defaulting to a
 complete, known-valid workflow that ships its own state-machine runner. They take
-no session state and cause no side effects.
+no session state and cause no side effects. When an effective
+`AuthoringSnapshot` is supplied, two additional read-only tools expose the
+bounded live catalog and explain the availability decision for a named tool:
+`describe_authoring_session()` and `explain_authoring_tool_access(name)`.
+
+### AuthoringSnapshot and draft publication
+
+`build_authoring_snapshot()` reads the current tool registry, phase role and
+capability filtering, browser/MCP status, workspace/cache/checkpoint policy,
+and session mode. It emits stable fingerprints and bounded metadata only;
+secrets, headers, URLs, prompt contents, and tool arguments are redacted or
+omitted. `AuthoringSnapshotCache` reuses snapshots until relevant live inputs
+change and limits retained entries.
+
+`scan_draft()` creates an exact `DraftManifest` with safe relative paths,
+content hashes, and byte/line counts. `publish_draft()` rechecks that manifest,
+stages a verified copy, backs up an existing package or legacy file, and uses
+an atomic rename. It restores the previous publication on failure and returns
+a `PublicationRecord`; `.drafts` and `.backups` are ignored by normal workflow
+discovery.
 
 A generated workflow is expected to ship its own runner; `validate_workflow_file`
 warns when a multi-phase workflow inherits `build_runner()`, and errors when the
 runner it does ship is abstract or missing `run`/`resume`.
+Optional integrations are declared additively on the plugin with
+`required_integrations`, `optional_integrations`, and
+`integration_fallbacks`. Validation compares those declarations with the
+redacted session status and rejects an unavailable required integration unless
+the plugin declares a degraded fallback; it never exposes credentials or
+endpoint headers.
 
 ---
 

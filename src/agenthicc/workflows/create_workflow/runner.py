@@ -31,8 +31,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
+import json
 import logging
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -47,6 +50,8 @@ from agenthicc.workflows.create_workflow.state import (
 if TYPE_CHECKING:
     from agenthicc.tui.runtime.mode_manager import ModeManager
     from agenthicc.workflows.config import WorkflowConfig
+    from agenthicc.workflows.create_workflow.draft import DraftManifest
+    from agenthicc.workflows.create_workflow.catalog import AuthoringSnapshot
     from agenthicc.workflows.create_workflow.validation import ValidationReport
     from agenthicc.workflows.plugin import WorkflowRun
 
@@ -72,6 +77,16 @@ _PHASE_MODEL_ATTR: dict[str, str] = {
 #: Conventional directory for project-local workflow plugins.
 _WORKFLOW_DIR: str = ".agenthicc/workflows"
 
+
+def _evidence_fingerprint(value: object) -> str:
+    """Return a deterministic identity for bounded JSON-safe evidence."""
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return ""
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 # Stable authoring policy for the meta-workflow itself.  The design, approved
 # artifacts, generated paths, validation reports, rejection feedback, and
 # retry state are all dynamic phase context and must never be interpolated into
@@ -92,8 +107,11 @@ whenever required information is missing, ambiguous, or could materially change
 the generated workflow. Wait for the answer instead of guessing. The question
 policy is stable; each actual question and answer remains dynamic. Prompt
 caching never replaces capability filtering, approval, workspace policy, or
-tool authorization. Provider TTL expiry, connection changes, stable-contract
-changes, and history compaction may intentionally invalidate reuse.
+tool authorization. Use the parent session's conversation_id and injected
+session memory for every phase, retry, and resume; never create a second
+conversation or replace the session memory. Provider TTL expiry, connection
+changes, stable-contract changes, and history compaction may intentionally
+invalidate reuse.
 """.strip()
 
 # ── system prompts ────────────────────────────────────────────────────────────
@@ -130,8 +148,9 @@ _RUNNER_GUIDE: str = (
     "workflow-specific resume data; omit asyncio.Events, locks, clients, and session "
     "memory from the payload, then attach the supplied memory object during restore. "
     "The payload must contain only bounded JSON-compatible values.\n"
-    "  10. run() and resume(context) must use config.session_memory when it is supplied "
-    "and must never create a second conversation for a resumed run. Use "
+    "  10. run() and resume(context) must use config.session_memory when it is supplied, "
+    "use config.conversation_id unchanged for every phase and resume, and must never "
+    "create a second conversation for a resumed run. Use "
     "config.workflow_handle to attach context and publish the current phase.\n"
     "  11. inherit config.workspace_scope and config.workspace_access unchanged. Never "
     "construct a second WorkspaceScope, bypass the policy with a raw filesystem call, "
@@ -175,6 +194,10 @@ _AUTHORING_GUIDE: str = (
     "  - name: lower_snake_case identifier, unique and not a builtin\n"
     "  - description: one line shown in the workflow picker\n"
     "  - mode_bindings: list of mode names that auto-select it ([] = manual only)\n"
+    "  - optional integration declarations: use required_integrations, optional_integrations, "
+    "and integration_fallbacks (a mapping keyed by integration name) when the workflow uses "
+    "CloakBrowser, Playwright, MCP, or another optional service; a required unavailable "
+    "integration must have a working fallback or validation will reject the package\n"
     "  - phases: ordered list of PhaseSpec objects wired with next / on_reject — this is "
     "the declarative metadata the registry and the TUI phase counter read\n"
     "  - build_runner(): returns the workflow's own runner (see below)\n"
@@ -188,13 +211,18 @@ _AUTHORING_GUIDE: str = (
     "same policy and must never create a second scope or raw unrestricted sandbox\n"
     "  - build_params(): typed WorkflowParams when [workflows.<name>] config is needed\n\n"
     + _RUNNER_GUIDE
-    + "\nUse describe_phasespec(), list_tool_capabilities(), list_agent_roles(), "
+    + "\nUse describe_authoring_session() for the effective live session catalog and "
+    "explain_authoring_tool_access(tool_name) for a decision trace. Use "
+    "describe_phasespec(), list_tool_capabilities(), list_agent_roles(), "
     "describe_cloakbrowser_tools(), describe_playwright_tools(), "
     "describe_runner_pattern(), describe_transition_tool_pattern(), "
     "describe_prompt_cache_contract(), show_workflow_template(), "
     "validate_workflow_cache_contract(), and show_example_workflow() to read the real API instead of "
-    "guessing at it. inspect_agenthicc_source() and search_agenthicc_docs() read the "
-    "installed agenthicc source and documentation directly."
+    "guessing at it. list_agenthicc_docs(), read_agenthicc_doc(), search_agenthicc_docs(), "
+    "inspect_agenthicc_source(), and search_agenthicc_source() read the installed "
+    "agenthicc source and documentation directly. These five exploratory tools are "
+    "read-only; use them when the live source, schema, or documentation is needed "
+    "instead of guessing."
 )
 
 _DESIGN_PROMPT: str = (
@@ -205,6 +233,11 @@ _DESIGN_PROMPT: str = (
     "transition graph (which phase follows which, and where a rejection loops back to). "
     "Explore only what you actually need — inspect the authoring API with the inspection "
     "tools, and read existing workflow files only if the request depends on them.\n\n"
+    "The complete read-only self-inspection surface is "
+    "list_agenthicc_docs(), read_agenthicc_doc(), search_agenthicc_docs(), "
+    "inspect_agenthicc_source(), and search_agenthicc_source(). The effective-session "
+    "catalog is authoritative for this run; the five source/documentation tools are "
+    "exploratory and must be used only when their detail is needed.\n\n"
     "Your design MUST also state the workflow's own runner: the state enum members, the "
     "context dataclass fields, the checkpoint payload fields and memory reattachment rule, "
     "one method per state, and the transition tool that ends each phase. For every phase "
@@ -232,7 +265,8 @@ _DESIGN_REMINDER: str = (
 
 _GENERATE_PROMPT: str = (
     "You are in the GENERATION phase of create_workflow. The approved design is in your "
-    "system prompt. Write the complete workflow directory to disk now with the write tools — "
+    "system prompt. Write the complete workflow directory to the run-owned draft path in "
+    "your system prompt with the write tools — "
     "do NOT re-design and do NOT ask for approval again.\n\n"
     "The package must import cleanly through its runner.py entry point: include the module docstring, "
     "'from __future__ import annotations', the imports it uses, and the full "
@@ -251,7 +285,14 @@ _GENERATE_PROMPT: str = (
     "include this policy verbatim in substance: ask the user a focused question through "
     "the existing ask_user tool whenever a missing or ambiguous requirement could change "
     "the result; wait for the answer and do not guess. The current question and answer "
-    "are dynamic context, not part of CACHE_CONTRACT.\n\n"
+    "are dynamic context, not part of CACHE_CONTRACT. Use the parent session's "
+    "WorkflowConfig.conversation_id and injected session memory unchanged across every "
+    "phase, retry, and resume; never create a second conversation.\n\n"
+    "If the workflow depends on an optional integration, declare it on the plugin with "
+    "required_integrations, optional_integrations, and/or integration_fallbacks. Use "
+    "exact names such as 'cloakbrowser', 'playwright', 'mcp', or 'mcp:<server>'. Do not "
+    "claim an unavailable integration is usable; a declared fallback must be a real "
+    "degraded path that works without the missing service.\n\n"
     "The generated runner must inherit WorkflowConfig.workspace_scope and "
     "WorkflowConfig.workspace_access unchanged. Every phase must call the public "
     "CodePlanRunner.run_phase() helper so the same live Safe/Plan/Yolo policy reaches "
@@ -272,7 +313,8 @@ _GENERATE_PROMPT: str = (
     "WRITE THE PACKAGE IN CHUNKS. A workflow with its own runner is a few hundred lines, and "
     "one tool call carrying the whole file can exceed the response limit — if that happens "
     "the call is discarded and nothing reaches disk. So:\n"
-    "  1. make_directory(path) for the target directory;\n"
+    "  1. make_directory(path) for the exact run-owned draft directory; never write directly "
+    "to the published .agenthicc/workflows directory;\n"
     "  2. write_file(path/runner.py, content) with the first chunk — the module docstring, the "
     "imports, and the state enum;\n"
     "  3. append_file(path/runner.py, content) for each following chunk — the context dataclass, the "
@@ -285,9 +327,10 @@ _GENERATE_PROMPT: str = (
     "is on disk and complete.\n"
     "Never re-write runner.py from the start after appending — that discards earlier chunks.\n\n"
     "The generated runner must use the WorkflowConfig.session_memory supplied by the "
-    "session, including on resume; never instantiate a fresh ShortTermMemory when an "
-    "injected session memory exists. The restore hook must attach its memory argument "
-    "to the context.\n\n"
+    "session, including on resume; use WorkflowConfig.conversation_id unchanged for "
+    "every phase and retry; never instantiate a fresh ShortTermMemory or a second "
+    "conversation when an injected session object exists. The restore hook must attach "
+    "its memory argument to the context.\n\n"
     "When the complete directory is on disk, call mark_generation_complete(summary, path) "
     "with the exact path you wrote to. Do not call it before the file is written."
 )
@@ -358,6 +401,16 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         self._cfg: WorkflowConfig = config
         self._mode_manager: ModeManager | None = mode_manager
         self._run_id: str = ""
+        # Snapshots are immutable and are keyed by live tool/configuration
+        # fingerprints.  Keeping this small cache on the runner avoids
+        # repeating schema extraction for every retry while still naturally
+        # invalidating when modes, MCP catalogs, browser selection, or tools
+        # change.
+        from agenthicc.workflows.create_workflow.catalog import (  # noqa: PLC0415
+            AuthoringSnapshotCache,
+        )
+
+        self._authoring_snapshot_cache = AuthoringSnapshotCache()
 
         # Gap (lauren-ai): no public model_id accessor on AgentRunnerBase.
         _transport_cfg = getattr(getattr(config.agent_runner, "_transport", None), "_config", None)
@@ -683,6 +736,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             design_data: dict[str, object] = {}
 
             tools: _ToolList = list(self._base_tools())
+            # Build the snapshot from the complete phase surface.  The two
+            # snapshot-query tools themselves are appended afterward because
+            # their closures need the immutable snapshot they report; the
+            # turn-level snapshot is rebuilt by _run_turn with those tools.
             tools.extend(make_inspection_tools())
             tools.extend(
                 make_design_tools(
@@ -692,7 +749,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     exit_event=exit_event,
                 )
             )
-            tools.extend(make_questions_tool(self._cfg.approval_svc))
+            tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
+            authoring_snapshot = self._authoring_snapshot(
+                phase_name="design",
+                phase_role="auto",
+                tools=tools,
+            )
+            tools.extend(make_inspection_tools(snapshot=authoring_snapshot)[-2:])
             text: str = ctx.intent if attempt == 1 else _DESIGN_REMINDER
 
             try:
@@ -754,17 +817,40 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             make_generation_tools,
         )
         from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
+        from agenthicc.workflows.create_workflow.draft import (  # noqa: PLC0415
+            DraftError,
+            reset_draft,
+            scan_draft,
+            stage_legacy_package,
+        )
 
         self._set_phase("generate", _PHASE_INDEX["generate"], ctx)
         ctx.command_outcomes.clear()
 
-        target_path: str = self._target_path(ctx.workflow_name)
+        target_path: str = self._draft_path(ctx.workflow_name, ctx.run_id)
+        if ctx.rejection_reason:
+            # A validation rejection starts a new generation attempt, but the
+            # attempt remains part of this run.  Clear only the exact run-owned
+            # draft so stale helper modules cannot leak into the next manifest.
+            try:
+                reset_draft(
+                    Path(target_path),
+                    root=self._workspace_root(),
+                    run_id=ctx.run_id or self._run_id or "pending",
+                    workflow_name=ctx.workflow_name,
+                )
+            except (DraftError, OSError, ValueError) as exc:
+                ctx.fail_reason = (
+                    f"Cannot reset rejected workflow draft: {type(exc).__name__}: {exc}"
+                )
+                return CreateWorkflowState.FAILED
         system_prompt: str = (
             _GENERATE_PROMPT
             + f"\n\n[USER REQUEST]\n{ctx.intent}"
             + f"\n\n[APPROVED DESIGN]\n{ctx.design}"
             + f"\n\n[WORKFLOW NAME]\n{ctx.workflow_name}"
             + f"\n\n[TARGET PATH]\n{target_path}"
+            + f"\n\n[PUBLISHED PATH — DO NOT WRITE HERE]\n{self._target_path(ctx.workflow_name)}"
         )
         if ctx.rejection_reason:
             system_prompt += (
@@ -774,7 +860,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             system_prompt += f"\n\n{ctx.validation_report}"
 
         first_text: str = (
-            f"Write the approved {ctx.workflow_name} workflow to {target_path}."
+            f"Write the approved {ctx.workflow_name} workflow to {target_path}. "
+            f"The published destination is {self._target_path(ctx.workflow_name)}; "
+            "do not write there directly."
             if not ctx.rejection_reason
             else (
                 f"Fix and rewrite {ctx.generated_path or target_path}. "
@@ -794,7 +882,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             tools: _ToolList = list(self._base_tools())
             tools.extend(make_inspection_tools())
             tools.extend(make_generation_tools(generate_event, generate_data))
-            tools.extend(make_questions_tool(self._cfg.approval_svc))
+            tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
+            authoring_snapshot = self._authoring_snapshot(
+                phase_name="generate",
+                phase_role="auto",
+                tools=tools,
+            )
+            tools.extend(make_inspection_tools(snapshot=authoring_snapshot)[-2:])
             text: str = first_text if attempt == 1 else _GENERATE_REMINDER
 
             try:
@@ -818,15 +912,53 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             if generate_event.is_set():
                 path = generate_data.get("path", "")
                 summary = generate_data.get("summary", "")
-                ctx.generated_path = path if isinstance(path, str) else ""
+                reported_path = path if isinstance(path, str) else ""
                 ctx.generation_summary = summary if isinstance(summary, str) else ""
+                manifest = None
+                draft_path = self._draft_path(ctx.workflow_name, ctx.run_id)
+                try:
+                    root = self._workspace_root()
+                    run_id = ctx.run_id or self._run_id or "pending"
+                    reported = Path(reported_path).expanduser()
+                    if not reported.is_absolute():
+                        reported = root / reported
+                    if reported.exists() and reported.resolve() != Path(draft_path).resolve():
+                        # Keep compatibility with older callers that reported
+                        # a direct published path, while making the draft the
+                        # only path that later phases can consume.
+                        stage_legacy_package(
+                            reported,
+                            destination=Path(draft_path),
+                            root=root,
+                        )
+                    if Path(draft_path).is_dir():
+                        manifest = scan_draft(
+                            Path(draft_path),
+                            root=root,
+                            run_id=run_id,
+                            workflow_name=ctx.workflow_name,
+                        )
+                except (DraftError, OSError, ValueError) as exc:
+                    # Leave the reported path intact so VALIDATE can show the
+                    # normal workspace/missing-file diagnostic and let the
+                    # bounded repair loop decide what happens next.
+                    log.warning("_generate draft staging deferred to validation: %s", exc)
+
+                ctx.generated_path = str(draft_path) if manifest is not None else reported_path
+                if manifest is not None:
+                    ctx.draft_manifest = manifest.to_dict()
+                    ctx.draft_fingerprint = manifest.fingerprint
                 ctx.add_artifact(
                     PhaseArtifact(
                         phase="generate",
                         kind="workflow_file",
                         content=ctx.generation_summary,
                         metadata={
-                            "path": ctx.generated_path,
+                            "path": reported_path or ctx.generated_path,
+                            "draft_path": ctx.generated_path,
+                            "reported_path": reported_path,
+                            "draft_fingerprint": ctx.draft_fingerprint,
+                            "file_count": len(manifest.files) if manifest is not None else 0,
                             "workflow_name": ctx.workflow_name,
                             "attempts": attempt,
                             "repair_cycle": ctx.repair_cycles,
@@ -854,16 +986,112 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         from agenthicc.workflows.create_workflow.validation import (  # noqa: PLC0415
             validate_workflow_file,
         )
+        from agenthicc.workflows.create_workflow.draft import (  # noqa: PLC0415
+            DraftError,
+            build_draft_path,
+            publish_draft,
+            scan_draft,
+            stage_legacy_package,
+        )
+        from agenthicc.workflows.create_workflow.smoke import (  # noqa: PLC0415
+            run_generated_workflow_smoke,
+        )
 
         self._set_phase("validate", _PHASE_INDEX["validate"], ctx)
         ctx.command_outcomes.clear()
 
-        report: ValidationReport = validate_workflow_file(
+        # Keep publication provenance complete even for embedders that replace
+        # _run_turn with a deterministic test/headless adapter.  The normal
+        # turn path records a richer snapshot immediately before the provider
+        # call; this fallback still records the live, redacted session contract.
+        if not ctx.authoring_snapshot:
+            snapshot = self._authoring_snapshot(
+                phase_name="validate",
+                phase_role="auto",
+                tools=self._base_tools(),
+            )
+            ctx.authoring_snapshot = snapshot.checkpoint_reference()
+            ctx.selected_tools = [entry.name for entry in snapshot.tools if entry.available]
+            ctx.dependency_summary = {
+                "browser": dict(snapshot.browser),
+                "mcp": [dict(item) for item in snapshot.mcp],
+                "unavailable_optional": [dict(item) for item in snapshot.unavailable],
+            }
+
+        manifest: DraftManifest | None = None
+        try:
+            root = self._workspace_root()
+            run_id = ctx.run_id or self._run_id or "pending"
+            expected_draft = build_draft_path(root, run_id, ctx.workflow_name)
+            candidate: Path | None = None
+            if ctx.generated_path.strip():
+                candidate = Path(ctx.generated_path).expanduser()
+                if not candidate.is_absolute():
+                    candidate = root / candidate
+            if (
+                candidate is not None
+                and candidate.exists()
+                and candidate.resolve() != expected_draft.resolve()
+            ):
+                stage_legacy_package(candidate, destination=expected_draft, root=root)
+            if expected_draft.is_dir():
+                manifest = scan_draft(
+                    expected_draft,
+                    root=root,
+                    run_id=run_id,
+                    workflow_name=ctx.workflow_name,
+                )
+                ctx.generated_path = str(expected_draft)
+                ctx.draft_manifest = manifest.to_dict()
+                ctx.draft_fingerprint = manifest.fingerprint
+            report: ValidationReport = validate_workflow_file(
+                ctx.generated_path,
+                expected_name=ctx.workflow_name,
+                root=root,
+                strict_cache_contract=True,
+                available_integrations=ctx.dependency_summary,
+            )
+        except (DraftError, OSError, ValueError) as exc:
+            report = validate_workflow_file(
+                ctx.generated_path,
+                expected_name=ctx.workflow_name,
+                root=self._workspace_root(),
+                strict_cache_contract=True,
+                available_integrations=ctx.dependency_summary,
+            )
+            report = dataclasses.replace(
+                report,
+                ok=False,
+                errors=(*report.errors, f"Draft manifest rejected: {type(exc).__name__}: {exc}"),
+                categories={**report.categories, "manifest": "fail", "result": "fail"},
+            )
+
+        smoke = run_generated_workflow_smoke(
             ctx.generated_path,
             expected_name=ctx.workflow_name,
             root=self._workspace_root(),
-            strict_cache_contract=True,
         )
+        if not smoke.ok:
+            report = dataclasses.replace(
+                report,
+                ok=False,
+                errors=(*report.errors, *smoke.errors),
+                categories={**report.categories, "smoke": "fail", "result": "fail"},
+            )
+        else:
+            report = dataclasses.replace(
+                report,
+                categories={**report.categories, "smoke": "pass"},
+            )
+        ctx.validation_evidence = {
+            "categories": dict(report.categories),
+            "evidence": dict(report.evidence),
+            "errors": list(report.errors),
+            "warnings": list(report.warnings),
+            "smoke": smoke.to_dict(),
+            "draft_fingerprint": ctx.draft_fingerprint,
+        }
+        ctx.validation_evidence["evidence_id"] = _evidence_fingerprint(ctx.validation_evidence)
         ctx.validation_report = report.render()
         ctx.add_artifact(
             PhaseArtifact(
@@ -877,6 +1105,9 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     "warnings": list(report.warnings),
                     "plugin_names": list(report.plugin_names),
                     "phase_names": list(report.phase_names),
+                    "categories": dict(report.categories),
+                    "evidence": dict(report.evidence),
+                    "smoke": smoke.to_dict(),
                 },
             )
         )
@@ -895,7 +1126,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             tools: _ToolList = list(self._base_tools()) + list(
                 make_validation_tools(validate_event, validate_data)
             )
-            tools.extend(make_questions_tool(self._cfg.approval_svc))
+            tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
             text: str = (
                 (
                     f"The generated workflow is at {report.path or ctx.generated_path}. "
@@ -934,6 +1165,62 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 summary = validate_data.get("summary", "")
                 ctx.validation_summary = summary if isinstance(summary, str) else ""
                 ctx.rejection_reason = ""
+                if manifest is None:
+                    ctx.fail_reason = "Validated workflow has no publishable draft manifest."
+                    ctx.publication = {
+                        "status": "failed",
+                        "error": ctx.fail_reason,
+                        "draft_path": ctx.generated_path,
+                        "catalog_snapshot": dict(ctx.authoring_snapshot),
+                        "validation_evidence_id": str(
+                            ctx.validation_evidence.get("evidence_id", "")
+                        ),
+                    }
+                    return CreateWorkflowState.FAILED
+                try:
+                    publication = publish_draft(
+                        manifest,
+                        root=self._workspace_root(),
+                        published_name=ctx.workflow_name,
+                    )
+                except (DraftError, OSError, ValueError) as exc:
+                    ctx.fail_reason = (
+                        f"Validated workflow could not be published: {type(exc).__name__}: {exc}"
+                    )
+                    ctx.publication = {
+                        "status": "failed",
+                        "error": ctx.fail_reason,
+                        "draft_path": ctx.generated_path,
+                        "catalog_snapshot": dict(ctx.authoring_snapshot),
+                        "validation_evidence_id": str(
+                            ctx.validation_evidence.get("evidence_id", "")
+                        ),
+                    }
+                    return CreateWorkflowState.FAILED
+                publication_data = publication.to_dict()
+                raw_categories = ctx.validation_evidence.get("categories", {})
+                validation_categories = (
+                    dict(raw_categories) if isinstance(raw_categories, dict) else {}
+                )
+                publication_data.update(
+                    {
+                        "catalog_snapshot": dict(ctx.authoring_snapshot),
+                        "catalog_snapshot_id": str(ctx.authoring_snapshot.get("snapshot_id", "")),
+                        "catalog_version": str(ctx.authoring_snapshot.get("catalog_version", "")),
+                        "validation_evidence_id": str(
+                            ctx.validation_evidence.get("evidence_id", "")
+                        ),
+                        "validation_categories": validation_categories,
+                    }
+                )
+                ctx.publication = publication_data
+                validation_artifact = ctx.artifacts.get("validate")
+                if validation_artifact is not None:
+                    validation_artifact.metadata["publication"] = dict(publication_data)
+                # The context points at the canonical package that the normal
+                # loader discovers. Legacy reported paths remain in the
+                # generation artifact and publication evidence.
+                ctx.generated_path = publication.published_path
                 return CreateWorkflowState.SUMMARIZE
 
             if action == "approve":
@@ -967,13 +1254,13 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         text: str = (
             f"Request: {ctx.intent}\n\n"
             f"Workflow created: {ctx.workflow_name or '(unnamed)'}\n"
-            f"Directory: {ctx.generated_path or '(unknown)'}\n"
+            f"Directory: {ctx.publication.get('published_path', ctx.generated_path) or '(unknown)'}\n"
             f"What was generated: {ctx.generation_summary or '(see conversation)'}\n"
             f"Validation verdict: {ctx.validation_summary or 'approved'}"
         )
         try:
             tools = list(self._base_tools())
-            tools.extend(make_questions_tool(self._cfg.approval_svc))
+            tools.extend(make_questions_tool(self._cfg.approval_svc, ctx.question_metadata))
             await self._run_turn(
                 text,
                 tools=tools,
@@ -996,7 +1283,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 content=ctx.validation_summary or ctx.generation_summary,
                 metadata={
                     "workflow_name": ctx.workflow_name,
-                    "path": ctx.generated_path,
+                    "path": ctx.publication.get("published_path", ctx.generated_path),
+                    "publication": dict(ctx.publication),
                     "repair_cycles": ctx.repair_cycles,
                 },
             )
@@ -1026,6 +1314,18 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         """Return the conventional project-local path for *workflow_name*."""
         return f"{_WORKFLOW_DIR}/{workflow_name or 'my_workflow'}"
 
+    def _draft_path(self, workflow_name: str, run_id: str) -> str:
+        """Return the isolated run-owned generation path for a workflow."""
+        from agenthicc.workflows.create_workflow.draft import build_draft_path  # noqa: PLC0415
+
+        return str(
+            build_draft_path(
+                self._workspace_root(),
+                run_id or self._run_id or "pending",
+                workflow_name or "my_workflow",
+            )
+        )
+
     def _phase_model(self, phase_name: str) -> str:
         """Return the model override for *phase_name*, or '' for the global default.
 
@@ -1041,6 +1341,23 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             return ""
         value = getattr(self, attr, "")
         return value if isinstance(value, str) else ""
+
+    def _authoring_snapshot(
+        self,
+        *,
+        phase_name: str,
+        phase_role: str,
+        phase_capabilities: Iterable[object] | None = None,
+        tools: _ToolList,
+    ) -> AuthoringSnapshot:
+        """Return the cached effective catalog for one authoring turn."""
+        return self._authoring_snapshot_cache.get_or_build(
+            self._cfg,
+            phase_name=phase_name,
+            phase_role=phase_role,
+            phase_capabilities=phase_capabilities,
+            tools=tools,
+        )
 
     def _set_phase(self, phase_name: str, phase_index: int, ctx: CreateWorkflowContext) -> None:
         """Update all workflow TUI state for the current phase in one call."""
@@ -1122,14 +1439,40 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                     tool
                 ) != "ask_user" and ToolCapability.CONTROL in get_tool_capabilities(tool)
                 (phase_tools if is_transition else stable_tools).append(tool)
+            from agenthicc.workflows.create_workflow.definition import CreateWorkflow
+
+            phase_spec = next(
+                (spec for spec in CreateWorkflow.phases if spec.name == phase_name),
+                None,
+            )
+            phase_role = phase_spec.agent_type if phase_spec is not None else "auto"
+            phase_capabilities = (
+                phase_spec.resolved_allowed_caps if phase_spec is not None else None
+            )
+
+            snapshot = self._authoring_snapshot(
+                phase_name=phase_name,
+                phase_role=phase_role,
+                phase_capabilities=phase_capabilities,
+                tools=tools,
+            )
+            ctx.authoring_snapshot = snapshot.checkpoint_reference()
+            ctx.selected_tools = [entry.name for entry in snapshot.tools if entry.available]
+            ctx.dependency_summary = {
+                "browser": dict(snapshot.browser),
+                "mcp": [dict(item) for item in snapshot.mcp],
+                "unavailable_optional": [dict(item) for item in snapshot.unavailable],
+            }
+            dynamic_prompt = (
+                f"{system_prompt}\n\n"
+                f"{snapshot.render()}\n\n"
+                f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
+                f"{phase_transition_instruction(tools, phase_name=phase_name)}"
+            )
             prompt_contract = build_workflow_prompt_contract(
                 workflow_name="create_workflow",
                 stable_system_prefix=CACHE_CONTRACT,
-                phase_prompt=(
-                    f"{system_prompt}\n\n"
-                    f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
-                    f"{phase_transition_instruction(tools, phase_name=phase_name)}"
-                ),
+                phase_prompt=dynamic_prompt,
                 stable_tools=stable_tools,
                 phase_tools=phase_tools,
                 execution=exec_cfg,
@@ -1141,6 +1484,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 "stable_tools",
                 "phase_tools",
             ]
+            diagnostic["authoring_snapshot_id"] = snapshot.snapshot_id
+            diagnostic["authoring_catalog_version"] = snapshot.catalog_version
             ctx.cache_diagnostic = diagnostic
             record_contract = getattr(self._cfg.workflow_handle, "record_prompt_contract", None)
             if callable(record_contract):
@@ -1166,11 +1511,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 workspace_access=self._cfg.workspace_access,
                 output_collector=[],
                 command_outcomes=ctx.command_outcomes,
-                system_prompt_suffix=(
-                    f"{system_prompt}\n\n"
-                    f"{_WORKFLOW_USER_QUESTION_REMINDER}\n\n"
-                    f"{phase_transition_instruction(tools, phase_name=phase_name)}"
-                ),
+                system_prompt_suffix=dynamic_prompt,
                 prompt_contract=prompt_contract,
                 memory_router=self._cfg.memory_router,
                 semantic_index=self._cfg.semantic_index,

@@ -23,6 +23,33 @@ from agenthicc.workflows.create_workflow.phase_tools import (
     validate_workflow_name,
 )
 from agenthicc.workflows.create_workflow.runner import CreateWorkflowRunner
+from agenthicc.workflows.create_workflow.catalog import (
+    AUTHORING_CATALOG_VERSION,
+    AuthoringSnapshotCache,
+    AuthoringSnapshot,
+    ToolAccessDecision,
+    ToolCatalogEntry,
+    build_authoring_snapshot,
+    build_tool_catalog,
+    explain_tool_access,
+)
+from agenthicc.workflows.create_workflow.draft import (
+    DRAFT_ROOT,
+    DraftError,
+    DraftFile,
+    DraftManifest,
+    PublicationRecord,
+    build_draft_path,
+    publish_draft,
+    reset_draft,
+    scan_draft,
+    stage_legacy_package,
+)
+from agenthicc.workflows.create_workflow.smoke import (
+    SmokeCheck,
+    SmokeReport,
+    run_generated_workflow_smoke,
+)
 from agenthicc.workflows.create_workflow.state import (
     CreateWorkflowContext,
     CreateWorkflowState,
@@ -47,4 +74,25 @@ __all__ = [
     "make_generation_tools",
     "make_validation_tools",
     "make_inspection_tools",
+    "AUTHORING_CATALOG_VERSION",
+    "AuthoringSnapshotCache",
+    "AuthoringSnapshot",
+    "ToolAccessDecision",
+    "ToolCatalogEntry",
+    "build_authoring_snapshot",
+    "build_tool_catalog",
+    "explain_tool_access",
+    "DRAFT_ROOT",
+    "DraftError",
+    "DraftFile",
+    "DraftManifest",
+    "PublicationRecord",
+    "build_draft_path",
+    "publish_draft",
+    "reset_draft",
+    "scan_draft",
+    "stage_legacy_package",
+    "SmokeCheck",
+    "SmokeReport",
+    "run_generated_workflow_smoke",
 ]

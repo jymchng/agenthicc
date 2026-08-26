@@ -248,7 +248,13 @@ async def test_full_run_against_a_real_processor(tmp_path: Path, processor) -> N
     assert ctx.repair_cycles == 0
     assert set(ctx.artifacts) == {"design", "generate", "validate", "summarize"}
     assert runner._cfg.app_state.workflow_run().status == "complete"
-    assert (tmp_path / ".agenthicc" / "workflows" / "doc_review.py").exists()
+    published = tmp_path / ".agenthicc" / "workflows" / "doc_review" / "runner.py"
+    assert published.exists()
+    assert Path(ctx.generated_path) == published.parent
+    assert ctx.draft_manifest["workflow_name"] == "doc_review"
+    assert ctx.publication["status"] == "published"
+    assert ctx.publication["catalog_snapshot_id"]
+    assert ctx.publication["validation_evidence_id"]
 
 
 async def test_repair_loop_against_a_real_processor(tmp_path: Path, processor) -> None:

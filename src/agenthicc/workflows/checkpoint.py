@@ -69,6 +69,13 @@ def _as_dict_list(value: object) -> list[dict[str, object]]:
     return [_as_metadata(item) for item in value if isinstance(item, dict)]
 
 
+def _as_string_list(value: object) -> list[str]:
+    """Return only string values from a checkpoint list field."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def _encode(value: object) -> object:
     """Convert supported context values into JSON-compatible data."""
     if isinstance(value, Enum):
@@ -131,17 +138,33 @@ def context_to_payload(
     from agenthicc.workflows.plugin import WorkflowContext
 
     if isinstance(context, WorkflowContext):
-        return {"kind": "WorkflowContext", "fields": _encode(context)}
-    if isinstance(context, CodePlanContext):
-        return {"kind": "CodePlanContext", "fields": _encode(context)}
-    if isinstance(context, CreateWorkflowContext):
-        return {"kind": "CreateWorkflowContext", "fields": _encode(context)}
-    if workflow is not None:
+        result = {"kind": "WorkflowContext", "fields": _encode(context)}
+    elif isinstance(context, CodePlanContext):
+        result = {"kind": "CodePlanContext", "fields": _encode(context)}
+    elif isinstance(context, CreateWorkflowContext):
+        result = {"kind": "CreateWorkflowContext", "fields": _encode(context)}
+    elif workflow is not None:
         codec = getattr(workflow, "checkpoint_context_to_payload", None)
         if callable(codec):
             custom_fields = codec(context)
             if isinstance(custom_fields, dict):
-                return {"kind": "CustomContext", "fields": _encode(custom_fields)}
+                result = {"kind": "CustomContext", "fields": _encode(custom_fields)}
+            else:
+                result = {}
+        else:
+            result = {}
+    else:
+        result = {}
+    if result:
+        try:
+            encoded = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        except (TypeError, ValueError) as exc:
+            raise CheckpointValidationError("workflow context is not JSON-serializable") from exc
+        if len(encoded.encode("utf-8")) > MAX_CHECKPOINT_BYTES:
+            raise CheckpointValidationError(
+                f"workflow context exceeds {MAX_CHECKPOINT_BYTES} bytes"
+            )
+        return result
     # Keep the explicit type check above so a dataclass from an extension cannot
     # be silently persisted without a declared codec.
     if isinstance(context, PhaseArtifact):  # pragma: no cover - defensive
@@ -255,6 +278,14 @@ def context_from_payload(
             state=state,
             phase_iteration=_as_int(fields.get("phase_iteration"), 0),
             cache_diagnostic=_as_metadata(fields.get("cache_diagnostic")),
+            authoring_snapshot=_as_metadata(fields.get("authoring_snapshot")),
+            selected_tools=_as_string_list(fields.get("selected_tools")),
+            dependency_summary=_as_metadata(fields.get("dependency_summary")),
+            draft_manifest=_as_metadata(fields.get("draft_manifest")),
+            draft_fingerprint=str(fields.get("draft_fingerprint", "")),
+            validation_evidence=_as_metadata(fields.get("validation_evidence")),
+            publication=_as_metadata(fields.get("publication")),
+            question_metadata=_as_metadata(fields.get("question_metadata")),
         )
     if kind == "CustomContext" and workflow is not None:
         codec = getattr(workflow, "checkpoint_context_from_payload", None)
