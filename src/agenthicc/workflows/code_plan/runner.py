@@ -20,7 +20,7 @@ import asyncio
 import dataclasses
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
@@ -38,6 +38,14 @@ log = logging.getLogger(__name__)
 # Gap (lauren-ai): tools are @_tool()-decorated callables with no public ABC.
 # list[object] is the most precise non-Any annotation available.
 _ToolList = list[ToolLike]
+
+
+class _TurnOptions(TypedDict, total=False):
+    """Optional routing fields accepted by the phase turn boundary."""
+
+    phase_name: str
+    model_override: str
+
 
 # ── default retry caps ────────────────────────────────────────────────────────
 
@@ -166,6 +174,15 @@ class CodePlanRunner(BaseWorkflowRunner):
         self._cfg: WorkflowConfig = config
         self._mode_manager: ModeManager | None = mode_manager
         self._run_id: str = ""
+        # Tool schemas are immutable for a cache epoch.  Cache the canonical
+        # session bundle, then apply the current mode's capability ceiling to
+        # the cached bundle on each request.  This avoids rebuilding plugin,
+        # MCP, browser, and memory tool objects for every composite phase.
+        self._tool_bundle_cache: list[ToolLike] | None = None
+        self._tool_bundle_cache_key: tuple[str, ...] | None = None
+        self._filtered_tool_cache: list[ToolLike] | None = None
+        self._tool_cache_epoch: int = 0
+        self._tool_cache_epoch_reason: str = "initial"
 
         # Gap (lauren-ai): no public model_id accessor on AgentRunnerBase.
         _transport_cfg = getattr(getattr(config.agent_runner, "_transport", None), "_config", None)
@@ -669,6 +686,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         max_turns: int = 10,
         shared_memory: "ShortTermMemory | None" = None,
         tools: _ToolList | None = None,
+        model_override: str = "",
     ) -> None:
         """Execute one additional agent phase using this runner's tool set.
 
@@ -740,10 +758,34 @@ class CodePlanRunner(BaseWorkflowRunner):
         )
         from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
 
-        phase_tools: _ToolList = list(self._base_tools())
-        phase_tools.extend(make_questions_tool(self._cfg.approval_svc))
-        if tools:
-            phase_tools.extend(tools)
+        # Capability filtering must use the phase's effective mode.  The
+        # actual mode switch also happens inside _run_turn, but constructing
+        # the base bundle before that switch would filter Yolo write tools out
+        # while the caller is still in Safe/Plan mode.  Set the mode only for
+        # this synchronous bundle compilation, restore it before awaiting, and
+        # let _run_turn own the normal async lifetime/restore boundary.
+        bundle_mode = None
+        if mode is not None and self._mode_manager is not None:
+            original_bundle_mode = self._cfg.app_state.active_mode()
+            bundle_mode = original_bundle_mode
+            override_name = self._mode_manager.resolve_name(mode)
+            self._mode_manager.set_by_name(override_name)
+        try:
+            phase_tools: _ToolList = list(self._base_tools())
+            phase_tools.extend(make_questions_tool(self._cfg.approval_svc))
+            if tools:
+                phase_tools.extend(tools)
+        finally:
+            if bundle_mode is not None and self._mode_manager is not None:
+                self._mode_manager.restore(bundle_mode)
+        active_phase = getattr(self, "_active_phase_name", "")
+        active_model = model_override or (self._phase_model(active_phase) if active_phase else "")
+        turn_options: _TurnOptions = {}
+        # Keep the historical call shape for downstream subclasses/tests that
+        # replace _run_turn with the pre-PRD-177 signature.  The new routing
+        # metadata is supplied only when this phase actually declares it.
+        if active_phase or active_model:
+            turn_options = {"phase_name": active_phase, "model_override": active_model}
         # PRD-126: composite-workflow phases get transport retry too.
         if stable_system_prompt:
             await self._run_turn(
@@ -754,6 +796,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 stable_system_prompt=stable_system_prompt,
                 max_turns=max_turns,
                 ctx=_ctx,
+                **turn_options,
             )
         else:
             # Keep compatibility with downstream subclasses/tests overriding
@@ -765,6 +808,7 @@ class CodePlanRunner(BaseWorkflowRunner):
                 system_prompt=system_prompt,
                 max_turns=max_turns,
                 ctx=_ctx,
+                **turn_options,
             )
 
     # ── phase helpers (PRD-115) ───────────────────────────────────────────────
@@ -951,16 +995,48 @@ class CodePlanRunner(BaseWorkflowRunner):
         from agenthicc.workflows.memory_tools import make_memory_tools  # noqa: PLC0415
 
         mode_blocked = self._cfg.app_state.active_mode().blocked_capabilities
-        all_tools: _ToolList = list(self._cfg.all_plugin_tools())
-        if self._cfg.mcp_registry is not None:
-            try:
-                all_tools = all_tools + list(self._cfg.mcp_registry.all_tools())
-            except Exception:  # noqa: BLE001
-                pass
-
+        blocked_key = tuple(sorted(str(item) for item in mode_blocked))
+        if self._tool_bundle_cache is None:
+            all_tools: _ToolList = list(self._cfg.all_plugin_tools())
+            if self._cfg.mcp_registry is not None:
+                try:
+                    all_tools.extend(self._cfg.mcp_registry.all_tools())
+                except Exception:  # noqa: BLE001
+                    pass
+            # Memory tool schemas are stable.  Build them exactly once along
+            # with the session tools; the returned list is copied below so a
+            # caller cannot mutate the cache.
+            all_tools.extend(make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index))
+            # Plugin and MCP discovery implementations may expose insertion
+            # order rather than a contractually sorted order.  Canonicalize it
+            # once at the epoch boundary so every phase sees the same schema
+            # sequence and provider cache key.
+            all_tools.sort(
+                key=lambda tool: str(getattr(tool, "name", getattr(tool, "__name__", "")))
+            )
+            self._tool_bundle_cache = all_tools
+        if self._tool_bundle_cache_key == blocked_key and self._filtered_tool_cache is not None:
+            return list(self._filtered_tool_cache)
         filtered: _ToolList = [
-            tool for tool in all_tools if not (get_tool_capabilities(tool) & mode_blocked)
+            tool
+            for tool in self._tool_bundle_cache
+            if not (get_tool_capabilities(tool) & mode_blocked)
         ]
-        # Memory tools carry no capability restrictions — always available.
-        filtered = filtered + make_memory_tools(self._cfg.memory_router, self._cfg.semantic_index)
-        return filtered
+        self._filtered_tool_cache = filtered
+        self._tool_bundle_cache_key = blocked_key
+        return list(filtered)
+
+    def invalidate_tool_bundle_cache(self, *, reason: str = "configuration_changed") -> None:
+        """Start a new stable-tool cache epoch.
+
+        MCP reloads, browser backend changes, and plugin configuration changes
+        are genuine stable-contract changes.  They must explicitly invalidate
+        the compiled bundle rather than rebuilding schemas opportunistically at
+        every phase.  The epoch is diagnostic metadata; it never claims that a
+        provider cache was actually hit.
+        """
+        self._tool_bundle_cache = None
+        self._filtered_tool_cache = None
+        self._tool_bundle_cache_key = None
+        self._tool_cache_epoch += 1
+        self._tool_cache_epoch_reason = str(reason)[:256] or "configuration_changed"

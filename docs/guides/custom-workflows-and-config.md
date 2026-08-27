@@ -228,6 +228,14 @@ TOML is a template for you to copy into `.agenthicc/agenthicc.toml`; the
 authoring workflow does not silently modify configuration files or write
 secrets.
 
+When a generated workflow is used as a downstream stage of `reconstruct_site`,
+it should treat the reconstruct evidence manifest as an external artifact
+reference: carry its path, revision, and content hashes in typed context, and
+rehydrate/verify them before use. Keep those references in the dynamic phase
+context, not in `CACHE_CONTRACT` or a stable tool schema. This preserves the
+same prompt-cache epoch and lets the generated workflow resume with the
+session's existing conversation and memory without duplicating research bodies.
+
 ### Optional integration declarations
 
 If a generated plugin uses an optional service, declare its dependency on the

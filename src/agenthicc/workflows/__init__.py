@@ -72,6 +72,26 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "SiteImitateRunner": ("agenthicc.workflows.site_imitate", "SiteImitateRunner"),
     "SiteImitateState": ("agenthicc.workflows.site_imitate", "SiteImitateState"),
     "SiteImitateWorkflow": ("agenthicc.workflows.site_imitate", "SiteImitateWorkflow"),
+    "ReconstructContext": (
+        "agenthicc.workflows.reconstruct_site",
+        "ReconstructContext",
+    ),
+    "ReconstructSiteParams": (
+        "agenthicc.workflows.reconstruct_site",
+        "ReconstructSiteParams",
+    ),
+    "ReconstructSiteRunner": (
+        "agenthicc.workflows.reconstruct_site",
+        "ReconstructSiteRunner",
+    ),
+    "ReconstructSiteWorkflow": (
+        "agenthicc.workflows.reconstruct_site",
+        "ReconstructSiteWorkflow",
+    ),
+    "ReconstructState": (
+        "agenthicc.workflows.reconstruct_site",
+        "ReconstructState",
+    ),
 }
 
 
@@ -146,4 +166,9 @@ __all__ = [
     "SiteImitateRunner",
     "SiteImitateState",
     "SiteImitateWorkflow",
+    "ReconstructContext",
+    "ReconstructSiteParams",
+    "ReconstructSiteRunner",
+    "ReconstructSiteWorkflow",
+    "ReconstructState",
 ]

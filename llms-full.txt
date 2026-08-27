@@ -1859,6 +1859,43 @@ checkpoint serialization/storage failures, write a bounded diagnostic-only
 is an optional hook for custom plugins that can construct typed state before
 runner setup; the framework always creates a durable bootstrap identity first.
 
+### ReconstructProfile
+
+~~~python
+class ReconstructProfile(StrEnum):
+    STATIC = "static"
+    APPLICATION = "application"
+    PRODUCTION = "production"
+    CUSTOM = "custom"
+~~~
+
+The profile selects an explicit reconstruct_site phase graph. Static runs
+skip infrastructure, application adds the data/API layer, production enables
+the complete infrastructure graph, and custom requires a validated ordered
+phase selection. Skipped phases are recorded in the evidence manifest.
+
+### ReconstructPhaseDefinition / ReconstructPhasePlan / ActiveReconstructPlan
+
+These immutable types are defined in
+agenthicc.workflows.reconstruct_site.evidence_plan. The phase plan is the
+single validated source for phase handlers, ordering, progress totals, model
+keys, capability requirements, profile membership, retry/re-entry edges, and
+artifact kinds. RECONSTRUCT_PHASE_PLAN.active(profile, custom_phases) returns
+the profile-specific graph consumed by both fresh execution and resume.
+
+### ReconstructEvidenceStore
+
+agenthicc.workflows.reconstruct_site.evidence.ReconstructEvidenceStore owns
+one workspace-scoped, revisioned evidence manifest for a reconstruct run.
+put() and put_json() write content-addressed artifacts atomically and
+idempotently; record_screenshot() links an existing Playwright or CloakBrowser
+browser artifact without copying credentials or image bytes; and
+record_degraded_screenshot() makes unavailable browser integrations explicit.
+verify() and read_kind() validate byte counts and SHA-256 digests before
+resume or rehydration. checkpoint_digest() returns only compact references,
+so large research bodies are not duplicated in workflow checkpoints and there
+is no artificial one-megabyte context ceiling.
+
 ### CodePlanRunner
 
 The specialized `code_plan` runner evolves `CodePlanState` through

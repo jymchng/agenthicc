@@ -1,7 +1,7 @@
 ---
 title: "PRD-177: Efficient, Evidence-Driven reconstruct_site Workflow"
-status: Proposed
-version: 0.1.0
+status: Implemented
+version: 1.0.0
 created: 2026-08-27
 scope: "reconstruct_site workflow execution, research evidence, artifacts, screenshots, caching, checkpoints, and validation"
 related_prds:
@@ -876,35 +876,35 @@ legacy state. The workflow must not silently start a new run.
 
 ## 15. Acceptance criteria
 
-- [ ] The active `reconstruct_site` graph has one authoritative phase-plan
+- [x] The active `reconstruct_site` graph has one authoritative phase-plan
       representation, and fresh execution and resume consume the same plan.
-- [ ] The progress counter reports the actual selected graph; the stale 22-phase
+- [x] The progress counter reports the actual selected graph; the stale 22-phase
       value is eliminated.
-- [ ] All parent phase turns, retries, re-entry, pause, and resume preserve the
+- [x] All parent phase turns, retries, re-entry, pause, and resume preserve the
       original session conversation ID and memory instance.
-- [ ] Required research outputs create verified durable artifact records and an
+- [x] Required research outputs create verified durable artifact records and an
       atomically revisioned manifest.
-- [ ] Screenshot records identify route, viewport, role, backend, hash, and
+- [x] Screenshot records identify route, viewport, role, backend, hash, and
       availability, and are linked to the reconstruct run.
-- [ ] Repeating a phase does not duplicate identical artifacts or screenshots.
-- [ ] Large research bodies are externalized and checkpoint serialization has
+- [x] Repeating a phase does not duplicate identical artifacts or screenshots.
+- [x] Large research bodies are externalized and checkpoint serialization has
       no arbitrary 1,000,000-byte ceiling.
-- [ ] Dynamic phase state and artifact changes do not alter the stable prompt
+- [x] Dynamic phase state and artifact changes do not alter the stable prompt
       policy or stable tool schemas within a cache epoch.
-- [ ] Model overrides configured for reconstruct phases reach the provider.
-- [ ] Static, application, production, and validated custom profiles select
+- [x] Model overrides configured for reconstruct phases reach the provider.
+- [x] Static, application, production, and validated custom profiles select
       explicit phase graphs and record skipped phases.
-- [ ] Unknown re-entry targets are rejected, not redirected to visual
+- [x] Unknown re-entry targets are rejected, not redirected to visual
       validation; valid re-entry records invalidated downstream artifacts.
-- [ ] Resume verifies artifact integrity and reports missing/corrupt evidence
+- [x] Resume verifies artifact integrity and reports missing/corrupt evidence
       as a recoverable diagnostic.
-- [ ] Browser/MCP unavailability is explicit and cannot become fabricated
+- [x] Browser/MCP unavailability is explicit and cannot become fabricated
       research evidence.
-- [ ] Capability, workspace, network, approval, and trust policies remain
+- [x] Capability, workspace, network, approval, and trust policies remain
       effective for all profile and artifact paths.
-- [ ] Unit, integration, E2E, and offline performance/regression tests cover
+- [x] Unit, integration, E2E, and offline performance/regression tests cover
       the requirements in Section 13.
-- [ ] Workflow, storage, custom-workflow, and testing guides document the new
+- [x] Workflow, storage, custom-workflow, and testing guides document the new
       artifact, screenshot, profile, cache, and resume contracts.
 
 ## 16. Assumptions and decisions
@@ -940,3 +940,45 @@ current source tree, all supported workflow/profile paths have durable evidence
 and exact resume behavior, prompt-cache diagnostics show stable contracts,
 performance benchmarks demonstrate the intended reductions, documentation is
 updated, and the final implementation evidence is recorded in this document.
+
+## 18. Implementation evidence
+
+Implemented in the active source tree on 2026-08-27:
+
+- evidence_plan.py is the authoritative 39-phase topology and profile
+  selector. The active runner wrapper uses the same selected plan for fresh
+  runs, resume, progress, model routing, capability metadata, and re-entry
+  validation.
+- evidence.py provides the atomic, revisioned, hash-addressed manifest,
+  durable phase receipts, browser-artifact screenshot links, degraded-browser
+  records, integrity verification, redaction, and compact checkpoint digest.
+- The runner preserves one session memory/conversation boundary, compiles a
+  stable tool bundle per cache epoch, forwards phase model overrides, and
+  records profile skips and re-entry invalidation.
+- The implementation is consolidated under
+  src/agenthicc/workflows/reconstruct_site/; the removed backup directory is
+  not part of the active package or registry.
+- Clean-room tests are in
+  tests/unit/test_reconstruct_evidence_prd177.py,
+  tests/integration/test_reconstruct_site_prd177.py,
+  tests/e2e/test_reconstruct_site_prd177.py, and
+  tests/performance/test_reconstruct_site_prd177.py.
+
+Verification completed on 2026-08-27:
+
+- `uv run pytest tests/unit -q`: 3,230 passed, 14 skipped.
+- `uv run pytest tests/integration -q`: 218 passed.
+- `uv run pytest tests/e2e -q`: 115 passed, 1 skipped.
+- `uv run pytest tests/performance/test_reconstruct_site_prd177.py -q`:
+  2 passed.
+- Focused reconstruct/cache-contract regression run: 36 passed.
+- `uv run nox -s llms_check`: successful; 22 public symbols documented.
+- `uv run ruff check src/ tests/ scripts/`, targeted Ruff formatting, `git diff --check`,
+  and the type-safety baseline audit: successful.
+
+The repository-wide `uv run mypy src/agenthicc` check still reports 305 errors
+in 20 files, including compatibility-runner and optional-backend typing drift;
+the focused new plan/evidence/active-wrapper modules type-check cleanly. The
+repository-wide formatting check likewise retains the unrelated files listed
+by Ruff. These known baseline issues are reported explicitly and are not
+masked by this implementation.

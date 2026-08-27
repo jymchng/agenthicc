@@ -177,6 +177,42 @@ async def test_code_plan_plan_phase_injects_the_existing_question_tool() -> None
 
 
 @pytest.mark.asyncio
+async def test_run_phase_filters_tools_using_the_effective_phase_mode() -> None:
+    runner = _runner()
+    manager = ModeManager(app_state=runner._cfg.app_state)
+    runner._mode_manager = manager
+
+    from lauren_ai._tools import tool
+    from agenthicc.tools.capabilities import tool_write
+
+    @tool_write
+    @tool()
+    async def write_fixture(path: str) -> dict[str, str]:
+        return {"path": path}
+
+    runner._cfg.plugin_tools.append(write_fixture)  # type: ignore[union-attr]
+    captured: dict[str, object] = {}
+
+    async def fake_turn(_text: str, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    runner._run_turn = fake_turn  # type: ignore[method-assign]
+    await runner.run_phase(
+        intent="intent",
+        text="write",
+        system_prompt="phase",
+        mode="Yolo",
+        max_turns=1,
+        shared_memory=MagicMock(),
+    )
+
+    tools = captured["tools"]
+    assert isinstance(tools, list)
+    assert any(getattr(item, "__name__", "") == "write_fixture" for item in tools)
+    assert manager.active_name == "Safe"
+
+
+@pytest.mark.asyncio
 async def test_resume_type_validation_and_extension_phase(monkeypatch: pytest.MonkeyPatch) -> None:
     runner = _runner()
     with pytest.raises(TypeError):

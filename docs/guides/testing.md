@@ -33,6 +33,21 @@ Queue one response for every expected LLM round-trip. Exercise:
 - transport retry rollback;
 - journal resume and idempotent tool replay.
 
+`reconstruct_site` adds deterministic evidence-contract coverage in
+`tests/unit/test_reconstruct_evidence_prd177.py`, integration coverage in
+`tests/integration/test_reconstruct_site_prd177.py`, and the offline
+workflow journey/performance coverage under `tests/e2e/` and
+`tests/performance/`. These tests use temporary workspaces and fake providers;
+they do not require Playwright, CloakBrowser, MCP, or provider credentials.
+Run the focused matrix with:
+
+```bash
+uv run pytest tests/unit/test_reconstruct_evidence_prd177.py -q
+uv run pytest tests/integration/test_reconstruct_site_prd177.py -q
+uv run pytest tests/e2e/test_reconstruct_site_prd177.py -q
+uv run pytest tests/performance/test_reconstruct_site_prd177.py -q
+```
+
 `agenthicc.testing` provides `SessionCassette`, mock approvals, and
 `run_headless_replay()` for deterministic scenarios.
 

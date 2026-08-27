@@ -125,6 +125,49 @@ are kept under the session directory with restrictive permissions. Corrupt,
 unreadable, stale, or plugin-mismatched checkpoints fail closed. Workflow
 contexts have no framework-imposed serialized byte ceiling; they must still be
 JSON-compatible, and available filesystem capacity is the practical limit.
+
+### `reconstruct_site` evidence package
+
+The reconstruct workflow keeps large, typed research and validation bodies in a
+workspace-scoped evidence package rather than duplicating them in the session
+checkpoint:
+
+```text
+.agenthicc/reconstruct_site/<run-id>/
+  manifest.json
+  phases/<phase>/<attempt>/<kind>-<content-hash>.<suffix>
+```
+
+`manifest.json` is schema-versioned, revisioned, mode-600 where supported, and
+published with the same atomic replacement primitive as workflow checkpoints.
+Each complete artifact records a content hash, byte count, media type, phase,
+attempt, source, and workspace-relative path. Repeated writes with the same
+run/phase/attempt/kind/content hash return the existing record. Stale records
+remain visible after a validation re-entry so the user can audit what changed;
+they are not accepted as current evidence.
+
+The checkpoint carries only the manifest path/revision, required and stale
+artifact IDs, screenshot IDs, profile/plan version, and a compact digest. The
+body is rehydrated from disk on resume and verified against its hash and byte
+count first. A missing file, malformed manifest, path escape, symlink escape,
+or content mismatch is a typed recoverable error, not an implicit restart or a
+successful phase. There is no framework-imposed one-megabyte checkpoint
+ceiling; large bodies are externalized and normal JSON, filesystem, and
+configured operational limits still apply.
+
+Browser screenshots remain owned by the existing browser artifact store. The
+reconstruct manifest links a validated workspace-relative browser path and
+records the capture identity (route, sanitized URL, viewport, dimensions,
+device scale, page state, role, backend, artifact ID, hash, and status). It
+never stores cookies, authorization headers, URL credentials, or fabricated
+image bytes. Identical capture identity plus content hash is deduplicated.
+Missing Playwright/CloakBrowser is recorded as `degraded` evidence with the
+reason and no artifact ID.
+
+The package also records profile-skipped phases and re-entry history. These
+records make a final evidence package explain both what was verified and what
+was intentionally outside the selected scope.
+
 Active
 `running`, `pausing`, and `resuming` records are classified as interrupted on
 startup and are never executed automatically. `/workflow resume` claims one
