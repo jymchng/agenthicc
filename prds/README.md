@@ -44,6 +44,7 @@ against the current source before implementing them.
 - [PRD-174 — Tool-Aware create_workflow Authoring and Safe Publication](prd-174-create-workflow-tool-aware-authoring.md)
 - [PRD-175 — Runtime AGENTS.md Integration](prd-175-agents-md-runtime-integration.md)
 - [PRD-176 — Fast, Progressive agenthicc Startup](prd-176-fast-progressive-startup.md)
+- [PRD-177 — Efficient, Evidence-Driven reconstruct_site Workflow](prd-177-reconstruct-site-optimization-and-evidence.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -252,6 +253,13 @@ extension and skill discovery, optional MCP/browser initialization, and
 heavyweight memory/index setup while preserving leases, workspace policy,
 workflow/checkpoint recovery, and the append-only session event source of
 truth.
+
+PRD-177 defines the optimization and evidence contract for `reconstruct_site`.
+It consolidates the 39-phase graph, makes research and screenshot evidence
+durable and manifest-backed, externalizes large artifacts from checkpoints,
+preserves one parent conversation and the prompt-cache contract, propagates
+per-phase model settings, adds static/application/production profiles, and
+makes validation re-entry bounded and artifact-aware.
 
 ## Existing PRDs
 
