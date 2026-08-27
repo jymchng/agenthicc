@@ -102,11 +102,13 @@ def test_load_builtin_workflows_returns_current_builtins() -> None:
     names = {d.name for d in defs}
     assert names == {
         "code_plan",
+        "copy_website",
         "create_workflow",
         "goal_flow",
         "make_agenthicc_tool",
         "make_epub_book",
         "make_pdf_book",
+        "reconstruct_site",
         "site_imitate",
     }
 
@@ -124,21 +126,27 @@ def test_code_plan_definition_has_runner_factory() -> None:
 
 @pytest.mark.unit
 def test_specialized_workflows_are_package_imports_with_runner_modules() -> None:
+    from agenthicc.workflows.copy_website import CopyWebsiteWorkflow
     from agenthicc.workflows.make_agenthicc_tool import MakeAgenthiccToolWorkflow
     from agenthicc.workflows.make_epub_book import MakeEpubBookWorkflow
     from agenthicc.workflows.make_pdf_book import MakePdfBookWorkflow
+    from agenthicc.workflows.reconstruct_site import ReconstructSiteWorkflow
     from agenthicc.workflows.site_imitate import SiteImitateWorkflow
 
     workflows = (
+        CopyWebsiteWorkflow,
         MakeAgenthiccToolWorkflow,
         MakeEpubBookWorkflow,
         MakePdfBookWorkflow,
+        ReconstructSiteWorkflow,
         SiteImitateWorkflow,
     )
     assert [workflow.name for workflow in workflows] == [
+        "copy_website",
         "make_agenthicc_tool",
         "make_epub_book",
         "make_pdf_book",
+        "reconstruct_site",
         "site_imitate",
     ]
     assert all(workflow.__module__.endswith(".runner") for workflow in workflows)

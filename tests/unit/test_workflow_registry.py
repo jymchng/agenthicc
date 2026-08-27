@@ -125,11 +125,13 @@ class TestBuildWorkflowRegistry:
 
         assert registry.names() == [
             "code_plan",
+            "copy_website",
             "create_workflow",
             "goal_flow",
             "make_agenthicc_tool",
             "make_epub_book",
             "make_pdf_book",
+            "reconstruct_site",
             "site_imitate",
         ]
         assert calls == []

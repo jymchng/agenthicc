@@ -47,6 +47,9 @@ _BUILTIN_WORKFLOW_DESCRIPTORS = (
         "code_plan", "agenthicc.workflows.code_plan.definition", "CodePlan", ("Plan",)
     ),
     BuiltinWorkflowDescriptor(
+        "copy_website", "agenthicc.workflows.copy_website", "CopyWebsiteWorkflow"
+    ),
+    BuiltinWorkflowDescriptor(
         "create_workflow",
         "agenthicc.workflows.create_workflow.definition",
         "CreateWorkflow",
@@ -68,6 +71,9 @@ _BUILTIN_WORKFLOW_DESCRIPTORS = (
         "make_pdf_book",
         "agenthicc.workflows.make_pdf_book.runner",
         "MakePdfBookWorkflow",
+    ),
+    BuiltinWorkflowDescriptor(
+        "reconstruct_site", "agenthicc.workflows.reconstruct_site", "ReconstructSiteWorkflow"
     ),
     BuiltinWorkflowDescriptor(
         "site_imitate", "agenthicc.workflows.site_imitate.runner", "SiteImitateWorkflow"
