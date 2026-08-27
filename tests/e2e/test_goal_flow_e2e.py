@@ -95,7 +95,15 @@ async def test_goal_flow_real_turns_checkpoint_each_verified_goal(tmp_path, proc
                 {"notes": "The requirements are concrete and testable."},
             ),
             "Clarification recorded.",
-            ("finalize_goals", {"goals": ["first goal", "second goal"]}),
+            (
+                "finalize_goals",
+                {
+                    "goals": [
+                        {"text": "first goal"},
+                        {"text": "second goal"},
+                    ]
+                },
+            ),
             "Goals recorded.",
             (
                 "goal_implemented",

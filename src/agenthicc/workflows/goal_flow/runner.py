@@ -17,7 +17,7 @@ import asyncio
 import dataclasses
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
@@ -159,13 +159,56 @@ def _make_decide_goals_tools(
 
     @tool_control
     @tool()
-    async def finalize_goals(goals: list[str]) -> dict[str, object]:
+    async def finalize_goals(goals: list[str | dict[str, str]]) -> dict[str, object]:
         """Record the ordered goals and advance to implementing goal #0.
 
         Args:
-            goals: The concrete, testable goals to satisfy, in order.
+            goals: The concrete, testable goals to satisfy, in order. Each item
+                is normally a string; for compatibility, an object containing
+                a string ``text`` (or ``goal``/``description``) field is also
+                accepted.
         """
-        cleaned = [g.strip() for g in goals if g and g.strip()]
+        if not isinstance(goals, list):
+            return {
+                "ok": False,
+                "error": "The goals were rejected: goals must be a JSON array.",
+                "fix": "Call finalize_goals(goals) with one or more concrete goals.",
+            }
+
+        cleaned: list[str] = []
+        invalid_indexes: list[int] = []
+        for index, item in enumerate(goals):
+            if isinstance(item, str):
+                text = item.strip()
+            elif isinstance(item, Mapping):
+                candidates = [
+                    candidate.strip()
+                    for key in ("text", "goal", "description")
+                    if isinstance(candidate := item.get(key), str)
+                ]
+                text = next((candidate for candidate in candidates if candidate), "")
+                if not candidates:
+                    # An object without a supported text field is malformed,
+                    # rather than an empty goal.
+                    invalid_indexes.append(index)
+                    continue
+            else:
+                invalid_indexes.append(index)
+                continue
+
+            if text:
+                cleaned.append(text)
+
+        if invalid_indexes:
+            indexes = ", ".join(str(index) for index in invalid_indexes)
+            return {
+                "ok": False,
+                "error": (
+                    "The goals were rejected: goal items at index "
+                    f"{indexes} must be strings or objects with a string text field."
+                ),
+                "fix": "Use finalize_goals(goals) with strings or {'text': '...'} objects.",
+            }
         if not cleaned:
             return {
                 "ok": False,

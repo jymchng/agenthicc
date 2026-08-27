@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -66,6 +67,50 @@ def test_goal_flow_is_a_builtin_and_has_a_checkpoint_codec() -> None:
     assert GoalFlowWorkflow.name == "goal_flow"
     assert callable(GoalFlowWorkflow.checkpoint_context_to_payload)
     assert callable(GoalFlowWorkflow.checkpoint_context_from_payload)
+
+
+@pytest.mark.asyncio
+async def test_finalize_goals_accepts_structured_text_items() -> None:
+    """Models may return the UI's ``[{"text": ...}]`` goal representation."""
+    from agenthicc.workflows.goal_flow.runner import _make_decide_goals_tools
+
+    event = asyncio.Event()
+    data: dict[str, list[str]] = {}
+    finalize_goals = _make_decide_goals_tools(event, data)[0]
+
+    result = await finalize_goals(
+        goals=[
+            {"text": " Paginate the contents page at 20 lessons per page "},
+        ]
+    )
+
+    assert result["ok"] is True
+    assert data["goals"] == ["Paginate the contents page at 20 lessons per page"]
+    assert event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_finalize_goals_keeps_string_compatibility_and_rejects_bad_items() -> None:
+    """The old string form remains valid and malformed objects do not crash."""
+    from agenthicc.workflows.goal_flow.runner import _make_decide_goals_tools
+
+    event = asyncio.Event()
+    data: dict[str, list[str]] = {}
+    finalize_goals = _make_decide_goals_tools(event, data)[0]
+
+    result = await finalize_goals(goals=[" first goal ", "", "second goal"])
+    assert result["ok"] is True
+    assert data["goals"] == ["first goal", "second goal"]
+    assert event.is_set()
+
+    bad_event = asyncio.Event()
+    bad_data: dict[str, list[str]] = {}
+    bad_finalize_goals = _make_decide_goals_tools(bad_event, bad_data)[0]
+    bad_result = await bad_finalize_goals(goals=[{"title": "missing supported text field"}])
+
+    assert bad_result["ok"] is False
+    assert "index 0" in str(bad_result["error"])
+    assert not bad_event.is_set()
 
 
 def test_completed_goal_checkpoint_advances_cursor_and_is_idempotent(tmp_path: Path) -> None:

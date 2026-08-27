@@ -572,50 +572,50 @@ workspace policies, conversation stores, or workflow runtimes.
 
 ### Authoring surface
 
-- [ ] A current-session authoring catalog lists every tool visible to each
+- [x] A current-session authoring catalog lists every tool visible to each
   create-workflow phase with deterministic names, signatures, capabilities,
   source group, and availability reason.
-- [ ] The catalog includes all five global source/documentation introspection
+- [x] The catalog includes all five global source/documentation introspection
   tools and the prompts name all five.
-- [ ] `describe_phasespec`, capability, role, browser, and MCP reports are
+- [x] `describe_phasespec`, capability, role, browser, and MCP reports are
   backed by live metadata and expose a schema/version or fail drift tests.
-- [ ] A named-tool decision trace explains capability metadata, role/phase
+- [x] A named-tool decision trace explains capability metadata, role/phase
   resolution, active mode blocking, optional availability, and workspace/network
   policy.
-- [ ] No catalog or session snapshot contains secrets or unbounded transcript
+- [x] No catalog or session snapshot contains secrets or unbounded transcript
   content.
 
 ### Generation and validation
 
-- [ ] A generated package is created in an authorized run-owned draft directory
+- [x] A generated package is created in an authorized run-owned draft directory
   with an exact manifest; the normal loader cannot observe a partial draft.
-- [ ] Repair cycles reuse the draft, reject undeclared/traversal/symlink files,
+- [x] Repair cycles reuse the draft, reject undeclared/traversal/symlink files,
   and cannot retain stale generated siblings outside the manifest.
-- [ ] The validator emits structured errors, warnings, skipped checks, and
+- [x] The validator emits structured errors, warnings, skipped checks, and
   evidence for manifest, plugin, graph, capability, browser/MCP, cache, question,
   workspace, transition, checkpoint, resume, and failure-recovery contracts.
-- [ ] A valid custom runner passes a deterministic no-network smoke contract.
-- [ ] An injected provider/tool failure proves that framework failure finalization
+- [x] A valid custom runner passes a deterministic no-network smoke contract.
+- [x] An injected provider/tool failure proves that framework failure finalization
   is reached and the generated runner does not swallow or terminalize the error.
-- [ ] A generated custom runner's restored context resumes at the saved state,
+- [x] A generated custom runner's restored context resumes at the saved state,
   preserves the same run/conversation identity, and reattaches the supplied
   session memory.
-- [ ] A missing required optional dependency rejects the workflow with an
+- [x] A missing required optional dependency rejects the workflow with an
   actionable, redacted diagnostic; an optional fallback is recorded as degraded.
 
 ### Approval, publication, and compatibility
 
-- [ ] Prose cannot transition any create-workflow phase; all transitions remain
+- [x] Prose cannot transition any create-workflow phase; all transitions remain
   successful tool calls.
-- [ ] Publication is impossible before design approval, deterministic validation,
+- [x] Publication is impossible before design approval, deterministic validation,
   smoke success, and validation-agent approval.
-- [ ] Atomic publication leaves the previous published package intact when it
+- [x] Atomic publication leaves the previous published package intact when it
   fails and records a resumable draft/checkpoint.
-- [ ] Successful publication records run ID, workflow name, manifest and source
+- [x] Successful publication records run ID, workflow name, manifest and source
   fingerprints, catalog snapshot, validation evidence, and publication state.
-- [ ] Existing inspection-tool names, legacy workflows, existing valid
+- [x] Existing inspection-tool names, legacy workflows, existing valid
   checkpoints, and current configuration formats continue to work.
-- [ ] `/workflows reload` or the equivalent registry refresh discovers the
+- [x] `/workflows reload` or the equivalent registry refresh discovers the
   published package exactly once, without builtin shadowing.
 
 ## 9. Test plan
