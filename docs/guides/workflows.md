@@ -962,6 +962,98 @@ and usable touch targets. Every component verification must include responsive
 evidence, and the final verification tool rejects a success summary that does
 not mention mobile, responsive, or viewport checks.
 
+### Website reconstruction workflows: choosing the right one
+
+`copy_website`, `site_imitate`, and `reconstruct_site` are related but serve
+different levels of fidelity and project scope. The spelling of the registered
+workflow is `reconstruct_site` (not `reconstuct_site`). All three are built-in,
+manually selected workflows and are available through the normal workflow
+registry:
+
+```text
+/workflow site_imitate
+/workflow copy_website
+/workflow reconstruct_site
+```
+
+The next user message supplies the reference URL and/or the desired product
+intent, depending on the workflow's phase prompts.
+
+| Workflow | Primary purpose | Reference analysis | Build and validation scope | Choose it when |
+|---|---|---|---|---|
+| `site_imitate` | Adapt the visual language of a reference site to a new use case | A focused `analyze` phase produces an analysis and component plan; the contract is not organized around a dedicated Playwright study/report phase | `plan → scaffold → build/verify` per planned component → `final_verify`; mobile-first responsive behavior is a hard invariant | The reference is inspiration or a design direction and the new product, content, and component structure matter more than pixel-level copying |
+| `copy_website` | Rebuild a known website with high visual and structural parity | Explicit `extract_target` and Playwright-driven `site_study` phases collect target pages, desktop/mobile observations, and screenshots, then create a design specification | `design_spec → scaffold → implement_layout → implement_pages → implement_data → responsive_pass → parity_verify → final_report`; parity rejection can send work back to layout implementation | The target is a live site that should be reproduced closely, including its layout taste, page structure, responsive behavior, and visual details |
+| `reconstruct_site` | Produce a broad, production-oriented reconstruction of a reference site | Deep discovery covers routes, assets, content, interactions, architecture, and design-system evidence | A large staged graph covers bootstrap, shell/components, per-route pages, data, responsive/visual/interaction validation, accessibility, performance, fidelity, infrastructure, package commands, scripts, documentation, and final validation | The result must be a substantial application with an audited implementation and operational/deployment artifacts, not only a visual clone |
+
+#### `site_imitate`: lightweight design adaptation
+
+This is the smallest of the three workflows. It first analyzes the reference
+and plans the components needed for the new purpose. It then scaffolds the
+application and repeatedly enters a component-level `build`/`verify` cycle,
+followed by a site-wide final verification. Its dynamic phase count therefore
+depends on how many components the planning phase identifies.
+
+The workflow deliberately emphasizes the new use case and a responsive,
+mobile-first result. Its verification contract checks mobile, tablet, and
+desktop behavior, overflow, navigation, and touch interaction. It does not
+promise that every route, asset, interaction, deployment target, or pixel-level
+detail from the reference will be inventoried and reproduced.
+
+#### `copy_website`: focused, Playwright-assisted parity
+
+This workflow is a fixed ten-stage pipeline. It extracts and normalizes the
+target first, studies the site with Playwright across viewports, turns that
+evidence into design tokens/component and data maps, and then implements the
+application. The later responsive pass and `parity_verify` phase are explicit
+parts of the contract rather than optional follow-up work. The verifier records
+discrepancies and can reject back to `implement_layout` for another fix cycle.
+
+`copy_website` is consequently more demanding than `site_imitate` about
+observing a specific live target, but narrower than `reconstruct_site` about
+production infrastructure and repository operations. It is the appropriate
+middle ground for “copy this site closely and make the result mobile-friendly.”
+
+#### `reconstruct_site`: comprehensive reconstruction and hardening
+
+This workflow has the broadest phase graph. Its early stages build inventories
+of routes, assets, content, visual evidence, and interactions before the
+architecture and design system are fixed. Implementation then proceeds through
+the global shell, shared components, dynamic route/page work, and the data
+layer. Quality stages separately exercise responsive behavior, visual parity,
+interactions, accessibility, performance, and a final fidelity pass.
+
+It also includes project-operability stages that the other two workflows do
+not require as part of their normal contract: SQLite, Prisma, TanStack Query,
+environment configuration, Docker, Netlify, Caddy, package commands, scripts,
+and documentation, each with corresponding verification phases. Its runner
+supports controlled re-entry to an earlier phase when a later validation result
+exposes a defect. Use it when “reconstruct” means to investigate and deliver a
+complete application surface, not merely to imitate the appearance of a page.
+
+#### Shared runtime guarantees and important boundaries
+
+The workflows differ in purpose, not in the workflow-engine guarantees. They
+are registered built-ins, use typed workflow context, persist phase artifacts
+through the checkpoint hooks, and advance only through their transition tools.
+Agent prose alone cannot silently move a run to the next phase. They are all
+manual-only entries (`mode_bindings = []`), so select one explicitly rather
+than expecting an ordinary turn to start it.
+
+Their shared guarantees do not make their contexts interchangeable. A resumed
+`copy_website` run restores its study/design/parity artifacts; a resumed
+`site_imitate` run restores its component plan and per-component verification;
+and a resumed `reconstruct_site` run restores its route, architecture,
+implementation, validation, and infrastructure state. Browser/page handles
+are live process resources and are not serialized into a checkpoint; a resumed
+browser phase must reopen an approved target and recreate its live handles.
+
+The optional browser integration is also not the selection criterion by itself:
+`copy_website` explicitly makes Playwright-based study part of its phase
+contract, while `site_imitate` and `reconstruct_site` are defined by their
+analysis/reconstruction scope and may receive browser tools from the session
+when configured. Choose based on the required outcome and evidence, not only
+on whether browser tools happen to be available.
+
 ## Resume and failure behaviour
 
 Workflow state is represented by `WorkflowRun`, phase outputs, kernel events,

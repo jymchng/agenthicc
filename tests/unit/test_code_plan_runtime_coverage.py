@@ -290,6 +290,122 @@ async def test_run_and_resume_failure_and_completed_phase_paths() -> None:
 
 
 @pytest.mark.asyncio
+async def test_code_plan_phase_retry_exhaustion_and_permanent_errors() -> None:
+    runner = _runner()
+
+    async def no_turn(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    runner._run_turn = no_turn  # type: ignore[method-assign]
+    assert await runner._plan(CodePlanContext("intent", "run")) is CodePlanState.FAILED
+    assert (
+        await runner._execute(CodePlanContext("intent", "run", plan="plan")) is CodePlanState.FAILED
+    )
+    assert await runner._review(CodePlanContext("intent", "run")) is CodePlanState.FAILED
+
+    async def broken_turn(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("provider is permanently unavailable")
+
+    runner._run_turn = broken_turn  # type: ignore[method-assign]
+    for method, context in (
+        (runner._plan, CodePlanContext("intent", "run")),
+        (runner._execute, CodePlanContext("intent", "run", plan="plan")),
+        (runner._review, CodePlanContext("intent", "run")),
+    ):
+        assert await method(context) is CodePlanState.FAILED
+        assert "RuntimeError" in context.fail_reason
+
+
+@pytest.mark.asyncio
+async def test_code_plan_execute_command_gate_retries_failed_command() -> None:
+    runner = _runner()
+    context = CodePlanContext("intent", "run", plan="plan")
+
+    async def failed_command(_text: str, **kwargs: object) -> None:
+        context.command_outcomes.append(
+            {
+                "terminal_id": "terminal-1",
+                "state": "failed",
+                "ok": False,
+                "returncode": 1,
+                "stderr": "compiler failed",
+            }
+        )
+        tools = kwargs["tools"]
+        assert isinstance(tools, list)
+        complete = next(
+            tool for tool in tools if getattr(tool, "__name__", "") == "mark_execute_complete"
+        )
+        await complete("implemented")  # type: ignore[operator]
+
+    runner._run_turn = failed_command  # type: ignore[method-assign]
+    assert await runner._execute(context) is CodePlanState.FAILED
+    assert "exhausted" in context.fail_reason
+
+
+def test_command_gate_deduplicates_terminal_retries_and_is_fail_closed() -> None:
+    assert CodePlanRunner._command_gate_error([]) is None
+    assert (
+        CodePlanRunner._command_gate_error(
+            [
+                {"terminal_id": "one", "state": "failed", "ok": False, "stderr": "old"},
+                {"terminal_id": "one", "state": "exited", "ok": True, "returncode": 0},
+            ]
+        )
+        is None
+    )
+    error = CodePlanRunner._command_gate_error([{"state": "running", "ok": True}])
+    assert error is not None and "running" in error
+
+
+@pytest.mark.asyncio
+async def test_code_plan_resume_dispatches_every_state_and_preserves_terminal_status() -> None:
+    runner = _runner()
+    calls: list[str] = []
+
+    async def phase(name: str, result: CodePlanState, _ctx: CodePlanContext) -> CodePlanState:
+        calls.append(name)
+        return result
+
+    runner._plan = lambda ctx: phase("plan", CodePlanState.EXECUTE, ctx)  # type: ignore[method-assign]
+    runner._execute = lambda ctx: phase("execute", CodePlanState.REVIEW, ctx)  # type: ignore[method-assign]
+    runner._review = lambda ctx: phase("review", CodePlanState.SUMMARIZE, ctx)  # type: ignore[method-assign]
+    runner._summarize = lambda ctx: phase("summarize", CodePlanState.COMPLETE, ctx)  # type: ignore[method-assign]
+    await runner.resume(
+        CodePlanContext("intent", "resume", state=CodePlanState.PLAN, shared_memory=MagicMock())
+    )
+    assert calls == ["plan", "execute", "review", "summarize"]
+    assert runner._cfg.app_state.workflow_run().status == "complete"
+
+    await runner.resume(
+        CodePlanContext("intent", "failed", state=CodePlanState.FAILED, shared_memory=MagicMock())
+    )
+    assert runner._cfg.app_state.workflow_run().status == "failed"
+
+
+def test_code_plan_model_and_phase_helpers_cover_extension_paths() -> None:
+    runner = _runner()
+    object.__setattr__(
+        runner._cfg,
+        "params",
+        SimpleNamespace(
+            model_for_phase=lambda name, fallback: "override" if name == "plan" else fallback
+        ),
+    )
+    assert runner._phase_model("plan") == "override"
+    runner._set_phase("extension", 10, CodePlanContext("intent", "run"))
+    runner._cfg.app_state.update_workflow_phase.assert_called_with(
+        workflow_name="code_plan",
+        phase_name="extension",
+        phase_index=10,
+        total_phases=4,
+        run_id="run",
+        intent="intent",
+        model_id="transport",
+    )
+
+
+@pytest.mark.asyncio
 async def test_resume_restores_execute_mode_from_plan_metadata() -> None:
     runner = _runner()
     context = CodePlanContext(

@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from agenthicc.workflows.code_plan.phase_tools import (
+    _normalize_execute_mode,
+    _validate_questions,
     make_executor_tools,
     make_planner_tools,
     make_questions_tool,
@@ -84,3 +86,19 @@ async def test_planner_executor_reviewer_and_questions_tools() -> None:
     assert "error" in await make_questions_tool(malformed)[0](
         [{"id": "x", "text": "x", "options": ["y"]}]
     )
+
+
+def test_phase_tool_helpers_normalize_modes_and_question_shapes() -> None:
+    assert _normalize_execute_mode(" yolo ") == "Yolo"
+    assert _normalize_execute_mode("SAFE") == "Safe"
+    assert _normalize_execute_mode("unknown") == "Safe"
+    assert _validate_questions(None)
+    assert _validate_questions([])
+    problems = _validate_questions(
+        [
+            "bad",
+            {"id": "", "text": "", "options": []},
+            {"id": "x", "text": "x", "options": "not-a-list"},
+        ]
+    )
+    assert len(problems) >= 4

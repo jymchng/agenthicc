@@ -141,3 +141,38 @@ async def test_workflow_runner_human_and_limit_failure_paths(
         WorkflowContext("x", "r", "limited", {"first": PhaseOutput("first", "auto", "prior")}),
     )
     assert output.approved is False and output.full_text == "needs changes"
+
+
+def test_workflow_runner_command_gates_cover_success_failure_and_readiness() -> None:
+    config, _app, _emitted, _mode = _runner_config()
+    runner = WorkflowRunner(OnePhase, config)
+    success = PhaseOutput(
+        "phase",
+        "auto",
+        metadata={
+            "command_outcomes": [
+                {"terminal_id": "one", "state": "failed", "ok": False},
+                {"terminal_id": "one", "state": "exited", "ok": True, "returncode": 0},
+            ]
+        },
+    )
+    assert runner._command_gate_error(PhaseSpec(name="phase"), success) is None
+    command_failure = runner._command_gate_error(
+        PhaseSpec(name="phase", require_successful_commands=True),
+        PhaseOutput(
+            "phase",
+            "auto",
+            metadata={"command_outcomes": [{"state": "failed", "ok": False, "stderr": "bad"}]},
+        ),
+    )
+    assert command_failure and "bad" in command_failure
+    readiness_failure = runner._command_gate_error(
+        PhaseSpec(
+            name="phase",
+            command_lifecycle="service",
+            terminal_wait_policy="background",
+            require_readiness=True,
+        ),
+        PhaseOutput("phase", "auto", metadata={"command_outcomes": []}),
+    )
+    assert readiness_failure and "not established" in readiness_failure

@@ -82,6 +82,10 @@ The built-in workflows have specialized runners:
 - Generic `WorkflowRunner` executes declarative `PhaseSpec` graphs and supports
   model overrides, command gates, human phases, parallel phases, and resume.
 
+See [the workflow comparison guide](../guides/workflows.md#website-reconstruction-workflows-choosing-the-right-one)
+for the intended boundary between `site_imitate`, `copy_website`, and
+`reconstruct_site`; they are complementary built-ins rather than aliases.
+
 `PhaseSpec` is not the sole source of truth for the specialized `code_plan` and
 `create_workflow` runners. Their class-level phase metadata is used for
 registry/UI/configuration surfaces, while the specialized runner owns prompts,
