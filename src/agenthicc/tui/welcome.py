@@ -7,8 +7,12 @@ so the panel lands in the normal scroll buffer.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import shutil
+import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich import box
@@ -26,6 +30,10 @@ if TYPE_CHECKING:
 
 CHANGELOG_URL = "https://agenthicc.dev/changelog.json"
 _CHANGELOG_TIMEOUT_S = 5.0
+_CHANGELOG_CACHE_MAX_AGE_S = 24 * 60 * 60
+_CHANGELOG_CACHE_MAX_BYTES = 128 * 1024
+_CHANGELOG_MAX_ITEMS = 64
+_CHANGELOG_MAX_ITEM_CHARS = 2_000
 _CHANGELOG_LIST_KEYS = (
     "items",
     "entries",
@@ -68,9 +76,64 @@ async def fetch_changelog(url: str = CHANGELOG_URL) -> list[str]:
                 response = await client.get(url)
                 response.raise_for_status()
                 payload = response.json()
-        return _normalize_changelog(payload)
+        result = _normalize_changelog(payload)
+        _write_cached_changelog(result)
+        return result
     except Exception:  # noqa: BLE001
         return []
+
+
+def load_cached_changelog(*, now: float | None = None) -> list[str]:
+    """Return a recent bounded changelog cache without network access."""
+    path = _changelog_cache_path()
+    try:
+        if not path.is_file() or path.stat().st_size > _CHANGELOG_CACHE_MAX_BYTES:
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        fetched_at = data.get("fetched_at") if isinstance(data, dict) else None
+        items = data.get("items") if isinstance(data, dict) else None
+        if (
+            not isinstance(fetched_at, (int, float))
+            or not isinstance(items, list)
+            or (now if now is not None else time.time()) - fetched_at > _CHANGELOG_CACHE_MAX_AGE_S
+            or fetched_at - (now if now is not None else time.time()) > 300
+        ):
+            return []
+        return [
+            item[:_CHANGELOG_MAX_ITEM_CHARS]
+            for item in items[:_CHANGELOG_MAX_ITEMS]
+            if isinstance(item, str) and item.strip()
+        ]
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def _changelog_cache_path() -> Path:
+    configured = os.environ.get("AGENTHICC_CHANGELOG_CACHE", "").strip()
+    return (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / ".agenthicc" / "cache" / "changelog.json"
+    )
+
+
+def _write_cached_changelog(items: Sequence[str]) -> None:
+    path = _changelog_cache_path()
+    payload = json.dumps(
+        {"fetched_at": time.time(), "items": list(items)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(payload.encode("utf-8")) > _CHANGELOG_CACHE_MAX_BYTES:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(payload + "\n", encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    except OSError:
+        return
 
 
 def _normalize_changelog(payload: object) -> list[str]:
@@ -118,8 +181,10 @@ def _normalize_changelog_entries(entries: list[object]) -> list[str]:
         else:
             text = ""
         if text:
-            result.append(text)
-    return result
+            result.append(text[:_CHANGELOG_MAX_ITEM_CHARS])
+        if len(result) >= _CHANGELOG_MAX_ITEMS:
+            break
+    return result[:_CHANGELOG_MAX_ITEMS]
 
 
 # ── left column ───────────────────────────────────────────────────────────────

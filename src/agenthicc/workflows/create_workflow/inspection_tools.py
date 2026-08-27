@@ -913,6 +913,9 @@ def make_inspection_tools(
                 "build_runner() on the plugin returning the runner class",
                 "inherit WorkflowConfig.workspace_scope and WorkflowConfig.workspace_access; "
                 "never construct a second scope or bypass the parent policy in a custom tool",
+                "declare only truly required deferred dependencies in the plugin's "
+                "required_startup_phases tuple; use config.wait_for_startup() for a "
+                "phase-local gate and keep optional integrations on a real fallback path",
                 "attach the typed context to config.workflow_handle before the first provider "
                 "or tool call; the framework persists setup failures as diagnostic-only and "
                 "typed phase errors as error-paused checkpoints",

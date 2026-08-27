@@ -67,6 +67,7 @@ async def _open_selected_session(ctx: CLIContext, *, page: int, page_size: int) 
         config_path=ctx.config_path,
         cli_secret_overrides=list(ctx.set_secret_overrides),
         cwd=cwd,
+        config=ctx.config,
     )
 
 

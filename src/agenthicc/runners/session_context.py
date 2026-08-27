@@ -6,6 +6,7 @@ No logic lives here.  ``TUISession`` reads from this context;
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
     from agenthicc.tools.cloakbrowser import BrowserSessionManager
     from agenthicc.tools.workspace_access import WorkspaceScope, WorkspaceAccessPolicy
     from agenthicc.runners.session_lease import SessionOwnerLease
+    from agenthicc.runners.startup import StartupCoordinator
     from asyncio import Task
 
 
@@ -110,7 +112,7 @@ class SessionContext:
 
     # ── optional browser integration (PRD-159) ─────────────────────────────
     browser_manager: "BrowserSessionManager | None" = None
-    browser_tools: list["ToolLike"] = field(default_factory=list)
+    browser_tools: "Iterable[ToolLike]" = field(default_factory=tuple)
 
     # ── invocation configuration ────────────────────────────────────────────
     cfg_overrides: tuple[str, ...] = ()
@@ -137,3 +139,8 @@ class SessionContext:
     #: The outer lease for every durable session attachment.  It is released
     #: by the owning runner after all session resources have been closed.
     owner_lease: "SessionOwnerLease | None" = None
+
+    # PRD-176: readiness/timing state shared by the TUI, headless runner, and
+    # deferred optional integrations.  It is observational only; runtime
+    # resources retain their existing ownership boundaries.
+    startup: "StartupCoordinator | None" = None

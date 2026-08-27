@@ -48,6 +48,7 @@ class CommandDispatcher:
             tool_sources=ctx.tool_sources,
             workflow_registry=ctx.workflow_registry,
             mcp_manager=ctx.mcp_manager,
+            startup=ctx.startup,
             mode_manager=ctx.mode_manager,
             terminal_manager=ctx.terminal_manager,
             set_pending_skill=ctx.set_pending_skill,

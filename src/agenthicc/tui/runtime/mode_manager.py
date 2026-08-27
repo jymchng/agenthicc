@@ -9,7 +9,7 @@ private fields.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from collections.abc import Callable
 from typing import Protocol
 
@@ -148,6 +148,23 @@ class ModeRegistry:
             return _normalize(self.resolve(name).name) in self._internal
         except UnknownModeError:
             return False
+
+    def refresh_workflows(
+        self,
+        default_map: dict[str, str],
+        available_map: dict[str, list[str]],
+    ) -> None:
+        """Refresh workflow bindings after deferred workflow discovery."""
+        defaults = _canonical_workflow_map(default_map)
+        available = _canonical_available_map(available_map)
+        for key, mode in tuple(self._modes.items()):
+            if key in self._internal:
+                continue
+            self._modes[key] = replace(
+                mode,
+                default_workflow=defaults.get(mode.name),
+                workflows=tuple(available.get(mode.name, ())),
+            )
 
 
 def _normalize(name: str) -> str:
@@ -411,6 +428,15 @@ class ModeManager:
     @property
     def active_name(self) -> str:
         return self.active.name
+
+    def refresh_workflow_bindings(
+        self,
+        default_map: dict[str, str],
+        available_map: dict[str, list[str]],
+    ) -> None:
+        """Apply workflow bindings discovered after the initial TUI frame."""
+        self._registry.refresh_workflows(default_map, available_map)
+        self._publish(self.active)
 
     def cycle(self) -> RuntimeMode:
         modes = self._registry.all()

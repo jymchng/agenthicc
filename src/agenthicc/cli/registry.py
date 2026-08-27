@@ -361,6 +361,7 @@ def _discover(
     project_dir: Path | None = None,
     user_dir: Path | None = None,
     strict_cli_shadow: bool = False,
+    config: object | None = None,
 ) -> None:
     """Discover commands from all three layers in precedence order."""
     # 1. Built-in (lowest priority)
@@ -372,12 +373,12 @@ def _discover(
 
     # 3. Project-local — highest priority; requires trust manifest
     project_cli = (project_dir or Path(".agenthicc")) / "cli"
-    _maybe_load_trusted(project_cli)
+    _maybe_load_trusted(project_cli, config=config)
 
     _check_shadows(strict=strict_cli_shadow)
 
 
-def _maybe_load_trusted(project_cli: Path) -> None:
+def _maybe_load_trusted(project_cli: Path, *, config: object | None = None) -> None:
     """Load project-local CLI plugins only if the trust manifest is valid."""
     if not project_cli.is_dir():
         return
@@ -385,15 +386,17 @@ def _maybe_load_trusted(project_cli: Path) -> None:
     trust_file = project_cli.parent / "trusted_cli.json"
 
     # PluginSettings.auto_trust bypasses the check for CI/CD environments.
-    try:
-        from agenthicc.config import load_config  # noqa: PLC0415
+    if config is None:
+        try:
+            from agenthicc.config import load_config  # noqa: PLC0415
 
-        cfg = load_config()
-        if cfg.plugins.auto_trust:
-            _discover_directory(project_cli, source="project")
-            return
-    except Exception:  # noqa: BLE001
-        pass
+            config = load_config()
+        except Exception:  # noqa: BLE001
+            config = None
+    plugins = getattr(config, "plugins", None)
+    if getattr(plugins, "auto_trust", False):
+        _discover_directory(project_cli, source="project")
+        return
 
     if not trust_file.exists():
         warnings.warn(

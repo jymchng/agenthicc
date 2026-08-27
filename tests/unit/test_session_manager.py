@@ -85,4 +85,5 @@ def test_sessions_list_enter_uses_resume_pipeline_and_session_cwd(
         "config_path": str(tmp_path / "agenthicc.toml"),
         "cli_secret_overrides": ["execution.api_key=TEST_KEY"],
         "cwd": str(tmp_path),
+        "config": None,
     }

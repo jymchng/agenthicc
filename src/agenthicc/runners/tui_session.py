@@ -8,6 +8,8 @@ import logging
 import os
 import sys
 import uuid
+from collections.abc import Awaitable, Callable, Iterable, Sized
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator, NoReturn, cast
 
@@ -17,6 +19,8 @@ if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
     from agenthicc.cli.context import CLIContext, CLIFlags
+    from agenthicc.config import AgenthiccConfig
+    from agenthicc.config import CloakBrowserSettings, PlaywrightSettings
     from agenthicc.memory.router import MemoryRouter
     from agenthicc.memory.vector import SemanticIndex
     from agenthicc.runners.session_context import SessionContext
@@ -30,10 +34,15 @@ if TYPE_CHECKING:
     from agenthicc.commands.busy_policy import BusyDecision
     from agenthicc.commands.registry import UnifiedCommandRegistry
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
+    from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.agents.registry import AgentsRegistry
+    from agenthicc.workflows.registry import WorkflowRegistry
     from agenthicc.workflows.plugin import WorkflowPlugin
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
+    from agenthicc.runners.startup import StartupCoordinator
     from agenthicc.tools.base import ToolLike
+    from agenthicc.tools.cloakbrowser.session import BrowserSessionManager
     from agenthicc.background.terminals import TerminalManager
 
 
@@ -51,21 +60,328 @@ def _make_session_tools(
 
 def _build_agent_runner(
     llm_cfg: LLMConfig | None, *, cassette_dir: Path | None = None
-) -> AgentRunnerBase | None:
-    """Build a lauren-ai AgentRunnerBase wired to a SignalBus."""
+) -> object | None:
+    """Return a lauren-ai runner constructed on the first agent turn.
+
+    Importing and constructing lauren-ai's runner is one of the largest local
+    startup costs. A new TUI can render and accept safe commands without it,
+    so the proxy keeps that provider boundary off the critical path while
+    preserving the private transport/signal contract used by AgentTurnRunner.
+    """
     if llm_cfg is None:
         return None
-    from lauren_ai._agents._runner import AgentRunnerBase  # noqa: PLC0415
-    from lauren_ai._module import _build_transport  # noqa: PLC0415
-    from lauren_ai._signals import SignalBus  # noqa: PLC0415
+    return _LazyAgentRunner(llm_cfg, cassette_dir=cassette_dir)
 
-    transport = _build_transport(llm_cfg)
-    if cassette_dir is not None:
-        from agenthicc.testing.recording_transport import RecordingTransport  # noqa: PLC0415
 
-        cassette_dir.mkdir(parents=True, exist_ok=True)
-        transport = RecordingTransport(transport, cassette_dir / "cassette.jsonl")
-    return AgentRunnerBase(transport=transport, signals=SignalBus())
+def _prepare_startup_dependency(ctx: "SessionContext", phase: str) -> None:
+    """Materialize a dependency explicitly declared by a workflow.
+
+    Most readiness phases are already started by session construction or the
+    post-frame coordinator. Provider and browser phases are deliberately
+    demand-driven, however. A workflow that declares either as required must
+    be allowed to opt into that cost before its first agent turn; it must not
+    wait forever for a lazy proxy that has not yet been touched.
+    """
+    if phase == "provider":
+        resource = getattr(ctx, "agent_runner", None)
+    elif phase == "browser":
+        resource = getattr(ctx, "browser_manager", None)
+    else:
+        return
+    prepare = getattr(resource, "prepare", None)
+    if callable(prepare):
+        prepare()
+
+
+async def _run_agent_turn(*args: object, **kwargs: object) -> None:
+    """Lazy compatibility shim retained for TUI tests and integrations."""
+    from agenthicc.runners.agent_turn import _run_agent_turn as run_agent_turn  # noqa: PLC0415
+
+    typed_runner = cast("Callable[..., Awaitable[None]]", run_agent_turn)
+    await typed_runner(*args, **kwargs)
+
+
+def _preserve_interrupted_memory(memory: object | None) -> bool:
+    """Lazy compatibility shim for the interruption recovery path."""
+    from agenthicc.runners.agent_turn import (  # noqa: PLC0415
+        _preserve_interrupted_memory as preserve,
+    )
+
+    return preserve(memory)
+
+
+class _LazyAgentRunner:
+    """Small first-use proxy for lauren-ai's provider runner."""
+
+    def __init__(self, llm_cfg: LLMConfig, *, cassette_dir: Path | None) -> None:
+        self._llm_cfg = llm_cfg
+        self._cassette_dir = cassette_dir
+        self._delegate: object | None = None
+        self._startup: "StartupCoordinator | None" = None
+
+    def _ensure(self) -> object:
+        if self._delegate is not None:
+            return self._delegate
+        from agenthicc.runners.startup import ReadinessState  # noqa: PLC0415
+
+        if self._startup is not None:
+            self._startup.begin("provider", deferred=True)
+        try:
+            self._delegate = self._create()
+        except Exception as exc:
+            if self._startup is not None:
+                self._startup.finish(
+                    "provider",
+                    ReadinessState.FAILED,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            raise
+        if self._startup is not None:
+            self._startup.finish("provider")
+        return self._delegate
+
+    def _create(self) -> object:
+        """Build the real runner, importing lauren-ai only on demand."""
+        from lauren_ai._agents._runner import AgentRunnerBase  # noqa: PLC0415
+        from lauren_ai._module import _build_transport  # noqa: PLC0415
+        from lauren_ai._signals import SignalBus  # noqa: PLC0415
+
+        transport = _build_transport(self._llm_cfg)
+        if self._cassette_dir is not None:
+            from agenthicc.testing.recording_transport import RecordingTransport  # noqa: PLC0415
+
+            self._cassette_dir.mkdir(parents=True, exist_ok=True)
+            transport = RecordingTransport(transport, self._cassette_dir / "cassette.jsonl")
+        return AgentRunnerBase(transport=transport, signals=SignalBus())
+
+    def prepare(self) -> object:
+        """Explicitly prepare the provider for a declared workflow dependency."""
+        return self._ensure()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._ensure(), name)
+
+
+class _LazyBrowserSession:
+    """Defer optional browser module imports until browser work is selected."""
+
+    def __init__(
+        self,
+        backend: str,
+        settings: object,
+        conversation_id: str,
+        workspace_root: Path,
+        startup: "StartupCoordinator | None" = None,
+    ) -> None:
+        self._backend = backend
+        self._settings = settings
+        self._conversation_id = conversation_id
+        self._workspace_root = workspace_root
+        self._startup = startup
+        self._delegate: object | None = None
+        self._pending_checkpoint: object | None = None
+
+    def _ensure(self) -> object:
+        if self._delegate is not None:
+            return self._delegate
+        from agenthicc.runners.startup import ReadinessState  # noqa: PLC0415
+
+        startup = self._startup
+        if startup is not None and not startup.closed:
+            startup.begin("browser", deferred=True)
+        try:
+            delegate = self._create_delegate()
+            self._delegate = delegate
+        except Exception as exc:
+            if startup is not None and not startup.closed:
+                detail = (
+                    f"optional {self._backend} backend is unavailable; install its extra"
+                    if isinstance(exc, ImportError)
+                    else f"{type(exc).__name__}: {exc}"
+                )
+                startup.finish("browser", ReadinessState.FAILED, error=detail)
+            raise
+        if startup is not None and not startup.closed:
+            startup.finish("browser")
+        return self._delegate
+
+    def _create_delegate(self) -> object:
+        """Import and construct the selected backend only on capability use."""
+        if self._backend == "playwright":
+            from agenthicc.tools.playwright import create_playwright_session  # noqa: PLC0415
+
+            delegate = create_playwright_session(
+                cast("PlaywrightSettings", self._settings),
+                conversation_id=self._conversation_id,
+                workspace_root=self._workspace_root,
+            )
+        elif self._backend == "cloakbrowser":
+            from agenthicc.tools.cloakbrowser import create_browser_session  # noqa: PLC0415
+
+            delegate = create_browser_session(
+                cast("CloakBrowserSettings", self._settings),
+                conversation_id=self._conversation_id,
+                workspace_root=self._workspace_root,
+            )
+        else:
+            raise RuntimeError(f"unsupported browser backend: {self._backend}")
+        self._delegate = delegate
+        try:
+            self._restore_pending_checkpoint()
+        except Exception:
+            # Do not leave a partially restored backend looking ready. The
+            # next explicit browser operation may retry after the checkpoint
+            # or dependency issue has been repaired.
+            self._delegate = None
+            raise
+        return delegate
+
+    def prepare(self) -> object:
+        """Explicitly prepare the backend for a declared workflow dependency."""
+        return self._ensure()
+
+    async def close_session(self) -> None:
+        """Do not import or initialize a browser solely during shutdown."""
+        if self._delegate is None:
+            return
+        close = getattr(self._delegate, "close_session", None)
+        if callable(close):
+            await close()
+
+    def reset_turn_budget(self) -> None:
+        """Reset browser accounting without starting an unused backend."""
+        if self._delegate is None:
+            return
+        reset = getattr(self._delegate, "reset_turn_budget", None)
+        if callable(reset):
+            reset()
+
+    def checkpoint_payload(self) -> dict[str, object]:
+        """Return empty browser state until a browser has actually been used."""
+        if self._delegate is None:
+            return {}
+        payload = getattr(self._delegate, "checkpoint_payload", None)
+        result = payload() if callable(payload) else {}
+        return result if isinstance(result, dict) else {}
+
+    def restore_checkpoint(self, payload: object) -> None:
+        """Remember checkpoint state without importing a browser backend."""
+        if self._delegate is None:
+            self._pending_checkpoint = payload
+            return
+        restore = getattr(self._delegate, "restore_checkpoint", None)
+        if callable(restore):
+            restore(payload)
+
+    def _restore_pending_checkpoint(self) -> None:
+        if self._pending_checkpoint is None:
+            return
+        restore = getattr(self._delegate, "restore_checkpoint", None)
+        if callable(restore):
+            restore(self._pending_checkpoint)
+        self._pending_checkpoint = None
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._ensure(), name)
+
+
+class _LazyBrowserTools:
+    """Iterable tool collection whose backend factory runs at first iteration."""
+
+    def __init__(
+        self,
+        backend: str,
+        manager: _LazyBrowserSession,
+        startup: "StartupCoordinator | None" = None,
+    ) -> None:
+        self._backend = backend
+        self._manager = manager
+        self._startup = startup
+        self._tools: list[object] | None = None
+
+    def _ensure(self) -> list[object]:
+        if self._tools is not None:
+            return self._tools
+        from agenthicc.runners.startup import ReadinessState  # noqa: PLC0415
+
+        startup = self._startup
+        if startup is not None and not startup.closed:
+            startup.begin("browser", deferred=True)
+        try:
+            if self._backend == "playwright":
+                from agenthicc.tools.playwright import make_playwright_tools  # noqa: PLC0415
+
+                self._tools = list(
+                    make_playwright_tools(cast("BrowserSessionManager", self._manager))
+                )
+            elif self._backend == "cloakbrowser":
+                from agenthicc.tools.cloakbrowser import make_cloakbrowser_tools  # noqa: PLC0415
+
+                self._tools = list(
+                    make_cloakbrowser_tools(cast("BrowserSessionManager", self._manager))
+                )
+            else:
+                self._tools = []
+        except Exception as exc:
+            if startup is not None and not startup.closed:
+                detail = (
+                    f"optional {self._backend} backend is unavailable; install its extra"
+                    if isinstance(exc, ImportError)
+                    else f"{type(exc).__name__}: {exc}"
+                )
+                startup.finish("browser", ReadinessState.FAILED, error=detail)
+            raise
+        if startup is not None and not startup.closed:
+            startup.finish("browser")
+        return self._tools
+
+    def __iter__(self) -> Iterator[object]:
+        return iter(self._ensure())
+
+
+class _LazySemanticIndex:
+    """Keep vector-store imports off startup while preserving memory tooling."""
+
+    def __init__(self, startup: "StartupCoordinator | None" = None) -> None:
+        self._delegate: object | None = None
+        self._startup = startup
+
+    def _ensure(self) -> object:
+        if self._delegate is None:
+            from agenthicc.runners.startup import ReadinessState  # noqa: PLC0415
+
+            startup = self._startup
+            if startup is not None and not startup.closed:
+                startup.begin("semantic_index", deferred=True)
+            try:
+                from agenthicc.memory.vector import SemanticIndex  # noqa: PLC0415
+
+                self._delegate = SemanticIndex()
+            except Exception as exc:
+                if startup is not None and not startup.closed:
+                    startup.finish(
+                        "semantic_index",
+                        ReadinessState.FAILED,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                raise
+            if startup is not None and not startup.closed:
+                startup.finish("semantic_index")
+        return self._delegate
+
+    async def add(self, *args: object, **kwargs: object) -> str:
+        add = cast("Callable[..., Awaitable[str]]", getattr(self._ensure(), "add"))
+        return await add(*args, **kwargs)
+
+    async def search(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
+        search = cast(
+            "Callable[..., Awaitable[list[tuple[str, float]]]]",
+            getattr(self._ensure(), "search"),
+        )
+        return await search(*args, **kwargs)
+
+    def __len__(self) -> int:
+        return len(cast("Sized", self._ensure()))
 
 
 def _fmt_exc(exc: BaseException) -> str:
@@ -152,11 +468,6 @@ from agenthicc.tui.runtime.session_log import (  # noqa: E402
     SessionEventLog,
     load_user_message_history,
 )
-from agenthicc.runners.agent_turn import (  # noqa: E402
-    _preserve_interrupted_memory,
-    _run_agent_turn,
-)
-from agenthicc.runners.session_context import SessionContext  # noqa: E402
 from agenthicc.runners.session_lease import (  # noqa: E402
     SessionAlreadyActiveError,
     SessionOpenCoordinator,
@@ -170,6 +481,154 @@ _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
 
 # Module-level alias so tests that monkeypatch this name on the module work.
 _find_latest_session_for_cwd = find_latest_session_for_cwd
+
+
+@dataclass(frozen=True)
+class _ExtensionDiscovery:
+    """Results produced off the event loop by deferred extension loading."""
+
+    skills: dict[str, SkillDef]
+    project_plugins: PluginToolSet
+    project_commands: list[object]
+    agents_registry: AgentsRegistry
+    installed_skills: int = 0
+    diagnostics: tuple[object, ...] = ()
+
+
+_EXTENSION_RESULT_CACHE: dict[str, _ExtensionDiscovery] = {}
+
+
+def _discover_extensions_sync(cfg: "AgenthiccConfig") -> _ExtensionDiscovery:
+    """Discover skills, tools, and commands without mutating live state."""
+    from agenthicc.agents.registry import build_agents_registry  # noqa: PLC0415
+    from agenthicc.commands.plugin_loader import discover_command_plugins  # noqa: PLC0415
+    from agenthicc.plugins.discovery import discover_project_tools  # noqa: PLC0415
+    from agenthicc.skills.bootstrap import bootstrap_default_skills  # noqa: PLC0415
+    from agenthicc.skills.loader import discover_skills_with_diagnostics  # noqa: PLC0415
+    from agenthicc.runners.discovery_cache import (  # noqa: PLC0415
+        fingerprint_sources,
+        read_discovery_cache,
+        write_discovery_cache,
+    )
+
+    skill_global_dir = (
+        Path(cfg.skills.default_skill_directory).expanduser()
+        if cfg.skills.default_skill_directory
+        else Path.home() / ".agenthicc"
+    )
+    installed_skills = bootstrap_default_skills(
+        global_dir=skill_global_dir,
+        enabled=cfg.skills.install_default_skills,
+    )
+    source_roots = (
+        skill_global_dir,
+        Path(".agenthicc") / "skills",
+        Path.home() / ".agenthicc" / "tools",
+        Path(".agenthicc") / "tools",
+        Path.home() / ".agenthicc" / "commands",
+        Path(".agenthicc") / "commands",
+        Path.home() / ".agenthicc" / "agents",
+        Path(".agenthicc") / "agents",
+        Path.home() / ".agenthicc" / "workflows",
+        Path(".agenthicc") / "workflows",
+    )
+    source_fingerprint = fingerprint_sources(source_roots)
+    fingerprint_key = str(source_fingerprint["fingerprint"])
+    cache_path = Path(".agenthicc") / "cache" / "extension-discovery.json"
+    # The persistent record is intentionally metadata-only.  Reuse live
+    # objects only within this process and only after recomputing the source
+    # fingerprint, so deleted/changed/unreadable files invalidate naturally.
+    previous = read_discovery_cache(cache_path)
+    cached = _EXTENSION_RESULT_CACHE.get(fingerprint_key)
+    if cached is not None:
+        if previous is None or previous.get("fingerprint") != fingerprint_key:
+            try:
+                write_discovery_cache(cache_path, source_fingerprint)
+            except OSError:
+                log.debug("could not refresh extension discovery cache", exc_info=True)
+        return cached
+    skill_discovery = discover_skills_with_diagnostics(
+        project_dir=Path(".agenthicc"),
+        user_dir=skill_global_dir,
+    )
+    project_plugins = discover_project_tools(
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
+    )
+    project_commands = discover_command_plugins(
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
+    ).all_commands
+    agents_registry = build_agents_registry(
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
+        load_external=True,
+    )
+    result = _ExtensionDiscovery(
+        skills=skill_discovery.skills,
+        project_plugins=project_plugins,
+        project_commands=list(project_commands),
+        agents_registry=agents_registry,
+        installed_skills=installed_skills,
+        diagnostics=tuple(skill_discovery.diagnostics),
+    )
+    _EXTENSION_RESULT_CACHE[fingerprint_key] = result
+    try:
+        write_discovery_cache(cache_path, source_fingerprint)
+    except OSError:
+        log.debug("could not write extension discovery cache", exc_info=True)
+    return result
+
+
+def _apply_extension_discovery(ctx: "SessionContext", discovery: _ExtensionDiscovery) -> None:
+    """Publish a validated discovery result on the event-loop owner."""
+    from agenthicc.commands.command import Command as _Cmd  # noqa: PLC0415
+    from agenthicc.plugins.discovery import warn_conflicts  # noqa: PLC0415
+
+    ctx.skills.clear()
+    ctx.skills.update(discovery.skills)
+    ctx.project_plugins.results.clear()
+    ctx.project_plugins.results.extend(discovery.project_plugins.results)
+    ctx.agents_registry.replace_with(discovery.agents_registry)
+    if ctx.project_plugins.all_tools:
+        warn_conflicts(ctx.project_plugins)
+    for spec in discovery.project_commands:
+        try:
+            if isinstance(spec, _Cmd):
+                command = spec
+            else:
+                name = getattr(spec, "name", None)
+                description = getattr(spec, "description", "")
+                if not isinstance(name, str) or not isinstance(description, str):
+                    continue
+                command = _Cmd(
+                    name=name,
+                    description=description,
+                    aliases=tuple(getattr(spec, "aliases", ())),
+                    argument_hint=getattr(spec, "argument_hint", ""),
+                    group=getattr(spec, "group", "Project"),
+                    source_id="plugin",
+                )
+            ctx.cmd_registry.register(command)
+        except Exception:  # noqa: BLE001
+            continue
+    ctx.command_plugin_names.update(
+        name
+        for spec in discovery.project_commands
+        if isinstance(name := getattr(spec, "name", None), str)
+    )
+    _register_skill_commands(ctx.cmd_registry, ctx.skills)
+
+
+def _discover_workflow_registry_sync() -> "WorkflowRegistry":
+    """Load external workflow modules outside the interactive event loop."""
+    from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
+
+    return build_workflow_registry(
+        project_dir=Path(".agenthicc"),
+        user_dir=Path.home() / ".agenthicc",
+        load_external=True,
+    )
 
 
 # ── session construction ──────────────────────────────────────────────────────
@@ -186,13 +645,19 @@ async def _build_session_context(
     mode_name: str | None = None,
     workflow_name: str | None = None,
     owner_lease: SessionOwnerLease | None = None,
+    config: "AgenthiccConfig | None" = None,
 ) -> SessionContext:
     """Acquire the session owner before constructing any durable resources."""
+
+    from agenthicc.runners.startup import ReadinessState, StartupCoordinator  # noqa: PLC0415
 
     session_id = resume_id or (
         owner_lease.session_id if owner_lease is not None else create_session_id()
     )
+    startup = StartupCoordinator()
+    startup.begin("bootstrap")
     try:
+        startup.begin("owner_lease")
         if owner_lease is None:
             coordinator = SessionOpenCoordinator(_SESSIONS_DIR)
             owner_lease = (
@@ -208,6 +673,8 @@ async def _build_session_context(
             )
         elif owner_lease.session_id != session_id:
             raise SessionStorageError("provided session owner does not match resume ID")
+        startup.finish("owner_lease")
+        startup.finish("bootstrap")
         return await _build_session_context_impl(
             resume_id,
             cli_overrides,
@@ -218,8 +685,24 @@ async def _build_session_context(
             mode_name=mode_name,
             workflow_name=workflow_name,
             owner_lease=owner_lease,
+            startup=startup,
+            config=config,
         )
-    except BaseException:
+    except BaseException as exc:
+        owner_report = startup.report("owner_lease")
+        if owner_report.state.value == "loading":
+            startup.finish(
+                "owner_lease",
+                ReadinessState.FAILED,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        bootstrap_report = startup.report("bootstrap")
+        if bootstrap_report.state.value == "loading":
+            startup.finish(
+                "bootstrap",
+                ReadinessState.FAILED,
+                error=f"{type(exc).__name__}: {exc}",
+            )
         if owner_lease is not None:
             owner_lease.release()
         raise
@@ -236,8 +719,13 @@ async def _build_session_context_impl(
     mode_name: str | None = None,
     workflow_name: str | None = None,
     owner_lease: SessionOwnerLease,
+    startup: StartupCoordinator | None = None,
+    config: "AgenthiccConfig | None" = None,
 ) -> SessionContext:
     """Construct all session-scoped singletons and return a SessionContext."""
+    from agenthicc.runners.startup import ReadinessState, StartupCoordinator  # noqa: PLC0415
+
+    startup = startup or StartupCoordinator()
     from rich.console import Console  # noqa: PLC0415
     from agenthicc.kernel import (  # noqa: PLC0415
         AppState as KAppState,
@@ -248,6 +736,7 @@ async def _build_session_context_impl(
     from agenthicc.kernel.reducer import root_reducer  # noqa: PLC0415
     from agenthicc.kernel.processor import restore_from_log  # noqa: PLC0415
     from agenthicc.config import load_config, build_llm_config  # noqa: PLC0415
+    from agenthicc.runners.session_context import SessionContext  # noqa: PLC0415
     from agenthicc.tui.conversation_store import AppState  # noqa: PLC0415
     from agenthicc.tui.runtime import (  # noqa: PLC0415
         CommandBus,
@@ -260,9 +749,22 @@ async def _build_session_context_impl(
         raise SessionStorageError("session owner does not match session context")
     _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Configuration is the first session-owned decision.  All later
+    # integrations consume this immutable-in-practice snapshot; loading it
+    # before journals and registries also makes the readiness timeline honest.
+    startup.begin("configuration")
+    cfg = config or load_config(
+        cli_overrides=cli_overrides or [],
+        cli_secret_overrides=cli_secret_overrides or [],
+        config_path=config_path,
+    )
+    startup.finish("configuration")
+
     # PRD-150: every client observes the same session projection.  The TUI
     # remains responsible for Rich/reactive presentation, while the service
     # owns the client-neutral snapshot and event cursor.
+    startup.begin("session_service")
+    startup.begin("session_index")
     from agenthicc.session_service import SessionService  # noqa: PLC0415
 
     session_service = SessionService()
@@ -271,6 +773,15 @@ async def _build_session_context_impl(
         project_root=Path.cwd(),
         capabilities=frozenset({"read", "control", "workspace"}),
     )
+    if session_service.store.index_dirty:
+        startup.finish(
+            "session_index",
+            ReadinessState.DEGRADED,
+            error="metadata index repair pending",
+        )
+    else:
+        startup.finish("session_index")
+    startup.finish("session_service")
 
     # ── cassette dir: <base>/<session_id>/ ───────────────────────────────────
     cassette_dir: Path | None = (
@@ -280,6 +791,8 @@ async def _build_session_context_impl(
         cassette_dir.mkdir(parents=True, exist_ok=True)
 
     # ── kernel ────────────────────────────────────────────────────────────────
+    startup.begin("kernel_shell")
+    startup.begin("selected_restore")
     log_path = str(_SESSIONS_DIR / f"{session_id}.jsonl")
     k_state = KAppState.create(
         settings=SystemSettings(event_log_path=log_path, snapshot_path=".agenthicc/snapshot.json"),
@@ -296,6 +809,7 @@ async def _build_session_context_impl(
         touch_session(resume_id)
     else:
         register_session(session_id, os.getcwd(), "")
+    startup.finish("kernel_shell")
 
     processor = EventProcessor(initial_state=k_state, persist=True)
     if resume_id:
@@ -309,13 +823,6 @@ async def _build_session_context_impl(
 
     kernel_projection_task = asyncio.create_task(
         _project_kernel_events(), name=f"session-kernel-projection-{session_id}"
-    )
-
-    # ── config / LLM ─────────────────────────────────────────────────────────
-    cfg = load_config(
-        cli_overrides=cli_overrides or [],
-        cli_secret_overrides=cli_secret_overrides or [],
-        config_path=config_path,
     )
 
     # PRD-149: terminal subprocesses are owned by a session-scoped manager.
@@ -433,12 +940,17 @@ async def _build_session_context_impl(
         )
 
     # ── workflow + agents registries ──────────────────────────────────────────
+    startup.begin("workflow_registry")
     from agenthicc.workflows.registry import build_workflow_registry  # noqa: PLC0415
-    from agenthicc.agents.registry import build_agents_registry  # noqa: PLC0415
+
+    load_external = headless or resume_id is not None or workflow_name is not None
 
     workflow_registry = build_workflow_registry(
         project_dir=Path(".agenthicc"),
         user_dir=Path.home() / ".agenthicc",
+        # Explicit workflow selection, resume recovery, and headless turns
+        # need external implementations before the context is returned.
+        load_external=load_external,
     )
     initial_workflow: str | None = None
     if workflow_name is not None:
@@ -450,10 +962,17 @@ async def _build_session_context_impl(
             available = ", ".join(sorted(workflow_registry.names())) or "none"
             raise ValueError(f"Unknown workflow {requested_workflow!r}. Available: {available}")
         initial_workflow = workflow_cls.name
+    startup.finish("workflow_registry")
+
+    startup.begin("agent_registry")
+    from agenthicc.agents.registry import build_agents_registry  # noqa: PLC0415
+
     agents_registry = build_agents_registry(
         project_dir=Path(".agenthicc"),
         user_dir=Path.home() / ".agenthicc",
+        load_external=load_external,
     )
+    startup.finish("agent_registry")
 
     # ── mode manager ──────────────────────────────────────────────────────────
     mode_manager = ModeManager(
@@ -507,6 +1026,7 @@ async def _build_session_context_impl(
         WorkspaceAccessPolicy,
     )
 
+    startup.begin("workspace_policy")
     workspace_scope = WorkspaceScope.create(
         Path.cwd(),
         allowed_paths=cfg.security.allowed_paths,
@@ -516,65 +1036,48 @@ async def _build_session_context_impl(
         mode_provider=app_state.active_mode,
         approval_service=approval_svc,
     )
+    startup.finish("workspace_policy")
 
     # ── skills / plugins ─────────────────────────────────────────────────────
-    from agenthicc.skills.bootstrap import bootstrap_default_skills  # noqa: PLC0415
-    from agenthicc.skills.loader import (  # noqa: PLC0415
-        discover_skills_with_diagnostics,
-    )
+    # A fresh interactive session can render its shell before executing any
+    # project extension code. Resume, explicit workflow selection, and
+    # headless execution retain eager discovery because their requested
+    # operation needs the complete extension contract before returning.
+    defer_extensions = not headless and resume_id is None and workflow_name is None
+    from agenthicc.plugins.discovery import PluginToolSet  # noqa: PLC0415
 
-    _skill_global_dir = (
-        Path(cfg.skills.default_skill_directory).expanduser()
-        if cfg.skills.default_skill_directory
-        else Path.home() / ".agenthicc"
-    )
-    _n_installed = bootstrap_default_skills(
-        global_dir=_skill_global_dir,
-        enabled=cfg.skills.install_default_skills,
-    )
-    if _n_installed:
-        console.print(
-            f"[dim]Installed {_n_installed} default skill(s).[/dim]",
-            markup=True,
-        )
-
-    skill_discovery = discover_skills_with_diagnostics(
-        project_dir=Path(".agenthicc"),
-        user_dir=_skill_global_dir,
-    )
-    skills = skill_discovery.skills
-    for diagnostic in skill_discovery.diagnostics:
-        if diagnostic.severity != "info":
+    if not defer_extensions:
+        startup.begin("extensions")
+    if defer_extensions:
+        skills: dict[str, SkillDef] = {}
+        project_plugins = PluginToolSet()
+        project_commands: list[object] = []
+        command_plugin_names: set[str] = set()
+    else:
+        discovered_extensions = _discover_extensions_sync(cfg)
+        skills = discovered_extensions.skills
+        project_plugins = discovered_extensions.project_plugins
+        project_commands = discovered_extensions.project_commands
+        command_plugin_names = {
+            name
+            for command in project_commands
+            if isinstance(name := getattr(command, "name", None), str)
+        }
+        if discovered_extensions.installed_skills:
             console.print(
-                f"[yellow]Skill discovery: {diagnostic}[/yellow]",
+                f"[dim]Installed {discovered_extensions.installed_skills} default skill(s).[/dim]",
                 markup=True,
             )
+        for diagnostic in discovered_extensions.diagnostics:
+            if getattr(diagnostic, "severity", "info") != "info":
+                console.print(f"[yellow]Skill discovery: {diagnostic}[/yellow]", markup=True)
+        if project_plugins.all_tools:
+            from agenthicc.plugins.discovery import warn_conflicts  # noqa: PLC0415
 
-    from agenthicc.plugins.discovery import (  # noqa: PLC0415
-        discover_project_tools,
-        warn_conflicts,
-    )
-    from agenthicc.commands.plugin_loader import discover_command_plugins  # noqa: PLC0415
-
-    project_plugins = discover_project_tools(
-        project_dir=Path(".agenthicc"),
-        user_dir=Path.home() / ".agenthicc",
-    )
-    warn_conflicts(project_plugins)
-    if project_plugins.all_tools:
-        console.print(
-            f"[dim]Loaded {len(project_plugins.all_tools)} project tool(s) from .agenthicc/tools/[/dim]"
-        )
-
-    # ── command plugins ───────────────────────────────────────────────────────
-    # Use the command-specific loader so COMMAND and COMMANDS exports share
-    # one validated contract and can later be reloaded atomically.
-    command_plugins = discover_command_plugins(
-        project_dir=Path(".agenthicc"),
-        user_dir=Path.home() / ".agenthicc",
-    )
-    project_commands = command_plugins.all_commands
-    command_plugin_names = {command.name for command in project_commands}
+            warn_conflicts(project_plugins)
+            console.print(
+                f"[dim]Loaded {len(project_plugins.all_tools)} project tool(s) from .agenthicc/tools/[/dim]"
+            )
 
     # ── MCP (PRD-172) ─────────────────────────────────────────────────────────
     # One manager is shared by normal turns, workflows, subagents, headless
@@ -605,8 +1108,17 @@ async def _build_session_context_impl(
                 # allowing valid servers to start. Required entries still
                 # participate in the manager's fail-closed startup contract.
                 mcp_manager.register_server(mcp_config, allow_invalid=True)
-            await mcp_manager.start_all(raise_required=True)
             mcp_registry = mcp_manager
+            if headless:
+                startup.begin("mcp")
+                await mcp_manager.start_all(raise_required=True)
+                startup.finish("mcp")
+            else:
+                startup.start_background(
+                    "mcp",
+                    lambda: mcp_manager.start_all(raise_required=True),
+                    degrade_on_error=True,
+                )
         except McpRequiredServerError:
             if mcp_manager is not None:
                 await mcp_manager.shutdown()
@@ -621,6 +1133,7 @@ async def _build_session_context_impl(
 
     mention_cache = MentionCache()
 
+    startup.begin("memory")
     # PRD-129 Phase 2: durable conversation journal.  session_memory is a
     # JournaledShortTermMemory — every transition is fsync'd to a per-session
     # append-only journal, and on resume (session_id == resume_id) the journal
@@ -635,35 +1148,26 @@ async def _build_session_context_impl(
     session_memory = session_conversation.memory
 
     # One browser manager and one opaque browser context per stable session
-    # conversation.  The selected backend is side-effect free at construction;
-    # its optional package/browser runtime is loaded only when a tool is used.
-    if cfg.tools.browser_backend == "playwright":
-        from agenthicc.tools.playwright import (  # noqa: PLC0415
-            create_playwright_session,
-            make_playwright_tools,
+    # conversation.  Both the backend module and its tool closures are lazy so
+    # creating a TUI never imports optional browser code.
+    browser_tools: Iterable[object]
+    if cfg.tools.browser_backend in {"playwright", "cloakbrowser"}:
+        browser_settings = (
+            cfg.tools.playwright
+            if cfg.tools.browser_backend == "playwright"
+            else cfg.tools.cloakbrowser
         )
-
-        browser_manager = create_playwright_session(
-            cfg.tools.playwright,
-            conversation_id=session_conversation.conversation_id,
-            workspace_root=Path.cwd(),
+        browser_manager = _LazyBrowserSession(
+            cfg.tools.browser_backend,
+            browser_settings,
+            session_conversation.conversation_id,
+            Path.cwd(),
+            startup,
         )
-        browser_tools = make_playwright_tools(browser_manager)
-    elif cfg.tools.browser_backend == "cloakbrowser":
-        from agenthicc.tools.cloakbrowser import (  # noqa: PLC0415
-            create_browser_session,
-            make_cloakbrowser_tools,
-        )
-
-        browser_manager = create_browser_session(
-            cfg.tools.cloakbrowser,
-            conversation_id=session_conversation.conversation_id,
-            workspace_root=Path.cwd(),
-        )
-        browser_tools = make_cloakbrowser_tools(browser_manager)
+        browser_tools = _LazyBrowserTools(cfg.tools.browser_backend, browser_manager, startup)
     else:
         browser_manager = None
-        browser_tools = []
+        browser_tools = ()
 
     from agenthicc.runners.usage_ledger import UsageLedger  # noqa: PLC0415
 
@@ -696,7 +1200,6 @@ async def _build_session_context_impl(
         SessionMemoryLayer,
     )
     from agenthicc.memory.router import MemoryRouter  # noqa: PLC0415
-    from agenthicc.memory.vector import SemanticIndex  # noqa: PLC0415
 
     _project_memory = ProjectMemoryLayer(Path(".agenthicc") / "memory" / "project.db")
     _global_memory = GlobalMemoryLayer()
@@ -706,7 +1209,8 @@ async def _build_session_context_impl(
         project_layer=_project_memory,
         global_layer=_global_memory,
     )
-    _semantic_index = SemanticIndex()
+    _semantic_index = _LazySemanticIndex(startup)
+    startup.finish("memory")
 
     # ── command registry + trigger registry ──────────────────────────────────
     from agenthicc.tui.trigger import TriggerManager  # noqa: PLC0415
@@ -726,8 +1230,8 @@ async def _build_session_context_impl(
             else:
                 cmd_registry.register(
                     _Cmd(
-                        name=_spec.name,
-                        description=_spec.description,
+                        name=getattr(_spec, "name"),
+                        description=getattr(_spec, "description"),
                         aliases=tuple(getattr(_spec, "aliases", ())),
                         argument_hint=getattr(_spec, "argument_hint", ""),
                         group=getattr(_spec, "group", "Project"),
@@ -741,6 +1245,9 @@ async def _build_session_context_impl(
             f"[dim]Loaded {len(project_commands)} project command(s) from .agenthicc/commands/[/dim]"
         )
 
+    if not defer_extensions:
+        startup.finish("extensions")
+
     _register_skill_commands(cmd_registry, skills)
 
     trigger_registry = TriggerManager()
@@ -753,6 +1260,8 @@ async def _build_session_context_impl(
         llm_cfg,
         cassette_dir=cassette_dir,
     )
+    if isinstance(agent_runner, _LazyAgentRunner):
+        agent_runner._startup = startup
 
     # ── resume: restore previous context ─────────────────────────────────────
     # PRD-129 Phase 2: prior context is restored by folding the durable journal
@@ -774,6 +1283,7 @@ async def _build_session_context_impl(
             pending_resume = RunCoordinator.build_resume_plan(
                 session_conversation.journal, _incomplete
             )
+    startup.finish("selected_restore")
 
     return SessionContext(
         processor=processor,
@@ -800,14 +1310,14 @@ async def _build_session_context_impl(
         mcp_manager=mcp_manager,
         console=console,
         memory_router=_memory_router,
-        semantic_index=_semantic_index,
+        semantic_index=cast("SemanticIndex", _semantic_index),
         pending_resume=pending_resume,
         command_plugin_names=command_plugin_names,
         session_service=session_service,
         kernel_projection_task=kernel_projection_task,
         usage_ledger=usage_ledger,
-        browser_manager=browser_manager,
-        browser_tools=browser_tools,
+        browser_manager=cast("BrowserSessionManager | None", browser_manager),
+        browser_tools=cast("Iterable[ToolLike]", browser_tools),
         cfg_overrides=tuple(cli_overrides or ()),
         cfg_secret_overrides=tuple(cli_secret_overrides or ()),
         initial_workflow=initial_workflow,
@@ -815,6 +1325,7 @@ async def _build_session_context_impl(
         workspace_access=workspace_access,
         resumed=bool(resume_id),
         owner_lease=owner_lease,
+        startup=startup,
     )
 
 
@@ -838,6 +1349,7 @@ class TUISession:
         self._pending_skill_body: list[str] = []
         self._msg_queue: list[str] = []
         self._agent_task: asyncio.Task[object] | None = None
+        self._deferred_startup_task: asyncio.Task[object] | None = None
         self._last_submitted_text: str = ""
         self._turn_count: int = 0
         self._pending_replay_id: str | None = None
@@ -882,11 +1394,12 @@ class TUISession:
             conversation_id=ctx.session_id,
             usage_ledger=getattr(ctx, "usage_ledger", None),
             browser_manager=getattr(ctx, "browser_manager", None),
-            browser_tools=list(getattr(ctx, "browser_tools", [])),
+            browser_tools=cast("Iterable[ToolLike]", getattr(ctx, "browser_tools", ())),
             workspace_scope=cast("WorkspaceScope | None", vars(ctx).get("workspace_scope")),
             workspace_access=cast(
                 "WorkspaceAccessPolicy | None", vars(ctx).get("workspace_access")
             ),
+            startup=getattr(ctx, "startup", None),
             next_queued_message=self._next_queued_message,
         )
         self._restore_paused_workflow()
@@ -1348,6 +1861,37 @@ class TUISession:
         if callable(redraw):
             redraw()
 
+    def _start_deferred_startup(self) -> None:
+        """Start optional discovery only after the first Live frame exists."""
+        from agenthicc.runners.startup import ReadinessState  # noqa: PLC0415
+
+        startup = getattr(self._ctx, "startup", None)
+        if startup is None or startup.report("extensions").state is not ReadinessState.NOT_STARTED:
+            return
+
+        async def load() -> object:
+            discovery, workflow_registry = await asyncio.gather(
+                asyncio.to_thread(_discover_extensions_sync, self._ctx.cfg),
+                asyncio.to_thread(_discover_workflow_registry_sync),
+            )
+            # Shutdown can win while the worker threads are unwinding. Never
+            # publish a discovery result into a closed session's registries.
+            if startup.closed:
+                return None
+            _apply_extension_discovery(self._ctx, discovery)
+            self._ctx.workflow_registry.replace_with(workflow_registry)
+            self._ctx.mode_manager.refresh_workflow_bindings(
+                workflow_registry.mode_default_map(),
+                workflow_registry.mode_available_map(),
+            )
+            return None
+
+        self._deferred_startup_task = startup.start_background(
+            "extensions",
+            load,
+            degrade_on_error=True,
+        )
+
     # ── public routing ────────────────────────────────────────────────────────
 
     def dispatch_slash(self, text: str) -> bool:
@@ -1357,7 +1901,15 @@ class TUISession:
 
         ctx = self._ctx
         project_tools: list[ToolLike] = list(ctx.project_plugins.all_tools)
-        project_tools.extend(getattr(ctx, "browser_tools", []))
+        # Most slash commands are local/read-only and do not need browser
+        # tool schemas. Iterating the session proxy here would import an
+        # optional browser package merely to run /status or /startup. The
+        # explicit /tools view is the user-facing browser-tool selection
+        # boundary; agent/workflow turns iterate it at their own dependency
+        # boundary below.
+        command_name = text.strip().split(None, 1)[0] if text.strip() else ""
+        if command_name == "/tools":
+            project_tools.extend(getattr(ctx, "browser_tools", ()))
         if ctx.mcp_registry is not None:
             project_tools.extend(ctx.mcp_registry.all_tools())
         tool_registry = build_registry(project_plugin_tools=project_tools)
@@ -1375,6 +1927,7 @@ class TUISession:
             tool_sources=tool_registry.sources,
             workflow_registry=ctx.workflow_registry,
             mcp_manager=getattr(ctx, "mcp_manager", None),
+            startup=getattr(ctx, "startup", None),
             mode_manager=ctx.mode_manager,
             terminal_manager=getattr(ctx, "terminal_manager", None),
             set_pending_skill=self._set_pending_skill,
@@ -2230,6 +2783,21 @@ class TUISession:
                 import dataclasses as _dc  # noqa: PLC0415
                 from agenthicc.workflows.plugin import WorkflowContext  # noqa: PLC0415
 
+                required_phases = tuple(
+                    phase
+                    for phase in getattr(_plugin_cls, "required_startup_phases", ())
+                    if isinstance(phase, str) and phase
+                )
+                if required_phases:
+                    startup = getattr(ctx, "startup", None)
+                    if startup is None:
+                        raise RuntimeError(
+                            "workflow declares startup dependencies but readiness is unavailable"
+                        )
+                    for phase in required_phases:
+                        _prepare_startup_dependency(ctx, phase)
+                    await startup.wait_for(*required_phases)
+
                 _phase_specs = getattr(_plugin_cls, "phases", ())
                 if (
                     self._workflow_handle is None
@@ -2292,6 +2860,8 @@ class TUISession:
                         for phase in _phase_specs
                         if hasattr(phase, "name") and hasattr(phase, "terminal_wait_policy")
                     },
+                    startup=getattr(ctx, "startup", None),
+                    required_startup_phases=required_phases,
                 )
                 # Plugin owns runner construction — no name-based branching.
                 _wf_runner = _plugin_cls.build_runner(_wf_config, ctx.mode_manager)
@@ -2400,6 +2970,47 @@ class TUISession:
         if turn_id is not None:
             self._publish_session_event("turn_started", turn_id=turn_id)
         try:
+            # Optional MCP startup is deferred until after the first TUI frame,
+            # but an agent turn that can see MCP tools must wait for the
+            # catalog readiness boundary before building its tool schema.
+            startup = getattr(self._ctx, "startup", None)
+            if startup is not None:
+                from agenthicc.runners.startup import StartupDependencyError  # noqa: PLC0415
+
+                if startup.report("extensions").state.value != "not_started":
+                    try:
+                        await startup.wait_for("extensions")
+                    except StartupDependencyError:
+                        # Project extensions are optional. A failed scan must
+                        # not prevent built-in tools and direct local turns;
+                        # the failed phase remains visible in /startup.
+                        conv.notify_transient(
+                            "⚠ Optional extensions unavailable; using built-in tools"
+                        )
+            mcp_manager = getattr(self._ctx, "mcp_manager", None)
+            if startup is not None and mcp_manager is not None:
+                # An optional MCP catalog may still be loading or may have
+                # failed. Local tools remain usable in both cases. Only the
+                # explicitly configured, auto-connected required servers are
+                # a dependency of a turn that publishes the MCP catalog.
+                required_servers = getattr(mcp_manager, "required_auto_connect_servers", ())
+                if required_servers:
+                    try:
+                        await startup.wait_for("mcp")
+                    except StartupDependencyError as exc:
+                        # The background boundary intentionally converts
+                        # failures to a visible degraded report. Rehydrate
+                        # the manager's established typed error at the
+                        # operation boundary so callers retain the pre-176
+                        # required-MCP contract.
+                        failures = getattr(mcp_manager, "required_failures", {})
+                        if isinstance(failures, dict) and failures:
+                            from agenthicc.tools.mcp_manager import (  # noqa: PLC0415
+                                McpRequiredServerError,
+                            )
+
+                            raise McpRequiredServerError(failures) from exc
+                        raise
             if conversation is not None:
                 await conversation.acquire(owner_id)
                 acquired = True
@@ -2793,6 +3404,20 @@ class TUISession:
                     handle.append_continuation(continuation)
                 ctx.session_memory.add_user(continuation_text)
 
+            required_phases = tuple(
+                phase
+                for phase in getattr(wf_defn, "required_startup_phases", ())
+                if isinstance(phase, str) and phase
+            )
+            if required_phases:
+                startup = getattr(ctx, "startup", None)
+                if startup is None:
+                    raise RuntimeError(
+                        "workflow declares startup dependencies but readiness is unavailable"
+                    )
+                for phase in required_phases:
+                    _prepare_startup_dependency(ctx, phase)
+                await startup.wait_for(*required_phases)
             _wf_params = wf_defn.build_params(ctx.cfg.workflows.get(wf_defn.name, {}))
             _phase_specs = getattr(wf_defn, "phases", ())
             _wf_config = _dc.replace(
@@ -2806,6 +3431,8 @@ class TUISession:
                     for phase in _phase_specs
                     if hasattr(phase, "name") and hasattr(phase, "terminal_wait_policy")
                 },
+                startup=getattr(ctx, "startup", None),
+                required_startup_phases=required_phases,
             )
             runner = wf_defn.build_runner(_wf_config, ctx.mode_manager)
             # The task argument is normally the same object as the handle's
@@ -2903,7 +3530,27 @@ class TUISession:
         ctx.command_bus.register(InterruptAgentCommand, self.handle_interrupt)
         self._wire_approval_overlay()
 
-        self._workspace.start()
+        startup = getattr(ctx, "startup", None)
+        if startup is not None:
+            startup.begin("first_frame")
+        try:
+            self._workspace.start()
+        except Exception as exc:
+            if startup is not None:
+                from agenthicc.runners.startup import ReadinessState  # noqa: PLC0415
+
+                startup.finish(
+                    "first_frame",
+                    ReadinessState.FAILED,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            raise
+        if startup is not None:
+            startup.finish("first_frame")
+        # The Live shell is now visible. Discovery may execute trusted or
+        # project extension code, so it starts only after that first frame and
+        # is joined at the agent-operation boundary.
+        self._start_deferred_startup()
         if getattr(ctx, "resumed", False):
             from agenthicc.tui.runtime.session_log import SessionEventLog  # noqa: PLC0415
 
@@ -2967,6 +3614,9 @@ class TUISession:
             proc_task.cancel()
             if ad_task:
                 ad_task.cancel()
+            startup = getattr(ctx, "startup", None)
+            if startup is not None:
+                await startup.close()
             await asyncio.gather(
                 *([agent_task] if agent_task else []),
                 tick_task,
@@ -2991,6 +3641,7 @@ async def _run_tui_session(
     mode_name: str | None = None,
     workflow_name: str | None = None,
     owner_lease: SessionOwnerLease | None = None,
+    config: "AgenthiccConfig | None" = None,
 ) -> None:
     """Run the reactive TUI, optionally from a resumed session's project."""
     if cwd is None:
@@ -3004,6 +3655,7 @@ async def _run_tui_session(
             mode_name=mode_name,
             workflow_name=workflow_name,
             owner_lease=owner_lease,
+            config=config,
         )
         return
 
@@ -3020,6 +3672,7 @@ async def _run_tui_session(
             mode_name=mode_name,
             workflow_name=workflow_name,
             owner_lease=owner_lease,
+            config=config,
         )
     finally:
         os.chdir(previous_cwd)
@@ -3035,24 +3688,44 @@ async def _run_tui_session_impl(
     mode_name: str | None = None,
     workflow_name: str | None = None,
     owner_lease: SessionOwnerLease | None = None,
+    config: "AgenthiccConfig | None" = None,
 ) -> None:
     """Reactive TUI session — single entry point, no legacy branches."""
     from agenthicc.tui.workspace import Workspace  # noqa: PLC0415
     from agenthicc.tui.input.unified_session import UnifiedInputSession  # noqa: PLC0415
+    from agenthicc.tui.welcome import (  # noqa: PLC0415
+        fetch_changelog,
+        load_cached_changelog,
+        print_welcome,
+    )
 
     cassette_base: Path | None = Path(record_cassette) if record_cassette else None
+    cached_changelog = load_cached_changelog()
 
-    ctx = await _build_session_context(
-        resume_id,
-        cli_overrides,
-        cassette_base,
-        config_path=config_path,
-        cli_secret_overrides=cli_secret_overrides,
-        mode_name=mode_name,
-        workflow_name=workflow_name,
-        owner_lease=owner_lease,
-    )
+    ctx = None
+    changelog_task: asyncio.Task[object] | None = None
     try:
+        ctx = await _build_session_context(
+            resume_id,
+            cli_overrides,
+            cassette_base,
+            config_path=config_path,
+            cli_secret_overrides=cli_secret_overrides,
+            mode_name=mode_name,
+            workflow_name=workflow_name,
+            owner_lease=owner_lease,
+            config=config,
+        )
+        # Welcome metadata is non-essential startup UI. It starts after the
+        # session coordinator exists and is never awaited before the first
+        # frame; the static panel uses the bounded last-known-good cache.
+        assert ctx.startup is not None
+        changelog_task = ctx.startup.start_background(
+            "welcome",
+            lambda: fetch_changelog(),
+            degrade_on_error=True,
+        )
+        ctx.startup.begin("tui_shell")
         # PRD-79: stamp CLIFlags onto AppState immediately after creation; frozen for session lifetime.
         if cli_flags is not None:
             ctx.app_state.cli_flags = cli_flags
@@ -3062,6 +3735,7 @@ async def _run_tui_session_impl(
             ctx.console,
             max_live_tool_calls=ctx.cfg.tools.max_live_tool_calls,
             group_exploratory_calls=ctx.cfg.tools.group_exploratory_calls,
+            startup=ctx.startup,
         )
         input_session = UnifiedInputSession(
             app_state=ctx.app_state,
@@ -3078,6 +3752,7 @@ async def _run_tui_session_impl(
             ),
         )
         session = TUISession(ctx, workspace, input_session)
+        ctx.startup.finish("tui_shell")
         from agenthicc.background.terminals import (  # noqa: PLC0415
             set_current_terminal_manager,
         )
@@ -3089,23 +3764,27 @@ async def _run_tui_session_impl(
         # tasks.  Run the same idempotent close boundary used by a live TUI so
         # partial startup cannot strand the session owner or its handles.
         try:
-            await _close_tui_session_resources(ctx, None, None, None)
+            if changelog_task is not None and not changelog_task.done():
+                changelog_task.cancel()
+            if changelog_task is not None:
+                await asyncio.gather(changelog_task, return_exceptions=True)
+            if ctx is not None:
+                await _close_tui_session_resources(ctx, None, None, None)
         except BaseException:
             pass
         raise
     try:
-        from agenthicc.tui.welcome import fetch_changelog, print_welcome  # noqa: PLC0415
-
-        changelog = await fetch_changelog()
-
         print_welcome(
             ctx.console,
             model=ctx.model_label,
             cwd=os.getcwd(),
-            changelog=changelog,
+            changelog=cached_changelog,
         )
         await session.run()
     finally:
+        if not changelog_task.done():
+            changelog_task.cancel()
+        await asyncio.gather(changelog_task, return_exceptions=True)
         await _close_tui_session_resources(ctx, session, terminal_context_token, cassette_base)
 
 
@@ -3142,6 +3821,9 @@ async def _close_tui_session_resources(
         if _fc is not None:
             _fc.close()
             configure_file_cache(None)
+        startup = getattr(ctx, "startup", None)
+        if startup is not None:
+            await startup.close()
         if ctx.mcp_registry:
             await ctx.mcp_registry.shutdown()
         browser_manager = getattr(ctx, "browser_manager", None)
@@ -3254,6 +3936,7 @@ def _run_tui(ctx: CLIContext) -> None:
                 mode_name=ctx.mode_name,
                 workflow_name=ctx.workflow_name,
                 owner_lease=owner_lease,
+                config=ctx.config,
             )
         )
     except SessionAlreadyActiveError as exc:

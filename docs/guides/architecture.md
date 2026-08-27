@@ -47,6 +47,37 @@ The headless runner uses the kernel directly and currently handles stdin
 intent submission. The TUI runner adds the larger session graph: configuration,
 registries, durable memory, approvals, workflow selection, and rendering.
 
+## Progressive startup
+
+Session construction is staged by runners.startup.StartupCoordinator. The
+owner lease and security-sensitive configuration/workspace decisions happen
+before durable session mutation. The session service then opens its bounded
+metadata projection and restores only the selected session; it does not replay
+unrelated JSONL histories merely because a new TUI was opened. The minimum
+kernel, built-in command registry, workspace, and input panel can render a
+first frame while project extensions and optional integrations load in tracked
+background phases.
+
+The coordinator is observational, not a second runtime or persistence layer.
+Every deferred task receives the existing session-owned context and is
+cancelled/awaited when the runner closes. An agent operation waits at its
+declared dependency boundary: for example, a direct turn waits for extension
+discovery before exposing project tools, and an MCP-dependent operation waits
+for the MCP catalog. A failed optional phase is shown as degraded and does not
+block unrelated local work; required resources retain their fail-closed
+semantics.
+
+Built-in workflows and agents expose lazy descriptors for names and mode
+metadata. Their implementations are materialized only when selected. The
+fresh-session TUI defers user/project Python extension imports until after the
+first frame, then replaces the contents of the session-owned registries in
+place so existing WorkflowConfig and AgentsRegistry references remain valid.
+This preserves phase state, prompt/cache contracts, conversation identity,
+memory, AGENTS.md instructions, tool policy, and checkpoints.
+
+See the startup guide for readiness states, /startup, cache repair, benchmark
+usage, and optional integration behavior.
+
 ## Kernel
 
 `kernel.AppState` is a frozen dataclass containing intents, workflows, tasks,

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.config import AgenthiccConfig
 
 
 @dataclass(frozen=True)
@@ -34,3 +38,7 @@ class CLIContext:
     continue_session: bool = False
     workflow_name: str | None = None
     mode_name: str | None = None
+    # The validated snapshot used while parsing this invocation.  Normal
+    # runners pass it into session construction so configuration is not parsed
+    # a second time.  It remains optional for embedders using the old shape.
+    config: "AgenthiccConfig | None" = None

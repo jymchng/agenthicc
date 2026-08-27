@@ -105,6 +105,7 @@ async def _open_manager(ctx: CLIContext) -> None:
                 cli_flags=ctx.flags,
                 config_path=ctx.config_path,
                 cwd=foreground.cwd,
+                config=ctx.config,
             )
         except Exception as exc:  # noqa: BLE001
             Console(highlight=False).print(

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from rich.console import Console, RenderableType
     from rich.live import Live
     from agenthicc.tui.conversation_store import AppState, ConversationEvent
+    from agenthicc.runners.startup import StartupCoordinator
 
 
 def _border(cols: int) -> RenderableType:
@@ -50,11 +51,13 @@ class Workspace:
         console: Console,
         max_live_tool_calls: int = 5,
         group_exploratory_calls: bool = True,
+        startup: StartupCoordinator | None = None,
     ) -> None:
         self._state = app_state
         self._console = console
+        self._startup = startup
 
-        self.status = StatusComponent(app_state)
+        self.status = StatusComponent(app_state, startup)
         self.composer = ComposerComponent(app_state)
         self.footer = FooterComponent(app_state)
         self.overlays = OverlayHost(app_state)
@@ -67,6 +70,8 @@ class Workspace:
 
         self._live: Live | None = None
         self._unsubs: list[Callable[[], None]] = []
+        if startup is not None:
+            self._unsubs.append(startup.subscribe(self._redraw))
         self._redraw_scheduled: bool = False
         self._resize_pending: bool = False
         self._resize_handle: asyncio.TimerHandle | None = None

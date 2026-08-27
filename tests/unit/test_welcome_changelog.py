@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
 
 import pytest
 from rich.console import Console
@@ -11,6 +12,7 @@ from agenthicc.tui.welcome import (
     CHANGELOG_URL,
     _normalize_changelog,
     fetch_changelog,
+    load_cached_changelog,
     render_welcome,
 )
 
@@ -37,7 +39,7 @@ def test_normalize_changelog_rejects_missing_list() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_changelog_uses_remote_json(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_fetch_changelog_uses_remote_json(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     requested: list[str] = []
 
     class Response:
@@ -58,6 +60,7 @@ async def test_fetch_changelog_uses_remote_json(monkeypatch: pytest.MonkeyPatch)
 
     import agenthicc.tools.http as http_tools
 
+    monkeypatch.setenv("AGENTHICC_CHANGELOG_CACHE", str(tmp_path / "changelog.json"))
     monkeypatch.setattr(http_tools, "agenthicc_http_client", fake_http_client)
 
     assert await fetch_changelog() == ["Remote update"]
@@ -67,6 +70,7 @@ async def test_fetch_changelog_uses_remote_json(monkeypatch: pytest.MonkeyPatch)
 @pytest.mark.asyncio
 async def test_fetch_changelog_returns_empty_list_on_error(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     @asynccontextmanager
     async def failing_http_client(**_: object):
@@ -75,9 +79,22 @@ async def test_fetch_changelog_returns_empty_list_on_error(
 
     import agenthicc.tools.http as http_tools
 
+    monkeypatch.setenv("AGENTHICC_CHANGELOG_CACHE", str(tmp_path / "changelog.json"))
     monkeypatch.setattr(http_tools, "agenthicc_http_client", failing_http_client)
 
     assert await fetch_changelog() == []
+
+
+def test_cached_changelog_is_bounded_by_age_and_size(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "changelog.json"
+    monkeypatch.setenv("AGENTHICC_CHANGELOG_CACHE", str(path))
+    path.write_text(json.dumps({"fetched_at": 100.0, "items": ["Cached update"]}))
+
+    assert load_cached_changelog(now=100.0 + 60.0) == ["Cached update"]
+    assert load_cached_changelog(now=100.0 + 24 * 60 * 60 + 1) == []
+
+    path.write_text("x" * (128 * 1024 + 1))
+    assert load_cached_changelog(now=100.0) == []
 
 
 def test_welcome_keeps_heading_when_changelog_is_empty() -> None:

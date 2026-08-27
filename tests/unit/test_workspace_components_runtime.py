@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agenthicc.tui.workspace import components
+from agenthicc.runners.startup import StartupCoordinator
 
 pytestmark = pytest.mark.unit
 
@@ -65,6 +66,16 @@ def test_status_running_compacting_and_helper_variants() -> None:
     assert "bold" in components._thinking_markup(10)
     assert components._build_hints("X  one word", 10)
     assert "five" in components._build_worker_grid(state.conversation.subagent_pool_state(), 200)
+
+
+def test_status_reports_deferred_startup_without_claiming_readiness() -> None:
+    coordinator = StartupCoordinator()
+    coordinator.begin("extensions", deferred=True)
+
+    rendered = components.StatusComponent(_state(), coordinator).render()
+
+    assert "Startup" in rendered.renderables[-1].plain
+    assert "loading" in rendered.renderables[-1].plain
 
 
 def test_composer_condensed_multiline_and_height() -> None:

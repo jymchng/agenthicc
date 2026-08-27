@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from agenthicc.cli.context import CLIContext, CLIFlags
+
+if TYPE_CHECKING:
+    from agenthicc.config import AgenthiccConfig
 
 
 def _add_global_flags(parser: argparse.ArgumentParser) -> None:
@@ -96,18 +101,44 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
 
 def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
     """Discover commands, build argparse, and return (CLIContext, Namespace)."""
+    argv = sys.argv[1:]
+    # Help/version are intentionally handled before registry/config discovery.
+    # This keeps documentation queries deterministic and prevents project
+    # extension code, optional integrations, and durable stores from loading
+    # just to answer a process-local question.
+    if argv == ["--version"]:
+        print("agenthicc 0.1.0")
+        raise SystemExit(0)
+    if argv in (["--help"], ["-h"]):
+        _fast_help_parser().parse_args(argv)
+        raise AssertionError("argparse help should terminate")
+
     from agenthicc.cli.registry import _discover, _as_tree, _wire  # noqa: PLC0415
 
-    # Read strict_cli_shadow before discovery so conflicts are handled correctly.
-    strict = False
+    # Parse only global options first.  This gives trusted project-command
+    # discovery the same configuration snapshot later consumed by the runner,
+    # without executing dynamic command modules to learn those options.
+    bootstrap_parser = argparse.ArgumentParser(add_help=False)
+    _add_global_flags(bootstrap_parser)
+    bootstrap_ns, _ = bootstrap_parser.parse_known_args(argv)
+    config = None
     try:
         from agenthicc.config import load_config  # noqa: PLC0415
 
-        strict = load_config().plugins.strict_cli_shadow
+        config = load_config(
+            cli_overrides=list(getattr(bootstrap_ns, "set_overrides", [])),
+            cli_secret_overrides=list(getattr(bootstrap_ns, "set_secret_overrides", [])),
+            config_path=getattr(bootstrap_ns, "config", None),
+        )
     except Exception:  # noqa: BLE001
         pass
 
-    _discover(strict_cli_shadow=strict)
+    _discover(
+        strict_cli_shadow=bool(
+            getattr(getattr(config, "plugins", None), "strict_cli_shadow", False)
+        ),
+        config=config,
+    )
 
     parser = argparse.ArgumentParser(
         prog="agenthicc",
@@ -117,11 +148,31 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
     _wire(parser, _as_tree())
 
     ns = parser.parse_args()
-    ctx = _build_ctx(ns)
+    ctx = _build_ctx(ns, config=config)
     return ctx, ns
 
 
-def _build_ctx(ns: argparse.Namespace) -> CLIContext:
+def _fast_help_parser() -> argparse.ArgumentParser:
+    """Build help without importing dynamic command implementations."""
+    parser = argparse.ArgumentParser(
+        prog="agenthicc",
+        description="Agenthicc — state-driven agent OS for autonomous software engineering",
+        epilog=(
+            "Built-in command groups: agents, auth, config, jobs, mcp, sessions, "
+            "skills, tools, trust, and workflows. Project commands are discovered "
+            "after startup."
+        ),
+    )
+    _add_global_flags(parser)
+    return parser
+
+
+def _build_ctx(
+    ns: argparse.Namespace,
+    *,
+    config: object | None = None,
+) -> CLIContext:
+    typed_config = cast("AgenthiccConfig | None", config)
     flags = CLIFlags(
         dangerously_skip_permissions=getattr(ns, "dangerously_skip_permissions", False),
     )
@@ -136,6 +187,7 @@ def _build_ctx(ns: argparse.Namespace) -> CLIContext:
         continue_session=getattr(ns, "continue_session", False),
         workflow_name=getattr(ns, "workflow_name", None),
         mode_name=getattr(ns, "mode_name", None),
+        config=typed_config,
     )
 
 

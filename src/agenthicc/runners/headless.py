@@ -415,6 +415,7 @@ async def run_headless_workflow(
         workflow_name=workflow_name,
         headless=True,
         owner_lease=owner_lease,
+        config=ctx.config,
     )
     terminal_token = None
     processor_task: asyncio.Task[object] | None = None
@@ -470,6 +471,7 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
         workflow_name=workflow_name,
         headless=True,
         owner_lease=owner_lease,
+        config=ctx.config,
     )
     terminal_token = None
     processor_task: asyncio.Task[object] | None = None

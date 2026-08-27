@@ -443,6 +443,13 @@ class WorkflowPlugin(abc.ABC):
     phases: list[PhaseSpec] = []
     max_total_phase_runs: int = 0
     """Hard ceiling on total phase runs (0 = no cap)."""
+    required_startup_phases: tuple[str, ...] = ()
+    """Session readiness phases required before this workflow can run.
+
+    Names are owned by the session startup coordinator (for example ``mcp`` or
+    ``extensions``). Optional integrations should not be listed here; their
+    failure must leave unrelated local turns usable.
+    """
 
     # ── Query helpers ─────────────────────────────────────────────────────────
 

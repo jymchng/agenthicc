@@ -43,6 +43,7 @@ against the current source before implementing them.
 - [PRD-173 — Recoverable Workflow Errors and Failure Checkpoints](prd-173-recoverable-workflow-errors.md)
 - [PRD-174 — Tool-Aware create_workflow Authoring and Safe Publication](prd-174-create-workflow-tool-aware-authoring.md)
 - [PRD-175 — Runtime AGENTS.md Integration](prd-175-agents-md-runtime-integration.md)
+- [PRD-176 — Fast, Progressive agenthicc Startup](prd-176-fast-progressive-startup.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -243,6 +244,14 @@ stable cacheable system-prompt region. It keeps project guidance separate from
 provider memory and the TUI transcript, records only redacted snapshot
 provenance in checkpoints, preserves runtime capability and workspace
 authority, and makes create_workflow-generated workflows inherit the contract.
+
+PRD-176 defines the startup performance work required to separate minimal safe
+bootstrap from progressive runtime readiness. It addresses eager imports,
+all-session replay in `SessionService`, pre-first-frame changelog networking,
+extension and skill discovery, optional MCP/browser initialization, and
+heavyweight memory/index setup while preserving leases, workspace policy,
+workflow/checkpoint recovery, and the append-only session event source of
+truth.
 
 ## Existing PRDs
 

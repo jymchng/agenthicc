@@ -90,6 +90,12 @@ Enter a natural-language request:
 
 The default session discovers built-in and project-local workflows, agents, tools, skills, modes, and MCP servers. New sessions start in **Safe** mode — reads run directly; writes, command execution, git changes, network access, and unannotated tools ask for approval.
 
+Startup is progressive: the TUI renders its first frame from the local
+session/configuration boundary while optional extensions, remote changelog,
+MCP connections, and browser integrations report readiness in the background.
+Use `/startup` to inspect phase timings. Session listing uses a bounded index
+and restores only the selected session; see the [startup guide](./docs/guides/startup.md).
+
 ### Headless mode
 
 ```bash
@@ -337,7 +343,7 @@ Session artifacts live below `~/.agenthicc/sessions/`:
 | `<session-id>.jsonl` | Kernel event log |
 | `<session-id>/conversation.jsonl` | Rendered conversation events; resumed TUI sessions replay the newest 20 complete turns |
 | `<session-id>/conversation-journal.jsonl` | Durable conversation-memory transitions used for crash recovery and tool replay |
-| `<session-id>/workflows/<run-id>/checkpoint.json` | Atomic, bounded workflow context checkpoints used by `/workflow resume` after an Esc pause |
+| `<session-id>/workflows/<run-id>/checkpoint.json` | Atomic JSON workflow context checkpoints with no framework-imposed byte ceiling, used by `/workflow resume` after an Esc pause |
 | `<session-id>/workflows/<run-id>/.claim` | Atomic live-owner lease; stale zombie/PID-reuse claims are recoverable, while live duplicate owners are rejected |
 | Optional cassette files | Recorded transport and approval interactions |
 

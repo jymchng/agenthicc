@@ -18,6 +18,8 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase/branch cursor, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
 | `<id>/workflows/<run>/recovery-error.json` | `WorkflowCheckpointStore` | Bounded, redacted diagnostic for setup, context, or checkpoint-storage failures that cannot produce a typed checkpoint | Display diagnosis after restart; never resumable by itself |
 | `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner/process-start identity only) | Prevent duplicate resume; reclaim only provably dead local claims |
+| `~/.agenthicc/session-service/index.json` | `SessionEventStore` | Bounded redacted metadata projection: id, project root, lifecycle, timestamps, sequence, capabilities, and file fingerprint | Atomic rebuild from authoritative service JSONL files; never used as event truth |
+| `~/.agenthicc/session-service/index.lock` | `SessionEventStore` | Short cross-process index merge lock | OS advisory lock; never held for session or turn lifetime |
 | `index.lock` | `SessionOpenCoordinator` | Short session-index read/modify/write critical section | OS advisory lock; never held for a turn or TUI lifetime |
 | `<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
 
@@ -120,7 +122,10 @@ journal, and only non-secret provider profile/workspace identity; the resumed
 session resolves current environment secrets during startup. Writes use a
 flushed temporary file followed by an atomic replacement, and checkpoint files
 are kept under the session directory with restrictive permissions. Corrupt,
-oversized, stale, or plugin-mismatched checkpoints fail closed. Active
+unreadable, stale, or plugin-mismatched checkpoints fail closed. Workflow
+contexts have no framework-imposed serialized byte ceiling; they must still be
+JSON-compatible, and available filesystem capacity is the practical limit.
+Active
 `running`, `pausing`, and `resuming` records are classified as interrupted on
 startup and are never executed automatically. `/workflow resume` claims one
 record atomically and rehydrates it into the existing `SessionConversation`.

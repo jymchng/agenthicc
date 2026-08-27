@@ -103,6 +103,41 @@ class TestBuildWorkflowRegistry:
         assert plugin_cls is not None
         assert "Plan" in plugin_cls.mode_bindings
 
+    def test_builtin_registry_is_lazy_until_a_workflow_is_selected(self, monkeypatch):
+        from agenthicc.workflows.loader import load_builtin_workflow
+
+        calls = []
+        original = load_builtin_workflow
+
+        def load(descriptor):
+            calls.append(descriptor.name)
+            return original(descriptor)
+
+        monkeypatch.setattr(
+            "agenthicc.workflows.registry.load_builtin_workflow", load, raising=False
+        )
+        # The registry module resolves this import inside build_workflow_registry,
+        # so patch the loader module as well for the actual lazy callback.
+        monkeypatch.setattr("agenthicc.workflows.loader.load_builtin_workflow", load)
+        registry = build_workflow_registry(
+            project_dir=Path("/nonexistent"), user_dir=Path("/nonexistent")
+        )
+
+        assert registry.names() == [
+            "code_plan",
+            "create_workflow",
+            "goal_flow",
+            "make_agenthicc_tool",
+            "make_epub_book",
+            "make_pdf_book",
+            "site_imitate",
+        ]
+        assert calls == []
+        assert registry.mode_default_map() == {"Plan": "code_plan"}
+        assert calls == []
+        assert registry.get("code_plan") is not None
+        assert calls == ["code_plan"]
+
     def test_code_plan_has_four_phases(self):
         # Single-agent workflow: plan / execute / review / summarize.
         # explore phase removed — exploration happens during plan phase.

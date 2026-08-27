@@ -65,6 +65,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
 | `PhaseSpec` | `agenthicc.workflows.plugin` | Declarative phase metadata; `system_prompt_override` replaces the role prompt only in the generic runner and remains dynamic under the cache contract |
 | `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
+| `StartupCoordinator` / `StartupPhaseReport` / `ReadinessState` | `agenthicc.runners.startup` | Session-scoped progressive startup phases, readiness gates, cancellation, and redacted diagnostics |
 | `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory, transactional tool-exchange recovery, and complete subagent-result persistence |
 | `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints, structured error pauses, and diagnostic fallback records |
 | `WorkflowFailureKind` | `agenthicc.runners.workflow_handle` | Typed stable categories for workflow failure finalization and diagnostics |

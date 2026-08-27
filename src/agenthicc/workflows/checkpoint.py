@@ -24,7 +24,6 @@ __all__ = [
 ]
 
 CHECKPOINT_SCHEMA_VERSION = 1
-MAX_CHECKPOINT_BYTES = 1_000_000
 
 
 class CheckpointValidationError(ValueError):
@@ -157,13 +156,13 @@ def context_to_payload(
         result = {}
     if result:
         try:
-            encoded = json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+            # Validate JSON shape and finite numeric values, but deliberately
+            # do not impose an artificial serialized-size ceiling.  Large
+            # workflow artifacts are legitimate state; the owning checkpoint
+            # store and filesystem determine practical capacity.
+            json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
         except (TypeError, ValueError) as exc:
             raise CheckpointValidationError("workflow context is not JSON-serializable") from exc
-        if len(encoded.encode("utf-8")) > MAX_CHECKPOINT_BYTES:
-            raise CheckpointValidationError(
-                f"workflow context exceeds {MAX_CHECKPOINT_BYTES} bytes"
-            )
         return result
     # Keep the explicit type check above so a dataclass from an extension cannot
     # be silently persisted without a declared codec.
@@ -317,7 +316,11 @@ def workflow_fingerprint(plugin: type[object]) -> str:
 
 @dataclass(frozen=True)
 class WorkflowCheckpoint:
-    """Versioned, bounded workflow metadata pointing into session history."""
+    """Versioned workflow metadata pointing into session history.
+
+    Checkpoint contexts have no framework-imposed serialized byte limit. They
+    remain JSON validated and are written atomically by the checkpoint store.
+    """
 
     run_id: str
     workflow_name: str

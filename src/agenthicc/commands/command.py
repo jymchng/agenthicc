@@ -96,6 +96,7 @@ class CommandContext:
     mcp_manager: "McpSessionManager | None" = None
     mode_manager: "ModeManager | None" = None
     terminal_manager: "TerminalManager | None" = None
+    startup: object | None = None
     set_pending_skill: "Callable[[str], None] | None" = None
     set_pending_menu: "Callable[[Overlay], None] | None" = None
     close_overlay: "Callable[[], None] | None" = None

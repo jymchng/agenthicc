@@ -286,6 +286,22 @@ class McpSessionManager:
         return dict(self._required_failures)
 
     @property
+    def required_auto_connect_servers(self) -> tuple[str, ...]:
+        """Return required servers whose configured contract starts at boot.
+
+        Optional servers may be unavailable while a local turn runs.  A
+        required server with ``auto_connect`` enabled is different: any
+        operation that publishes the MCP catalog must wait for its shared
+        startup boundary.  Servers configured for explicit/manual startup are
+        intentionally omitted and remain an explicit command dependency.
+        """
+        return tuple(
+            name
+            for name, config in sorted(self._configs.items())
+            if config.required and config.enabled and config.auto_connect
+        )
+
+    @property
     def bridges(self) -> Mapping[str, McpToolBridge]:
         return MappingProxyType(dict(self._bridges))
 

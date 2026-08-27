@@ -3031,6 +3031,49 @@ def write_bootstrap_plan(plan: ProjectBootstrapPlan, *, force: bool = False) -> 
 Atomically write a plan. Existing files require `force=True`; symlinks and
 plans made stale by an intervening edit are rejected.
 
+## Progressive startup — `agenthicc.runners.startup`
+
+### `ReadinessState`
+
+    class ReadinessState(StrEnum):
+        NOT_STARTED = "not_started"
+        LOADING = "loading"
+        READY = "ready"
+        DEGRADED = "degraded"
+        FAILED = "failed"
+        CANCELLED = "cancelled"
+
+### `StartupPhaseReport`
+
+    @dataclass(frozen=True, slots=True)
+    class StartupPhaseReport:
+        name: str
+        state: ReadinessState
+        deferred: bool = False
+        started_at: float | None = None
+        finished_at: float | None = None
+        error: str | None = None
+        observed_at: float | None = None
+
+`elapsed_s` uses a monotonic clock and `to_dict()` returns only bounded safe
+diagnostics. It never includes prompts, transcripts, credentials, headers, or
+full exception data.
+
+### `StartupCoordinator`
+
+Owns session startup phase reports and tracked background readiness tasks.
+`begin()`/`finish()` record a phase, `start_background()` starts a
+cancellable deferred operation, `wait_for()` gates a dependent operation,
+`snapshot()` and `to_dict()` expose deterministic diagnostics, and
+`close()` cancels and awaits outstanding tasks idempotently. The TUI uses
+this owner for its first-frame boundary and `/startup`; it does not replace
+the event processor or any session/workflow persistence owner.
+
+`SessionEventStore` uses an atomic redacted `index.json` projection for
+listing and lazily replays one selected service session. The authoritative
+JSONL logs remain unchanged; invalid/stale indexes are rebuilt and
+index-write failures do not fail a durable event append.
+
 ## Client-neutral session service — `agenthicc.session_service`
 
 ### SessionService

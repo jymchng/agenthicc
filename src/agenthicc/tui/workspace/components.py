@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
     from rich.text import Text
     from agenthicc.tui.conversation_store import AppState
+    from agenthicc.runners.startup import StartupCoordinator
 
 # Flower icons that cycle during agent runs
 _FLOWERS = ("✿", "❀", "❁", "❃", "✾", "❋", "✽", "❊")
@@ -110,8 +111,24 @@ class StatusComponent:
     Line 2: {model_name} │ Tokens: Nk │ $N.NNNN
     """
 
-    def __init__(self, app_state: AppState) -> None:
+    def __init__(self, app_state: AppState, startup: StartupCoordinator | None = None) -> None:
         self._state = app_state
+        self._startup = startup
+
+    def _startup_line(self, cols: int) -> "Text | None":
+        """Render non-ready startup work without exposing exception details."""
+        if self._startup is None:
+            return None
+        from rich.text import Text  # noqa: PLC0415
+
+        reports = self._startup.snapshot()
+        pending = [report for report in reports if report.state.value != "ready"]
+        if not pending:
+            return None
+        labels = ", ".join(f"{report.name} {report.state.value}" for report in pending[:3])
+        if len(pending) > 3:
+            labels += f", +{len(pending) - 3} more"
+        return Text.from_markup(_fit(f"[dim]Startup: {labels}[/dim]", cols))
 
     def render(self) -> RenderableType:
         from rich.text import Text  # noqa: PLC0415
@@ -265,11 +282,15 @@ class StatusComponent:
             l3_parts.pop()
         line3 = "".join(l3_parts)
 
-        return Group(
+        startup_line = self._startup_line(cols)
+        lines: list[RenderableType] = [
             Text.from_markup(line1),
             Text.from_markup(line2),
             Text.from_markup(line3),
-        )
+        ]
+        if startup_line is not None:
+            lines.append(startup_line)
+        return Group(*lines)
 
     def height(self, cols: int) -> int:  # noqa: ARG002
         """Return the total terminal rows this component occupies.
@@ -290,7 +311,8 @@ class StatusComponent:
         line1 = 1  # always: flower + state + runtime
         line2 = 1 if has_model else 0  # model name
         line3 = 1 if has_model else 0  # session id + metrics
-        return blank + line1 + line2 + line3
+        startup_line = self._startup_line(cols)
+        return blank + line1 + line2 + line3 + (1 if startup_line is not None else 0)
 
 
 # ── multi-line composer helper ────────────────────────────────────────────────
@@ -422,7 +444,8 @@ class FooterComponent:
         # Row 2+: notification (may be multi-line) > paste hint > normal hints.
         # Multi-line notifications (from stacked notify_transient() calls or
         # explicit \n in the message) each get their own rendered row.
-        notif = conv.notification()
+        raw_notif = conv.notification()
+        notif = raw_notif if isinstance(raw_notif, str) else None
         hints_str: str | Text
         if notif:
             notif_lines = _wrap_notification(notif, cols)

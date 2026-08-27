@@ -120,6 +120,44 @@ def test_create_workflow_context_checkpoint_preserves_artifacts() -> None:
     assert restored.cache_diagnostic == context.cache_diagnostic
 
 
+def test_large_workflow_context_is_not_rejected_by_framework_byte_cap() -> None:
+    context = CodePlanContext(
+        intent="x" * 1_100_000,
+        run_id="large-run",
+        plan="persist this large but valid context",
+        state=CodePlanState.PLAN,
+    )
+
+    payload = context_to_payload(context)
+
+    assert len(json.dumps(payload, ensure_ascii=False)) > 1_000_000
+    assert payload["kind"] == "CodePlanContext"
+
+
+def test_checkpoint_store_accepts_large_context_without_framework_byte_cap(
+    tmp_path: Path,
+) -> None:
+    checkpoint = WorkflowCheckpoint(
+        run_id="large-run",
+        workflow_name="code_plan",
+        conversation_id="session-1",
+        intent="large context",
+        status="paused",
+        current_phase="plan",
+        phase_index=0,
+        phase_iteration=0,
+        conversation_cursor=0,
+        context={"kind": "CustomContext", "fields": {"artifact": "x" * 1_100_000}},
+        plugin_fingerprint="fingerprint",
+    )
+    store = WorkflowCheckpointStore("session-1", root=tmp_path)
+
+    path = store.save(checkpoint)
+
+    assert path.stat().st_size > 1_000_000
+    assert store.load("large-run") == checkpoint
+
+
 def test_checkpoint_store_round_trip_and_tamper_detection(tmp_path: Path) -> None:
     store = WorkflowCheckpointStore("session-1", root=tmp_path)
     checkpoint = WorkflowCheckpoint(

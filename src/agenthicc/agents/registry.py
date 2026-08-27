@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -22,6 +23,7 @@ class AgentsRegistry:
 
     def __init__(self) -> None:
         self._defs: dict[str, AgentDefinition] = {}
+        self._lazy: dict[str, Callable[[], AgentDefinition]] = {}
 
     def register(self, defn: AgentDefinition) -> None:
         existing = self._defs.get(defn.name)
@@ -33,12 +35,46 @@ class AgentsRegistry:
                 existing.source,
             )
         self._defs[defn.name] = defn
+        self._lazy.pop(defn.name, None)
+
+    def register_lazy(self, name: str, loader: Callable[[], AgentDefinition]) -> None:
+        """Register an agent descriptor without importing its implementation."""
+        if name and name not in self._defs:
+            self._lazy[name] = loader
+
+    def _materialize(self, name: str) -> AgentDefinition | None:
+        definition = self._defs.get(name)
+        if definition is not None:
+            return definition
+        loader = self._lazy.get(name)
+        if loader is None:
+            return None
+        definition = loader()
+        self.register(definition)
+        return definition
 
     def get(self, name: str) -> AgentDefinition | None:
-        return self._defs.get(name)
+        return self._materialize(name)
 
     def all(self) -> list[AgentDefinition]:
-        return list(self._defs.values())
+        return [definition for name in self.names() if (definition := self.get(name))]
+
+    def names(self) -> list[str]:
+        """Return agent names without materializing lazy definitions."""
+        return [*self._defs.keys(), *[name for name in self._lazy if name not in self._defs]]
+
+    def replace_with(self, other: "AgentsRegistry") -> None:
+        """Replace entries in place while preserving session-owned identity.
+
+        The interactive session gives its workflow configuration a reference
+        to one registry object.  Deferred project-agent discovery therefore
+        swaps the contents rather than replacing that object, just like the
+        workflow registry does.
+        """
+        if other is self:
+            return
+        self._defs = dict(other._defs)
+        self._lazy = dict(other._lazy)
 
     def get_role_system_prompt(self, agent_type: str) -> str:
         """Return the role-specific system prompt for *agent_type*.
@@ -99,10 +135,16 @@ class AgentsRegistry:
 def build_agents_registry(
     project_dir: Path | None = None,
     user_dir: Path | None = None,
+    *,
+    load_external: bool = True,
 ) -> AgentsRegistry:
-    """Build the agents registry: builtin → user-global → project-local."""
-    from agenthicc.agents.builtin import BUILTIN_AGENT_DEFINITIONS  # noqa: PLC0415
+    """Build the agents registry: builtin → user-global → project-local.
 
+    With ``load_external=False`` only built-in descriptors are registered.
+    This is the progressive TUI form; user/project Python modules are loaded
+    by the extension readiness phase.  The default remains eager for callers
+    that use this public helper as a complete registry builder.
+    """
     if project_dir is None:
         project_dir = Path(".agenthicc")
     if user_dir is None:
@@ -110,17 +152,33 @@ def build_agents_registry(
 
     registry = AgentsRegistry()
 
-    # 1. Builtins
-    for defn in BUILTIN_AGENT_DEFINITIONS:
-        registry.register(defn)
+    # 1. Builtins. The decorated lauren-ai classes are imported only when a
+    # role prompt or a per-turn instance requests one of these descriptors.
+    for name in ("planner", "executor", "reviewer", "explorer", "verifier", "human", "auto"):
+        registry.register_lazy(name, _make_builtin_loader(name))
 
-    # 2. User-global
-    _scan_agents_dir(user_dir / "agents", "user", registry)
+    if load_external:
+        # 2. User-global
+        _scan_agents_dir(user_dir / "agents", "user", registry)
 
-    # 3. Project-local
-    _scan_agents_dir(project_dir / "agents", "project", registry)
+        # 3. Project-local
+        _scan_agents_dir(project_dir / "agents", "project", registry)
 
     return registry
+
+
+def _make_builtin_loader(name: str) -> Callable[[], AgentDefinition]:
+    """Return a zero-argument loader for one built-in role."""
+
+    def load() -> AgentDefinition:
+        from agenthicc.agents.builtin import BUILTIN_AGENT_DEFINITIONS  # noqa: PLC0415
+
+        for definition in BUILTIN_AGENT_DEFINITIONS:
+            if definition.name == name:
+                return definition
+        raise LookupError(f"unknown built-in agent {name!r}")
+
+    return load
 
 
 def _scan_agents_dir(directory: Path, source: str, registry: AgentsRegistry) -> None:

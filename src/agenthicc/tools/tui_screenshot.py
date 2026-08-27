@@ -10,7 +10,6 @@ expensive or flaky terminals never need to be re-run just to restyle a capture.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 import re
@@ -23,7 +22,7 @@ from pathlib import Path
 
 from lauren_ai import tool
 from lauren_ai._tools import set_metadata
-from agenthicc.tools.capabilities import ToolCapability, tool_read_search
+from agenthicc.tools.capabilities import ToolCapability
 
 DEPENDENCIES = ["pyte>=0.8.0", "Pillow>=10.0"]
 
@@ -423,8 +422,6 @@ class TuiScreenshotTool:
         sess.proc = proc
         sess.pty_fd = master_fd
         # Background reader draining the PTY into the session buffer.
-        loop = asyncio.get_event_loop()
-
         async def _reader() -> None:
             while sess.proc is not None and sess.proc.poll() is None:
                 try:
@@ -589,7 +586,7 @@ class TuiScreenshotTool:
 
     def _render_png_sync(self, ansi: str, path: Path, style_map: dict[str, object]) -> None:
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from PIL import Image, ImageDraw
         except ImportError as exc:  # pragma: no cover - dep missing
             raise _RenderUnavailable("Pillow is not installed (DEPENDENCIES: Pillow>=10.0)") from exc
 
@@ -613,7 +610,7 @@ class TuiScreenshotTool:
         line_h = int(font_size * line_spacing * 1.35)
 
         cell_w = font.getlength("M")
-        cols = max((len(l) for l in lines), default=1)
+        cols = max((len(line_text) for line_text in lines), default=1)
         content_w = int(cols * cell_w) + padding * 2
         content_h = max(len(lines) * line_h + padding * 2, padding * 2 + line_h)
 
@@ -653,14 +650,13 @@ class TuiScreenshotTool:
     async def _render_svg(self, ansi: str, path: Path, style_map: dict[str, object]) -> None:
         theme = str(style_map.get("theme") or "modern-dark")
         palette = _THEMES.get(theme, _THEMES["modern-dark"])
-        fg = palette.get("fg", "#E6EDF3")
         bg = palette.get("bg", "#0D1117")
         font_size = int(style_map.get("font_size") or 16)
         padding = int(style_map.get("padding") or 24)
         text = self._ansi_to_text(ansi)
         lines = text.splitlines() or [""]
         line_h = int(font_size * 1.35)
-        cols = max((len(l) for l in lines), default=1)
+        cols = max((len(line_text) for line_text in lines), default=1)
         width = int(cols * font_size * 0.62) + padding * 2
         height = max(len(lines) * line_h + padding * 2, padding * 2 + line_h)
 
@@ -669,8 +665,8 @@ class TuiScreenshotTool:
 
         body = "\n".join(
             f'<text x="{padding}" y="{padding + (i + 1) * line_h}" '
-            f'font-family="monospace" font-size="{font_size}">{esc(l)}</text>'
-            for i, l in enumerate(lines)
+            f'font-family="monospace" font-size="{font_size}">{esc(line_text)}</text>'
+            for i, line_text in enumerate(lines)
         )
         svg = (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'

@@ -19,7 +19,6 @@ from agenthicc.runners.process_lease import (
     read_json_object,
 )
 from agenthicc.workflows.checkpoint import (
-    MAX_CHECKPOINT_BYTES,
     CheckpointValidationError,
     WorkflowCheckpoint,
 )
@@ -120,10 +119,6 @@ class WorkflowCheckpointStore:
         except OSError:
             pass
         payload = json.dumps(checkpoint.to_dict(), ensure_ascii=False, sort_keys=True, indent=2)
-        if len(payload.encode("utf-8")) > MAX_CHECKPOINT_BYTES:
-            raise CheckpointValidationError(
-                f"workflow checkpoint exceeds {MAX_CHECKPOINT_BYTES} bytes"
-            )
         fd, temp_name = tempfile.mkstemp(prefix=".checkpoint-", suffix=".tmp", dir=path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:

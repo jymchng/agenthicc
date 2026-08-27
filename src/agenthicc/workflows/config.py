@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.usage_ledger import UsageLedger
     from agenthicc.tools.cloakbrowser import BrowserSessionManager
     from agenthicc.tools.workspace_access import WorkspaceScope, WorkspaceAccessPolicy
+    from agenthicc.runners.startup import StartupCoordinator
 
 
 @dataclass(frozen=True)
@@ -68,12 +69,16 @@ class WorkflowConfig:
     """Session-scoped provider usage ledger (PRD-157)."""
     browser_manager: "BrowserSessionManager | None" = None
     """Session-owned browser lifecycle; live browser objects never enter checkpoints."""
-    browser_tools: list["ToolLike"] = field(default_factory=list)
-    """Session-bound CloakBrowser tools; empty when the optional feature is disabled."""
+    browser_tools: Iterable["ToolLike"] = field(default_factory=tuple)
+    """Session-bound browser tools, materialized only when iterated."""
     workspace_scope: "WorkspaceScope | None" = None
     """Canonical filesystem roots for this workflow's parent session."""
     workspace_access: "WorkspaceAccessPolicy | None" = None
     """Mode-aware path policy shared with all phase turns and tools."""
+    startup: "StartupCoordinator | None" = None
+    """Session-owned readiness coordinator for deferred dependencies."""
+    required_startup_phases: tuple[str, ...] = ()
+    """Readiness phases a custom workflow must await before its first turn."""
 
     def all_plugin_tools(self) -> list["ToolLike"]:
         """Return project tools while accepting legacy list-based configs."""
@@ -82,3 +87,17 @@ class WorkflowConfig:
         else:
             tools = list(self.plugin_tools.all_tools)
         return [*tools, *self.browser_tools]
+
+    async def wait_for_startup(self, *phases: str) -> None:
+        """Await session-owned readiness phases without creating new resources.
+
+        Custom workflows should use this boundary for declared dependencies
+        such as ``mcp``. The coordinator raises its typed dependency error for
+        failed, cancelled, or never-started required phases.
+        """
+        names = phases or self.required_startup_phases
+        if not names:
+            return
+        if self.startup is None:
+            raise RuntimeError("startup readiness is unavailable for this workflow")
+        await self.startup.wait_for(*names)

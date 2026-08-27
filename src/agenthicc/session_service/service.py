@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 import uuid
@@ -30,6 +31,7 @@ _SENSITIVE = re.compile(
     r"(?i)(password|passwd|token|secret|api[_-]?key|authorization|cookie|private[_-]?key)"
 )
 _TERMINAL_STATES = {SessionState.COMPLETED, SessionState.FAILED, SessionState.CANCELLED}
+log = logging.getLogger(__name__)
 
 
 def _redact(value: object, key: str = "") -> object:
@@ -133,14 +135,86 @@ class SessionService:
         self._turn_handlers: dict[str, TurnHandler] = {}
         self._turn_tasks: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
-        self._load_existing()
+        # Session runtimes are deliberately materialized on demand.  The
+        # store's small metadata index lets listing and selection avoid reading
+        # every historical JSONL event stream during process startup.
+        self._metadata = self.store.session_metadata()
 
-    def _load_existing(self) -> None:
-        for session_id in self.store.session_ids():
-            events = self.store.all_events(session_id)
-            if not events:
-                continue
-            self._runtimes[session_id] = self._runtime_from_events(events)
+    async def _ensure_runtime_locked(self, session_id: str) -> _Runtime:
+        """Materialize one session while the service lock is held."""
+        runtime = self._runtimes.get(session_id)
+        if runtime is not None:
+            return runtime
+        if not self.store.exists(session_id):
+            raise SessionError("not_found", f"session not found: {session_id}", status=404)
+        events = self.store.all_events(session_id)
+        if not events:
+            raise SessionError("not_found", f"session not found: {session_id}", status=404)
+        runtime = self._runtime_from_events(events)
+        self._runtimes[session_id] = runtime
+        self._subscriptions.setdefault(session_id, set())
+        self._update_metadata(runtime)
+        return runtime
+
+    @staticmethod
+    def _metadata_for_runtime(runtime: _Runtime) -> dict[str, object]:
+        snapshot = runtime.snapshot
+        return {
+            "session_id": snapshot.session_id,
+            "project_root": snapshot.project_root,
+            "created_at": snapshot.created_at,
+            "updated_at": snapshot.updated_at,
+            "state": snapshot.state.value,
+            "last_event_sequence": snapshot.last_event_sequence,
+            "capabilities": list(snapshot.capabilities),
+            "deleted": runtime.deleted,
+        }
+
+    @staticmethod
+    def _snapshot_from_metadata(metadata: Mapping[str, object]) -> SessionSnapshot:
+        session_id = metadata.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session metadata has no session_id")
+        raw_state = metadata.get("state", SessionState.CREATED.value)
+        try:
+            state = SessionState(raw_state if isinstance(raw_state, str) else "created")
+        except ValueError:
+            state = SessionState.CREATED
+        capabilities = metadata.get("capabilities", [])
+        safe_capabilities = (
+            tuple(item for item in capabilities if isinstance(item, str))
+            if isinstance(capabilities, (list, tuple))
+            else ()
+        )
+        project_root = metadata.get("project_root", "")
+        created_at_value = metadata.get("created_at")
+        updated_at_value = metadata.get("updated_at")
+        sequence_value = metadata.get("last_event_sequence")
+        return SessionSnapshot(
+            schema_version=1,
+            session_id=session_id,
+            project_root=project_root if isinstance(project_root, str) else "",
+            created_at=(
+                float(created_at_value) if isinstance(created_at_value, (int, float)) else 0.0
+            ),
+            updated_at=(
+                float(updated_at_value) if isinstance(updated_at_value, (int, float)) else 0.0
+            ),
+            state=state,
+            last_event_sequence=sequence_value if isinstance(sequence_value, int) else 0,
+            capabilities=safe_capabilities,
+        )
+
+    def _update_metadata(self, runtime: _Runtime) -> None:
+        """Publish a small redacted index record after a durable change."""
+        metadata = self._metadata_for_runtime(runtime)
+        self._metadata[runtime.snapshot.session_id] = metadata
+        try:
+            self.store.update_session_metadata(runtime.snapshot.session_id, metadata)
+        except (OSError, ValueError) as exc:
+            # The event was already durably appended.  The next selected
+            # session access can reconstruct this acceleration record.
+            log.warning("session metadata update failed: %s", exc)
 
     @staticmethod
     def _initial_snapshot(
@@ -388,6 +462,7 @@ class SessionService:
                 agent=dict(agent or {}),
                 workflow=dict(workflow or {}),
             )
+            self._update_metadata(runtime)
             return self._project_snapshot(runtime.snapshot, caps)
 
     async def ensure_session(
@@ -402,6 +477,8 @@ class SessionService:
         caps = capabilities if capabilities is not None else self.default_capabilities
         async with self._lock:
             existing = self._runtimes.get(session_id)
+            if existing is None and self.store.exists(session_id):
+                existing = await self._ensure_runtime_locked(session_id)
             if existing is not None:
                 return self._project_snapshot(existing.snapshot, caps)
             runtime = _Runtime(
@@ -432,7 +509,9 @@ class SessionService:
     ) -> SessionSnapshot:
         caps = capabilities if capabilities is not None else self.default_capabilities
         async with self._lock:
-            return self._project_snapshot(self._active_runtime(session_id).snapshot, caps)
+            await self._ensure_runtime_locked(session_id)
+            runtime = self._active_runtime(session_id)
+            return self._project_snapshot(runtime.snapshot, caps)
 
     async def list_sessions(
         self,
@@ -444,12 +523,21 @@ class SessionService:
         self._require(caps, "read")
         target = str(Path(project_root).resolve()) if project_root is not None else None
         async with self._lock:
-            snapshots = [
-                self._project_snapshot(runtime.snapshot, caps)
-                for runtime in self._runtimes.values()
-                if not runtime.deleted
-                and (target is None or runtime.snapshot.project_root == target)
-            ]
+            # Refresh only bounded index metadata. This picks up sessions
+            # created by another client without replaying their event logs.
+            self._metadata = self.store.session_metadata()
+            snapshots: list[SessionSnapshot] = []
+            for session_id, metadata in self._metadata.items():
+                if bool(metadata.get("deleted", False)):
+                    continue
+                runtime = self._runtimes.get(session_id)
+                snapshot = (
+                    runtime.snapshot
+                    if runtime is not None
+                    else self._snapshot_from_metadata(metadata)
+                )
+                if target is None or snapshot.project_root == target:
+                    snapshots.append(self._project_snapshot(snapshot, caps))
         return sorted(snapshots, key=lambda item: item.updated_at, reverse=True)
 
     async def events(
@@ -462,6 +550,7 @@ class SessionService:
         caps = capabilities if capabilities is not None else self.default_capabilities
         self._require(caps, "read")
         async with self._lock:
+            await self._ensure_runtime_locked(session_id)
             runtime = self._active_runtime(session_id)
             if runtime.events and after_sequence < runtime.earliest_sequence - 1:
                 raise SessionError(
@@ -479,6 +568,7 @@ class SessionService:
         """Compact durable history and advance the service replay boundary."""
 
         async with self._lock:
+            await self._ensure_runtime_locked(session_id)
             runtime = self._active_runtime(session_id)
             earliest = self.store.compact(session_id, before_sequence=before_sequence)
             if earliest:
@@ -542,8 +632,11 @@ class SessionService:
         visibility: str = "session",
     ) -> SessionEvent:
         async with self._lock:
+            runtime = await self._ensure_runtime_locked(session_id)
+            if runtime.deleted:
+                raise SessionError("not_found", f"session not found: {session_id}", status=404)
             return await self._append_locked(
-                self._active_runtime(session_id),
+                runtime,
                 source=source,
                 kind=kind,
                 payload=payload,
@@ -578,7 +671,7 @@ class SessionService:
         if not log_path.exists():
             return 0
         async with self._lock:
-            runtime = self._active_runtime(session_id)
+            runtime = await self._ensure_runtime_locked(session_id)
             if any(event.source == "kernel" for event in runtime.events):
                 return 0
         from agenthicc.kernel import Event  # noqa: PLC0415
@@ -623,6 +716,7 @@ class SessionService:
         runtime.snapshot = self._apply_event(runtime.snapshot, event)
         if runtime.earliest_sequence == 0:
             runtime.earliest_sequence = event.sequence
+        self._update_metadata(runtime)
         await self._notify(runtime, event)
         return event
 
@@ -653,9 +747,7 @@ class SessionService:
         turn_id: str | None = None
         cancel_task: asyncio.Task[None] | None = None
         async with self._lock:
-            runtime = self._runtimes.get(session_id)
-            if runtime is None:
-                raise SessionError("not_found", f"session not found: {session_id}", status=404)
+            runtime = await self._ensure_runtime_locked(session_id)
             existing = runtime.command_results.get(command.idempotency_key)
             if existing is not None:
                 return replace(existing, replayed=True)
@@ -765,6 +857,7 @@ class SessionService:
                 )
                 result = CommandResult(True, command.command_id, session_id, data={"deleted": True})
                 runtime.deleted = True
+                self._update_metadata(runtime)
                 subscriptions = self._subscriptions.pop(session_id, set())
                 for subscription in subscriptions:
                     subscription.closed = True

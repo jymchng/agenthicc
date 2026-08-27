@@ -438,6 +438,29 @@ def _cmd_status(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_startup(ctx: CommandContext) -> bool:
+    """Show redacted startup phase timing and readiness diagnostics."""
+    coordinator = ctx.startup
+    if coordinator is None:
+        ctx.console.print("Startup diagnostics are unavailable.", markup=False)
+        return True
+    reports = getattr(coordinator, "to_dict", lambda: [])()
+    if not reports:
+        ctx.console.print("No startup phases have been recorded.", markup=False)
+        return True
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        elapsed = report.get("elapsed_s")
+        elapsed_text = f"{float(elapsed):.3f}s" if isinstance(elapsed, (int, float)) else "—"
+        ctx.console.print(
+            f"{report.get('name', 'unknown')}: {report.get('state', 'unknown')} "
+            f"({elapsed_text})",
+            markup=False,
+        )
+    return True
+
+
 def _cmd_ps(ctx: CommandContext) -> bool:
     """Open or print the owned background-terminal manager."""
 
@@ -983,6 +1006,12 @@ BUILTIN_COMMANDS: list[Command] = [
         description="Show running agents and their tasks",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_status,
+    ),
+    Command(
+        name="/startup",
+        description="Show startup phase readiness and timing diagnostics",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_startup,
     ),
     Command(
         name="/ps",

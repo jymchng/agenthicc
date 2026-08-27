@@ -14,35 +14,86 @@ import importlib.util
 import inspect
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import TYPE_CHECKING
 
-from agenthicc.workflows.plugin import WorkflowPlugin
+if TYPE_CHECKING:
+    from agenthicc.workflows.plugin import WorkflowPlugin
 
 log = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class BuiltinWorkflowDescriptor:
+    """Import-free metadata for a built-in workflow.
+
+    Registry construction is on the interactive startup path.  Keeping the
+    module and attribute name here lets the registry expose workflow names and
+    mode bindings without importing every workflow implementation.  The
+    implementation is imported only when the workflow is selected (or when a
+    caller explicitly asks for all plugin classes).
+    """
+
+    name: str
+    module: str
+    attribute: str
+    mode_bindings: tuple[str, ...] = ()
+
+
+_BUILTIN_WORKFLOW_DESCRIPTORS = (
+    BuiltinWorkflowDescriptor(
+        "code_plan", "agenthicc.workflows.code_plan.definition", "CodePlan", ("Plan",)
+    ),
+    BuiltinWorkflowDescriptor(
+        "create_workflow",
+        "agenthicc.workflows.create_workflow.definition",
+        "CreateWorkflow",
+    ),
+    BuiltinWorkflowDescriptor(
+        "goal_flow", "agenthicc.workflows.goal_flow.runner", "GoalFlowWorkflow"
+    ),
+    BuiltinWorkflowDescriptor(
+        "make_agenthicc_tool",
+        "agenthicc.workflows.make_agenthicc_tool.runner",
+        "MakeAgenthiccToolWorkflow",
+    ),
+    BuiltinWorkflowDescriptor(
+        "make_epub_book",
+        "agenthicc.workflows.make_epub_book.runner",
+        "MakeEpubBookWorkflow",
+    ),
+    BuiltinWorkflowDescriptor(
+        "make_pdf_book",
+        "agenthicc.workflows.make_pdf_book.runner",
+        "MakePdfBookWorkflow",
+    ),
+    BuiltinWorkflowDescriptor(
+        "site_imitate", "agenthicc.workflows.site_imitate.runner", "SiteImitateWorkflow"
+    ),
+)
+
+
+def builtin_workflow_descriptors() -> tuple[BuiltinWorkflowDescriptor, ...]:
+    """Return built-in metadata without importing workflow implementations."""
+    return _BUILTIN_WORKFLOW_DESCRIPTORS
+
+
+def load_builtin_workflow(descriptor: BuiltinWorkflowDescriptor) -> type[WorkflowPlugin]:
+    """Import and return one built-in workflow described by *descriptor*."""
+    from agenthicc.workflows.plugin import WorkflowPlugin  # noqa: PLC0415
+
+    module = __import__(descriptor.module, fromlist=[descriptor.attribute])
+    plugin_cls = getattr(module, descriptor.attribute)
+    if not isinstance(plugin_cls, type) or not issubclass(plugin_cls, WorkflowPlugin):
+        raise TypeError(f"{descriptor.module}.{descriptor.attribute} is not a WorkflowPlugin")
+    return plugin_cls
+
+
 def load_builtin_workflows() -> list[type[WorkflowPlugin]]:
     """Return every built-in :class:`WorkflowPlugin` definition."""
-    from agenthicc.workflows.code_plan.definition import CodePlan  # noqa: PLC0415
-    from agenthicc.workflows.create_workflow.definition import CreateWorkflow  # noqa: PLC0415
-    from agenthicc.workflows.goal_flow.runner import GoalFlowWorkflow  # noqa: PLC0415
-    from agenthicc.workflows.make_agenthicc_tool.runner import (  # noqa: PLC0415
-        MakeAgenthiccToolWorkflow,
-    )
-    from agenthicc.workflows.make_epub_book.runner import MakeEpubBookWorkflow  # noqa: PLC0415
-    from agenthicc.workflows.make_pdf_book.runner import MakePdfBookWorkflow  # noqa: PLC0415
-    from agenthicc.workflows.site_imitate.runner import SiteImitateWorkflow  # noqa: PLC0415
-
-    return [
-        CodePlan,
-        CreateWorkflow,
-        GoalFlowWorkflow,
-        MakeAgenthiccToolWorkflow,
-        MakeEpubBookWorkflow,
-        MakePdfBookWorkflow,
-        SiteImitateWorkflow,
-    ]
+    return [load_builtin_workflow(item) for item in _BUILTIN_WORKFLOW_DESCRIPTORS]
 
 
 def load_python_workflows(
@@ -55,6 +106,8 @@ def load_python_workflows(
     provenance is recorded by :mod:`agenthicc.workflows.registry`.
     """
     try:
+        from agenthicc.workflows.plugin import WorkflowPlugin  # noqa: PLC0415
+
         modules = load_python_workflow_modules(path)
         results: list[type[WorkflowPlugin]] = []
         seen: set[type[WorkflowPlugin]] = set()

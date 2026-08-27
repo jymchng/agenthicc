@@ -91,6 +91,19 @@ def _config(name: str, **kwargs: object) -> McpServerConfig:
     return McpServerConfig(name=name, url="fake-server", **kwargs)
 
 
+def test_required_auto_connect_servers_excludes_optional_and_manual_servers() -> None:
+    manager = McpSessionManager(
+        [
+            _config("required", required=True),
+            _config("optional"),
+            _config("manual", required=True, auto_connect=False),
+            _config("disabled", required=True, enabled=False),
+        ]
+    )
+
+    assert manager.required_auto_connect_servers == ("required",)
+
+
 def test_config_supports_argv_and_redacts_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MCP_TOKEN", "secret-token")
     config = McpServerConfig.from_dict(
@@ -258,7 +271,11 @@ async def test_refresh_replaces_removed_tools_and_increments_revision() -> None:
 async def test_reload_all_reconnects_every_enabled_server_and_republishes_catalogs() -> None:
     bridges: dict[str, FakeBridge] = {}
     manager = McpSessionManager(
-        [_config("automatic"), _config("manual", auto_connect=False), _config("disabled", enabled=False)],
+        [
+            _config("automatic"),
+            _config("manual", auto_connect=False),
+            _config("disabled", enabled=False),
+        ],
         bridge_factory=_factory(bridges),
     )
     await manager.start_all()

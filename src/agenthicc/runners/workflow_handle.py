@@ -377,7 +377,13 @@ class WorkflowRunHandle:
         return self.continuation_messages.pop(0)
 
     def build_checkpoint(self, *, reason: str = "") -> WorkflowCheckpoint:
-        """Build a bounded checkpoint from the current context and journal."""
+        """Build a checkpoint from the current context and journal.
+
+        Checkpoint context has no framework-imposed serialized byte ceiling.
+        The context still must use a declared JSON-compatible codec, while
+        the checkpoint store and the backing filesystem determine practical
+        capacity.
+        """
         if self.context is None:
             raise ValueError("cannot checkpoint a workflow before its context exists")
         context_payload = context_to_payload(self.context, workflow=self.workflow)

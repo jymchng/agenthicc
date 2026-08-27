@@ -57,6 +57,7 @@ __all__ = [
 ]
 
 _MAX_OUTPUT_BYTES = 64 * 1024
+_CANCELLATION_OUTPUT_GRACE_S = 0.3
 _SECRET_FLAGS = re.compile(
     r"(?i)(--?(?:password|passwd|token|secret|api[-_]?key|authorization))\s*(?:=|\s)\s*([^\s]+)"
 )
@@ -184,9 +185,9 @@ async def _run_proc(
         except (asyncio.TimeoutError, asyncio.CancelledError):
             return b"", b"[process output could not be fully drained]\n"
 
-    try:
+    async def spawn_process() -> asyncio.subprocess.Process:
         if shell:
-            proc = await asyncio.create_subprocess_shell(
+            return await asyncio.create_subprocess_shell(
                 cmd[0],
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -199,46 +200,86 @@ async def _run_proc(
                     else shutil.which("bash")
                 ),
             )
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=effective_env,
-                start_new_session=True,
-            )
+        return await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=effective_env,
+            start_new_session=True,
+        )
+
+    try:
+        # Shield the spawn itself.  asyncio can cancel the parent after the
+        # child has been created but before create_subprocess_* returns.  The
+        # old implementation then lost the Process handle and could leave an
+        # orphan.  Finishing this tiny task gives cancellation cleanup the
+        # handle it needs.
+        spawn_task = asyncio.create_task(spawn_process(), name="command-spawn")
+        spawn_cancelled = False
+        try:
+            proc = await asyncio.shield(spawn_task)
+        except asyncio.CancelledError:
+            spawn_cancelled = True
+            proc = await asyncio.shield(spawn_task)
+
         process = proc
         communication = asyncio.create_task(process.communicate(), name="command-output")
         cleanup_result = "not_required"
         state = CommandState.EXITED
         termination_reason: str | None = None
         cancelled = False
-        try:
-            if deadline.effective_s is None:
-                stdout_b, stderr_b = await asyncio.shield(communication)
-            else:
-                stdout_b, stderr_b = await asyncio.wait_for(
-                    asyncio.shield(communication), timeout=deadline.effective_s
-                )
-        except asyncio.TimeoutError:
-            state = CommandState.TIMED_OUT
-            termination_reason = "command deadline expired"
-            cleanup_result = await cleanup(reason="timeout")
-            stdout_b, stderr_b = await output_after_cleanup()
-            stderr_b += b"[process stopped: command timeout]\n"
-        except asyncio.CancelledError:
+        if spawn_cancelled:
             state = CommandState.CANCELLED
             cancelled = True
             termination_reason = "owning task cancelled"
+            # The cancellation may have arrived while the child was still
+            # being spawned. Let communicate() observe already-produced pipe
+            # data before terminating a process whose handle we only just
+            # recovered. This preserves the same partial-output contract as
+            # cancellation after normal process startup.
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(communication), timeout=_CANCELLATION_OUTPUT_GRACE_S
+                )
+            except asyncio.TimeoutError:
+                pass
             cleanup_task = asyncio.create_task(cleanup(reason="cancellation"))
             cleanup_result = await asyncio.shield(cleanup_task)
             stdout_b, stderr_b = await output_after_cleanup()
             stderr_b += b"[process stopped: cancellation]\n"
             if _PROPAGATE_TOOL_CANCELLATION.get():
-                raise
+                raise asyncio.CancelledError
         else:
-            stdout_b, stderr_b = stdout_b, stderr_b
+            try:
+                if deadline.effective_s is None:
+                    stdout_b, stderr_b = await asyncio.shield(communication)
+                else:
+                    stdout_b, stderr_b = await asyncio.wait_for(
+                        asyncio.shield(communication), timeout=deadline.effective_s
+                    )
+            except asyncio.TimeoutError:
+                state = CommandState.TIMED_OUT
+                termination_reason = "command deadline expired"
+                cleanup_result = await cleanup(reason="timeout")
+                stdout_b, stderr_b = await output_after_cleanup()
+                stderr_b += b"[process stopped: command timeout]\n"
+            except asyncio.CancelledError:
+                state = CommandState.CANCELLED
+                cancelled = True
+                termination_reason = "owning task cancelled"
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(communication), timeout=_CANCELLATION_OUTPUT_GRACE_S
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                cleanup_task = asyncio.create_task(cleanup(reason="cancellation"))
+                cleanup_result = await asyncio.shield(cleanup_task)
+                stdout_b, stderr_b = await output_after_cleanup()
+                stderr_b += b"[process stopped: cancellation]\n"
+                if _PROPAGATE_TOOL_CANCELLATION.get():
+                    raise
         if state is CommandState.EXITED and process.returncode != 0:
             state = CommandState.FAILED
             termination_reason = f"process exited with return code {process.returncode}"

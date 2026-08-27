@@ -218,8 +218,11 @@ Every generated custom runner must use the cache-stable `CACHE_CONTRACT`, pass
 it as `stable_system_prompt` to `CodePlanRunner.run_phase()`, keep phase state
 and artifacts dynamic, use the parent session's `conversation_id`, memory,
 workspace policy, and browser/MCP tools, and ask the user focused questions for
-material ambiguity instead of guessing. It must provide JSON-bounded checkpoint
-codecs and re-raise ordinary errors to the framework failure finalizer. A
+material ambiguity instead of guessing. It must provide JSON-compatible
+checkpoint codecs; checkpoint contexts have no framework-imposed serialized
+byte ceiling. The framework still validates JSON shape and rejects unsupported
+runtime objects, and the filesystem remains the practical capacity boundary.
+It must re-raise ordinary errors to the framework failure finalizer. A
 simple unconditional graph may use the inherited generic runner. The generated
 TOML is a template for you to copy into `.agenthicc/agenthicc.toml`; the
 authoring workflow does not silently modify configuration files or write
