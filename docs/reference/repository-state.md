@@ -74,6 +74,11 @@ The built-in workflows have specialized runners:
   `plan → execute → review → summarize`.
 - `create_workflow` uses its own typed authoring state, phase artifacts, direct
   source generation, deterministic validation, and resume/retry rules.
+- `copy_website` studies a target with Playwright before rebuilding it through
+  explicit implementation, responsive, and parity-validation phases.
+- `reconstruct_site` performs a deeper reference-site reconstruction with
+  research, architecture, infrastructure, implementation, and validation
+  phases.
 - Generic `WorkflowRunner` executes declarative `PhaseSpec` graphs and supports
   model overrides, command gates, human phases, parallel phases, and resume.
 

@@ -27,7 +27,7 @@ agenthicc runs **agent turns** inside your project with full filesystem, git, an
 | **Terminal workspace** | Rich Live TUI with approvals, overlays, modes, slash commands, workflow progress, and a pinned composer |
 | **Headless mode** | Stdin-based JSON-lines interface for pipelines and CI |
 | **State-driven kernel** | Immutable domain state with JSONL persistence and event sourcing |
-| **Workflow system** | `code_plan`, `site_imitate`, and user-authored workflows with typed state machines |
+| **Workflow system** | `code_plan`, `create_workflow`, `copy_website`, `reconstruct_site`, `site_imitate`, and user-authored workflows with typed state machines |
 | **Extension registries** | Tools, agents, skills, modes, commands, and MCP servers |
 | **Memory** | Session, project, and global memory with durable conversation journaling |
 | **Context budgeting** | Model-aware compaction, transport retries, and tool-result replay for interrupted/resumed turns |
@@ -40,6 +40,8 @@ agenthicc runs **agent turns** inside your project with full filesystem, git, an
 |---|---|
 | `code_plan` | Plan-and-execute code changes with approval gates |
 | `create_workflow` | Author new workflows interactively |
+| `copy_website` | Study a website with Playwright and rebuild it as a mobile-friendly Next.js application |
+| `reconstruct_site` | Reconstruct a reference website through research, implementation, and validation phases |
 | `site_imitate` | Generate mobile-first responsive websites (viewport checks enforced) |
 
 ---
