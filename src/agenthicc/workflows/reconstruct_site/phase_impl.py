@@ -1,15 +1,16 @@
 """reconstruct_site — reconstruct a reference website as a modern Next.js app.
 
-A 39-phase (including a controlled repeated per-route PAGE phase) orchestration
+A 41-phase (including a controlled repeated per-route PAGE phase) orchestration
 workflow:
-discovery, deep research, analysis, architecture, design-system extraction,
-project bootstrap, global shell, shared components, per-page implementation,
-data layer, responsive pass, visual/interaction validation, accessibility,
-performance, final fidelity pass, and final validation — then COMPLETE or
-BLOCKED. All phase transitions happen only through explicit @tool_control
-transition-tool calls; prose never advances the workflow. Later validation
-phases can send the run back to any earlier phase via a `target_phase`
-argument on their rejection tools (controlled re-entry).
+discovery, deep visual/interaction/responsive research, asset analysis,
+architecture, design-system extraction, research approval, project bootstrap,
+global shell, shared components, per-page implementation, data layer,
+responsive pass, visual/interaction validation, accessibility, performance,
+final fidelity pass, and final validation — then COMPLETE or BLOCKED. All
+phase transitions happen only through explicit @tool_control transition-tool
+calls; prose never advances the workflow. Later validation phases can send the
+run back to any earlier phase via a `target_phase` argument on their rejection
+tools (controlled re-entry).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import uuid
 from collections.abc import Callable
 from enum import Enum, auto
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit, urlunsplit
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
@@ -34,6 +36,21 @@ log = logging.getLogger(__name__)
 
 #: Bounded retries per phase — never loop forever waiting for a tool call.
 _MAX_ATTEMPTS = 5
+
+
+def _safe_reference_url(value: str) -> str:
+    """Keep the navigable URL while removing credentials and query secrets."""
+    try:
+        parsed = urlsplit(value.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return ""
+        host = parsed.hostname
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    except ValueError:
+        return ""
+
 
 # Stable workflow policy.  Keep phase-specific instructions and current
 # artifacts in the dynamic ``system_prompt`` argument to ``run_phase``.
@@ -59,8 +76,10 @@ class ReconstructState(Enum):
     VISUAL_RESEARCH = auto()
     INTERACTION_ANALYSIS = auto()
     CONTENT_ASSETS = auto()
+    RESPONSIVE_RESEARCH = auto()
     ARCHITECTURE = auto()
     DESIGN_SYSTEM = auto()
+    RESEARCH_GATE = auto()
     BOOTSTRAP = auto()
     GLOBAL_SHELL = auto()
     COMPONENT_SYSTEM = auto()
@@ -136,7 +155,18 @@ class ReconstructContext:
     component_inventory: list[dict[str, object]] = dataclasses.field(default_factory=list)
     design_tokens: dict[str, object] = dataclasses.field(default_factory=dict)
     architecture: str = ""
+    research_scope: dict[str, object] = dataclasses.field(default_factory=dict)
     interaction_inventory: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    visual_observations: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    interaction_traces: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    responsive_inventory: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    responsive_breakpoints: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    coverage_matrix: dict[str, object] = dataclasses.field(default_factory=dict)
+    research_baseline: dict[str, object] = dataclasses.field(default_factory=dict)
+    research_baseline_id: str = ""
+    research_gate_status: str = "pending"
+    research_exceptions: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    unresolved_research: list[str] = dataclasses.field(default_factory=list)
 
     # Status + issue tracking
     implementation_status: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -178,6 +208,12 @@ def _make_init_tools(
         auth_required: bool = False,
         reference_is_static: bool = True,
         reproduce_api_or_mock: str = "mock",
+        allowed_domains: list[str] | None = None,
+        route_inclusion: list[str] | None = None,
+        route_exclusion: list[str] | None = None,
+        dynamic_content_policy: str = "observe",
+        unavailable_behavior: str = "report",
+        fidelity_exceptions: str = "",
     ) -> dict[str, object]:
         """Record the initial workflow state and advance to reconnaissance.
 
@@ -189,12 +225,28 @@ def _make_init_tools(
             auth_required: Whether the reference has authentication UI.
             reference_is_static: Whether the reference is static or dynamic.
             reproduce_api_or_mock: 'reproduce' or 'mock' for API behaviour.
+            allowed_domains: Domains the browser is authorized to visit. This
+                is scope metadata only; the configured network policy remains
+                authoritative.
+            route_inclusion: Optional route patterns to include.
+            route_exclusion: Optional route patterns to exclude.
+            dynamic_content_policy: How live, personalized, or randomized
+                content should be represented.
+            unavailable_behavior: Whether inaccessible states are reported or
+                represented with an explicitly approved fixture/mock.
+            fidelity_exceptions: User-approved fidelity limitations.
         """
         if not reference_url.strip():
             return {
                 "ok": False,
                 "error": "reference_url must not be empty.",
                 "fix": "Provide the reference website URL.",
+            }
+        if not _safe_reference_url(reference_url):
+            return {
+                "ok": False,
+                "error": "reference_url must be an HTTP or HTTPS URL without invalid syntax.",
+                "fix": "Provide a reachable reference URL such as https://example.test/.",
             }
         if not target_directory.strip():
             return {
@@ -209,6 +261,12 @@ def _make_init_tools(
         data["auth_required"] = bool(auth_required)
         data["reference_is_static"] = bool(reference_is_static)
         data["reproduce_api_or_mock"] = reproduce_api_or_mock.strip() or "mock"
+        data["allowed_domains"] = [item.strip() for item in (allowed_domains or []) if item.strip()]
+        data["route_inclusion"] = [item.strip() for item in (route_inclusion or []) if item.strip()]
+        data["route_exclusion"] = [item.strip() for item in (route_exclusion or []) if item.strip()]
+        data["dynamic_content_policy"] = dynamic_content_policy.strip() or "observe"
+        data["unavailable_behavior"] = unavailable_behavior.strip() or "report"
+        data["fidelity_exceptions"] = fidelity_exceptions.strip()
         event.set()
         return {
             "ok": True,
@@ -251,13 +309,46 @@ def _make_recon_tools(
                 "error": "routes must not be empty.",
                 "fix": "Inventory every discoverable major route first.",
             }
+        normalized_routes: list[dict[str, object]] = []
+        for route in routes:
+            if not isinstance(route, dict) or not str(route.get("route", "")).strip():
+                return {
+                    "ok": False,
+                    "error": "each route must be an object with a non-empty route.",
+                    "fix": "Record the canonical route or surface identifier.",
+                }
+            item = dict(route)
+            status = str(item.get("coverage_status", item.get("status", "observed"))).strip()
+            if status not in {
+                "observed",
+                "discovered_not_observed",
+                "unavailable",
+                "excluded",
+                "not_applicable",
+            }:
+                return {
+                    "ok": False,
+                    "error": f"invalid route coverage_status: {status!r}.",
+                    "fix": "Use observed, discovered_not_observed, unavailable, excluded, or not_applicable.",
+                }
+            if (
+                status != "observed"
+                and not str(item.get("reason", item.get("limitations", ""))).strip()
+            ):
+                return {
+                    "ok": False,
+                    "error": f"route {item['route']!r} needs a reason for status {status!r}.",
+                    "fix": "Explain why the candidate was not fully observed.",
+                }
+            item["coverage_status"] = status
+            normalized_routes.append(item)
         if not summary.strip():
             return {
                 "ok": False,
                 "error": "summary must not be empty.",
                 "fix": "Summarise the site-level reconnaissance.",
             }
-        data["routes"] = routes
+        data["routes"] = normalized_routes
         data["summary"] = summary.strip()
         event.set()
         return {
@@ -281,6 +372,7 @@ def _make_visual_research_tools(
     async def submit_visual_spec(
         design_tokens: dict[str, object],
         summary: str,
+        observations: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         """Record the quantified visual design inventory and advance.
 
@@ -290,6 +382,8 @@ def _make_visual_research_tools(
                 image treatment, breakpoints). Values must be measured, not
                 vague ("clean modern design" is not acceptable).
             summary: Narrative of the visual spec with concrete observations.
+            observations: Optional per-route/viewport/state measurements. Each
+                observation should identify its coverage cell or source route.
         """
         if not design_tokens:
             return {
@@ -305,6 +399,7 @@ def _make_visual_research_tools(
             }
         data["design_tokens"] = design_tokens
         data["summary"] = summary.strip()
+        data["visual_observations"] = observations or []
         event.set()
         return {"ok": True, "message": "Visual spec recorded. Interaction analysis next."}
 
@@ -324,6 +419,7 @@ def _make_interaction_analysis_tools(
     async def submit_interaction_inventory(
         interactions: list[dict[str, object]],
         summary: str,
+        traces: list[dict[str, object]] | None = None,
     ) -> dict[str, object]:
         """Record the interaction/behaviour catalogue and advance.
 
@@ -336,6 +432,7 @@ def _make_interaction_analysis_tools(
                 tabs, carousels, forms+validation, loading, API requests,
                 infinite scroll, pagination, URL/query state, animations,
                 keyboard).
+            traces: Optional action/state traces linked to coverage cells.
         """
         if not interactions:
             return {
@@ -351,6 +448,7 @@ def _make_interaction_analysis_tools(
             }
         data["interactions"] = interactions
         data["summary"] = summary.strip()
+        data["interaction_traces"] = traces or []
         event.set()
         return {
             "ok": True,
@@ -399,6 +497,143 @@ def _make_content_assets_tools(
         return {"ok": True, "message": "Asset inventory recorded. Architecture next."}
 
     return [submit_asset_inventory]
+
+
+def _make_responsive_research_tools(
+    event: asyncio.Event,
+    data: dict[str, object],
+) -> list[Callable[..., object]]:
+    """Return the transition tool for viewport and breakpoint research."""
+    from lauren_ai._tools import tool
+    from agenthicc.tools.capabilities import tool_control
+
+    @tool_control
+    @tool()
+    async def submit_responsive_research(
+        observations: list[dict[str, object]],
+        breakpoints: list[dict[str, object]],
+        summary: str,
+    ) -> dict[str, object]:
+        """Record cross-viewport observations and advance to architecture.
+
+        Args:
+            observations: One entry per route/viewport comparison. Include
+                surface, viewport, state, layout changes, visibility, overflow,
+                typography, image, and touch-target observations.
+            breakpoints: Observed breakpoint intervals and the evidence for
+                each interval.
+            summary: Concrete responsive behavior summary.
+        """
+        if not observations:
+            return {
+                "ok": False,
+                "error": "observations must not be empty.",
+                "fix": "Compare every in-scope surface across the viewport matrix.",
+            }
+        if not summary.strip():
+            return {
+                "ok": False,
+                "error": "summary must not be empty.",
+                "fix": "Describe the observed breakpoint and reflow behavior.",
+            }
+        data["responsive_observations"] = observations
+        data["responsive_breakpoints"] = breakpoints
+        data["summary"] = summary.strip()
+        event.set()
+        return {
+            "ok": True,
+            "message": "Responsive research recorded. Architecture planning next.",
+        }
+
+    return [submit_responsive_research]
+
+
+def _make_research_gate_tools(
+    event: asyncio.Event,
+    data: dict[str, object],
+) -> list[Callable[..., object]]:
+    """Return explicit approval/rejection tools for the research gate."""
+    from lauren_ai._tools import tool
+    from agenthicc.tools.capabilities import tool_control
+
+    @tool_control
+    @tool()
+    async def approve_research_baseline(
+        summary: str,
+        baseline_artifact_id: str,
+    ) -> dict[str, object]:
+        """Approve a complete fidelity baseline and start implementation."""
+        if not summary.strip() or not baseline_artifact_id.strip():
+            return {
+                "ok": False,
+                "error": "summary and baseline_artifact_id are required.",
+                "fix": "Resolve all blocking cells, then approve the current baseline.",
+            }
+        data.update(
+            {
+                "action": "approve",
+                "summary": summary.strip(),
+                "baseline_artifact_id": baseline_artifact_id.strip(),
+            }
+        )
+        event.set()
+        return {"ok": True, "message": "Research baseline approval recorded."}
+
+    @tool_control
+    @tool()
+    async def approve_degraded_research(
+        exception_ids: list[str],
+        rationale: str,
+        baseline_artifact_id: str,
+    ) -> dict[str, object]:
+        """Approve only explicitly unavailable research cells."""
+        if not exception_ids or not rationale.strip() or not baseline_artifact_id.strip():
+            return {
+                "ok": False,
+                "error": "exception_ids, rationale, and baseline_artifact_id are required.",
+                "fix": "List each accepted unavailable cell and explain the limitation.",
+            }
+        data.update(
+            {
+                "action": "approve_degraded",
+                "exception_ids": exception_ids,
+                "rationale": rationale.strip(),
+                "baseline_artifact_id": baseline_artifact_id.strip(),
+            }
+        )
+        event.set()
+        return {"ok": True, "message": "Degraded research approval recorded."}
+
+    @tool_control
+    @tool()
+    async def reject_research_baseline(
+        findings: list[dict[str, object]],
+        target_phase: str,
+    ) -> dict[str, object]:
+        """Reject the baseline and request targeted research re-entry."""
+        if not findings:
+            return {
+                "ok": False,
+                "error": "findings must not be empty.",
+                "fix": "List the missing or contradictory observations.",
+            }
+        if not target_phase.strip():
+            return {
+                "ok": False,
+                "error": "target_phase must not be empty.",
+                "fix": "Choose the earliest phase that can resolve the findings.",
+            }
+        data.update(
+            {
+                "action": "reject",
+                "findings": findings,
+                "target_phase": target_phase.strip(),
+            }
+        )
+        event.set()
+        return {"ok": True, "message": "Research rejection recorded; targeted re-entry requested."}
+
+    return [approve_research_baseline, approve_degraded_research, reject_research_baseline]
 
 
 def _make_architecture_tools(
@@ -1796,10 +2031,10 @@ class ReconstructSiteRunner(CodePlanRunner):
     """
 
     workflow_name = "reconstruct_site"
-    total_phases = 39
+    total_phases = 41
 
     async def run(self, intent: str) -> ReconstructContext:
-        """Drive the 39-phase graph with controlled PAGE repetition."""
+        """Drive the 41-phase graph with controlled PAGE repetition."""
         from lauren_ai._memory import ShortTermMemory
 
         handle = self._cfg.workflow_handle
@@ -1838,10 +2073,14 @@ class ReconstructSiteRunner(CodePlanRunner):
                     state = await self._interaction_analysis(ctx, memory)
                 case ReconstructState.CONTENT_ASSETS:
                     state = await self._content_assets(ctx, memory)
+                case ReconstructState.RESPONSIVE_RESEARCH:
+                    state = await self._responsive_research(ctx, memory)
                 case ReconstructState.ARCHITECTURE:
                     state = await self._architecture(ctx, memory)
                 case ReconstructState.DESIGN_SYSTEM:
                     state = await self._design_system(ctx, memory)
+                case ReconstructState.RESEARCH_GATE:
+                    state = await self._research_gate(ctx, memory)
                 case ReconstructState.BOOTSTRAP:
                     state = await self._bootstrap(ctx, memory)
                 case ReconstructState.GLOBAL_SHELL:
@@ -1950,10 +2189,14 @@ class ReconstructSiteRunner(CodePlanRunner):
                     state = await self._interaction_analysis(context, memory)
                 case ReconstructState.CONTENT_ASSETS:
                     state = await self._content_assets(context, memory)
+                case ReconstructState.RESPONSIVE_RESEARCH:
+                    state = await self._responsive_research(context, memory)
                 case ReconstructState.ARCHITECTURE:
                     state = await self._architecture(context, memory)
                 case ReconstructState.DESIGN_SYSTEM:
                     state = await self._design_system(context, memory)
+                case ReconstructState.RESEARCH_GATE:
+                    state = await self._research_gate(context, memory)
                 case ReconstructState.BOOTSTRAP:
                     state = await self._bootstrap(context, memory)
                 case ReconstructState.GLOBAL_SHELL:
@@ -2031,40 +2274,42 @@ class ReconstructSiteRunner(CodePlanRunner):
             ReconstructState.VISUAL_RESEARCH: 2,
             ReconstructState.INTERACTION_ANALYSIS: 3,
             ReconstructState.CONTENT_ASSETS: 4,
-            ReconstructState.ARCHITECTURE: 5,
-            ReconstructState.DESIGN_SYSTEM: 6,
-            ReconstructState.BOOTSTRAP: 7,
-            ReconstructState.GLOBAL_SHELL: 8,
-            ReconstructState.COMPONENT_SYSTEM: 9,
-            ReconstructState.PAGE: 10,
-            ReconstructState.DATA_LAYER: 11,
-            ReconstructState.RESPONSIVE_PASS: 12,
-            ReconstructState.VISUAL_VALIDATION: 13,
-            ReconstructState.INTERACTION_VALIDATION: 14,
-            ReconstructState.ACCESSIBILITY: 15,
-            ReconstructState.PERFORMANCE: 16,
-            ReconstructState.FIDELITY_PASS: 17,
-            ReconstructState.SQLITE_DB: 18,
-            ReconstructState.VERIFY_SQLITE: 19,
-            ReconstructState.PRISMA: 20,
-            ReconstructState.VERIFY_PRISMA: 21,
-            ReconstructState.TANSTACK_QUERY: 22,
-            ReconstructState.VERIFY_TANSTACK: 23,
-            ReconstructState.ENV_CONFIG: 24,
-            ReconstructState.VERIFY_ENV: 25,
-            ReconstructState.DOCKER: 26,
-            ReconstructState.VERIFY_DOCKER: 27,
-            ReconstructState.NETLIFY: 28,
-            ReconstructState.VERIFY_NETLIFY: 29,
-            ReconstructState.CADDY: 30,
-            ReconstructState.VERIFY_CADDY: 31,
-            ReconstructState.PACKAGE_COMMANDS: 32,
-            ReconstructState.VERIFY_PACKAGE: 33,
-            ReconstructState.SCRIPTS: 34,
-            ReconstructState.VERIFY_SCRIPTS: 35,
-            ReconstructState.DOCS: 36,
-            ReconstructState.VERIFY_DOCS: 37,
-            ReconstructState.FINAL_VALIDATION: 38,
+            ReconstructState.RESPONSIVE_RESEARCH: 5,
+            ReconstructState.ARCHITECTURE: 6,
+            ReconstructState.DESIGN_SYSTEM: 7,
+            ReconstructState.RESEARCH_GATE: 8,
+            ReconstructState.BOOTSTRAP: 9,
+            ReconstructState.GLOBAL_SHELL: 10,
+            ReconstructState.COMPONENT_SYSTEM: 11,
+            ReconstructState.PAGE: 12,
+            ReconstructState.DATA_LAYER: 13,
+            ReconstructState.RESPONSIVE_PASS: 14,
+            ReconstructState.VISUAL_VALIDATION: 15,
+            ReconstructState.INTERACTION_VALIDATION: 16,
+            ReconstructState.ACCESSIBILITY: 17,
+            ReconstructState.PERFORMANCE: 18,
+            ReconstructState.FIDELITY_PASS: 19,
+            ReconstructState.SQLITE_DB: 20,
+            ReconstructState.VERIFY_SQLITE: 21,
+            ReconstructState.PRISMA: 22,
+            ReconstructState.VERIFY_PRISMA: 23,
+            ReconstructState.TANSTACK_QUERY: 24,
+            ReconstructState.VERIFY_TANSTACK: 25,
+            ReconstructState.ENV_CONFIG: 26,
+            ReconstructState.VERIFY_ENV: 27,
+            ReconstructState.DOCKER: 28,
+            ReconstructState.VERIFY_DOCKER: 29,
+            ReconstructState.NETLIFY: 30,
+            ReconstructState.VERIFY_NETLIFY: 31,
+            ReconstructState.CADDY: 32,
+            ReconstructState.VERIFY_CADDY: 33,
+            ReconstructState.PACKAGE_COMMANDS: 34,
+            ReconstructState.VERIFY_PACKAGE: 35,
+            ReconstructState.SCRIPTS: 36,
+            ReconstructState.VERIFY_SCRIPTS: 37,
+            ReconstructState.DOCS: 38,
+            ReconstructState.VERIFY_DOCS: 39,
+            ReconstructState.FINAL_VALIDATION: 40,
         }.get(state, 0)
 
     # ── discovery / research / analysis phase methods ────────────────────────
@@ -2083,11 +2328,16 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "workflow state: reference_url, target_directory, project constraints, "
                     "desired routes, auth requirements, whether the reference is static or "
                     "dynamic, and whether API behaviour should be reproduced or mocked. "
+                    "Also confirm allowed domains, route inclusion/exclusion, treatment of "
+                    "live/personalized content, unavailable-state handling, and accepted "
+                    "fidelity exceptions. Never place credentials in these fields. "
                     "Verify the reference is accessible (browser tools). Ask the user via "
                     "ask_user if required inputs are missing. Then call "
                     "submit_initial_state(reference_url, target_directory, constraints, "
                     "desired_routes, auth_required, reference_is_static, "
-                    "reproduce_api_or_mock). Only a successful transition-tool call changes "
+                    "reproduce_api_or_mock, allowed_domains, route_inclusion, "
+                    "route_exclusion, dynamic_content_policy, unavailable_behavior, "
+                    "fidelity_exceptions). Only a successful transition-tool call changes "
                     "phase; prose such as 'done' never advances the workflow. Do NOT start "
                     "coding yet."
                 ),
@@ -2097,8 +2347,23 @@ class ReconstructSiteRunner(CodePlanRunner):
                 tools=_make_init_tools(event, data),
             )
             if event.is_set():
-                ctx.target_url = str(data.get("reference_url", ""))
+                ctx.target_url = _safe_reference_url(str(data.get("reference_url", "")))
                 ctx.target_directory = str(data.get("target_directory", ""))
+                ctx.research_scope = {
+                    "reference_url": ctx.target_url,
+                    "target_directory": ctx.target_directory,
+                    "desired_routes": str(data.get("desired_routes", "")),
+                    "auth_required": bool(data.get("auth_required", False)),
+                    "reference_is_static": bool(data.get("reference_is_static", True)),
+                    "reproduce_api_or_mock": str(data.get("reproduce_api_or_mock", "mock")),
+                    "constraints_provided": bool(str(data.get("constraints", "")).strip()),
+                    "allowed_domains": list(data.get("allowed_domains", [])),
+                    "route_inclusion": list(data.get("route_inclusion", [])),
+                    "route_exclusion": list(data.get("route_exclusion", [])),
+                    "dynamic_content_policy": str(data.get("dynamic_content_policy", "observe")),
+                    "unavailable_behavior": str(data.get("unavailable_behavior", "report")),
+                    "fidelity_exceptions": str(data.get("fidelity_exceptions", "")),
+                }
                 ctx.artifacts["initial_state"] = (
                     f"url={ctx.target_url}; dir={ctx.target_directory}; "
                     f"static={data.get('reference_is_static')}; "
@@ -2198,6 +2463,11 @@ class ReconstructSiteRunner(CodePlanRunner):
                 tokens = data.get("design_tokens", {})
                 if isinstance(tokens, dict):
                     ctx.design_tokens = tokens
+                raw_observations = data.get("visual_observations", [])
+                if isinstance(raw_observations, list):
+                    ctx.visual_observations = [
+                        item for item in raw_observations if isinstance(item, dict)
+                    ]
                 ctx.artifacts["visual_spec"] = "visual_spec.md"
                 ctx.completed_phases.append("visual_research")
                 ctx.last_transition = "submit_visual_spec"
@@ -2243,6 +2513,9 @@ class ReconstructSiteRunner(CodePlanRunner):
                 raw = data.get("interactions", [])
                 if isinstance(raw, list):
                     ctx.interaction_inventory = [i for i in raw if isinstance(i, dict)]
+                raw_traces = data.get("interaction_traces", [])
+                if isinstance(raw_traces, list):
+                    ctx.interaction_traces = [item for item in raw_traces if isinstance(item, dict)]
                 ctx.artifacts["interaction_inventory"] = "interaction_inventory.md"
                 ctx.completed_phases.append("interaction_analysis")
                 ctx.last_transition = "submit_interaction_inventory"
@@ -2287,9 +2560,61 @@ class ReconstructSiteRunner(CodePlanRunner):
                 ctx.artifacts["asset_inventory"] = "asset_inventory.md"
                 ctx.completed_phases.append("content_assets")
                 ctx.last_transition = "submit_asset_inventory"
-                return ReconstructState.ARCHITECTURE
+                return ReconstructState.RESPONSIVE_RESEARCH
 
         ctx.fail_reason = "content_assets phase never called submit_asset_inventory()"
+        return ReconstructState.FAILED
+
+    async def _responsive_research(
+        self, ctx: ReconstructContext, memory: object
+    ) -> ReconstructState:
+        """Capture breakpoint and cross-viewport behavior before planning."""
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            event: asyncio.Event = asyncio.Event()
+            data: dict[str, object] = {}
+            await self.run_phase(
+                intent=ctx.intent,
+                text=(
+                    f"Reference URL: {ctx.target_url}\n\nCompare every surface across mobile, "
+                    "tablet, and desktop viewports."
+                    if attempt == 1
+                    else "Call submit_responsive_research(observations, breakpoints, summary) now."
+                ),
+                stable_system_prompt=CACHE_CONTRACT,
+                system_prompt=(
+                    "You are in the RESPONSIVE_RESEARCH phase of reconstruct_site. Study "
+                    "the same reference surfaces at every configured viewport. Record "
+                    "breakpoint intervals, reflow/order/alignment, visibility and drawer "
+                    "changes, text wrapping/truncation, image cropping, overflow, sticky "
+                    "elements, touch targets, reduced-motion behavior, and safe-area "
+                    "details. Use screenshots and measured observations when browser "
+                    "access is available. Do not implement anything and do not infer mobile "
+                    "behavior from desktop alone. Then call "
+                    "submit_responsive_research(observations, breakpoints, summary). Only "
+                    "a successful transition-tool call changes phase; prose never advances."
+                ),
+                mode="Yolo",
+                max_turns=30,
+                shared_memory=memory,
+                tools=_make_responsive_research_tools(event, data),
+            )
+            if event.is_set():
+                raw_observations = data.get("responsive_observations", [])
+                raw_breakpoints = data.get("responsive_breakpoints", [])
+                if isinstance(raw_observations, list):
+                    ctx.responsive_inventory = [
+                        item for item in raw_observations if isinstance(item, dict)
+                    ]
+                if isinstance(raw_breakpoints, list):
+                    ctx.responsive_breakpoints = [
+                        item for item in raw_breakpoints if isinstance(item, dict)
+                    ]
+                ctx.artifacts["responsive_research"] = "responsive_research.md"
+                ctx.completed_phases.append("responsive_research")
+                ctx.last_transition = "submit_responsive_research"
+                return ReconstructState.ARCHITECTURE
+
+        ctx.fail_reason = "responsive_research never called submit_responsive_research()"
         return ReconstructState.FAILED
 
     async def _architecture(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
@@ -2331,7 +2656,7 @@ class ReconstructSiteRunner(CodePlanRunner):
         return ReconstructState.FAILED
 
     async def _design_system(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
-        """Loop until submit_design_system fires; return BOOTSTRAP or FAILED."""
+        """Loop until submit_design_system fires; return RESEARCH_GATE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
@@ -2374,9 +2699,47 @@ class ReconstructSiteRunner(CodePlanRunner):
                 ctx.artifacts["design_system"] = "design_system.md"
                 ctx.completed_phases.append("design_system")
                 ctx.last_transition = "submit_design_system"
-                return ReconstructState.BOOTSTRAP
+                return ReconstructState.RESEARCH_GATE
 
         ctx.fail_reason = "design_system phase never called submit_design_system()"
+        return ReconstructState.FAILED
+
+    async def _research_gate(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
+        """Wait for the wrapper's evidence-aware gate to authorize bootstrap."""
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            event: asyncio.Event = asyncio.Event()
+            data: dict[str, object] = {}
+            await self.run_phase(
+                intent=ctx.intent,
+                text=(
+                    "Review the evidence coverage report and approve, explicitly approve "
+                    "degraded cells, or reject with a targeted research phase."
+                    if attempt == 1
+                    else "Call an appropriate research-gate transition tool now."
+                ),
+                stable_system_prompt=CACHE_CONTRACT,
+                system_prompt=(
+                    "You are in the RESEARCH_GATE phase of reconstruct_site. This is a "
+                    "hard boundary before implementation. Review every route, viewport, "
+                    "visual state, interaction trace, responsive observation, asset, and "
+                    "measurement in the coverage report. Do not write application code. "
+                    "If complete, call approve_research_baseline(summary, "
+                    "baseline_artifact_id). If only explicitly unavailable cells remain, "
+                    "call approve_degraded_research(exception_ids, rationale, "
+                    "baseline_artifact_id). Otherwise call "
+                    "reject_research_baseline(findings, target_phase). Prose never "
+                    "advances this gate."
+                ),
+                mode="Yolo",
+                max_turns=15,
+                shared_memory=memory,
+                tools=_make_research_gate_tools(event, data),
+            )
+            if event.is_set():
+                ctx.last_transition = str(data.get("action", ""))
+                return ReconstructState.BOOTSTRAP
+
+        ctx.fail_reason = "research_gate never called an approval or rejection tool"
         return ReconstructState.FAILED
 
     async def _bootstrap(self, ctx: ReconstructContext, memory: object) -> ReconstructState:
@@ -3809,8 +4172,10 @@ class ReconstructSiteRunner(CodePlanRunner):
             "visual_research": ReconstructState.VISUAL_RESEARCH,
             "interaction_analysis": ReconstructState.INTERACTION_ANALYSIS,
             "content_assets": ReconstructState.CONTENT_ASSETS,
+            "responsive_research": ReconstructState.RESPONSIVE_RESEARCH,
             "architecture": ReconstructState.ARCHITECTURE,
             "design_system": ReconstructState.DESIGN_SYSTEM,
+            "research_gate": ReconstructState.RESEARCH_GATE,
             "bootstrap": ReconstructState.BOOTSTRAP,
             "global_shell": ReconstructState.GLOBAL_SHELL,
             "component_system": ReconstructState.COMPONENT_SYSTEM,
@@ -3830,8 +4195,10 @@ class ReconstructSiteParams(WorkflowParams):
     visual_model: str = ""
     interaction_model: str = ""
     assets_model: str = ""
+    responsive_research_model: str = ""
     architecture_model: str = ""
     design_model: str = ""
+    research_gate_model: str = ""
     bootstrap_model: str = ""
     shell_model: str = ""
     components_model: str = ""
@@ -3853,8 +4220,10 @@ class ReconstructSiteParams(WorkflowParams):
             "visual_research": self.visual_model,
             "interaction_analysis": self.interaction_model,
             "content_assets": self.assets_model,
+            "responsive_research": self.responsive_research_model,
             "architecture": self.architecture_model,
             "design_system": self.design_model,
+            "research_gate": self.research_gate_model,
             "bootstrap": self.bootstrap_model,
             "global_shell": self.shell_model,
             "component_system": self.components_model,
@@ -3921,9 +4290,10 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             on_reject="visual_research",
             system_prompt_override=(
                 "You are in the VISUAL_RESEARCH phase of reconstruct_site. Extract "
-                "concrete measured visual tokens and call submit_visual_spec(design_tokens, "
-                "summary). Only a successful transition-tool call changes phase; prose "
-                "never advances the workflow."
+                "concrete measured visual tokens and observations for each route, viewport, "
+                "state, and interaction cell. Call submit_visual_spec(design_tokens, "
+                "summary, observations). Only a successful transition-tool call changes "
+                "phase; prose never advances the workflow."
             ),
         ),
         PhaseSpec(
@@ -3935,9 +4305,10 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             on_reject="interaction_analysis",
             system_prompt_override=(
                 "You are in the INTERACTION_ANALYSIS phase of reconstruct_site. Catalogue "
-                "how the site behaves and call submit_interaction_inventory(interactions, "
-                "summary). Only a successful transition-tool call changes phase; prose "
-                "never advances the workflow."
+                "how the site behaves, trace observable state changes, and call "
+                "submit_interaction_inventory(interactions, summary, traces). Only a "
+                "successful transition-tool call changes phase; prose never advances the "
+                "workflow."
             ),
         ),
         PhaseSpec(
@@ -3945,13 +4316,30 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             agent_type="auto",
             mode_override="Yolo",
             max_turns=25,
-            next="architecture",
+            next="responsive_research",
             on_reject="content_assets",
             system_prompt_override=(
                 "You are in the CONTENT_ASSETS phase of reconstruct_site. Inventory "
                 "content/assets with real dimensions and call submit_asset_inventory("
                 "assets, summary). Only a successful transition-tool call changes phase; "
                 "prose never advances the workflow."
+            ),
+        ),
+        PhaseSpec(
+            name="responsive_research",
+            agent_type="auto",
+            mode_override="Yolo",
+            max_turns=30,
+            next="architecture",
+            on_reject="responsive_research",
+            system_prompt_override=(
+                "You are in the RESPONSIVE_RESEARCH phase of reconstruct_site. Compare "
+                "every reference surface across the configured mobile, tablet, and "
+                "desktop viewports. Record measured reflow, breakpoints, visibility, "
+                "overflow, touch-target, sticky, and safe-area behavior, then call "
+                "submit_responsive_research(observations, breakpoints, summary). Do not "
+                "code. Only a successful transition-tool call changes phase; prose never "
+                "advances the workflow."
             ),
         ),
         PhaseSpec(
@@ -3973,13 +4361,31 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             agent_type="auto",
             mode_override="Yolo",
             max_turns=25,
-            next="bootstrap",
+            next="research_gate",
             on_reject="design_system",
             system_prompt_override=(
                 "You are in the DESIGN_SYSTEM phase of reconstruct_site. Extract design "
                 "tokens + shadcn/ui component map and call submit_design_system("
                 "design_tokens, component_map, summary). Only a successful transition-tool "
                 "call changes phase; prose never advances the workflow."
+            ),
+        ),
+        PhaseSpec(
+            name="research_gate",
+            agent_type="auto",
+            mode_override="Yolo",
+            max_turns=15,
+            next="bootstrap",
+            on_reject="research_gate",
+            system_prompt_override=(
+                "You are in the RESEARCH_GATE phase of reconstruct_site. Review the "
+                "evidence coverage report. Application implementation cannot begin until "
+                "required route, viewport, state, interaction, responsive, asset, and "
+                "measurement evidence is complete or explicitly accepted as degraded. "
+                "Call approve_research_baseline(summary, baseline_artifact_id), "
+                "approve_degraded_research(exception_ids, rationale, "
+                "baseline_artifact_id), or reject_research_baseline(findings, "
+                "target_phase). Prose never advances the gate."
             ),
         ),
         PhaseSpec(
@@ -4495,7 +4901,18 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             "component_inventory": list(context.component_inventory),
             "design_tokens": dict(context.design_tokens),
             "architecture": context.architecture,
+            "research_scope": dict(context.research_scope),
             "interaction_inventory": list(context.interaction_inventory),
+            "visual_observations": list(context.visual_observations),
+            "interaction_traces": list(context.interaction_traces),
+            "responsive_inventory": list(context.responsive_inventory),
+            "responsive_breakpoints": list(context.responsive_breakpoints),
+            "coverage_matrix": dict(context.coverage_matrix),
+            "research_baseline": dict(context.research_baseline),
+            "research_baseline_id": context.research_baseline_id,
+            "research_gate_status": context.research_gate_status,
+            "research_exceptions": list(context.research_exceptions),
+            "unresolved_research": list(context.unresolved_research),
             "implementation_status": dict(context.implementation_status),
             "validation_status": dict(context.validation_status),
             "known_issues": list(context.known_issues),
@@ -4537,7 +4954,18 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             component_inventory=_dict_list(payload.get("component_inventory")),
             design_tokens=_str_dict(payload.get("design_tokens")),
             architecture=str(payload.get("architecture", "")),
+            research_scope=_object_dict(payload.get("research_scope")),
             interaction_inventory=_dict_list(payload.get("interaction_inventory")),
+            visual_observations=_dict_list(payload.get("visual_observations")),
+            interaction_traces=_dict_list(payload.get("interaction_traces")),
+            responsive_inventory=_dict_list(payload.get("responsive_inventory")),
+            responsive_breakpoints=_dict_list(payload.get("responsive_breakpoints")),
+            coverage_matrix=_object_dict(payload.get("coverage_matrix")),
+            research_baseline=_object_dict(payload.get("research_baseline")),
+            research_baseline_id=str(payload.get("research_baseline_id", "")),
+            research_gate_status=str(payload.get("research_gate_status", "pending")),
+            research_exceptions=_dict_list(payload.get("research_exceptions")),
+            unresolved_research=_str_list(payload.get("unresolved_research")),
             implementation_status=_str_dict(payload.get("implementation_status")),
             validation_status=_str_dict(payload.get("validation_status")),
             known_issues=_dict_list(payload.get("known_issues")),
@@ -4567,8 +4995,10 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             visual_model=str(source.get("visual_model", "") or ""),
             interaction_model=str(source.get("interaction_model", "") or ""),
             assets_model=str(source.get("assets_model", "") or ""),
+            responsive_research_model=str(source.get("responsive_research_model", "") or ""),
             architecture_model=str(source.get("architecture_model", "") or ""),
             design_model=str(source.get("design_model", "") or ""),
+            research_gate_model=str(source.get("research_gate_model", "") or ""),
             bootstrap_model=str(source.get("bootstrap_model", "") or ""),
             shell_model=str(source.get("shell_model", "") or ""),
             components_model=str(source.get("components_model", "") or ""),
@@ -4603,3 +5033,10 @@ def _str_dict(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
     return {str(key): str(val) for key, val in value.items() if val is not None}
+
+
+def _object_dict(value: object) -> dict[str, object]:
+    """Coerce a JSON object while retaining nested evidence values."""
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): val for key, val in value.items()}

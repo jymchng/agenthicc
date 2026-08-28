@@ -169,7 +169,8 @@ and restored from phase metadata on resume; missing or invalid selections use
 the fail-closed `Safe` default. `create_workflow` design approval remains on
 the legacy plan-review option set.
 
-| ReconstructProfile / ReconstructPhasePlan / RECONSTRUCT_PHASE_PLAN | agenthicc.workflows.reconstruct_site.evidence_plan | Validated static/application/production/custom phase graphs and shared dispatch metadata |
+| ReconstructProfile / ReconstructPhasePlan / RECONSTRUCT_PHASE_PLAN / LEGACY_RECONSTRUCT_PHASE_PLAN | agenthicc.workflows.reconstruct_site.evidence_plan | Validated current and PRD-177-compatible phase graphs with shared dispatch metadata |
+| ViewportSpec / CoverageMatrix / FidelityBaseline / ResearchGate | agenthicc.workflows.reconstruct_site.research | Typed route/viewport/state evidence coverage, deterministic baseline hashing, and strict/degraded research-gate decisions |
 | ReconstructEvidenceStore / EvidenceManifest | agenthicc.workflows.reconstruct_site.evidence | Atomic, hash-addressed research, validation, and browser screenshot evidence for one reconstruct run |
 | CreateWorkflowState | agenthicc.workflows.create_workflow.state | Design/generate/validate/summarize state machine with COMPLETE, EXITED, FAILED terminals |
 | CreateWorkflowContext | agenthicc.workflows.create_workflow.state | Typed intent, approved design, draft/publication evidence, per-phase `PhaseArtifact`s, shared memory, and checkpoint provenance |

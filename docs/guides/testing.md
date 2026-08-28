@@ -39,6 +39,10 @@ Queue one response for every expected LLM round-trip. Exercise:
 workflow journey/performance coverage under `tests/e2e/` and
 `tests/performance/`. These tests use temporary workspaces and fake providers;
 they do not require Playwright, CloakBrowser, MCP, or provider credentials.
+PRD-178's clean-room research contract and hard gate are covered by
+`tests/unit/test_reconstruct_research_prd178.py`,
+`tests/integration/test_reconstruct_research_prd178.py`, and
+`tests/e2e/test_reconstruct_research_prd178.py`.
 Run the focused matrix with:
 
 ```bash
@@ -46,6 +50,7 @@ uv run pytest tests/unit/test_reconstruct_evidence_prd177.py -q
 uv run pytest tests/integration/test_reconstruct_site_prd177.py -q
 uv run pytest tests/e2e/test_reconstruct_site_prd177.py -q
 uv run pytest tests/performance/test_reconstruct_site_prd177.py -q
+uv run pytest tests/unit/test_reconstruct_research_prd178.py tests/integration/test_reconstruct_research_prd178.py tests/e2e/test_reconstruct_research_prd178.py -q
 ```
 
 `agenthicc.testing` provides `SessionCassette`, mock approvals, and

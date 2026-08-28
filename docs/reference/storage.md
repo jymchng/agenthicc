@@ -141,7 +141,7 @@ checkpoint:
 `manifest.json` is schema-versioned, revisioned, mode-600 where supported, and
 published with the same atomic replacement primitive as workflow checkpoints.
 Each complete artifact records a content hash, byte count, media type, phase,
-attempt, source, and workspace-relative path. Repeated writes with the same
+attempt, source, workspace-relative path, and source-cell provenance. Repeated writes with the same
 run/phase/attempt/kind/content hash return the existing record. Stale records
 remain visible after a validation re-entry so the user can audit what changed;
 they are not accepted as current evidence.
@@ -157,12 +157,27 @@ configured operational limits still apply.
 
 Browser screenshots remain owned by the existing browser artifact store. The
 reconstruct manifest links a validated workspace-relative browser path and
-records the capture identity (route, sanitized URL, viewport, dimensions,
-device scale, page state, role, backend, artifact ID, hash, and status). It
-never stores cookies, authorization headers, URL credentials, or fabricated
-image bytes. Identical capture identity plus content hash is deduplicated.
-Missing Playwright/CloakBrowser is recorded as `degraded` evidence with the
-reason and no artifact ID.
+records the capture identity (route, sanitized URL, source revision, viewport,
+dimensions, device scale, page state, role, backend, artifact ID, hash, and
+status), plus nullable font/image/network load results and redaction status.
+The browser artifact ID is a file reference, not part of the capture identity,
+so a repeated unchanged capture is deduplicated even when the browser adapter
+allocates a new ID. It never stores cookies, authorization headers, URL
+credentials, or fabricated image bytes. Missing Playwright/CloakBrowser is
+recorded as `degraded` evidence with the reason and no artifact ID.
+
+PRD-178 adds typed research artifacts for the route/surface inventory,
+viewport environment matrix, visual measurements, interaction traces,
+responsive observations, and `fidelity_baseline`. A baseline links each
+required observation cell to its receipts and artifacts. The checkpoint stores
+only its baseline ID, manifest revision, and compact coverage counts/blocking
+cell IDs; resume verifies the manifest before rehydrating the full coverage
+matrix. `pending`, `unavailable`, `waived`, `not_applicable`, `stale`, and
+`contradictory` are distinct statuses; `not_applicable` is only valid with a
+recorded reason. Only complete cells, explicit exclusions, or user-approved
+unavailable exceptions can pass the research gate. A PRD-177 checkpoint
+retains its persisted `reconstruct-site.v2` graph on resume, so PRD-178
+research phases are not silently inserted into an existing run.
 
 The package also records profile-skipped phases and re-entry history. These
 records make a final evidence package explain both what was verified and what

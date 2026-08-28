@@ -14,6 +14,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
 
 __all__ = [
+    "LEGACY_PHASE_PLAN_VERSION",
     "PHASE_PLAN_VERSION",
     "PhasePlanError",
     "ReconstructProfile",
@@ -23,7 +24,8 @@ __all__ = [
     "RECONSTRUCT_PHASE_PLAN",
 ]
 
-PHASE_PLAN_VERSION = "reconstruct-site.v2"
+PHASE_PLAN_VERSION = "reconstruct-site.v3"
+LEGACY_PHASE_PLAN_VERSION = "reconstruct-site.v2"
 
 
 class PhasePlanError(ValueError):
@@ -206,6 +208,8 @@ class ReconstructPhasePlan:
         self,
         profile: ReconstructProfile | str,
         custom_phases: Iterable[str] = (),
+        *,
+        require_research_gate: bool = True,
     ) -> ActiveReconstructPlan:
         selected_profile = _coerce_profile(profile)
         if selected_profile is ReconstructProfile.CUSTOM:
@@ -220,6 +224,10 @@ class ReconstructPhasePlan:
             if selected[0] != "init" or selected[-1] != "final_validation":
                 raise PhasePlanError(
                     "custom profile must include init and final_validation at its boundaries"
+                )
+            if require_research_gate and "research_gate" not in selected:
+                raise PhasePlanError(
+                    "custom profile must include research_gate before implementation"
                 )
             if len(set(selected)) != len(selected):
                 raise PhasePlanError("custom profile contains duplicate phases")
@@ -370,8 +378,10 @@ _CAPABILITIES_BY_PHASE: dict[str, tuple[str, ...]] = {
     "visual_research": ("memory", "read", "network", "screenshot"),
     "interaction_analysis": ("memory", "read", "network"),
     "content_assets": ("memory", "read", "network"),
+    "responsive_research": ("memory", "read", "network", "screenshot"),
     "architecture": ("memory", "read"),
     "design_system": ("memory", "read"),
+    "research_gate": ("memory", "read"),
     "bootstrap": ("memory", "read", "write", "execute"),
     "global_shell": ("memory", "read", "write", "execute"),
     "component_system": ("memory", "read", "write", "execute"),
@@ -388,13 +398,53 @@ _CAPABILITIES_BY_PHASE: dict[str, tuple[str, ...]] = {
 
 RECONSTRUCT_PHASE_PLAN = ReconstructPhasePlan(
     (
-        _phase("init", 10, artifacts=("initial_state",)),
-        _phase("recon", 35, artifacts=("route_inventory",)),
-        _phase("visual_research", 30, artifacts=("visual_spec", "screenshot")),
-        _phase("interaction_analysis", 30, artifacts=("interaction_inventory",)),
-        _phase("content_assets", 25, artifacts=("asset_inventory",)),
+        _phase("init", 10, artifacts=("initial_state", "research_scope")),
+        _phase(
+            "recon",
+            35,
+            artifacts=(
+                "route_inventory",
+                "route_surface_inventory",
+                "viewport_environment_matrix",
+                "visual_state_inventory",
+            ),
+        ),
+        _phase(
+            "visual_research",
+            30,
+            artifacts=(
+                "visual_spec",
+                "visual_measurements",
+                "visual_state_inventory",
+                "screenshot",
+            ),
+        ),
+        _phase(
+            "interaction_analysis",
+            30,
+            artifacts=(
+                "interaction_inventory",
+                "interaction_trace_catalog",
+                "interaction_state_graph",
+            ),
+        ),
+        _phase(
+            "content_assets",
+            25,
+            artifacts=("asset_inventory", "content_asset_inventory", "font_icon_inventory"),
+        ),
+        _phase(
+            "responsive_research",
+            30,
+            artifacts=("responsive_research", "responsive_behavior_matrix", "screenshot"),
+        ),
         _phase("architecture", 25, artifacts=("architecture",)),
         _phase("design_system", 25, artifacts=("design_system",)),
+        _phase(
+            "research_gate",
+            15,
+            artifacts=("fidelity_baseline", "research_coverage_report", "research_gate_receipt"),
+        ),
         _phase("bootstrap", 25, artifacts=("bootstrap",)),
         _phase("global_shell", 30, artifacts=("global_shell",)),
         _phase("component_system", 30, artifacts=("component_system",)),
@@ -427,5 +477,27 @@ RECONSTRUCT_PHASE_PLAN = ReconstructPhasePlan(
         _phase("docs", 40, artifacts=("docs",), profiles=_INFRA),
         _phase("verify_docs", 30, artifacts=("verify_docs",), profiles=_INFRA),
         _phase("final_validation", 35, artifacts=("final_validation",)),
+    )
+)
+
+# PRD-177 checkpoints are still readable.  Their persisted graph did not
+# contain the research-only phases introduced by PRD-178, so resume must use a
+# separately versioned view instead of silently inserting new work before the
+# existing bootstrap boundary.  These are the same canonical definitions and
+# handlers; only the two newly introduced phases are absent from this view.
+LEGACY_RECONSTRUCT_PHASE_PLAN = ReconstructPhasePlan(
+    tuple(
+        dataclasses.replace(
+            item,
+            artifact_kinds={
+                "init": ("initial_state",),
+                "recon": ("route_inventory",),
+                "visual_research": ("visual_spec", "screenshot"),
+                "interaction_analysis": ("interaction_inventory",),
+                "content_assets": ("asset_inventory",),
+            }.get(item.name, item.artifact_kinds),
+        )
+        for item in RECONSTRUCT_PHASE_PLAN.definitions
+        if item.name not in {"responsive_research", "research_gate"}
     )
 )

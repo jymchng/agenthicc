@@ -65,7 +65,7 @@ def test_registry_loads_the_in_directory_runner() -> None:
 async def test_fresh_and_resume_dispatch_use_the_same_authoritative_plan(tmp_path: Path) -> None:
     params = ReconstructSiteParams(
         profile="custom",
-        custom_phases=("init", "final_validation"),
+        custom_phases=("init", "research_gate", "final_validation"),
     )
     config = _config(tmp_path, params)
 

@@ -41,7 +41,7 @@ agenthicc runs **agent turns** inside your project with full filesystem, git, an
 | `code_plan` | Plan-and-execute code changes with approval gates |
 | `create_workflow` | Author new workflows interactively |
 | `copy_website` | Study a website with Playwright and rebuild it as a mobile-friendly Next.js application |
-| `reconstruct_site` | Reconstruct a reference website through research, implementation, and validation phases |
+| `reconstruct_site` | Reconstruct a reference website through evidence-first responsive research, implementation, and validation phases |
 | `site_imitate` | Generate mobile-first responsive websites (viewport checks enforced) |
 
 ---

@@ -29,19 +29,19 @@ from agenthicc.workflows.reconstruct_site.evidence_plan import (
 
 
 def test_plan_has_one_authoritative_order_and_real_profile_counts() -> None:
-    assert len(RECONSTRUCT_PHASE_PLAN.names) == 39
+    assert len(RECONSTRUCT_PHASE_PLAN.names) == 41
     assert RECONSTRUCT_PHASE_PLAN.names[0] == "init"
     assert RECONSTRUCT_PHASE_PLAN.names[-1] == "final_validation"
-    assert RECONSTRUCT_PHASE_PLAN.active("static").total_phases == 18
-    assert RECONSTRUCT_PHASE_PLAN.active("application").total_phases == 19
-    assert RECONSTRUCT_PHASE_PLAN.active("production").total_phases == 39
+    assert RECONSTRUCT_PHASE_PLAN.active("static").total_phases == 20
+    assert RECONSTRUCT_PHASE_PLAN.active("application").total_phases == 21
+    assert RECONSTRUCT_PHASE_PLAN.active("production").total_phases == 41
 
 
 def test_custom_profile_is_explicit_and_validated() -> None:
     selected = RECONSTRUCT_PHASE_PLAN.active(
-        "custom", ("init", "recon", "bootstrap", "final_validation")
+        "custom", ("init", "recon", "research_gate", "bootstrap", "final_validation")
     )
-    assert selected.names == ("init", "recon", "bootstrap", "final_validation")
+    assert selected.names == ("init", "recon", "research_gate", "bootstrap", "final_validation")
     assert any(item.name == "visual_research" for item in selected.skipped)
 
     with pytest.raises(PhasePlanError, match="unknown phases"):
@@ -118,6 +118,38 @@ def test_large_artifact_is_externalized_without_an_artificial_limit(tmp_path: Pa
     assert len(json.dumps(store.checkpoint_digest())) < 10_000
 
 
+def test_artifact_provenance_links_are_validated_and_round_trip(tmp_path: Path) -> None:
+    store = ReconstructEvidenceStore(
+        WorkspaceView(tmp_path), "provenance-run", plan_version=PHASE_PLAN_VERSION, profile="static"
+    )
+    record = store.put_json(
+        "visual_measurements",
+        {"heading": {"font_size": 32}},
+        phase="visual_research",
+        source_cells=("/|desktop|loaded|page|reference",),
+    )
+
+    assert record.source_cells == ("/|desktop|loaded|page|reference",)
+    restored = ReconstructEvidenceStore(
+        WorkspaceView(tmp_path), "provenance-run", plan_version=PHASE_PLAN_VERSION, profile="static"
+    )
+    assert restored.manifest.artifacts[0].source_cells == record.source_cells
+    with pytest.raises(EvidenceError, match="source_cells"):
+        store.put_json(
+            "visual_measurements",
+            {"heading": {"font_size": 32}},
+            phase="visual_research",
+            source_cells="not-a-cell-list",  # type: ignore[arg-type]
+        )
+    with pytest.raises(EvidenceError, match="source_cells"):
+        store.put_json(
+            "visual_measurements",
+            {"heading": {"font_size": 32}},
+            phase="visual_research",
+            source_cells=[1],  # type: ignore[list-item]
+        )
+
+
 def test_integrity_check_detects_tampering_and_missing_files(tmp_path: Path) -> None:
     store = ReconstructEvidenceStore(
         WorkspaceView(tmp_path), "integrity-run", plan_version=PHASE_PLAN_VERSION, profile="static"
@@ -178,6 +210,31 @@ def test_screenshot_identity_deduplicates_and_redacts_url_credentials(tmp_path: 
     assert first == second
     assert store.manifest.screenshots[0].url == "https://example.test/home"
     assert "password" not in json.dumps(store.manifest.to_dict())
+
+    third = store.record_screenshot(
+        {"artifact_id": "different-browser-id", "path": str(browser_path)},
+        role="reference",
+        route="/home",
+        url="https://example.test/home",
+        viewport="desktop",
+        width=1440,
+        height=900,
+        backend="Playwright",
+        source_cells=("/home|desktop|loaded|nav|reference",),
+    )
+    assert third == first
+
+    assert store.attach_artifact_source_cells(
+        "browser-id", ("/home|desktop|loaded|page|reference",)
+    )
+    linked = next(item for item in store.manifest.artifacts if item.artifact_id == "browser-id")
+    assert linked.source_cells == (
+        "/home|desktop|loaded|nav|reference",
+        "/home|desktop|loaded|page|reference",
+    )
+    assert not store.attach_artifact_source_cells(
+        "browser-id", ("/home|desktop|loaded|page|reference",)
+    )
 
 
 def test_screenshot_capture_rejects_invalid_identity(tmp_path: Path) -> None:

@@ -1034,12 +1034,12 @@ complete application surface, not merely to imitate the appearance of a page.
 
 `reconstruct_site` uses the authoritative plan in
 `agenthicc.workflows.reconstruct_site.evidence_plan`. The plan contains the
-39 canonical phase names, handlers, retry limits, model keys, capability
+41 canonical phase names, handlers, retry limits, model keys, capability
 declarations, artifact kinds, and profile membership. The runner validates the
 registry `PhaseSpec` names against that plan at import time and uses the same
 plan for fresh execution, resume, progress, model lookup, and re-entry. The
-overall counter is therefore the selected graph size (18 for `static`, 19 for
-`application`, and 39 for `production`); the repeated route phase is rendered
+overall counter is therefore the selected graph size (20 for `static`, 21 for
+`application`, and 41 for `production`); the repeated route phase is rendered
 separately as `page completed/total`.
 
 Select a profile explicitly in the workflow parameters when scope matters:
@@ -1052,13 +1052,34 @@ max_reentries = 3
 [workflows.reconstruct_site.phase_models]
 recon = "fast-research-model"
 visual_validation = "vision-model"
+
+# Optional deterministic browser matrix. Omit it for the mobile/tablet/
+# desktop defaults (390x844, 768x1024, 1440x900).
+[[workflows.reconstruct_site.viewports]]
+viewport_id = "mobile"
+width = 390
+height = 844
+touch = true
 ```
 
 `custom_phases` is accepted as a comma-separated value or a list by the
-configuration loader. It must follow the canonical order and include `init`
-and `final_validation`; omitted phases are recorded in the manifest with a
-reason. Profile selection is retained on resume and cannot silently change the
-graph for an existing run.
+configuration loader. It must follow the canonical order and include `init`,
+`research_gate`, and `final_validation`; omitted phases are recorded in the
+manifest with a reason. Profile selection is retained on resume and cannot
+silently change the graph for an existing run. `research_gate` is a hard,
+tool-controlled boundary: bootstrap cannot begin until the route/viewport/
+visual-state/interaction/responsive coverage matrix has a complete baseline,
+or the user has explicitly accepted named unavailable cells.
+
+The opening research sequence is evidence-first: `recon` discovers every
+in-scope surface, `visual_research` records reference screenshots and measured
+rendering observations, `interaction_analysis` records action/state traces,
+`content_assets` inventories content/fonts/icons/media, and
+`responsive_research` compares the same surfaces across the mobile, tablet,
+and desktop matrix. `architecture` and `design_system` may write planning
+artifacts but do not mutate the application. The typed contracts live in
+`agenthicc.workflows.reconstruct_site.research`; implementation and later
+validation consume the resulting `fidelity_baseline` by artifact reference.
 
 Every run writes a durable evidence package below the authorized workspace:
 
@@ -1101,6 +1122,15 @@ active. A valid target stales the target phase's and downstream artifact kinds,
 records the source/target/reason, and consumes the bounded re-entry budget.
 This preserves unaffected route/asset research while forcing dependent work to
 be revalidated.
+
+The research-fidelity contract is implemented in
+[PRD-178](../../prds/prd-178-reconstruct-site-ui-fidelity-research.md). It
+requires the opening research phases to account for every in-scope
+route/surface, viewport, visual state, interaction trace, responsive rule, and
+asset before implementation begins, with a tool-controlled completeness gate.
+The runtime includes both `responsive_research` and `research_gate`. A run
+cannot enter `bootstrap` until the gate tool approves a complete baseline or
+the user explicitly accepts named unavailable cells.
 
 #### Shared runtime guarantees and important boundaries
 

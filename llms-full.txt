@@ -1882,6 +1882,10 @@ single validated source for phase handlers, ordering, progress totals, model
 keys, capability requirements, profile membership, retry/re-entry edges, and
 artifact kinds. RECONSTRUCT_PHASE_PLAN.active(profile, custom_phases) returns
 the profile-specific graph consumed by both fresh execution and resume.
+`LEGACY_RECONSTRUCT_PHASE_PLAN` is the read-only PRD-177 compatibility view;
+resume selects it when the persisted plan version is
+`LEGACY_PHASE_PLAN_VERSION`, so old runs do not silently gain new research
+phases.
 
 ### ReconstructEvidenceStore
 
@@ -1895,6 +1899,20 @@ verify() and read_kind() validate byte counts and SHA-256 digests before
 resume or rehydration. checkpoint_digest() returns only compact references,
 so large research bodies are not duplicated in workflow checkpoints and there
 is no artificial one-megabyte context ceiling.
+
+### reconstruct_site research contracts
+
+`agenthicc.workflows.reconstruct_site.research` contains the typed contracts
+for PRD-178's evidence-first boundary. `ViewportSpec` defines the deterministic
+mobile/tablet/desktop matrix; `CoverageCell` and `CoverageMatrix` track every
+surface, visual state, interaction cluster, and required evidence kind;
+`ObservationReceipt` and `InteractionTrace` capture redacted observation and
+action outcomes; `FidelityBaseline` provides deterministic baseline hashing;
+and `ResearchGate` accepts a baseline only when coverage is complete or when
+the agent explicitly records unavailable-cell exceptions. These contracts are
+provider- and browser-independent, validate checkpoint/re-hydration data, and
+allow browser-unavailable runs to fail closed or proceed only through the
+explicit degraded path.
 
 ### CodePlanRunner
 

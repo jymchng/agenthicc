@@ -332,6 +332,26 @@ When `system_prompt_override = ""` (the default), the registry prompt is used. T
 
 **Fix:** Remove the manual `WorkflowRun` construction from `run()` and initialise it via `_set_phase("plan", 0, ctx)` instead, or create a `_init_workflow_run()` helper.
 
+## PRD-178 implementation record — reconstruct_site research boundary
+
+The evidence-complete research work described by PRD-178 is implemented in
+the current `reconstruct_site` package. This is a current-state record for
+future audits, not a historical finding.
+
+| Requirement | Current implementation | Regression coverage |
+|---|---|---|
+| Research-first phase topology | The authoritative 41-phase plan includes `responsive_research` and the tool-controlled `research_gate`; static, application, production, and custom profiles share the same validated metadata. | `tests/unit/test_reconstruct_research_prd178.py`, `tests/integration/test_reconstruct_research_prd178.py` |
+| Route/viewport/state/interaction coverage | `CoverageMatrix` expands the discovered surface inventory across the deterministic mobile/tablet/desktop viewport matrix and records complete, unavailable, waived, stale, or contradictory evidence. | Unit matrix and stale/round-trip tests; performance expansion test |
+| Durable baseline and evidence | `ObservationReceipt`, `InteractionTrace`, and `FidelityBaseline` are validated, hash-addressed, persisted through `ReconstructEvidenceStore`, and rehydrated by reference from checkpoints. | Integration checkpoint/rehydration tests and E2E artifact assertions |
+| Implementation gate | Strict approval requires complete coverage; degraded approval requires explicit unavailable-cell exceptions. Rejection returns to a validated research phase and leaves implementation blocked. | Unit gate tests, integration missing-evidence test, E2E degraded-gate run |
+| Resume and cache behavior | Research state, gate decision, baseline references, receipts, and the compact coverage digest survive resume. The existing shared conversation and stable prompt/tool bundle remain the workflow cache boundary. | Integration rehydration and existing workflow resume suites |
+| Browser degradation and security | Browser absence is recorded as unavailable evidence; no synthetic screenshot is created, and browser/network policy remains owned by the existing guarded integrations. | E2E no-browser degraded run and existing browser policy suites |
+
+The earlier PRD-177 evidence contract remains compatible: old visual and
+interaction artifact shapes are accepted during rehydration, while new runs
+write the typed PRD-178 shapes. The remaining historical findings above are
+not implied to be resolved by PRD-178.
+
 ---
 
 ## Priority Improvement Roadmap

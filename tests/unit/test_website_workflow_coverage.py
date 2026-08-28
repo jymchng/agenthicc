@@ -230,6 +230,26 @@ async def _successful_run_phase(**kwargs: object) -> None:
             return
 
 
+async def _successful_reconstruct_run_phase(runner: Any, **kwargs: object) -> None:
+    """Use the current evidence ID when exercising the real research gate."""
+    tools = kwargs.get("tools", [])
+    assert isinstance(tools, list)
+    for tool in tools:
+        if getattr(tool, "__name__", "") == "approve_research_baseline":
+            degraded = next(
+                candidate
+                for candidate in tools
+                if getattr(candidate, "__name__", "") == "approve_degraded_research"
+            )
+            await degraded(
+                exception_ids=list(runner._active_context.unresolved_research),
+                rationale="The test runner has no browser backend.",
+                baseline_artifact_id=runner._active_context.research_baseline_id,
+            )
+            return
+    await _successful_run_phase(**kwargs)
+
+
 def _reconstruct_context() -> ReconstructContext:
     return ReconstructContext(
         intent="reconstruct https://example.test",
@@ -498,7 +518,7 @@ async def test_site_imitate_resume_from_analyze_and_remaining_failure_paths() ->
 @pytest.mark.asyncio
 async def test_reconstruct_site_full_driver_covers_dynamic_page_and_infrastructure() -> None:
     runner = _runner(ReconstructSiteRunner)
-    runner.run_phase = _successful_run_phase  # type: ignore[method-assign]
+    runner.run_phase = lambda **kwargs: _successful_reconstruct_run_phase(runner, **kwargs)  # type: ignore[method-assign]
 
     context = await runner.run("reconstruct https://example.test")
     assert context.state is ReconstructState.COMPLETE
@@ -513,7 +533,7 @@ async def test_reconstruct_site_full_driver_covers_dynamic_page_and_infrastructu
 @pytest.mark.asyncio
 async def test_reconstruct_site_resume_dispatches_every_declared_phase() -> None:
     runner = _runner(ReconstructSiteRunner)
-    runner.run_phase = _successful_run_phase  # type: ignore[method-assign]
+    runner.run_phase = lambda **kwargs: _successful_reconstruct_run_phase(runner, **kwargs)  # type: ignore[method-assign]
     resumed = await runner.resume(_reconstruct_context())
     assert resumed.state is ReconstructState.COMPLETE
     with pytest.raises(TypeError, match="ReconstructContext"):
@@ -1207,8 +1227,10 @@ async def test_reconstruct_transition_factories_cover_all_input_guards() -> None
         "_make_visual_research_tools",
         "_make_interaction_analysis_tools",
         "_make_content_assets_tools",
+        "_make_responsive_research_tools",
         "_make_architecture_tools",
         "_make_design_system_tools",
+        "_make_research_gate_tools",
         "_make_bootstrap_tools",
         "_make_global_shell_tools",
         "_make_component_system_tools",

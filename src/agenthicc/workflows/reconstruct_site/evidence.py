@@ -93,6 +93,24 @@ def _string_items(value: object, label: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _source_cells(value: Iterable[str]) -> tuple[str, ...]:
+    """Normalize coverage-cell links without accepting an accidental string."""
+    if isinstance(value, str):
+        raise EvidenceError("source_cells must be an iterable of strings")
+    try:
+        raw = tuple(value)
+    except TypeError as exc:
+        raise EvidenceError("source_cells must be an iterable of strings") from exc
+    if not all(isinstance(item, str) for item in raw):
+        raise EvidenceError("source_cells must be an iterable of strings")
+    result = tuple(item.strip() for item in raw)
+    if any(not item for item in result):
+        raise EvidenceError("source_cells must not contain empty values")
+    if len(result) != len(set(result)):
+        raise EvidenceError("source_cells must not contain duplicates")
+    return result
+
+
 def _safe_url(value: str) -> str:
     """Keep screenshot identity useful without retaining URL credentials."""
     try:
@@ -105,6 +123,21 @@ def _safe_url(value: str) -> str:
         return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
     except ValueError:
         return ""
+
+
+def _optional_bool(value: object) -> bool | None:
+    """Decode nullable boolean capture metadata without truthy-string bugs."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    raise EvidenceIntegrityError("screenshot load metadata must be boolean or null")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -121,10 +154,13 @@ class ArtifactRecord:
     attempt: int
     status: str = "complete"
     source: str = "workflow"
+    source_cells: tuple[str, ...] = ()
     created_at: float = dataclasses.field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, object]:
-        return dataclasses.asdict(self)
+        value = dataclasses.asdict(self)
+        value["source_cells"] = list(self.source_cells)
+        return value
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> "ArtifactRecord":
@@ -140,6 +176,7 @@ class ArtifactRecord:
                 attempt=int(str(raw.get("attempt", 1))),
                 status=str(raw.get("status", "complete")),
                 source=str(raw.get("source", "workflow")),
+                source_cells=_string_items(raw.get("source_cells", []), "artifact source_cells"),
                 created_at=float(str(raw.get("created_at", time.time()))),
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -179,6 +216,11 @@ class ScreenshotEvidence:
     sha256: str | None
     status: str = "complete"
     reason: str = ""
+    source_revision: str = ""
+    fonts_loaded: bool | None = None
+    images_loaded: bool | None = None
+    network_complete: bool | None = None
+    redaction_status: str = "not_reported"
     created_at: float = dataclasses.field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, object]:
@@ -202,6 +244,11 @@ class ScreenshotEvidence:
                 sha256=(str(raw["sha256"]) if raw.get("sha256") else None),
                 status=str(raw.get("status", "complete")),
                 reason=str(raw.get("reason", "")),
+                source_revision=str(raw.get("source_revision", "")),
+                fonts_loaded=_optional_bool(raw.get("fonts_loaded")),
+                images_loaded=_optional_bool(raw.get("images_loaded")),
+                network_complete=_optional_bool(raw.get("network_complete")),
+                redaction_status=str(raw.get("redaction_status", "not_reported")),
                 created_at=float(str(raw.get("created_at", time.time()))),
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -214,6 +261,8 @@ class ScreenshotEvidence:
             raise EvidenceIntegrityError("invalid screenshot dimensions")
         if result.status == "complete" and (not result.artifact_id or not result.sha256):
             raise EvidenceIntegrityError("complete screenshot has no artifact reference")
+        if not result.redaction_status.strip():
+            raise EvidenceIntegrityError("screenshot redaction status is empty")
         if result.sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", result.sha256):
             raise EvidenceIntegrityError("invalid screenshot digest")
         if not result.screenshot_id.strip() or not result.route.strip():
@@ -328,7 +377,16 @@ class EvidenceManifest:
             raise EvidenceIntegrityError("manifest contains invalid values") from exc
         if result.revision < 0 or result.status not in {"running", "complete", "paused", "failed"}:
             raise EvidenceIntegrityError("manifest revision or status is invalid")
-        artifact_keys = [(item.artifact_id, item.kind) for item in result.artifacts]
+        # An artifact digest is content-addressed, so the same bytes can be
+        # deliberately referenced by more than one phase (for example the
+        # route/state inventory is useful to both recon and visual research).
+        # A duplicate is only malformed when the same artifact is recorded for
+        # the same phase/attempt.  Treating the phase as part of the manifest
+        # identity also keeps manifests written before provenance links were
+        # added resumable.
+        artifact_keys = [
+            (item.artifact_id, item.kind, item.phase, item.attempt) for item in result.artifacts
+        ]
         if len(artifact_keys) != len(set(artifact_keys)):
             raise EvidenceIntegrityError("manifest contains duplicate artifact records")
         screenshot_ids = [item.screenshot_id for item in result.screenshots]
@@ -440,6 +498,7 @@ class ReconstructEvidenceStore:
         media_type: str = "application/octet-stream",
         source: str = "workflow",
         suffix: str = ".bin",
+        source_cells: Iterable[str] = (),
     ) -> ArtifactRecord:
         """Atomically write one artifact and publish its manifest record."""
         safe_kind = _safe_component(kind, "artifact kind")
@@ -448,6 +507,7 @@ class ReconstructEvidenceStore:
             raise EvidenceError("artifact attempt must be positive")
         raw = content.encode("utf-8") if isinstance(content, str) else bytes(content)
         digest = _hash(raw)
+        normalized_source_cells = _source_cells(source_cells)
         with self._lock:
             for existing in self._manifest.artifacts:
                 if (
@@ -481,8 +541,9 @@ class ReconstructEvidenceStore:
                 phase=safe_phase,
                 attempt=attempt,
                 source=source,
+                source_cells=normalized_source_cells,
             )
-            self._publish(self._with(artifacts=(*self._manifest.artifacts, record)))
+            self._publish(self._with(artifacts=self._upsert_artifact(record)))
             return record
 
     def put_json(
@@ -495,6 +556,7 @@ class ReconstructEvidenceStore:
         media_type: str = "application/json",
         source: str = "workflow",
         suffix: str = ".json",
+        source_cells: Iterable[str] = (),
     ) -> ArtifactRecord:
         raw = json.dumps(_redact(value), ensure_ascii=False, sort_keys=True, indent=2).encode(
             "utf-8"
@@ -507,6 +569,7 @@ class ReconstructEvidenceStore:
             media_type=media_type,
             source=source,
             suffix=suffix,
+            source_cells=source_cells,
         )
 
     def record_screenshot(
@@ -524,6 +587,12 @@ class ReconstructEvidenceStore:
         backend: str = "unknown",
         phase: str = "visual_research",
         attempt: int = 1,
+        source_cells: Iterable[str] = (),
+        source_revision: str = "",
+        fonts_loaded: bool | None = None,
+        images_loaded: bool | None = None,
+        network_complete: bool | None = None,
+        redaction_status: str = "not_reported",
     ) -> ScreenshotEvidence:
         """Link an existing bounded browser artifact without copying it."""
         if role not in {"reference", "implementation", "exploratory"}:
@@ -550,6 +619,9 @@ class ReconstructEvidenceStore:
         except OSError as exc:
             raise EvidenceIntegrityError("browser screenshot is unreadable") from exc
         digest = _hash(raw)
+        normalized_source_cells = _source_cells(source_cells)
+        normalized_source_revision = str(source_revision).strip()
+        normalized_redaction_status = str(redaction_status).strip() or "not_reported"
         identity: dict[str, object] = {
             "role": role,
             "route": route,
@@ -560,13 +632,17 @@ class ReconstructEvidenceStore:
             "device_scale": device_scale,
             "page_state": page_state,
             "backend": backend,
-            "artifact_id": artifact_id,
             "sha256": digest,
+            "source_revision": normalized_source_revision,
         }
         screenshot_id = _hash(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode())
         with self._lock:
             for existing in self._manifest.screenshots:
                 if existing.screenshot_id == screenshot_id:
+                    if existing.artifact_id and normalized_source_cells:
+                        self.attach_artifact_source_cells(
+                            existing.artifact_id, normalized_source_cells
+                        )
                     return existing
             # The linked browser artifact remains outside the reconstruct tree,
             # but the manifest contains its validated workspace-relative path.
@@ -580,6 +656,7 @@ class ReconstructEvidenceStore:
                 phase=phase,
                 attempt=attempt,
                 source="browser",
+                source_cells=normalized_source_cells,
             )
             screenshots = (
                 *self._manifest.screenshots,
@@ -596,6 +673,11 @@ class ReconstructEvidenceStore:
                     backend=backend,
                     artifact_id=artifact_id,
                     sha256=digest,
+                    source_revision=normalized_source_revision,
+                    fonts_loaded=fonts_loaded,
+                    images_loaded=images_loaded,
+                    network_complete=network_complete,
+                    redaction_status=normalized_redaction_status,
                 ),
             )
             return self._publish(
@@ -650,19 +732,39 @@ class ReconstructEvidenceStore:
 
     def _upsert_artifact(self, record: ArtifactRecord) -> tuple[ArtifactRecord, ...]:
         return tuple(
-            record if item.artifact_id == record.artifact_id and item.kind == record.kind else item
+            dataclasses.replace(
+                record,
+                source_cells=tuple(dict.fromkeys((*item.source_cells, *record.source_cells))),
+                created_at=item.created_at,
+            )
+            if (
+                item.artifact_id == record.artifact_id
+                and item.kind == record.kind
+                and item.phase == record.phase
+                and item.attempt == record.attempt
+            )
+            else item
             for item in self._manifest.artifacts
         ) + tuple(
             ()
             if any(
-                item.artifact_id == record.artifact_id and item.kind == record.kind
+                item.artifact_id == record.artifact_id
+                and item.kind == record.kind
+                and item.phase == record.phase
+                and item.attempt == record.attempt
                 for item in self._manifest.artifacts
             )
             else (record,)
         )
 
     def write_phase_receipt(
-        self, phase: str, attempt: int, summary: str, *, transition: str
+        self,
+        phase: str,
+        attempt: int,
+        summary: str,
+        *,
+        transition: str,
+        source_cells: Iterable[str] = (),
     ) -> ArtifactRecord:
         return self.put_json(
             "phase_receipt",
@@ -675,6 +777,7 @@ class ReconstructEvidenceStore:
             phase=phase,
             attempt=attempt,
             source="workflow",
+            source_cells=source_cells,
         )
 
     def invalidate(
@@ -698,6 +801,52 @@ class ReconstructEvidenceStore:
                 )
             )
             return affected
+
+    def mark_stale_artifacts(self, artifact_ids: Iterable[str], *, reason: str) -> tuple[str, ...]:
+        """Mark exactly the failed artifact records stale for targeted recovery."""
+        wanted = {str(item) for item in artifact_ids if str(item)}
+        if not wanted:
+            return ()
+        with self._lock:
+            affected = tuple(
+                item.artifact_id
+                for item in self._manifest.artifacts
+                if item.artifact_id in wanted and item.status == "complete"
+            )
+            if not affected:
+                return ()
+            stale = tuple(
+                dataclasses.replace(item, status="stale") if item.artifact_id in wanted else item
+                for item in self._manifest.artifacts
+            )
+            self._publish(self._with(artifacts=stale))
+            return affected
+
+    def attach_artifact_source_cells(self, artifact_id: str, source_cells: Iterable[str]) -> bool:
+        """Add coverage provenance to an existing artifact record.
+
+        Browser adapters create their own artifact records before the
+        reconstruct phase knows which coverage cells the screenshot satisfies.
+        This metadata-only operation closes that provenance link without
+        copying or rewriting the browser-owned bytes.
+        """
+        normalized_source_cells = _source_cells(source_cells)
+        if not normalized_source_cells:
+            return False
+        with self._lock:
+            changed = False
+            artifacts: list[ArtifactRecord] = []
+            for item in self._manifest.artifacts:
+                if item.artifact_id != artifact_id:
+                    artifacts.append(item)
+                    continue
+                merged = tuple(dict.fromkeys((*item.source_cells, *normalized_source_cells)))
+                changed = changed or merged != item.source_cells
+                artifacts.append(dataclasses.replace(item, source_cells=merged))
+            if not changed:
+                return False
+            self._publish(self._with(artifacts=tuple(artifacts)))
+            return True
 
     def verify(self) -> list[dict[str, object]]:
         """Verify complete files and return structured recoverable errors."""

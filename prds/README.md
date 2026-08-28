@@ -45,6 +45,7 @@ against the current source before implementing them.
 - [PRD-175 — Runtime AGENTS.md Integration](prd-175-agents-md-runtime-integration.md)
 - [PRD-176 — Fast, Progressive agenthicc Startup](prd-176-fast-progressive-startup.md)
 - [PRD-177 — Efficient, Evidence-Driven reconstruct_site Workflow](prd-177-reconstruct-site-optimization-and-evidence.md)
+- [PRD-178 — Evidence-Complete UI and Interaction Research for reconstruct_site](prd-178-reconstruct-site-ui-fidelity-research.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -260,6 +261,14 @@ durable and manifest-backed, externalizes large artifacts from checkpoints,
 preserves one parent conversation and the prompt-cache contract, propagates
 per-phase model settings, adds static/application/production profiles, and
 makes validation re-entry bounded and artifact-aware.
+
+PRD-178 is the implemented follow-on for observable UI fidelity. It makes the
+opening reconstruct phases an evidence-complete study of routes, viewports,
+visual states, interactions, responsive behavior, content, and assets, then
+adds a tool-controlled research gate before implementation. It preserves
+PRD-177's evidence store, conversation/checkpoint continuity, cache contract,
+browser policy, and profile model while defining measurable baseline and
+coverage requirements.
 
 ## Existing PRDs
 
