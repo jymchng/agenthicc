@@ -46,6 +46,7 @@ against the current source before implementing them.
 - [PRD-176 — Fast, Progressive agenthicc Startup](prd-176-fast-progressive-startup.md)
 - [PRD-177 — Efficient, Evidence-Driven reconstruct_site Workflow](prd-177-reconstruct-site-optimization-and-evidence.md)
 - [PRD-178 — Evidence-Complete UI and Interaction Research for reconstruct_site](prd-178-reconstruct-site-ui-fidelity-research.md)
+- [PRD-179 — Phase Annotations and Boundary Checkpoints for Generated Workflows](prd-179-create-workflow-phase-annotations-and-boundary-checkpoints.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -269,6 +270,18 @@ adds a tool-controlled research gate before implementation. It preserves
 PRD-177's evidence store, conversation/checkpoint continuity, cache contract,
 browser policy, and profile model while defining measurable baseline and
 coverage requirements.
+
+PRD-179 defines the contract that `create_workflow` must teach and validate
+for generated custom workflows. It requires one canonical phase plan, a
+reconstruct-style runtime annotation published to both `AppState` and the
+workflow handle before every turn, and a typed boundary checkpoint after every
+phase transition, retry, interruption, and terminal outcome. It keeps phase
+metadata, mutable runtime projection, and durable resume context distinct
+while preserving the parent conversation, cache contract, and existing
+workflow policies.
+It also requires resume reconciliation from verified durable state before any
+phase prompt, preventing stale cursors or transcript summaries from restarting
+completed phases.
 
 ## Existing PRDs
 
