@@ -183,6 +183,37 @@ def _run_async(factory: Callable[[], Coroutine[Any, Any, _SmokeResult]]) -> _Smo
 def _fake_config() -> SimpleNamespace:
     """Build the smallest session-shaped config a generated runner needs."""
 
+    class _Handle:
+        """In-memory handle that proves generated boundary calls are durable-shaped."""
+
+        def __init__(self) -> None:
+            self.run_id = "smoke-run"
+            self.calls: list[tuple[str, object]] = []
+            self.checkpoint_supported = True
+
+        def attach_context(self, context: object) -> None:
+            self.calls.append(("attach", context))
+
+        def update_phase(
+            self,
+            phase: str | None,
+            index: int,
+            iteration: int,
+            *,
+            persist: bool = True,
+        ) -> None:
+            self.calls.append(("update", (phase, index, iteration, persist)))
+
+        def save_checkpoint(self, *, reason: str = "") -> SimpleNamespace:
+            self.calls.append(("checkpoint", reason))
+            return SimpleNamespace(revision=len(self.calls))
+
+        def mark_terminal(self, _status: str, *, error: str = "") -> None:
+            self.calls.append(("terminal", error))
+
+        def is_pause_requested(self) -> bool:
+            return False
+
     class _Execution:
         def effective_model(self) -> str:
             return "smoke-model"
@@ -190,12 +221,13 @@ def _fake_config() -> SimpleNamespace:
         def effective_usable_budget(self) -> int:
             return 16_000
 
+    handle = _Handle()
     return SimpleNamespace(
         agent_runner=SimpleNamespace(
             _transport=SimpleNamespace(_config=SimpleNamespace(model="smoke-model"))
         ),
         cfg=SimpleNamespace(execution=_Execution()),
-        workflow_handle=None,
+        workflow_handle=handle,
         session_memory=object(),
         conversation_id="smoke-conversation",
         params=None,
@@ -267,6 +299,17 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
 
     runner.run_phase = fake_run_phase
     context = await runner.run("bounded smoke intent")
+    handle = config.workflow_handle
+    boundary_reasons = [
+        str(value)
+        for name, value in handle.calls
+        if name == "checkpoint" and str(value).startswith("phase_boundary:")
+    ]
+    if not boundary_reasons:
+        raise ValueError(
+            "fake handle observed no completed-phase boundary checkpoint; "
+            "phase-entry persistence alone is insufficient"
+        )
     codec = getattr(plugin, "checkpoint_context_to_payload")
     payload = codec(context)
     json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -280,7 +323,12 @@ async def _exercise_custom_runner(plugin: _SmokePlugin) -> tuple[object, object,
         raise ValueError("checkpoint restore did not reattach supplied session memory")
     if getattr(restored, "run_id", None) != getattr(context, "run_id", None):
         raise ValueError("checkpoint restore changed run identity")
-    return context, restored, bool(calls), "fake provider and transition tools exercised"
+    return (
+        context,
+        restored,
+        bool(calls),
+        "fake provider, transition tools, and completed-phase boundary checkpoints exercised",
+    )
 
 
 async def _exercise_error_propagation(plugin: _SmokePlugin) -> bool:
@@ -480,6 +528,13 @@ def run_generated_workflow_smoke(
                         "fake_runtime",
                         "pass",
                         f"{detail}; prose-only first turns remained in phase loops",
+                    )
+                )
+                checks.append(
+                    SmokeCheck(
+                        "phase_boundary_checkpoint",
+                        "pass",
+                        "fake handle observed at least one post-transition boundary checkpoint",
                     )
                 )
                 propagated = bool(

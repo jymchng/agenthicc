@@ -126,6 +126,48 @@ unreadable, stale, or plugin-mismatched checkpoints fail closed. Workflow
 contexts have no framework-imposed serialized byte ceiling; they must still be
 JSON-compatible, and available filesystem capacity is the practical limit.
 
+### Phase-boundary lifecycle
+
+Stateful workflows use `PhaseSpec` as the canonical graph and keep the live
+cursor in their typed context. A runtime `PhaseAnnotation` is projected to the
+TUI and `WorkflowRunHandle` before each phase turn; it contains the workflow,
+phase/index/total, run identity, intent, effective model, iteration/attempt,
+status, and optional plan version. It is not copied into the stable prompt
+prefix or treated as durable progress by itself.
+
+After a transition tool commits the next state and output, the runner writes a
+completed-boundary checkpoint through `WorkflowRunHandle.save_checkpoint()` via
+`checkpoint_phase_boundary()`. The checkpoint is written before the next
+provider turn, including retries, rejection/repair loops, dynamic iterations,
+and complete/exited/failed terminal outcomes. A phase-entry checkpoint and a
+completed-boundary checkpoint are separate lifecycle events. A serialization
+or storage failure raises `PhaseBoundaryError` and stops the runner; it cannot
+be reported as a successful transition.
+
+Resume reconciliation runs before any phase prompt or recovery question. It
+validates the checkpoint and plugin/plan identity, verifies the workflow's
+phase receipts, and consults durable journal state. The authority order is a
+valid newest boundary checkpoint, verified contiguous receipts newer than a
+stale cursor, durable workflow events, and finally transcript text only as
+advisory context. The reconstruct-site receipt reader therefore advances a
+stale `INIT` cursor to the earliest verified incomplete phase without replaying
+`INIT`. Reconciliation is idempotent and does not duplicate conversation
+messages, memory, receipts, or artifacts.
+
+Checkpoint payloads contain typed state, phase history, artifact references,
+retry/rejection data, and redacted cache diagnostics. They exclude the
+`ConversationStore`, session memory, events/locks, browser/provider clients,
+open files, callbacks, and credentials. Resume attaches the already-open
+session memory and preserves its conversation ID; persistence never copies the
+conversation and does not guarantee a provider cache hit.
+
+The session's existing `ConversationJournal` also records a redacted
+`workflow_phase_boundary` index after a completed checkpoint is durable.
+`fold_workflow_phase_boundaries(run_id, workflow_name)` exposes only validated
+phase names and cursor metadata for recovery. It is auxiliary evidence: a
+missing or failed journal append never invalidates a successful checkpoint, and
+it contains no prompt text, tool arguments, artifact bodies, or secrets.
+
 ### `reconstruct_site` evidence package
 
 The reconstruct workflow keeps large, typed research and validation bodies in a

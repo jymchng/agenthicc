@@ -77,6 +77,13 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.phase_lifecycle import (
+    PhaseAnnotation,
+    PhaseBoundaryError,
+    checkpoint_phase_boundary,
+    publish_phase_annotation,
+    reconcile_phase_cursor,
+)
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
@@ -135,6 +142,11 @@ class ReleaseContext:
     run_id: str = ""
     state: ReleaseState = ReleaseState.PLAN
     phase_iteration: int = 0
+    plan_version: str = "release_check.v1"
+    phase_attempts: dict[str, int] = dataclasses.field(default_factory=dict)
+    completed_phases: list[str] = dataclasses.field(default_factory=list)
+    phase_history: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    last_boundary: dict[str, object] = dataclasses.field(default_factory=dict)
     # Session memory is injected by the session and deliberately excluded from
     # the checkpoint payload. The restore hook reattaches the supplied object.
     shared_memory: ShortTermMemory | None = dataclasses.field(default=None, repr=False)
@@ -215,7 +227,110 @@ class ReleaseCheckRunner(CodePlanRunner):
     """
 
     workflow_name = "release_check"
-    total_phases = 3
+    @property
+    def total_phases(self) -> int:
+        """Derive progress from the plugin's PhaseSpec declaration."""
+        return len(self._phase_names())
+
+    @staticmethod
+    def _phase_names() -> tuple[str, ...]:
+        return tuple(spec.name for spec in ReleaseCheckWorkflow.phases)
+
+    def _publish_phase(self, ctx: ReleaseContext, state: ReleaseState) -> None:
+        """Project the active PhaseSpec through the shared lifecycle helper."""
+        phase_name = state.name.lower()
+        phase_index = self._phase_names().index(phase_name)
+        ctx.phase_attempts[phase_name] = ctx.phase_attempts.get(phase_name, 0) + 1
+        publish_phase_annotation(
+            self._cfg,
+            PhaseAnnotation(
+                workflow_name=self.workflow_name,
+                phase_name=phase_name,
+                phase_index=phase_index,
+                total_phases=self.total_phases,
+                run_id=ctx.run_id,
+                intent=ctx.intent,
+                model_id=str(getattr(self, "_model_id", "")),
+                phase_iteration=ctx.phase_iteration,
+                phase_attempt=ctx.phase_attempts[phase_name],
+                plan_version=ctx.plan_version,
+            ),
+            ctx,
+        )
+
+    def _checkpoint_boundary(
+        self,
+        ctx: ReleaseContext,
+        completed_phase: str,
+        next_state: ReleaseState,
+    ) -> None:
+        """Persist the selected next state before another provider turn."""
+        next_phase = None if next_state.is_terminal else next_state.name.lower()
+        names = self._phase_names()
+        next_index = names.index(next_phase) if next_phase is not None else names.index(completed_phase)
+        outcome = "failed" if next_state is ReleaseState.FAILED else "completed"
+        if next_state.is_terminal and next_state is not ReleaseState.FAILED:
+            outcome = "terminal"
+        boundary_key = "|".join(
+            (
+                completed_phase,
+                next_phase or "",
+                str(next_index),
+                str(ctx.phase_iteration),
+                outcome,
+            )
+        )
+        if (
+            ctx.last_boundary.get("boundary_key") == boundary_key
+            and ctx.last_boundary.get("durable") is True
+        ):
+            return
+        ctx.last_boundary = {
+            "completed_phase": completed_phase,
+            "next_state": next_state.name,
+            "next_phase": next_phase,
+            "outcome": outcome,
+            "plan_version": ctx.plan_version,
+            "boundary_key": boundary_key,
+            "durable": False,
+        }
+        if completed_phase not in ctx.completed_phases:
+            ctx.completed_phases.append(completed_phase)
+        ctx.phase_history.append(dict(ctx.last_boundary))
+        try:
+            checkpoint_phase_boundary(
+                self._cfg,
+                ctx,
+                completed_phase=completed_phase,
+                next_phase=next_phase,
+                phase_index=next_index,
+                phase_iteration=ctx.phase_iteration,
+                outcome=outcome,
+            )
+        except PhaseBoundaryError:
+            raise
+
+    def _reconcile_resume(self, ctx: ReleaseContext) -> None:
+        """Resolve the saved cursor before constructing the first resume prompt."""
+        resolution = reconcile_phase_cursor(
+            self._phase_names(),
+            ctx.state.name.lower(),
+            completed_phases=ctx.completed_phases,
+            terminal_phase="complete",
+        )
+        if resolution.phase_name == "complete":
+            ctx.state = ReleaseState.COMPLETE
+        else:
+            ctx.state = ReleaseState[resolution.phase_name.upper()]
+        if self._cfg.workflow_handle is not None and resolution.reconciled:
+            self._cfg.workflow_handle.attach_context(ctx)
+            self._cfg.workflow_handle.update_phase(
+                resolution.phase_name,
+                resolution.phase_index,
+                ctx.phase_iteration,
+                persist=False,
+            )
+            self._cfg.workflow_handle.save_checkpoint(reason="resume_reconciled")
 
     async def run(self, intent: str) -> ReleaseContext:
         """Drive plan → verify → report."""
@@ -241,11 +356,8 @@ class ReleaseCheckRunner(CodePlanRunner):
         while not state.is_terminal:
             ctx.state = state
             ctx.phase_iteration += 1
-            if handle is not None:
-                handle.attach_context(ctx)
-                handle.update_phase(
-                    state.name.lower(), self._phase_index(state), ctx.phase_iteration
-                )
+            completed_phase = state.name.lower()
+            self._publish_phase(ctx, state)
             match state:
                 case ReleaseState.PLAN:
                     state = await self._plan(ctx, memory)
@@ -253,6 +365,8 @@ class ReleaseCheckRunner(CodePlanRunner):
                     state = await self._verify(ctx, memory)
                 case ReleaseState.REPORT:
                     state = await self._report(ctx, memory)
+            ctx.state = state
+            self._checkpoint_boundary(ctx, completed_phase, state)
             log.info("release_check → %s", state.name)
 
         ctx.state = state
@@ -274,8 +388,9 @@ class ReleaseCheckRunner(CodePlanRunner):
         if memory is None:
             memory = ShortTermMemory(
                 max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
+        )
         context.shared_memory = memory
+        self._reconcile_resume(context)
         handle = self._cfg.workflow_handle
         if handle is not None:
             handle.attach_context(context)
@@ -283,11 +398,8 @@ class ReleaseCheckRunner(CodePlanRunner):
         while not state.is_terminal:
             context.state = state
             context.phase_iteration += 1
-            if handle is not None:
-                handle.attach_context(context)
-                handle.update_phase(
-                    state.name.lower(), self._phase_index(state), context.phase_iteration
-                )
+            completed_phase = state.name.lower()
+            self._publish_phase(context, state)
             match state:
                 case ReleaseState.PLAN:
                     state = await self._plan(context, memory)
@@ -295,6 +407,8 @@ class ReleaseCheckRunner(CodePlanRunner):
                     state = await self._verify(context, memory)
                 case ReleaseState.REPORT:
                     state = await self._report(context, memory)
+            context.state = state
+            self._checkpoint_boundary(context, completed_phase, state)
         context.state = state
         if handle is not None:
             handle.attach_context(context)
@@ -464,6 +578,7 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
             "artifacts": context.artifacts,
             "state": context.state.name,
             "phase_iteration": context.phase_iteration,
+            "plan_version": context.plan_version,
         }
 
     @classmethod
@@ -494,6 +609,26 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
             artifacts=artifacts,
             state=state,
             phase_iteration=int(payload.get("phase_iteration", 0)),
+            plan_version=str(payload.get("plan_version", "release_check.v1")),
+            phase_attempts={
+                str(key): int(value)
+                for key, value in payload.get("phase_attempts", {}).items()
+            } if isinstance(payload.get("phase_attempts", {}), dict) else {},
+            completed_phases=(
+                [str(item) for item in payload.get("completed_phases", [])]
+                if isinstance(payload.get("completed_phases", []), list)
+                else []
+            ),
+            phase_history=(
+                [dict(item) for item in payload.get("phase_history", []) if isinstance(item, dict)]
+                if isinstance(payload.get("phase_history", []), list)
+                else []
+            ),
+            last_boundary=(
+                {str(key): item for key, item in payload.get("last_boundary", {}).items()}
+                if isinstance(payload.get("last_boundary", {}), dict)
+                else {}
+            ),
             shared_memory=memory,
         )
 
@@ -919,6 +1054,14 @@ def make_inspection_tools(
                 "attach the typed context to config.workflow_handle before the first provider "
                 "or tool call; the framework persists setup failures as diagnostic-only and "
                 "typed phase errors as error-paused checkpoints",
+                "construct PhaseAnnotation from the authoritative PhaseSpec plan and call "
+                "publish_phase_annotation() before every phase turn, retry, and resume",
+                "after each valid transition, call checkpoint_phase_boundary() with the "
+                "committed next state before publishing or invoking the next phase",
+                "propagate PhaseBoundaryError to the framework finalizer; never continue "
+                "after a checkpoint serialization or storage failure",
+                "reconcile checkpoint, verified receipts, and journal state before any "
+                "resume prompt; transcript summaries are advisory only",
                 "do not swallow phase exceptions or mark a failed run complete; let the "
                 "framework failure finalizer own error disposition and persistence",
             ],
@@ -929,7 +1072,9 @@ def make_inspection_tools(
                 "WorkflowConfig.session_memory for every call (with a local fallback only "
                 "when no session memory exists), and pass one object to every phase. "
                 "Attach the typed context to config.workflow_handle and update its phase "
-                "cursor. Never call super().run() — that would execute code_plan's own "
+                "cursor through PhaseAnnotation/publish_phase_annotation; call "
+                "checkpoint_phase_boundary after each transition. Never call super().run() — "
+                "that would execute code_plan's own "
                 "phases."
             ),
             "reference_implementations": [
@@ -937,6 +1082,105 @@ def make_inspection_tools(
                 "agenthicc.workflows.create_workflow.runner:CreateWorkflowRunner",
             ],
             "example": "show_example_workflow('runner')",
+        }
+
+    @tool_read
+    @_tool()
+    async def describe_phase_lifecycle() -> dict[str, object]:
+        """Return the exact runtime annotation and checkpoint contract.
+
+        This intentionally exposes the ordering and failure semantics as
+        structured data so an authoring agent can implement the lifecycle
+        without copying a built-in workflow's private business phases.
+        """
+        return {
+            "schema_version": "agenthicc.phase-lifecycle.v1",
+            "required_imports": (
+                "from agenthicc.workflows.phase_lifecycle import "
+                "PhaseAnnotation, PhaseBoundaryError, checkpoint_phase_boundary, "
+                "publish_phase_annotation, reconcile_phase_cursor"
+            ),
+            "annotation_fields": [
+                "workflow_name",
+                "phase_name",
+                "phase_index",
+                "total_phases",
+                "run_id",
+                "intent",
+                "model_id",
+                "phase_iteration",
+                "phase_attempt",
+                "status",
+                "plan_version",
+            ],
+            "entry_order": [
+                "set typed state and increment phase iteration/attempt",
+                "attach typed context to config.workflow_handle",
+                "publish_phase_annotation(config, annotation, context)",
+                "run the bounded inner agent-turn loop",
+            ],
+            "boundary_order": [
+                "validate successful transition-tool result and next state",
+                "commit output, artifacts, history, retry/rejection data, and next state",
+                "checkpoint_phase_boundary(config, context, completed_phase, next_phase, outcome)",
+                "publish the next phase annotation only after checkpoint success",
+                "allow the next provider turn",
+            ],
+            "failure_rule": (
+                "PhaseBoundaryError must propagate to the framework failure finalizer. "
+                "Never swallow save_checkpoint errors or call the next provider turn."
+            ),
+            "resume_rule": (
+                "resume(context) reattaches the supplied session memory and conversation_id, "
+                "reconciles durable state before constructing a phase prompt, then enters "
+                "the same outer dispatch loop; it never calls run(intent)."
+            ),
+            "prompt_cache_rule": (
+                "Keep CACHE_CONTRACT, schemas, and lifecycle policy stable. Put phase name, "
+                "iteration, artifacts, questions, and transition data in dynamic context."
+            ),
+        }
+
+    @tool_read
+    @_tool()
+    async def show_phase_lifecycle_template() -> dict[str, object]:
+        """Return a minimal implementation pattern for a custom runner."""
+        return {
+            "schema_version": "agenthicc.phase-lifecycle-template.v1",
+            "source": (
+                "from agenthicc.workflows.phase_lifecycle import (\n"
+                "    PhaseAnnotation, PhaseBoundaryError, checkpoint_phase_boundary,\n"
+                "    publish_phase_annotation, reconcile_phase_cursor,\n"
+                ")\n\n"
+                "def publish_current(self, ctx, phase_name, phase_index):\n"
+                "    publish_phase_annotation(\n"
+                "        self._cfg,\n"
+                "        PhaseAnnotation(\n"
+                "            workflow_name=self.workflow_name, phase_name=phase_name,\n"
+                "            phase_index=phase_index, total_phases=len(self._phase_names()),\n"
+                "            run_id=ctx.run_id, intent=ctx.intent, model_id=self._model_id,\n"
+                "            phase_iteration=ctx.phase_iteration,\n"
+                "            phase_attempt=ctx.phase_attempts.get(phase_name, 0),\n"
+                "            plan_version=ctx.plan_version,\n"
+                "        ), ctx,\n"
+                "    )\n\n"
+                "def checkpoint_boundary(self, ctx, completed_phase, next_phase, index, outcome):\n"
+                "    try:\n"
+                "        return checkpoint_phase_boundary(\n"
+                "            self._cfg, ctx, completed_phase=completed_phase,\n"
+                "            next_phase=next_phase, phase_index=index,\n"
+                "            phase_iteration=ctx.phase_iteration, outcome=outcome,\n"
+                "        )\n"
+                "    except PhaseBoundaryError:\n"
+                "        raise  # the framework failure finalizer owns recovery"
+            ),
+            "do_not": [
+                "do not put runtime annotation values into CACHE_CONTRACT",
+                "do not call another phase method directly",
+                "do not use agent prose as a transition",
+                "do not replace supplied session memory or conversation_id",
+                "do not silently continue after a boundary checkpoint error",
+            ],
         }
 
     @tool_read
@@ -1016,6 +1260,11 @@ def make_inspection_tools(
                 "Pass CACHE_CONTRACT as stable_system_prompt=... to every run_phase() call.",
                 "Use the existing ask_user tool for material clarification and wait for its answer.",
                 "Keep actual questions, answers, phase state, and artifacts dynamic.",
+                "Use PhaseAnnotation/publish_phase_annotation for the runtime phase projection "
+                "and checkpoint_phase_boundary after every transition; do not put either "
+                "dynamic value into CACHE_CONTRACT.",
+                "Reconcile durable checkpoint/receipt/journal state before any resume prompt; "
+                "transcript summaries are advisory only.",
                 "Inherit WorkflowConfig.workspace_scope/workspace_access for every phase and "
                 "custom path-aware tool; never construct a second scope or bypass authorization.",
                 "Never insert messages into the beginning of shared conversation history.",
@@ -1112,6 +1361,8 @@ def make_inspection_tools(
         describe_cloakbrowser_tools,
         describe_playwright_tools,
         describe_runner_pattern,
+        describe_phase_lifecycle,
+        show_phase_lifecycle_template,
         describe_transition_tool_pattern,
         show_example_workflow,
         describe_prompt_cache_contract,

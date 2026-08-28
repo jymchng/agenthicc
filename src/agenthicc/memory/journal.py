@@ -237,6 +237,85 @@ class ConversationJournal:
             }
         )
 
+    def workflow_phase_boundary(
+        self,
+        run_id: str,
+        workflow_name: str,
+        *,
+        completed_phase: str,
+        next_phase: str | None,
+        phase_index: int,
+        phase_iteration: int,
+        outcome: str,
+        plan_version: str = "",
+        boundary_key: str = "",
+    ) -> None:
+        """Record redacted workflow-boundary metadata after a checkpoint.
+
+        This is an auxiliary recovery index, not a second workflow state
+        store. It is written only after the workflow checkpoint succeeds and
+        contains no prompt, tool arguments, artifact bodies, or credentials.
+        The checkpoint remains authoritative when an older journal lacks this
+        record or a journal write is interrupted.
+        """
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "workflow_phase_boundary",
+                "run_id": str(run_id)[:128],
+                "workflow_name": str(workflow_name)[:128],
+                "completed_phase": str(completed_phase)[:128],
+                "next_phase": str(next_phase)[:128] if next_phase is not None else None,
+                "phase_index": max(0, int(phase_index)),
+                "phase_iteration": max(0, int(phase_iteration)),
+                "outcome": str(outcome)[:96],
+                "plan_version": str(plan_version)[:128],
+                "boundary_key": str(boundary_key)[:512],
+            }
+        )
+
+    def fold_workflow_phase_boundaries(
+        self,
+        run_id: str,
+        workflow_name: str,
+    ) -> list[dict[str, object]]:
+        """Return valid boundary records for one run in journal order.
+
+        Invalid records and a corrupt trailing line are ignored. A journal is
+        an auxiliary source for resume reconciliation, so malformed metadata
+        must never make an otherwise valid checkpoint unusable.
+        """
+        if not self._path.exists():
+            return []
+        result: list[dict[str, object]] = []
+        with self._path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    break
+                if not isinstance(entry, dict):
+                    continue
+                if (
+                    entry.get("kind") != "workflow_phase_boundary"
+                    or entry.get("run_id") != run_id
+                    or entry.get("workflow_name") != workflow_name
+                    or not isinstance(entry.get("completed_phase"), str)
+                    or not entry["completed_phase"].strip()
+                    or not isinstance(entry.get("phase_index"), int)
+                    or isinstance(entry["phase_index"], bool)
+                    or entry["phase_index"] < 0
+                    or not isinstance(entry.get("phase_iteration"), int)
+                    or isinstance(entry["phase_iteration"], bool)
+                    or entry["phase_iteration"] < 0
+                ):
+                    continue
+                result.append({str(key): value for key, value in entry.items()})
+        return result
+
     # ── PRD-169: tool-exchange lifecycle ────────────────────────────────────
 
     def tool_exchange_started(

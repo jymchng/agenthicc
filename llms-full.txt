@@ -1900,6 +1900,28 @@ resume or rehydration. checkpoint_digest() returns only compact references,
 so large research bodies are not duplicated in workflow checkpoints and there
 is no artificial one-megabyte context ceiling.
 
+### Generated workflow phase lifecycle
+
+`agenthicc.workflows.phase_lifecycle` provides `PhaseAnnotation`,
+`PhaseBoundaryError`, `ResumeResolution`, `publish_phase_annotation()`,
+`checkpoint_phase_boundary()`, and `reconcile_phase_cursor()`. `PhaseSpec`
+remains the canonical stable graph. A custom runner projects the actual
+phase/index/total, run ID, intent, effective model, iteration, attempt, and
+plan version to AppState and WorkflowRunHandle before each phase turn. These
+runtime values are dynamic and are not added to the cache-stable system prompt.
+After a transition tool commits the next typed state and output,
+`checkpoint_phase_boundary()` uses the existing handle checkpoint path before
+the next provider turn, including retry, rejection, loop, and terminal
+boundaries. `PhaseBoundaryError` propagates to the framework finalizer.
+`reconcile_phase_cursor()` runs before a resumed phase prompt; verified
+contiguous receipts and durable state outrank transcript summaries, so a stale
+INIT cursor cannot replay completed phases. The create_workflow inspection
+tools `describe_phase_lifecycle()` and `show_phase_lifecycle_template()` expose
+this contract to authoring agents.
+The shared session journal exposes `workflow_phase_boundary()` and
+`fold_workflow_phase_boundaries()` as redacted, run-scoped auxiliary evidence;
+the checkpoint is written first and remains authoritative.
+
 ### reconstruct_site research contracts
 
 `agenthicc.workflows.reconstruct_site.research` contains the typed contracts

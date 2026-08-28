@@ -1,7 +1,7 @@
 ---
 title: "PRD-179: Phase Annotations and Boundary Checkpoints for Generated Workflows"
-status: Proposed
-version: 1.1.0
+status: Implemented
+version: 1.2.0
 created: 2026-08-28
 scope: "create_workflow authoring prompts, generated workflow phase metadata, TUI projections, and phase-boundary checkpoints"
 related_prds:
@@ -1221,29 +1221,65 @@ the new per-phase checkpoint guarantee.
 
 ## 19. Implementation checklist
 
-- [ ] Add annotation and checkpoint requirements to the stable runner guide.
-- [ ] Add the same requirements to design, generation, validation, and
+- [x] Add annotation and checkpoint requirements to the stable runner guide.
+- [x] Add the same requirements to design, generation, validation, and
       inspection-tool prompts without putting dynamic values in the stable
       cache contract.
-- [ ] Define or reuse one canonical phase-plan/index helper.
-- [ ] Define or reuse one centralized runtime annotation helper.
-- [ ] Ensure generated runners publish AppState and WorkflowRunHandle state
+- [x] Define or reuse one canonical phase-plan/index helper.
+- [x] Define or reuse one centralized runtime annotation helper.
+- [x] Ensure generated runners publish AppState and WorkflowRunHandle state
       before every first turn, retry, and resume.
-- [ ] Add a pre-prompt resume reconciler with checkpoint/manifest/journal
+- [x] Add a pre-prompt resume reconciler with checkpoint/manifest/journal
       authority precedence and a safe no-evidence fallback.
-- [ ] Ensure reconstruct_site and generated workflows do not inject a fresh
+- [x] Ensure reconstruct_site and generated workflows do not inject a fresh
       INIT prompt before reconciliation completes.
-- [ ] Define or reuse one boundary checkpoint helper.
-- [ ] Ensure every valid phase transition checkpoints before the next provider
+- [x] Define or reuse one boundary checkpoint helper.
+- [x] Ensure every valid phase transition checkpoints before the next provider
       turn, including rejection and terminal boundaries.
-- [ ] Ensure checkpoint failures stop progression and reach recovery handling.
-- [ ] Extend generated-workflow validation and smoke fixtures.
-- [ ] Add unit, integration, E2E, regression, compatibility, and performance
+- [x] Ensure checkpoint failures stop progression and reach recovery handling.
+- [x] Extend generated-workflow validation and smoke fixtures.
+- [x] Add unit, integration, E2E, regression, compatibility, and performance
       tests listed in this PRD.
-- [ ] Update workflow, storage, generated-workflow, and public-symbol docs.
-- [ ] Run the relevant lint, format, type, docs, and complete test gates.
-- [ ] Update this PRD status and link implementation/test evidence only after
+- [x] Update workflow, storage, generated-workflow, and public-symbol docs.
+- [x] Run the relevant lint, format, type, docs, and complete test gates.
+- [x] Update this PRD status and link implementation/test evidence only after
       the acceptance criteria are verified.
+
+## 19.1 Implementation evidence — 2026-08-28
+
+Implemented in the current source tree. The shared lifecycle implementation is
+in `src/agenthicc/workflows/phase_lifecycle.py`; the create_workflow authoring
+surface now exposes `describe_phase_lifecycle()` and
+`show_phase_lifecycle_template()` and returns both tools from
+`make_inspection_tools()`. Generated-runner validation and smoke execution
+require the annotation, boundary, codec, resume, cache, and fail-closed
+markers. The create_workflow and reconstruct_site runners use the same
+session-owned ConversationStore/journal and WorkflowRunHandle checkpoint path.
+
+Resume reconciliation is performed before phase prompt construction. Verified
+phase receipts and journal boundaries are folded through the canonical plan,
+with contiguous-prefix validation and explicit bounded provenance. The
+reconstruct_site stale-INIT regression resolves to BOOTSTRAP when the durable
+receipts prove that INIT through design_system are complete. Boundary journal
+records contain metadata only; prompts, tool arguments, artifact bodies,
+credentials, and memory objects are excluded from checkpoint payloads.
+
+Verification evidence:
+
+- `uv run pytest tests/ -q`: **3601 passed, 15 skipped**.
+- Focused lifecycle/authoring suite: **184 passed** before the final repository
+  run, with the final repository run covering those tests again.
+- `uv run ruff check ...` on the touched source/tests: passed.
+- `uv run ruff format --check ...` on the touched source/tests: passed.
+- `uv run mypy` on the touched lifecycle/create_workflow surfaces: passed.
+- `uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.json`: passed.
+- `uv run nox -s llms_check`: passed.
+- `uv run python -m compileall -q src tests`: passed.
+
+The repository-wide format check still reports pre-existing formatting drift in
+12 unrelated files; those files were intentionally not reformatted as part of
+this implementation. The repository-wide test and touched-surface checks are
+clean.
 
 ## 20. Definition of done
 

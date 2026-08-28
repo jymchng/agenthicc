@@ -508,12 +508,28 @@ def test_inspection_tools_are_the_documented_set() -> None:
         "describe_cloakbrowser_tools",
         "describe_playwright_tools",
         "describe_runner_pattern",
+        "describe_phase_lifecycle",
+        "show_phase_lifecycle_template",
         "describe_transition_tool_pattern",
         "show_example_workflow",
         "describe_prompt_cache_contract",
         "show_workflow_template",
         "validate_workflow_cache_contract",
     ]
+
+
+async def test_phase_lifecycle_inspection_tools_expose_annotation_and_ordering() -> None:
+    lifecycle = await _call(make_inspection_tools(), "describe_phase_lifecycle")
+    template = await _call(make_inspection_tools(), "show_phase_lifecycle_template")
+    assert isinstance(lifecycle, dict)
+    assert isinstance(template, dict)
+    assert lifecycle["schema_version"] == "agenthicc.phase-lifecycle.v1"
+    assert "phase_index" in lifecycle["annotation_fields"]
+    assert "total_phases" in lifecycle["annotation_fields"]
+    assert "checkpoint_phase_boundary" in " ".join(lifecycle["boundary_order"])
+    assert "PhaseAnnotation" in template["source"]
+    assert "publish_phase_annotation" in template["source"]
+    assert "checkpoint_phase_boundary" in template["source"]
 
 
 async def test_describe_phasespec_covers_every_live_field() -> None:

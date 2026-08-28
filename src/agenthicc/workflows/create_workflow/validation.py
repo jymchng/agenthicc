@@ -699,6 +699,49 @@ def _check_error_recovery_contract(source: str, errors: list[str], *, strict: bo
                     )
 
 
+def _check_phase_lifecycle_contract(source: str, errors: list[str], *, strict: bool) -> None:
+    """Require the shared annotation/boundary contract for new custom runners."""
+    if not strict:
+        return
+    required_markers = {
+        "PhaseAnnotation": "a PhaseAnnotation built from the canonical phase plan",
+        "publish_phase_annotation": "publish_phase_annotation() before every phase turn",
+        "update_phase": "the WorkflowRunHandle phase projection",
+        "checkpoint_phase_boundary": "checkpoint_phase_boundary() after every transition",
+        "save_checkpoint": "the existing durable checkpoint path",
+        "reconcile_phase_cursor": "pre-prompt resume reconciliation",
+        "plan_version": "the persisted phase-plan revision or plugin fingerprint",
+        "phase_attempts": "per-phase retry/attempt state",
+        "completed_phases": "completed-phase evidence",
+        "phase_history": "auditable phase-boundary history",
+        "last_boundary": "the latest durable boundary marker",
+    }
+    missing = [
+        description for marker, description in required_markers.items() if marker not in source
+    ]
+    if missing:
+        errors.append(
+            "custom workflow lifecycle contract is incomplete; missing "
+            + ", ".join(missing)
+            + ". Use describe_phase_lifecycle() and show_phase_lifecycle_template()."
+        )
+    if "update_workflow_phase" not in source and "publish_phase_annotation" not in source:
+        errors.append(
+            "custom workflow lifecycle must reach the AppState workflow-phase projection "
+            "through publish_phase_annotation() or an equivalent direct call."
+        )
+    if "PhaseBoundaryError" not in source or "raise" not in source:
+        errors.append(
+            "custom workflow runners must propagate PhaseBoundaryError from a failed "
+            "boundary checkpoint to the framework failure finalizer."
+        )
+    if "phase_index" not in source or "total_phases" not in source:
+        errors.append(
+            "phase annotations must derive phase_index and total_phases from the declared "
+            "PhaseSpec plan; a hard-coded progress counter is not sufficient."
+        )
+
+
 def _string_values(value: object) -> tuple[str, ...]:
     """Read a bounded string collection from generated plugin metadata."""
     if isinstance(value, str):
@@ -1322,6 +1365,11 @@ def validate_workflow_file(
             errors,
             strict=strict_cache_contract,
         )
+        _check_phase_lifecycle_contract(
+            "\n".join(sources.values()),
+            errors,
+            strict=strict_cache_contract,
+        )
     cache_contract = _check_prompt_cache_contract(
         sources,
         target,
@@ -1391,6 +1439,19 @@ def validate_workflow_file(
             and not has_error("checkpoint")
         )
         else "fail",
+        "phase_lifecycle": "fail"
+        if any(
+            marker in error_text
+            for marker in (
+                "phase lifecycle",
+                "phaseannotation",
+                "boundary checkpoint",
+                "phase annotation",
+            )
+        )
+        else "pass"
+        if not custom_runner or strict_cache_contract
+        else "warning",
         "resume": "fail"
         if has_error("resume")
         else "pass"

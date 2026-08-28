@@ -557,6 +557,72 @@ is supplied.
 
 ### Checkpointing a custom runner
 
+#### Phase annotations and completed-boundary checkpoints
+
+`PhaseSpec` is the stable graph declaration; it is not itself the live cursor.
+Every stateful runner should derive its phase index and total from that
+declaration and project the actual execution state through the shared helpers:
+
+```python
+from agenthicc.workflows.phase_lifecycle import (
+    PhaseAnnotation,
+    checkpoint_phase_boundary,
+    publish_phase_annotation,
+)
+
+publish_phase_annotation(
+    config,
+    PhaseAnnotation(
+        workflow_name=self.workflow_name,
+        phase_name=phase_name,
+        phase_index=phase_index,
+        total_phases=len(phase_names),
+        run_id=context.run_id,
+        intent=context.intent,
+        model_id=effective_model,
+        phase_iteration=context.phase_iteration,
+        phase_attempt=context.phase_attempts.get(phase_name, 0),
+        plan_version="my-workflow.v1",
+    ),
+    context,
+)
+```
+
+The annotation updates both `AppState.update_workflow_phase()` (the TUI
+projection) and `WorkflowRunHandle.update_phase()` (the phase-entry recovery
+cursor). It is dynamic runtime state and must not be interpolated into the
+cache-stable system prompt.
+
+After a transition tool succeeds, the runner commits the next typed state and
+phase output, then calls `checkpoint_phase_boundary()` before publishing or
+invoking the next phase. This is a completed-boundary checkpoint, not merely a
+phase-entry checkpoint. It is required for ordinary transitions, retries,
+rejections, loops, and terminal outcomes. `PhaseBoundaryError` must reach the
+framework failure finalizer; a UI update is never proof that persistence
+succeeded, and the next provider turn must not start after a checkpoint error.
+
+On resume, reconcile the checkpoint, verified phase receipts, and workflow
+journal before constructing a phase prompt or asking the user how to recover.
+The valid durable cursor and verified contiguous receipts outrank transcript
+summaries. A summary can be retained as dynamic context, but it cannot make a
+completed `INIT` phase run again when receipts prove that the next phase is
+already active. The shared `reconcile_phase_cursor()` helper is pure and
+idempotent; workflow-specific evidence stores supply the verified receipt
+names. When no durable evidence exists, record the safe first-phase fallback
+explicitly rather than presenting it as successful recovery.
+
+Completed boundaries are appended to the same session journal through
+`ConversationJournal.workflow_phase_boundary()` only after the workflow
+checkpoint is saved. `fold_workflow_phase_boundaries()` is an auxiliary,
+run-scoped index; it never replaces the checkpoint or duplicates the
+conversation. Journal write failure is logged as degraded diagnostics after
+the primary checkpoint has already made the transition safe.
+
+`create_workflow` exposes `describe_phase_lifecycle()` and
+`show_phase_lifecycle_template()` to authoring agents. New generated custom
+runners are statically validated and smoke-tested for this annotation,
+boundary, resume, and failure contract before publication.
+
 The framework codecs cover `WorkflowContext`, `CodePlanContext`, and
 `CreateWorkflowContext`. A plugin with a custom runner/context must opt in
 explicitly; `create_workflow` rejects a generated custom runner that omits

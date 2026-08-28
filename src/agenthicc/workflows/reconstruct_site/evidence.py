@@ -158,9 +158,24 @@ class ArtifactRecord:
     created_at: float = dataclasses.field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, object]:
-        value = dataclasses.asdict(self)
-        value["source_cells"] = list(self.source_cells)
-        return value
+        # Keep this explicit instead of dataclasses.asdict(): manifest writes
+        # happen once per artifact and asdict recursively copies every field.
+        # The records are immutable, so a shallow construction is sufficient
+        # and materially reduces the O(n) work for large manifests.
+        return {
+            "artifact_id": self.artifact_id,
+            "kind": self.kind,
+            "relative_path": self.relative_path,
+            "media_type": self.media_type,
+            "sha256": self.sha256,
+            "byte_count": self.byte_count,
+            "phase": self.phase,
+            "attempt": self.attempt,
+            "status": self.status,
+            "source": self.source,
+            "source_cells": list(self.source_cells),
+            "created_at": self.created_at,
+        }
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> "ArtifactRecord":
@@ -453,7 +468,10 @@ class ReconstructEvidenceStore:
 
     def _publish(self, manifest: EvidenceManifest) -> EvidenceManifest:
         payload = json.dumps(
-            manifest.to_dict(), ensure_ascii=False, sort_keys=True, indent=2
+            manifest.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
         ).encode()
         atomic_replace(self._manifest_path, payload, prefix=".manifest-")
         self._manifest = manifest
@@ -731,31 +749,19 @@ class ReconstructEvidenceStore:
             return result
 
     def _upsert_artifact(self, record: ArtifactRecord) -> tuple[ArtifactRecord, ...]:
-        return tuple(
-            dataclasses.replace(
+        key = (record.artifact_id, record.kind, record.phase, record.attempt)
+        artifacts = list(self._manifest.artifacts)
+        for index, item in enumerate(artifacts):
+            if (item.artifact_id, item.kind, item.phase, item.attempt) != key:
+                continue
+            artifacts[index] = dataclasses.replace(
                 record,
                 source_cells=tuple(dict.fromkeys((*item.source_cells, *record.source_cells))),
                 created_at=item.created_at,
             )
-            if (
-                item.artifact_id == record.artifact_id
-                and item.kind == record.kind
-                and item.phase == record.phase
-                and item.attempt == record.attempt
-            )
-            else item
-            for item in self._manifest.artifacts
-        ) + tuple(
-            ()
-            if any(
-                item.artifact_id == record.artifact_id
-                and item.kind == record.kind
-                and item.phase == record.phase
-                and item.attempt == record.attempt
-                for item in self._manifest.artifacts
-            )
-            else (record,)
-        )
+            return tuple(artifacts)
+        artifacts.append(record)
+        return tuple(artifacts)
 
     def write_phase_receipt(
         self,
@@ -769,6 +775,8 @@ class ReconstructEvidenceStore:
         return self.put_json(
             "phase_receipt",
             {
+                "run_id": self.run_id,
+                "plan_version": self._manifest.plan_version,
                 "phase": phase,
                 "attempt": attempt,
                 "summary": summary[:4000],
@@ -779,6 +787,59 @@ class ReconstructEvidenceStore:
             source="workflow",
             source_cells=source_cells,
         )
+
+    def read_phase_receipts(self) -> tuple[dict[str, object], ...]:
+        """Read and validate every complete phase-boundary receipt.
+
+        ``read_kind`` intentionally returns only the newest artifact of a
+        kind, which is correct for research bodies but insufficient for resume
+        reconciliation: retries and earlier phase boundaries are all useful
+        evidence.  This method verifies each receipt's content-addressed bytes
+        and rejects malformed or cross-run records instead of silently using
+        them as a cursor.
+        """
+
+        records = sorted(
+            (
+                item
+                for item in self._manifest.artifacts
+                if item.kind == "phase_receipt" and item.status == "complete"
+            ),
+            key=lambda item: (item.created_at, item.attempt, item.artifact_id),
+        )
+        result: list[dict[str, object]] = []
+        for record in records:
+            path = self.workspace.resolve(record.relative_path)
+            try:
+                raw = path.read_bytes()
+            except OSError as exc:
+                raise EvidenceIntegrityError(
+                    f"phase receipt {record.artifact_id} is unreadable"
+                ) from exc
+            if len(raw) != record.byte_count or _hash(raw) != record.sha256:
+                raise EvidenceIntegrityError(
+                    f"phase receipt {record.artifact_id} failed integrity verification"
+                )
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise EvidenceIntegrityError(
+                    f"phase receipt {record.artifact_id} is not valid JSON"
+                ) from exc
+            if not isinstance(value, dict):
+                raise EvidenceIntegrityError("phase receipt payload must be an object")
+            phase = value.get("phase")
+            attempt = value.get("attempt")
+            if phase != record.phase or not isinstance(phase, str) or not phase.strip():
+                raise EvidenceIntegrityError("phase receipt phase does not match its manifest")
+            if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+                raise EvidenceIntegrityError("phase receipt attempt is invalid")
+            saved_run = value.get("run_id", self.run_id)
+            saved_plan = value.get("plan_version", self._manifest.plan_version)
+            if saved_run != self.run_id or saved_plan != self._manifest.plan_version:
+                raise EvidenceIntegrityError("phase receipt identity does not match its manifest")
+            result.append({str(key): item for key, item in value.items()})
+        return tuple(result)
 
     def invalidate(
         self, kinds: Iterable[str], *, source_phase: str, target_phase: str, reason: str

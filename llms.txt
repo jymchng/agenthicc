@@ -68,6 +68,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `StartupCoordinator` / `StartupPhaseReport` / `ReadinessState` | `agenthicc.runners.startup` | Session-scoped progressive startup phases, readiness gates, cancellation, and redacted diagnostics |
 | `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory, transactional tool-exchange recovery, and complete subagent-result persistence |
 | `WorkflowCheckpoint` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints, structured error pauses, and diagnostic fallback records |
+| `PhaseAnnotation` / `ResumeResolution` / `checkpoint_phase_boundary` | `agenthicc.workflows.phase_lifecycle` | Shared runtime phase projection, fail-closed completed-boundary checkpointing, and idempotent pre-prompt cursor reconciliation |
 | `WorkflowFailureKind` | `agenthicc.runners.workflow_handle` | Typed stable categories for workflow failure finalization and diagnostics |
 | `WorkflowRecoveryCoordinator` / `WorkflowRecoveryRecord` | `agenthicc.runners.workflow_recovery` | Fail-closed interrupted/error-paused discovery, validation, claims, and typed rehydration |
 | `PromptContract` / `build_workflow_prompt_contract` | `agenthicc.runners.prompt_contract` | Cache-stable system/tool prefix plus append-only dynamic workflow context; emits redacted cache diagnostics |

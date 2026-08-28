@@ -8,6 +8,25 @@
 **Scope:** Original audit of 17 source files; current package contains 21 Python files
 **Findings:** 9 architectural issues · 10 code quality issues · 9 bugs · 5 integration gaps
 
+## PRD-179 generated-runner lifecycle audit — 2026-08-28
+
+The generated-workflow contract now has one shared lifecycle surface in
+`agenthicc.workflows.phase_lifecycle`. `PhaseAnnotation` projects the actual
+PhaseSpec cursor to `AppState` and `WorkflowRunHandle`; it is separate from the
+cache-stable prompt. `checkpoint_phase_boundary()` persists committed phase
+output and the next cursor before another provider turn, including terminal
+boundaries, and propagates `PhaseBoundaryError` to the session failure
+finalizer. `reconcile_phase_cursor()` is the pure pre-prompt cursor resolver;
+reconstruct_site supplies integrity-verified phase receipts so a stale INIT
+checkpoint cannot replay completed research phases.
+
+`create_workflow` exposes `describe_phase_lifecycle()` and
+`show_phase_lifecycle_template()` to authoring agents. Strict validation now
+requires lifecycle evidence for new custom runners, while the default legacy
+validation mode remains compatible with existing manually installed plugins.
+The generated template and smoke path exercise the same annotation, boundary,
+resume, and error-propagation contract.
+
 ## Current status audit — 2026-07-29
 
 The findings below originated from an earlier package review. The current

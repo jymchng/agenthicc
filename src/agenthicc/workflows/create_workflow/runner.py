@@ -41,6 +41,13 @@ from typing import TYPE_CHECKING
 
 from agenthicc.tools.base import ToolLike
 from agenthicc.workflows.base_runner import BaseWorkflowRunner
+from agenthicc.workflows.phase_lifecycle import (
+    PhaseAnnotation,
+    PhaseBoundaryError,
+    checkpoint_phase_boundary,
+    publish_phase_annotation,
+    reconcile_phase_cursor,
+)
 from agenthicc.workflows.create_workflow.state import (
     CreateWorkflowContext,
     CreateWorkflowState,
@@ -152,6 +159,16 @@ _RUNNER_GUIDE: str = (
     "use config.conversation_id unchanged for every phase and resume, and must never "
     "create a second conversation for a resumed run. Use "
     "config.workflow_handle to attach context and publish the current phase.\n"
+    "  10a. Use the shared phase lifecycle contract: import PhaseAnnotation, "
+    "publish_phase_annotation(), and checkpoint_phase_boundary() from "
+    "agenthicc.workflows.phase_lifecycle. Build the annotation from the exact "
+    "PhaseSpec plan (phase name/index/total, run ID, intent, effective model, "
+    "iteration/attempt, and plan version), and publish it before every phase turn, "
+    "including retries and resume. After a transition tool succeeds, commit the "
+    "next typed state and output, call checkpoint_phase_boundary(), and only then "
+    "enter/publish the next phase. A PhaseBoundaryError must propagate; never "
+    "silently continue after checkpoint failure. Use describe_phase_lifecycle() "
+    "and show_phase_lifecycle_template() for the exact call shape.\n"
     "  11. inherit config.workspace_scope and config.workspace_access unchanged. Never "
     "construct a second WorkspaceScope, bypass the policy with a raw filesystem call, "
     "or treat a custom runner as permission to access a parent directory. Use the "
@@ -186,7 +203,12 @@ _RUNNER_GUIDE: str = (
     "a real fallback so optional failure does not block local work. The runner may "
     "also call config.wait_for_startup() for a phase-local dependency, but it must "
     "never construct a second MCP/browser/provider resource.\n"
-    "Call describe_runner_pattern() and describe_transition_tool_pattern() for the "
+    "  17. Resume reconciliation must happen before any phase prompt, provider call, "
+    "or recovery question: verified checkpoint/receipt/journal state outranks a "
+    "transcript summary, and a stale INIT cursor must advance to the earliest verified "
+    "incomplete phase.\n"
+    "Call describe_runner_pattern(), describe_phase_lifecycle(), "
+    "show_phase_lifecycle_template(), and describe_transition_tool_pattern() for the "
     "full checklist and canonical decorator/import pattern, then "
     "show_example_workflow() for a complete working runner to adapt. Omit the runner ONLY "
     "when every single phase is one unconditional agent turn with no retry and no branch."
@@ -224,7 +246,8 @@ _AUTHORING_GUIDE: str = (
     "explain_authoring_tool_access(tool_name) for a decision trace. Use "
     "describe_phasespec(), list_tool_capabilities(), list_agent_roles(), "
     "describe_cloakbrowser_tools(), describe_playwright_tools(), "
-    "describe_runner_pattern(), describe_transition_tool_pattern(), "
+    "describe_runner_pattern(), describe_phase_lifecycle(), "
+    "show_phase_lifecycle_template(), describe_transition_tool_pattern(), "
     "describe_prompt_cache_contract(), show_workflow_template(), "
     "validate_workflow_cache_contract(), and show_example_workflow() to read the real API instead of "
     "guessing at it. list_agenthicc_docs(), read_agenthicc_doc(), search_agenthicc_docs(), "
@@ -312,6 +335,16 @@ _GENERATE_PROMPT: str = (
     "current_workspace_access() or an authorized built-in adapter; never construct a "
     "second scope, add an implicit parent root, parse around the policy, or use raw "
     "filesystem I/O for a convenience check.\n\n"
+    "Implement the runtime lifecycle with the shared "
+    "agenthicc.workflows.phase_lifecycle helpers. Centralize a publish_phase(context, "
+    "phase_spec) operation that constructs a validated PhaseAnnotation and calls "
+    "publish_phase_annotation() before every first turn, retry, and resume. Centralize "
+    "checkpoint_boundary(context, completed_phase, next_state, outcome) and call "
+    "checkpoint_phase_boundary() after the transition tool commits state/output and "
+    "before the outer loop can publish or invoke the next phase. Include terminal "
+    "boundaries. Propagate PhaseBoundaryError to the framework finalizer; do not "
+    "swallow it. Inspect describe_phase_lifecycle() and "
+    "show_phase_lifecycle_template() before coding.\n\n"
     "Write the runner the design specified into runner.py — the state enum, the "
     "context dataclass, one bounded async method per state, the "
     "'while not state.is_terminal' + 'match state' driver in run(), resume(), the phase "
@@ -514,16 +547,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
 
                 state = await self._dispatch(state, ctx)
                 ctx.state = state
-                if handle is not None and not state.is_terminal:
-                    # Persist the selected state immediately after the
-                    # transition tool returns and before the next phase turn.
-                    next_phase = state.name.lower()
-                    handle.attach_context(ctx)
-                    handle.update_phase(
-                        next_phase,
-                        _PHASE_INDEX.get(next_phase, 0),
-                        ctx.phase_iteration,
-                    )
+                # A phase method returns only after its transition tool has
+                # fired (or its bounded failure path has been selected).  The
+                # boundary must be durable before the outer loop can enter a
+                # further phase turn, including terminal outcomes.
+                self._checkpoint_boundary(ctx, phase_name, state)
 
                 next_label: str | None = state.name.lower() if not state.is_terminal else None
                 artifact = ctx.artifacts.get(phase_name)
@@ -577,6 +605,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
             raise
+        except PhaseBoundaryError:
+            # A UI projection is not durable progress.  Let the session-owned
+            # failure finalizer classify and persist the checkpoint failure.
+            raise
         except Exception as exc:
             log.error("CreateWorkflowRunner error: %s", exc, exc_info=True)
             wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
@@ -618,6 +650,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             raise TypeError("workflow resume requires a WorkflowContext")
 
         self._run_id = ctx.run_id
+        self._reconcile_resume_cursor(ctx)
+        state = ctx.state
         if handle is not None:
             handle.attach_context(ctx)
         # Re-enter the same outer dispatch loop. The typed state is the durable
@@ -655,14 +689,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 )
                 state = await self._dispatch(state, ctx)
                 ctx.state = state
-                if handle is not None and not state.is_terminal:
-                    handle.attach_context(ctx)
-                    next_phase = state.name.lower()
-                    handle.update_phase(
-                        next_phase,
-                        _PHASE_INDEX.get(next_phase, 0),
-                        ctx.phase_iteration,
-                    )
+                self._checkpoint_boundary(ctx, phase_name, state)
 
             final_status = self._final_status(state)
             wf_run = dataclasses.replace(wf_run, status=final_status, current_phase=None)
@@ -692,6 +719,82 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             if final_status in {"complete", "exited"} and handle.checkpoint_supported:
                 handle.save_checkpoint(reason=final_status)
         return ctx
+
+    def _reconcile_resume_cursor(self, ctx: CreateWorkflowContext) -> None:
+        """Resolve the saved state before the first resumed phase prompt.
+
+        ``create_workflow`` has no external artifact manifest, so its typed
+        context is the durable execution evidence.  The same pure resolver
+        used by reconstruct_site still matters here: it prevents an older
+        checkpoint cursor from being allowed to replay a phase when the
+        context already contains a contiguous completed prefix.  A validation
+        rejection is an intentional re-entry and therefore preserves its
+        repair cursor rather than treating the successful validation attempt
+        as a linear prefix.
+        """
+        current = ctx.state.name.lower()
+        if ctx.state.is_terminal:
+            ctx.resume_resolution_source = "checkpoint_cursor"
+            return
+        boundary = ctx.last_boundary
+        preserve_current = (
+            isinstance(boundary, dict)
+            and str(boundary.get("next_phase", "")).strip().lower() == current
+            and str(boundary.get("outcome", "")).strip().lower() in {"rejected", "retry"}
+        )
+        journal_phases: tuple[str, ...] = ()
+        handle = self._cfg.workflow_handle
+        if handle is not None:
+            try:
+                conversation = object.__getattribute__(handle, "conversation")
+                journal = object.__getattribute__(conversation, "journal")
+                fold_boundaries = object.__getattribute__(journal, "fold_workflow_phase_boundaries")
+                records = fold_boundaries(ctx.run_id, self.workflow_name)
+                journal_phases = tuple(
+                    str(item["completed_phase"])
+                    for item in records
+                    if isinstance(item.get("completed_phase"), str)
+                )
+            except (AttributeError, TypeError):
+                # Lightweight/headless adapters may not expose the optional
+                # journal index. The typed checkpoint remains authoritative.
+                journal_phases = ()
+        resolution = reconcile_phase_cursor(
+            _PHASE_NAMES,
+            current,
+            completed_phases=ctx.completed_phases,
+            journal_phases=journal_phases,
+            terminal_phase="complete",
+            preserve_current=preserve_current,
+        )
+        ctx.resume_resolution_source = resolution.source
+        ctx.resume_resolution_reason = resolution.diagnostic[:512]
+        ctx.resume_reconciled = resolution.reconciled
+        for phase_name in resolution.completed_phases:
+            if phase_name not in ctx.completed_phases:
+                ctx.completed_phases.append(phase_name)
+        if resolution.phase_name == "complete":
+            resolved = CreateWorkflowState.COMPLETE
+        else:
+            resolved = CreateWorkflowState[resolution.phase_name.upper()]
+        if resolved is ctx.state:
+            return
+        ctx.state = resolved
+        ctx.last_boundary = {
+            **ctx.last_boundary,
+            "next_state": resolved.name,
+            "next_phase": None if resolved.is_terminal else resolved.name.lower(),
+            "outcome": "resume_reconciled",
+        }
+        if self._cfg.workflow_handle is not None:
+            self._cfg.workflow_handle.attach_context(ctx)
+            self._cfg.workflow_handle.update_phase(
+                None if resolved.is_terminal else resolution.phase_name,
+                resolution.phase_index,
+                ctx.phase_iteration,
+                persist=False,
+            )
+            self._cfg.workflow_handle.save_checkpoint(reason="resume_reconciled")
 
     # ── outer-loop dispatch ───────────────────────────────────────────────────
 
@@ -1375,18 +1478,74 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         """Update all workflow TUI state for the current phase in one call."""
         ctx.state = CreateWorkflowState[phase_name.upper()]
         ctx.phase_iteration += 1
-        handle = self._cfg.workflow_handle
-        if handle is not None:
-            handle.attach_context(ctx)
-            handle.update_phase(phase_name, phase_index, ctx.phase_iteration)
-        self._cfg.app_state.update_workflow_phase(
-            workflow_name=self.workflow_name,
-            phase_name=phase_name,
-            phase_index=phase_index,
-            total_phases=self.total_phases,
-            run_id=ctx.run_id,
-            intent=ctx.intent,
-            model_id=self._phase_model(phase_name) or self._model_id,
+        ctx.phase_attempts[phase_name] = ctx.phase_attempts.get(phase_name, 0) + 1
+        publish_phase_annotation(
+            self._cfg,
+            PhaseAnnotation(
+                workflow_name=self.workflow_name,
+                phase_name=phase_name,
+                phase_index=phase_index,
+                total_phases=self.total_phases,
+                run_id=ctx.run_id,
+                intent=ctx.intent,
+                model_id=self._phase_model(phase_name) or self._model_id,
+                phase_iteration=ctx.phase_iteration,
+                phase_attempt=ctx.phase_attempts[phase_name],
+                plan_version=ctx.plan_version,
+            ),
+            ctx,
+        )
+
+    def _checkpoint_boundary(
+        self,
+        ctx: CreateWorkflowContext,
+        completed_phase: str,
+        next_state: CreateWorkflowState,
+    ) -> None:
+        """Commit one phase result before the outer loop advances."""
+        next_phase = None if next_state.is_terminal else next_state.name.lower()
+        next_index = (
+            _PHASE_INDEX.get(next_phase, _PHASE_INDEX.get(completed_phase, 0))
+            if next_phase is not None
+            else _PHASE_INDEX.get(completed_phase, 0)
+        )
+        outcome = "failed" if next_state is CreateWorkflowState.FAILED else "completed"
+        if next_state.is_terminal and next_state is not CreateWorkflowState.FAILED:
+            outcome = "terminal"
+        elif ctx.rejection_reason and next_state is CreateWorkflowState.GENERATE:
+            outcome = "rejected"
+        existing = ctx.last_boundary
+        boundary_key = "|".join(
+            (
+                completed_phase[:128],
+                next_phase[:128] if next_phase is not None else "",
+                str(next_index),
+                str(ctx.phase_iteration),
+                outcome,
+            )
+        )
+        if existing.get("boundary_key") == boundary_key and existing.get("durable") is True:
+            return
+        ctx.last_boundary = {
+            "completed_phase": completed_phase,
+            "next_state": next_state.name,
+            "next_phase": next_phase,
+            "outcome": outcome,
+            "phase_iteration": ctx.phase_iteration,
+            "boundary_key": boundary_key,
+            "durable": False,
+        }
+        if completed_phase not in ctx.completed_phases:
+            ctx.completed_phases.append(completed_phase)
+        ctx.phase_history.append(dict(ctx.last_boundary))
+        checkpoint_phase_boundary(
+            self._cfg,
+            ctx,
+            completed_phase=completed_phase,
+            next_phase=next_phase,
+            phase_index=next_index,
+            phase_iteration=ctx.phase_iteration,
+            outcome=outcome,
         )
 
     # ── turn helpers ──────────────────────────────────────────────────────────

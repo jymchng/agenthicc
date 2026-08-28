@@ -24,6 +24,12 @@ from typing import TYPE_CHECKING
 
 from agenthicc.tools.base import ToolLike
 from agenthicc.tools.sandbox import WorkspaceView
+from agenthicc.workflows.phase_lifecycle import (
+    PhaseAnnotation,
+    checkpoint_phase_boundary,
+    publish_phase_annotation,
+    reconcile_phase_cursor,
+)
 from .evidence import (
     ArtifactRecord,
     EvidenceIntegrityError,
@@ -193,6 +199,10 @@ class ReconstructContext(PhaseContext):
     cache_epoch: int = 0
     cache_epoch_reason: str = "initial"
     stable_tool_bundle_fingerprint: str = ""
+    # Resume reconciliation is durable diagnostic state, not prompt content.
+    resume_resolution_source: str = ""
+    resume_resolution_reason: str = ""
+    resume_reconciled: bool = False
 
     @property
     def page_progress(self) -> dict[str, int]:
@@ -909,22 +919,23 @@ class ReconstructSiteRunner(PhaseRunner):
         if phase_name == "page":
             progress = context.page_progress
             display_name = f"page {progress['current']}/{progress['total']}"
-        app_state = getattr(self._cfg, "app_state", None)
-        update_phase = getattr(app_state, "update_workflow_phase", None)
-        if callable(update_phase):
-            update_phase(
+        publish_phase_annotation(
+            self._cfg,
+            PhaseAnnotation(
                 workflow_name=self.workflow_name,
-                phase_name=display_name,
+                phase_name=phase_name,
                 phase_index=index,
                 total_phases=plan.total_phases,
                 run_id=context.run_id,
                 intent=context.intent,
                 model_id=model,
-            )
-        handle = self._cfg.workflow_handle
-        if handle is not None:
-            handle.attach_context(context)
-            handle.update_phase(phase_name, index, context.phase_iteration)
+                phase_iteration=context.phase_iteration,
+                phase_attempt=context.phase_attempt,
+                plan_version=plan.version,
+            ),
+            context,
+            display_name=display_name,
+        )
 
     def _summary_for(self, context: ReconstructContext, phase_name: str) -> str:
         value = context.artifacts.get(phase_name, "")
@@ -1361,6 +1372,109 @@ class ReconstructSiteRunner(PhaseRunner):
         context.artifact_manifest_revision = store.manifest.revision
         context.screenshot_ids = [item.screenshot_id for item in store.manifest.screenshots]
 
+    def _reconcile_resume_cursor(
+        self, context: ReconstructContext, plan: ActiveReconstructPlan
+    ) -> None:
+        """Resolve a restored cursor against verified phase receipts.
+
+        Checkpoint context is the normal source of truth, but it can be older
+        than the manifest when a process stopped between the phase transition
+        and the next checkpoint write.  Receipt evidence is therefore allowed
+        to advance an older cursor only when it proves a contiguous canonical
+        prefix.  This method runs after evidence rehydration and before
+        ``_run_context`` can construct a phase prompt or call a provider.
+        """
+
+        current_name = context.state.name.lower()
+        if context.state.is_terminal:
+            context.resume_resolution_source = "checkpoint_cursor"
+            return
+
+        receipt_phases: tuple[str, ...] = ()
+        journal_phases: tuple[str, ...] = ()
+        store = getattr(self, "_evidence", None)
+        if store is not None:
+            try:
+                receipts = store.read_phase_receipts()
+                receipt_phases = tuple(
+                    str(item["phase"]) for item in receipts if isinstance(item.get("phase"), str)
+                )
+            except EvidenceIntegrityError as exc:
+                # Integrity failures were already narrowed by _rehydrate_evidence
+                # where possible.  Do not infer later progress from a malformed
+                # receipt; retain the validated checkpoint cursor and expose a
+                # bounded diagnostic for the normal recovery path.
+                context.resume_resolution_source = "checkpoint_cursor"
+                context.resume_resolution_reason = (
+                    f"phase receipt reconciliation unavailable: {type(exc).__name__}: {exc}"
+                )[:512]
+                context.known_issues.append(
+                    {
+                        "phase": current_name,
+                        "issue": context.resume_resolution_reason,
+                        "severity": "high",
+                    }
+                )
+
+        handle = self._cfg.workflow_handle
+        if handle is not None:
+            try:
+                conversation = object.__getattribute__(handle, "conversation")
+                journal = object.__getattribute__(conversation, "journal")
+                fold_boundaries = object.__getattribute__(journal, "fold_workflow_phase_boundaries")
+                journal_records = fold_boundaries(context.run_id, self.workflow_name)
+                journal_phases = tuple(
+                    str(item["completed_phase"])
+                    for item in journal_records
+                    if isinstance(item.get("completed_phase"), str)
+                )
+            except (AttributeError, TypeError):
+                journal_phases = ()
+
+        preserve_current = False
+        if context.reentry_history:
+            latest = context.reentry_history[-1]
+            preserve_current = str(latest.get("target_phase", "")).strip().lower() == current_name
+        resolution = reconcile_phase_cursor(
+            plan.names,
+            current_name,
+            completed_phases=context.completed_phases,
+            receipt_phases=receipt_phases,
+            journal_phases=journal_phases,
+            terminal_phase="complete",
+            preserve_current=preserve_current,
+        )
+        context.resume_resolution_source = resolution.source
+        context.resume_resolution_reason = resolution.diagnostic[:512]
+        context.resume_reconciled = resolution.reconciled
+
+        for phase_name in resolution.completed_phases:
+            if phase_name not in context.completed_phases:
+                context.completed_phases.append(phase_name)
+
+        if resolution.phase_name == "complete":
+            resolved_state = ReconstructState.COMPLETE
+        else:
+            resolved_state = ReconstructState[resolution.phase_name.upper()]
+        if resolved_state is context.state:
+            return
+
+        context.state = resolved_state
+        context.last_transition = "resume_reconciled"
+        handle = self._cfg.workflow_handle
+        if handle is not None:
+            handle.attach_context(context)
+            # This is a reconciliation checkpoint, not a phase-entry write.
+            # It must exist before _run_context publishes a prompt for the
+            # selected phase.
+            handle.update_phase(
+                None if resolved_state.is_terminal else resolution.phase_name,
+                resolution.phase_index,
+                context.phase_iteration,
+                persist=False,
+            )
+            handle.save_checkpoint(reason="resume_reconciled")
+
     def _recover_corrupt_evidence(
         self, context: ReconstructContext, errors: Sequence[Mapping[str, object]]
     ) -> None:
@@ -1503,12 +1617,11 @@ class ReconstructSiteRunner(PhaseRunner):
                     {"phase": phase_name, "issue": str(exc), "severity": "high"}
                 )
                 next_state = state
-            phase_transitioned = next_state not in {
-                ReconstructState.FAILED,
-                ReconstructState.BLOCKED,
-            } and (
+            boundary_requested = self.__dict__.get("_pending_reentry") is not None
+            phase_transitioned = (
                 next_state is not state
                 or (phase_name == "page" and context.page_index != page_index_before)
+                or boundary_requested
             )
             if phase_transitioned:
                 try:
@@ -1527,7 +1640,7 @@ class ReconstructSiteRunner(PhaseRunner):
                         context.completed_phases.pop()
                     next_state = state
                     phase_transitioned = False
-            pending_reentry = getattr(self, "_pending_reentry", None)
+            pending_reentry = self.__dict__.get("_pending_reentry")
             if pending_reentry is not None:
                 source, target, reason = pending_reentry
                 affected = self._ensure_evidence(context).invalidate(
@@ -1569,8 +1682,20 @@ class ReconstructSiteRunner(PhaseRunner):
             handle = self._cfg.workflow_handle
             if handle is not None:
                 handle.attach_context(context)
-                if not state.is_terminal:
-                    handle.persist_context_transition(reason="phase_transition")
+                if phase_transitioned:
+                    next_phase = None if state.is_terminal else state.name.lower()
+                    boundary_index = (
+                        plan.index[next_phase] if next_phase is not None else plan.index[phase_name]
+                    )
+                    checkpoint_phase_boundary(
+                        self._cfg,
+                        context,
+                        completed_phase=phase_name,
+                        next_phase=next_phase,
+                        phase_index=boundary_index,
+                        phase_iteration=context.phase_iteration,
+                        outcome=("terminal" if state.is_terminal else "completed"),
+                    )
             log.info("reconstruct_site[%s] → %s", context.profile, state.name)
         context.state = state
         evidence = getattr(self, "_evidence", None)
@@ -1625,6 +1750,10 @@ class ReconstructSiteRunner(PhaseRunner):
         )
         self._active_plan = self._select_profile(context)
         self._rehydrate_evidence(context)
+        # This is intentionally before _run_context: its first operation for
+        # a non-terminal state is phase prompt construction.  A stale INIT
+        # checkpoint must therefore be reconciled before any provider call.
+        self._reconcile_resume_cursor(context, self._active_plan)
         return await self._run_context(context, memory)
 
     async def run_phase(self, **kwargs: object) -> None:
@@ -1904,6 +2033,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                     "cache_epoch": context.cache_epoch,
                     "cache_epoch_reason": context.cache_epoch_reason,
                     "stable_tool_bundle_fingerprint": context.stable_tool_bundle_fingerprint,
+                    "resume_resolution_source": context.resume_resolution_source,
+                    "resume_resolution_reason": context.resume_resolution_reason,
+                    "resume_reconciled": context.resume_reconciled,
                 }
             )
             # Once an evidence manifest exists, the large research bodies are
@@ -1958,8 +2090,11 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             ("browser_backend", ""),
             ("browser_capability_status", "unknown"),
             ("research_cell_id", ""),
+            ("resume_resolution_source", ""),
+            ("resume_resolution_reason", ""),
         ):
             values[name] = str(payload.get(name, default) or default)
+        values["resume_reconciled"] = bool(payload.get("resume_reconciled", False))
         for name in ("phase_attempt", "artifact_manifest_revision", "reentry_count"):
             try:
                 values[name] = max(0, int(str(payload.get(name, 0))))

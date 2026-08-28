@@ -108,7 +108,18 @@ class CreateWorkflowContext:
     command_outcomes: list[dict[str, object]] = dataclasses.field(default_factory=list)
     shared_memory: ShortTermMemory | None = None  # shared across all phases
     state: CreateWorkflowState = CreateWorkflowState.DESIGN
+    plan_version: str = "create_workflow.v1"
     phase_iteration: int = 0
+    # Durable execution journal projected into the typed context.  The
+    # checkpoint codec stores these values, while the session ConversationStore
+    # remains the single conversational memory source.
+    phase_attempts: dict[str, int] = dataclasses.field(default_factory=dict)
+    completed_phases: list[str] = dataclasses.field(default_factory=list)
+    phase_history: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    last_boundary: dict[str, object] = dataclasses.field(default_factory=dict)
+    resume_resolution_source: str = ""
+    resume_resolution_reason: str = ""
+    resume_reconciled: bool = False
     # Redacted prompt-cache metadata from the latest phase turn.  It is safe to
     # checkpoint because it contains fingerprints and region names only, never
     # prompt text, conversation contents, secrets, or tool arguments.

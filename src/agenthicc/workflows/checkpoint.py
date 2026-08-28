@@ -276,6 +276,17 @@ def context_from_payload(
             shared_memory=memory,
             state=state,
             phase_iteration=_as_int(fields.get("phase_iteration"), 0),
+            plan_version=str(fields.get("plan_version", "create_workflow.v1")),
+            phase_attempts={
+                str(key): _as_int(value, 0)
+                for key, value in _as_metadata(fields.get("phase_attempts")).items()
+            },
+            completed_phases=_as_string_list(fields.get("completed_phases")),
+            phase_history=_as_dict_list(fields.get("phase_history")),
+            last_boundary=_as_metadata(fields.get("last_boundary")),
+            resume_resolution_source=str(fields.get("resume_resolution_source", "")),
+            resume_resolution_reason=str(fields.get("resume_resolution_reason", "")),
+            resume_reconciled=bool(fields.get("resume_reconciled", False)),
             cache_diagnostic=_as_metadata(fields.get("cache_diagnostic")),
             authoring_snapshot=_as_metadata(fields.get("authoring_snapshot")),
             selected_tools=_as_string_list(fields.get("selected_tools")),
