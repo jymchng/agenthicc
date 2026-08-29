@@ -130,7 +130,7 @@ class TestBuildWorkflowRegistry:
             "goal_flow",
             "make_agenthicc_tool",
             "make_epub_book",
-            "make_pdf_book",
+            "make_book",
             "reconstruct_site",
             "site_imitate",
         ]
@@ -139,6 +139,13 @@ class TestBuildWorkflowRegistry:
         assert calls == []
         assert registry.get("code_plan") is not None
         assert calls == ["code_plan"]
+
+    def test_make_book_is_registered_and_loadable(self):
+        plugin_cls = build_workflow_registry().get("make_book")
+
+        assert plugin_cls is not None
+        assert plugin_cls.name == "make_book"
+        assert plugin_cls.__name__ == "MakeBookWorkflow"
 
     def test_code_plan_has_four_phases(self):
         # Single-agent workflow: plan / execute / review / summarize.

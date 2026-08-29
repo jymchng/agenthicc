@@ -497,7 +497,7 @@ class SiteImitateRunner(CodePlanRunner):
     public ``run_phase()`` helper. ``super().run()`` is never called, so none of
     code_plan's own phases execute - this runner owns the whole flow.
 
-    Like make_epub_book / make_pdf_book, the number of phases is DYNAMIC. The
+    Like make_epub_book / make_book, the number of phases is DYNAMIC. The
     PLAN phase decides how many parts the site needs (header, sidebar, footer,
     each page section, ...). After scaffolding, the runner drives one BUILD
     phase and one immediately-following VERIFY phase per component, then a
@@ -1061,7 +1061,7 @@ class SiteImitateWorkflow(WorkflowPlugin):
             ),
         ),
         # The build/verify phases below are a static skeleton; the runner
-        # re-enters them once per planned component (like make_pdf_book's
+        # re-enters them once per planned component (like make_book's
         # chapter loop), so the effective phase count is 2*N + 4.
         PhaseSpec(
             name="build",

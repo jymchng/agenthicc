@@ -1,4 +1,4 @@
-"""make_pdf_book — Write a specialised, technical book chapter-by-chapter and compile it into a PDF.
+"""make_book — Write a specialised, technical book chapter-by-chapter and compile it into a PDF.
 
 Same shape as ``make_epub_book``, but the output is a polished, typeset PDF
 instead of an EPUB. The workflow:
@@ -35,11 +35,6 @@ from typing import TYPE_CHECKING
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
-# Cache-contract boundary: the inherited ``run_phase`` calls
-# ``build_workflow_prompt_contract`` before every phase turn. This runner keeps
-# all phase state/artifacts in the dynamic region and supplies only its stable
-# contract constant to that boundary.
-
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
     from agenthicc.tui.runtime.mode_manager import ModeManager
@@ -49,26 +44,6 @@ log = logging.getLogger(__name__)
 
 #: Bounded retries per phase — never loop forever waiting for a tool call.
 _MAX_ATTEMPTS = 5
-
-
-# Stable workflow policy. Book metadata, research notes, chapter content,
-# artifact paths, and validation results remain dynamic phase context.
-CACHE_CONTRACT = """
-[MAKE_PDF_BOOK CACHE CONTRACT]
-Keep this book-authoring policy unchanged across TOC, RESEARCH, CHAPTER,
-ASSETS, FRONT_MATTER, BACK_MATTER, and COMPILE. Ask the user a focused
-clarifying question through the existing ask_user tool whenever a missing or
-ambiguous requirement could materially change the book; wait for the answer
-instead of guessing. Actual questions and answers are dynamic context.
-
-Keep the title, author, audience, chapter list, research notes, written
-content, asset paths, validation reports, retry details, and phase state in
-dynamic context. Do not insert changing book data into this stable contract,
-rewrite the beginning of shared conversation history, or put rolling summaries
-here. Use the shared run_phase API so stable tools remain ordered before
-phase-local transition tools and the session's capability, approval,
-workspace, and memory policies remain authoritative.
-""".strip()
 
 
 #: MathJax node renderer template injected into the compile prompt. Used by the
@@ -133,7 +108,7 @@ fs.writeFileSync(file, html);
 console.log('rendered ' + count + ' equations -> ' + file);"""
 
 
-class MakePdfBookState(Enum):
+class MakeBookState(Enum):
     """Every state this workflow can be in."""
 
     TOC = auto()
@@ -149,7 +124,7 @@ class MakePdfBookState(Enum):
     @property
     def is_terminal(self) -> bool:
         """True when no further phase should run."""
-        return self in (MakePdfBookState.COMPLETE, MakePdfBookState.FAILED)
+        return self in (MakeBookState.COMPLETE, MakeBookState.FAILED)
 
 
 @dataclasses.dataclass
@@ -166,12 +141,12 @@ class ChapterInfo:
 
 
 @dataclasses.dataclass
-class MakePdfBookContext:
+class MakeBookContext:
     """Data carried across every phase of one run."""
 
     intent: str
     run_id: str = ""
-    state: MakePdfBookState = MakePdfBookState.TOC
+    state: MakeBookState = MakeBookState.TOC
     phase_iteration: int = 0
     # Session memory is injected by the session and deliberately excluded from
     # the checkpoint payload. The restore hook reattaches the supplied object.
@@ -355,7 +330,9 @@ def _make_research_tools(
             if not raw_notes.strip():
                 continue
             covered[raw_index] = raw_notes.strip()
-        missing: list[int] = [i for i in range(chapter_count) if i not in covered]
+        missing: list[int] = [
+            i for i in range(chapter_count) if i not in covered
+        ]
         if missing:
             return {
                 "ok": False,
@@ -426,6 +403,8 @@ def _make_chapter_tools(
         }
 
     return [confirm_chapter_complete]
+
+
 
 
 def _make_assets_tools(
@@ -603,19 +582,11 @@ def _make_compile_tools(
 # ── runner ────────────────────────────────────────────────────────────────────
 
 # Static phase names for status-bar and event payloads.
-_PHASE_NAMES: tuple[str, ...] = (
-    "toc",
-    "research",
-    "assets",
-    "chapter",
-    "front_matter",
-    "back_matter",
-    "compile",
-)
+_PHASE_NAMES: tuple[str, ...] = ("toc", "research", "assets", "chapter", "front_matter", "back_matter", "compile")
 
 
-class MakePdfBookRunner(CodePlanRunner):
-    """State-machine runner for make_pdf_book.
+class MakeBookRunner(CodePlanRunner):
+    """State-machine runner for make_book.
 
     Subclasses ``CodePlanRunner`` purely to inherit its session wiring and the
     public ``run_phase()`` helper. ``super().run()`` is never called, so none of
@@ -626,10 +597,10 @@ class MakePdfBookRunner(CodePlanRunner):
     as soon as the TOC reveals the chapter count.
     """
 
-    workflow_name = "make_pdf_book"
+    workflow_name = "make_book"
     total_phases = 7
 
-    async def run(self, intent: str) -> MakePdfBookContext:
+    async def run(self, intent: str) -> MakeBookContext:
         """Drive toc → research → chapter×N → compile."""
         from lauren_ai._memory import ShortTermMemory
 
@@ -638,12 +609,14 @@ class MakePdfBookRunner(CodePlanRunner):
         memory = (
             self._cfg.session_memory
             if self._cfg.session_memory is not None
-            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+            else ShortTermMemory(
+                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
+            )
         )
-        ctx = MakePdfBookContext(
+        ctx = MakeBookContext(
             intent=intent,
             run_id=run_id,
-            state=MakePdfBookState.TOC,
+            state=MakeBookState.TOC,
             shared_memory=memory,
         )
         if handle is not None:
@@ -661,44 +634,42 @@ class MakePdfBookRunner(CodePlanRunner):
                     ctx.phase_iteration,
                 )
             match state:
-                case MakePdfBookState.TOC:
+                case MakeBookState.TOC:
                     state = await self._toc(ctx, memory)
-                case MakePdfBookState.RESEARCH:
+                case MakeBookState.RESEARCH:
                     state = await self._research(ctx, memory)
-                case MakePdfBookState.ASSETS:
+                case MakeBookState.ASSETS:
                     state = await self._assets(ctx, memory)
-                case MakePdfBookState.CHAPTER:
+                case MakeBookState.CHAPTER:
                     state = await self._chapter(ctx, memory)
-                case MakePdfBookState.FRONT_MATTER:
+                case MakeBookState.FRONT_MATTER:
                     state = await self._front_matter(ctx, memory)
-                case MakePdfBookState.BACK_MATTER:
+                case MakeBookState.BACK_MATTER:
                     state = await self._back_matter(ctx, memory)
-                case MakePdfBookState.COMPILE:
+                case MakeBookState.COMPILE:
                     state = await self._compile(ctx, memory)
-            if handle is not None:
-                ctx.state = state
-                handle.attach_context(ctx)
-                handle.persist_context_transition()
-            log.info("make_pdf_book → %s", state.name)
+            log.info("make_book → %s", state.name)
 
         ctx.state = state
         if handle is not None:
             handle.attach_context(ctx)
         return ctx
 
-    async def resume(self, context: object) -> MakePdfBookContext:
+    async def resume(self, context: object) -> MakeBookContext:
         """Resume the saved state with the session's existing conversation."""
         from lauren_ai._memory import ShortTermMemory
 
-        if not isinstance(context, MakePdfBookContext):
-            raise TypeError("make_pdf_book resume requires MakePdfBookContext")
+        if not isinstance(context, MakeBookContext):
+            raise TypeError("make_book resume requires MakeBookContext")
         memory = (
             self._cfg.session_memory
             if self._cfg.session_memory is not None
             else context.shared_memory
         )
         if memory is None:
-            memory = ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
+            memory = ShortTermMemory(
+                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
+            )
         context.shared_memory = memory
         if len(context.chapters) > 0:
             self.total_phases = len(context.chapters) + 6
@@ -717,58 +688,55 @@ class MakePdfBookRunner(CodePlanRunner):
                     context.phase_iteration,
                 )
             match state:
-                case MakePdfBookState.TOC:
+                case MakeBookState.TOC:
                     state = await self._toc(context, memory)
-                case MakePdfBookState.RESEARCH:
+                case MakeBookState.RESEARCH:
                     state = await self._research(context, memory)
-                case MakePdfBookState.ASSETS:
+                case MakeBookState.ASSETS:
                     state = await self._assets(context, memory)
-                case MakePdfBookState.CHAPTER:
+                case MakeBookState.CHAPTER:
                     state = await self._chapter(context, memory)
-                case MakePdfBookState.FRONT_MATTER:
+                case MakeBookState.FRONT_MATTER:
                     state = await self._front_matter(context, memory)
-                case MakePdfBookState.BACK_MATTER:
+                case MakeBookState.BACK_MATTER:
                     state = await self._back_matter(context, memory)
-                case MakePdfBookState.COMPILE:
+                case MakeBookState.COMPILE:
                     state = await self._compile(context, memory)
-            if handle is not None:
-                context.state = state
-                handle.attach_context(context)
-                handle.persist_context_transition()
         context.state = state
         if handle is not None:
             handle.attach_context(context)
         return context
 
     @staticmethod
-    def _phase_index(state: MakePdfBookState, ctx: MakePdfBookContext) -> int:
+    def _phase_index(state: MakeBookState, ctx: MakeBookContext) -> int:
         """Return the dynamic status-bar position for *state*.
 
         toc=0, research=1, assets=2, chapter=3+index, front_matter=N+3,
         back_matter=N+4, compile=N+5. With N chapters the total is N+6.
         """
         n: int = len(ctx.chapters)
-        if state is MakePdfBookState.TOC:
+        if state is MakeBookState.TOC:
             return 0
-        if state is MakePdfBookState.RESEARCH:
+        if state is MakeBookState.RESEARCH:
             return 1
-        if state is MakePdfBookState.ASSETS:
+        if state is MakeBookState.ASSETS:
             return 2
-        if state is MakePdfBookState.CHAPTER:
+        if state is MakeBookState.CHAPTER:
             return 3 + ctx.current_chapter_index
-        if state is MakePdfBookState.FRONT_MATTER:
+        if state is MakeBookState.FRONT_MATTER:
             return n + 3
-        if state is MakePdfBookState.BACK_MATTER:
+        if state is MakeBookState.BACK_MATTER:
             return n + 4
-        if state is MakePdfBookState.COMPILE:
+        if state is MakeBookState.COMPILE:
             return n + 5
         return 0
 
+
     async def _toc(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeBookState:
         """Loop until submit_toc fires; return RESEARCH or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -784,7 +752,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     )
                 ),
                 system_prompt=(
-                    "You are in the TOC phase of make_pdf_book. Your job is to plan the "
+                    "You are in the TOC phase of make_book. Your job is to plan the "
                     "table of contents for a SPECIALISED, TECHNICAL book from the user's "
                     "intent. This is not a general-audience title — it is written for "
                     "practitioners who already know their field.\n\n"
@@ -827,6 +795,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     "   - TABLE OF CONTENTS: a visible contents page placed after the preface. NOTE: the contents listing itself is NOT written by hand \u2014 the compile toolchain auto-generates it (pandoc --toc, LaTeX \\tableofcontents, or typst #outline). Plan only that the page exists after the preface.\n"
                     "   - INDEX: an index section at the end listing the key terms of the book (term -> chapter/section), so the book is navigable.\n"
                     "   - COLOURED HEADINGS: headings must be coloured (a consistent accent colour for h1/h2), not plain black — plan the accent colour here (e.g. a deep blue fitting the subject).\n"
+
                     "user's directory if given.\n\n"
                     "Call submit_toc(title, author, chapters, audience, technical_level, "
                     "prerequisites, output_dir, content_types) where chapters is a list of "
@@ -834,7 +803,6 @@ class MakePdfBookRunner(CodePlanRunner):
                     "becomes one chapter phase, so include ALL chapters now.\n\n"
                     "Do NOT write any chapter content yet. This phase plans the structure only."
                 ),
-                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=10,
                 shared_memory=memory,
                 tools=_make_toc_tools(event, data),
@@ -864,8 +832,12 @@ class MakePdfBookRunner(CodePlanRunner):
                     "code",
                     "tables",
                 ]
-                ctx.assets_dir = f"{ctx.output_dir}/assets" if ctx.output_dir else "assets"
-                ctx.research_dir = f"{ctx.output_dir}/research" if ctx.output_dir else "research"
+                ctx.assets_dir = (
+                    f"{ctx.output_dir}/assets" if ctx.output_dir else "assets"
+                )
+                ctx.research_dir = (
+                    f"{ctx.output_dir}/research" if ctx.output_dir else "research"
+                )
                 ctx.chapters = chapters
                 ctx.current_chapter_index = 0
                 self.total_phases = len(chapters) + 6
@@ -876,19 +848,21 @@ class MakePdfBookRunner(CodePlanRunner):
                     f"Prerequisites: {ctx.prerequisites or '(unspecified)'}\n"
                     f"Content: {', '.join(ctx.content_types)}\n"
                     f"Chapters: {len(chapters)}\n"
-                    + "\n".join(f"  {i + 1}. {c.title}" for i, c in enumerate(chapters))
+                    + "\n".join(
+                        f"  {i + 1}. {c.title}" for i, c in enumerate(chapters)
+                    )
                 )
                 ctx.artifacts["toc"] = ctx.toc_summary
-                return MakePdfBookState.RESEARCH
+                return MakeBookState.RESEARCH
 
         ctx.fail_reason = "toc phase never called submit_toc()"
-        return MakePdfBookState.FAILED
+        return MakeBookState.FAILED
 
     async def _research(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeBookState:
         """Loop until submit_research fires; return CHAPTER or FAILED."""
         chapter_titles: str = "\n".join(
             f"  {i + 1}. {c.title} — {c.outline}" for i, c in enumerate(ctx.chapters)
@@ -911,63 +885,194 @@ class MakePdfBookRunner(CodePlanRunner):
                     )
                 ),
                 system_prompt=(
-                    "You are in the RESEARCH phase of make_pdf_book. Gather extensive, "
+                    "You are in the RESEARCH phase of make_book. Gather extensive, "
                     "AUTHORITATIVE, TECHNICAL research before any chapter is written. "
-                    "This book is specialised — vague general knowledge is not enough.\n\n"
+                    "This book is specialised — vague general knowledge is not enough. Follow the "
+                    "DEEP RESEARCH METHODOLOGY below — a generic, evidence-first process: build a "
+                    "reliable, relevant, and sufficiently deep understanding so the chapters are "
+                    "based on VERIFIED information rather than assumptions, snippets, or superficial "
+                    "summaries.\n\n"
                     f"Book: {ctx.title}\nAuthor: {ctx.author}\n"
                     f"Audience: {ctx.audience or '(unspecified)'}\n"
                     f"Technical level: {ctx.technical_level}\n"
                     f"Prerequisites: {ctx.prerequisites or '(unspecified)'}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
                     f"Chapters:\n{chapter_titles}\n\n"
-                    "Requirements:\n"
-                    "1. Research EVERY chapter topic to technical depth. For each chapter "
-                    "gather:\n"
+                    "## 1. Understand the intent before researching\n"
+                    "Determine exactly what the book must accomplish: the primary objective, the "
+                    "expected outcome, the entities/technologies/people/organisations/products/"
+                    "places/concepts involved, the decisions the chapters must support, the "
+                    "constraints and requirements, and what information would materially improve "
+                    "the final book. Do not research indiscriminately — research should be driven "
+                    "by the actual task.\n\n"
+                    "## 2. Inspect existing material first\n"
+                    "Before searching externally, inspect all relevant material already available: "
+                    "source files, existing documentation, previous research, configuration, "
+                    "datasets, notes, specifications, generated artifacts. Determine what is "
+                    "already known, what has already been researched, what sources already exist, "
+                    "what assumptions are being made, what information is missing, what may be "
+                    "outdated, and what needs independent verification. Do not repeat research "
+                    "unnecessarily — build on existing knowledge where possible.\n\n"
+                    "## 3. Build a research plan\n"
+                    "Identify the research dimensions relevant to each chapter: background/"
+                    "context, current state, historical development, technical implementation, "
+                    "architecture, APIs/documentation, policies/regulations, market landscape, "
+                    "competitors/alternatives, costs/pricing, security/privacy, limitations, "
+                    "adoption, user experience, implementation examples, recent developments, "
+                    "expert perspectives, risks, trade-offs, future direction. Only use dimensions "
+                    "that are relevant. For complex topics, break the subject into explicit "
+                    "research questions.\n\n"
+                    "## 4. Search broadly, then narrow\n"
+                    "Perform multiple searches using different formulations. Start broad enough to "
+                    "discover the relevant ecosystem, then progressively narrow. Use different "
+                    "keywords, synonyms, technical terminology, product names, organisation names, "
+                    "dates, geographic qualifiers, implementation-specific queries, and "
+                    "problem-oriented queries. For time-sensitive subjects, explicitly search for "
+                    "recent information and prefer the most recent reliable information when the "
+                    "book depends on current state. Do not stop at the first useful result.\n\n"
+                    "## 5. Visit the actual sources\n"
+                    "Search results are discovery mechanisms, not evidence by themselves. When a "
+                    "useful source is discovered: open the actual webpage/document, read the "
+                    "relevant content, inspect surrounding context, follow important links, open "
+                    "referenced documentation, trace claims back to their original source where "
+                    "possible, and extract the information actually useful to the book. Use the "
+                    "network/search tools AND the Playwright browser tools (playwright_open, "
+                    "playwright_snapshot, playwright_click, playwright_wait_for) to visit websites "
+                    "directly. Do not base important conclusions solely on search-result "
+                    "snippets.\n\n"
+                    "## 6. Prioritise primary sources\n"
+                    "Use a source hierarchy appropriate to the intent. Generally prioritise: "
+                    "official documentation / primary sources; official organisations and product "
+                    "websites; standards and specifications; original research papers; government "
+                    "publications; official announcements; reputable technical publications; "
+                    "independent expert analysis; community discussions and secondary sources. Use "
+                    "secondary sources when they provide independent analysis, criticism, practical "
+                    "experience, comparisons, or context unavailable from primary sources. Do not "
+                    "treat marketing claims as independently verified facts.\n\n"
+                    "## 7. Verify important claims\n"
+                    "Actively challenge assumptions. For each important claim ask: how do we know "
+                    "this is true? Where appropriate, verify it using the original source, multiple "
+                    "independent sources, official documentation, technical specifications, "
+                    "authoritative datasets, or recent publications. Pay particular attention to: "
+                    "numbers, dates, product capabilities, technical behaviour, compatibility, "
+                    "legal/regulatory claims, pricing, security claims, performance claims, and "
+                    "current availability. If sources disagree, RECORD THE DISAGREEMENT rather than "
+                    "silently choosing one.\n\n"
+                    "## 8. Research current information\n"
+                    "When the book depends on current information, deliberately investigate recent "
+                    "developments: recent announcements, product changes, new releases, policy "
+                    "changes, updated documentation, recent statistics, current pricing, recent "
+                    "incidents, new competitors, recent research, changes since existing material "
+                    "was written. Use dates intelligently — do not present historical information "
+                    "as current.\n\n"
+                    "## 9. Follow research trails\n"
+                    "When a source reveals something important, investigate it further. If a "
+                    "document references another organisation, a technology, a standard, a dataset, "
+                    "a paper, an API, or a regulation, follow the reference when it could materially "
+                    "improve the book. The best research often comes from following these trails "
+                    "rather than performing isolated searches.\n\n"
+                    "## 10. Research counterarguments and alternatives\n"
+                    "Do not research only information that confirms the initial assumption. Where "
+                    "relevant, investigate alternatives, competing approaches, criticisms, "
+                    "limitations, failure cases, trade-offs, opposing viewpoints, negative user "
+                    "experiences, security concerns, and implementation difficulties. The purpose "
+                    "is to prevent the chapters from becoming one-sided.\n\n"
+                    "## 11. Extract findings, don't just collect URLs\n"
+                    "Research output must contain knowledge, not merely a bibliography. For each "
+                    "significant source, capture: what it says, why it matters, which part of the "
+                    "book it informs, important facts, relevant technical details, limitations, "
+                    "implications, useful examples, and contradictions or uncertainties. Avoid "
+                    "research notes consisting primarily of URLs.\n\n"
+                    "## 12. Store research in a reusable structure\n"
+                    f"Persist research under {ctx.research_dir or '<output_dir>/research'}. "
+                    "Organise it according to the book's intent. For a multi-chapter book, use one "
+                    "Markdown notes file per chapter (e.g. research/ch01-notes.md, "
+                    "research/ch02-notes.md, ...), plus a research/sources.md listing every source "
+                    "with URLs/DOIs, and a research/summary.md with the overview. Adapt the "
+                    "structure to the task rather than following a rigid template.\n\n"
+                    "## 13. Research notes must be actionable\n"
+                    "Every research note should make clear: WHAT was discovered (a concise but "
+                    "sufficiently detailed explanation), WHAT it means (interpretation and "
+                    "context), WHY it matters (connection to the book's intent), WHAT should happen "
+                    "next (how the finding should influence the chapter), HOW CONFIDENT we are "
+                    "(verified fact, strong evidence, reasonable inference, or uncertain "
+                    "information), and WHERE it came from (the relevant source).\n\n"
+                    "## 14. Maintain an evidence trail\n"
+                    "For important findings, maintain a clear relationship between Claim -> Source "
+                    "-> Evidence -> Conclusion -> Downstream action. Do not make a downstream "
+                    "recommendation without being able to explain what evidence supports it.\n\n"
+                    "## 15. Do not fabricate information\n"
+                    "Never invent sources, URLs, statistics, quotes, product capabilities, "
+                    "technical details, dates, research findings, user opinions, or market "
+                    "information. If something cannot be verified, explicitly mark it as uncertain. "
+                    "If reliable information cannot be found, say so rather than filling gaps with "
+                    "plausible-sounding assumptions.\n\n"
+                    "## 16. Adapt research depth to task complexity\n"
+                    "Do not use an arbitrary number of searches. For a simple chapter, enough "
+                    "research to establish reliable facts. For a complex chapter, perform broad "
+                    "discovery, primary-source investigation, cross-checking, alternatives "
+                    "analysis, and deeper source traversal. The objective is sufficient research "
+                    "for the chapter, not a predetermined search count.\n\n"
+                    "## 17. Stop researching when the evidence is sufficient\n"
+                    "Do not endlessly browse. Research is sufficient when the major research "
+                    "questions have been answered, important claims have been verified, relevant "
+                    "alternatives have been considered, current information has been checked where "
+                    "necessary, remaining uncertainty is understood, and additional searches are "
+                    "unlikely to materially change the chapters.\n\n"
+                    "## 18. Create a research summary\n"
+                    "Before proceeding, create/update research/summary.md (or research/overview.md) "
+                    "including: Objective (what was researched and why), Key Findings, Important "
+                    "Corrections (claims found wrong or outdated), Current Developments, "
+                    "Alternatives/Trade-offs, Risks/Limitations, Uncertainties (information that "
+                    "could not be conclusively verified), Recommended Implications (how the "
+                    "research should influence the chapters), and Sources (the most authoritative "
+                    "sources used).\n\n"
+                    "## 19. Handoff to the main workflow\n"
+                    "Once research is complete, do not discard the research context. The chapter "
+                    "phases will use the research/ directory as their evidence base. The downstream "
+                    "chapters must reflect the research findings — do not perform research merely "
+                    "to produce a folder of notes that the chapters ignore.\n\n"
+                    "## 20. Final research-phase checklist\n"
+                    "Before declaring the research phase complete, confirm: the user's actual intent "
+                    "was understood; existing material was inspected; relevant research questions "
+                    "were identified; multiple search approaches were used where necessary; "
+                    "important sources were actually visited; primary sources were prioritised; "
+                    "important claims were verified; current information was investigated where "
+                    "relevant; alternatives and counterarguments were considered where relevant; "
+                    "research findings were extracted rather than merely collecting URLs; important "
+                    "uncertainty was documented; research was persisted under the research/ "
+                    "directory; the summary contains the key findings; the research is sufficiently "
+                    "detailed for the chapter phases to act on it; no fabricated information was "
+                    "introduced; additional searching is unlikely to materially change the result.\n\n"
+                    "## Book-specific requirements\n"
+                    "1. Research EVERY chapter topic to technical depth. For each chapter gather:\n"
                     "   - Precise definitions of the core concepts and terminology\n"
                     "   - The specific methods, algorithms, formulas, or procedures involved\n"
-                    "   - Key data: measurements, benchmarks, specifications, constants, "
-                    "versions, dates\n"
+                    "   - Key data: measurements, benchmarks, specifications, constants, versions, dates\n"
                     "   - Concrete worked examples or case studies the chapter can use\n"
                     "   - Known limitations, edge cases, and pitfalls in the field\n"
                     "   - Common misconceptions to explicitly correct\n"
-                    "2. Use the network/search tools AND the Playwright browser tools "
-                    "(playwright_open, playwright_snapshot, playwright_click, "
-                    "playwright_wait_for) to visit websites directly and consult PRIMARY "
-                    "and authoritative technical sources: peer-reviewed papers, "
-                    "standards documents (RFCs, ISO/EN specs), official documentation, "
-                    "textbooks, and reputable technical references. Cross-check "
-                    "figures across sources.\n"
-                    "3. Record the exact sources used (URLs, DOIs, standard numbers, titles) "
-                    "so chapters can cite them.\n"
-                    "4. Keep notes dense and organised — one block per chapter, with data "
-                    "and specifics the writer can quote directly.\n"
-                    "5. INDEX TERMS — for EACH chapter, note the 10-20 key indexable "
-                    "terms (concepts, names, methods) the index section will list; record "
-                    "them explicitly in that chapter's notes. Also record the exact LaTeX "
-                    "for key formulas, accurate runnable code snippets (with language tags "
-                    "and expected output), and the data for reference tables — all in "
-                    "the chapter notes. (Visual assets are produced in a separate ASSETS "
-                    "phase after research, so do NOT generate images here.)\n"
-                    f"6. STORE THE RESEARCH MATERIAL IN FILES — create the research "
-                    f"directory {ctx.research_dir or '<output_dir>/research'} (the write "
-                    "tool creates parent directories) and write the durable research "
-                    "material there: one Markdown notes file per chapter (e.g. "
-                    "research/ch01-notes.md, research/ch02-notes.md, ...), a "
-                    "research/sources.md listing every source with URLs/DOIs, and a "
-                    "research/summary.md with the overview. Keep the per-chapter notes "
-                    "files dense — exact data, formulas, code, and index terms the writer "
-                    "can quote directly. The notes you pass to submit_research() must "
-                    "mirror these files.\n\n"
+                    "2. Keep notes dense and organised — one block per chapter, with data and "
+                    "specifics the writer can quote directly.\n"
+                    "3. INDEX TERMS — for EACH chapter, note the 10-20 key indexable terms (concepts, "
+                    "names, methods) the index section will list; record them explicitly in that "
+                    "chapter's notes. Also record the exact LaTeX for key formulas, accurate "
+                    "runnable code snippets (with language tags and expected output), and the data "
+                    "for reference tables — all in the chapter notes. (Visual assets are produced "
+                    "in a separate ASSETS phase after research, so do NOT generate images here.)\n"
+                    "4. STORE THE RESEARCH MATERIAL IN FILES as described in section 12 — create the "
+                    f"research directory {ctx.research_dir or '<output_dir>/research'} and write "
+                    "the durable research material there. The notes you pass to submit_research() "
+                    "must mirror these files.\n\n"
                     "Call submit_research(notes, sources, summary, files) where:\n"
-                    "  - notes: list of {'chapter_index': int, 'notes': str} — ONE entry "
-                    "per chapter, indices 0..N-1\n"
+                    "  - notes: list of {'chapter_index': int, 'notes': str} — ONE entry per chapter, "
+                    "indices 0..N-1\n"
                     "  - sources: list of source URLs/DOIs/standard numbers consulted\n"
                     "  - summary: a short overview of the research\n"
                     "  - files: the file paths you wrote under the research/ directory\n\n"
                     "Do NOT write any chapter content. This phase gathers material only."
                 ),
                 mode="Yolo",
-                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=20,
                 shared_memory=memory,
                 tools=_make_research_tools(event, data, len(ctx.chapters)),
@@ -989,23 +1094,24 @@ class MakePdfBookRunner(CodePlanRunner):
                     f"{len(ctx.research_files)} files under "
                     f"{ctx.research_dir or '<output_dir>/research'}"
                 )
-                return MakePdfBookState.ASSETS
+                return MakeBookState.ASSETS
 
         ctx.fail_reason = "research phase never called submit_research()"
-        return MakePdfBookState.FAILED
+        return MakeBookState.FAILED
+
 
     async def _chapter(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeBookState:
         """Write one chapter; loop until confirm_chapter_complete fires.
 
         Returns CHAPTER (next chapter) while chapters remain, else COMPILE.
         """
         index: int = ctx.current_chapter_index
         if index >= len(ctx.chapters):
-            return MakePdfBookState.FRONT_MATTER
+            return MakeBookState.FRONT_MATTER
         chapter: ChapterInfo = ctx.chapters[index]
         research_block: str = ctx.research_notes.get(index, "")
         for attempt in range(1, _MAX_ATTEMPTS + 1):
@@ -1029,7 +1135,7 @@ class MakePdfBookRunner(CodePlanRunner):
                 intent=ctx.intent,
                 text=text,
                 system_prompt=(
-                    "You are in the CHAPTER phase of make_pdf_book. One phase runs per "
+                    "You are in the CHAPTER phase of make_book. One phase runs per "
                     "chapter — write exactly ONE technical chapter now, in full.\n\n"
                     f"Book: {ctx.title}\nAuthor: {ctx.author}\n"
                     f"Audience: {ctx.audience or '(specialist reader)'}\n"
@@ -1082,8 +1188,12 @@ class MakePdfBookRunner(CodePlanRunner):
                     "spoken.\n\n"
                     "BEAUTY & STRUCTURE (the finished book must look professional):\n"
                     "- Use a single '# ' chapter title and '## ' section headings — the typesetter colours these automatically with the accent colour planned in the TOC; never style headings with raw HTML or inline colours.\n"
+                    "- HEADING RULES (mandatory, enforced across the WHOLE book):\n"
+                    "   (a) Chapter titles carry NO 'Chapter N:' prefix — write the bare title only (e.g. '# Introduction to Codex', NOT '# Chapter 1: Introduction to Codex').\n"
+                    "   (b) Every '## ' section subheading must be UNIQUE across ALL chapters — no two chapters may share the same section heading text. Vary each heading so it is original to its chapter while remaining recognisable for its section type.\n"
                     "- Mark every key indexable term in **bold** on first use — the index section collects these, so consistent marking makes the index accurate.\n"
                     "- Keep paragraphs, lists, and spacing clean; prefer short, scannable sections over dense walls of text.\n"
+
                     "RICH CONTENT — use every enabled content type where it adds value:\n"
                     + (
                         "- IMAGES: create BOTH mermaid diagrams AND matplotlib graphs "
@@ -1121,8 +1231,8 @@ class MakePdfBookRunner(CodePlanRunner):
                         "- CODE: include fenced code blocks with a language tag (```python, "
                         "```rust, ```ts). Code must be accurate, runnable, and directly "
                         "relevant. Add a short comment or prose tie-in for each snippet. The "
-                        "language tag enables pygments syntax highlighting in the compiled "
-                        "book.\n"
+                    "language tag enables pygments syntax highlighting in the compiled "
+                    "book.\n"
                         if "code" in ctx.content_types
                         else ""
                     )
@@ -1160,7 +1270,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     "   - HTML/epub: add '<hr class=\"pagebreak\">' or use CSS page-break.\n"
                     "   Example structure (LaTeX tier):\n"
                     "   ```\n"
-                    "   # Chapter 1: Title\n\n"
+                    "   # Title (no 'Chapter N:' prefix)\n\n"
                     "   \\newpage\n\n"
                     "   ## Section 1\n\n"
                     "   Content here...\n"
@@ -1174,7 +1284,6 @@ class MakePdfBookRunner(CodePlanRunner):
                     "and the list of asset files (images) the chapter references."
                 ),
                 mode="Yolo",
-                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=25,
                 shared_memory=memory,
                 tools=_make_chapter_tools(event, data),
@@ -1196,16 +1305,17 @@ class MakePdfBookRunner(CodePlanRunner):
                     f"{len(chapter.assets)} assets)"
                 )
                 ctx.current_chapter_index = index + 1
-                return MakePdfBookState.CHAPTER
+                return MakeBookState.CHAPTER
 
         ctx.fail_reason = f"chapter {index + 1} never confirmed completion"
-        return MakePdfBookState.FAILED
+        return MakeBookState.FAILED
+
 
     async def _assets(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeBookState:
         """Produce all figure/asset files; loop until confirm_assets_ready fires."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -1219,7 +1329,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     else "Call confirm_assets_ready(assets) now with the full asset list."
                 ),
                 system_prompt=(
-                    "You are in the ASSETS phase of make_pdf_book. Produce EVERY visual asset "
+                    "You are in the ASSETS phase of make_book. Produce EVERY visual asset "
                     "the book needs, in one phase, before any chapter is written.\n\n"
                     f"Book: {ctx.title}\nAssets dir: {ctx.assets_dir or '<output_dir>/assets'}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
@@ -1284,7 +1394,6 @@ class MakePdfBookRunner(CodePlanRunner):
                     "chapter phases so they can reference them by name."
                 ),
                 mode="Yolo",
-                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=25,
                 shared_memory=memory,
                 tools=_make_assets_tools(event, data),
@@ -1292,16 +1401,16 @@ class MakePdfBookRunner(CodePlanRunner):
             if event.is_set():
                 ctx.images = [str(a) for a in data.get("assets", [])]
                 ctx.artifacts["assets"] = f"{len(ctx.images)} assets produced"
-                return MakePdfBookState.CHAPTER
+                return MakeBookState.CHAPTER
 
         ctx.fail_reason = "assets phase never called confirm_assets_ready()"
-        return MakePdfBookState.FAILED
+        return MakeBookState.FAILED
 
     async def _front_matter(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeBookState:
         """Build preface and table-of-contents pages (cover is user-supplied); return BACK_MATTER or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -1309,12 +1418,13 @@ class MakePdfBookRunner(CodePlanRunner):
             await self.run_phase(
                 intent=ctx.intent,
                 text=(
-                    f"Build the front-matter pages (preface, table of contents) for '{ctx.title}'."
+                    f"Build the front-matter pages (preface, table of contents) "
+                    f"for '{ctx.title}'."
                     if attempt == 1
                     else "Call confirm_front_matter_ready(summary, files) now."
                 ),
                 system_prompt=(
-                    "You are in the FRONT_MATTER phase of make_pdf_book. Build the book's "
+                    "You are in the FRONT_MATTER phase of make_book. Build the book's "
                     "front-matter pages so the finished book looks like a real published "
                     "book.\n\n"
                     f"Book: {ctx.title}\nAuthor: {ctx.author}\n"
@@ -1344,7 +1454,6 @@ class MakePdfBookRunner(CodePlanRunner):
                     "and the list of files you created."
                 ),
                 mode="Yolo",
-                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_front_matter_tools(event, data),
@@ -1353,16 +1462,16 @@ class MakePdfBookRunner(CodePlanRunner):
                 ctx.front_matter_summary = str(data.get("summary", ""))
                 ctx.front_matter_files = list(data.get("files", []))
                 ctx.artifacts["front_matter"] = ctx.front_matter_summary
-                return MakePdfBookState.BACK_MATTER
+                return MakeBookState.BACK_MATTER
 
         ctx.fail_reason = "front_matter phase never called confirm_front_matter_ready()"
-        return MakePdfBookState.FAILED
+        return MakeBookState.FAILED
 
     async def _back_matter(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeBookState:
         """Build the index page; return COMPILE or FAILED."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -1376,7 +1485,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     else "Call confirm_back_matter_ready(summary, files) now."
                 ),
                 system_prompt=(
-                    "You are in the BACK_MATTER phase of make_pdf_book. Build the book's "
+                    "You are in the BACK_MATTER phase of make_book. Build the book's "
                     "index page.\n\n"
                     f"Book: {ctx.title}\nChapters: {ctx.toc_summary or '(see plan)'}\n\n"
                     "Read the chapter files and collect every **bold-marked** indexable "
@@ -1391,7 +1500,6 @@ class MakePdfBookRunner(CodePlanRunner):
                     "and the index file(s) you created."
                 ),
                 mode="Yolo",
-                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_back_matter_tools(event, data),
@@ -1400,16 +1508,17 @@ class MakePdfBookRunner(CodePlanRunner):
                 ctx.back_matter_summary = str(data.get("summary", ""))
                 ctx.back_matter_files = list(data.get("files", []))
                 ctx.artifacts["back_matter"] = ctx.back_matter_summary
-                return MakePdfBookState.COMPILE
+                return MakeBookState.COMPILE
 
         ctx.fail_reason = "back_matter phase never called confirm_back_matter_ready()"
-        return MakePdfBookState.FAILED
+        return MakeBookState.FAILED
+
 
     async def _compile(
         self,
-        ctx: MakePdfBookContext,
+        ctx: MakeBookContext,
         memory: object,
-    ) -> MakePdfBookState:
+    ) -> MakeBookState:
         """Typeset the PDF; loop until a verdict tool fires."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
@@ -1424,9 +1533,9 @@ class MakePdfBookRunner(CodePlanRunner):
                 f"Rich content: {', '.join(ctx.content_types)}\n"
                 f"Chapter files:\n{paths}\n"
                 + (
-                    "\nFront matter (preface/contents; cover is user-supplied):\n"
+                    f"\nFront matter (preface/contents; cover is user-supplied):\n"
                     + "\n".join(f"  {f}" for f in ctx.front_matter_files)
-                    + "\nBack matter (index):\n"
+                    + f"\nBack matter (index):\n"
                     + "\n".join(f"  {f}" for f in ctx.back_matter_files)
                     if ctx.front_matter_files or ctx.back_matter_files
                     else ""
@@ -1439,23 +1548,29 @@ class MakePdfBookRunner(CodePlanRunner):
                 intent=ctx.intent,
                 text=text,
                 system_prompt=(
-                    "You are in the COMPILE phase of make_pdf_book. Typeset all written "
+                    "You are in the COMPILE phase of make_book. Typeset all written "
                     "chapters into a single polished PDF file, preserving every kind of "
                     "rich content.\n\n"
                     f"Title: {ctx.title}\nAuthor: {ctx.author}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
-                    "Chapter files:\n" + "\n".join(f"  {c.file_path}" for c in written) + "\n\n"
+                    "Chapter files:\n"
+                    + "\n".join(f"  {c.file_path}" for c in written)
+                    + "\n\n"
                     "Asset files (images/figures the chapters reference):\n"
-                    + ("\n".join(f"  {a}" for a in ctx.images) if ctx.images else "  (none)")
+                    + (
+                        "\n".join(f"  {a}" for a in ctx.images)
+                        if ctx.images
+                        else "  (none)"
+                    )
                     + "\n\n"
                     "BOOK POLISH — the finished PDF must look like a real published book. The front-matter pages (preface/contents) and the index page were built by the FRONT_MATTER and BACK_MATTER phases — use those files, do NOT rebuild them. The COVER page is supplied by the END USER (e.g. <output_dir>/assets/cover.png) — place it as page 1; do NOT generate, design, or rebuild it:\n"
                     "  FRONT MATTER: the preface/contents Markdown files from the FRONT_MATTER phase (ctx.front_matter_files) go FIRST, before the chapter list, in this order: preface, contents, chapters; the user-supplied cover image (<output_dir>/assets/cover.png) becomes page 1.\n"
                     "  BACK MATTER: append the index file from the BACK_MATTER phase (ctx.back_matter_files) after the last chapter.\n"
                     "  COLOURED HEADINGS:\n"
                     "   - TYPST tier: after the sed symbol fixes, prepend to book.typ a heading-colour rule and a clean page setup (adjust colours to the planned accent):\n"
-                    '        #set page(paper: "a4", margin: 2.2cm)\n'
-                    '        #show heading.where(level: 1): set text(fill: rgb("#1f4e79"), size: 20pt, weight: "bold")\n'
-                    '        #show heading.where(level: 2): set text(fill: rgb("#2e74b5"), size: 15pt)\n'
+                    "        #set page(paper: \"a4\", margin: 2.2cm)\n"
+                    "        #show heading.where(level: 1): set text(fill: rgb(\"#1f4e79\"), size: 20pt, weight: \"bold\")\n"
+                    "        #show heading.where(level: 2): set text(fill: rgb(\"#2e74b5\"), size: 15pt)\n"
                     "     Prepend with: sed -i '1i #set page(paper: \"a4\", margin: 2.2cm)' book.typ (repeat per rule).\n"
                     "   - XELATEX tier: write a header.tex with \\usepackage{xcolor} \\usepackage{sectsty}, \\definecolor{accent}{HTML}{1F4E79}, \\allsectionsfont{\\color{accent}}, and pass pandoc -H header.tex.\n"
                     "  JUSTIFIED TEXT (mandatory): all body paragraph text must be justified \u2014 flush to BOTH the left and right margins.\n"
@@ -1463,9 +1578,10 @@ class MakePdfBookRunner(CodePlanRunner):
                     "   - XELATEX tier: pdflatex/xelatex justify body text by default; do not introduce '\\raggedright' or any left-alignment override.\n"
                     "   Verify in the compiled PDF that multi-line body paragraphs reach the right margin on every line except the paragraph-final line (and short items such as list bullets and table cells, which stay short).\n"
                     "  TOC (mandatory): the table of contents MUST be generated by the typesetting toolchain itself \u2014 pandoc --toc (typst/xelatex), LaTeX \\tableofcontents, or typst #outline \u2014 whichever the engine uses. NEVER hand-write the TOC or a toc.md listing; let the toolchain produce it so page numbers are accurate. If pandoc --toc places it before the cover, post-process (as described below) so it lands after the cover, but the listing itself is always engine-generated.\n"
+                    "  TOC DOTTED LEADERS (mandatory): the generated table of contents MUST render WITHOUT dotted leaders between each entry title and its page number. In the LaTeX/xelatex tier, add tocloft and disable the dot fillers in header.tex, e.g. '\\usepackage{tocloft}' and '\\renewcommand{\\cftdotfill}[1]{\\hfill}' (page numbers stay right-aligned via \\hfill). In the typst tier, use an outline style without a dot fill between title and page. VERIFY after compiling that the TOC shows no dotted leader runs between titles and page numbers.\n"
                     "  INDEX: index.md lists the marked terms; for typst/xelatex use chapter numbers as references when page numbers are not known in advance.\n"
                     "  PAGE BREAKS (mandatory): every chapter MUST begin on a new page, and the preface, the table of contents, any appendices, and the index must EACH begin on a new page. The cover is page 1 \u2014 it must NOT carry a leading page break (that would create a blank first page). Enforce every other break by placing a raw '\\newpage' (LaTeX tier; pandoc passes raw LaTeX through to the .tex) or '#pagebreak()' (typst tier) on its own line immediately after the '# ' title in each file: each chapter file, the preface file, the contents file, and the index file. NEVER use '#pagebreak()' in the LaTeX tier \u2014 pandoc renders it as literal '#pagebreak()' text there. VERIFY after compiling: use pypdf to extract per-page text and confirm that each chapter title and the preface/contents/index titles each start on their own page (no body text from the previous page shares it).\n"
-                    "  After building, verify: the extracted text contains 'Preface', 'Contents' and 'Index'; page 1 is the user-supplied cover (image-only page, no body text); and the typst source contains a '#show heading' colour rule (grep 'show heading' book.typ).\n"
+                    "  After building, verify: the extracted text contains 'Preface', 'Contents' and 'Index'; page 1 is the user-supplied cover (image-only page, no body text); and the typst source contains a '#show heading' colour rule (grep 'show heading' book.typ). Also verify the three heading/TOC rules: (1) the extracted TOC text shows NO dotted-leader runs (no sequences of 3+ dots between entry titles and page numbers); (2) NO 'Chapter N:' prefixed headings appear anywhere (chapter titles are bare, e.g. 'Introduction to Codex'); (3) every '## ' section subheading is UNIQUE across ALL chapters (grep the chapter sources and confirm no duplicate heading text).\n"
                     "BUILD SCRIPT & DIST DELIVERABLE (mandatory):\n"
                     "Write a reusable build script <output_dir>/build_pdf.py (Python 3; a "
                     "build.sh is acceptable) that performs the END-TO-END compile from the "
@@ -1493,8 +1609,17 @@ class MakePdfBookRunner(CodePlanRunner):
                     "after the title in each markdown source; the cover is page 1 and "
                     "carries no leading break). Verify with pypdf per-page text that "
                     "no two of these share a page, and fix the sources if they do.\n"
+                    "  KDP METADATA (mandatory): write a <output_dir>/metadata.toml that "
+                    "lists the Amazon KDP listing metadata: [title], [subtitle], "
+                    "[description], and [keywords] with at most 7 keywords or short "
+                    "phrases (Amazon allows up to 7). Example:\n"
+                    "      title = \"The Book Title\"\n"
+                    "      subtitle = \"A Practical Guide\"\n"
+                    "      description = \"A short, compelling blurb for the Amazon listing.\"\n"
+                    "      keywords = [\"keyword one\", \"keyword two\", \"keyword three\", \"keyword four\", \"keyword five\", \"keyword six\", \"keyword seven\"]\n"
                     "Call mark_book_complete() with the dist/ PDF path, and name the "
                     "build script + dist output in the summary.\n"
+
                     "Compile strategy — try in order until one produces a valid PDF:\n"
                     "1. TYPST (preferred — native typeset math, single static binary, "
                     "no system install):\n"
@@ -1503,7 +1628,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     "download/typst-x86_64-unknown-linux-musl.tar.xz -o /tmp/typst.tar.xz\n"
                     "        mkdir -p .math-render\n"
                     "        tar -xJf /tmp/typst.tar.xz -C .math-render --strip-components=1\n"
-                    '        export PATH="$PWD/.math-render:$PATH"\n'
+                    "        export PATH=\"$PWD/.math-render:$PATH\"\n"
                     "   b. Create a small title page file <title>.txt:\n"
                     "        # <Title>\n        **<Author>**\n"
                     "   c. IMPORTANT — pandoc's typst writer emits symbol names that "
@@ -1589,7 +1714,7 @@ class MakePdfBookRunner(CodePlanRunner):
                     "  1. exists and starts with the '%PDF' magic bytes (head -c 4 "
                     "<file> == %PDF)\n"
                     "  2. page count >= 1 (aim 3+ for a real book): pip install pypdf "
-                    '&& python3 -c "from pypdf import PdfReader; '
+                    "&& python3 -c \"from pypdf import PdfReader; "
                     "print(len(PdfReader('<title>.pdf').pages))\"  (or pdfinfo)\n"
                     "  3. EVERY chapter title appears in the extracted text (so no "
                     "chapter was dropped). pdftotext is often NOT installed — use "
@@ -1621,6 +1746,9 @@ class MakePdfBookRunner(CodePlanRunner):
                     ".get('/Subtype') == '/Image': c += 1\n"
                     "        print('images:', c)\n"
                     "        PY\n"
+                    "  7. TOC has NO dotted leaders: the extracted TOC text shows no dotted-leader runs \u2014 no sequences of 3+ dots between entry titles and page numbers. If dots appear, re-apply the tocloft \\renewcommand{\\cftdotfill}[1]{\\hfill} header fix (LaTeX tier) or the no-fill outline style (typst tier) and recompile.\n"
+                    "  8. NO 'Chapter N:' prefixed headings: the extracted text and the chapter sources contain no heading that starts with 'Chapter N:' (titles are bare, e.g. 'Introduction to Codex').\n"
+                    "  9. UNIQUE subheadings: grep the chapter sources for '## ' section headings and confirm NO heading text is duplicated across different chapters.\n"
                     "Output path convention: <output_dir>/dist/<title-slug>.pdf (e.g. "
                     "Kalman-Filtering/dist/Kalman-Filtering.pdf), produced by the "
                     "build script.\n\n"
@@ -1634,7 +1762,6 @@ class MakePdfBookRunner(CodePlanRunner):
                     "revisit the whole book). You MUST call one of them."
                 ),
                 mode="Yolo",
-                stable_system_prompt=CACHE_CONTRACT,
                 max_turns=15,
                 shared_memory=memory,
                 tools=_make_compile_tools(event, data),
@@ -1645,24 +1772,24 @@ class MakePdfBookRunner(CodePlanRunner):
                     ctx.pdf_path = str(data.get("pdf_path", ""))
                     ctx.compile_summary = str(data.get("summary", ""))
                     ctx.artifacts["pdf"] = ctx.pdf_path
-                    return MakePdfBookState.COMPLETE
+                    return MakeBookState.COMPLETE
                 ctx.fail_reason = str(data.get("issue", ""))
                 bad_index: int = int(data.get("chapter_index", -1))
                 if 0 <= bad_index < len(ctx.chapters):
                     ctx.current_chapter_index = bad_index
-                    return MakePdfBookState.CHAPTER
-                return MakePdfBookState.FAILED
+                    return MakeBookState.CHAPTER
+                return MakeBookState.FAILED
 
         ctx.fail_reason = "compile phase never reported a verdict"
-        return MakePdfBookState.FAILED
+        return MakeBookState.FAILED
 
 
 # ── plugin ────────────────────────────────────────────────────────────────────
 
 
 @dataclasses.dataclass
-class MakePdfBookParams(WorkflowParams):
-    """Per-phase model overrides read from [workflows.make_pdf_book]."""
+class MakeBookParams(WorkflowParams):
+    """Per-phase model overrides read from [workflows.make_book]."""
 
     toc_model: str = ""
     research_model: str = ""
@@ -1679,16 +1806,16 @@ class MakePdfBookParams(WorkflowParams):
         }
 
 
-class MakePdfBookWorkflow(WorkflowPlugin):
+class MakeBookWorkflow(WorkflowPlugin):
     """Write a specialised, technical book chapter by chapter and compile it into a typeset PDF."""
 
-    name = "make_pdf_book"
+    name = "make_book"
     description = (
         "Write a specialised, technical book chapter by chapter (one phase per chapter, "
         "dynamic count) with images, equations, code, and tables, then compile it into "
         "a typeset PDF."
     )
-    mode_bindings = []  # manual only — invoke with /workflow make_pdf_book
+    mode_bindings = []  # manual only — invoke with /workflow make_book
 
     # Static skeleton graph. The registry reads this at discovery time, so the
     # per-chapter count cannot be declared statically: the runner re-enters the
@@ -1701,7 +1828,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="research",
             on_reject="toc",
             system_prompt_override=(
-                "You are in the TOC phase of make_pdf_book. Plan a specialised, technical "
+                "You are in the TOC phase of make_book. Plan a specialised, technical "
                 "book's table of contents (title, author, audience, technical level, "
                 "prerequisites, chapter list with concrete outlines, rich content types), "
                 "then call submit_toc()."
@@ -1715,12 +1842,17 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="assets",
             on_reject="research",
             system_prompt_override=(
-                "You are in the RESEARCH phase of make_pdf_book. Gather extensive, "
-                "authoritative technical research for EVERY chapter topic (primary "
-                "sources, data, formulas, citations; you may also use the Playwright "
-                "browser tools to visit websites directly during research), STORE the "
-                "research material as files under the research/ directory "
-                "(<output_dir>/research/), then call submit_research()."
+                "You are in the RESEARCH phase of make_book. Follow the DEEP "
+                "RESEARCH METHODOLOGY detailed in the phase prompt: understand the "
+                "book's intent before researching, inspect existing material first, "
+                "build a research plan, search broadly then narrow, visit the actual "
+                "sources (including via the Playwright browser tools), prioritise "
+                "primary sources, verify important claims, research current "
+                "information, follow research trails, and research counterarguments "
+                "and alternatives. STORE the research material as durable files under "
+                "the research/ directory (<output_dir>/research/): one notes file per "
+                "chapter, plus research/sources.md and research/summary.md. Then call "
+                "submit_research() with notes for EVERY chapter."
             ),
         ),
         PhaseSpec(
@@ -1731,7 +1863,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="chapter",
             on_reject="assets",
             system_prompt_override=(
-                "You are in the ASSETS phase of make_pdf_book. Produce EVERY visual asset "
+                "You are in the ASSETS phase of make_book. Produce EVERY visual asset "
                 "the book needs (figures and flowcharts) into the "
                 "assets dir, then call confirm_assets_ready(). Create BOTH kinds of "
                 "assets: (1) MERMAID DIAGRAMS for structural/flow content "
@@ -1760,7 +1892,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="chapter",  # self-loop: the runner advances the chapter index
             on_reject="chapter",
             system_prompt_override=(
-                "You are in the CHAPTER phase of make_pdf_book. Write exactly ONE "
+                "You are in the CHAPTER phase of make_book. Write exactly ONE "
                 "technical chapter in full as Markdown (precise terminology, data, "
                 "formulas, code snippets, tables, images with captions, and inline "
                 "citations grounded in the research). Where the chapter needs "
@@ -1785,7 +1917,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="back_matter",
             on_reject="front_matter",
             system_prompt_override=(
-                "You are in the FRONT_MATTER phase of make_pdf_book. Build the preface "
+                "You are in the FRONT_MATTER phase of make_book. Build the preface "
                 "and a table-of-contents page container (heading + page break only \u2014 "
                 "the compile toolchain auto-generates the TOC listing via pandoc/typst/"
                 "pdflatex, never by hand). Do NOT build a cover page \u2014 the cover is "
@@ -1800,7 +1932,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next="compile",
             on_reject="back_matter",
             system_prompt_override=(
-                "You are in the BACK_MATTER phase of make_pdf_book. Build the index page "
+                "You are in the BACK_MATTER phase of make_book. Build the index page "
                 "from the bold-marked terms, then call confirm_back_matter_ready()."
             ),
         ),
@@ -1812,7 +1944,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             next=None,  # terminal on success
             on_reject="chapter",  # re-enter at the offending chapter index
             system_prompt_override=(
-                "You are in the COMPILE phase of make_pdf_book. Typeset all chapters "
+                "You are in the COMPILE phase of make_book. Typeset all chapters "
                 "into a valid .pdf (pandoc -t typst + sed symbol fixes + typst compile "
                 "→ xelatex → chromium+MathJax → reportlab), preserve images, "
                 "native math, code, and tables, validate it (%PDF, page count, "
@@ -1828,8 +1960,8 @@ class MakePdfBookWorkflow(WorkflowPlugin):
     @classmethod
     def checkpoint_context_to_payload(cls, context: object) -> dict[str, object]:
         """Encode resumable state without duplicating provider memory."""
-        if not isinstance(context, MakePdfBookContext):
-            raise TypeError("make_pdf_book checkpoint requires MakePdfBookContext")
+        if not isinstance(context, MakeBookContext):
+            raise TypeError("make_book checkpoint requires MakeBookContext")
         return {
             "intent": context.intent,
             "run_id": context.run_id,
@@ -1878,13 +2010,13 @@ class MakePdfBookWorkflow(WorkflowPlugin):
         cls,
         payload: dict[str, object],
         memory: object | None = None,
-    ) -> MakePdfBookContext:
+    ) -> MakeBookContext:
         """Restore state and attach the already-open session memory."""
-        raw_state = str(payload.get("state", MakePdfBookState.TOC.name))
+        raw_state = str(payload.get("state", MakeBookState.TOC.name))
         try:
-            state = MakePdfBookState[raw_state]
+            state = MakeBookState[raw_state]
         except KeyError as exc:
-            raise ValueError(f"unknown make_pdf_book state: {raw_state}") from exc
+            raise ValueError(f"unknown make_book state: {raw_state}") from exc
         raw_chapters = payload.get("chapters", [])
         chapters: list[ChapterInfo] = []
         if isinstance(raw_chapters, list):
@@ -1900,8 +2032,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
                         word_count=int(raw.get("word_count", 0)),
                         status=str(raw.get("status", "pending")),
                         assets=[
-                            str(a)
-                            for a in raw.get("assets", [])
+                            str(a) for a in raw.get("assets", [])
                             if isinstance(raw.get("assets"), list)
                         ],
                     )
@@ -1922,9 +2053,11 @@ class MakePdfBookWorkflow(WorkflowPlugin):
                     continue
         raw_research_sources = payload.get("research_sources", [])
         research_sources = (
-            [str(s) for s in raw_research_sources] if isinstance(raw_research_sources, list) else []
+            [str(s) for s in raw_research_sources]
+            if isinstance(raw_research_sources, list)
+            else []
         )
-        return MakePdfBookContext(
+        return MakeBookContext(
             intent=str(payload.get("intent", "")),
             run_id=str(payload.get("run_id", "")),
             state=state,
@@ -1935,8 +2068,7 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             technical_level=str(payload.get("technical_level", "advanced")),
             prerequisites=str(payload.get("prerequisites", "")),
             output_dir=str(payload.get("output_dir", "")),
-            content_types=list(payload.get("content_types", []))
-            or [
+            content_types=list(payload.get("content_types", [])) or [
                 "images",
                 "equations",
                 "code",
@@ -1954,16 +2086,13 @@ class MakePdfBookWorkflow(WorkflowPlugin):
             research_sources=research_sources,
             research_summary=str(payload.get("research_summary", "")),
             research_files=[str(f) for f in payload.get("research_files", [])]
-            if isinstance(payload.get("research_files", []), list)
-            else [],
+            if isinstance(payload.get("research_files", []), list) else [],
             front_matter_summary=str(payload.get("front_matter_summary", "")),
             front_matter_files=[str(f) for f in payload.get("front_matter_files", [])]
-            if isinstance(payload.get("front_matter_files", []), list)
-            else [],
+            if isinstance(payload.get("front_matter_files", []), list) else [],
             back_matter_summary=str(payload.get("back_matter_summary", "")),
             back_matter_files=[str(f) for f in payload.get("back_matter_files", [])]
-            if isinstance(payload.get("back_matter_files", []), list)
-            else [],
+            if isinstance(payload.get("back_matter_files", []), list) else [],
             pdf_path=str(payload.get("pdf_path", "")),
             compile_summary=str(payload.get("compile_summary", "")),
             fail_reason=str(payload.get("fail_reason", "")),
@@ -1976,14 +2105,14 @@ class MakePdfBookWorkflow(WorkflowPlugin):
         cls,
         config: WorkflowConfig,
         mode_manager: ModeManager | None,
-    ) -> MakePdfBookRunner:
+    ) -> MakeBookRunner:
         """Return this workflow's own state-machine runner."""
-        return MakePdfBookRunner(config, mode_manager)
+        return MakeBookRunner(config, mode_manager)
 
     @classmethod
     def build_params(cls, source: dict[str, object]) -> WorkflowParams:
-        """Build typed params from [workflows.make_pdf_book]."""
-        return MakePdfBookParams(
+        """Build typed params from [workflows.make_book]."""
+        return MakeBookParams(
             toc_model=str(source.get("toc_model", "") or ""),
             research_model=str(source.get("research_model", "") or ""),
             chapter_model=str(source.get("chapter_model", "") or ""),

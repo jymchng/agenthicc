@@ -58,19 +58,19 @@ from agenthicc.workflows.make_epub_book.runner import (
     _make_research_tools as make_epub_research_tools,
     _make_toc_tools as make_epub_toc_tools,
 )
-from agenthicc.workflows.make_pdf_book.runner import (
-    ChapterInfo as PdfChapterInfo,
-    MakePdfBookContext,
-    MakePdfBookRunner,
-    MakePdfBookState,
-    MakePdfBookWorkflow,
-    _make_assets_tools as make_pdf_assets_tools,
-    _make_back_matter_tools as make_pdf_back_matter_tools,
-    _make_chapter_tools as make_pdf_chapter_tools,
-    _make_compile_tools as make_pdf_compile_tools,
-    _make_front_matter_tools as make_pdf_front_matter_tools,
-    _make_research_tools as make_pdf_research_tools,
-    _make_toc_tools as make_pdf_toc_tools,
+from agenthicc.workflows.make_book.runner import (
+    ChapterInfo as BookChapterInfo,
+    MakeBookContext,
+    MakeBookRunner,
+    MakeBookState,
+    MakeBookWorkflow,
+    _make_assets_tools as make_book_assets_tools,
+    _make_back_matter_tools as make_book_back_matter_tools,
+    _make_chapter_tools as make_book_chapter_tools,
+    _make_compile_tools as make_book_compile_tools,
+    _make_front_matter_tools as make_book_front_matter_tools,
+    _make_research_tools as make_book_research_tools,
+    _make_toc_tools as make_book_toc_tools,
 )
 from agenthicc.workflows.site_imitate.runner import (
     MOBILE_RESPONSIVE_CONTRACT,
@@ -680,7 +680,7 @@ def test_make_agenthicc_tool_checkpoint_codec_and_factory_guards() -> None:
 @pytest.mark.parametrize(
     ("runner_cls", "state_cls", "workflow_cls", "expected_suffix"),
     [
-        (MakePdfBookRunner, MakePdfBookState, MakePdfBookWorkflow, ".pdf"),
+        (MakeBookRunner, MakeBookState, MakeBookWorkflow, ".pdf"),
         (MakeEpubBookRunner, MakeEpubBookState, MakeEpubBookWorkflow, ".epub"),
     ],
 )
@@ -716,7 +716,7 @@ async def test_book_workflows_full_dynamic_driver_and_checkpoint_codec(
 @pytest.mark.parametrize(
     ("runner_cls", "context_cls", "state_cls", "workflow_cls"),
     [
-        (MakePdfBookRunner, MakePdfBookContext, MakePdfBookState, MakePdfBookWorkflow),
+        (MakeBookRunner, MakeBookContext, MakeBookState, MakeBookWorkflow),
         (MakeEpubBookRunner, MakeEpubBookContext, MakeEpubBookState, MakeEpubBookWorkflow),
     ],
 )
@@ -739,7 +739,7 @@ async def test_book_workflows_resume_from_the_first_phase(
 
 def test_book_workflow_checkpoint_and_param_guards() -> None:
     for workflow_cls, state_cls in (
-        (MakePdfBookWorkflow, MakePdfBookState),
+        (MakeBookWorkflow, MakeBookState),
         (MakeEpubBookWorkflow, MakeEpubBookState),
     ):
         with pytest.raises(TypeError):
@@ -757,13 +757,13 @@ def test_book_workflow_checkpoint_and_param_guards() -> None:
     "module_factories",
     [
         (
-            make_pdf_toc_tools,
-            make_pdf_research_tools,
-            make_pdf_chapter_tools,
-            make_pdf_assets_tools,
-            make_pdf_front_matter_tools,
-            make_pdf_back_matter_tools,
-            make_pdf_compile_tools,
+            make_book_toc_tools,
+            make_book_research_tools,
+            make_book_chapter_tools,
+            make_book_assets_tools,
+            make_book_front_matter_tools,
+            make_book_back_matter_tools,
+            make_book_compile_tools,
         ),
         (
             make_epub_toc_tools,
@@ -869,10 +869,10 @@ async def test_book_transition_tools_cover_validation_and_decisions(
     ("runner_cls", "context", "methods"),
     [
         (
-            MakePdfBookRunner,
-            MakePdfBookContext(
+            MakeBookRunner,
+            MakeBookContext(
                 intent="book",
-                chapters=[PdfChapterInfo(0, title="Chapter", outline="Outline")],
+                chapters=[BookChapterInfo(0, title="Chapter", outline="Outline")],
             ),
             (
                 "_toc",

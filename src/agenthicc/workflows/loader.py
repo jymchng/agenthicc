@@ -68,9 +68,9 @@ _BUILTIN_WORKFLOW_DESCRIPTORS = (
         "MakeEpubBookWorkflow",
     ),
     BuiltinWorkflowDescriptor(
-        "make_pdf_book",
-        "agenthicc.workflows.make_pdf_book.runner",
-        "MakePdfBookWorkflow",
+        "make_book",
+        "agenthicc.workflows.make_book.runner",
+        "MakeBookWorkflow",
     ),
     BuiltinWorkflowDescriptor(
         "reconstruct_site", "agenthicc.workflows.reconstruct_site", "ReconstructSiteWorkflow"

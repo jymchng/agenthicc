@@ -244,7 +244,7 @@ paths, validation reports, and retry state remain dynamic rather than changing
 the reusable system prefix.
 
 All built-in workflow runners use this boundary: `code_plan`, `create_workflow`,
-`site_imitate`, `make_agenthicc_tool`, `make_pdf_book`, and `make_epub_book`.
+`site_imitate`, `make_agenthicc_tool`, `make_book`, and `make_epub_book`.
 
 ### Transition tools
 
