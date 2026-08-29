@@ -44,20 +44,6 @@ from agenthicc.workflows.reconstruct_site.runner import (
     ReconstructSiteRunner,
     ReconstructState,
 )
-from agenthicc.workflows.make_epub_book.runner import (
-    ChapterInfo as EpubChapterInfo,
-    MakeEpubBookContext,
-    MakeEpubBookRunner,
-    MakeEpubBookState,
-    MakeEpubBookWorkflow,
-    _make_assets_tools as make_epub_assets_tools,
-    _make_back_matter_tools as make_epub_back_matter_tools,
-    _make_chapter_tools as make_epub_chapter_tools,
-    _make_compile_tools as make_epub_compile_tools,
-    _make_front_matter_tools as make_epub_front_matter_tools,
-    _make_research_tools as make_epub_research_tools,
-    _make_toc_tools as make_epub_toc_tools,
-)
 from agenthicc.workflows.make_book.runner import (
     ChapterInfo as BookChapterInfo,
     MakeBookContext,
@@ -200,9 +186,8 @@ async def _call_transition(tool: Any) -> object:
             "target_phase",
         }:
             value = _value(tool_name, parameter.name)
-            if parameter.name in {"pdf_path", "epub_path"}:
-                module = getattr(tool, "__module__", "")
-                value = "book.epub" if "make_epub_book" in module else "book.pdf"
+            if parameter.name == "pdf_path":
+                value = "book.pdf"
             kwargs[parameter.name] = value
     return await tool(**kwargs)
 
@@ -681,7 +666,6 @@ def test_make_agenthicc_tool_checkpoint_codec_and_factory_guards() -> None:
     ("runner_cls", "state_cls", "workflow_cls", "expected_suffix"),
     [
         (MakeBookRunner, MakeBookState, MakeBookWorkflow, ".pdf"),
-        (MakeEpubBookRunner, MakeEpubBookState, MakeEpubBookWorkflow, ".epub"),
     ],
 )
 async def test_book_workflows_full_dynamic_driver_and_checkpoint_codec(
@@ -717,7 +701,6 @@ async def test_book_workflows_full_dynamic_driver_and_checkpoint_codec(
     ("runner_cls", "context_cls", "state_cls", "workflow_cls"),
     [
         (MakeBookRunner, MakeBookContext, MakeBookState, MakeBookWorkflow),
-        (MakeEpubBookRunner, MakeEpubBookContext, MakeEpubBookState, MakeEpubBookWorkflow),
     ],
 )
 async def test_book_workflows_resume_from_the_first_phase(
@@ -738,10 +721,7 @@ async def test_book_workflows_resume_from_the_first_phase(
 
 
 def test_book_workflow_checkpoint_and_param_guards() -> None:
-    for workflow_cls, state_cls in (
-        (MakeBookWorkflow, MakeBookState),
-        (MakeEpubBookWorkflow, MakeEpubBookState),
-    ):
+    for workflow_cls, state_cls in ((MakeBookWorkflow, MakeBookState),):
         with pytest.raises(TypeError):
             workflow_cls.checkpoint_context_to_payload(object())
         with pytest.raises(ValueError, match="unknown"):
@@ -764,15 +744,6 @@ def test_book_workflow_checkpoint_and_param_guards() -> None:
             make_book_front_matter_tools,
             make_book_back_matter_tools,
             make_book_compile_tools,
-        ),
-        (
-            make_epub_toc_tools,
-            make_epub_research_tools,
-            make_epub_chapter_tools,
-            make_epub_assets_tools,
-            make_epub_front_matter_tools,
-            make_epub_back_matter_tools,
-            make_epub_compile_tools,
         ),
     ],
 )
@@ -851,7 +822,8 @@ async def test_book_transition_tools_cover_validation_and_decisions(
         assert (await tool(summary="created", files=["book.md", ""]))["ok"] is True
 
     event.clear()
-    complete, reject = make_compile(event, data)
+    complete, reject, create_builder = make_compile(event, data)
+    assert getattr(create_builder, "__name__", "") == "create_build_book"
     path_name = "epub_path" if "epub" in getattr(complete, "__module__", "") else "pdf_path"
     wrong_path = {path_name: "book.txt", "summary": "done"}
     assert (await complete(**wrong_path))["ok"] is False
@@ -873,22 +845,6 @@ async def test_book_transition_tools_cover_validation_and_decisions(
             MakeBookContext(
                 intent="book",
                 chapters=[BookChapterInfo(0, title="Chapter", outline="Outline")],
-            ),
-            (
-                "_toc",
-                "_research",
-                "_assets",
-                "_chapter",
-                "_front_matter",
-                "_back_matter",
-                "_compile",
-            ),
-        ),
-        (
-            MakeEpubBookRunner,
-            MakeEpubBookContext(
-                intent="book",
-                chapters=[EpubChapterInfo(0, title="Chapter", outline="Outline")],
             ),
             (
                 "_toc",

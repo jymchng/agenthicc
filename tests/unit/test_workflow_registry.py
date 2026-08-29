@@ -129,7 +129,6 @@ class TestBuildWorkflowRegistry:
             "create_workflow",
             "goal_flow",
             "make_agenthicc_tool",
-            "make_epub_book",
             "make_book",
             "reconstruct_site",
             "site_imitate",

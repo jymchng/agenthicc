@@ -63,11 +63,6 @@ _BUILTIN_WORKFLOW_DESCRIPTORS = (
         "MakeAgenthiccToolWorkflow",
     ),
     BuiltinWorkflowDescriptor(
-        "make_epub_book",
-        "agenthicc.workflows.make_epub_book.runner",
-        "MakeEpubBookWorkflow",
-    ),
-    BuiltinWorkflowDescriptor(
         "make_book",
         "agenthicc.workflows.make_book.runner",
         "MakeBookWorkflow",

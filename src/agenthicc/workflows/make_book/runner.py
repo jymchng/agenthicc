@@ -1,7 +1,6 @@
 """make_book — Write a specialised, technical book chapter-by-chapter and compile it into a PDF.
 
-Same shape as ``make_epub_book``, but the output is a polished, typeset PDF
-instead of an EPUB. The workflow:
+The workflow:
 
 1. ``toc`` — plans the table of contents (title, author, audience, technical
    level, chapter list with outlines, output directory, rich content types).
@@ -30,9 +29,11 @@ import logging
 import uuid
 from collections.abc import Callable
 from enum import Enum, auto
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
+from agenthicc.workflows.make_book.builder import write_build_book_script
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
@@ -44,6 +45,22 @@ log = logging.getLogger(__name__)
 
 #: Bounded retries per phase — never loop forever waiting for a tool call.
 _MAX_ATTEMPTS = 5
+
+# Immutable instructions and tool-policy text belong in the reusable prompt
+# prefix.  Phase state, book metadata, artifacts, retry feedback, and model
+# outputs stay in the dynamic phase prompt supplied to ``run_phase``.
+CACHE_CONTRACT: str = """
+make_book cache contract:
+- Keep this workflow policy and the deterministic tool schemas stable across
+  every phase and retry.
+- Treat phase prompts, chapter metadata, research, artifact paths, questions,
+  answers, and validation results as dynamic context; never copy them into the
+  stable prefix.
+- Use the phase transition tools exactly as declared. A phase advances only
+  after its success or rejection tool is called.
+- Preserve all generated files and checkpoint state so a resumed run can
+  continue from its recorded phase.
+""".strip()
 
 
 #: MathJax node renderer template injected into the compile prompt. Used by the
@@ -177,6 +194,7 @@ class MakeBookContext:
     back_matter_summary: str = ""
     back_matter_files: list[str] = dataclasses.field(default_factory=list)
     fail_reason: str = ""
+    build_script_path: str = ""
     artifacts: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
@@ -330,9 +348,7 @@ def _make_research_tools(
             if not raw_notes.strip():
                 continue
             covered[raw_index] = raw_notes.strip()
-        missing: list[int] = [
-            i for i in range(chapter_count) if i not in covered
-        ]
+        missing: list[int] = [i for i in range(chapter_count) if i not in covered]
         if missing:
             return {
                 "ok": False,
@@ -403,8 +419,6 @@ def _make_chapter_tools(
         }
 
     return [confirm_chapter_complete]
-
-
 
 
 def _make_assets_tools(
@@ -516,9 +530,62 @@ def _make_back_matter_tools(
 def _make_compile_tools(
     event: asyncio.Event,
     data: dict[str, object],
+    *,
+    output_dir: str = "",
+    builder_dir: str = "",
+    title: str = "",
+    author: str = "",
 ) -> list[Callable[..., object]]:
-    """Return the pass/fail decision tools for the compile phase."""
+    """Return build-script and pass/fail tools for the compile phase.
+
+    ``create_build_book`` is intentionally idempotent.  The compile agent is
+    instructed to call it before running the generated builder, while
+    ``mark_book_complete`` also creates it as a safety net for a model that
+    jumps directly to the completion tool.
+    """
     from lauren_ai._tools import tool
+
+    def _create_builder() -> dict[str, object]:
+        if not output_dir.strip():
+            return {
+                "ok": False,
+                "error": "No output directory is available for build_book.py.",
+                "fix": "Set the book output directory before creating the builder.",
+            }
+        try:
+            destination = write_build_book_script(
+                Path(builder_dir or output_dir).expanduser(),
+                title=title,
+                author=author,
+                book_root=Path(output_dir).expanduser(),
+            )
+        except (OSError, ValueError) as exc:
+            return {
+                "ok": False,
+                "error": f"Could not create build_book.py: {exc}",
+                "fix": "Use a writable book output directory and try again.",
+            }
+        data["build_script_path"] = str(destination)
+        return {
+            "ok": True,
+            "path": str(destination),
+            "message": (
+                "Created the reusable build_book.py builder. Run it from its "
+                "directory to rebuild the PDF independently of this session."
+            ),
+        }
+
+    @tool()
+    async def create_build_book() -> dict[str, object]:
+        """Create the reusable ``build_book.py`` PDF builder.
+
+        The script discovers front-matter, chapter, and back-matter Markdown
+        files relative to itself, compiles them with Pandoc and XeLaTeX in
+        multiple passes, optionally attaches the user cover, and writes the
+        final PDF under ``dist/``.  Call this before running the builder.
+        """
+
+        return _create_builder()
 
     @tool()
     async def mark_book_complete(
@@ -531,6 +598,10 @@ def _make_compile_tools(
             pdf_path: Path to the finished .pdf file.
             summary: Summary of the book and how to open the PDF.
         """
+        if output_dir.strip() and not data.get("build_script_path"):
+            created = _create_builder()
+            if not bool(created.get("ok")):
+                return created
         if not pdf_path.strip() or not pdf_path.lower().endswith(".pdf"):
             return {
                 "ok": False,
@@ -576,13 +647,21 @@ def _make_compile_tools(
             "message": f"Book sent back for fixes: {issue}",
         }
 
-    return [mark_book_complete, reject_book]
+    return [mark_book_complete, reject_book, create_build_book]
 
 
 # ── runner ────────────────────────────────────────────────────────────────────
 
 # Static phase names for status-bar and event payloads.
-_PHASE_NAMES: tuple[str, ...] = ("toc", "research", "assets", "chapter", "front_matter", "back_matter", "compile")
+_PHASE_NAMES: tuple[str, ...] = (
+    "toc",
+    "research",
+    "assets",
+    "chapter",
+    "front_matter",
+    "back_matter",
+    "compile",
+)
 
 
 class MakeBookRunner(CodePlanRunner):
@@ -609,9 +688,7 @@ class MakeBookRunner(CodePlanRunner):
         memory = (
             self._cfg.session_memory
             if self._cfg.session_memory is not None
-            else ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
+            else ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         )
         ctx = MakeBookContext(
             intent=intent,
@@ -667,9 +744,7 @@ class MakeBookRunner(CodePlanRunner):
             else context.shared_memory
         )
         if memory is None:
-            memory = ShortTermMemory(
-                max_tokens=self._cfg.cfg.execution.effective_usable_budget()
-            )
+            memory = ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         context.shared_memory = memory
         if len(context.chapters) > 0:
             self.total_phases = len(context.chapters) + 6
@@ -731,7 +806,6 @@ class MakeBookRunner(CodePlanRunner):
             return n + 5
         return 0
 
-
     async def _toc(
         self,
         ctx: MakeBookContext,
@@ -742,6 +816,7 @@ class MakeBookRunner(CodePlanRunner):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
             await self.run_phase(
+                stable_system_prompt=CACHE_CONTRACT,
                 intent=ctx.intent,
                 text=(
                     ctx.intent
@@ -795,7 +870,6 @@ class MakeBookRunner(CodePlanRunner):
                     "   - TABLE OF CONTENTS: a visible contents page placed after the preface. NOTE: the contents listing itself is NOT written by hand \u2014 the compile toolchain auto-generates it (pandoc --toc, LaTeX \\tableofcontents, or typst #outline). Plan only that the page exists after the preface.\n"
                     "   - INDEX: an index section at the end listing the key terms of the book (term -> chapter/section), so the book is navigable.\n"
                     "   - COLOURED HEADINGS: headings must be coloured (a consistent accent colour for h1/h2), not plain black — plan the accent colour here (e.g. a deep blue fitting the subject).\n"
-
                     "user's directory if given.\n\n"
                     "Call submit_toc(title, author, chapters, audience, technical_level, "
                     "prerequisites, output_dir, content_types) where chapters is a list of "
@@ -832,12 +906,8 @@ class MakeBookRunner(CodePlanRunner):
                     "code",
                     "tables",
                 ]
-                ctx.assets_dir = (
-                    f"{ctx.output_dir}/assets" if ctx.output_dir else "assets"
-                )
-                ctx.research_dir = (
-                    f"{ctx.output_dir}/research" if ctx.output_dir else "research"
-                )
+                ctx.assets_dir = f"{ctx.output_dir}/assets" if ctx.output_dir else "assets"
+                ctx.research_dir = f"{ctx.output_dir}/research" if ctx.output_dir else "research"
                 ctx.chapters = chapters
                 ctx.current_chapter_index = 0
                 self.total_phases = len(chapters) + 6
@@ -848,9 +918,7 @@ class MakeBookRunner(CodePlanRunner):
                     f"Prerequisites: {ctx.prerequisites or '(unspecified)'}\n"
                     f"Content: {', '.join(ctx.content_types)}\n"
                     f"Chapters: {len(chapters)}\n"
-                    + "\n".join(
-                        f"  {i + 1}. {c.title}" for i, c in enumerate(chapters)
-                    )
+                    + "\n".join(f"  {i + 1}. {c.title}" for i, c in enumerate(chapters))
                 )
                 ctx.artifacts["toc"] = ctx.toc_summary
                 return MakeBookState.RESEARCH
@@ -871,6 +939,7 @@ class MakeBookRunner(CodePlanRunner):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
             await self.run_phase(
+                stable_system_prompt=CACHE_CONTRACT,
                 intent=ctx.intent,
                 text=(
                     (
@@ -1099,7 +1168,6 @@ class MakeBookRunner(CodePlanRunner):
         ctx.fail_reason = "research phase never called submit_research()"
         return MakeBookState.FAILED
 
-
     async def _chapter(
         self,
         ctx: MakeBookContext,
@@ -1132,6 +1200,7 @@ class MakeBookRunner(CodePlanRunner):
                 )
             )
             await self.run_phase(
+                stable_system_prompt=CACHE_CONTRACT,
                 intent=ctx.intent,
                 text=text,
                 system_prompt=(
@@ -1193,7 +1262,6 @@ class MakeBookRunner(CodePlanRunner):
                     "   (b) Every '## ' section subheading must be UNIQUE across ALL chapters — no two chapters may share the same section heading text. Vary each heading so it is original to its chapter while remaining recognisable for its section type.\n"
                     "- Mark every key indexable term in **bold** on first use — the index section collects these, so consistent marking makes the index accurate.\n"
                     "- Keep paragraphs, lists, and spacing clean; prefer short, scannable sections over dense walls of text.\n"
-
                     "RICH CONTENT — use every enabled content type where it adds value:\n"
                     + (
                         "- IMAGES: create BOTH mermaid diagrams AND matplotlib graphs "
@@ -1231,8 +1299,8 @@ class MakeBookRunner(CodePlanRunner):
                         "- CODE: include fenced code blocks with a language tag (```python, "
                         "```rust, ```ts). Code must be accurate, runnable, and directly "
                         "relevant. Add a short comment or prose tie-in for each snippet. The "
-                    "language tag enables pygments syntax highlighting in the compiled "
-                    "book.\n"
+                        "language tag enables pygments syntax highlighting in the compiled "
+                        "book.\n"
                         if "code" in ctx.content_types
                         else ""
                     )
@@ -1267,7 +1335,6 @@ class MakeBookRunner(CodePlanRunner):
                     "files.\n"
                     "   - Typst tier (only if the compile actually lands on typst): use "
                     "'#pagebreak()' after the title.\n"
-                    "   - HTML/epub: add '<hr class=\"pagebreak\">' or use CSS page-break.\n"
                     "   Example structure (LaTeX tier):\n"
                     "   ```\n"
                     "   # Title (no 'Chapter N:' prefix)\n\n"
@@ -1310,7 +1377,6 @@ class MakeBookRunner(CodePlanRunner):
         ctx.fail_reason = f"chapter {index + 1} never confirmed completion"
         return MakeBookState.FAILED
 
-
     async def _assets(
         self,
         ctx: MakeBookContext,
@@ -1321,6 +1387,7 @@ class MakeBookRunner(CodePlanRunner):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
             await self.run_phase(
+                stable_system_prompt=CACHE_CONTRACT,
                 intent=ctx.intent,
                 text=(
                     f"Generate all figure and diagram assets for '{ctx.title}' "
@@ -1416,10 +1483,10 @@ class MakeBookRunner(CodePlanRunner):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
             await self.run_phase(
+                stable_system_prompt=CACHE_CONTRACT,
                 intent=ctx.intent,
                 text=(
-                    f"Build the front-matter pages (preface, table of contents) "
-                    f"for '{ctx.title}'."
+                    f"Build the front-matter pages (preface, table of contents) for '{ctx.title}'."
                     if attempt == 1
                     else "Call confirm_front_matter_ready(summary, files) now."
                 ),
@@ -1429,8 +1496,7 @@ class MakeBookRunner(CodePlanRunner):
                     "book.\n\n"
                     f"Book: {ctx.title}\nAuthor: {ctx.author}\n"
                     f"Chapters: {ctx.toc_summary or '(see plan)'}\n\n"
-                    "Create these pages (as Markdown in the project for PDF, or XHTML "
-                    "items for EPUB):\n"
+                    "Create these pages as Markdown files in the project for the PDF:\n"
                     "NOTE: the COVER page is supplied by the END USER (e.g. "
                     "<output_dir>/assets/cover.png). Do NOT build, generate, or design "
                     "a cover page \u2014 the compile phase places the user-supplied cover "
@@ -1477,6 +1543,7 @@ class MakeBookRunner(CodePlanRunner):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
             await self.run_phase(
+                stable_system_prompt=CACHE_CONTRACT,
                 intent=ctx.intent,
                 text=(
                     f"Build the INDEX page for '{ctx.title}' from the bold-marked terms "
@@ -1491,8 +1558,7 @@ class MakeBookRunner(CodePlanRunner):
                     "Read the chapter files and collect every **bold-marked** indexable "
                     "term (concepts, names, methods) plus the research-phase index-term "
                     "notes, then produce an INDEX page: an alphabetised list of terms "
-                    "each pointing to its chapter (chapter number, or link to the "
-                    "chapter XHTML for EPUB).\n"
+                    "each pointing to its chapter by chapter number.\n"
                     "The index page must begin on a NEW PAGE \u2014 put a raw "
                     "'\\newpage' (LaTeX tier) or '#pagebreak()' (typst tier) on its "
                     "own line right after the index title.\n\n"
@@ -1513,7 +1579,6 @@ class MakeBookRunner(CodePlanRunner):
         ctx.fail_reason = "back_matter phase never called confirm_back_matter_ready()"
         return MakeBookState.FAILED
 
-
     async def _compile(
         self,
         ctx: MakeBookContext,
@@ -1533,9 +1598,9 @@ class MakeBookRunner(CodePlanRunner):
                 f"Rich content: {', '.join(ctx.content_types)}\n"
                 f"Chapter files:\n{paths}\n"
                 + (
-                    f"\nFront matter (preface/contents; cover is user-supplied):\n"
+                    "\nFront matter (preface/contents; cover is user-supplied):\n"
                     + "\n".join(f"  {f}" for f in ctx.front_matter_files)
-                    + f"\nBack matter (index):\n"
+                    + "\nBack matter (index):\n"
                     + "\n".join(f"  {f}" for f in ctx.back_matter_files)
                     if ctx.front_matter_files or ctx.back_matter_files
                     else ""
@@ -1545,6 +1610,7 @@ class MakeBookRunner(CodePlanRunner):
                 else "Call mark_book_complete(pdf_path, summary) or reject_book(issue, chapter_index) now."
             )
             await self.run_phase(
+                stable_system_prompt=CACHE_CONTRACT,
                 intent=ctx.intent,
                 text=text,
                 system_prompt=(
@@ -1553,24 +1619,18 @@ class MakeBookRunner(CodePlanRunner):
                     "rich content.\n\n"
                     f"Title: {ctx.title}\nAuthor: {ctx.author}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
-                    "Chapter files:\n"
-                    + "\n".join(f"  {c.file_path}" for c in written)
-                    + "\n\n"
+                    "Chapter files:\n" + "\n".join(f"  {c.file_path}" for c in written) + "\n\n"
                     "Asset files (images/figures the chapters reference):\n"
-                    + (
-                        "\n".join(f"  {a}" for a in ctx.images)
-                        if ctx.images
-                        else "  (none)"
-                    )
+                    + ("\n".join(f"  {a}" for a in ctx.images) if ctx.images else "  (none)")
                     + "\n\n"
                     "BOOK POLISH — the finished PDF must look like a real published book. The front-matter pages (preface/contents) and the index page were built by the FRONT_MATTER and BACK_MATTER phases — use those files, do NOT rebuild them. The COVER page is supplied by the END USER (e.g. <output_dir>/assets/cover.png) — place it as page 1; do NOT generate, design, or rebuild it:\n"
                     "  FRONT MATTER: the preface/contents Markdown files from the FRONT_MATTER phase (ctx.front_matter_files) go FIRST, before the chapter list, in this order: preface, contents, chapters; the user-supplied cover image (<output_dir>/assets/cover.png) becomes page 1.\n"
                     "  BACK MATTER: append the index file from the BACK_MATTER phase (ctx.back_matter_files) after the last chapter.\n"
                     "  COLOURED HEADINGS:\n"
                     "   - TYPST tier: after the sed symbol fixes, prepend to book.typ a heading-colour rule and a clean page setup (adjust colours to the planned accent):\n"
-                    "        #set page(paper: \"a4\", margin: 2.2cm)\n"
-                    "        #show heading.where(level: 1): set text(fill: rgb(\"#1f4e79\"), size: 20pt, weight: \"bold\")\n"
-                    "        #show heading.where(level: 2): set text(fill: rgb(\"#2e74b5\"), size: 15pt)\n"
+                    '        #set page(paper: "a4", margin: 2.2cm)\n'
+                    '        #show heading.where(level: 1): set text(fill: rgb("#1f4e79"), size: 20pt, weight: "bold")\n'
+                    '        #show heading.where(level: 2): set text(fill: rgb("#2e74b5"), size: 15pt)\n'
                     "     Prepend with: sed -i '1i #set page(paper: \"a4\", margin: 2.2cm)' book.typ (repeat per rule).\n"
                     "   - XELATEX tier: write a header.tex with \\usepackage{xcolor} \\usepackage{sectsty}, \\definecolor{accent}{HTML}{1F4E79}, \\allsectionsfont{\\color{accent}}, and pass pandoc -H header.tex.\n"
                     "  JUSTIFIED TEXT (mandatory): all body paragraph text must be justified \u2014 flush to BOTH the left and right margins.\n"
@@ -1583,8 +1643,13 @@ class MakeBookRunner(CodePlanRunner):
                     "  PAGE BREAKS (mandatory): every chapter MUST begin on a new page, and the preface, the table of contents, any appendices, and the index must EACH begin on a new page. The cover is page 1 \u2014 it must NOT carry a leading page break (that would create a blank first page). Enforce every other break by placing a raw '\\newpage' (LaTeX tier; pandoc passes raw LaTeX through to the .tex) or '#pagebreak()' (typst tier) on its own line immediately after the '# ' title in each file: each chapter file, the preface file, the contents file, and the index file. NEVER use '#pagebreak()' in the LaTeX tier \u2014 pandoc renders it as literal '#pagebreak()' text there. VERIFY after compiling: use pypdf to extract per-page text and confirm that each chapter title and the preface/contents/index titles each start on their own page (no body text from the previous page shares it).\n"
                     "  After building, verify: the extracted text contains 'Preface', 'Contents' and 'Index'; page 1 is the user-supplied cover (image-only page, no body text); and the typst source contains a '#show heading' colour rule (grep 'show heading' book.typ). Also verify the three heading/TOC rules: (1) the extracted TOC text shows NO dotted-leader runs (no sequences of 3+ dots between entry titles and page numbers); (2) NO 'Chapter N:' prefixed headings appear anywhere (chapter titles are bare, e.g. 'Introduction to Codex'); (3) every '## ' section subheading is UNIQUE across ALL chapters (grep the chapter sources and confirm no duplicate heading text).\n"
                     "BUILD SCRIPT & DIST DELIVERABLE (mandatory):\n"
-                    "Write a reusable build script <output_dir>/build_pdf.py (Python 3; a "
-                    "build.sh is acceptable) that performs the END-TO-END compile from the "
+                    "First call create_build_book(). This creates the reusable, standalone "
+                "Python builder src/agenthicc/workflows/make_book/build_book.py, configured "
+                "for this run's output directory, with deterministic source "
+                    "discovery, Pandoc -> XeLaTeX multi-pass compilation, KDP 6x9 trim, "
+                    "optional cover attachment, --out/--keep-intermediates options, and "
+                    "safe intermediate cleanup. Then run build_book.py so it performs the "
+                    "END-TO-END compile from the "
                     "markdown sources to the final PDF, then RUN it so dist/ holds the "
                     "deliverable:\n"
                     "  1. Regenerate the intermediate TeX from sources (pandoc), then "
@@ -1593,7 +1658,7 @@ class MakeBookRunner(CodePlanRunner):
                     "\\tableofcontents AFTER the cover content and BEFORE the Preface "
                     "heading (pandoc's --toc flag puts it before the cover, so do NOT "
                     "rely on --toc).\n"
-                    "  2. Compile with pdflatex AT LEAST TWICE \u2014 TOC page numbers only "
+                    "  2. Compile with xelatex AT LEAST TWICE \u2014 TOC page numbers only "
                     "resolve on the second pass; run a third pass if the log contains "
                     "'Rerun to get cross-references right' / 'Label(s) may have "
                     "changed'. Do NOT skip passes when pdflatex exits non-zero on "
@@ -1601,7 +1666,7 @@ class MakeBookRunner(CodePlanRunner):
                     "  3. Copy the final PDF into <output_dir>/dist/<title-slug>.pdf "
                     "(create dist/).\n"
                     "  4. Delete ALL intermediate artifacts (book.tex, book.typ, *.aux, "
-                    "*.log, *.toc, *.out, *.fls, .math-render/, .epub-work/, etc.) so "
+                    "*.log, *.toc, *.out, *.fls, .math-render/, etc.) so "
                     "only the sources, the build script, and dist/ remain.\n"
                     "  5. Enforce PAGE BREAKS: every chapter plus the preface, contents, "
                     "appendices and index must start on a new page (raw '\\newpage' in "
@@ -1613,13 +1678,12 @@ class MakeBookRunner(CodePlanRunner):
                     "lists the Amazon KDP listing metadata: [title], [subtitle], "
                     "[description], and [keywords] with at most 7 keywords or short "
                     "phrases (Amazon allows up to 7). Example:\n"
-                    "      title = \"The Book Title\"\n"
-                    "      subtitle = \"A Practical Guide\"\n"
-                    "      description = \"A short, compelling blurb for the Amazon listing.\"\n"
-                    "      keywords = [\"keyword one\", \"keyword two\", \"keyword three\", \"keyword four\", \"keyword five\", \"keyword six\", \"keyword seven\"]\n"
+                    '      title = "The Book Title"\n'
+                    '      subtitle = "A Practical Guide"\n'
+                    '      description = "A short, compelling blurb for the Amazon listing."\n'
+                    '      keywords = ["keyword one", "keyword two", "keyword three", "keyword four", "keyword five", "keyword six", "keyword seven"]\n'
                     "Call mark_book_complete() with the dist/ PDF path, and name the "
                     "build script + dist output in the summary.\n"
-
                     "Compile strategy — try in order until one produces a valid PDF:\n"
                     "1. TYPST (preferred — native typeset math, single static binary, "
                     "no system install):\n"
@@ -1628,7 +1692,7 @@ class MakeBookRunner(CodePlanRunner):
                     "download/typst-x86_64-unknown-linux-musl.tar.xz -o /tmp/typst.tar.xz\n"
                     "        mkdir -p .math-render\n"
                     "        tar -xJf /tmp/typst.tar.xz -C .math-render --strip-components=1\n"
-                    "        export PATH=\"$PWD/.math-render:$PATH\"\n"
+                    '        export PATH="$PWD/.math-render:$PATH"\n'
                     "   b. Create a small title page file <title>.txt:\n"
                     "        # <Title>\n        **<Author>**\n"
                     "   c. IMPORTANT — pandoc's typst writer emits symbol names that "
@@ -1670,10 +1734,10 @@ class MakeBookRunner(CodePlanRunner):
                     "\\AA and \\hbar natively — no symbol fixes needed.)\n"
                     "3. CHROMIUM HEADLESS + MATHJAX SVG (works when no TeX/typst engine "
                     "can be installed):\n"
-                    "   a. pandoc <title>.txt chapters/*.md -o book.epub --mathml "
-                    "(same as the EPUB pipeline), extract it, and run the RENDERER "
-                    "TEMPLATE below over every chapter XHTML to turn each <math> into a "
-                    "self-contained SVG (glyphs inline, no fonts/JS/network).\n"
+                    "   a. Convert the Markdown sources directly to one standalone HTML "
+                    "document with pandoc --mathml, then run the RENDERER TEMPLATE "
+                    "below over every <math> element to turn it into a self-contained "
+                    "SVG (glyphs inline, no fonts/JS/network).\n"
                     "   b. Concatenate the chapter bodies into ONE self-contained HTML "
                     "with a <style> block, inlining every PNG figure as base64 <img> "
                     "and every equation SVG directly.\n"
@@ -1714,7 +1778,7 @@ class MakeBookRunner(CodePlanRunner):
                     "  1. exists and starts with the '%PDF' magic bytes (head -c 4 "
                     "<file> == %PDF)\n"
                     "  2. page count >= 1 (aim 3+ for a real book): pip install pypdf "
-                    "&& python3 -c \"from pypdf import PdfReader; "
+                    '&& python3 -c "from pypdf import PdfReader; '
                     "print(len(PdfReader('<title>.pdf').pages))\"  (or pdfinfo)\n"
                     "  3. EVERY chapter title appears in the extracted text (so no "
                     "chapter was dropped). pdftotext is often NOT installed — use "
@@ -1764,14 +1828,24 @@ class MakeBookRunner(CodePlanRunner):
                 mode="Yolo",
                 max_turns=15,
                 shared_memory=memory,
-                tools=_make_compile_tools(event, data),
+                tools=_make_compile_tools(
+                    event,
+                    data,
+                    output_dir=ctx.output_dir or str(Path.cwd()),
+                    builder_dir=str(Path(__file__).resolve().parent),
+                    title=ctx.title,
+                    author=ctx.author,
+                ),
             )
             if event.is_set():
                 action: str = str(data.get("action", ""))
                 if action == "complete":
                     ctx.pdf_path = str(data.get("pdf_path", ""))
                     ctx.compile_summary = str(data.get("summary", ""))
+                    ctx.build_script_path = str(data.get("build_script_path", ""))
                     ctx.artifacts["pdf"] = ctx.pdf_path
+                    if ctx.build_script_path:
+                        ctx.artifacts["builder"] = ctx.build_script_path
                     return MakeBookState.COMPLETE
                 ctx.fail_reason = str(data.get("issue", ""))
                 bad_index: int = int(data.get("chapter_index", -1))
@@ -1945,11 +2019,13 @@ class MakeBookWorkflow(WorkflowPlugin):
             on_reject="chapter",  # re-enter at the offending chapter index
             system_prompt_override=(
                 "You are in the COMPILE phase of make_book. Typeset all chapters "
-                "into a valid .pdf (pandoc -t typst + sed symbol fixes + typst compile "
-                "→ xelatex → chromium+MathJax → reportlab), preserve images, "
+                "into a valid .pdf with the generated build_book.py builder "
+                "(Pandoc -> XeLaTeX multi-pass), preserve images, "
                 "native math, code, and tables, validate it (%PDF, page count, "
-                "pypdf chapter-title + no-leak + image-count checks), then write a "
-                "reusable build_pdf.py that rebuilds the PDF end-to-end into dist/ "
+                "pypdf chapter-title + no-leak + image-count checks), call "
+                "create_build_book() to create the reusable builder at "
+                "src/agenthicc/workflows/make_book/build_book.py, then run "
+                "it to rebuild the PDF end-to-end into dist/ "
                 "(compile at least twice so TOC page numbers resolve; user cover → TOC → "
                 "preface ordering; clean all intermediates), run it, and call "
                 "mark_book_complete() with the dist/ path or reject_book()."
@@ -1999,6 +2075,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             "front_matter_files": context.front_matter_files,
             "back_matter_summary": context.back_matter_summary,
             "back_matter_files": context.back_matter_files,
+            "build_script_path": context.build_script_path,
             "pdf_path": context.pdf_path,
             "compile_summary": context.compile_summary,
             "fail_reason": context.fail_reason,
@@ -2032,7 +2109,8 @@ class MakeBookWorkflow(WorkflowPlugin):
                         word_count=int(raw.get("word_count", 0)),
                         status=str(raw.get("status", "pending")),
                         assets=[
-                            str(a) for a in raw.get("assets", [])
+                            str(a)
+                            for a in raw.get("assets", [])
                             if isinstance(raw.get("assets"), list)
                         ],
                     )
@@ -2053,9 +2131,7 @@ class MakeBookWorkflow(WorkflowPlugin):
                     continue
         raw_research_sources = payload.get("research_sources", [])
         research_sources = (
-            [str(s) for s in raw_research_sources]
-            if isinstance(raw_research_sources, list)
-            else []
+            [str(s) for s in raw_research_sources] if isinstance(raw_research_sources, list) else []
         )
         return MakeBookContext(
             intent=str(payload.get("intent", "")),
@@ -2068,7 +2144,8 @@ class MakeBookWorkflow(WorkflowPlugin):
             technical_level=str(payload.get("technical_level", "advanced")),
             prerequisites=str(payload.get("prerequisites", "")),
             output_dir=str(payload.get("output_dir", "")),
-            content_types=list(payload.get("content_types", [])) or [
+            content_types=list(payload.get("content_types", []))
+            or [
                 "images",
                 "equations",
                 "code",
@@ -2086,13 +2163,17 @@ class MakeBookWorkflow(WorkflowPlugin):
             research_sources=research_sources,
             research_summary=str(payload.get("research_summary", "")),
             research_files=[str(f) for f in payload.get("research_files", [])]
-            if isinstance(payload.get("research_files", []), list) else [],
+            if isinstance(payload.get("research_files", []), list)
+            else [],
             front_matter_summary=str(payload.get("front_matter_summary", "")),
             front_matter_files=[str(f) for f in payload.get("front_matter_files", [])]
-            if isinstance(payload.get("front_matter_files", []), list) else [],
+            if isinstance(payload.get("front_matter_files", []), list)
+            else [],
             back_matter_summary=str(payload.get("back_matter_summary", "")),
             back_matter_files=[str(f) for f in payload.get("back_matter_files", [])]
-            if isinstance(payload.get("back_matter_files", []), list) else [],
+            if isinstance(payload.get("back_matter_files", []), list)
+            else [],
+            build_script_path=str(payload.get("build_script_path", "")),
             pdf_path=str(payload.get("pdf_path", "")),
             compile_summary=str(payload.get("compile_summary", "")),
             fail_reason=str(payload.get("fail_reason", "")),

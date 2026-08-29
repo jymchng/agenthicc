@@ -172,6 +172,28 @@ The generic `WorkflowRunner` executes `WorkflowPlugin` phase specifications.
 Workflow selection is influenced by the active mode, registry mappings, and the
 session-local `/workflow` override.
 
+### `make_book` and its standalone builder
+
+The `make_book` workflow produces a technical PDF and, during its compile
+phase, exposes `create_build_book`. The tool creates
+`src/agenthicc/workflows/make_book/build_book.py` as a normal executable
+Python program, configured for the run's book output directory. The generated
+builder discovers `front-matter/`, `chapters/`, and `back-matter/` relative to
+that configured root, invokes Pandoc and XeLaTeX for at least two passes,
+writes the result to `dist/`, and can be rerun later without an agent session:
+
+```bash
+python3 src/agenthicc/workflows/make_book/build_book.py --out dist/my-book.pdf
+```
+
+It accepts `--out`/`-o` for a custom PDF path and
+`--keep-intermediates`/`--keep` for debugging. It uses a KDP-oriented 6×9
+inch layout, no-dot table-of-contents styling, and attaches an optional
+`assets/cover.png` (or supported JPG variant) when Pillow and pypdf are
+available. The compile completion tool also creates the builder as a safety
+net if the agent did not call `create_build_book` explicitly; its path is
+stored in the workflow checkpoint and artifact summary.
+
 When `code_plan` reaches its human plan review, the overlay offers
 `Approve - Safe` and `Approve - YOLO`. The selected mode is carried into the
 execute phase and is preserved in phase metadata for resume; Safe retains
@@ -356,8 +378,7 @@ The built-in `make_agenthicc_tool` runner also passes one immutable contract to
 every analyze, generate, validate, and finalize turn, keeping its tool plan,
 generated source path, validation report, and retry state in dynamic context.
 The same boundary is used by every built-in workflow, including `code_plan`,
-`create_workflow`, `site_imitate`, `make_agenthicc_tool`, `make_book`, and
-`make_epub_book`.
+`create_workflow`, `site_imitate`, `make_agenthicc_tool`, and `make_book`.
 
 The runtime records only redacted contract fingerprints and cache epochs in the
 conversation journal and workflow checkpoint. A phase change does not change
