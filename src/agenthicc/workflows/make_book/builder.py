@@ -32,8 +32,8 @@ def build_book_script(
 
     Only metadata is interpolated into the template.  The generated program
     discovers all content relative to the configured book root.  The generated
-    file itself is kept in the workflow package, which gives every make_book
-    run one canonical builder location.
+    file itself is kept beside the run's book sources, so the generated book
+    directory is self-contained and can be rebuilt without an agent session.
     """
 
     safe_title = title.strip() or "Untitled Book"
@@ -42,7 +42,7 @@ def build_book_script(
     source_root = str(Path(book_root).expanduser().resolve())
 
     return rf'''#!/usr/bin/env python3
-"""Rebuild {safe_title!r} as a print-ready PDF.
+"""Rebuild the configured book as a print-ready PDF.
 
 Sources are discovered below the configured book root in this order:
 ``front-matter/``, ``chapters/``, and ``back-matter/``.  The output defaults to
@@ -309,7 +309,7 @@ def write_build_book_script(
     *,
     title: str,
     author: str,
-    book_root: Path | None = None,
+    book_root: Path | str | None = None,
 ) -> Path:
     """Atomically create or refresh ``script_dir/build_book.py``.
 
@@ -321,7 +321,7 @@ def write_build_book_script(
     script_dir = script_dir.expanduser()
     script_dir.mkdir(parents=True, exist_ok=True)
     destination = script_dir / "build_book.py"
-    source_root = book_root.expanduser() if book_root is not None else script_dir
+    source_root = Path(book_root).expanduser() if book_root is not None else script_dir
     handle = tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -333,9 +333,7 @@ def write_build_book_script(
     temporary = Path(handle.name)
     try:
         with handle:
-            handle.write(
-                build_book_script(title=title, author=author, book_root=source_root)
-            )
+            handle.write(build_book_script(title=title, author=author, book_root=source_root))
         os.chmod(temporary, 0o755)
         os.replace(temporary, destination)
     except BaseException:

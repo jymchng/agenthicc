@@ -32,7 +32,10 @@ def test_slugify_book_title_is_stable_and_safe() -> None:
 
 
 def test_generated_builder_is_valid_python_and_contains_pipeline() -> None:
-    source = build_book_script(title='A book called "Build It"', author="An Author")
+    source = build_book_script(
+        title='A book called "Build It" with a \'triple\' quote """',
+        author="An Author",
+    )
 
     ast.parse(source)
     assert "A book called" in source
@@ -105,16 +108,14 @@ async def test_mark_book_complete_creates_builder_as_safety_net(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_compile_tool_can_place_builder_in_workflow_package(tmp_path) -> None:
+async def test_compile_tool_places_builder_in_book_output_directory(tmp_path) -> None:
     event = asyncio.Event()
     data: dict[str, object] = {}
     book_root = tmp_path / "generated-book"
-    workflow_dir = tmp_path / "workflow" / "make_book"
     tools = _make_compile_tools(
         event,
         data,
         output_dir=str(book_root),
-        builder_dir=str(workflow_dir),
         title="A Technical Book",
         author="Author",
     )
@@ -122,9 +123,8 @@ async def test_compile_tool_can_place_builder_in_workflow_package(tmp_path) -> N
     result = await _named_tool(tools, "create_build_book")()
 
     assert result["ok"] is True
-    destination = workflow_dir / "build_book.py"
+    destination = book_root / "build_book.py"
     assert destination.is_file()
-    assert not (book_root / "build_book.py").exists()
     assert str(book_root.resolve()) in destination.read_text(encoding="utf-8")
 
 

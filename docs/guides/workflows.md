@@ -176,14 +176,14 @@ session-local `/workflow` override.
 
 The `make_book` workflow produces a technical PDF and, during its compile
 phase, exposes `create_build_book`. The tool creates
-`src/agenthicc/workflows/make_book/build_book.py` as a normal executable
-Python program, configured for the run's book output directory. The generated
-builder discovers `front-matter/`, `chapters/`, and `back-matter/` relative to
-that configured root, invokes Pandoc and XeLaTeX for at least two passes,
-writes the result to `dist/`, and can be rerun later without an agent session:
+`<output_dir>/build_book.py` as a normal executable Python program inside the
+run's book output directory. The generated builder discovers `front-matter/`,
+`chapters/`, and `back-matter/` relative to that directory, invokes Pandoc and
+XeLaTeX for at least two passes, writes the result to `dist/`, and can be rerun
+later without an agent session:
 
 ```bash
-python3 src/agenthicc/workflows/make_book/build_book.py --out dist/my-book.pdf
+python3 <output_dir>/build_book.py --out dist/my-book.pdf
 ```
 
 It accepts `--out`/`-o` for a custom PDF path and

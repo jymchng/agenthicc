@@ -532,7 +532,6 @@ def _make_compile_tools(
     data: dict[str, object],
     *,
     output_dir: str = "",
-    builder_dir: str = "",
     title: str = "",
     author: str = "",
 ) -> list[Callable[..., object]]:
@@ -553,11 +552,12 @@ def _make_compile_tools(
                 "fix": "Set the book output directory before creating the builder.",
             }
         try:
+            book_root = Path(output_dir).expanduser()
             destination = write_build_book_script(
-                Path(builder_dir or output_dir).expanduser(),
+                book_root,
                 title=title,
                 author=author,
-                book_root=Path(output_dir).expanduser(),
+                book_root=book_root,
             )
         except (OSError, ValueError) as exc:
             return {
@@ -1644,8 +1644,8 @@ class MakeBookRunner(CodePlanRunner):
                     "  After building, verify: the extracted text contains 'Preface', 'Contents' and 'Index'; page 1 is the user-supplied cover (image-only page, no body text); and the typst source contains a '#show heading' colour rule (grep 'show heading' book.typ). Also verify the three heading/TOC rules: (1) the extracted TOC text shows NO dotted-leader runs (no sequences of 3+ dots between entry titles and page numbers); (2) NO 'Chapter N:' prefixed headings appear anywhere (chapter titles are bare, e.g. 'Introduction to Codex'); (3) every '## ' section subheading is UNIQUE across ALL chapters (grep the chapter sources and confirm no duplicate heading text).\n"
                     "BUILD SCRIPT & DIST DELIVERABLE (mandatory):\n"
                     "First call create_build_book(). This creates the reusable, standalone "
-                "Python builder src/agenthicc/workflows/make_book/build_book.py, configured "
-                "for this run's output directory, with deterministic source "
+                "Python builder <output_dir>/build_book.py inside this run's output "
+                "directory, with deterministic source "
                     "discovery, Pandoc -> XeLaTeX multi-pass compilation, KDP 6x9 trim, "
                     "optional cover attachment, --out/--keep-intermediates options, and "
                     "safe intermediate cleanup. Then run build_book.py so it performs the "
@@ -1831,8 +1831,7 @@ class MakeBookRunner(CodePlanRunner):
                 tools=_make_compile_tools(
                     event,
                     data,
-                    output_dir=ctx.output_dir or str(Path.cwd()),
-                    builder_dir=str(Path(__file__).resolve().parent),
+                    output_dir=ctx.output_dir,
                     title=ctx.title,
                     author=ctx.author,
                 ),
@@ -2024,7 +2023,7 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "native math, code, and tables, validate it (%PDF, page count, "
                 "pypdf chapter-title + no-leak + image-count checks), call "
                 "create_build_book() to create the reusable builder at "
-                "src/agenthicc/workflows/make_book/build_book.py, then run "
+                "<output_dir>/build_book.py, then run "
                 "it to rebuild the PDF end-to-end into dist/ "
                 "(compile at least twice so TOC page numbers resolve; user cover → TOC → "
                 "preface ordering; clean all intermediates), run it, and call "
