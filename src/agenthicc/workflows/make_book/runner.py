@@ -1316,7 +1316,7 @@ def _make_compile_tools(
     @tool_read
     @tool()
     async def list_build_book_reference() -> dict[str, object]:
-        """List the bundled Hyrox-derived builder reference and its sections."""
+        """List the bundled Fit-for-HYROX builder reference and its sections."""
         try:
             lines = reference_path.read_text(encoding="utf-8").splitlines()
         except OSError as exc:
@@ -1335,9 +1335,9 @@ def _make_compile_tools(
             "line_count": len(lines),
             "sections": sections,
             "message": (
-                "Read this as a build-pipeline reference. Adapt its source discovery, "
+                "Read this as a Fit-for-HYROX build-pipeline reference. Adapt its source discovery, "
                 "validation, and PDF/EPUB stages to the current book output directory; "
-                "do not copy its Recovery-from-HYROX-specific filenames or title data."
+                "do not copy its Fit-for-HYROX-specific filenames, title, or cover data."
             ),
         }
 
@@ -2673,9 +2673,9 @@ class MakeBookRunner(CodePlanRunner):
                     "You are in the COMPILE phase of make_book. Before creating or modifying "
                     "the builder, call list_build_book_reference() and then read the relevant "
                     "ranges with read_build_book_reference(start_line=..., end_line=...). The "
-                    "bundled reference is the Hyrox-derived build_book.py pattern: adapt its "
-                    "pipeline and validation, but never copy its Recovery-from-HYROX-specific "
-                    "filenames, title, author, or fixed chapter list.\n\n"
+                    "bundled reference is the Fit-for-HYROX build_book.py pattern: adapt its "
+                    "pipeline and validation, but never copy its Fit-for-HYROX-specific "
+                    "filenames, title, author, covers, or fixed chapter list.\n\n"
                     "Typeset all written chapters into a single polished PDF and a matching "
                     "reflowable EPUB, preserving every kind of rich content.\n\n"
                     f"Title: {ctx.title}\nAuthor: {ctx.author}\n"

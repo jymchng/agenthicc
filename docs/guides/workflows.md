@@ -185,9 +185,9 @@ The `make_book` workflow produces a technical PDF and a matching reflowable
 EPUB. During its compile phase it exposes
 `list_build_book_reference()` and
 `read_build_book_reference(start_line, end_line)` so the agent can inspect the
-bundled Hyrox-derived `build_book.py` reference in manageable chunks. The
-reference is guidance only: its Recovery-from-HYROX title, chapter list, and
-paths must not be copied into a generated book.
+bundled Fit-for-HYROX-derived `build_book.py` reference in manageable chunks.
+The reference is guidance only: its Fit-for-HYROX title, chapter list, covers,
+and paths must not be copied into a generated book.
 
 The `create_build_book()` tool creates
 `<output_dir>/build_book.py` as a normal executable Python program inside the
