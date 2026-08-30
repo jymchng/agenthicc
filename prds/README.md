@@ -47,6 +47,8 @@ against the current source before implementing them.
 - [PRD-177 — Efficient, Evidence-Driven reconstruct_site Workflow](prd-177-reconstruct-site-optimization-and-evidence.md)
 - [PRD-178 — Evidence-Complete UI and Interaction Research for reconstruct_site](prd-178-reconstruct-site-ui-fidelity-research.md)
 - [PRD-179 — Phase Annotations and Boundary Checkpoints for Generated Workflows](prd-179-create-workflow-phase-annotations-and-boundary-checkpoints.md)
+- [PRD-180 — Subagent Artifact Writing and Reliable Research Handoffs](prd-180-subagent-artifact-writing-and-research-handoffs.md)
+- [PRD-181 — Simplified make_book Phase Transition Tools](prd-181-simplified-make-book-phase-transitions.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -213,6 +215,73 @@ async def _successful_run_phase(**kwargs: object) -> None:
         }:
             await _call_transition(tool)
             return
+
+
+async def _successful_make_book_run_phase(tmp_path: Path, **kwargs: object) -> None:
+    """Drive make_book with real on-disk artifacts and compact gate calls."""
+
+    tools = kwargs.get("tools", [])
+    assert isinstance(tools, list)
+    names = {getattr(tool, "__name__", ""): tool for tool in tools}
+    if "submit_toc" in names:
+        prompt = str(kwargs.get("system_prompt", ""))
+        manifest_match = re.search(r"Write a small JSON object to (.+?) with title", prompt)
+        assert manifest_match is not None
+        manifest = Path(manifest_match.group(1))
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(
+            '{"title": "Book", "chapters": [{"title": "Chapter One", "outline": "Outline"}], "output_dir": "'
+            + str(tmp_path / "book")
+            + '"}',
+            encoding="utf-8",
+        )
+        await names["submit_toc"](summary="A one-chapter technical book plan.")
+    elif "submit_research" in names:
+        root = tmp_path / "book" / "research"
+        root.mkdir(parents=True)
+        for filename, body in (
+            ("ch01-notes.md", "Evidence for chapter one."),
+            ("sources.md", "https://source.test"),
+            ("summary.md", "Research summary."),
+        ):
+            (root / filename).write_text(body, encoding="utf-8")
+        await names["submit_research"](summary="Evidence was collected.")
+    elif "confirm_assets_ready" in names:
+        assets = tmp_path / "book" / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        for index in range(5):
+            (assets / f"figure-{index}.svg").write_text("<svg />", encoding="utf-8")
+        unsplash = assets / "unsplash"
+        unsplash.mkdir(exist_ok=True)
+        (unsplash / "photo.jpg").write_bytes(b"jpeg fixture")
+        (unsplash / "manifest.json").write_text(
+            '{"file": "photo.jpg", "source_url": "https://unsplash.com/photos/free"}',
+            encoding="utf-8",
+        )
+        await names["confirm_assets_ready"](
+            summary="Six varied assets, including a free Unsplash image."
+        )
+    elif "confirm_chapter_complete" in names:
+        chapter = tmp_path / "book" / "chapters"
+        chapter.mkdir(parents=True)
+        (chapter / "01-chapter-one.md").write_text("# Chapter One\n\nText.", encoding="utf-8")
+        await names["confirm_chapter_complete"](summary="Chapter written and checked.")
+    elif "confirm_front_matter_ready" in names:
+        directory = tmp_path / "book" / "front-matter"
+        directory.mkdir(parents=True)
+        (directory / "preface.md").write_text("# Preface\n", encoding="utf-8")
+        await names["confirm_front_matter_ready"](summary="Preface is ready.")
+    elif "confirm_back_matter_ready" in names:
+        directory = tmp_path / "book" / "back-matter"
+        directory.mkdir(parents=True)
+        (directory / "index.md").write_text("# Index\n", encoding="utf-8")
+        await names["confirm_back_matter_ready"](summary="Index is ready.")
+    elif "mark_book_complete" in names:
+        await names["create_build_book"]()
+        dist = tmp_path / "book" / "dist"
+        dist.mkdir(parents=True)
+        (dist / "book.pdf").write_bytes(b"%PDF-1.7\nvalid test fixture\n")
+        await names["mark_book_complete"](summary="PDF compiled and validated.")
 
 
 async def _successful_reconstruct_run_phase(runner: Any, **kwargs: object) -> None:
@@ -673,9 +742,10 @@ async def test_book_workflows_full_dynamic_driver_and_checkpoint_codec(
     state_cls: type[Any],
     workflow_cls: type[Any],
     expected_suffix: str,
+    tmp_path: Path,
 ) -> None:
     runner = _runner(runner_cls)
-    runner.run_phase = _successful_run_phase  # type: ignore[method-assign]
+    runner.run_phase = lambda **kwargs: _successful_make_book_run_phase(tmp_path, **kwargs)  # type: ignore[method-assign]
 
     context = await runner.run("write a technical book")
     assert context.state is state_cls.COMPLETE
@@ -708,9 +778,10 @@ async def test_book_workflows_resume_from_the_first_phase(
     context_cls: type[Any],
     state_cls: type[Any],
     workflow_cls: type[Any],
+    tmp_path: Path,
 ) -> None:
     runner = _runner(runner_cls)
-    runner.run_phase = _successful_run_phase  # type: ignore[method-assign]
+    runner.run_phase = lambda **kwargs: _successful_make_book_run_phase(tmp_path, **kwargs)  # type: ignore[method-assign]
     context = context_cls(intent="book", run_id="resume", state=state_cls.TOC)
     resumed = await runner.resume(context)
     assert resumed.state is state_cls.COMPLETE
@@ -749,6 +820,7 @@ def test_book_workflow_checkpoint_and_param_guards() -> None:
 )
 async def test_book_transition_tools_cover_validation_and_decisions(
     module_factories: tuple[Any, ...],
+    tmp_path: Path,
 ) -> None:
     (
         make_toc,
@@ -762,78 +834,98 @@ async def test_book_transition_tools_cover_validation_and_decisions(
 
     event = asyncio.Event()
     data: dict[str, object] = {}
-    toc = make_toc(event, data)[0]
-    assert (await toc(title="", author="", chapters=[]))["ok"] is False
-    assert (await toc(title="Book", author="Author", chapters=[], technical_level="advanced"))[
-        "ok"
-    ] is False
-    assert (
-        await toc(
-            title="Book",
-            author="Author",
-            chapters=[{"title": "Chapter"}],
-            technical_level="unknown",
-        )
-    )["ok"] is False
-    assert (
-        await toc(
-            title="Book", author="Author", chapters=[{"title": "Chapter"}], content_types=["video"]
-        )
-    )["ok"] is False
-    assert (await toc(title="Book", author="Author", chapters=[{"title": ""}, "bad"]))[
-        "ok"
-    ] is False
-    assert (
-        await toc(
-            title="Book", author="Author", chapters=[{"title": "Chapter", "outline": "Outline"}]
-        )
-    )["ok"] is True
+    manifest = tmp_path / "toc.json"
+    toc = make_toc(event, data, manifest_path=str(manifest))[0]
+    assert (await toc(summary=""))["ok"] is False
+    assert (await toc(summary="plan"))["ok"] is False
+    manifest.write_text('{"title": "Book", "chapters": []}', encoding="utf-8")
+    assert (await toc(summary="plan"))["ok"] is False
+    manifest.write_text(
+        '{"title": "Book", "chapters": [{"title": "Chapter"}], "technical_level": "unknown"}',
+        encoding="utf-8",
+    )
+    assert (await toc(summary="plan"))["ok"] is False
+    manifest.write_text(
+        '{"title": "Book", "chapters": [{"title": "Chapter"}], "content_types": ["video"]}',
+        encoding="utf-8",
+    )
+    manifest.write_text('{"title": "Book", "chapters": [{"title": ""}, "bad"]}', encoding="utf-8")
+    assert (await toc(summary="plan"))["ok"] is False
+    manifest.write_text(
+        '{"title": "Book", "chapters": [{"title": "Chapter", "outline": "Outline"}], "output_dir": "'
+        + str(tmp_path / "book")
+        + '"}',
+        encoding="utf-8",
+    )
+    assert (await toc(summary="plan"))["ok"] is True
 
     event.clear()
-    research = make_research(event, data, 2)[0]
-    assert (await research(notes=[], sources=[], summary=""))["ok"] is False
-    assert (
-        await research(notes=[{"chapter_index": 0, "notes": "one"}], sources=[], summary="summary")
-    )["ok"] is False
-    assert (
-        await research(
-            notes=[{"chapter_index": 0, "notes": "one"}, {"chapter_index": 1, "notes": "two"}],
-            sources=[],
-            summary="summary",
-        )
-    )["ok"] is True
+    research_root = tmp_path / "book" / "research"
+    research_root.mkdir(parents=True)
+    (research_root / "ch01-notes.md").write_text("one", encoding="utf-8")
+    (research_root / "ch02-notes.md").write_text("two", encoding="utf-8")
+    (research_root / "summary.md").write_text("summary", encoding="utf-8")
+    research = make_research(event, data, 2, research_dir=str(research_root))[0]
+    assert (await research(summary=""))["ok"] is False
+    (research_root / "ch02-notes.md").unlink()
+    assert (await research(summary="summary"))["ok"] is False
+    (research_root / "ch02-notes.md").write_text("two", encoding="utf-8")
+    assert (await research(summary="summary"))["ok"] is True
 
     event.clear()
-    chapter = make_chapter(event, data)[0]
-    assert (await chapter(chapter_index=-1, file_path="chapter.md", word_count=1))["ok"] is False
-    assert (await chapter(chapter_index=0, file_path="", word_count=1))["ok"] is False
-    assert (await chapter(chapter_index=0, file_path="chapter.md", word_count=-1))["ok"] is True
+    chapter_root = tmp_path / "book" / "chapters"
+    chapter_root.mkdir(parents=True)
+    (chapter_root / "01-chapter.md").write_text("# Chapter\n\nOne two three.", encoding="utf-8")
+    chapter = make_chapter(
+        event,
+        data,
+        output_dir=str(tmp_path / "book"),
+        assets_dir=str(tmp_path / "book" / "assets"),
+        chapter_index=0,
+        chapter_title="Chapter",
+    )[0]
+    assert (await chapter(summary=""))["ok"] is False
+    assert (await chapter(summary="chapter done"))["ok"] is True
+    event.clear()
+    assert (await chapter(summary="chapter repeated"))["ok"] is True
 
     event.clear()
-    assets = make_assets(event, data)[0]
-    assert (await assets(assets=[]))["ok"] is False
-    assert (await assets(assets=["assets/figure.svg", ""]))["ok"] is True
+    assets_root = tmp_path / "book" / "assets"
+    assets_root.mkdir(parents=True)
+    for index in range(5):
+        (assets_root / f"figure-{index}.svg").write_text("<svg />", encoding="utf-8")
+    (assets_root / "unsplash").mkdir()
+    (assets_root / "unsplash" / "photo.jpg").write_bytes(b"fixture")
+    (assets_root / "unsplash" / "manifest.json").write_text(
+        '{"file": "photo.jpg", "source_url": "https://unsplash.com/photos/free"}',
+        encoding="utf-8",
+    )
+    assets = make_assets(event, data, assets_dir=str(assets_root))[0]
+    assert (await assets(summary="assets ready"))["ok"] is True
 
-    for factory in (make_front, make_back):
+    for factory, directory in ((make_front, "front-matter"), (make_back, "back-matter")):
         event.clear()
-        tool = factory(event, data)[0]
-        assert (await tool(summary="", files=[]))["ok"] is False
-        assert (await tool(summary="created", files=[]))["ok"] is False
-        assert (await tool(summary="created", files=["book.md", ""]))["ok"] is True
+        target = tmp_path / "book" / directory
+        target.mkdir(parents=True)
+        (target / "book.md").write_text("# Book", encoding="utf-8")
+        tool = factory(event, data, output_dir=str(tmp_path / "book"))[0]
+        assert (await tool(summary="matter is ready"))["ok"] is True
 
     event.clear()
-    complete, reject, create_builder = make_compile(event, data)
+    pdf = tmp_path / "book" / "dist" / "book.pdf"
+    pdf.parent.mkdir(parents=True)
+    pdf.write_bytes(b"%PDF-1.7\nfixture")
+    data["chapters"] = [{"title": "Chapter"}]
+    complete, reject, create_builder = make_compile(
+        event, data, output_dir=str(tmp_path / "book"), title="Book", author="Author"
+    )
     assert getattr(create_builder, "__name__", "") == "create_build_book"
-    path_name = "epub_path" if "epub" in getattr(complete, "__module__", "") else "pdf_path"
-    wrong_path = {path_name: "book.txt", "summary": "done"}
-    assert (await complete(**wrong_path))["ok"] is False
-    assert (
-        await complete(
-            **{path_name: "book.pdf" if path_name == "pdf_path" else "book.epub", "summary": ""}
-        )
-    )["ok"] is False
-    assert (await reject(issue=""))["ok"] is False
-    assert (await reject(issue="rewrite chapter", chapter_index=0))["ok"] is True
+    assert (await complete(summary="compiled"))["ok"] is False
+    await create_builder()
+    assert (await complete(summary="compiled"))["ok"] is True
+    event.clear()
+    assert (await reject(summary=""))["ok"] is False
+    assert (await reject(summary="rewrite the whole book"))["ok"] is True
 
 
 @pytest.mark.asyncio

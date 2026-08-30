@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
+import re
 import uuid
 from collections.abc import Callable
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.make_book.builder import write_build_book_script
@@ -174,6 +177,7 @@ class MakeBookContext:
     technical_level: str = ""
     prerequisites: str = ""
     output_dir: str = ""
+    toc_manifest_path: str = ""
     content_types: list[str] = dataclasses.field(
         default_factory=lambda: ["images", "equations", "code", "tables"]
     )
@@ -196,56 +200,237 @@ class MakeBookContext:
     fail_reason: str = ""
     build_script_path: str = ""
     artifacts: dict[str, str] = dataclasses.field(default_factory=dict)
+    transition_receipts: list[dict[str, object]] = dataclasses.field(default_factory=list)
 
 
 # ── phase tool factories ──────────────────────────────────────────────────────
+
+_CONTRACT_VERSION = "make_book.transitions.v2"
+_SUPPORTED_CONTENT_TYPES: tuple[str, ...] = ("images", "equations", "code", "tables")
+_SUPPORTED_ASSET_SUFFIXES: frozenset[str] = frozenset(
+    {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".mmd", ".py"}
+)
+
+
+def _compact(value: str, *, limit: int = 4_000) -> str:
+    """Return bounded text suitable for context and checkpoint metadata."""
+
+    text = value.strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _path_error(path: str, root: Path, reason: str) -> dict[str, object]:
+    """Build a compact artifact error without echoing file contents."""
+
+    return {
+        "ok": False,
+        "error": f"artifact '{path}' {reason} under '{root}'.",
+        "fix": "Create the artifact in the directory named by the phase prompt, then retry the short completion call.",
+    }
+
+
+def _resolve_under(root_text: str, candidate: str, *, kind: str = "file") -> Path:
+    """Resolve an untrusted artifact path and reject traversal/symlink escapes."""
+
+    if not root_text.strip():
+        raise ValueError("the workflow output directory is not configured")
+    if "\x00" in candidate:
+        raise ValueError("path contains a NUL character")
+    root = Path(root_text).expanduser().resolve()
+    raw = Path(candidate).expanduser()
+    target = (raw if raw.is_absolute() else root / raw).resolve(strict=False)
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("path escapes the configured output directory") from exc
+    if kind == "file" and not target.is_file():
+        raise FileNotFoundError(str(target))
+    if kind == "directory" and not target.is_dir():
+        raise FileNotFoundError(str(target))
+    return target
+
+
+def _display_paths(paths: list[Path], root_text: str) -> list[str]:
+    """Return deterministic paths relative to the book output root."""
+
+    root = Path(root_text).expanduser().resolve()
+    return [str(path.relative_to(root)) for path in sorted(paths, key=lambda item: str(item))]
+
+
+def _files_under(directory: Path, suffixes: frozenset[str]) -> list[Path]:
+    """List regular files in a canonical directory, deterministically."""
+
+    if not directory.is_dir():
+        return []
+    root = directory.resolve()
+    files: list[Path] = []
+    for path in directory.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in suffixes:
+            continue
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            # A symlinked artifact outside the configured root is not part of
+            # the inventory and must never be recorded as a valid handoff.
+            continue
+        files.append(resolved)
+    return sorted(
+        files,
+        key=lambda path: str(path),
+    )
+
+
+def _chapter_slug(title: str) -> str:
+    """Create the chapter filename slug used by the canonical phase prompt."""
+
+    slug = re.sub(r"[^a-z0-9]+", "-", title.casefold()).strip("-")
+    return slug or "chapter"
+
+
+def _canonical_chapter_path(output_dir: str, chapter_index: int, title: str) -> Path:
+    """Return the runner-owned default path for a chapter."""
+
+    root = Path(output_dir).expanduser().resolve()
+    return root / "chapters" / f"{chapter_index + 1:02d}-{_chapter_slug(title)}.md"
+
+
+def _toc_manifest_path(run_id: str) -> str:
+    """Return the deterministic, run-scoped path for the agent's TOC JSON."""
+
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", run_id).strip(".-") or "run"
+    return str((Path.cwd() / ".agenthicc" / "make_book" / safe_id / "toc.json").resolve())
+
+
+def _markdown_asset_references(path: Path, output_dir: str, assets_dir: str) -> list[str]:
+    """Extract and verify Markdown image references for one chapter."""
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    references = re.findall(r"!\[[^\]]*\]\(([^)\s]+)", text)
+    if not references:
+        return []
+    assets_root = Path(assets_dir).expanduser().resolve()
+    result: list[Path] = []
+    for reference in references:
+        candidate = reference.split("#", 1)[0].strip().strip("<>")
+        if not candidate:
+            continue
+        try:
+            output_root = Path(output_dir).expanduser().resolve()
+            raw_reference = Path(candidate).expanduser()
+            resolved = (
+                raw_reference if raw_reference.is_absolute() else path.parent / raw_reference
+            ).resolve(strict=False)
+            resolved.relative_to(output_root)
+            if not resolved.is_file():
+                raise FileNotFoundError(str(resolved))
+            resolved.relative_to(assets_root)
+        except (ValueError, FileNotFoundError) as exc:
+            raise ValueError(
+                f"referenced asset '{candidate}' is missing or outside the assets directory"
+            ) from exc
+        if resolved not in result:
+            result.append(resolved)
+    return sorted(result, key=lambda item: str(item))
+
+
+def _unsplash_manifest_entries(value: object) -> list[dict[str, object]]:
+    """Normalize the supported Unsplash manifest shapes for validation."""
+
+    if isinstance(value, list):
+        return [entry for entry in value if isinstance(entry, dict)]
+    if not isinstance(value, dict):
+        return []
+    for key in ("images", "assets", "entries"):
+        nested = value.get(key)
+        if isinstance(nested, list):
+            return [entry for entry in nested if isinstance(entry, dict)]
+    return [value]
+
+
+def _transition_receipt(
+    data: dict[str, object],
+    *,
+    phase: str,
+    outcome: str = "accepted",
+) -> dict[str, object]:
+    """Return the compact typed receipt captured at a phase gate."""
+
+    raw = data.get("receipt", {})
+    receipt = dict(raw) if isinstance(raw, dict) else {}
+    receipt.update({"contract_version": _CONTRACT_VERSION, "phase": phase, "outcome": outcome})
+    return receipt
 
 
 def _make_toc_tools(
     event: asyncio.Event,
     data: dict[str, object],
+    *,
+    manifest_path: str,
 ) -> list[Callable[..., object]]:
-    """Return the only tool that can end the toc phase."""
+    """Return the summary-only TOC gate.
+
+    The agent writes the structured plan to ``manifest_path`` with its normal
+    filesystem tool.  This gate only verifies and reads that existing file.
+    """
     from lauren_ai._tools import tool
 
     @tool()
-    async def submit_toc(
-        title: str,
-        author: str,
-        chapters: list[dict[str, str]],
-        audience: str = "",
-        technical_level: str = "advanced",
-        prerequisites: str = "",
-        output_dir: str = "",
-        content_types: list[str] | None = None,
-    ) -> dict[str, object]:
-        """Record the book plan (table of contents) and advance to the chapters.
-
-        Args:
-            title: The book title.
-            author: The author name (defaults to "Anonymous" if unknown).
-            chapters: List of chapters, each {"title": str, "outline": str}.
-                One chapter phase will run per entry, so list ALL chapters.
-            audience: The specialised readership (e.g. "embedded systems
-                engineers", "NLP researchers", "quantitative traders").
-            technical_level: Depth target — "intermediate", "advanced", or
-                "expert".
-            prerequisites: Knowledge the reader is assumed to have.
-            output_dir: Directory to write chapters and the PDF into
-                (defaults to a folder derived from the title).
-            content_types: Rich content the book should include — any subset of
-                "images", "equations", "code", "tables" (default: all four).
-        """
+    async def submit_toc(summary: str) -> dict[str, object]:
+        """Verify the written TOC manifest and record a concise summary."""
+        if not summary.strip():
+            return {
+                "ok": False,
+                "error": "submit_toc summary is empty.",
+                "fix": "Write the TOC manifest first, then call submit_toc(summary=...).",
+            }
+        manifest = Path(manifest_path).expanduser().resolve()
+        if not manifest.is_file():
+            return {
+                "ok": False,
+                "error": f"TOC manifest '{manifest}' was not found.",
+                "fix": "Write the JSON manifest at the exact path from the phase prompt, then retry submit_toc(summary=...).",
+            }
+        try:
+            raw_plan = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            return {
+                "ok": False,
+                "error": f"TOC manifest '{manifest}' is not valid JSON.",
+                "fix": "Write a JSON object containing title and chapters, then retry.",
+                "detail": str(exc),
+            }
+        if not isinstance(raw_plan, dict):
+            return {
+                "ok": False,
+                "error": "TOC manifest must contain a JSON object.",
+                "fix": "Use {title, chapters, author, ...} in toc.json.",
+            }
+        plan = raw_plan
+        title = str(plan.get("title", "")).strip()
+        chapters = plan.get("chapters", [])
+        if not isinstance(chapters, list):
+            return {
+                "ok": False,
+                "error": "TOC manifest chapters must be a list.",
+                "fix": "Put chapters: [{title: ..., outline: ...}] in toc.json, then retry submit_toc(summary=...).",
+            }
+        author = str(plan.get("author") or "Anonymous").strip() or "Anonymous"
+        audience = str(plan.get("audience") or "").strip()
+        technical_level = str(plan.get("technical_level") or "advanced").strip()
+        prerequisites = str(plan.get("prerequisites") or "").strip()
+        requested_output_dir = str(plan.get("output_dir") or "").strip()
+        content_types = plan.get("content_types")
         if not title.strip():
             return {
                 "ok": False,
-                "error": "title must not be empty.",
-                "fix": "Call submit_toc() with a book title.",
+                "error": "TOC manifest title is empty.",
+                "fix": "Put a non-empty title in toc.json, then retry submit_toc(summary=...).",
             }
         if not chapters:
             return {
                 "ok": False,
-                "error": "chapters must not be empty.",
+                "error": "submit_toc plan.chapters is empty.",
                 "fix": "Provide at least one chapter with a title and outline.",
             }
         if technical_level not in ("intermediate", "advanced", "expert"):
@@ -254,14 +439,19 @@ def _make_toc_tools(
                 "error": f"Unsupported technical_level '{technical_level}'.",
                 "fix": "Use 'intermediate', 'advanced', or 'expert'.",
             }
-        valid_types: tuple[str, ...] = ("images", "equations", "code", "tables")
-        types: list[str] = list(content_types or list(valid_types))
-        bad_types: list[str] = [t for t in types if t not in valid_types]
+        if content_types is not None and not isinstance(content_types, list):
+            return {
+                "ok": False,
+                "error": "TOC manifest content_types must be a list.",
+                "fix": "Use a list of images, equations, code, and tables.",
+            }
+        types = [str(value).strip() for value in (content_types or _SUPPORTED_CONTENT_TYPES)]
+        bad_types: list[str] = [value for value in types if value not in _SUPPORTED_CONTENT_TYPES]
         if bad_types:
             return {
                 "ok": False,
                 "error": f"Unsupported content_types: {bad_types}.",
-                "fix": f"Use only: {', '.join(valid_types)}.",
+                "fix": f"Use only: {', '.join(_SUPPORTED_CONTENT_TYPES)}.",
             }
         cleaned: list[dict[str, str]] = []
         for raw in chapters:
@@ -278,14 +468,38 @@ def _make_toc_tools(
                 "error": "No valid chapters were supplied.",
                 "fix": "Each chapter needs a non-empty 'title'; outline is recommended.",
             }
+        if requested_output_dir and "\x00" in requested_output_dir:
+            return {
+                "ok": False,
+                "error": "TOC manifest output_dir contains a NUL character.",
+                "fix": "Use a normal book directory or omit output_dir.",
+            }
+        if requested_output_dir:
+            output_dir = str(Path(requested_output_dir).expanduser().resolve())
+        else:
+            output_dir = str(Path(_chapter_slug(title)).resolve())
         data["title"] = title.strip()
-        data["author"] = (author or "Anonymous").strip()
-        data["audience"] = audience.strip()
+        data["author"] = author
+        data["audience"] = audience
         data["technical_level"] = technical_level
-        data["prerequisites"] = prerequisites.strip()
+        data["prerequisites"] = prerequisites
         data["chapters"] = cleaned
-        data["output_dir"] = output_dir.strip()
+        data["output_dir"] = output_dir
         data["content_types"] = types
+        data["summary"] = _compact(summary)
+        data["toc_manifest_path"] = str(manifest)
+        data["receipt"] = _transition_receipt(
+            {
+                "receipt": {
+                    "summary": _compact(summary, limit=1_000),
+                    "manifest_path": str(manifest),
+                    "title": title,
+                    "chapter_count": len(cleaned),
+                    "output_dir": output_dir,
+                }
+            },
+            phase="toc",
+        )
         event.set()
         return {
             "ok": True,
@@ -303,68 +517,71 @@ def _make_research_tools(
     event: asyncio.Event,
     data: dict[str, object],
     chapter_count: int,
+    *,
+    research_dir: str = "",
 ) -> list[Callable[..., object]]:
-    """Return the only tool that can end the research phase."""
+    """Return the compact, file-backed research handoff gate."""
     from lauren_ai._tools import tool
 
     @tool()
-    async def submit_research(
-        notes: list[dict[str, object]],
-        sources: list[str],
-        summary: str,
-        files: list[str] | None = None,
-    ) -> dict[str, object]:
-        """Record extensive research for every chapter and advance to writing.
-
-        Args:
-            notes: One entry per chapter, each {"chapter_index": int, "notes": str}.
-                Must cover EVERY chapter (indices 0..N-1).
-            sources: List of sources consulted (URLs, titles, references).
-            summary: A concise overview of the research gathered.
-            files: Optional list of file paths written under the research/
-                directory (per-chapter notes, sources, summary) — the durable
-                copy of the material gathered in this phase.
-        """
-        if not notes:
-            return {
-                "ok": False,
-                "error": "notes must not be empty.",
-                "fix": "Provide research notes for every chapter.",
-            }
+    async def submit_research(summary: str) -> dict[str, object]:
+        """Scan the research handoff and record its concise summary."""
         if not summary.strip():
             return {
                 "ok": False,
-                "error": "summary must not be empty.",
-                "fix": "Summarise the research you gathered.",
+                "error": "submit_research summary is empty.",
+                "fix": "Write all research files, then call submit_research(summary=...).",
             }
-        covered: dict[int, str] = {}
-        for raw in notes:
-            if not isinstance(raw, dict):
+        if not research_dir.strip():
+            return {
+                "ok": False,
+                "error": "research directory is not configured.",
+                "fix": "Use the directory supplied by the phase prompt.",
+            }
+        root = Path(research_dir).expanduser().resolve()
+        files = _files_under(root, frozenset({".md", ".txt", ".json", ".yaml", ".yml"}))
+        if not files:
+            return {
+                "ok": False,
+                "error": f"no research files were found under '{root}'.",
+                "fix": "Write the chapter notes, sources, and summary files, then retry.",
+            }
+        canonical: list[Path] = []
+        for path in files:
+            try:
+                path.relative_to(root)
+            except ValueError:
                 continue
-            raw_index = raw.get("chapter_index")
-            raw_notes = raw.get("notes")
-            if not isinstance(raw_index, int) or not isinstance(raw_notes, str):
-                continue
-            if not raw_notes.strip():
-                continue
-            covered[raw_index] = raw_notes.strip()
-        missing: list[int] = [i for i in range(chapter_count) if i not in covered]
+            canonical.append(path)
+        chapter_indices: set[int] = set()
+        for path in canonical:
+            match = re.search(
+                r"(?:^|[/\\])(?:ch|chapter)[-_]?0*(\d+)(?:[-_]|\.)", str(path).casefold()
+            )
+            if match:
+                number = int(match.group(1))
+                chapter_indices.add(number - 1 if number > 0 else 0)
+        missing: list[int] = [i for i in range(chapter_count) if i not in chapter_indices]
         if missing:
             return {
                 "ok": False,
-                "error": f"Research is missing for chapter indices: {missing}.",
-                "fix": "Provide detailed notes for EVERY chapter before advancing.",
+                "error": f"research handoff is missing chapter note files for {missing} under '{root}'.",
+                "fix": "Use names such as ch01-notes.md, ch02-notes.md, then retry submit_research(summary=...).",
             }
-        data["notes"] = {str(k): v for k, v in covered.items()}
-        data["sources"] = [str(s) for s in sources if str(s).strip()]
-        data["summary"] = summary.strip()
-        data["files"] = [str(f) for f in (files or []) if str(f).strip()]
+        data["notes"] = {}
+        data["sources"] = []
+        data["summary"] = _compact(summary)
+        data["files"] = _display_paths(canonical, str(root))
+        data["receipt"] = _transition_receipt(
+            {"receipt": {"files": data["files"], "chapter_count": chapter_count}},
+            phase="research",
+        )
         event.set()
         return {
             "ok": True,
             "message": (
-                f"Research recorded: {len(covered)} chapters covered, "
-                f"{len(sources)} sources, {len(data['files'])} files stored "
+                f"Research recorded: {chapter_count} chapters covered, "
+                f"{len(data['sources'])} sources, {len(data['files'])} files stored "
                 "under the research/ directory. The chapter phases start next."
             ),
         }
@@ -375,47 +592,81 @@ def _make_research_tools(
 def _make_chapter_tools(
     event: asyncio.Event,
     data: dict[str, object],
+    *,
+    output_dir: str,
+    assets_dir: str,
+    chapter_index: int,
+    chapter_title: str,
 ) -> list[Callable[..., object]]:
-    """Return the tool that ends one chapter phase."""
+    """Return the summary-only chapter completion gate."""
     from lauren_ai._tools import tool
 
     @tool()
-    async def confirm_chapter_complete(
-        chapter_index: int,
-        file_path: str,
-        word_count: int,
-        assets: list[str] | None = None,
-    ) -> dict[str, object]:
-        """Signal that the chapter at *chapter_index* has been written.
+    async def confirm_chapter_complete(summary: str) -> dict[str, object]:
+        """Verify the current chapter, deriving path, count, and assets.
 
-        Args:
-            chapter_index: Zero-based index of the chapter that was written.
-                Must match the chapter the phase was asked to write.
-            file_path: Path to the written Markdown file.
-            word_count: Approximate word count of the chapter.
-            assets: Optional list of asset file paths the chapter uses
-                (images, diagrams) — must exist under <output_dir>/assets.
+        The current chapter index, canonical path, word count, and referenced
+        assets always come from the runner/filesystem.
         """
-        if chapter_index < 0:
+        if not summary.strip():
             return {
                 "ok": False,
-                "error": "chapter_index must be >= 0.",
-                "fix": "Pass the zero-based index of the chapter you just wrote.",
+                "error": "confirm_chapter_complete summary is empty.",
+                "fix": "Write the chapter, then call confirm_chapter_complete(summary=...).",
             }
-        if not file_path.strip():
+        candidate = str(_canonical_chapter_path(output_dir, chapter_index, chapter_title))
+        try:
+            path = _resolve_under(output_dir, candidate)
+        except (ValueError, FileNotFoundError) as exc:
+            return _path_error(
+                candidate,
+                Path(output_dir).expanduser().resolve(),
+                "was not found or is outside the book output directory",
+            ) | {"detail": str(exc)}
+        if path.suffix.lower() != ".md":
+            return _path_error(
+                candidate, Path(output_dir).expanduser().resolve(), "is not a Markdown chapter"
+            )
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return _path_error(
+                candidate, Path(output_dir).expanduser().resolve(), "could not be read"
+            ) | {"detail": str(exc)}
+        if not contents.strip():
+            return _path_error(candidate, Path(output_dir).expanduser().resolve(), "is empty")
+        try:
+            referenced_assets = _markdown_asset_references(path, output_dir, assets_dir)
+        except (ValueError, FileNotFoundError) as exc:
             return {
                 "ok": False,
-                "error": "file_path must not be empty.",
-                "fix": "Provide the path to the chapter file you wrote.",
+                "error": f"chapter {chapter_index + 1} has invalid referenced assets.",
+                "fix": "Ensure every referenced asset exists under the assets directory.",
+                "detail": str(exc),
             }
-        data["chapter_index"] = int(chapter_index)
-        data["file_path"] = file_path.strip()
-        data["word_count"] = max(0, int(word_count))
-        data["assets"] = [str(a) for a in (assets or []) if str(a).strip()]
+        words = len(re.findall(r"\b[\w][\w'’-]*\b", contents))
+        canonical_assets = _display_paths(referenced_assets, output_dir)
+        data["chapter_index"] = chapter_index
+        data["file_path"] = str(path.relative_to(Path(output_dir).expanduser().resolve()))
+        data["word_count"] = words
+        data["assets"] = canonical_assets
+        data["summary"] = _compact(summary)
+        data["receipt"] = _transition_receipt(
+            {
+                "receipt": {
+                    "chapter_index": chapter_index,
+                    "file_path": data["file_path"],
+                    "word_count": words,
+                    "assets": canonical_assets,
+                    "bytes": path.stat().st_size,
+                }
+            },
+            phase="chapter",
+        )
         event.set()
         return {
             "ok": True,
-            "message": f"Chapter {chapter_index} confirmed at '{file_path}'.",
+            "message": f"Chapter {chapter_index + 1} confirmed at '{data['file_path']}' ({words} words).",
         }
 
     return [confirm_chapter_complete]
@@ -424,24 +675,166 @@ def _make_chapter_tools(
 def _make_assets_tools(
     event: asyncio.Event,
     data: dict[str, object],
+    *,
+    assets_dir: str,
+    required: bool = True,
+    minimum_assets: int = 1,
+    require_unsplash: bool = True,
 ) -> list[Callable[..., object]]:
-    """Return the tool that ends the assets phase."""
+    """Return the summary-only asset inventory gate.
+
+    The assets phase is intentionally a substantial handoff: it requires at
+    least three assets per chapter and a minimum of six assets overall, plus a
+    free-Unsplash raster image with a provenance manifest.  The gate only
+    inspects those artifacts; it never downloads or creates them.
+    """
     from lauren_ai._tools import tool
 
     @tool()
-    async def confirm_assets_ready(assets: list[str]) -> dict[str, object]:
-        """Signal that all figure/diagram assets were produced.
-
-        Args:
-            assets: Full list of asset file paths (figures).
-        """
-        if not assets:
+    async def confirm_assets_ready(summary: str) -> dict[str, object]:
+        """Scan and verify all figure/diagram assets under the asset root."""
+        if not summary.strip():
             return {
                 "ok": False,
-                "error": "assets must not be empty.",
-                "fix": "Provide at least one produced asset file path.",
+                "error": "confirm_assets_ready summary is empty.",
+                "fix": "Create the asset inventory, then call confirm_assets_ready(summary=...).",
             }
-        data["assets"] = [str(a) for a in assets if str(a).strip()]
+        if not assets_dir.strip():
+            return {
+                "ok": False,
+                "error": "assets directory is not configured.",
+                "fix": "Use the asset directory supplied by the phase prompt.",
+            }
+        root = Path(assets_dir).expanduser().resolve()
+        assets = _files_under(root, _SUPPORTED_ASSET_SUFFIXES)
+        if required and len(assets) < minimum_assets:
+            return {
+                "ok": False,
+                "error": f"only {len(assets)} supported assets were found under '{root}'; {minimum_assets} are required.",
+                "fix": "Create many varied assets in the assets directory, then retry confirm_assets_ready(summary=...).",
+            }
+        raster_suffixes = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+        has_unsplash = any(
+            path.suffix.lower() in raster_suffixes
+            and "unsplash" in {part.casefold() for part in path.relative_to(root).parts}
+            for path in assets
+        )
+        if required and require_unsplash and not has_unsplash:
+            return {
+                "ok": False,
+                "error": f"no Unsplash image was found under '{root}/unsplash/'.",
+                "fix": "Use the free Unsplash service, save at least one raster result under assets/unsplash/, never Unsplash+, write assets/unsplash/manifest.json, then retry confirm_assets_ready(summary=...).",
+            }
+        unsplash_manifest: Path | None = None
+        if required and require_unsplash:
+            try:
+                unsplash_manifest = _resolve_under(str(root), "unsplash/manifest.json")
+                manifest_text = unsplash_manifest.read_text(encoding="utf-8", errors="replace")
+                manifest_data = json.loads(manifest_text)
+            except (
+                ValueError,
+                FileNotFoundError,
+                OSError,
+                UnicodeError,
+                json.JSONDecodeError,
+            ) as exc:
+                return {
+                    "ok": False,
+                    "error": "the Unsplash provenance manifest is missing or invalid.",
+                    "fix": "Write valid JSON to assets/unsplash/manifest.json with the free Unsplash source URL for each downloaded image; never record Unsplash+ assets.",
+                    "detail": str(exc),
+                }
+            if not isinstance(manifest_data, (dict, list)) or not manifest_data:
+                return {
+                    "ok": False,
+                    "error": "the Unsplash provenance manifest is empty.",
+                    "fix": "Record one manifest entry per free Unsplash image in assets/unsplash/manifest.json.",
+                }
+            entries = _unsplash_manifest_entries(manifest_data)
+            if not entries:
+                return {
+                    "ok": False,
+                    "error": "the Unsplash provenance manifest has no image entries.",
+                    "fix": "Record one JSON object per free Unsplash image with file and source_url fields.",
+                }
+            raw_entries: object = manifest_data
+            if isinstance(manifest_data, dict):
+                for key in ("images", "assets", "entries"):
+                    if isinstance(manifest_data.get(key), list):
+                        raw_entries = manifest_data[key]
+                        break
+            if isinstance(raw_entries, list) and len(entries) != len(raw_entries):
+                return {
+                    "ok": False,
+                    "error": "the Unsplash provenance manifest contains malformed entries.",
+                    "fix": "Make every manifest entry a JSON object with file and source_url fields.",
+                }
+            source_urls: list[str] = []
+            declared_files: set[str] = set()
+            for entry in entries:
+                source = next(
+                    (
+                        entry.get(key)
+                        for key in ("source_url", "url", "download_url", "photo_url")
+                        if entry.get(key)
+                    ),
+                    "",
+                )
+                if not isinstance(source, str):
+                    continue
+                source_urls.append(source.casefold())
+                for key in ("file", "path", "filename"):
+                    declared = entry.get(key)
+                    if isinstance(declared, str) and declared.strip():
+                        declared_files.add(Path(declared).name.casefold())
+                        break
+            unsplash_rasters = [
+                path
+                for path in assets
+                if path.suffix.lower() in raster_suffixes
+                and "unsplash" in {part.casefold() for part in path.relative_to(root).parts}
+            ]
+
+            def _is_free_unsplash_url(source: str) -> bool:
+                parsed = urlparse(source)
+                host = (parsed.hostname or "").casefold().rstrip(".")
+                return (
+                    parsed.scheme in {"http", "https"}
+                    and (host == "unsplash.com" or host.endswith(".unsplash.com"))
+                    and not host.startswith("plus.")
+                    and "unsplash+" not in source
+                    and "unsplash.plus" not in source
+                )
+
+            if not source_urls or any(not _is_free_unsplash_url(source) for source in source_urls):
+                return {
+                    "ok": False,
+                    "error": "the Unsplash provenance manifest does not prove free Unsplash sources only.",
+                    "fix": "Record free unsplash.com source URLs in assets/unsplash/manifest.json and remove any Unsplash+ or paid source.",
+                }
+            if len(entries) < len(unsplash_rasters) or any(
+                path.name.casefold() not in declared_files for path in unsplash_rasters
+            ):
+                return {
+                    "ok": False,
+                    "error": "the Unsplash provenance manifest does not cover every downloaded image.",
+                    "fix": "Add one manifest entry with file and free source_url for every raster under assets/unsplash/.",
+                }
+        canonical = _display_paths(assets, str(root.parent))
+        data["assets"] = canonical
+        if unsplash_manifest is not None:
+            data["unsplash_manifest"] = str(unsplash_manifest.relative_to(root.parent))
+        data["summary"] = _compact(summary)
+        data["receipt"] = _transition_receipt(
+            {
+                "receipt": {
+                    "assets": canonical,
+                    "asset_count": len(canonical),
+                    "unsplash_manifest": data.get("unsplash_manifest", ""),
+                }
+            },
+            phase="assets",
+        )
         event.set()
         return {
             "ok": True,
@@ -454,35 +847,35 @@ def _make_assets_tools(
 def _make_front_matter_tools(
     event: asyncio.Event,
     data: dict[str, object],
+    *,
+    output_dir: str,
 ) -> list[Callable[..., object]]:
-    """Return the tool that ends the front_matter phase."""
+    """Return the summary-only front-matter inventory gate."""
     from lauren_ai._tools import tool
 
     @tool()
-    async def confirm_front_matter_ready(
-        summary: str,
-        files: list[str],
-    ) -> dict[str, object]:
-        """Signal that the preface and contents pages are built (the cover is user-supplied).
-
-        Args:
-            summary: What was created.
-            files: The front-matter file paths.
-        """
+    async def confirm_front_matter_ready(summary: str) -> dict[str, object]:
+        """Scan ``front-matter/`` and record its Markdown files."""
         if not summary.strip():
             return {
                 "ok": False,
-                "error": "summary must not be empty.",
-                "fix": "Describe the front-matter pages you created.",
+                "error": "confirm_front_matter_ready summary is empty.",
+                "fix": "Write front matter, then call confirm_front_matter_ready(summary=...).",
             }
+        root = Path(output_dir).expanduser().resolve() / "front-matter"
+        files = _files_under(root, frozenset({".md"}))
         if not files:
             return {
                 "ok": False,
-                "error": "files must not be empty.",
-                "fix": "List the preface/contents files you created.",
+                "error": f"front matter is missing under '{root}'.",
+                "fix": "Write the preface/contents Markdown files there, then retry confirm_front_matter_ready(summary=...).",
             }
-        data["summary"] = summary.strip()
-        data["files"] = [str(f) for f in files if str(f).strip()]
+        canonical = _display_paths(files, output_dir)
+        data["summary"] = _compact(summary)
+        data["files"] = canonical
+        data["receipt"] = _transition_receipt(
+            {"receipt": {"files": canonical}}, phase="front_matter"
+        )
         event.set()
         return {"ok": True, "message": "Front matter confirmed."}
 
@@ -492,35 +885,35 @@ def _make_front_matter_tools(
 def _make_back_matter_tools(
     event: asyncio.Event,
     data: dict[str, object],
+    *,
+    output_dir: str,
 ) -> list[Callable[..., object]]:
-    """Return the tool that ends the back_matter phase."""
+    """Return the summary-only back-matter inventory gate."""
     from lauren_ai._tools import tool
 
     @tool()
-    async def confirm_back_matter_ready(
-        summary: str,
-        files: list[str],
-    ) -> dict[str, object]:
-        """Signal that the index page is built.
-
-        Args:
-            summary: What was created.
-            files: The index file path(s).
-        """
+    async def confirm_back_matter_ready(summary: str) -> dict[str, object]:
+        """Scan ``back-matter/`` and record its Markdown files."""
         if not summary.strip():
             return {
                 "ok": False,
-                "error": "summary must not be empty.",
-                "fix": "Describe the index page you created.",
+                "error": "confirm_back_matter_ready summary is empty.",
+                "fix": "Write back matter, then call confirm_back_matter_ready(summary=...).",
             }
+        root = Path(output_dir).expanduser().resolve() / "back-matter"
+        files = _files_under(root, frozenset({".md"}))
         if not files:
             return {
                 "ok": False,
-                "error": "files must not be empty.",
-                "fix": "List the index file(s) you created.",
+                "error": f"back matter is missing under '{root}'.",
+                "fix": "Write the index Markdown files there, then retry confirm_back_matter_ready(summary=...).",
             }
-        data["summary"] = summary.strip()
-        data["files"] = [str(f) for f in files if str(f).strip()]
+        canonical = _display_paths(files, output_dir)
+        data["summary"] = _compact(summary)
+        data["files"] = canonical
+        data["receipt"] = _transition_receipt(
+            {"receipt": {"files": canonical}}, phase="back_matter"
+        )
         event.set()
         return {"ok": True, "message": "Back matter confirmed."}
 
@@ -537,10 +930,8 @@ def _make_compile_tools(
 ) -> list[Callable[..., object]]:
     """Return build-script and pass/fail tools for the compile phase.
 
-    ``create_build_book`` is intentionally idempotent.  The compile agent is
-    instructed to call it before running the generated builder, while
-    ``mark_book_complete`` also creates it as a safety net for a model that
-    jumps directly to the completion tool.
+    ``create_build_book`` is the only creator in this group.  The completion
+    gates are verification-only and never create or modify book artifacts.
     """
     from lauren_ai._tools import tool
 
@@ -588,63 +979,79 @@ def _make_compile_tools(
         return _create_builder()
 
     @tool()
-    async def mark_book_complete(
-        pdf_path: str,
-        summary: str,
-    ) -> dict[str, object]:
-        """Signal that the PDF was compiled and validated.
-
-        Args:
-            pdf_path: Path to the finished .pdf file.
-            summary: Summary of the book and how to open the PDF.
-        """
-        if output_dir.strip() and not data.get("build_script_path"):
-            created = _create_builder()
-            if not bool(created.get("ok")):
-                return created
-        if not pdf_path.strip() or not pdf_path.lower().endswith(".pdf"):
-            return {
-                "ok": False,
-                "error": "pdf_path must point to a .pdf file.",
-                "fix": "Provide the actual path of the compiled PDF.",
-            }
+    async def mark_book_complete(summary: str) -> dict[str, object]:
+        """Discover, validate, and accept the compiled PDF under ``dist/``."""
         if not summary.strip():
             return {
                 "ok": False,
-                "error": "summary must not be empty.",
-                "fix": "Describe the finished book and where the PDF lives.",
+                "error": "mark_book_complete summary is empty.",
+                "fix": "Run the builder, then call mark_book_complete(summary=...).",
             }
-        data["action"] = "complete"
-        data["pdf_path"] = pdf_path.strip()
-        data["summary"] = summary.strip()
-        event.set()
-        return {"ok": True, "message": "Book marked as complete."}
-
-    @tool()
-    async def reject_book(
-        issue: str,
-        chapter_index: int = -1,
-    ) -> dict[str, object]:
-        """Signal that the compile failed and optionally which chapter to fix.
-
-        Args:
-            issue: Description of what went wrong.
-            chapter_index: Zero-based index of the chapter that needs rewriting,
-                or -1 if the whole book must be revisited.
-        """
-        if not issue.strip():
+        if not output_dir.strip():
             return {
                 "ok": False,
-                "error": "issue must not be empty.",
+                "error": "book output directory is not configured.",
+                "fix": "Run the TOC phase before compiling.",
+            }
+        root = Path(output_dir).expanduser().resolve()
+        builder = root / "build_book.py"
+        if not builder.is_file():
+            return {
+                "ok": False,
+                "error": f"reusable builder is missing under '{root}'.",
+                "fix": "Call create_build_book() first, run the builder, then retry mark_book_complete(summary=...).",
+            }
+        dist = root / "dist"
+        candidates = _files_under(dist, frozenset({".pdf"}))
+        if len(candidates) != 1:
+            return {
+                "ok": False,
+                "error": f"expected exactly one PDF under '{dist}', found {len(candidates)}.",
+                "fix": "Run the builder and remove stale PDFs, then retry mark_book_complete(summary=...).",
+            }
+        pdf = candidates[0]
+        if pdf.suffix.lower() != ".pdf":
+            return _path_error(str(pdf), root, "is not a PDF")
+        try:
+            header = pdf.read_bytes()[:5]
+        except OSError as exc:
+            return _path_error(str(pdf), root, "could not be read") | {"detail": str(exc)}
+        if header != b"%PDF-":
+            return _path_error(str(pdf), root, "does not have a valid PDF header")
+        summary = _compact(summary, limit=2_000)
+        data["action"] = "complete"
+        data["pdf_path"] = str(pdf.relative_to(root))
+        data["summary"] = summary
+        data["receipt"] = _transition_receipt(
+            {"receipt": {"pdf_path": data["pdf_path"], "bytes": pdf.stat().st_size}},
+            phase="compile",
+        )
+        event.set()
+        return {"ok": True, "message": f"Book marked as complete: {data['pdf_path']}."}
+
+    @tool()
+    async def reject_book(summary: str) -> dict[str, object]:
+        """Record a compile failure summary and recover the whole book."""
+        issue = summary.strip()
+        if not issue:
+            return {
+                "ok": False,
+                "error": "reject_book summary is empty.",
                 "fix": "Describe what needs to be fixed.",
             }
+        chapter_index = -1
         data["action"] = "reject"
-        data["issue"] = issue.strip()
-        data["chapter_index"] = int(chapter_index)
+        data["issue"] = _compact(issue)
+        data["chapter_index"] = chapter_index
+        data["receipt"] = _transition_receipt(
+            {"receipt": {"summary": data["issue"], "chapter_index": chapter_index}},
+            phase="compile",
+            outcome="rejected",
+        )
         event.set()
         return {
             "ok": True,
-            "message": f"Book sent back for fixes: {issue}",
+            "message": f"Book sent back for fixes: {data['issue']}",
         }
 
     return [mark_book_complete, reject_book, create_build_book]
@@ -695,6 +1102,7 @@ class MakeBookRunner(CodePlanRunner):
             run_id=run_id,
             state=MakeBookState.TOC,
             shared_memory=memory,
+            toc_manifest_path=_toc_manifest_path(run_id),
         )
         if handle is not None:
             handle.attach_context(ctx)
@@ -746,6 +1154,8 @@ class MakeBookRunner(CodePlanRunner):
         if memory is None:
             memory = ShortTermMemory(max_tokens=self._cfg.cfg.execution.effective_usable_budget())
         context.shared_memory = memory
+        if not context.toc_manifest_path:
+            context.toc_manifest_path = _toc_manifest_path(context.run_id)
         if len(context.chapters) > 0:
             self.total_phases = len(context.chapters) + 6
         handle = self._cfg.workflow_handle
@@ -806,6 +1216,35 @@ class MakeBookRunner(CodePlanRunner):
             return n + 5
         return 0
 
+    @staticmethod
+    def _capture_transition_receipt(
+        ctx: MakeBookContext,
+        data: dict[str, object],
+        phase: str,
+    ) -> None:
+        """Persist one bounded receipt after a gate has fully validated.
+
+        Receipts contain metadata and canonical paths only.  They deliberately
+        never duplicate research bodies, chapter contents, provider objects,
+        or live tool callables.
+        """
+
+        raw = data.get("receipt")
+        if not isinstance(raw, dict):
+            return
+        receipt = {str(key): value for key, value in raw.items()}
+        receipt.update(
+            {
+                "workflow": "make_book",
+                "run_id": ctx.run_id,
+                "phase": phase,
+                "phase_index": MakeBookRunner._phase_index(ctx.state, ctx),
+                "current_chapter_index": ctx.current_chapter_index,
+            }
+        )
+        if receipt not in ctx.transition_receipts:
+            ctx.transition_receipts.append(receipt)
+
     async def _toc(
         self,
         ctx: MakeBookContext,
@@ -821,10 +1260,7 @@ class MakeBookRunner(CodePlanRunner):
                 text=(
                     ctx.intent
                     if attempt == 1
-                    else (
-                        "Call submit_toc(title, author, chapters, audience, "
-                        "technical_level, prerequisites, output_dir, content_types) now."
-                    )
+                    else ("Call submit_toc(summary=...) now after writing the TOC manifest.")
                 ),
                 system_prompt=(
                     "You are in the TOC phase of make_book. Your job is to plan the "
@@ -871,17 +1307,24 @@ class MakeBookRunner(CodePlanRunner):
                     "   - INDEX: an index section at the end listing the key terms of the book (term -> chapter/section), so the book is navigable.\n"
                     "   - COLOURED HEADINGS: headings must be coloured (a consistent accent colour for h1/h2), not plain black — plan the accent colour here (e.g. a deep blue fitting the subject).\n"
                     "user's directory if given.\n\n"
-                    "Call submit_toc(title, author, chapters, audience, technical_level, "
-                    "prerequisites, output_dir, content_types) where chapters is a list of "
-                    "{'title': ..., 'outline': ...} — one entry per chapter. Every entry "
-                    "becomes one chapter phase, so include ALL chapters now.\n\n"
+                    f"Write a small JSON object to {ctx.toc_manifest_path} with title, chapters, "
+                    "author, audience, technical_level, prerequisites, output_dir, and "
+                    "content_types. Chapters must be a list of {'title': ..., 'outline': ...} "
+                    "objects, one per chapter. The runner owns the current phase and validates "
+                    "the manifest; it does not create this file. After the file is complete, "
+                    "call submit_toc(summary=...) with a concise explanation of the plan.\n\n"
                     "Do NOT write any chapter content yet. This phase plans the structure only."
                 ),
                 max_turns=10,
                 shared_memory=memory,
-                tools=_make_toc_tools(event, data),
+                tools=_make_toc_tools(
+                    event,
+                    data,
+                    manifest_path=ctx.toc_manifest_path,
+                ),
             )
             if event.is_set():
+                self._capture_transition_receipt(ctx, data, "toc")
                 raw_chapters = data.get("chapters", [])
                 chapters: list[ChapterInfo] = []
                 for index, raw in enumerate(raw_chapters):
@@ -948,10 +1391,7 @@ class MakeBookRunner(CodePlanRunner):
                         f"Chapters to research:\n{chapter_titles}"
                     )
                     if attempt == 1
-                    else (
-                        "Call submit_research(notes, sources, summary) now with notes "
-                        "covering EVERY chapter."
-                    )
+                    else ("Call submit_research(summary=...) now; the runner scans research/.")
                 ),
                 system_prompt=(
                     "You are in the RESEARCH phase of make_book. Gather extensive, "
@@ -1131,22 +1571,25 @@ class MakeBookRunner(CodePlanRunner):
                     "in a separate ASSETS phase after research, so do NOT generate images here.)\n"
                     "4. STORE THE RESEARCH MATERIAL IN FILES as described in section 12 — create the "
                     f"research directory {ctx.research_dir or '<output_dir>/research'} and write "
-                    "the durable research material there. The notes you pass to submit_research() "
-                    "must mirror these files.\n\n"
-                    "Call submit_research(notes, sources, summary, files) where:\n"
-                    "  - notes: list of {'chapter_index': int, 'notes': str} — ONE entry per chapter, "
-                    "indices 0..N-1\n"
-                    "  - sources: list of source URLs/DOIs/standard numbers consulted\n"
-                    "  - summary: a short overview of the research\n"
-                    "  - files: the file paths you wrote under the research/ directory\n\n"
+                    "the durable research material there. The transition payload must contain only "
+                    "the compact manifest; the files are authoritative.\n\n"
+                    "After the files are complete, call submit_research(summary=...) with a "
+                    "short evidence-based handoff. The runner scans the research directory and "
+                    "derives the complete file inventory and chapter coverage.\n\n"
                     "Do NOT write any chapter content. This phase gathers material only."
                 ),
                 mode="Yolo",
                 max_turns=20,
                 shared_memory=memory,
-                tools=_make_research_tools(event, data, len(ctx.chapters)),
+                tools=_make_research_tools(
+                    event,
+                    data,
+                    len(ctx.chapters),
+                    research_dir=ctx.research_dir,
+                ),
             )
             if event.is_set():
+                self._capture_transition_receipt(ctx, data, "research")
                 raw_notes = data.get("notes", {})
                 ctx.research_notes = {
                     int(key): str(value)
@@ -1182,6 +1625,7 @@ class MakeBookRunner(CodePlanRunner):
             return MakeBookState.FRONT_MATTER
         chapter: ChapterInfo = ctx.chapters[index]
         research_block: str = ctx.research_notes.get(index, "")
+        research_files: str = "\n".join(f"  {path}" for path in ctx.research_files)
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
@@ -1194,10 +1638,7 @@ class MakeBookRunner(CodePlanRunner):
                     else ""
                 )
                 if attempt == 1
-                else (
-                    "Call confirm_chapter_complete(chapter_index, file_path, word_count, "
-                    "assets) now with the chapter you wrote."
-                )
+                else ("Call confirm_chapter_complete(summary=...) now after writing the chapter.")
             )
             await self.run_phase(
                 stable_system_prompt=CACHE_CONTRACT,
@@ -1215,7 +1656,15 @@ class MakeBookRunner(CodePlanRunner):
                     f"Chapter {index + 1} of {len(ctx.chapters)}: {chapter.title}\n\n"
                     "Research for this chapter (use it — ground the writing in these facts, "
                     "data, and sources):\n"
-                    + (research_block if research_block else "  (none recorded)")
+                    "The research handoff is file-backed. Read these files from disk; "
+                    "do not expect their full contents in the prompt:\n"
+                    + (research_files or "  (no research file inventory recorded)\n")
+                    + "\n"
+                    + (
+                        research_block
+                        if research_block
+                        else "Use the research files above as the authoritative evidence base."
+                    )
                     + "\n\n"
                     "TECHNICAL WRITING STANDARDS (this is a specialised book):\n"
                     "- Write FOR the specialist reader: assume the stated prerequisites; "
@@ -1345,21 +1794,25 @@ class MakeBookRunner(CodePlanRunner):
                     "6. End with a short transition that sets up the next chapter.\n"
                     "6. Do NOT include the book title or author in the file — just the "
                     "chapter content. The PDF metadata handles title/author.\n\n"
-                    "Write the file with the write tool, then call "
-                    "confirm_chapter_complete(chapter_index=<index>, file_path=..., "
-                    "word_count=..., assets=[...]) with the exact index you were assigned "
-                    "and the list of asset files (images) the chapter references."
+                    "Write the file with the write tool, then call confirm_chapter_complete(summary=...). "
+                    "The runner knows the current chapter, finds the canonical file, counts "
+                    "its words, and verifies referenced assets. Do not send a chapter index, "
+                    "path, word count, or asset list."
                 ),
                 mode="Yolo",
                 max_turns=25,
                 shared_memory=memory,
-                tools=_make_chapter_tools(event, data),
+                tools=_make_chapter_tools(
+                    event,
+                    data,
+                    output_dir=ctx.output_dir,
+                    assets_dir=ctx.assets_dir,
+                    chapter_index=index,
+                    chapter_title=chapter.title,
+                ),
             )
             if event.is_set():
-                reported: int = int(data.get("chapter_index", -1))
-                if reported != index:
-                    # The agent confirmed the wrong chapter — keep this phase active.
-                    continue
+                self._capture_transition_receipt(ctx, data, "chapter")
                 chapter.file_path = str(data.get("file_path", ""))
                 chapter.word_count = int(data.get("word_count", 0))
                 chapter.status = "written"
@@ -1393,22 +1846,26 @@ class MakeBookRunner(CodePlanRunner):
                     f"Generate all figure and diagram assets for '{ctx.title}' "
                     f"into {ctx.assets_dir or '<output_dir>/assets'}."
                     if attempt == 1
-                    else "Call confirm_assets_ready(assets) now with the full asset list."
+                    else "Call confirm_assets_ready(summary=...) now; the runner scans the asset directory."
                 ),
                 system_prompt=(
-                    "You are in the ASSETS phase of make_book. Produce EVERY visual asset "
-                    "the book needs, in one phase, before any chapter is written.\n\n"
+                    "You are in the ASSETS phase of make_book. Produce MANY varied visual "
+                    "assets, in one phase, before any chapter is written. Produce at least "
+                    f"{max(6, len(ctx.chapters) * 3)} assets overall (at least three per "
+                    "chapter), not merely one figure per chapter.\n\n"
                     f"Book: {ctx.title}\nAssets dir: {ctx.assets_dir or '<output_dir>/assets'}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
                     f"Chapter outlines:\n{ctx.toc_summary or '(see plan)'}\n\n"
                     "Create the assets directory if missing, then generate BOTH kinds "
                     "of visual assets \u2014 mermaid diagrams AND matplotlib graphs:\n"
                     "For PHOTOGRAPHIC / ILLUSTRATIVE images (real-world photos, scenery, "
-                    "product shots, case-study visuals), you may use the unsplash_images "
-                    "tool to download ready-made, high-quality photos from Unsplash into "
-                    "the assets directory (e.g. unsplash_images(query='python', "
-                    "count=2, output_dir=<output_dir>/assets)). They are referenced from "
-                    "chapters exactly like the generated figures.\n"
+                    "product shots, case-study visuals), MUST use an available retrieval "
+                    "capability for the free Unsplash service (prefer a configured "
+                    "unsplash_images tool; otherwise use the approved browser/network "
+                    "tools) to download photos into assets/unsplash/. Do NOT use "
+                    "Unsplash+ or any paid Unsplash asset. Keep the source manifest "
+                    "alongside the files at assets/unsplash/manifest.json. "
+                    "They are referenced from chapters exactly like the generated figures.\n"
                     "1. MERMAID DIAGRAMS for STRUCTURAL/FLOW content (architectures, "
                     "state machines, flowcharts, sequence/ER diagrams, network "
                     "topologies): write one .mmd source per diagram (e.g. "
@@ -1456,16 +1913,24 @@ class MakeBookRunner(CodePlanRunner):
                     "3. Keep every image bounded and PNG at a reasonable resolution (1024x768 or similar). "
                     "NOTE: the COVER page is NOT generated here \u2014 the end user supplies "
                     "<output_dir>/assets/cover.png themselves; do not create or design it.\n\n"
-                    "Then call confirm_assets_ready(assets) with the FULL list of asset "
-                    "file paths you produced (figures). These are handed to the "
-                    "chapter phases so they can reference them by name."
+                    "Then call confirm_assets_ready(summary=...). The runner scans the configured "
+                    "assets directory and records the complete verified inventory; do not "
+                    "copy a long asset list into the tool call."
                 ),
                 mode="Yolo",
                 max_turns=25,
                 shared_memory=memory,
-                tools=_make_assets_tools(event, data),
+                tools=_make_assets_tools(
+                    event,
+                    data,
+                    assets_dir=ctx.assets_dir,
+                    required=True,
+                    minimum_assets=max(6, len(ctx.chapters) * 3),
+                    require_unsplash=True,
+                ),
             )
             if event.is_set():
+                self._capture_transition_receipt(ctx, data, "assets")
                 ctx.images = [str(a) for a in data.get("assets", [])]
                 ctx.artifacts["assets"] = f"{len(ctx.images)} assets produced"
                 return MakeBookState.CHAPTER
@@ -1488,7 +1953,7 @@ class MakeBookRunner(CodePlanRunner):
                 text=(
                     f"Build the front-matter pages (preface, table of contents) for '{ctx.title}'."
                     if attempt == 1
-                    else "Call confirm_front_matter_ready(summary, files) now."
+                    else "Call confirm_front_matter_ready(summary=...) now; the runner scans front-matter/."
                 ),
                 system_prompt=(
                     "You are in the FRONT_MATTER phase of make_book. Build the book's "
@@ -1516,15 +1981,16 @@ class MakeBookRunner(CodePlanRunner):
                     "(LaTeX tier; pandoc passes it through) or '#pagebreak()' (typst "
                     "tier) on its own line right after the '# ' title in the preface "
                     "file and in the contents file.\n\n"
-                    "Then call confirm_front_matter_ready(summary, files) with a summary "
-                    "and the list of files you created."
+                    "Then call confirm_front_matter_ready(summary=...). The runner scans and verifies "
+                    "the Markdown files under front-matter/."
                 ),
                 mode="Yolo",
                 max_turns=15,
                 shared_memory=memory,
-                tools=_make_front_matter_tools(event, data),
+                tools=_make_front_matter_tools(event, data, output_dir=ctx.output_dir),
             )
             if event.is_set():
+                self._capture_transition_receipt(ctx, data, "front_matter")
                 ctx.front_matter_summary = str(data.get("summary", ""))
                 ctx.front_matter_files = list(data.get("files", []))
                 ctx.artifacts["front_matter"] = ctx.front_matter_summary
@@ -1549,7 +2015,7 @@ class MakeBookRunner(CodePlanRunner):
                     f"Build the INDEX page for '{ctx.title}' from the bold-marked terms "
                     "in the chapters."
                     if attempt == 1
-                    else "Call confirm_back_matter_ready(summary, files) now."
+                    else "Call confirm_back_matter_ready(summary=...) now; the runner scans back-matter/."
                 ),
                 system_prompt=(
                     "You are in the BACK_MATTER phase of make_book. Build the book's "
@@ -1562,15 +2028,16 @@ class MakeBookRunner(CodePlanRunner):
                     "The index page must begin on a NEW PAGE \u2014 put a raw "
                     "'\\newpage' (LaTeX tier) or '#pagebreak()' (typst tier) on its "
                     "own line right after the index title.\n\n"
-                    "Then call confirm_back_matter_ready(summary, files) with a summary "
-                    "and the index file(s) you created."
+                    "Then call confirm_back_matter_ready(summary=...). The runner scans and verifies "
+                    "the Markdown files under back-matter/."
                 ),
                 mode="Yolo",
                 max_turns=15,
                 shared_memory=memory,
-                tools=_make_back_matter_tools(event, data),
+                tools=_make_back_matter_tools(event, data, output_dir=ctx.output_dir),
             )
             if event.is_set():
+                self._capture_transition_receipt(ctx, data, "back_matter")
                 ctx.back_matter_summary = str(data.get("summary", ""))
                 ctx.back_matter_files = list(data.get("files", []))
                 ctx.artifacts["back_matter"] = ctx.back_matter_summary
@@ -1607,7 +2074,7 @@ class MakeBookRunner(CodePlanRunner):
                 )
                 + (f"Asset files:\n{asset_list}" if ctx.images else "")
                 if attempt == 1
-                else "Call mark_book_complete(pdf_path, summary) or reject_book(issue, chapter_index) now."
+                else "Call mark_book_complete(summary=...) or reject_book(summary=...) now."
             )
             await self.run_phase(
                 stable_system_prompt=CACHE_CONTRACT,
@@ -1644,8 +2111,8 @@ class MakeBookRunner(CodePlanRunner):
                     "  After building, verify: the extracted text contains 'Preface', 'Contents' and 'Index'; page 1 is the user-supplied cover (image-only page, no body text); and the typst source contains a '#show heading' colour rule (grep 'show heading' book.typ). Also verify the three heading/TOC rules: (1) the extracted TOC text shows NO dotted-leader runs (no sequences of 3+ dots between entry titles and page numbers); (2) NO 'Chapter N:' prefixed headings appear anywhere (chapter titles are bare, e.g. 'Introduction to Codex'); (3) every '## ' section subheading is UNIQUE across ALL chapters (grep the chapter sources and confirm no duplicate heading text).\n"
                     "BUILD SCRIPT & DIST DELIVERABLE (mandatory):\n"
                     "First call create_build_book(). This creates the reusable, standalone "
-                "Python builder <output_dir>/build_book.py inside this run's output "
-                "directory, with deterministic source "
+                    "Python builder <output_dir>/build_book.py inside this run's output "
+                    "directory, with deterministic source "
                     "discovery, Pandoc -> XeLaTeX multi-pass compilation, KDP 6x9 trim, "
                     "optional cover attachment, --out/--keep-intermediates options, and "
                     "safe intermediate cleanup. Then run build_book.py so it performs the "
@@ -1682,8 +2149,9 @@ class MakeBookRunner(CodePlanRunner):
                     '      subtitle = "A Practical Guide"\n'
                     '      description = "A short, compelling blurb for the Amazon listing."\n'
                     '      keywords = ["keyword one", "keyword two", "keyword three", "keyword four", "keyword five", "keyword six", "keyword seven"]\n'
-                    "Call mark_book_complete() with the dist/ PDF path, and name the "
-                    "build script + dist output in the summary.\n"
+                    "Call mark_book_complete(summary=...) after the builder produces the PDF; "
+                    "the runner discovers the dist/ output. If compilation fails, call "
+                    "reject_book(summary=...) with a concise diagnosis.\n"
                     "Compile strategy — try in order until one produces a valid PDF:\n"
                     "1. TYPST (preferred — native typeset math, single static binary, "
                     "no system install):\n"
@@ -1820,10 +2288,10 @@ class MakeBookRunner(CodePlanRunner):
                     "to .math-render/render-math.js and run with node:\n"
                     + _MATHJAX_RENDERER_JS
                     + "\n\n"
-                    "On success call mark_book_complete(pdf_path, summary) with the path "
-                    "and a summary. On failure call reject_book(issue, chapter_index) — "
-                    "include the zero-based chapter_index that needs rewriting (or -1 to "
-                    "revisit the whole book). You MUST call one of them."
+                    "On success call mark_book_complete(summary=...); the runner discovers "
+                    "and validates the single PDF under dist/. On failure call "
+                    "reject_book(summary=...) with a concise diagnosis; the runner sends "
+                    "the whole book back for correction. You MUST call one."
                 ),
                 mode="Yolo",
                 max_turns=15,
@@ -1837,6 +2305,7 @@ class MakeBookRunner(CodePlanRunner):
                 ),
             )
             if event.is_set():
+                self._capture_transition_receipt(ctx, data, "compile")
                 action: str = str(data.get("action", ""))
                 if action == "complete":
                     ctx.pdf_path = str(data.get("pdf_path", ""))
@@ -1904,7 +2373,7 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "You are in the TOC phase of make_book. Plan a specialised, technical "
                 "book's table of contents (title, author, audience, technical level, "
                 "prerequisites, chapter list with concrete outlines, rich content types), "
-                "then call submit_toc()."
+                "write the TOC manifest, then call submit_toc(summary=...)."
             ),
         ),
         PhaseSpec(
@@ -1925,7 +2394,8 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "and alternatives. STORE the research material as durable files under "
                 "the research/ directory (<output_dir>/research/): one notes file per "
                 "chapter, plus research/sources.md and research/summary.md. Then call "
-                "submit_research() with notes for EVERY chapter."
+                "submit_research(summary=...); the runner checks "
+                "the files and derives chapter coverage."
             ),
         ),
         PhaseSpec(
@@ -1938,8 +2408,11 @@ class MakeBookWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the ASSETS phase of make_book. Produce EVERY visual asset "
                 "the book needs (figures and flowcharts) into the "
-                "assets dir, then call confirm_assets_ready(). Create BOTH kinds of "
-                "assets: (1) MERMAID DIAGRAMS for structural/flow content "
+                "assets dir, then call confirm_assets_ready(summary=...). Create MANY kinds of "
+                "assets: produce at least max(6, 3 * chapter_count) supported files, "
+                "not merely one asset per chapter. Include varied diagrams, charts, "
+                "and illustrations. "
+                "(1) MERMAID DIAGRAMS for structural/flow content "
                 "(architectures, state machines, flowcharts, sequence/ER diagrams, "
                 "network topologies) \u2014 write a .mmd source per diagram and render "
                 "each to PNG via mermaid-cli/mmdc, keeping the .mmd sources; "
@@ -1951,10 +2424,13 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "clean frameless legends, no clipped labels. TEXT CONTRAST (mandatory): "
                 "every label vs its box fill must pass WCAG AA (contrast ratio >= 4.5:1) "
                 "\u2014 dark text on light fills, white text only on dark fills \u2014 enforced "
-                "by a programmatic contrast check inside the figure script. You may "
-                "also use the unsplash_images tool to fetch ready-made, high-quality "
-                "photos from Unsplash for photographic/illustrative content, saving "
-                "them under the assets dir."
+                "by a programmatic contrast check inside the figure script. You MUST use "
+                "an available retrieval capability (prefer a configured unsplash_images "
+                "tool; otherwise use approved browser/network tools) to fetch ready-made, "
+                "high-quality photos from the free Unsplash service for photographic/"
+                "illustrative content, saving them under assets/unsplash/. Never use "
+                "Unsplash+ or any paid source, and record each source URL in "
+                "assets/unsplash/manifest.json."
             ),
         ),
         PhaseSpec(
@@ -1973,7 +2449,7 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "render it to a PNG via mermaid-cli) AND matplotlib graphs (write a "
                 "matplotlib script and run it to produce a PNG), save them under "
                 "<output_dir>/assets/, and reference them in the chapter. Then call "
-                "confirm_chapter_complete(). Write it in a natural human authorial "
+                "confirm_chapter_complete(summary=...). Write it in a natural human authorial "
                 "voice - no formulaic AI prose: vary sentence rhythm, open sections "
                 "with a concrete hook, and never use mechanical transitions. Every "
                 "image you include must be appropriately sized for print - cap the "
@@ -1994,7 +2470,7 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "and a table-of-contents page container (heading + page break only \u2014 "
                 "the compile toolchain auto-generates the TOC listing via pandoc/typst/"
                 "pdflatex, never by hand). Do NOT build a cover page \u2014 the cover is "
-                "supplied by the END USER; then call confirm_front_matter_ready()."
+                "supplied by the END USER; then call confirm_front_matter_ready(summary=...)."
             ),
         ),
         PhaseSpec(
@@ -2006,7 +2482,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             on_reject="back_matter",
             system_prompt_override=(
                 "You are in the BACK_MATTER phase of make_book. Build the index page "
-                "from the bold-marked terms, then call confirm_back_matter_ready()."
+                "from the bold-marked terms, then call confirm_back_matter_ready(summary=...)."
             ),
         ),
         PhaseSpec(
@@ -2027,7 +2503,7 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "it to rebuild the PDF end-to-end into dist/ "
                 "(compile at least twice so TOC page numbers resolve; user cover → TOC → "
                 "preface ordering; clean all intermediates), run it, and call "
-                "mark_book_complete() with the dist/ path or reject_book()."
+                "mark_book_complete(summary=...) after verification or reject_book(summary=...)."
             ),
         ),
     ]
@@ -2048,6 +2524,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             "technical_level": context.technical_level,
             "prerequisites": context.prerequisites,
             "output_dir": context.output_dir,
+            "toc_manifest_path": context.toc_manifest_path,
             "content_types": context.content_types,
             "assets_dir": context.assets_dir,
             "research_dir": context.research_dir,
@@ -2079,6 +2556,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             "compile_summary": context.compile_summary,
             "fail_reason": context.fail_reason,
             "artifacts": context.artifacts,
+            "transition_receipts": context.transition_receipts,
         }
 
     @classmethod
@@ -2132,6 +2610,16 @@ class MakeBookWorkflow(WorkflowPlugin):
         research_sources = (
             [str(s) for s in raw_research_sources] if isinstance(raw_research_sources, list) else []
         )
+        raw_receipts = payload.get("transition_receipts", [])
+        transition_receipts = (
+            [
+                {str(key): value for key, value in receipt.items()}
+                for receipt in raw_receipts
+                if isinstance(receipt, dict)
+            ]
+            if isinstance(raw_receipts, list)
+            else []
+        )
         return MakeBookContext(
             intent=str(payload.get("intent", "")),
             run_id=str(payload.get("run_id", "")),
@@ -2143,6 +2631,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             technical_level=str(payload.get("technical_level", "advanced")),
             prerequisites=str(payload.get("prerequisites", "")),
             output_dir=str(payload.get("output_dir", "")),
+            toc_manifest_path=str(payload.get("toc_manifest_path", "")),
             content_types=list(payload.get("content_types", []))
             or [
                 "images",
@@ -2177,6 +2666,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             compile_summary=str(payload.get("compile_summary", "")),
             fail_reason=str(payload.get("fail_reason", "")),
             artifacts=artifacts,
+            transition_receipts=transition_receipts,
             shared_memory=memory,
         )
 

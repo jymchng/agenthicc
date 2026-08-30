@@ -190,9 +190,53 @@ It accepts `--out`/`-o` for a custom PDF path and
 `--keep-intermediates`/`--keep` for debugging. It uses a KDP-oriented 6×9
 inch layout, no-dot table-of-contents styling, and attaches an optional
 `assets/cover.png` (or supported JPG variant) when Pillow and pypdf are
-available. The compile completion tool also creates the builder as a safety
-net if the agent did not call `create_build_book` explicitly; its path is
-stored in the workflow checkpoint and artifact summary.
+available. `mark_book_complete` is verification-only: the agent must call
+`create_build_book()` and run the resulting script before the completion gate
+will accept the existing PDF. Its path is stored in the workflow checkpoint
+and artifact summary.
+
+#### `make_book` phase handoffs
+
+Every `make_book` phase transition uses the same small model-facing contract:
+
+```python
+submit_toc(summary="The plan is ready; the manifest is on disk.")
+submit_research(summary="All chapter notes and sources are written.")
+confirm_assets_ready(summary="The asset inventory is complete.")
+confirm_chapter_complete(summary="This chapter is written and checked.")
+confirm_front_matter_ready(summary="The preface and contents container are ready.")
+confirm_back_matter_ready(summary="The index is ready.")
+mark_book_complete(summary="The builder produced and validated the PDF.")
+reject_book(summary="The PDF failed validation because …")
+```
+
+The short summary is the only transition argument. The agent writes the
+artifacts with its ordinary filesystem/tools first; the runner then verifies
+existing files and derives paths, counts, inventories, and PDF selection. A
+failed gate neither creates an artifact nor advances the phase.
+
+The TOC agent writes its structured plan to the run-scoped `toc.json` path
+shown in its prompt before calling `submit_toc`. Research is file-backed under
+`<output_dir>/research/`, with one chapter note file per chapter. Chapter
+handoffs use the runner-derived `chapters/NN-title-slug.md` path and calculate
+word count and Markdown asset references themselves.
+
+The assets phase is intentionally substantial. It must produce at least
+`max(6, 3 * chapter_count)` varied supported files—not merely one asset per
+chapter—including Mermaid sources/renders and reproducible charts where
+appropriate. It must also place at least one raster image from the free
+Unsplash service under `assets/unsplash/` and write
+`assets/unsplash/manifest.json` with free `unsplash.com` source URLs. Unsplash+
+and paid sources are rejected by the gate. The manifest is provenance
+metadata; the transition tool does not download or create images.
+
+`create_build_book()` is different: it is a zero-argument compile utility that
+creates `<output_dir>/build_book.py`. It is not a phase transition. The
+completion transition remains verification-only and requires that the builder
+already exists and that `dist/` contains exactly one existing PDF with a
+`%PDF-` header. Transition receipts store compact metadata and canonical paths
+so checkpoint/resume preserves progress without copying provider memory or
+large research bodies.
 
 When `code_plan` reaches its human plan review, the overlay offers
 `Approve - Safe` and `Approve - YOLO`. The selected mode is carried into the

@@ -246,6 +246,15 @@ the reusable system prefix.
 All built-in workflow runners use this boundary: `code_plan`, `create_workflow`,
 `site_imitate`, `make_agenthicc_tool`, and `make_book`.
 
+`make_book` phase handoffs use one required argument: a concise `summary`.
+The agent writes the TOC manifest, research, many visual assets, chapters, and
+book matter to disk first; the runner derives and verifies their paths,
+inventories, counts, and PDF output. The assets phase requires at least
+`max(6, 3 * chapter_count)` varied files, including a free Unsplash raster and
+`assets/unsplash/manifest.json`; Unsplash+ and paid sources are rejected. See
+the [workflow guide](./docs/guides/workflows.md#make_book-phase-handoffs) for
+the exact calls and artifact layout.
+
 ### Transition tools
 
 Transition tools in generated runners must use the canonical bare `@tool_control` decorator imported from `agenthicc.tools.capabilities`, above `@tool()`. The authoring inspection tool `describe_transition_tool_pattern` shows the exact form, and strict validation catches factory-local import or decorator mistakes before the workflow is accepted.

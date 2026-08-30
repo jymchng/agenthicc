@@ -85,7 +85,7 @@ async def test_create_build_book_tool_writes_builder_without_advancing_phase(tmp
 
 
 @pytest.mark.asyncio
-async def test_mark_book_complete_creates_builder_as_safety_net(tmp_path) -> None:
+async def test_mark_book_complete_only_verifies_existing_pdf(tmp_path) -> None:
     event = asyncio.Event()
     data: dict[str, object] = {}
     tools = _make_compile_tools(
@@ -96,15 +96,20 @@ async def test_mark_book_complete_creates_builder_as_safety_net(tmp_path) -> Non
         author="Author",
     )
 
+    pdf = tmp_path / "dist" / "a-technical-book.pdf"
+    pdf.parent.mkdir()
+    pdf.write_bytes(b"%PDF-1.7\nvalid test fixture\n")
+
+    await _named_tool(tools, "create_build_book")()
     result = await _named_tool(tools, "mark_book_complete")(
-        pdf_path="dist/a-technical-book.pdf",
-        summary="Built and validated.",
+        summary="The existing PDF was compiled and validated."
     )
 
     assert result["ok"] is True
     assert event.is_set() is True
     assert (tmp_path / "build_book.py").is_file()
     assert data["build_script_path"] == str(tmp_path / "build_book.py")
+    assert data["pdf_path"] == "dist/a-technical-book.pdf"
 
 
 @pytest.mark.asyncio
