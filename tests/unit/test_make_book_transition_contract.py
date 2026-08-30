@@ -404,6 +404,9 @@ def test_make_book_prompts_define_generated_toc_and_layout_phases() -> None:
     assert "contents.md" in phases["back_matter"].system_prompt_override
     assert "6.175in" in phases["layout_review"].system_prompt_override
     assert "8.05in" in phases["final_layout_review"].system_prompt_override
+    assert "600-DPI REQUIREMENT" in phases["assets"].system_prompt_override
+    assert "savefig(..., dpi=600)" in phases["assets"].system_prompt_override
+    assert "mermaid-cli PNG output with Pillow" in phases["assets"].system_prompt_override
     assert len(make_book.MakeBookWorkflow.phases) == 9
 
 

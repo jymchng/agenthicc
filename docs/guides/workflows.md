@@ -257,6 +257,16 @@ Unsplash service under `assets/unsplash/` and write
 and paid sources are rejected by the gate. The manifest is provenance
 metadata; the transition tool does not download or create images.
 
+The ASSETS agent is explicitly instructed to generate every rasterized figure,
+chart, photograph, and rendered Mermaid diagram at a minimum of 600 DPI on
+both axes. Matplotlib charts should use `savefig(..., dpi=600)` or higher;
+Mermaid PNG output should be reopened and exported with Pillow at
+`dpi=(600, 600)` or higher. `.mmd` files, chart scripts, and SVG sources are
+kept for reproducibility and are resolution-independent themselves; any
+rasterized derivative must meet the 600-DPI minimum. This is an authoring
+requirement rather than an additional artifact-verification or mutation step
+in `confirm_assets_ready`.
+
 Two layout-review phases run around front/back matter. They inspect every
 Markdown source that will be compiled, including image references and pipe
 tables. Images and diagrams must fit within 6.175 inches of rendered width

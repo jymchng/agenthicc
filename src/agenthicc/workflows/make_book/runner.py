@@ -1133,7 +1133,7 @@ def _make_assets_tools(
         event.set()
         return {
             "ok": True,
-            "message": f"{len(data['assets'])} assets confirmed. The chapter phases start next.",
+            "message": (f"{len(data['assets'])} assets confirmed. The chapter phases start next."),
         }
 
     return [confirm_assets_ready]
@@ -2364,6 +2364,16 @@ class MakeBookRunner(CodePlanRunner):
                     f"Book: {ctx.title}\nAssets dir: {ctx.assets_dir or '<output_dir>/assets'}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
                     f"Chapter outlines:\n{ctx.toc_summary or '(see plan)'}\n\n"
+                    "600-DPI ASSET REQUIREMENT (mandatory): every rasterized figure, "
+                    "chart, photograph, and Mermaid diagram must be generated at a "
+                    "minimum of 600 DPI in both axes. For matplotlib use "
+                    "savefig(..., dpi=600) or higher; for downloaded photos, export "
+                    "a 600-DPI raster copy; for mermaid-cli PNG output, reopen and "
+                    "save it with Pillow using dpi=(600, 600) or higher. Keep .mmd, chart scripts, "
+                    "and other source files for reproducibility; vector SVG/MMD source "
+                    "files are resolution-independent, but every rasterized derivative "
+                    "must meet the 600-DPI minimum. Do not defer this requirement to "
+                    "the compile phase.\n\n"
                     "Create the assets directory if missing, then generate BOTH kinds "
                     "of visual assets \u2014 mermaid diagrams AND matplotlib graphs:\n"
                     "For PHOTOGRAPHIC / ILLUSTRATIVE images (real-world photos, scenery, "
@@ -3012,6 +3022,13 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "assets: produce at least max(6, 3 * chapter_count) supported files, "
                 "not merely one asset per chapter. Include varied diagrams, charts, "
                 "and illustrations. "
+                "600-DPI REQUIREMENT (mandatory): generate every rasterized figure, "
+                "chart, photo, and Mermaid PNG at a minimum of 600 DPI in both axes. "
+                "Use matplotlib savefig(..., dpi=600) or higher, and post-process "
+                "mermaid-cli PNG output with Pillow using dpi=(600, 600) or higher. "
+                "Do not defer this to compilation. SVG and .mmd source files are "
+                "resolution-independent, but their rasterized derivatives must meet "
+                "the 600-DPI minimum. "
                 "(1) MERMAID DIAGRAMS for structural/flow content "
                 "(architectures, state machines, flowcharts, sequence/ER diagrams, "
                 "network topologies) \u2014 write a .mmd source per diagram and render "
