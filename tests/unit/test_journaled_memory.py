@@ -102,6 +102,50 @@ class TestRollbackAndCompaction:
         j.close()
 
 
+class TestProviderStepRecovery:
+    def test_step_checkpoint_methods_journal_boundaries_without_copying_history(
+        self, tmp_path
+    ) -> None:
+        j, mem = _make(tmp_path)
+        mem.add_user("intent")
+        mem.begin_logical_turn("turn-1", "intent", conversation_id="session-1")
+        _checkpoint = mem.begin_provider_step(
+            "turn-1",
+            "turn-1:0",
+            "turn-1:0:a",
+            step_index=0,
+        )
+        mem.add_assistant(_completion("committed"))
+        mem.commit_provider_step("turn-1", "turn-1:0", step_index=0)
+        next_checkpoint = mem.begin_provider_step(
+            "turn-1",
+            "turn-1:1",
+            "turn-1:1:a",
+            step_index=1,
+        )
+        mem.add_assistant(_completion("attempt-only"))
+        mem.rollback_uncommitted_attempt(
+            next_checkpoint,
+            turn_id="turn-1",
+            step_id="turn-1:1",
+        )
+        mem.record_partial_fragment("turn-1", "partial output", step_id="turn-1:1")
+
+        # The helper's checkpoint is independent, and the rollback removes only
+        # the uncommitted tail. Partial output is diagnostic, not provider memory.
+        assert [message["content"] for message in mem._messages] == [
+            "intent",
+            "committed",
+        ]
+        folded, _summary = fold_path(j.path)
+        assert folded == list(mem._messages)
+        entries = [line for line in j.path.read_text().splitlines() if line.strip()]
+        assert any('"kind": "step_started"' in line for line in entries)
+        assert any('"kind": "step_committed"' in line for line in entries)
+        assert any('"kind": "partial_fragment"' in line for line in entries)
+        j.close()
+
+
 class TestRetryIdempotencyWithJournal:
     """The Phase 1 ledger + Phase 2 journal cooperating across a turn retry."""
 

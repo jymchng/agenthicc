@@ -1,11 +1,11 @@
-"""Shared transport-retry helper with memory rollback (PRD-126).
+"""Shared transport-retry helper with scoped memory recovery (PRD-126/182).
 
-``run_with_transport_retry`` is the single mechanism used by every code path
-that drives an LLM turn — workflow phases, composite ``run_phase`` calls,
-direct TUI turns, and subagent workers.  It snapshots the conversation memory
-before each attempt and restores it on a transient network error so the next
-attempt starts from a clean, pre-turn history (avoiding the double-user-message
-400 that naive transport-level retries cause).
+``run_with_transport_retry`` handles atomic/stateless calls and remains
+available to workflow phases, composite calls, direct TUI turns, and subagent
+workers. It snapshots the conversation memory before each callable attempt
+and restores it on a transient network error. Multi-step streaming turns must
+be retried by lauren-ai at the provider-step boundary; agenthicc deliberately
+does not wrap those turns in a whole-turn retry.
 
 Bounds and safety:
 
@@ -73,13 +73,15 @@ async def run_with_transport_retry(
     deadline_monotonic: float | None = None,
     on_retry: Callable[[int, int, float, BaseException], Awaitable[None] | None] | None = None,
     reset_fns: Sequence[Callable[[], None]] = (),
+    checkpoint_provider: Callable[[], object | None] | None = None,
 ) -> None:
-    """Run *turn_fn* with snapshot-rollback retry on transient network errors.
+    """Run *turn_fn* with scoped retry on transient network errors.
 
     :param turn_fn: Zero-arg coroutine performing one full agent turn.  It is
-        responsible for any memory mutation (e.g. ``run_stream`` adds the user
-        message); the snapshot/restore here guarantees each call sees a clean
-        history.
+        responsible for any memory mutation. For atomic callables, the
+        snapshot/restore here guarantees each attempt sees a clean history.
+        A multi-step caller must provide ``checkpoint_provider`` and advance it
+        only after a committed step.
     :param config: Retry bounds.
     :param memory: ``ShortTermMemory`` to snapshot/restore.  When ``None`` (or
         lacking ``snapshot``/``restore``) no rollback is performed — retry
@@ -89,6 +91,10 @@ async def run_with_transport_retry(
     :param on_retry: Optional callback ``(attempt, max_retries, delay, exc)``
         fired before each backoff sleep.  May be sync or async.
     :param reset_fns: Side-effect rollback callbacks run after memory restore.
+    :param checkpoint_provider: Optional callback returning the latest safe
+        snapshot. When supplied, transient retry restores this snapshot rather
+        than the snapshot taken before the whole callable. This is required
+        when a callable contains multiple internally committed steps.
     :raises BaseException: The last error when retries are exhausted, or
         immediately for permanent / cancellation errors.
     """
@@ -109,9 +115,15 @@ async def run_with_transport_retry(
             if not _is_transient_network_error(exc) or attempt >= config.max_retries:
                 raise
 
-            # 1. Roll back conversation memory to the pre-turn snapshot.
-            if snapshot is not None and memory is not None:
-                memory.restore(snapshot)
+            # 1. Roll back only the uncommitted portion. A step-aware caller
+            # advances this checkpoint after each committed provider step;
+            # falling back to the attempt snapshot preserves old atomic-call
+            # behavior for stateless/one-shot users of this helper.
+            recovery_snapshot = (
+                checkpoint_provider() if checkpoint_provider is not None else snapshot
+            )
+            if recovery_snapshot is not None and memory is not None:
+                memory.restore(recovery_snapshot)
 
             # 2. Roll back side effects (approval state, etc.).
             for fn in reset_fns:

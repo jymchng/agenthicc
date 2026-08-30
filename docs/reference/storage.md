@@ -12,7 +12,7 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>.jsonl` | kernel `EventProcessor` | Serialized domain events | `restore_from_log()` folds valid events |
 | `<id>/metadata.json` | `tui.runtime.session_log` | cwd, model, timestamps | Session discovery/index |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
-| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, turn markers, tool records, subagent worker/pool results, and versioned usage records | Rebuild memory, restore usage, resume interrupted turns, and recover complete subagent results |
+| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, tool records, subagent worker/pool results, and versioned usage records | Rebuild memory, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns, and recover complete subagent results |
 | `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
 | `<id>/.owner.lock` | `SessionOwnerLease` | Short per-session critical section for owner publication, stale replacement, and release | OS advisory lock; never held for the session lifetime |
 | `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase/branch cursor, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
@@ -70,6 +70,40 @@ before provider I/O. A known cancellation/queued-continuation race is also
 repaired by moving its matching late result back beside the assistant call and
 writing one durable reset. Invalid unknown, duplicate, empty, or ambiguous
 non-adjacent exchanges fail closed rather than being silently rewritten.
+
+### Provider-step recovery
+
+The journal separates a user-facing logical turn from the provider requests
+inside it. A streaming turn can append several valid assistant/tool exchanges
+before a later network failure. The relevant records are:
+
+```text
+turn_started(T)
+step_started(T, T:0, attempt-a)
+step_committed(T, T:0, cursor=C0)
+step_started(T, T:1, attempt-b)
+step_interrupted(T, T:1, partial_chars=N)
+partial_fragment(T, T:1, bounded text)
+turn_failed(T, last_committed_step=T:0, cursor=C0)
+```
+
+`fold_path()` ignores receipts and partial fragments when rebuilding provider
+messages. `fold_resume_state()` returns the latest committed step and the
+interrupted step alongside the legacy `base_count`, allowing a resumed turn to
+continue from the durable projection instead of rolling back to the start of
+the user submission. The step runner may restore only the current attempt's
+checkpoint. It must not restore a pre-turn snapshot after `step_committed`.
+
+`turn_failed` is terminal bookkeeping for a provider/tool error and does not
+reset or replace the folded messages. `turn_aborted` remains the marker for an
+explicit user cancellation. A partial stream is diagnostic evidence and is
+never serialized as an ordinary assistant message, preventing malformed text
+or incomplete tool JSON from being sent on a later request. All new metadata
+is bounded and older journals containing only append/reset and legacy turn
+markers remain readable. Workflow rehydration writes the non-terminal
+`turn_recovery_started` marker while it is being handed off; only a completed
+resume may write `turn_recovered`, so a crash during recovery cannot hide the
+open turn.
 
 ### Subagent result records
 

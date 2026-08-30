@@ -385,6 +385,15 @@ and the repair is persisted in the conversation journal. If history is
 ambiguous, the request is blocked locally with a safe invariant diagnostic
 instead of sending a malformed provider payload.
 
+A streaming user turn may contain multiple provider steps. A late provider
+failure retries only its current step and preserves all earlier committed
+assistant/tool messages. The journal records step starts, commits,
+interruptions, and a terminal `turn_failed` marker; bounded partial output is
+shown as interrupted transcript evidence, never as a completed assistant
+message. A subsequent message continues with the same session memory and
+conversation ID, so it can ask about or build on work completed before the
+failure.
+
 Export a portable, redacted support artifact with:
 
 ```bash

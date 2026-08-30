@@ -70,6 +70,7 @@ def test_process_interrupted_checkpoint_is_rehydrated_at_exact_typed_state(
     conversation = _conversation(tmp_path)
     try:
         store, handle = _running_checkpoint(tmp_path, conversation)
+        conversation.journal.turn_started("turn-1", "continue the workflow", base_count=0)
         coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
 
         records = coordinator.inspect(
@@ -95,6 +96,13 @@ def test_process_interrupted_checkpoint_is_rehydrated_at_exact_typed_state(
         assert restored.context.state is CodePlanState.PLAN
         assert restored.context.shared_memory is conversation.memory
         assert store.claim_owner("run-1") == "test-owner"
+        journal_entries = [
+            json.loads(line)
+            for line in conversation.journal.path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert journal_entries[-1]["kind"] == "turn_recovery_started"
+        assert conversation.journal.resume_state() is not None
         restored.release_claim()
         assert store.claim_owner("run-1") is None
         # The original in-memory handle was never the durable owner.

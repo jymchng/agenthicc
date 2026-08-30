@@ -379,6 +379,7 @@ def _workflow_summary(records: list[object], redactor: _Redactor) -> dict[str, o
 def _resume_summary(records: list[object]) -> dict[str, object]:
     started: list[tuple[str, int]] = []
     completed: set[str] = set()
+    terminal: set[str] = set()
     tool_counts: dict[str, int] = {}
 
     for record in records:
@@ -391,11 +392,14 @@ def _resume_summary(records: list[object]) -> dict[str, object]:
             started.append((turn_id, _integer(entry.get("base_count"))))
         elif kind == "turn_completed" and turn_id:
             completed.add(turn_id)
+            terminal.add(turn_id)
+        elif kind in {"turn_failed", "turn_aborted", "turn_recovered"} and turn_id:
+            terminal.add(turn_id)
         elif kind == "tool_recorded" and turn_id:
             _increment(tool_counts, turn_id)
 
     for turn_id, base_count in reversed(started):
-        if turn_id not in completed:
+        if turn_id not in terminal:
             return {
                 "incomplete": True,
                 "turn_id": turn_id,

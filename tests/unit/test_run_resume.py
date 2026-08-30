@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -17,7 +18,7 @@ from agenthicc.memory.journal import (
     journal_path_for,
 )
 from agenthicc.memory.journaled import JournaledShortTermMemory
-from agenthicc.runners.agent_turn import AgentTurnRunner
+from agenthicc.runners.agent_turn import AgentTurnRunner, _TurnRecoveryEventSink
 from agenthicc.runners.durable_ledger import DurableIdempotencyLedger
 from agenthicc.runners.run_coordinator import RunCoordinator
 from agenthicc.runners.agent_turn import _preserve_interrupted_memory
@@ -90,6 +91,72 @@ class TestFoldResumeState:
         j.close()
         inc = fold_resume_state(jp)
         assert inc is not None and inc.turn_id == "turn-2"
+
+    def test_step_receipts_expose_safe_cursor_and_interrupted_step(self, tmp_path) -> None:
+        jp = tmp_path / "j.jsonl"
+        j = ConversationJournal(jp)
+        j.turn_started("turn-1", "continue the work", base_count=1, conversation_id="session-1")
+        j.step_started("turn-1", "turn-1:0", "turn-1:0:a", step_index=0)
+        j.step_committed("turn-1", "turn-1:0", step_index=0, cursor=12, message_count=4)
+        j.step_started("turn-1", "turn-1:1", "turn-1:1:a", step_index=1)
+        j.step_interrupted(
+            "turn-1",
+            "turn-1:1",
+            "turn-1:1:a",
+            error_kind="TransientTransportError",
+            partial_chars=128,
+            retryable=True,
+        )
+        j.close()
+
+        incomplete = fold_resume_state(jp)
+        assert incomplete is not None
+        assert incomplete.last_committed_step == "turn-1:0"
+        assert incomplete.last_committed_cursor == 12
+        assert incomplete.interrupted_step_id == "turn-1:1"
+        assert incomplete.interrupted_attempt_id == "turn-1:1:a"
+
+        entries = [json.loads(line) for line in jp.read_text(encoding="utf-8").splitlines()]
+        started_entry = next(entry for entry in entries if entry["kind"] == "step_started")
+        assert isinstance(started_entry["base_cursor"], int)
+
+    def test_failed_turn_is_terminal_but_does_not_remove_messages(self, tmp_path) -> None:
+        jp = tmp_path / "j.jsonl"
+        j = ConversationJournal(jp)
+        j.turn_started("turn-1", "do work", base_count=0)
+        j.append_message({"role": "user", "content": "do work"})
+        j.step_committed("turn-1", "turn-1:0", step_index=0, message_count=2)
+        j.turn_failed(
+            "turn-1",
+            last_committed_step="turn-1:0",
+            error_kind="transport",
+            retryable=True,
+        )
+        j.close()
+
+        assert fold_resume_state(jp) is None
+        reopened = ConversationJournal(jp)
+        messages, _summary = reopened.fold()
+        reopened.close()
+        assert messages == [{"role": "user", "content": "do work"}]
+
+    def test_recovery_started_is_non_terminal_until_recovery_finishes(self, tmp_path) -> None:
+        jp = tmp_path / "j.jsonl"
+        j = ConversationJournal(jp)
+        j.turn_started("turn-1", "resume work", base_count=1)
+        j.step_committed("turn-1", "turn-1:0", step_index=0, message_count=2)
+        j.turn_recovery_started("turn-1")
+        j.close()
+
+        incomplete = fold_resume_state(jp)
+        assert incomplete is not None
+        assert incomplete.turn_id == "turn-1"
+        assert incomplete.last_committed_step == "turn-1:0"
+
+        j = ConversationJournal(jp)
+        j.turn_recovered("turn-1")
+        j.close()
+        assert fold_resume_state(jp) is None
 
 
 # ── DurableIdempotencyLedger ─────────────────────────────────────────────────
@@ -246,6 +313,64 @@ class TestRunCoordinatorCycle:
 
 
 @pytest.mark.asyncio
+async def test_failed_turn_marker_retains_prior_context(tmp_path) -> None:
+    """A handled provider failure closes the turn without a destructive reset."""
+    from lauren_ai._exceptions import TransientTransportError
+
+    journal = ConversationJournal(tmp_path / "j.jsonl")
+    memory = JournaledShortTermMemory(journal, max_tokens=32_000)
+    memory.add_user("earlier request")
+    memory.add_assistant({"role": "assistant", "content": "completed step"})
+
+    class ExecutionConfig:
+        auto_compact = True
+        max_output_tokens = 512
+        transport_max_retries = 0
+        transport_retry_base_delay_s = 0.0
+        transport_retry_max_total_s = 0.0
+
+        @staticmethod
+        def effective_context_window() -> int:
+            return 8_192
+
+        @staticmethod
+        def effective_usable_budget() -> int:
+            return 7_000
+
+    ctx = AgentTurnContext(
+        text="continue",
+        runner=SimpleNamespace(_transport=None, _signals=None),  # type: ignore[arg-type]
+        processor=MagicMock(),
+        session_memory=memory,
+        conversation_id="session-1",
+        conv_store=MagicMock(),
+        exec_cfg=ExecutionConfig(),  # type: ignore[arg-type]
+    )
+    runner = AgentTurnRunner(ctx)
+    runner._intent_id = "failed-turn"
+    runner._agent_id = "agent-failed"
+    runner._model_id = "test-model"
+
+    async def fail_once(_stream_once) -> None:
+        raise TransientTransportError("late provider failure", status_code=503)
+
+    runner._stream_with_retry = fail_once  # type: ignore[method-assign]
+    active_runner = SimpleNamespace(_transport=None, supports_step_recovery=True)
+
+    await runner._stream(object(), "continue", active_runner)  # type: ignore[arg-type]
+
+    assert memory._messages == [
+        {"role": "user", "content": "earlier request"},
+        {"role": "assistant", "content": "completed step"},
+    ]
+    entries = [json.loads(line) for line in journal.path.read_text().splitlines() if line.strip()]
+    assert entries[-1]["kind"] == "turn_failed"
+    assert entries[-1]["turn_id"] == "failed-turn"
+    assert fold_resume_state(journal.path) is None
+    journal.close()
+
+
+@pytest.mark.asyncio
 async def test_agent_turn_cancellation_preserves_context_for_the_next_prompt(tmp_path) -> None:
     """Cancellation must retain completed tool context instead of rolling back the turn."""
 
@@ -316,3 +441,51 @@ def test_journal_path_for_is_under_sessions() -> None:
     p = journal_path_for("abc")
     assert p.parent.parent.name == "sessions"
     assert isinstance(IncompleteTurn("t", "m", 0), IncompleteTurn)
+
+
+@pytest.mark.asyncio
+async def test_turn_recovery_sink_projects_step_receipts_and_partial_output(tmp_path) -> None:
+    journal = ConversationJournal(tmp_path / "j.jsonl")
+    conv_store = MagicMock()
+    committed: list[str] = []
+    sink = _TurnRecoveryEventSink(journal, conv_store, committed.append)
+
+    class AgentStepStarted:
+        run_id = "turn-1"
+        step_id = "turn-1:0"
+        attempt_id = "turn-1:0:a"
+        step_index = 0
+
+    class AgentStepInterrupted:
+        run_id = "turn-1"
+        step_id = "turn-1:1"
+        attempt_id = "turn-1:1:a"
+        error_kind = "TransientTransportError"
+        partial_chars = 7
+        partial_text = "partial"
+        retryable = True
+
+    class AgentStepCommitted:
+        run_id = "turn-1"
+        step_id = "turn-1:0"
+        step_index = 0
+        message_count = 2
+
+    await sink.on_signal(AgentStepStarted())
+    await sink.on_signal(AgentStepInterrupted())
+    await sink.on_signal(AgentStepCommitted())
+
+    entries = [json.loads(line) for line in journal.path.read_text().splitlines() if line.strip()]
+    assert [entry["kind"] for entry in entries] == [
+        "step_started",
+        "step_interrupted",
+        "partial_fragment",
+        "step_committed",
+    ]
+    assert entries[2]["text"] == "partial"
+    assert committed == ["turn-1:0"]
+    conv_store.append_event.assert_called_once_with(
+        "assistant_partial",
+        {"text": "partial", "interrupted": True},
+    )
+    journal.close()

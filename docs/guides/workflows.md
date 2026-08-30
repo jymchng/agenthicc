@@ -94,6 +94,13 @@ Corrupt checkpoints, incompatible plugins/profiles/workspaces, cursor drift,
 and unrecoverable tool tails stay on disk for diagnosis and produce a stable
 error plus a reset/reload action. They are never replaced by a new run.
 
+Provider-step recovery is separate from workflow recovery. A workflow resume
+may record `turn_recovery_started` while it rehydrates the shared journal, but
+that marker is non-terminal: a crash during rehydration leaves the interrupted
+turn discoverable on the next attach. Only the resumed turn's successful
+completion writes the terminal `turn_recovered` marker. This prevents a restart
+window from hiding the very history it is meant to preserve.
+
 ### Workflow errors are saved before the TUI returns to idle
 
 All workflow setup, phase, provider, tool, timeout, and unexpected-cancellation

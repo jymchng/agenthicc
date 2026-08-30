@@ -5,7 +5,8 @@ crash, a kill, an unhandled error — and prepares everything needed to re-drive
 it from where it left off:
 
 - the user message to re-submit,
-- the rollback point (pre-turn message count), and
+    - the historical rollback point (retained for compatibility),
+    - the latest committed provider-step cursor, and
 - a durable idempotency ledger seeded with the tools that already ran, so their
   side effects are replayed rather than repeated.
 
@@ -32,6 +33,9 @@ class ResumePlan:
     user_message: str
     base_count: int
     ledger: DurableIdempotencyLedger
+    last_committed_step: str = ""
+    last_committed_cursor: int | None = None
+    interrupted_step_id: str | None = None
 
 
 class RunCoordinator:
@@ -55,4 +59,7 @@ class RunCoordinator:
             user_message=incomplete.user_message,
             base_count=incomplete.base_count,
             ledger=ledger,
+            last_committed_step=incomplete.last_committed_step,
+            last_committed_cursor=incomplete.last_committed_cursor,
+            interrupted_step_id=incomplete.interrupted_step_id,
         )

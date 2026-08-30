@@ -159,9 +159,9 @@ the code rather than hard-coding them in support material.
 | `context_windows` | `{}` | Model id → context window under `[memory.context_windows]` |
 | `prompt_cache` | true | Enable provider prompt-cache integration where supported |
 | `file_cache` | true | Enable freshness-validated workspace file cache |
-| `transport_max_retries` | 3 | Turn-level transport retry count |
-| `transport_retry_base_delay_s` | 1.0 | Exponential retry base delay |
-| `transport_retry_max_total_s` | 0 | Optional retry wall-clock ceiling |
+| `transport_max_retries` | 3 | Provider-step transport retry count; never retries a whole multi-step turn |
+| `transport_retry_base_delay_s` | 1.0 | Exponential provider-step retry base delay |
+| `transport_retry_max_total_s` | 0 | Optional provider-step retry wall-clock ceiling |
 | `llm_sdk_max_retries` | 2 | Provider SDK retry count |
 
 The live usable context budget is derived from the resolved model window and

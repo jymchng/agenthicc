@@ -163,6 +163,34 @@ def test_inspect_reports_clean_resume_state(tmp_path: Path) -> None:
     }
 
 
+def test_inspect_treats_failed_turn_as_terminal_without_erasing_context(tmp_path: Path) -> None:
+    session_id = "session-failed-turn"
+    _write_jsonl(tmp_path / f"{session_id}.jsonl", [{"event_type": "IntentCreated"}])
+    _write_jsonl(
+        tmp_path / session_id / "conversation-journal.jsonl",
+        [
+            {"kind": "turn_started", "turn_id": "turn-1", "base_count": 0},
+            {"kind": "append", "message": {"role": "assistant", "content": "kept"}},
+            {
+                "kind": "turn_failed",
+                "turn_id": "turn-1",
+                "last_committed_step": "turn-1:0",
+            },
+        ],
+    )
+
+    summary = session_export.inspect_session(session_id, sessions_dir=tmp_path)
+
+    assert summary["resume"] == {
+        "incomplete": False,
+        "turn_id": None,
+        "base_count": None,
+        "tool_records": 0,
+        "turns_started": 1,
+        "turns_completed": 0,
+    }
+
+
 def test_inspect_rejects_missing_and_escaping_session_ids(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="Session not found"):
         session_export.inspect_session("missing", sessions_dir=tmp_path)

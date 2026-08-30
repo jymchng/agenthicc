@@ -30,8 +30,17 @@ Queue one response for every expected LLM round-trip. Exercise:
 - rejection and retry loops;
 - parallel phases and failure handling;
 - context compaction and model-window limits;
-- transport retry rollback;
+- provider-step transport retry (a late failure must not roll back an earlier
+  committed step);
 - journal resume and idempotent tool replay.
+
+PRD-182 fault-injection tests should distinguish a logical user turn from its
+provider steps. A fake stream must fail before bytes, after partial text, and
+after a prior tool exchange. Assert the exact provider message list on the
+retry/follow-up request, the step receipts and folded journal, the absence of
+partial text from ordinary provider messages, and the side-effecting tool's
+execution count. Use a fresh journal-backed memory instance to verify the same
+committed prefix survives restart.
 
 `reconstruct_site` adds deterministic evidence-contract coverage in
 `tests/unit/test_reconstruct_evidence_prd177.py`, integration coverage in

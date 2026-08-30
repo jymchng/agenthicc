@@ -12,9 +12,11 @@ Entry format — one JSON object per line::
 
     {"seq": 0, "kind": "append", "message": {...}}
     {"seq": 1, "kind": "reset",  "messages": [...], "summary": "..."}
-    {"seq": 2, "kind": "turn_started",   "turn_id": "...", "user_message": "...", "base_count": 4}
-    {"seq": 3, "kind": "tool_recorded",  "turn_id": "...", "key": "...", "result": {...}}
-    {"seq": 4, "kind": "turn_completed", "turn_id": "..."}
+    {"seq": 2, "kind": "turn_started",   "turn_id": "...", "schema_version": 2}
+    {"seq": 3, "kind": "step_started",  "turn_id": "...", "step_id": "...", "attempt_id": "..."}
+    {"seq": 4, "kind": "step_committed", "turn_id": "...", "step_id": "...", "cursor": 7}
+    {"seq": 5, "kind": "partial_fragment", "turn_id": "...", "text": "..."}
+    {"seq": 6, "kind": "turn_failed",   "turn_id": "...", "last_committed_step": "..."}
 
 Subagent worker and pool results are auxiliary records in this journal. They
 are ignored by the provider-message fold and projected separately by the
@@ -22,12 +24,14 @@ subagent resume cache. This matters when a parent is cancelled after a pool
 finishes but before lauren-ai commits the parent tool exchange.
 
 :func:`fold_path` (Phase 2) replays ``append`` / ``reset`` to rebuild the message
-list, ignoring the Phase 3 markers.  :func:`fold_resume_state` (Phase 3) replays
-the turn markers + tool records to find an **incomplete** turn (a
-``turn_started`` with no matching ``turn_completed``) and the tools it already
-ran — everything a :class:`RunCoordinator` needs to resume it.  A corrupt
-trailing line — the signature of a crash mid-write — is skipped, mirroring the
-kernel's ``restore_from_log``.
+list, ignoring lifecycle and diagnostic records.  :func:`fold_resume_state`
+(Phase 3/PRD-182) replays turn markers, step receipts, and tool records to find
+an **incomplete** turn (a ``turn_started`` with no matching terminal marker),
+including its latest safe provider-step cursor. A corrupt trailing line — the
+signature of a crash mid-write — is skipped, mirroring the kernel's
+``restore_from_log``. ``turn_recovery_started`` is non-terminal; only
+``turn_recovered`` written after a completed recovery handoff closes that
+legacy lifecycle marker.
 """
 
 from __future__ import annotations
@@ -56,15 +60,25 @@ class IncompleteTurn:
     :param turn_id: The turn's stable identifier (reused when re-driving).
     :param user_message: The user message that drove the turn (re-submitted).
     :param base_count: Message count *before* the turn began — the rollback
-        point so the re-drive starts from a clean pre-turn history.
+        point retained for legacy consumers. New recovery must not use it to
+        erase committed provider steps.
     :param tool_records: ``(key, result_payload)`` for every tool the turn
         already executed, in order; replayed so side effects don't repeat.
+    :param last_committed_step: The most recent durable provider-step ID.
+    :param last_committed_cursor: Journal cursor recorded for that step.
+    :param interrupted_step_id: The provider step that was active at failure,
+        when the journal contains a step interruption receipt.
+    :param interrupted_attempt_id: The failed provider attempt ID, when known.
     """
 
     turn_id: str
     user_message: str
     base_count: int
     tool_records: list[tuple[str, object]] = field(default_factory=list)
+    last_committed_step: str = ""
+    last_committed_cursor: int | None = None
+    interrupted_step_id: str | None = None
+    interrupted_attempt_id: str | None = None
 
 
 def journal_path_for(session_id: str) -> Path:
@@ -109,15 +123,18 @@ def fold_resume_state(path: Path) -> IncompleteTurn | None:
     """Find the last incomplete turn in a journal, or ``None`` if all complete.
 
     An incomplete turn is a ``turn_started`` whose ``turn_id`` has no later
-    ``turn_completed`` — the signature of a crash mid-turn.  Its already-executed
-    tool results (``tool_recorded`` entries) are returned so the re-drive can
-    replay them instead of re-running their side effects.
+    terminal marker (``turn_completed``, ``turn_failed``, or ``turn_aborted``)
+    — the signature of a crash mid-turn. Its already-executed tool results
+    (``tool_recorded`` entries) and step receipts are returned so the re-drive
+    can replay them instead of re-running their side effects.
     """
     if not path.exists():
         return None
     started: list[tuple[str, str, int]] = []  # (turn_id, user_message, base_count)
     completed: set[str] = set()
     records: dict[str, list[tuple[str, object]]] = {}
+    committed: dict[str, tuple[str, int | None]] = {}
+    interrupted: dict[str, tuple[str, str]] = {}
     with path.open("r", encoding="utf-8") as fh:
         for raw in fh:
             line = raw.strip()
@@ -134,14 +151,40 @@ def fold_resume_state(path: Path) -> IncompleteTurn | None:
                     (tid, entry.get("user_message", ""), int(entry.get("base_count", 0)))
                 )
                 records.setdefault(tid, [])
-            elif kind in {"turn_completed", "turn_aborted", "turn_recovered"}:
+            elif kind in {"turn_completed", "turn_aborted", "turn_failed", "turn_recovered"}:
                 completed.add(entry["turn_id"])
             elif kind == "tool_recorded":
                 records.setdefault(entry["turn_id"], []).append((entry["key"], entry.get("result")))
+            elif kind == "step_committed":
+                turn_id = str(entry.get("turn_id", ""))
+                if turn_id:
+                    raw_cursor = entry.get("cursor")
+                    committed[turn_id] = (
+                        str(entry.get("step_id", "")),
+                        int(raw_cursor) if isinstance(raw_cursor, int) else None,
+                    )
+            elif kind == "step_interrupted":
+                turn_id = str(entry.get("turn_id", ""))
+                if turn_id:
+                    interrupted[turn_id] = (
+                        str(entry.get("step_id", "")),
+                        str(entry.get("attempt_id", "")),
+                    )
     # The most recent started-but-not-completed turn is the one to resume.
     for tid, user_message, base_count in reversed(started):
         if tid not in completed:
-            return IncompleteTurn(tid, user_message, base_count, records.get(tid, []))
+            last_step, last_cursor = committed.get(tid, ("", None))
+            interrupted_step, interrupted_attempt = interrupted.get(tid, (None, None))
+            return IncompleteTurn(
+                tid,
+                user_message,
+                base_count,
+                records.get(tid, []),
+                last_committed_step=last_step,
+                last_committed_cursor=last_cursor,
+                interrupted_step_id=interrupted_step,
+                interrupted_attempt_id=interrupted_attempt,
+            )
     return None
 
 
@@ -176,28 +219,93 @@ class ConversationJournal:
         """Durably record one appended message."""
         self._write({"seq": self._seq, "kind": "append", "message": message})
 
-    def reset(self, messages: list[object], summary: str | None) -> None:
-        """Durably record a full-state replacement (rollback / compaction)."""
+    def reset(
+        self,
+        messages: list[object],
+        summary: str | None,
+        *,
+        turn_id: str = "",
+        step_id: str = "",
+        reason: str = "",
+    ) -> None:
+        """Durably record a full-state replacement (rollback / compaction).
+
+        Optional provider-step metadata makes an attempt-local rollback
+        auditable while keeping the original two-argument API compatible with
+        compaction and older callers.
+        """
+        entry: dict[str, object] = {
+            "seq": self._seq,
+            "kind": "reset",
+            "messages": list(messages),
+            "summary": summary,
+        }
+        if turn_id or step_id or reason:
+            entry.update(
+                {
+                    "schema_version": 1,
+                    "turn_id": str(turn_id)[:128],
+                    "step_id": str(step_id)[:160],
+                    "reason": str(reason)[:96],
+                }
+            )
+        self._write(entry)
+
+    def partial_fragment(
+        self,
+        turn_id: str,
+        *,
+        step_id: str = "",
+        attempt_id: str = "",
+        text: str,
+        interrupted: bool = True,
+    ) -> None:
+        """Persist bounded diagnostic text from an incomplete provider step.
+
+        A partial fragment is deliberately not an ``append`` message, so
+        journal folding never feeds it back to a provider as valid assistant
+        content. The TUI may project it as interrupted output.
+        """
         self._write(
             {
                 "seq": self._seq,
-                "kind": "reset",
-                "messages": list(messages),
-                "summary": summary,
+                "kind": "partial_fragment",
+                "schema_version": 1,
+                "turn_id": str(turn_id)[:128],
+                "step_id": str(step_id)[:160],
+                "attempt_id": str(attempt_id)[:160],
+                "text": str(text)[:16_384],
+                "interrupted": bool(interrupted),
             }
         )
 
     # ── Phase 3: turn lifecycle + durable tool records ───────────────────────
 
-    def turn_started(self, turn_id: str, user_message: str, base_count: int) -> None:
-        """Mark the start of a turn and the rollback point that precedes it."""
+    def turn_started(
+        self,
+        turn_id: str,
+        user_message: str,
+        base_count: int,
+        *,
+        conversation_id: str = "",
+        base_cursor: int | None = None,
+    ) -> None:
+        """Mark the start of a turn and its durable pre-turn checkpoint.
+
+        ``base_count`` is retained for old resume consumers. ``base_cursor``
+        and ``conversation_id`` make the newer step-aware recovery contract
+        explicit without changing how legacy journals fold.
+        """
         self._write(
             {
                 "seq": self._seq,
                 "kind": "turn_started",
-                "turn_id": turn_id,
+                "schema_version": 2,
+                "turn_id": str(turn_id)[:128],
+                "conversation_id": str(conversation_id)[:128],
                 "user_message": user_message,
-                "base_count": base_count,
+                "base_count": max(0, int(base_count)),
+                "base_cursor": base_cursor if base_cursor is not None else self._seq,
             }
         )
 
@@ -221,9 +329,136 @@ class ConversationJournal:
             }
         )
 
+    def turn_failed(
+        self,
+        turn_id: str,
+        *,
+        last_committed_step: str = "",
+        cursor: int | None = None,
+        error_kind: str = "error",
+        retryable: bool = False,
+    ) -> None:
+        """Close a failed turn without rolling back committed conversation state.
+
+        ``turn_failed`` is intentionally distinct from ``turn_aborted``:
+        cancellation is an intentional user action, while a provider/tool
+        failure is a durable outcome that must retain the valid messages
+        produced before the failure.
+        """
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "turn_failed",
+                "turn_id": turn_id,
+                "last_committed_step": last_committed_step,
+                "cursor": cursor if cursor is not None else self._seq,
+                "error_kind": str(error_kind)[:96],
+                "retryable": bool(retryable),
+            }
+        )
+
+    def step_started(
+        self,
+        turn_id: str,
+        step_id: str,
+        attempt_id: str,
+        *,
+        step_index: int,
+        base_cursor: int | None = None,
+    ) -> None:
+        """Record the beginning of one provider-step attempt.
+
+        ``base_cursor`` identifies the projection from which this attempt
+        started. It is diagnostic metadata only; folding still uses append and
+        reset records as the message source of truth.
+        """
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "step_started",
+                "schema_version": 1,
+                "turn_id": str(turn_id)[:128],
+                "step_id": str(step_id)[:160],
+                "attempt_id": str(attempt_id)[:160],
+                "step_index": max(0, int(step_index)),
+                "base_cursor": base_cursor if base_cursor is not None else self._seq,
+            }
+        )
+
+    def step_committed(
+        self,
+        turn_id: str,
+        step_id: str,
+        *,
+        step_index: int,
+        cursor: int | None = None,
+        message_count: int = 0,
+    ) -> None:
+        """Record a provider step after its messages are durable."""
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "step_committed",
+                "schema_version": 1,
+                "turn_id": str(turn_id)[:128],
+                "step_id": str(step_id)[:160],
+                "step_index": max(0, int(step_index)),
+                "cursor": cursor if cursor is not None else self._seq,
+                "message_count": max(0, int(message_count)),
+            }
+        )
+
+    def step_interrupted(
+        self,
+        turn_id: str,
+        step_id: str,
+        attempt_id: str,
+        *,
+        error_kind: str,
+        partial_chars: int,
+        retryable: bool,
+    ) -> None:
+        """Record a failed provider attempt without storing raw prompt data."""
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "step_interrupted",
+                "schema_version": 1,
+                "turn_id": str(turn_id)[:128],
+                "step_id": str(step_id)[:160],
+                "attempt_id": str(attempt_id)[:160],
+                "error_kind": str(error_kind)[:96],
+                "partial_chars": max(0, int(partial_chars)),
+                "retryable": bool(retryable),
+            }
+        )
+
     def turn_recovered(self, turn_id: str) -> None:
-        """Mark a crash-interrupted turn as recovered and re-driven."""
+        """Mark a crash-interrupted turn as fully recovered and re-driven.
+
+        This is a terminal marker retained for compatibility with callers that
+        write it after the resumed turn has actually been handed off. Recovery
+        discovery must use :meth:`turn_recovery_started` instead; writing this
+        marker before the resumed work runs would hide a second crash.
+        """
         self._write({"seq": self._seq, "kind": "turn_recovered", "turn_id": turn_id})
+
+    def turn_recovery_started(self, turn_id: str) -> None:
+        """Record that recovery was selected without closing the turn.
+
+        The marker is deliberately non-terminal. If the process dies after
+        this write but before the workflow is rehydrated, the original
+        ``turn_started`` remains discoverable and its durable message/step
+        projection can be resumed again.
+        """
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "turn_recovery_started",
+                "schema_version": 1,
+                "turn_id": str(turn_id)[:128],
+            }
+        )
 
     def tool_recorded(self, turn_id: str, key: str, result: object) -> None:
         """Durably record one executed tool result for idempotent replay."""

@@ -17,7 +17,7 @@ import os
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.runners.prompt_contract import PromptBlock
@@ -30,6 +30,7 @@ from agenthicc.tools.hooks import (
 )
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 def _config_value(config: object | None, name: str, default: object) -> object:
@@ -40,6 +41,20 @@ def _config_value(config: object | None, name: str, default: object) -> object:
         return object.__getattribute__(config, name)
     except AttributeError:
         return default
+
+
+def _optional_attribute(value: object | None, name: str, default: _T) -> _T:
+    """Read an optional attribute without weakening the static type surface."""
+    if value is None:
+        return default
+    try:
+        return cast(_T, value.__getattribute__(name))
+    except AttributeError:
+        try:
+            dynamic_getter = object.__getattribute__(value, "__getattr__")
+            return cast(_T, dynamic_getter(name))
+        except AttributeError:
+            return default
 
 
 def _require_tool_transaction_api(memory: object | None) -> None:
@@ -134,8 +149,9 @@ def _is_transient_network_error(exc: BaseException) -> bool:
 
     Checks for :class:`~lauren_ai._exceptions.TransientTransportError` and
     common timeout / connection error type names anywhere in the exception
-    chain (``__cause__`` and ``__context__``).  These errors are retriable
-    with a memory-snapshot rollback (PRD-126).
+    chain (``__cause__`` and ``__context__``).  The lauren-ai streaming runner
+    retries these at the current provider-step boundary; the outer agenthicc
+    turn no longer performs a destructive whole-turn rollback.
 
     :param exc: The exception raised by the LLM transport or SDK.
     :return: ``True`` when the error is a retriable network-level failure.
@@ -603,6 +619,102 @@ class _ToolRecoveryEventSink:
         )
 
 
+class _TurnRecoveryEventSink:
+    """Persist provider-step boundaries and advance the safe retry point."""
+
+    def __init__(
+        self,
+        journal: object,
+        conv_store: object | None,
+        on_step_committed: Callable[[str], None],
+        on_step_started: Callable[[str], None] | None = None,
+    ) -> None:
+        self._journal = journal
+        self._conv_store = conv_store
+        self._on_step_committed = on_step_committed
+        self._on_step_started = on_step_started
+
+    async def on_signal(self, signal: object) -> None:
+        name = type(signal).__name__
+        turn_id = str(_optional_attribute(signal, "run_id", "") or "")
+        step_id = str(_optional_attribute(signal, "step_id", "") or "")
+        if name == "AgentStepStarted":
+            record = _optional_attribute(self._journal, "step_started", None)
+            if callable(record):
+                record(
+                    turn_id,
+                    step_id,
+                    str(_optional_attribute(signal, "attempt_id", "") or ""),
+                    step_index=int(_optional_attribute(signal, "step_index", 0) or 0),
+                    base_cursor=int(_optional_attribute(self._journal, "cursor", 0) or 0),
+                )
+            if self._on_step_started is not None:
+                self._on_step_started(step_id)
+        elif name == "AgentStepRetryScheduled":
+            append_event = _optional_attribute(self._conv_store, "append_event", None)
+            if callable(append_event):
+                append_event(
+                    "system",
+                    {
+                        "text": (
+                            "⟳ Provider step failed; retrying "
+                            f"({int(_optional_attribute(signal, 'retry_number', 0) or 0)}/"
+                            f"{int(_optional_attribute(signal, 'max_retries', 0) or 0)})…"
+                        )
+                    },
+                )
+        elif name == "AgentStepInterrupted":
+            record = _optional_attribute(self._journal, "step_interrupted", None)
+            if callable(record):
+                record(
+                    turn_id,
+                    step_id,
+                    str(_optional_attribute(signal, "attempt_id", "") or ""),
+                    error_kind=str(_optional_attribute(signal, "error_kind", "error") or "error"),
+                    partial_chars=int(_optional_attribute(signal, "partial_chars", 0) or 0),
+                    retryable=bool(_optional_attribute(signal, "retryable", False)),
+                )
+            partial_text = str(_optional_attribute(signal, "partial_text", "") or "")[:16_384]
+            if partial_text:
+                partial_record = _optional_attribute(self._journal, "partial_fragment", None)
+                if callable(partial_record):
+                    try:
+                        partial_record(
+                            turn_id,
+                            step_id=step_id,
+                            attempt_id=str(_optional_attribute(signal, "attempt_id", "") or ""),
+                            text=partial_text,
+                        )
+                    except Exception:  # noqa: BLE001 - diagnostics never stop the agent
+                        logger.warning(
+                            "agenthicc: failed to persist provider partial fragment",
+                            exc_info=True,
+                        )
+                append_event = _optional_attribute(self._conv_store, "append_event", None)
+                if callable(append_event):
+                    try:
+                        append_event(
+                            "assistant_partial",
+                            {"text": partial_text, "interrupted": True},
+                        )
+                    except Exception:  # noqa: BLE001 - diagnostics never stop the agent
+                        logger.warning(
+                            "agenthicc: failed to project provider partial fragment",
+                            exc_info=True,
+                        )
+        elif name == "AgentStepCommitted":
+            record = _optional_attribute(self._journal, "step_committed", None)
+            if callable(record):
+                record(
+                    turn_id,
+                    step_id,
+                    step_index=int(_optional_attribute(signal, "step_index", 0) or 0),
+                    cursor=int(_optional_attribute(self._journal, "cursor", 0) or 0),
+                    message_count=int(_optional_attribute(signal, "message_count", 0) or 0),
+                )
+            self._on_step_committed(step_id)
+
+
 # ── AgentTurnRunner ───────────────────────────────────────────────────────────
 
 
@@ -640,6 +752,11 @@ class AgentTurnRunner:
         self._runtime_dynamic_blocks: list[PromptBlock] = []
         self._cache_summary: str | None = None
         self._usage_tracker: UsageRunTracker | None = None
+        self._step_recovery_supported = False
+        self._safe_snapshot_provider: Callable[[], object | None] | None = None
+        self._reset_attempt_output: Callable[[], None] | None = None
+        self._last_committed_step = ""
+        self._active_step_id = ""
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -1053,7 +1170,9 @@ class AgentTurnRunner:
         if callable(mcp_prompt):
             prompt_text = mcp_prompt()
             if isinstance(prompt_text, str) and prompt_text.strip():
-                effective_base += "\n\n### MCP server instructions (untrusted metadata)\n" + prompt_text
+                effective_base += (
+                    "\n\n### MCP server instructions (untrusted metadata)\n" + prompt_text
+                )
         if prompt_contract is None:
             system = (
                 effective_base
@@ -1304,9 +1423,9 @@ class AgentTurnRunner:
         message and provider/system/tool framing.
 
         ``force`` is used only after a provider explicitly rejects the request
-        for context length.  The caller restores the pre-attempt snapshot
-        before invoking this method, so the retried turn cannot duplicate its
-        user message.
+        for context length. The caller compacts the current projection in
+        place; it never restores a snapshot from before the logical turn, so
+        committed provider steps and the user message remain available.
         """
         ctx = self._ctx
         memory = ctx.session_memory
@@ -1334,9 +1453,7 @@ class AgentTurnRunner:
         before = estimate
         from agenthicc.memory.compactor import compact_memory  # noqa: PLC0415
 
-        max_completion_tokens = _config_value(
-            ctx.exec_cfg, "max_completion_tokens", None
-        )
+        max_completion_tokens = _config_value(ctx.exec_cfg, "max_completion_tokens", None)
         if not isinstance(max_completion_tokens, int):
             max_completion_tokens = None
 
@@ -1501,6 +1618,8 @@ class AgentTurnRunner:
             self._usage_tracker = usage_tracker
 
         turn_completed = False
+        turn_cancelled = False
+        turn_error: BaseException | None = None
 
         # PRD-135: auto-compaction is driven *inside* the run loop by lauren-ai's
         # exact-count compaction ladder (rung 1 — proactive LLM summarisation —
@@ -1587,17 +1706,38 @@ class AgentTurnRunner:
         # On a crash the absence of a matching turn_completed (written in the
         # finally below) flags this turn for resumption.
         if _journal is not None and ctx.session_memory is not None:
-            _journal.turn_started(self._intent_id, agent_text, len(ctx.session_memory._messages))
+            _journal.turn_started(
+                self._intent_id,
+                agent_text,
+                len(ctx.session_memory._messages),
+                conversation_id=ctx.conversation_id,
+                base_cursor=getattr(_journal, "cursor", None),
+            )
 
-        # PRD-126: one streaming attempt — the unit retried on transient network
-        # errors.  The user message is added inside run_stream(), so the retry
-        # helper snapshots session_memory before each attempt and restores it on
-        # a transient failure, guaranteeing a clean pre-turn history every time.
+        # PRD-182: the provider-step runner owns retries.  The outer callable is
+        # deliberately not retried because it can contain several committed
+        # provider/tool steps.  Re-running it from a pre-turn snapshot would
+        # erase the context needed by the next step.
         _attempt_number = [0]
+        _partial_stream_text: list[str] = []
+        _stream_seeded_user = [False]
+        _resume_existing_turn = [ctx.resume_turn_id is not None]
+        _partial_fragment_recorded = [False]
+        _output_attempt_start = [
+            len(ctx.output_collector) if ctx.output_collector is not None else 0
+        ]
+        _step_sink: object | None = None
+        _latest_safe_snapshot: object | None = None
 
         async def _stream_once() -> None:
             local_turn: list[str] = []
             _attempt_number[0] += 1
+            _partial_stream_text.clear()
+            _stream_seeded_user[0] = False
+            _partial_fragment_recorded[0] = False
+            _output_attempt_start[0] = (
+                len(ctx.output_collector) if ctx.output_collector is not None else 0
+            )
             if usage_tracker is not None and _attempt_number[0] > 1:
                 usage_tracker.finalize("failed")
             config_kwargs = _AgentConfig(
@@ -1626,6 +1766,13 @@ class AgentTurnRunner:
                 "top_p": _config_value(ctx.exec_cfg, "top_p", None),
                 "max_completion_tokens": _config_value(ctx.exec_cfg, "max_completion_tokens", None),
                 "request_options": _config_value(ctx.exec_cfg, "request_options", None),
+                "transport_max_retries": _config_value(ctx.exec_cfg, "transport_max_retries", 0),
+                "transport_retry_base_delay_s": _config_value(
+                    ctx.exec_cfg, "transport_retry_base_delay_s", 0.5
+                ),
+                "transport_retry_max_total_s": _config_value(
+                    ctx.exec_cfg, "transport_retry_max_total_s", 0.0
+                ),
             }
             if provider_options["request_options"] is not None:
                 from agenthicc.config import RequestOptionSettings  # noqa: PLC0415
@@ -1656,6 +1803,8 @@ class AgentTurnRunner:
                 event_sinks.append(usage_tracker.sink)
             if getattr(ctx.runner, "_signals", None) is None and ctx.conv_store is not None:
                 event_sinks.append(_ToolRecoveryEventSink(ctx.conv_store))
+            if _step_sink is not None:
+                event_sinks.append(_step_sink)
             stream = await active_runner.run_stream(
                 agent_instance,
                 agent_text,
@@ -1664,11 +1813,22 @@ class AgentTurnRunner:
                 memory=ctx.session_memory,
                 idempotency_ledger=turn_ledger,
                 config_override=config_kwargs,
+                metadata={
+                    # A crash/recovery or compatibility retry starts from a
+                    # memory projection that already contains this logical
+                    # turn's user message. Ordinary turns add it in Lauren.
+                    "_agenthicc_resume_existing_turn": _resume_existing_turn[0]
+                },
                 event_sinks=event_sinks or None,
             )
+            # ``run_stream`` seeds the user message before returning its async
+            # generator.  Remember that fact so an older-runner context
+            # overflow retry does not append the same user message twice.
+            _stream_seeded_user[0] = True
             async for chunk in stream:
                 if chunk.delta:
                     local_turn.append(chunk.delta)
+                    _partial_stream_text.append(chunk.delta)
                     if ctx.output_collector is not None:
                         ctx.output_collector.append(chunk.delta)
 
@@ -1713,6 +1873,7 @@ class AgentTurnRunner:
                         )
                     turn_text = "".join(local_turn).strip()
                     local_turn = []
+                    _partial_stream_text.clear()
                     if turn_text and ctx.conv_store:
                         ctx.conv_store.append_event("text", {"text": turn_text})
                     # Auto-index completed turn text for semantic search (PRD-101).
@@ -1728,6 +1889,61 @@ class AgentTurnRunner:
             if ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot")
             else None
         )
+        _latest_safe_snapshot = turn_snapshot
+        self._step_recovery_supported = bool(
+            getattr(active_runner, "supports_step_recovery", False)
+        )
+
+        def _advance_safe_step(step_id: str) -> None:
+            nonlocal _latest_safe_snapshot
+            if ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot"):
+                _latest_safe_snapshot = ctx.session_memory.snapshot()
+            self._last_committed_step = step_id
+
+        def _begin_step(step_id: str) -> None:
+            self._active_step_id = step_id
+
+        if _journal is not None and self._step_recovery_supported:
+            _step_sink = _TurnRecoveryEventSink(
+                _journal,
+                ctx.conv_store,
+                _advance_safe_step,
+                _begin_step,
+            )
+
+        def _reset_attempt_output() -> None:
+            if ctx.output_collector is not None:
+                del ctx.output_collector[_output_attempt_start[0] :]
+
+        def _record_partial_fragment() -> None:
+            """Persist interrupted output without turning it into a message."""
+            if not _partial_stream_text or _partial_fragment_recorded[0]:
+                return
+            text = "".join(_partial_stream_text)[:16_384]
+            record = getattr(ctx.session_memory, "record_partial_fragment", None)
+            if callable(record):
+                try:
+                    record(self._intent_id, text, step_id=self._active_step_id)
+                except Exception:  # noqa: BLE001 - preserve the provider failure
+                    logger.warning(
+                        "agenthicc: failed to persist interrupted provider output",
+                        exc_info=True,
+                    )
+            if ctx.conv_store:
+                try:
+                    ctx.conv_store.append_event(
+                        "assistant_partial",
+                        {"text": text, "interrupted": True},
+                    )
+                except Exception:  # noqa: BLE001 - preserve the provider failure
+                    logger.warning(
+                        "agenthicc: failed to project interrupted provider output",
+                        exc_info=True,
+                    )
+            _partial_fragment_recorded[0] = True
+
+        self._safe_snapshot_provider = lambda: _latest_safe_snapshot
+        self._reset_attempt_output = _reset_attempt_output
 
         try:
             # Older Lauren releases do not run the exact-count compaction
@@ -1742,10 +1958,12 @@ class AgentTurnRunner:
                 )
                 if ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot"):
                     turn_snapshot = ctx.session_memory.snapshot()
+                    _latest_safe_snapshot = turn_snapshot
 
             await self._stream_with_retry(_stream_once)
             turn_completed = True
         except (asyncio.CancelledError, KeyboardInterrupt):
+            turn_cancelled = True
             # Preserve completed sub-turns and tool results so the next user
             # message can ask what was in progress. Only an unanswered final
             # tool call is healed; rolling back to ``turn_base_count`` would
@@ -1770,21 +1988,23 @@ class AgentTurnRunner:
                         )
                     },
                 )
+            _record_partial_fragment()
             if ctx.conv_store:
                 ctx.conv_store.close_turn()
             raise  # must propagate so task.cancel() terminates the workflow runner
         except Exception as exc:
+            turn_error = exc
             # A generic 400 from older Lauren/OpenAI integrations is still
-            # recoverable when its only cause is an overlong context. Restore
-            # the pre-attempt memory (run_stream has already appended the user
-            # message), compact once, and retry the same turn exactly once.
-            # This prevents the previous behaviour: the phase loop retried an
-            # identical oversized request until the user had to intervene.
+            # recoverable when its only cause is an overlong context. Compact
+            # the current projection once and retry the same provider request.
+            # Crucially, do not restore ``turn_snapshot`` here: it predates
+            # this logical turn and could erase provider steps already
+            # committed before a later step overflowed.
             overflow_error = _auto_compact and _is_context_overflow_error(exc)
-            if overflow_error and turn_snapshot is not None:
-                memory = ctx.session_memory
-                if memory is not None and hasattr(memory, "restore"):
-                    memory.restore(turn_snapshot)
+            if overflow_error:
+                _resume_existing_turn[0] = _stream_seeded_user[0]
+                _record_partial_fragment()
+                _reset_attempt_output()
                 compacted = await self._auto_compact_if_needed(
                     active_runner,
                     agent_text,
@@ -1795,18 +2015,21 @@ class AgentTurnRunner:
                     if contract is not None:
                         agent_text = self._prepare_cache_stable_message(base_agent_text)
                     try:
+                        # The failed overflow request already seeded the user
+                        # message. Keep that message and all earlier committed
+                        # steps in memory while the compatibility retry runs.
                         await self._stream_with_retry(_stream_once)
                     except Exception as retry_exc:  # noqa: BLE001
                         exc = retry_exc
+                        turn_error = retry_exc
                     else:
                         turn_completed = True
 
             # A non-overflow failure may arrive after Lauren has appended an
             # assistant tool batch but before the result exchange is durable.
             # Repair it before exposing the error or allowing a phase loop to
-            # retry. Context-overflow retries intentionally restore the clean
-            # pre-request snapshot instead, so they do not journal a synthetic
-            # exchange that was never executed.
+            # retry. Context-overflow retries keep the current projection and
+            # therefore do not need a synthetic pre-turn reset.
             repaired = False
             if not overflow_error:
                 try:
@@ -1829,6 +2052,7 @@ class AgentTurnRunner:
 
             if turn_completed:
                 return
+            _record_partial_fragment()
             if ctx.conv_store:
                 # Emit one well-formatted error event with the exception class name.
                 # Do NOT call fail_turn/close_turn here — the finally block handles
@@ -1840,11 +2064,15 @@ class AgentTurnRunner:
                 # loop can exit immediately instead of exhausting its retry cap.
                 # _stream()'s finally block still runs → close_turn() is called.
                 raise
-            # Transient errors that survive _stream_with_retry are swallowed here
-            # (PRD-117): the phase loop re-runs the whole turn and decides.
+            # Transient errors that survive step-scoped retry are swallowed here
+            # so workflow runners can apply their existing recoverable-error
+            # policy without rolling back this turn's committed steps.
         finally:
             if usage_tracker is not None:
-                usage_tracker.finalize("cancelled" if not turn_completed else "completed")
+                lifecycle = (
+                    "completed" if turn_completed else "cancelled" if turn_cancelled else "failed"
+                )
+                usage_tracker.finalize(lifecycle)
             self._turn_active = False
             if ctx.conv_store:
                 # close_turn() is idempotent — safe even when CancelledError path
@@ -1858,37 +2086,63 @@ class AgentTurnRunner:
                 try:
                     if turn_completed:
                         _journal.turn_completed(self._intent_id)
+                    elif turn_cancelled:
+                        _journal.turn_aborted(self._intent_id, reason="cancelled")
                     else:
-                        _journal.turn_aborted(self._intent_id, reason="cancelled-or-failed")
+                        fail = getattr(_journal, "turn_failed", None)
+                        if callable(fail):
+                            fail(
+                                self._intent_id,
+                                last_committed_step=self._last_committed_step,
+                                cursor=getattr(_journal, "cursor", None),
+                                error_kind=(
+                                    type(turn_error).__name__
+                                    if turn_error is not None
+                                    else "agent_turn"
+                                ),
+                                retryable=(
+                                    not _is_permanent_error(turn_error)
+                                    if turn_error is not None
+                                    else True
+                                ),
+                            )
+                        else:
+                            _journal.turn_aborted(self._intent_id, reason="failed")
                 except OSError:
                     pass
             self._restore_cache_summary()
+            self._safe_snapshot_provider = None
+            self._reset_attempt_output = None
 
     # ── transport retry wrapper (PRD-126) ─────────────────────────────────────
 
     async def _stream_with_retry(self, stream_once: Callable[[], Awaitable[None]]) -> None:
-        """Run one streaming attempt with snapshot-rollback retry.
+        """Run one streaming invocation without whole-turn retry.
 
         Delegates to the shared :func:`~agenthicc.runners.retry.run_with_transport_retry`.
-        Snapshots ``session_memory`` before each attempt; on a transient network
-        error it restores the snapshot, resets approval-turn state so any gate is
-        re-presented, then retries.  Reads bounds from ``ctx.exec_cfg``.
+        The shared helper remains the compatibility boundary for atomic calls,
+        but this method sets ``max_retries=0`` because a streaming invocation
+        can contain multiple provider/tool steps. Lauren-ai owns retrying the
+        current provider step, where it can restore only that step's checkpoint.
+        Reads provider-step bounds from ``ctx.exec_cfg``.
         """
         from agenthicc.runners.retry import RetryConfig, run_with_transport_retry  # noqa: PLC0415
 
         ctx = self._ctx
         exec_cfg = ctx.exec_cfg
+        # A multi-step run must be retried by lauren-ai at its provider-step
+        # boundary. The outer callable is deliberately never retried: if an
+        # older runner lacks that capability, failing once is safer than
+        # restoring a pre-turn snapshot and erasing committed work.
         config = RetryConfig(
-            max_retries=int(getattr(exec_cfg, "transport_max_retries", 3)),
+            max_retries=0,
             base_delay_s=float(getattr(exec_cfg, "transport_retry_base_delay_s", 1.0)),
             max_total_duration_s=float(getattr(exec_cfg, "transport_retry_max_total_s", 0.0)),
         )
 
-        # PRD-129: on a rollback, promote the just-executed (now rolled-back)
-        # tool results so the next attempt replays them instead of re-executing
-        # their side effects.  Promotion happens ONLY here (on a real rollback),
-        # so a legitimate repeat call within a single forward attempt still runs
-        # live and sees fresh data.
+        # These callbacks remain wired for compatibility with the shared helper
+        # and for defensive future callers. They are not invoked by this
+        # multi-step path because ``max_retries`` is intentionally zero.
         reset_fns: list[Callable[[], None]] = []
         _ledger = getattr(self, "_turn_ledger", None)
         if _ledger is not None:
@@ -1902,6 +2156,8 @@ class AgentTurnRunner:
             workspace_access = current_workspace_access()
         if workspace_access is not None:
             reset_fns.append(workspace_access.reset_turn_memory)
+        if self._reset_attempt_output is not None:
+            reset_fns.append(self._reset_attempt_output)
 
         await run_with_transport_retry(
             stream_once,
@@ -1910,6 +2166,7 @@ class AgentTurnRunner:
             deadline_monotonic=ctx.retry_deadline_monotonic,
             on_retry=self._emit_retry,
             reset_fns=reset_fns,
+            checkpoint_provider=self._safe_snapshot_provider,
         )
 
     async def _emit_retry(

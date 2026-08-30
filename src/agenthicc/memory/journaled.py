@@ -76,9 +76,23 @@ class JournaledShortTermMemory(ShortTermMemory):
 
     # ── reset surface — retry rollback and compaction ────────────────────────
 
-    def restore(self, data: object) -> None:
+    def restore(
+        self,
+        data: object,
+        *,
+        turn_id: str = "",
+        step_id: str = "",
+        reason: str = "",
+    ) -> None:
+        """Restore a projection and record its optional recovery scope."""
         super().restore(data)
-        self._journal.reset(self._messages, self._summary)
+        self._journal.reset(
+            self._messages,
+            self._summary,
+            turn_id=turn_id,
+            step_id=step_id,
+            reason=reason,
+        )
 
     def commit_tool_exchange(
         self,
@@ -119,11 +133,120 @@ class JournaledShortTermMemory(ShortTermMemory):
         """
         self._journal.reset(self._messages, self._summary)
 
+    # ── provider-step recovery contract (PRD-182) ─────────────────────────
+
+    def begin_logical_turn(
+        self,
+        turn_id: str,
+        user_message: str,
+        *,
+        conversation_id: str = "",
+    ) -> None:
+        """Record a logical-turn boundary without copying conversation data."""
+        self._journal.turn_started(
+            turn_id,
+            user_message,
+            len(self._messages),
+            conversation_id=conversation_id,
+            base_cursor=self._journal.cursor,
+        )
+
+    def begin_provider_step(
+        self,
+        turn_id: str,
+        step_id: str,
+        attempt_id: str,
+        *,
+        step_index: int,
+    ) -> object:
+        """Record an attempt and return its attempt-local memory checkpoint."""
+        self._journal.step_started(
+            turn_id,
+            step_id,
+            attempt_id,
+            step_index=step_index,
+            base_cursor=self._journal.cursor,
+        )
+        return self.snapshot()
+
+    def commit_provider_step(
+        self,
+        turn_id: str,
+        step_id: str,
+        *,
+        step_index: int,
+        message_count: int | None = None,
+    ) -> None:
+        """Record a step only after its message projection is complete."""
+        self._journal.step_committed(
+            turn_id,
+            step_id,
+            step_index=step_index,
+            cursor=self._journal.cursor,
+            message_count=len(self._messages) if message_count is None else message_count,
+        )
+
+    def rollback_uncommitted_attempt(
+        self,
+        checkpoint: object,
+        *,
+        turn_id: str = "",
+        step_id: str = "",
+    ) -> None:
+        """Restore one attempt checkpoint and journal its bounded scope.
+
+        Callers should pass a checkpoint returned by
+        :meth:`begin_provider_step`; the provider-step runner, rather than a
+        phase or logical-turn retry loop, owns this operation.
+        """
+        self.restore(
+            checkpoint,
+            turn_id=turn_id,
+            step_id=step_id,
+            reason="provider_attempt_rollback",
+        )
+
+    def record_partial_fragment(
+        self,
+        turn_id: str,
+        text: str,
+        *,
+        step_id: str = "",
+        attempt_id: str = "",
+    ) -> None:
+        """Persist bounded interrupted output outside provider message memory."""
+        self._journal.partial_fragment(
+            turn_id,
+            step_id=step_id,
+            attempt_id=attempt_id,
+            text=text,
+        )
+
+    def finalize_turn_failure(
+        self,
+        turn_id: str,
+        *,
+        last_committed_step: str = "",
+        error_kind: str = "error",
+        retryable: bool = False,
+    ) -> None:
+        """Close a failed turn while retaining its committed projection."""
+        self._journal.turn_failed(
+            turn_id,
+            last_committed_step=last_committed_step,
+            cursor=self._journal.cursor,
+            error_kind=error_kind,
+            retryable=retryable,
+        )
+
     def rollback_to(self, count: int) -> None:
         """Truncate to *count* messages and journal the reset (PRD-129 Phase 3).
 
-        Used on crash-resume to return memory to a turn's pre-turn state before
-        re-driving it.
+        Retained for legacy callers that explicitly request a historical
+        rollback. Provider-step recovery must not call this method with a
+        logical turn's ``base_count``: doing so would erase messages from
+        already committed steps. Use ``rollback_uncommitted_attempt`` for the
+        current provider attempt instead.
         """
         self._messages = self._messages[:count]
         self._journal.reset(self._messages, self._summary)

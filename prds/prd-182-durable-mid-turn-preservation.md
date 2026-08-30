@@ -1,6 +1,6 @@
 ---
 title: "PRD-182: Durable preservation of failed mid-turn conversation state"
-status: Proposed
+status: Implemented
 version: 1.0.0
 created: 2026-08-30
 scope: "agent turn retries, lauren-ai streaming, conversation journals, TUI transcript, and workflow continuation"
@@ -288,6 +288,11 @@ Requirements for these records:
 - an interrupted trailing JSONL write does not invalidate earlier records;
 - old journals containing only `append`, `reset`, `turn_started`,
   `turn_completed`, `turn_aborted`, and `tool_recorded` still fold correctly.
+
+Workflow recovery writes a non-terminal `turn_recovery_started` marker while it
+rehydrates a saved run. The terminal `turn_recovered` marker is reserved for a
+resume path that has actually completed its handoff. If the process dies
+during recovery, the original `turn_started` therefore remains discoverable.
 
 `reset` remains valid for compaction and an attempt-local rollback. A reset
 must include the safe cursor/step it belongs to. A reset that would remove a
@@ -717,9 +722,10 @@ using the existing rules; subsequent writes use the new schema.
 - The journal remains the only durable conversation authority. Workflow
   checkpoints store cursors and workflow context, not copied conversation
   messages.
-- Partial fragment retention limits and privacy redaction should reuse the
-  existing session retention/configuration policy; they must be finalized
-  before implementation is marked complete.
+- Partial fragments use the existing transcript projection policy and a
+  bounded 16 KiB diagnostic payload in this implementation. A future
+  configurable retention policy may lower that bound, but it must never feed
+  raw partial data into provider memory automatically.
 - The existing `turn_aborted` marker remains meaningful for explicit user
   cancellation. A new failure marker is required so provider errors are not
   confused with intentional cancellation.

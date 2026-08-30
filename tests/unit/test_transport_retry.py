@@ -228,6 +228,37 @@ class TestRunWithTransportRetry:
         assert mem.messages == ["user-intent", "partial-assistant"]
         assert calls[0] == 2
 
+    async def test_checkpoint_provider_preserves_committed_prefix(self) -> None:
+        """A nested callable retries from its latest safe step, not pre-turn."""
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+
+        mem = _FakeMemory()
+        mem.messages = ["user-intent", "committed-step-1"]
+        calls = [0]
+
+        async def fn():
+            calls[0] += 1
+            mem.messages.append("uncommitted-step-2")
+            if calls[0] == 1:
+                raise TransientTransportError("late provider disconnect")
+
+        def latest_checkpoint():
+            return ["user-intent", "committed-step-1"]
+
+        await run_with_transport_retry(
+            fn,
+            config=self._config(max_retries=1),
+            memory=mem,
+            checkpoint_provider=latest_checkpoint,
+        )
+        assert mem.messages == [
+            "user-intent",
+            "committed-step-1",
+            "uncommitted-step-2",
+        ]
+        assert calls[0] == 2
+
     async def test_exhausted_retries_raises(self) -> None:
         from agenthicc.runners.retry import run_with_transport_retry
         from lauren_ai._exceptions import TransientTransportError

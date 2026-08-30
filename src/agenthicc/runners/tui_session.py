@@ -3301,10 +3301,10 @@ class TUISession:
         """PRD-129 Phase 3: re-drive a turn the prior session left incomplete.
 
         Fires only for a *direct* turn (no in-progress workflow — those are left
-        to the workflow's own resume).  Rolls memory back to the turn's pre-turn
-        point, then re-submits the user message with a ledger seeded from the
+        to the workflow's own resume). Re-submits the user message against the
+        journal-rehydrated committed projection with a ledger seeded from the
         tools that already ran, so completed side effects are replayed, not
-        repeated.
+        repeated; it does not roll memory back to the pre-turn count.
         """
         ctx = self._ctx
         plan = ctx.pending_resume
@@ -3315,10 +3315,12 @@ class TUISession:
             or self._workflow_recovery_errors
         ):
             return
-        mem = ctx.session_memory
-        rollback = getattr(mem, "rollback_to", None)
-        if callable(rollback):
-            rollback(int(getattr(plan, "base_count", 0)))
+        # PRD-182: the journal/memory projection already contains every
+        # provider step committed before the interruption. Rolling back to
+        # ``base_count`` here would erase that useful context and was the
+        # source of the "fresh conversation" symptom after a late failure.
+        # Lauren receives the original message with a resume marker and must
+        # continue from the retained safe step instead.
         ctx.app_state.conversation.notification.set(
             "↻ Resuming an interrupted turn — completed tools are replayed, not repeated…"
         )

@@ -383,7 +383,11 @@ class WorkflowRecoveryCoordinator:
                         "conversation_tool_tail_invalid: saved tool-call history "
                         f"could not be repaired ({type(exc).__name__}: {exc})"
                     ) from exc
-                journal.turn_recovered(incomplete.turn_id)
+                # This selection is not proof that the resumed workflow has
+                # completed. Keep the turn discoverable if the process dies
+                # between rehydration and the next provider step; a terminal
+                # ``turn_recovered`` marker belongs after the resumed work.
+                journal.turn_recovery_started(incomplete.turn_id)
 
             handle = WorkflowRunHandle.from_checkpoint(
                 checkpoint,

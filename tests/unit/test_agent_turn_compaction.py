@@ -212,3 +212,59 @@ async def test_context_overflow_compacts_then_retries_without_duplicate_user_mes
         for call in active_runner.run_stream.await_args_list
     )
     ctx.conv_store.close_turn.assert_called_once()  # type: ignore[union-attr]
+
+
+@pytest.mark.unit
+async def test_context_overflow_does_not_restore_before_committed_prefix() -> None:
+    """A compatibility compaction retry keeps messages from earlier steps."""
+    memory = ShortTermMemory(max_tokens=800)
+    memory.add_user("earlier request")
+    memory.add_assistant({"role": "assistant", "content": "committed step"})
+    transport = _SummaryTransport(summary="unused")
+    overflow = Exception("maximum context length exceeded")
+    overflow.status_code = 400  # type: ignore[attr-defined]
+    attempt = 0
+
+    async def run_stream(*args, **kwargs):  # noqa: ANN002, ANN003
+        nonlocal attempt
+        attempt += 1
+        metadata = kwargs.get("metadata", {})
+        if not metadata.get("_agenthicc_resume_existing_turn"):
+            memory.add_user(args[1])
+        if attempt == 1:
+
+            async def failed_stream():
+                raise overflow
+                yield  # pragma: no cover
+
+            return failed_stream()
+
+        async def successful_stream():
+            yield CompletionChunk(delta="continued", stop_reason="end_turn")
+
+        return successful_stream()
+
+    active_runner = SimpleNamespace(
+        _transport=transport,
+        run_stream=AsyncMock(side_effect=run_stream),
+    )
+    ctx = _make_context(memory)
+    runner = AgentTurnRunner(ctx)
+    runner._model_id = "test-model"
+    runner._intent_id = "turn-1"
+    runner._auto_compact_if_needed = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    await runner._stream(object(), "continue", active_runner)  # type: ignore[arg-type]
+
+    assert memory._messages[:2] == [
+        {"role": "user", "content": "earlier request"},
+        {"role": "assistant", "content": "committed step"},
+    ]
+    assert (
+        sum(
+            message.get("content") == "continue"
+            for message in memory._messages
+            if isinstance(message, dict)
+        )
+        == 1
+    )

@@ -143,6 +143,16 @@ same boundary; agenthicc does not maintain a second provider-specific result
 correlator. Journaled memory persists repair before control returns to the TUI,
 and malformed history is reported as a safe structured diagnostic.
 
+Streaming recovery has one additional boundary: a logical user turn contains
+one or more provider steps, and each step may have multiple network attempts.
+`lauren-ai` emits step-start, retry, interruption, and commit receipts. The
+session adapter persists them and advances the safe memory cursor only after a
+valid assistant/tool exchange is committed. A transport error in step N may
+discard only the uncommitted attempt N; it cannot restore the snapshot from
+before step N-1. This keeps the journal fold, the reactive transcript, and the
+next provider request aligned after a late failure. Unsupported older runners
+are not placed inside a destructive whole-stream retry boundary.
+
 For workflow turns, `AgentTurnRunner` also applies the shared prompt contract:
 the stable system policy and deterministic stable-tool schemas form the reusable
 prefix, while phase instructions, artifacts, questions, answers, and summaries

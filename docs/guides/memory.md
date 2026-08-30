@@ -32,10 +32,48 @@ replacement for a production vector database.
 ## Conversation memory
 
 The session runner creates a journal-backed short-term memory. Each append,
-reset, turn marker, and durable tool record is written to
-`conversation-journal.jsonl` and flushed. On resume the journal is folded back
-into the live memory; an incomplete turn can be re-driven with already-complete
+reset, logical-turn marker, provider-step receipt, partial-fragment diagnostic,
+and durable tool record is written to `conversation-journal.jsonl` and flushed.
+On resume the journal is folded back into the live memory; an incomplete turn
+can be re-driven from its latest committed provider step with already-complete
 tools replayed from the durable ledger.
+
+### Failed mid-turn recovery
+
+One submitted message is a logical turn, but a single `lauren-ai` streaming
+run may contain several provider requests:
+
+```text
+logical turn T
+├─ provider step T:0 → assistant/tool messages → step_committed
+├─ provider step T:1 → transport failure → step_interrupted
+└─ turn_failed(T, last_committed_step=T:0)
+```
+
+The retry unit is the provider step, not the whole logical turn. A retry may
+discard only the uncommitted provider attempt; it must never restore a snapshot
+from before `T:0`. This is the key difference between a safe retry and the old
+whole-stream rollback that made a later provider error erase earlier assistant
+and tool-result messages.
+
+`AgentStepStarted`, `AgentStepRetryScheduled`, `AgentStepInterrupted`, and
+`AgentStepCommitted` are emitted by the provider runner. The session adapter
+projects those receipts into the journal and advances the safe checkpoint only
+after the memory append and tool exchange have completed. Partial streamed
+text is stored as an `assistant_partial` transcript event and a bounded
+`partial_fragment` diagnostic; it is never folded into provider memory as a
+normal assistant message.
+
+For a failed turn, the live memory therefore remains the valid prefix
+`H, U, committed steps`, and the next user message is appended to that same
+session conversation exactly once. `turn_failed` is distinct from
+`turn_aborted`: the former means a provider/tool error while preserving
+context, while the latter is reserved for explicit cancellation. An older
+`lauren-ai` runner that cannot expose provider-step recovery is not wrapped in
+a destructive whole-turn retry; it fails with its retained memory projection.
+The step-scoped retry path becomes active when the installed runner advertises
+the step-recovery capability; the companion lauren-ai implementation in this
+workspace does so.
 
 An explicit turn interruption preserves the valid assistant/tool exchanges
 that completed before cancellation. If the interrupted tail contains an
@@ -48,9 +86,10 @@ Automatic compaction is model-aware. Newer lauren-ai versions receive the
 resolved `context_window` and use their exact-count compaction ladder. When an
 older lauren-ai transport cannot provide that guard, agenthicc runs the same
 bounded map-reduce fallback at the turn boundary. If the provider still
-returns a context-length 400, the pre-turn memory snapshot is restored,
-compacted once, and the turn is retried rather than submitting the same
-oversized request again. If a provider returns an empty final summary (common
+returns a context-length 400, the current committed projection is compacted
+once and the request is retried without restoring a pre-turn snapshot. This
+preserves earlier provider steps when a later request overflows. If a provider
+returns an empty final summary (common
 when a reasoning endpoint spends the initial output budget on hidden
 reasoning), agenthicc retries the summary with a larger completion budget and
 the configured provider request options. Only when that retry still produces
