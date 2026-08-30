@@ -58,6 +58,26 @@ def test_every_phase_transition_requires_only_a_summary(tmp_path: Path) -> None:
             make_book._make_back_matter_tools(event, data, output_dir=str(tmp_path)),
             "confirm_back_matter_ready",
         ),
+        _tool(
+            make_book._make_layout_tools(
+                event,
+                data,
+                output_dir=str(tmp_path),
+                assets_dir=str(tmp_path / "assets"),
+                phase="layout_review",
+            ),
+            "confirm_layout_ready",
+        ),
+        _tool(
+            make_book._make_layout_tools(
+                event,
+                data,
+                output_dir=str(tmp_path),
+                assets_dir=str(tmp_path / "assets"),
+                phase="final_layout_review",
+            ),
+            "confirm_layout_ready",
+        ),
     ]
     compile_tools = make_book._make_compile_tools(event, data, output_dir=str(tmp_path))
     transition_tools.extend(
@@ -276,11 +296,96 @@ async def test_front_and_back_matter_gates_scan_existing_markdown(tmp_path: Path
     assert (await front(summary="missing"))["ok"] is False
     (tmp_path / "front-matter").mkdir()
     (tmp_path / "front-matter" / "preface.md").write_text("# Preface", encoding="utf-8")
+    (tmp_path / "front-matter" / "contents.md").write_text("# Contents", encoding="utf-8")
+    front_rejected = await front(summary="Do not accept a hand-written TOC")
+    assert front_rejected["ok"] is False
+    assert event.is_set() is False
+    (tmp_path / "front-matter" / "contents.md").unlink()
     assert (await front(summary="Preface ready"))["ok"] is True
     event.clear()
     (tmp_path / "back-matter").mkdir()
     (tmp_path / "back-matter" / "index.md").write_text("# Index", encoding="utf-8")
+    (tmp_path / "back-matter" / "contents.md").write_text("# Contents", encoding="utf-8")
+    back_rejected = await back(summary="Do not accept a hand-written TOC")
+    assert back_rejected["ok"] is False
+    assert event.is_set() is False
+    (tmp_path / "back-matter" / "contents.md").unlink()
     assert (await back(summary="Index ready"))["ok"] is True
+
+
+def _png_header(width: int, height: int) -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\rIHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+        + b"\x08\x02\x00\x00\x00"
+    )
+
+
+@pytest.mark.asyncio
+async def test_layout_gate_enforces_image_and_table_bounds_without_writing(
+    tmp_path: Path,
+) -> None:
+    assets = tmp_path / "assets"
+    chapters = tmp_path / "chapters"
+    assets.mkdir()
+    chapters.mkdir()
+    image = assets / "figure.png"
+    image.write_bytes(_png_header(700, 700))
+    chapter = chapters / "01-layout.md"
+    chapter.write_text(
+        "# Layout\n\n![Figure](../assets/figure.png){width=7in height=7.1in}\n",
+        encoding="utf-8",
+    )
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+    confirm = _tool(
+        make_book._make_layout_tools(
+            event,
+            data,
+            output_dir=str(tmp_path),
+            assets_dir=str(assets),
+            phase="layout_review",
+        ),
+        "confirm_layout_ready",
+    )
+
+    oversized = await confirm(summary="Check the chapter layout")
+    assert oversized["ok"] is False
+    assert event.is_set() is False
+    assert data == {}
+
+    chapter.write_text(
+        "# Layout\n\n![Figure](../assets/figure.png){width=7in height=7in}\n",
+        encoding="utf-8",
+    )
+    accepted = await confirm(summary="The image is bounded")
+    assert accepted["ok"] is True
+    assert data["image_count"] == 1
+    assert data["table_count"] == 0
+    assert data["receipt"]["max_height_in"] == 7.0
+
+    event.clear()
+    data.clear()
+    rows = "\n".join(f"| {index} | {'x' * 110} |" for index in range(25))
+    chapter.write_text(
+        f"# Layout\n\n| Key | Description |\n| --- | --- |\n{rows}\n",
+        encoding="utf-8",
+    )
+    too_tall = await confirm(summary="Check the table layout")
+    assert too_tall["ok"] is False
+    assert event.is_set() is False
+    assert data == {}
+
+
+def test_make_book_prompts_define_generated_toc_and_layout_phases() -> None:
+    phases = {phase.name: phase for phase in make_book.MakeBookWorkflow.phases}
+    assert "contents.md" in phases["front_matter"].system_prompt_override
+    assert "contents.md" in phases["back_matter"].system_prompt_override
+    assert "7in" in phases["layout_review"].system_prompt_override
+    assert "7in" in phases["final_layout_review"].system_prompt_override
+    assert len(make_book.MakeBookWorkflow.phases) == 9
 
 
 @pytest.mark.asyncio

@@ -74,9 +74,12 @@ research bodies, and PDF paths. This caused:
 5. Make asset production substantial and publication-ready: at least three
    supported assets per chapter and at least six overall, including free
    Unsplash photography with provenance.
-6. Preserve receipts, checkpoint state, resume behavior, and the shared
+6. Ensure every referenced image/diagram and every Markdown table fits within
+   the configured 7 x 10 inch page: at most 7 inches wide and 7 inches high
+   (70% of page height), with layout review before and after front/back matter.
+7. Preserve receipts, checkpoint state, resume behavior, and the shared
    workflow conversation without duplicating provider memory.
-7. Keep stable workflow policy in the cacheable prompt prefix and put phase
+8. Keep stable workflow policy in the cacheable prompt prefix and put phase
    state, summaries, paths, and retry feedback in dynamic context.
 
 ## 4. Non-goals
@@ -115,7 +118,7 @@ word count, asset list, research body, or PDF path from the model.
 
 ### FR-1 — Exact provider schemas
 
-The eight transition tools must emit schemas equivalent to:
+Every phase-transition tool must emit a schema equivalent to:
 
 ```json
 {
@@ -199,9 +202,28 @@ The gate does not download, generate, or modify any asset.
 `confirm_front_matter_ready(summary=...)` scans existing Markdown files under
 `front-matter/`; `confirm_back_matter_ready(summary=...)` does the same under
 `back-matter/`. Neither accepts or creates a file list. Empty or missing
-directories reject without an event.
+directories reject without an event. The front-matter agent writes the
+preface only. Neither front matter nor back matter may contain `contents.md`:
+the table of contents remains a generated builder artifact, produced from
+chapter headings by Pandoc `--toc`/LaTeX `\\tableofcontents` (or the equivalent
+Typst outline), not an agent-authored source file. Back matter contains the
+index and any explicitly requested non-TOC appendices only.
 
-### FR-7 — Compile verdict
+### FR-7 — Layout review handoffs
+
+`confirm_layout_ready(summary=...)` is the only transition tool in each of the
+two layout-review phases. The first phase runs after all chapters and before
+front matter; the final phase runs after front/back matter and before compile.
+The agent may edit existing Markdown and assets with normal filesystem tools,
+but the gate is verification-only. It scans every source that the builder will
+compile, resolves referenced local images/diagrams, reads their dimensions or
+explicit Markdown dimensions, and checks that each fits within 7 inches of
+width and 7 inches of height (70% of the 10-inch page). It estimates Markdown
+table width and height from rendered cell content and rejects tables exceeding
+the same bounds. It rejects missing/out-of-root/undimensioned referenced
+images and layout violations without mutating files or setting the event.
+
+### FR-8 — Compile verdict
 
 `create_build_book()` may create the reusable builder at the output directory.
 `mark_book_complete(summary=...)` may only verify existing state: the builder
@@ -210,7 +232,12 @@ bytes must be `%PDF-`. It must not create a builder, directory, PDF, or repair
 an invalid output. `reject_book(summary=...)` records a bounded whole-book
 diagnosis and routes back to correction; an empty summary is rejected.
 
-### FR-8 — Receipts and checkpoints
+The generated builder defaults to a 7 x 10 inch paperback page and applies a
+typesetter-level image guard so referenced images cannot exceed the page width
+or 70% of page height even when source dimensions are omitted. It excludes
+`contents.md` from source discovery and generates the TOC itself.
+
+### FR-9 — Receipts and checkpoints
 
 After each accepted gate, the runner captures one compact receipt containing
 the contract version, workflow/run identity, phase, bounded metadata, and
@@ -221,7 +248,7 @@ reattaching the existing session memory supplied by the caller.
 
 Repeated successful calls must not append duplicate receipts.
 
-### FR-9 — Retry and transition semantics
+### FR-10 — Retry and transition semantics
 
 Each phase has a bounded inner retry loop. A failed tool result leaves state
 unchanged and sends short repair feedback. Only a successful transition tool
@@ -240,6 +267,13 @@ phase that exhausts retries fails through the existing workflow failure path.
   prompts list the durable research files and tell the agent to read them.
 - Asset prompts must explicitly say “many assets,” the formula for the
   minimum, free Unsplash, no Unsplash+, and the manifest path.
+- Front-matter and back-matter prompts must explicitly forbid `contents.md` and
+  any hand-written TOC. They must describe the generated TOC as a
+  `build_book.py`/typesetter responsibility.
+- Chapter, asset, layout-review, and compile prompts must state the 7 x 10
+  inch layout contract: referenced images/diagrams and Markdown tables are
+  capped at 7 inches wide and 7 inches high. Layout prompts must tell the
+  agent to edit existing files and then submit only the short summary.
 
 ## 8. Data flow
 
@@ -258,9 +292,14 @@ user intent
   -> chapter agent writes chapters/NN-slug.md
   -> confirm_chapter_complete(summary)
        -> derive/read/count/check references
-  -> front/back agents write canonical Markdown
+  -> layout-review agent corrects chapter media/table sizing
+  -> confirm_layout_ready(summary)
+  -> front agent writes the preface only (no contents.md)
+  -> back agent writes the index only (no contents.md)
   -> confirm_*_ready(summary)
        -> scan existing files
+  -> final layout-review agent validates every final source
+  -> confirm_layout_ready(summary)
   -> compile agent calls create_build_book(), runs builder, writes dist/*.pdf
   -> mark_book_complete(summary)
        -> verify builder + exactly one valid PDF
@@ -296,30 +335,40 @@ Chapter path, word count, referenced assets, asset count, research file list,
 front/back file lists, and PDF path in accepted state are derived from files,
 not trusted from model arguments.
 
-### AC-5 — Durable resume
+### AC-5 — Generated TOC and bounded layout
+
+No front-matter or back-matter agent writes `contents.md`. The generated
+`build_book.py` excludes that filename and invokes the typesetting toolchain's
+TOC generation. Both layout-review phases reject any referenced image/diagram
+or Markdown table exceeding 7 inches in width or 7 inches in height.
+
+### AC-6 — Durable resume
 
 The checkpoint round trip preserves context, manifest path, and receipts while
 excluding live session memory. A resumed runner starts from the saved typed
 state and can continue using the existing artifacts.
 
-### AC-6 — Full journey
+### AC-7 — Full journey
 
-The deterministic E2E test drives TOC → research → assets → chapter → front
-matter → back matter → compile, verifies all receipts, and restores the
-checkpoint successfully.
+The deterministic E2E test drives TOC → research → assets → chapter → layout
+review → front matter → back matter → final layout review → compile, verifies
+all receipts, and restores the checkpoint successfully.
 
 ## 10. Test plan
 
 - **Unit:** emitted schemas; blank summaries; malformed/missing TOC; research
   chapter coverage; canonical chapter path/count/reference validation; asset
-  minimum and Unsplash provenance rules; front/back scans; builder/PDF checks;
-  rejection behavior; path/symlink containment; checkpoint codec.
+  minimum and Unsplash provenance rules; front/back scans and `contents.md`
+  rejection; image dimension/attribute and table width/height layout rules;
+  builder 7 x 10 defaults and generated-TOC source filtering; builder/PDF
+  checks; rejection behavior; path/symlink containment; checkpoint codec.
 - **Integration:** execute every gate against a temporary output tree, assert
   no gate creates missing artifacts, assert deterministic inventories and
   receipt ordering, then serialize/restore the complete context.
 - **E2E:** replace model turns with a deterministic filesystem-producing
-  driver, run the complete state machine, verify dynamic chapter flow and all
-  seven boundary receipts, then resume from the checkpoint.
+  driver, run the complete state machine including both layout-review phases,
+  verify dynamic chapter flow and all nine boundary receipts, then resume from
+  the checkpoint.
 - **Regression:** preserve tests for truncated research handoffs, wrong
   chapter paths/counts, missing Unsplash provenance, Unsplash+ provenance,
   stale PDFs, and duplicate receipt insertion.

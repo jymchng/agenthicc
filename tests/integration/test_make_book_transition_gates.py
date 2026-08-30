@@ -32,7 +32,10 @@ async def test_complete_file_backed_gate_sequence_and_checkpoint(tmp_path: Path)
     (output / "research" / "sources.md").write_text("https://source.test", encoding="utf-8")
     (output / "research" / "summary.md").write_text("Summary.", encoding="utf-8")
     for index in range(5):
-        (output / "assets" / f"figure-{index}.svg").write_text("<svg />", encoding="utf-8")
+        (output / "assets" / f"figure-{index}.svg").write_text(
+            '<svg width="100" height="100" viewBox="0 0 100 100"></svg>',
+            encoding="utf-8",
+        )
     (output / "assets" / "unsplash" / "photo.jpg").write_bytes(b"jpeg fixture")
     (output / "assets" / "unsplash" / "manifest.json").write_text(
         json.dumps([{"file": "photo.jpg", "source_url": "https://unsplash.com/photos/free"}]),
@@ -99,6 +102,20 @@ async def test_complete_file_backed_gate_sequence_and_checkpoint(tmp_path: Path)
     receipts.append(data["receipt"])
 
     event.clear()
+    layout = _named(
+        make_book._make_layout_tools(
+            event,
+            data,
+            output_dir=str(output),
+            assets_dir=str(output / "assets"),
+            phase="layout_review",
+        ),
+        "confirm_layout_ready",
+    )
+    assert (await layout(summary="Chapter media and tables fit the page"))["ok"] is True
+    receipts.append(data["receipt"])
+
+    event.clear()
     front = _named(
         make_book._make_front_matter_tools(event, data, output_dir=str(output)),
         "confirm_front_matter_ready",
@@ -112,6 +129,20 @@ async def test_complete_file_backed_gate_sequence_and_checkpoint(tmp_path: Path)
         "confirm_back_matter_ready",
     )
     assert (await back(summary="Back matter is ready"))["ok"] is True
+    receipts.append(data["receipt"])
+
+    event.clear()
+    final_layout = _named(
+        make_book._make_layout_tools(
+            event,
+            data,
+            output_dir=str(output),
+            assets_dir=str(output / "assets"),
+            phase="final_layout_review",
+        ),
+        "confirm_layout_ready",
+    )
+    assert (await final_layout(summary="All final media and tables fit the page"))["ok"] is True
     receipts.append(data["receipt"])
 
     event.clear()
@@ -142,7 +173,9 @@ async def test_complete_file_backed_gate_sequence_and_checkpoint(tmp_path: Path)
         "research",
         "chapter",
         "assets",
+        "layout_review",
         "front_matter",
         "back_matter",
+        "final_layout_review",
         "compile",
     ]

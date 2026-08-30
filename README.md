@@ -253,7 +253,10 @@ inventories, counts, and PDF output. The assets phase requires at least
 `max(6, 3 * chapter_count)` varied files, including a free Unsplash raster and
 `assets/unsplash/manifest.json`; Unsplash+ and paid sources are rejected. See
 the [workflow guide](./docs/guides/workflows.md#make_book-phase-handoffs) for
-the exact calls and artifact layout.
+the exact calls and artifact layout. `make_book` uses two layout-review phases:
+referenced images/diagrams and Markdown tables must fit within the default
+7×10-inch page, no more than 7 inches wide or 7 inches high. The builder
+generates the TOC from chapter headings; agents must not write `contents.md`.
 
 ### Transition tools
 

@@ -187,8 +187,10 @@ python3 <output_dir>/build_book.py --out dist/my-book.pdf
 ```
 
 It accepts `--out`/`-o` for a custom PDF path and
-`--keep-intermediates`/`--keep` for debugging. It uses a KDP-oriented 6×9
-inch layout, no-dot table-of-contents styling, and attaches an optional
+`--keep-intermediates`/`--keep` for debugging. It uses a KDP-oriented 7×10
+inch layout, generates the table of contents from chapter headings with
+Pandoc's `--toc` option (there is no agent-authored `contents.md`), applies
+image bounds of at most 7 inches wide and 7 inches high, and attaches an optional
 `assets/cover.png` (or supported JPG variant) when Pillow and pypdf are
 available. `mark_book_complete` is verification-only: the agent must call
 `create_build_book()` and run the resulting script before the completion gate
@@ -204,8 +206,10 @@ submit_toc(summary="The plan is ready; the manifest is on disk.")
 submit_research(summary="All chapter notes and sources are written.")
 confirm_assets_ready(summary="The asset inventory is complete.")
 confirm_chapter_complete(summary="This chapter is written and checked.")
-confirm_front_matter_ready(summary="The preface and contents container are ready.")
+confirm_layout_ready(summary="All chapter media and tables fit the page bounds.")
+confirm_front_matter_ready(summary="The preface is ready; the builder generates the TOC.")
 confirm_back_matter_ready(summary="The index is ready.")
+confirm_layout_ready(summary="All final media and tables fit the page bounds.")
 mark_book_complete(summary="The builder produced and validated the PDF.")
 reject_book(summary="The PDF failed validation because …")
 ```
@@ -229,6 +233,14 @@ Unsplash service under `assets/unsplash/` and write
 `assets/unsplash/manifest.json` with free `unsplash.com` source URLs. Unsplash+
 and paid sources are rejected by the gate. The manifest is provenance
 metadata; the transition tool does not download or create images.
+
+Two layout-review phases run around front/back matter. They inspect every
+Markdown source that will be compiled, including image references and pipe
+tables. Images and diagrams must fit within 7 inches of page width and 7
+inches of page height (70% of the 10-inch page); tables use the same width and
+height budget. The first review lets the agent correct chapter sources, and
+the final review catches changes made by front/back matter. Both are
+verification-only summary handoffs and reject without mutating files.
 
 `create_build_book()` is different: it is a zero-argument compile utility that
 creates `<output_dir>/build_book.py`. It is not a phase transition. The

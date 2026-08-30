@@ -266,6 +266,10 @@ async def _successful_make_book_run_phase(tmp_path: Path, **kwargs: object) -> N
         chapter.mkdir(parents=True)
         (chapter / "01-chapter-one.md").write_text("# Chapter One\n\nText.", encoding="utf-8")
         await names["confirm_chapter_complete"](summary="Chapter written and checked.")
+    elif "confirm_layout_ready" in names:
+        await names["confirm_layout_ready"](
+            summary="All images, diagrams, and tables fit the 7 x 10 page bounds."
+        )
     elif "confirm_front_matter_ready" in names:
         directory = tmp_path / "book" / "front-matter"
         directory.mkdir(parents=True)

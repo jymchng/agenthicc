@@ -47,6 +47,12 @@ def test_generated_builder_is_valid_python_and_contains_pipeline() -> None:
     assert '"xelatex",' in source
     assert "--keep-intermediates" in source
     assert "attach_cover" in source
+    assert "TRIM_W_IN = 7.0" in source
+    assert "TRIM_H_IN = 10.0" in source
+    assert "paperwidth=7.0in,paperheight=10.0in" in source
+    assert "maxheight" in source
+    assert "contents.md" in source
+    assert "--toc" in source
 
 
 def test_write_build_book_script_is_executable_and_refreshable(tmp_path) -> None:
@@ -148,9 +154,19 @@ def test_build_script_path_round_trips_in_checkpoint() -> None:
         intent="write a book",
         state=MakeBookState.COMPLETE,
         build_script_path="books/example/build_book.py",
+        layout_summary="Chapter layout is bounded.",
+        layout_files=["chapters/01.md"],
+        layout_image_count=2,
+        layout_table_count=1,
+        final_layout_summary="Final layout is bounded.",
     )
 
     payload = MakeBookWorkflow.checkpoint_context_to_payload(context)
     restored = MakeBookWorkflow.checkpoint_context_from_payload(payload)
 
     assert restored.build_script_path == "books/example/build_book.py"
+    assert restored.layout_summary == "Chapter layout is bounded."
+    assert restored.layout_files == ["chapters/01.md"]
+    assert restored.layout_image_count == 2
+    assert restored.layout_table_count == 1
+    assert restored.final_layout_summary == "Final layout is bounded."

@@ -73,6 +73,10 @@ async def _drive_make_book_turn(output: Path, **kwargs: object) -> None:
             "# First Chapter\n\nContent.", encoding="utf-8"
         )
         await by_name["confirm_chapter_complete"](summary="Chapter is written.")
+    elif "confirm_layout_ready" in by_name:
+        await by_name["confirm_layout_ready"](
+            summary="All images, diagrams, and tables fit the 7x10 page bounds."
+        )
     elif "confirm_front_matter_ready" in by_name:
         directory = output / "front-matter"
         directory.mkdir(parents=True, exist_ok=True)
@@ -109,8 +113,10 @@ async def test_make_book_end_to_end_records_verified_phase_receipts(tmp_path: Pa
         "research",
         "assets",
         "chapter",
+        "layout_review",
         "front_matter",
         "back_matter",
+        "final_layout_review",
         "compile",
     ]
     assert all(
