@@ -194,12 +194,17 @@ python3 <output_dir>/build_book.py --out dist/my-book.pdf
 ```
 
 It accepts `--out`/`-o` for a custom PDF path and
-`--keep-intermediates`/`--keep` for debugging. It uses an 8.5×11-inch US Letter
-layout, generates the table of contents from chapter headings with
-Pandoc's `--toc` option (there is no agent-authored `contents.md`), applies
-image bounds of at most 8.5 inches wide and 7.7 inches high, and attaches an optional
-`assets/cover.png` (or supported JPG variant) when Pillow and pypdf are
-available. `mark_book_complete` is verification-only: the agent must call
+`--keep-intermediates`/`--keep` for debugging. It uses an 8×11.5-inch page with
+0.75-inch margins, so the content width is 6.5 inches and the image/table
+target width is 95% of that content width (6.175 inches). It generates the
+table of contents from chapter headings with Pandoc's `--toc` option (there is
+no agent-authored `contents.md`), applies a maximum media height of 8.05
+inches (70% of the page height), and attaches an optional `assets/cover.png`
+(or supported JPG variant) when pypdf is available. Before Pandoc runs, Pillow
+stages every raster asset at 600 DPI and the target width, preserving its
+aspect ratio without modifying the source files. Pillow is required when
+raster assets are present; install the optional `agenthicc[book]` extra for
+the generated builder dependency. `mark_book_complete` is verification-only: the agent must call
 `create_build_book()` and run the resulting script before the completion gate
 will accept the existing PDF. Its path is stored in the workflow checkpoint
 and artifact summary.
@@ -243,9 +248,9 @@ metadata; the transition tool does not download or create images.
 
 Two layout-review phases run around front/back matter. They inspect every
 Markdown source that will be compiled, including image references and pipe
-tables. Images and diagrams must fit within 8.5 inches of page width and 7.7
-inches of page height (70% of the 11-inch page); tables use the same width and
-height budget. The first review lets the agent correct chapter sources, and
+tables. Images and diagrams must fit within 6.175 inches of rendered width
+(95% of the 6.5-inch content box) and 8.05 inches of page height (70% of the
+11.5-inch page); tables use the same width and height budget. The first review lets the agent correct chapter sources, and
 the final review catches changes made by front/back matter. Both are
 verification-only summary handoffs and reject without mutating files.
 

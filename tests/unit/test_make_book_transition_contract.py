@@ -23,6 +23,17 @@ def _schema(tool: object) -> dict[str, object]:
     return metadata.parameters["input_schema"]
 
 
+def test_layout_budget_matches_builder_page_geometry() -> None:
+    assert make_book._PAGE_WIDTH_IN == 8.0
+    assert make_book._PAGE_HEIGHT_IN == 11.5
+    assert make_book._PAGE_MARGIN_IN == 0.75
+    assert make_book._CONTENT_WIDTH_IN == 6.5
+    assert make_book._TARGET_MEDIA_WIDTH_IN == 6.175
+    assert make_book._MAX_MEDIA_HEIGHT_IN == 8.05
+    assert make_book._parse_layout_measurement("95%", axis="width") == 6.175
+    assert make_book._parse_layout_measurement("70%", axis="height") == 8.05
+
+
 def test_every_phase_transition_requires_only_a_summary(tmp_path: Path) -> None:
     event = asyncio.Event()
     data: dict[str, object] = {}
@@ -335,7 +346,7 @@ async def test_layout_gate_enforces_image_and_table_bounds_without_writing(
     image.write_bytes(_png_header(700, 700))
     chapter = chapters / "01-layout.md"
     chapter.write_text(
-        "# Layout\n\n![Figure](../assets/figure.png){width=8.5in height=7.8in}\n",
+        "# Layout\n\n![Figure](../assets/figure.png){width=6.2in height=8.1in}\n",
         encoding="utf-8",
     )
     event = asyncio.Event()
@@ -357,14 +368,15 @@ async def test_layout_gate_enforces_image_and_table_bounds_without_writing(
     assert data == {}
 
     chapter.write_text(
-        "# Layout\n\n![Figure](../assets/figure.png){width=8.5in height=7.7in}\n",
+        "# Layout\n\n![Figure](../assets/figure.png){width=6.175in height=8.05in}\n",
         encoding="utf-8",
     )
     accepted = await confirm(summary="The image is bounded")
     assert accepted["ok"] is True
     assert data["image_count"] == 1
     assert data["table_count"] == 0
-    assert data["receipt"]["max_height_in"] == 7.7
+    assert data["receipt"]["max_width_in"] == 6.175
+    assert data["receipt"]["max_height_in"] == 8.05
 
     event.clear()
     data.clear()
@@ -383,8 +395,8 @@ def test_make_book_prompts_define_generated_toc_and_layout_phases() -> None:
     phases = {phase.name: phase for phase in make_book.MakeBookWorkflow.phases}
     assert "contents.md" in phases["front_matter"].system_prompt_override
     assert "contents.md" in phases["back_matter"].system_prompt_override
-    assert "8.5in" in phases["layout_review"].system_prompt_override
-    assert "7.7in" in phases["final_layout_review"].system_prompt_override
+    assert "6.175in" in phases["layout_review"].system_prompt_override
+    assert "8.05in" in phases["final_layout_review"].system_prompt_override
     assert len(make_book.MakeBookWorkflow.phases) == 9
 
 

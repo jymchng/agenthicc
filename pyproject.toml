@@ -20,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 cloud = ["aiohttp>=3.9", "keyring>=25.0"]
+book = ["Pillow>=10"]
 cloakbrowser = ["cloakbrowser==0.5.3"]
 playwright = ["playwright>=1.52,<2"]
 mcp = [

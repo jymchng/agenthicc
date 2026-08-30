@@ -268,7 +268,7 @@ async def _successful_make_book_run_phase(tmp_path: Path, **kwargs: object) -> N
         await names["confirm_chapter_complete"](summary="Chapter written and checked.")
     elif "confirm_layout_ready" in names:
         await names["confirm_layout_ready"](
-            summary="All images, diagrams, and tables fit the 8.5 x 11 page bounds."
+            summary="All images, diagrams, and tables fit the 8 x 11.5 page bounds."
         )
     elif "confirm_front_matter_ready" in names:
         directory = tmp_path / "book" / "front-matter"

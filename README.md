@@ -255,9 +255,10 @@ inventories, counts, and PDF output. The assets phase requires at least
 the [workflow guide](./docs/guides/workflows.md#make_book-phase-handoffs) for
 the exact calls and artifact layout. `make_book` uses two layout-review phases:
 referenced images/diagrams and Markdown tables must fit within the default
-8.5×11-inch US Letter page, no more than 8.5 inches wide or 7.7 inches high.
-The builder
-generates the TOC from chapter headings; agents must not write `contents.md`.
+8×11.5-inch page with 0.75-inch margins: no more than 6.175 inches wide (95%
+of the 6.5-inch content width) or 8.05 inches high (70% of page height). The
+builder generates the TOC from chapter headings, stages raster assets at 600
+DPI while preserving aspect ratio, and agents must not write `contents.md`.
 
 ### Transition tools
 

@@ -47,9 +47,16 @@ def test_generated_builder_is_valid_python_and_contains_pipeline() -> None:
     assert '"xelatex",' in source
     assert "--keep-intermediates" in source
     assert "attach_cover" in source
-    assert "TRIM_W_IN = 8.5" in source
-    assert "TRIM_H_IN = 11.0" in source
-    assert "paperwidth=8.5in,paperheight=11.0in" in source
+    assert "TRIM_W_IN = 8.0" in source
+    assert "TRIM_H_IN = 11.5" in source
+    assert "MARGIN_IN = 0.75" in source
+    assert "CONTENT_W_IN = TRIM_W_IN - (2 * MARGIN_IN)" in source
+    assert "IMAGE_TARGET_W_IN = CONTENT_W_IN * IMAGE_WIDTH_FRACTION" in source
+    assert "IMAGE_DPI = 600" in source
+    assert "paperwidth=8.0in,paperheight=11.5in,margin=0.75in" in source
+    assert r"0.95\textwidth" in source
+    assert "dpi=(IMAGE_DPI, IMAGE_DPI)" in source
+    assert "normalize_raster_images" in source
     assert "maxheight" in source
     assert "contents.md" in source
     assert "--toc" in source
