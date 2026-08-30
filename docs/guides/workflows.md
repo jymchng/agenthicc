@@ -181,16 +181,24 @@ session-local `/workflow` override.
 
 ### `make_book` and its standalone builder
 
-The `make_book` workflow produces a technical PDF and, during its compile
-phase, exposes `create_build_book`. The tool creates
+The `make_book` workflow produces a technical PDF and a matching reflowable
+EPUB. During its compile phase it exposes
+`list_build_book_reference()` and
+`read_build_book_reference(start_line, end_line)` so the agent can inspect the
+bundled Hyrox-derived `build_book.py` reference in manageable chunks. The
+reference is guidance only: its Recovery-from-HYROX title, chapter list, and
+paths must not be copied into a generated book.
+
+The `create_build_book()` tool creates
 `<output_dir>/build_book.py` as a normal executable Python program inside the
 run's book output directory. The generated builder discovers `front-matter/`,
 `chapters/`, and `back-matter/` relative to that directory, invokes Pandoc and
-XeLaTeX for at least two passes, writes the result to `dist/`, and can be rerun
-later without an agent session:
+XeLaTeX for at least two PDF passes, invokes Pandoc again for EPUB output, and
+can be rerun later without an agent session:
 
 ```bash
 python3 <output_dir>/build_book.py --out dist/my-book.pdf
+# Produces dist/my-book.pdf and dist/my-book.epub
 ```
 
 It accepts `--out`/`-o` for a custom PDF path and
@@ -204,10 +212,13 @@ inches (70% of the page height), and attaches an optional `assets/cover.png`
 stages every raster asset at 600 DPI and the target width, preserving its
 aspect ratio without modifying the source files. Pillow is required when
 raster assets are present; install the optional `agenthicc[book]` extra for
-the generated builder dependency. `mark_book_complete` is verification-only: the agent must call
+the generated builder dependency. The EPUB uses responsive CSS (`max-width:
+100%; height: auto`) so images and tables reflow on reader screens. The
+builder writes the paired `.pdf` and `.epub` using the same title, chapter,
+asset, and metadata inputs. `mark_book_complete` is verification-only: the agent must call
 `create_build_book()` and run the resulting script before the completion gate
-will accept the existing PDF. Its path is stored in the workflow checkpoint
-and artifact summary.
+will accept the existing PDF and EPUB. Both paths are stored in the workflow
+checkpoint and artifact summary.
 
 #### `make_book` phase handoffs
 
@@ -222,7 +233,7 @@ confirm_layout_ready(summary="All chapter media and tables fit the page bounds."
 confirm_front_matter_ready(summary="The preface is ready; the builder generates the TOC.")
 confirm_back_matter_ready(summary="The index is ready.")
 confirm_layout_ready(summary="All final media and tables fit the page bounds.")
-mark_book_complete(summary="The builder produced and validated the PDF.")
+mark_book_complete(summary="The builder produced and validated the PDF and EPUB.")
 reject_book(summary="The PDF failed validation because …")
 ```
 
@@ -258,9 +269,10 @@ verification-only summary handoffs and reject without mutating files.
 creates `<output_dir>/build_book.py`. It is not a phase transition. The
 completion transition remains verification-only and requires that the builder
 already exists and that `dist/` contains exactly one existing PDF with a
-`%PDF-` header. Transition receipts store compact metadata and canonical paths
-so checkpoint/resume preserves progress without copying provider memory or
-large research bodies.
+`%PDF-` header plus exactly one valid EPUB with the same filename stem.
+Transition receipts store compact metadata and canonical paths so
+checkpoint/resume preserves progress without copying provider memory or large
+research bodies.
 
 When `code_plan` reaches its human plan review, the overlay offers
 `Approve - Safe` and `Approve - YOLO`. The selected mode is carried into the

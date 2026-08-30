@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,12 @@ import pytest
 from agenthicc.workflows.make_book.runner import MakeBookRunner, MakeBookWorkflow
 
 pytestmark = pytest.mark.e2e
+
+
+def _write_epub(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr("book.opf", "<package></package>")
 
 
 def _runner_config() -> SimpleNamespace:
@@ -92,7 +99,8 @@ async def _drive_make_book_turn(output: Path, **kwargs: object) -> None:
         dist = output / "dist"
         dist.mkdir(parents=True, exist_ok=True)
         (dist / "e2e-book.pdf").write_bytes(b"%PDF-1.7\ne2e fixture")
-        await by_name["mark_book_complete"](summary="The PDF is compiled and valid.")
+        _write_epub(dist / "e2e-book.epub")
+        await by_name["mark_book_complete"](summary="The PDF and EPUB are compiled and valid.")
 
 
 @pytest.mark.asyncio
@@ -107,6 +115,7 @@ async def test_make_book_end_to_end_records_verified_phase_receipts(tmp_path: Pa
 
     assert context.state.name == "COMPLETE"
     assert context.pdf_path == "dist/e2e-book.pdf"
+    assert context.epub_path == "dist/e2e-book.epub"
     assert context.build_script_path.endswith("build_book.py")
     assert [receipt["phase"] for receipt in context.transition_receipts] == [
         "toc",

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -76,6 +77,12 @@ from agenthicc.workflows.site_imitate.runner import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _write_epub(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr("book.opf", "<package></package>")
 
 
 def _runner_config() -> SimpleNamespace:
@@ -285,6 +292,7 @@ async def _successful_make_book_run_phase(tmp_path: Path, **kwargs: object) -> N
         dist = tmp_path / "book" / "dist"
         dist.mkdir(parents=True)
         (dist / "book.pdf").write_bytes(b"%PDF-1.7\nvalid test fixture\n")
+        _write_epub(dist / "book.epub")
         await names["mark_book_complete"](summary="PDF compiled and validated.")
 
 
@@ -919,9 +927,17 @@ async def test_book_transition_tools_cover_validation_and_decisions(
     pdf = tmp_path / "book" / "dist" / "book.pdf"
     pdf.parent.mkdir(parents=True)
     pdf.write_bytes(b"%PDF-1.7\nfixture")
+    _write_epub(pdf.with_suffix(".epub"))
     data["chapters"] = [{"title": "Chapter"}]
-    complete, reject, create_builder = make_compile(
+    compile_tools = make_compile(
         event, data, output_dir=str(tmp_path / "book"), title="Book", author="Author"
+    )
+    complete = next(
+        tool for tool in compile_tools if getattr(tool, "__name__", "") == "mark_book_complete"
+    )
+    reject = next(tool for tool in compile_tools if getattr(tool, "__name__", "") == "reject_book")
+    create_builder = next(
+        tool for tool in compile_tools if getattr(tool, "__name__", "") == "create_build_book"
     )
     assert getattr(create_builder, "__name__", "") == "create_build_book"
     assert (await complete(summary="compiled"))["ok"] is False

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import inspect
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,12 @@ def _tool(tools: list[object], name: str) -> object:
 def _schema(tool: object) -> dict[str, object]:
     metadata = getattr(tool, "__lauren_ai_tool__")
     return metadata.parameters["input_schema"]
+
+
+def _write_epub(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr("book.opf", "<package></package>")
 
 
 def test_layout_budget_matches_builder_page_geometry() -> None:
@@ -401,7 +408,7 @@ def test_make_book_prompts_define_generated_toc_and_layout_phases() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compile_gate_only_verifies_existing_builder_and_pdf(tmp_path: Path) -> None:
+async def test_compile_gate_verifies_existing_builder_pdf_and_epub(tmp_path: Path) -> None:
     event = asyncio.Event()
     data: dict[str, object] = {}
     tools = make_book._make_compile_tools(event, data, output_dir=str(tmp_path), title="Book")
@@ -420,9 +427,15 @@ async def test_compile_gate_only_verifies_existing_builder_and_pdf(tmp_path: Pat
     assert event.is_set() is False
 
     (tmp_path / "dist" / "book.pdf").write_bytes(b"%PDF-1.7\nfixture")
+    missing_epub = await complete(summary="compiled")
+    assert missing_epub["ok"] is False
+    assert "EPUB" in missing_epub["error"]
+
+    _write_epub(tmp_path / "dist" / "book.epub")
     accepted = await complete(summary="PDF compiled and validated")
     assert accepted["ok"] is True
     assert data["pdf_path"] == "dist/book.pdf"
+    assert data["epub_path"] == "dist/book.epub"
 
 
 @pytest.mark.asyncio

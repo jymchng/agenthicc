@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,12 @@ pytestmark = pytest.mark.integration
 
 def _named(tools: list[object], name: str) -> object:
     return next(tool for tool in tools if getattr(tool, "__name__", "") == name)
+
+
+def _write_epub(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr("book.opf", "<package></package>")
 
 
 @pytest.mark.asyncio
@@ -48,6 +55,7 @@ async def test_complete_file_backed_gate_sequence_and_checkpoint(tmp_path: Path)
     (output / "front-matter" / "preface.md").write_text("# Preface\n", encoding="utf-8")
     (output / "back-matter" / "index.md").write_text("# Index\n", encoding="utf-8")
     (output / "dist" / "book.pdf").write_bytes(b"%PDF-1.7\nfixture")
+    _write_epub(output / "dist" / "book.epub")
 
     receipts: list[dict[str, object]] = []
     event = asyncio.Event()
@@ -150,7 +158,9 @@ async def test_complete_file_backed_gate_sequence_and_checkpoint(tmp_path: Path)
         event, data, output_dir=str(output), title="Book", author="Author"
     )
     await _named(compile_tools, "create_build_book")()
-    assert (await _named(compile_tools, "mark_book_complete")(summary="PDF is valid"))["ok"] is True
+    assert (await _named(compile_tools, "mark_book_complete")(summary="PDF and EPUB are valid"))[
+        "ok"
+    ] is True
     receipts.append(data["receipt"])
 
     context = make_book.MakeBookContext(

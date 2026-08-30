@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,19 @@ for arg in "$@"; do
   if [ "$previous" = "-o" ]; then out="$arg"; fi
   previous="$arg"
 done
+case "$out" in
+  *.epub)
+    python - "$out" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1], "w") as archive:
+    archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+    archive.writestr("book.opf", "<package></package>")
+PY
+    exit 0
+    ;;
+esac
 cat > "$out" <<'EOF'
 \\documentclass{book}
 \\begin{document}
@@ -102,9 +116,13 @@ printf '%%PDF-1.7\\n1 0 obj\\n<<>>\\nendobj\\n' > "$outdir/book.pdf"
     assert result.returncode == 0, result.stderr + result.stdout
     output = tmp_path / "dist" / "result.pdf"
     assert output.read_bytes().startswith(b"%PDF")
+    epub = tmp_path / "dist" / "result.epub"
+    assert epub.read_bytes()[:2] == b"PK"
+    with zipfile.ZipFile(epub) as archive:
+        assert archive.read("mimetype") == b"application/epub+zip"
     assert not (tmp_path / ".build_book").exists()
     commands = log_path.read_text(encoding="utf-8").splitlines()
-    assert commands.count("pandoc") == 1
+    assert commands.count("pandoc") == 2
     assert commands.count("xelatex") == 2
     assert "contents.md" not in (tmp_path / "pandoc-args.log").read_text(encoding="utf-8")
 
@@ -137,6 +155,19 @@ for arg in "$@"; do
   if [ "$previous" = "-o" ]; then out="$arg"; fi
   previous="$arg"
 done
+case "$out" in
+  *.epub)
+    python - "$out" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1], "w") as archive:
+    archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+    archive.writestr("book.opf", "<package></package>")
+PY
+    exit 0
+    ;;
+esac
 cat > "$out" <<'EOF'
 \documentclass{book}
 \begin{document}
@@ -225,4 +256,5 @@ def test_generated_builder_compiles_real_toc_and_bounded_table(tmp_path) -> None
 
     assert result.returncode == 0, result.stderr + result.stdout
     assert (tmp_path / "dist" / "real.pdf").read_bytes().startswith(b"%PDF-")
+    assert (tmp_path / "dist" / "real.epub").read_bytes()[:2] == b"PK"
     assert not (tmp_path / ".build_book").exists()

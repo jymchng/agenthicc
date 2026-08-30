@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import zipfile
 
 import pytest
 
@@ -24,6 +25,12 @@ pytestmark = pytest.mark.unit
 
 def _named_tool(tools: list[object], name: str) -> object:
     return next(tool for tool in tools if getattr(tool, "__name__", "") == name)
+
+
+def _write_epub(path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        archive.writestr("book.opf", "<package></package>")
 
 
 def test_slugify_book_title_is_stable_and_safe() -> None:
@@ -57,6 +64,9 @@ def test_generated_builder_is_valid_python_and_contains_pipeline() -> None:
     assert r"0.95\textwidth" in source
     assert "dpi=(IMAGE_DPI, IMAGE_DPI)" in source
     assert "normalize_raster_images" in source
+    assert "build_epub" in source
+    assert "--split-level=1" in source
+    assert 'output.with_suffix(".epub")' in source
     assert "maxheight" in source
     assert "contents.md" in source
     assert "--toc" in source
@@ -98,7 +108,7 @@ async def test_create_build_book_tool_writes_builder_without_advancing_phase(tmp
 
 
 @pytest.mark.asyncio
-async def test_mark_book_complete_only_verifies_existing_pdf(tmp_path) -> None:
+async def test_mark_book_complete_verifies_existing_pdf_and_epub(tmp_path) -> None:
     event = asyncio.Event()
     data: dict[str, object] = {}
     tools = _make_compile_tools(
@@ -112,6 +122,7 @@ async def test_mark_book_complete_only_verifies_existing_pdf(tmp_path) -> None:
     pdf = tmp_path / "dist" / "a-technical-book.pdf"
     pdf.parent.mkdir()
     pdf.write_bytes(b"%PDF-1.7\nvalid test fixture\n")
+    _write_epub(tmp_path / "dist" / "a-technical-book.epub")
 
     await _named_tool(tools, "create_build_book")()
     result = await _named_tool(tools, "mark_book_complete")(
@@ -123,6 +134,25 @@ async def test_mark_book_complete_only_verifies_existing_pdf(tmp_path) -> None:
     assert (tmp_path / "build_book.py").is_file()
     assert data["build_script_path"] == str(tmp_path / "build_book.py")
     assert data["pdf_path"] == "dist/a-technical-book.pdf"
+    assert data["epub_path"] == "dist/a-technical-book.epub"
+
+
+@pytest.mark.asyncio
+async def test_mark_book_complete_rejects_an_unmatched_epub(tmp_path) -> None:
+    event = asyncio.Event()
+    data: dict[str, object] = {}
+    tools = _make_compile_tools(event, data, output_dir=str(tmp_path))
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "book.pdf").write_bytes(b"%PDF-1.7\nvalid test fixture\n")
+    _write_epub(dist / "different-book.epub")
+
+    await _named_tool(tools, "create_build_book")()
+    result = await _named_tool(tools, "mark_book_complete")(summary="Compiled outputs")
+
+    assert result["ok"] is False
+    assert "does not match" in result["error"]
+    assert event.is_set() is False
 
 
 @pytest.mark.asyncio
@@ -156,6 +186,29 @@ async def test_create_build_book_requires_a_target_directory() -> None:
     assert "output directory" in result["error"]
 
 
+@pytest.mark.asyncio
+async def test_compile_tools_expose_bounded_hyrox_builder_reference() -> None:
+    tools = _make_compile_tools(asyncio.Event(), {})
+
+    listed = await _named_tool(tools, "list_build_book_reference")()
+    assert listed["ok"] is True
+    assert str(listed["path"]).endswith("workflows/make_book/build_book.py")
+    assert int(listed["line_count"]) > 1_000
+    assert any("build_epub" in str(section) for section in listed["sections"])
+
+    excerpt = await _named_tool(tools, "read_build_book_reference")(
+        start_line=920,
+        end_line=960,
+    )
+    assert excerpt["ok"] is True
+    assert "build_epub" in excerpt["content"]
+    too_large = await _named_tool(tools, "read_build_book_reference")(
+        start_line=1,
+        end_line=201,
+    )
+    assert too_large["ok"] is False
+
+
 def test_build_script_path_round_trips_in_checkpoint() -> None:
     context = MakeBookContext(
         intent="write a book",
@@ -166,12 +219,14 @@ def test_build_script_path_round_trips_in_checkpoint() -> None:
         layout_image_count=2,
         layout_table_count=1,
         final_layout_summary="Final layout is bounded.",
+        epub_path="dist/example.epub",
     )
 
     payload = MakeBookWorkflow.checkpoint_context_to_payload(context)
     restored = MakeBookWorkflow.checkpoint_context_from_payload(payload)
 
     assert restored.build_script_path == "books/example/build_book.py"
+    assert restored.epub_path == "dist/example.epub"
     assert restored.layout_summary == "Chapter layout is bounded."
     assert restored.layout_files == ["chapters/01.md"]
     assert restored.layout_image_count == 2

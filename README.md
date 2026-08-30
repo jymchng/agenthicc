@@ -258,7 +258,8 @@ referenced images/diagrams and Markdown tables must fit within the default
 8×11.5-inch page with 0.75-inch margins: no more than 6.175 inches wide (95%
 of the 6.5-inch content width) or 8.05 inches high (70% of page height). The
 builder generates the TOC from chapter headings, stages raster assets at 600
-DPI while preserving aspect ratio, and agents must not write `contents.md`.
+DPI while preserving aspect ratio, builds a matching reflowable EPUB, and
+agents must not write `contents.md`.
 
 ### Transition tools
 

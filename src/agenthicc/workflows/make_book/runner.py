@@ -31,6 +31,7 @@ import json
 import logging
 import re
 import uuid
+import zipfile
 from collections.abc import Callable
 from enum import Enum, auto
 from pathlib import Path
@@ -196,6 +197,7 @@ class MakeBookContext:
     research_summary: str = ""
     research_files: list[str] = dataclasses.field(default_factory=list)
     pdf_path: str = ""
+    epub_path: str = ""
     compile_summary: str = ""
     front_matter_summary: str = ""
     front_matter_files: list[str] = dataclasses.field(default_factory=list)
@@ -1301,12 +1303,81 @@ def _make_compile_tools(
     title: str = "",
     author: str = "",
 ) -> list[Callable[..., object]]:
-    """Return build-script and pass/fail tools for the compile phase.
+    """Return builder-reference, build-script, and pass/fail tools for compile.
 
     ``create_build_book`` is the only creator in this group.  The completion
     gates are verification-only and never create or modify book artifacts.
     """
     from lauren_ai._tools import tool
+    from agenthicc.tools.capabilities import tool_read
+
+    reference_path = Path(__file__).with_name("build_book.py")
+
+    @tool_read
+    @tool()
+    async def list_build_book_reference() -> dict[str, object]:
+        """List the bundled Hyrox-derived builder reference and its sections."""
+        try:
+            lines = reference_path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            return {
+                "ok": False,
+                "error": f"Could not read the bundled build_book.py reference: {exc}",
+            }
+        sections = [
+            {"line": index, "definition": line.strip()}
+            for index, line in enumerate(lines, start=1)
+            if line.startswith(("def ", "class "))
+        ]
+        return {
+            "ok": True,
+            "path": str(reference_path),
+            "line_count": len(lines),
+            "sections": sections,
+            "message": (
+                "Read this as a build-pipeline reference. Adapt its source discovery, "
+                "validation, and PDF/EPUB stages to the current book output directory; "
+                "do not copy its Recovery-from-HYROX-specific filenames or title data."
+            ),
+        }
+
+    @tool_read
+    @tool()
+    async def read_build_book_reference(
+        start_line: int = 1,
+        end_line: int = 160,
+    ) -> dict[str, object]:
+        """Read a bounded line range from the bundled builder reference."""
+        if start_line < 1 or end_line < start_line:
+            return {
+                "ok": False,
+                "error": "start_line must be >= 1 and end_line must be >= start_line.",
+            }
+        if end_line - start_line + 1 > 200:
+            return {
+                "ok": False,
+                "error": "Read at most 200 reference lines per call.",
+            }
+        try:
+            lines = reference_path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            return {
+                "ok": False,
+                "error": f"Could not read the bundled build_book.py reference: {exc}",
+            }
+        if start_line > len(lines):
+            return {
+                "ok": False,
+                "error": f"start_line {start_line} is beyond the {len(lines)}-line reference.",
+            }
+        end = min(end_line, len(lines))
+        return {
+            "ok": True,
+            "path": str(reference_path),
+            "start_line": start_line,
+            "end_line": end,
+            "content": "\n".join(lines[start_line - 1 : end]),
+        }
 
     def _create_builder() -> dict[str, object]:
         if not output_dir.strip():
@@ -1335,25 +1406,27 @@ def _make_compile_tools(
             "path": str(destination),
             "message": (
                 "Created the reusable build_book.py builder. Run it from its "
-                "directory to rebuild the PDF independently of this session."
+                "directory to rebuild the PDF and matching EPUB independently "
+                "of this session."
             ),
         }
 
     @tool()
     async def create_build_book() -> dict[str, object]:
-        """Create the reusable ``build_book.py`` PDF builder.
+        """Create the reusable build_book.py PDF and EPUB builder.
 
         The script discovers front-matter, chapter, and back-matter Markdown
         files relative to itself, compiles them with Pandoc and XeLaTeX in
-        multiple passes, optionally attaches the user cover, and writes the
-        final PDF under ``dist/``.  Call this before running the builder.
+        multiple passes, builds a matching reflowable EPUB with Pandoc,
+        optionally attaches the user cover to the PDF, and writes both under
+        dist/. Call this before running the builder.
         """
 
         return _create_builder()
 
     @tool()
     async def mark_book_complete(summary: str) -> dict[str, object]:
-        """Discover, validate, and accept the compiled PDF under ``dist/``."""
+        """Discover, validate, and accept the compiled PDF and EPUB under dist/."""
         if not summary.strip():
             return {
                 "ok": False,
@@ -1391,16 +1464,52 @@ def _make_compile_tools(
             return _path_error(str(pdf), root, "could not be read") | {"detail": str(exc)}
         if header != b"%PDF-":
             return _path_error(str(pdf), root, "does not have a valid PDF header")
+        epub_candidates = _files_under(dist, frozenset({".epub"}))
+        if len(epub_candidates) != 1:
+            return {
+                "ok": False,
+                "error": f"expected exactly one EPUB under '{dist}', found {len(epub_candidates)}.",
+                "fix": "Run build_book.py to produce the matching EPUB, then remove stale EPUBs and retry.",
+            }
+        epub = epub_candidates[0]
+        if epub.stem != pdf.stem:
+            return {
+                "ok": False,
+                "error": (f"EPUB '{epub.name}' does not match the PDF '{pdf.name}' by filename."),
+                "fix": "Run build_book.py with one output basename so the PDF and EPUB pair up.",
+            }
+        try:
+            with zipfile.ZipFile(epub) as archive:
+                names = set(archive.namelist())
+                if "mimetype" not in names or not any(name.endswith(".opf") for name in names):
+                    return _path_error(
+                        str(epub), root, "does not contain EPUB mimetype and OPF metadata"
+                    )
+                if archive.read("mimetype") != b"application/epub+zip":
+                    return _path_error(str(epub), root, "has an invalid EPUB mimetype")
+        except (OSError, zipfile.BadZipFile, KeyError) as exc:
+            return _path_error(str(epub), root, "could not be validated") | {"detail": str(exc)}
         summary = _compact(summary, limit=2_000)
         data["action"] = "complete"
         data["pdf_path"] = str(pdf.relative_to(root))
+        data["epub_path"] = str(epub.relative_to(root))
         data["summary"] = summary
         data["receipt"] = _transition_receipt(
-            {"receipt": {"pdf_path": data["pdf_path"], "bytes": pdf.stat().st_size}},
+            {
+                "receipt": {
+                    "pdf_path": data["pdf_path"],
+                    "epub_path": data["epub_path"],
+                    "pdf_bytes": pdf.stat().st_size,
+                    "epub_bytes": epub.stat().st_size,
+                }
+            },
             phase="compile",
         )
         event.set()
-        return {"ok": True, "message": f"Book marked as complete: {data['pdf_path']}."}
+        return {
+            "ok": True,
+            "message": f"Book marked as complete: {data['pdf_path']} and {data['epub_path']}.",
+        }
 
     @tool()
     async def reject_book(summary: str) -> dict[str, object]:
@@ -1427,7 +1536,13 @@ def _make_compile_tools(
             "message": f"Book sent back for fixes: {data['issue']}",
         }
 
-    return [mark_book_complete, reject_book, create_build_book]
+    return [
+        mark_book_complete,
+        reject_book,
+        create_build_book,
+        list_build_book_reference,
+        read_build_book_reference,
+    ]
 
 
 # ── runner ────────────────────────────────────────────────────────────────────
@@ -2533,7 +2648,7 @@ class MakeBookRunner(CodePlanRunner):
             paths: str = "\n".join(f"  {c.file_path}" for c in written)
             asset_list: str = "\n".join(f"  {a}" for a in ctx.images)
             text: str = (
-                f"Compile the finished book into a PDF.\n\n"
+                f"Compile the finished book into a PDF and matching EPUB.\n\n"
                 f"Title: {ctx.title}\nAuthor: {ctx.author}\n"
                 f"Output dir: {ctx.output_dir or '(derived from title)'}\n"
                 f"Rich content: {', '.join(ctx.content_types)}\n"
@@ -2555,9 +2670,14 @@ class MakeBookRunner(CodePlanRunner):
                 intent=ctx.intent,
                 text=text,
                 system_prompt=(
-                    "You are in the COMPILE phase of make_book. Typeset all written "
-                    "chapters into a single polished PDF file, preserving every kind of "
-                    "rich content.\n\n"
+                    "You are in the COMPILE phase of make_book. Before creating or modifying "
+                    "the builder, call list_build_book_reference() and then read the relevant "
+                    "ranges with read_build_book_reference(start_line=..., end_line=...). The "
+                    "bundled reference is the Hyrox-derived build_book.py pattern: adapt its "
+                    "pipeline and validation, but never copy its Recovery-from-HYROX-specific "
+                    "filenames, title, author, or fixed chapter list.\n\n"
+                    "Typeset all written chapters into a single polished PDF and a matching "
+                    "reflowable EPUB, preserving every kind of rich content.\n\n"
                     f"Title: {ctx.title}\nAuthor: {ctx.author}\n"
                     f"Rich content: {', '.join(ctx.content_types)}\n"
                     "Chapter files:\n" + "\n".join(f"  {c.file_path}" for c in written) + "\n\n"
@@ -2589,7 +2709,8 @@ class MakeBookRunner(CodePlanRunner):
                     "directory, with deterministic source "
                     "discovery, Pandoc -> XeLaTeX multi-pass compilation, 8x11.5in trim with "
                     "0.75in margins, 95% content-width images at 600 DPI, "
-                    "optional cover attachment, --out/--keep-intermediates options, and "
+                    "a matching reflowable EPUB, optional cover attachment, "
+                    "--out/--keep-intermediates options, and "
                     "safe intermediate cleanup. Then run build_book.py so it performs the "
                     "END-TO-END compile from the "
                     "markdown sources to the final PDF, then RUN it so dist/ holds the "
@@ -2606,6 +2727,7 @@ class MakeBookRunner(CodePlanRunner):
                     "changed'. Do NOT skip passes when pdflatex exits non-zero on "
                     "Unicode warnings; the PDF is still produced, keep going.\n"
                     "  3. Copy the final PDF into <output_dir>/dist/<title-slug>.pdf "
+                    "and the matching EPUB into <output_dir>/dist/<title-slug>.epub "
                     "(create dist/).\n"
                     "  4. Delete ALL intermediate artifacts (book.tex, book.typ, *.aux, "
                     "*.log, *.toc, *.out, *.fls, .math-render/, etc.) so "
@@ -2624,8 +2746,8 @@ class MakeBookRunner(CodePlanRunner):
                     '      subtitle = "A Practical Guide"\n'
                     '      description = "A short, compelling blurb for the Amazon listing."\n'
                     '      keywords = ["keyword one", "keyword two", "keyword three", "keyword four", "keyword five", "keyword six", "keyword seven"]\n'
-                    "Call mark_book_complete(summary=...) after the builder produces the PDF; "
-                    "the runner discovers the dist/ output. If compilation fails, call "
+                    "Call mark_book_complete(summary=...) after the builder produces both "
+                    "artifacts; the runner discovers and validates the dist/ outputs. If compilation fails, call "
                     "reject_book(summary=...) with a concise diagnosis.\n"
                     "Compile strategy — try in order until one produces a valid PDF:\n"
                     "1. TYPST (preferred — native typeset math, single static binary, "
@@ -2765,7 +2887,7 @@ class MakeBookRunner(CodePlanRunner):
                     + _MATHJAX_RENDERER_JS
                     + "\n\n"
                     "On success call mark_book_complete(summary=...); the runner discovers "
-                    "and validates the single PDF under dist/. On failure call "
+                    "and validates exactly one PDF and one matching EPUB under dist/. On failure call "
                     "reject_book(summary=...) with a concise diagnosis; the runner sends "
                     "the whole book back for correction. You MUST call one."
                 ),
@@ -2785,9 +2907,11 @@ class MakeBookRunner(CodePlanRunner):
                 action: str = str(data.get("action", ""))
                 if action == "complete":
                     ctx.pdf_path = str(data.get("pdf_path", ""))
+                    ctx.epub_path = str(data.get("epub_path", ""))
                     ctx.compile_summary = str(data.get("summary", ""))
                     ctx.build_script_path = str(data.get("build_script_path", ""))
                     ctx.artifacts["pdf"] = ctx.pdf_path
+                    ctx.artifacts["epub"] = ctx.epub_path
                     if ctx.build_script_path:
                         ctx.artifacts["builder"] = ctx.build_script_path
                     return MakeBookState.COMPLETE
@@ -3005,14 +3129,17 @@ class MakeBookWorkflow(WorkflowPlugin):
             next=None,  # terminal on success
             on_reject="chapter",  # re-enter at the offending chapter index
             system_prompt_override=(
-                "You are in the COMPILE phase of make_book. Typeset all chapters. "
-                "into a valid .pdf with the generated build_book.py builder "
-                "(Pandoc -> XeLaTeX multi-pass), preserve images, "
+                "You are in the COMPILE phase of make_book. Use the bundled "
+                "build_book.py reference tools before creating the output builder, "
+                "then adapt the pattern rather than its hard-coded example data. "
+                "Typeset all chapters into a valid .pdf and matching .epub with the "
+                "generated build_book.py builder (Pandoc -> XeLaTeX multi-pass for PDF "
+                "and Pandoc EPUB output), preserve images, "
                 "native math, code, and tables, validate it (%PDF, page count, "
                 "pypdf chapter-title + no-leak + image-count checks), call "
                 "create_build_book() to create the reusable builder at "
                 "<output_dir>/build_book.py, then run "
-                "it to rebuild the PDF end-to-end into dist/ "
+                "it to rebuild the PDF and EPUB end-to-end into dist/ "
                 "(compile at least twice so TOC page numbers resolve; user cover → TOC → "
                 "preface ordering; clean all intermediates), run it, and call "
                 "mark_book_complete(summary=...) after verification or reject_book(summary=...)."
@@ -3070,6 +3197,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             "final_layout_summary": context.final_layout_summary,
             "build_script_path": context.build_script_path,
             "pdf_path": context.pdf_path,
+            "epub_path": context.epub_path,
             "compile_summary": context.compile_summary,
             "fail_reason": context.fail_reason,
             "artifacts": context.artifacts,
@@ -3187,6 +3315,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             final_layout_summary=str(payload.get("final_layout_summary", "")),
             build_script_path=str(payload.get("build_script_path", "")),
             pdf_path=str(payload.get("pdf_path", "")),
+            epub_path=str(payload.get("epub_path", "")),
             compile_summary=str(payload.get("compile_summary", "")),
             fail_reason=str(payload.get("fail_reason", "")),
             artifacts=artifacts,

@@ -122,6 +122,9 @@ module = [
     "agenthicc.tools.mcp",
     "agenthicc.tools.outlook",
     "agenthicc.tools.outlook.*",
+    # The bundled make_book reference is intentionally kept byte-for-byte
+    # identical to the external example and is not runtime application code.
+    "agenthicc.workflows.make_book.build_book",
 ]
 ignore_missing_imports = true
 ignore_errors = true
@@ -143,3 +146,6 @@ extend-ignore = ["E501"]
 "src/agenthicc/testing/recording_approval.py" = ["F821"]
 "src/agenthicc/tools/http.py" = ["F821"]
 "src/agenthicc/tui/runtime/replay.py" = ["F401"]
+# This file is a verbatim, bundled upstream/reference script. Keep its source
+# unchanged so the compile-phase inspection tools expose the exact reference.
+"src/agenthicc/workflows/make_book/build_book.py" = ["F401", "F841"]
