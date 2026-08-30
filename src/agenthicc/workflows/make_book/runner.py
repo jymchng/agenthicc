@@ -220,14 +220,14 @@ _SUPPORTED_ASSET_SUFFIXES: frozenset[str] = frozenset(
     {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".mmd", ".py"}
 )
 
-# The paperback builder uses a 7 x 10 inch page.  Layout review deliberately
+# The builder uses an 8.5 x 11 inch US Letter page.  Layout review deliberately
 # uses the physical page rather than a provider-specific pixel size so the
 # same checks work for LaTeX, Typst, and a resumed run.  The builder applies
 # the image guard again at typesetting time; the phase gate catches explicit
 # source dimensions and tables that cannot be safely auto-scaled.
-_PAGE_WIDTH_IN = 7.0
-_PAGE_HEIGHT_IN = 10.0
-_MAX_MEDIA_HEIGHT_IN = _PAGE_HEIGHT_IN * 0.70
+_PAGE_WIDTH_IN = 8.5
+_PAGE_HEIGHT_IN = 11.0
+_MAX_MEDIA_HEIGHT_IN = round(_PAGE_HEIGHT_IN * 0.70, 2)
 _MAX_TABLE_WIDTH_IN = _PAGE_WIDTH_IN
 _MAX_TABLE_HEIGHT_IN = _MAX_MEDIA_HEIGHT_IN
 _TABLE_ROW_HEIGHT_IN = 0.28
@@ -1252,7 +1252,7 @@ def _make_layout_tools(
                 "issues": issues[:12],
                 "fix": (
                     "Edit the existing Markdown sources: every image/diagram must fit within "
-                    "the full 7in page width and 7in (70%) page height; every table must "
+                    "the full 8.5in page width and 7.7in (70%) page height; every table must "
                     "fit within the same width/height budget; then retry."
                 ),
             }
@@ -2107,7 +2107,7 @@ class MakeBookRunner(CodePlanRunner):
                         "enabled.\n"
                         "   EVERY image must be APPROPRIATELY SIZED for print: no "
                         "full-bleed wall-to-wall images. Cap the rendered image at "
-                        "7in wide and 7in high (70% of the 10in page height); the "
+                        "8.5in wide and 7.7in high (70% of the 11in page height); the "
                         "compiler's maxwidth/maxheight guard enforces this too. For "
                         "wider source images, pre-resize or crop them so the figure "
                         "fits comfortably on the page next to the caption. Avoid "
@@ -2137,7 +2137,7 @@ class MakeBookRunner(CodePlanRunner):
                     + (
                         "- TABLES: render reference data, comparisons, and parameters as "
                         "Markdown tables with a header row and aligned columns. Keep every "
-                        "table within 7in page width and 7in height (70% of the 10in page); "
+                        "table within 8.5in page width and 7.7in height (70% of the 11in page); "
                         "split wide or tall tables into multiple readable tables.\n"
                         if "tables" in ctx.content_types
                         else ""
@@ -2294,8 +2294,8 @@ class MakeBookRunner(CodePlanRunner):
                     "below 4.5:1) and run it before confirming the assets. Keep "
                     "labels short and legible.\n"
                     "3. Keep every image bounded and PNG at a reasonable resolution (1024x768 or similar); "
-                    "never let a referenced image or diagram exceed 7in page width or 7in rendered "
-                    "height (70% of the 10in page). Use Markdown width/height attributes when needed. "
+                    "never let a referenced image or diagram exceed 8.5in page width or 7.7in rendered "
+                    "height (70% of the 11in page). Use Markdown width/height attributes when needed. "
                     "NOTE: the COVER page is NOT generated here \u2014 the end user supplies "
                     "<output_dir>/assets/cover.png themselves; do not create or design it.\n\n"
                     "Then call confirm_assets_ready(summary=...). The runner scans the configured "
@@ -2355,11 +2355,11 @@ class MakeBookRunner(CodePlanRunner):
                     "and correct the existing Markdown and asset references before handing off. "
                     "Do not create a contents.md file: build_book.py generates the TOC.\n\n"
                     "LAYOUT CONTRACT (mandatory): every image and diagram that a book source "
-                    "references must fit within the full 7in page width and must not exceed "
-                    "7in of rendered height, which is 70% of the 10in paperback page. "
+                    "references must fit within the full 8.5in page width and must not exceed "
+                    "7.7in of rendered height, which is 70% of the 11in US Letter page. "
                     "Use explicit Markdown width/height attributes when needed, preserve aspect "
                     "ratio, and resize or crop oversized source files. Every Markdown table must "
-                    "also fit within 7in width and 7in height: split very wide or tall tables "
+                    "also fit within 8.5in width and 7.7in height: split very wide or tall tables "
                     "into readable tables rather than allowing overflow or an unreadable tiny font. "
                     "Keep captions with their media.\n"
                     "The transition tool is verification-only. Use normal filesystem tools to "
@@ -2573,7 +2573,7 @@ class MakeBookRunner(CodePlanRunner):
                     "First call create_build_book(). This creates the reusable, standalone "
                     "Python builder <output_dir>/build_book.py inside this run's output "
                     "directory, with deterministic source "
-                    "discovery, Pandoc -> XeLaTeX multi-pass compilation, KDP 7x10 trim, "
+                    "discovery, Pandoc -> XeLaTeX multi-pass compilation, US Letter 8.5x11 trim, "
                     "optional cover attachment, --out/--keep-intermediates options, and "
                     "safe intermediate cleanup. Then run build_book.py so it performs the "
                     "END-TO-END compile from the "
@@ -2913,9 +2913,9 @@ class MakeBookWorkflow(WorkflowPlugin):
                 "voice - no formulaic AI prose: vary sentence rhythm, open sections "
                 "with a concrete hook, and never use mechanical transitions. Every "
                 "image you include must be appropriately sized for print - cap it at "
-                "7in wide and 7in tall (70% of the 10in page height), and pre-resize "
+                "8.5in wide and 7.7in tall (70% of the 11in page height), and pre-resize "
                 "or crop wider/taller sources so figures fit the page; no wall-to-wall "
-                "or tiny blurry images. Tables must also fit within 7in wide by 7in "
+                "or tiny blurry images. Tables must also fit within 8.5in wide by 7.7in "
                 "tall; split or simplify oversized tables."
             ),
         ),
@@ -2929,8 +2929,8 @@ class MakeBookWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the LAYOUT_REVIEW phase of make_book. Inspect every completed "
                 "chapter's images, diagrams, and Markdown tables. Correct existing sources "
-                "so every image/diagram fits within 7in width and 7in height (70% of the "
-                "10in page), and every table fits within the same bounds. Then call "
+                "so every image/diagram fits within 8.5in width and 7.7in height (70% of the "
+                "11in page), and every table fits within the same bounds. Then call "
                 "confirm_layout_ready(summary=...)."
             ),
         ),
@@ -2974,7 +2974,7 @@ class MakeBookWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the FINAL_LAYOUT_REVIEW phase of make_book. Inspect every final "
                 "front-matter, chapter, and back-matter source. Correct any image, diagram, "
-                "or Markdown table that exceeds 7in width or 7in height (70% of the 10in "
+                "or Markdown table that exceeds 8.5in width or 7.7in height (70% of the 11in "
                 "page), then call confirm_layout_ready(summary=...). The transition gate "
                 "must pass before compilation."
             ),

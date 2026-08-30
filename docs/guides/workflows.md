@@ -187,10 +187,10 @@ python3 <output_dir>/build_book.py --out dist/my-book.pdf
 ```
 
 It accepts `--out`/`-o` for a custom PDF path and
-`--keep-intermediates`/`--keep` for debugging. It uses a KDP-oriented 7×10
-inch layout, generates the table of contents from chapter headings with
+`--keep-intermediates`/`--keep` for debugging. It uses an 8.5×11-inch US Letter
+layout, generates the table of contents from chapter headings with
 Pandoc's `--toc` option (there is no agent-authored `contents.md`), applies
-image bounds of at most 7 inches wide and 7 inches high, and attaches an optional
+image bounds of at most 8.5 inches wide and 7.7 inches high, and attaches an optional
 `assets/cover.png` (or supported JPG variant) when Pillow and pypdf are
 available. `mark_book_complete` is verification-only: the agent must call
 `create_build_book()` and run the resulting script before the completion gate
@@ -236,8 +236,8 @@ metadata; the transition tool does not download or create images.
 
 Two layout-review phases run around front/back matter. They inspect every
 Markdown source that will be compiled, including image references and pipe
-tables. Images and diagrams must fit within 7 inches of page width and 7
-inches of page height (70% of the 10-inch page); tables use the same width and
+tables. Images and diagrams must fit within 8.5 inches of page width and 7.7
+inches of page height (70% of the 11-inch page); tables use the same width and
 height budget. The first review lets the agent correct chapter sources, and
 the final review catches changes made by front/back matter. Both are
 verification-only summary handoffs and reject without mutating files.

@@ -335,7 +335,7 @@ async def test_layout_gate_enforces_image_and_table_bounds_without_writing(
     image.write_bytes(_png_header(700, 700))
     chapter = chapters / "01-layout.md"
     chapter.write_text(
-        "# Layout\n\n![Figure](../assets/figure.png){width=7in height=7.1in}\n",
+        "# Layout\n\n![Figure](../assets/figure.png){width=8.5in height=7.8in}\n",
         encoding="utf-8",
     )
     event = asyncio.Event()
@@ -357,18 +357,18 @@ async def test_layout_gate_enforces_image_and_table_bounds_without_writing(
     assert data == {}
 
     chapter.write_text(
-        "# Layout\n\n![Figure](../assets/figure.png){width=7in height=7in}\n",
+        "# Layout\n\n![Figure](../assets/figure.png){width=8.5in height=7.7in}\n",
         encoding="utf-8",
     )
     accepted = await confirm(summary="The image is bounded")
     assert accepted["ok"] is True
     assert data["image_count"] == 1
     assert data["table_count"] == 0
-    assert data["receipt"]["max_height_in"] == 7.0
+    assert data["receipt"]["max_height_in"] == 7.7
 
     event.clear()
     data.clear()
-    rows = "\n".join(f"| {index} | {'x' * 110} |" for index in range(25))
+    rows = "\n".join(f"| {index} | {'x' * 110} |" for index in range(28))
     chapter.write_text(
         f"# Layout\n\n| Key | Description |\n| --- | --- |\n{rows}\n",
         encoding="utf-8",
@@ -383,8 +383,8 @@ def test_make_book_prompts_define_generated_toc_and_layout_phases() -> None:
     phases = {phase.name: phase for phase in make_book.MakeBookWorkflow.phases}
     assert "contents.md" in phases["front_matter"].system_prompt_override
     assert "contents.md" in phases["back_matter"].system_prompt_override
-    assert "7in" in phases["layout_review"].system_prompt_override
-    assert "7in" in phases["final_layout_review"].system_prompt_override
+    assert "8.5in" in phases["layout_review"].system_prompt_override
+    assert "7.7in" in phases["final_layout_review"].system_prompt_override
     assert len(make_book.MakeBookWorkflow.phases) == 9
 
 

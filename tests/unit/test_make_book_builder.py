@@ -47,9 +47,9 @@ def test_generated_builder_is_valid_python_and_contains_pipeline() -> None:
     assert '"xelatex",' in source
     assert "--keep-intermediates" in source
     assert "attach_cover" in source
-    assert "TRIM_W_IN = 7.0" in source
-    assert "TRIM_H_IN = 10.0" in source
-    assert "paperwidth=7.0in,paperheight=10.0in" in source
+    assert "TRIM_W_IN = 8.5" in source
+    assert "TRIM_H_IN = 11.0" in source
+    assert "paperwidth=8.5in,paperheight=11.0in" in source
     assert "maxheight" in source
     assert "contents.md" in source
     assert "--toc" in source

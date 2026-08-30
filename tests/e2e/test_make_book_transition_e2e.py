@@ -75,7 +75,7 @@ async def _drive_make_book_turn(output: Path, **kwargs: object) -> None:
         await by_name["confirm_chapter_complete"](summary="Chapter is written.")
     elif "confirm_layout_ready" in by_name:
         await by_name["confirm_layout_ready"](
-            summary="All images, diagrams, and tables fit the 7x10 page bounds."
+            summary="All images, diagrams, and tables fit the 8.5x11 page bounds."
         )
     elif "confirm_front_matter_ready" in by_name:
         directory = output / "front-matter"

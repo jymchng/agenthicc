@@ -75,8 +75,9 @@ research bodies, and PDF paths. This caused:
    supported assets per chapter and at least six overall, including free
    Unsplash photography with provenance.
 6. Ensure every referenced image/diagram and every Markdown table fits within
-   the configured 7 x 10 inch page: at most 7 inches wide and 7 inches high
-   (70% of page height), with layout review before and after front/back matter.
+   the configured 8.5 x 11 inch US Letter page: at most 8.5 inches wide and
+   7.7 inches high (70% of page height), with layout review before and after
+   front/back matter.
 7. Preserve receipts, checkpoint state, resume behavior, and the shared
    workflow conversation without duplicating provider memory.
 8. Keep stable workflow policy in the cacheable prompt prefix and put phase
@@ -217,8 +218,8 @@ front matter; the final phase runs after front/back matter and before compile.
 The agent may edit existing Markdown and assets with normal filesystem tools,
 but the gate is verification-only. It scans every source that the builder will
 compile, resolves referenced local images/diagrams, reads their dimensions or
-explicit Markdown dimensions, and checks that each fits within 7 inches of
-width and 7 inches of height (70% of the 10-inch page). It estimates Markdown
+explicit Markdown dimensions, and checks that each fits within 8.5 inches of
+width and 7.7 inches of height (70% of the 11-inch page). It estimates Markdown
 table width and height from rendered cell content and rejects tables exceeding
 the same bounds. It rejects missing/out-of-root/undimensioned referenced
 images and layout violations without mutating files or setting the event.
@@ -232,7 +233,7 @@ bytes must be `%PDF-`. It must not create a builder, directory, PDF, or repair
 an invalid output. `reject_book(summary=...)` records a bounded whole-book
 diagnosis and routes back to correction; an empty summary is rejected.
 
-The generated builder defaults to a 7 x 10 inch paperback page and applies a
+The generated builder defaults to an 8.5 x 11 inch US Letter page and applies a
 typesetter-level image guard so referenced images cannot exceed the page width
 or 70% of page height even when source dimensions are omitted. It excludes
 `contents.md` from source discovery and generates the TOC itself.
@@ -270,9 +271,9 @@ phase that exhausts retries fails through the existing workflow failure path.
 - Front-matter and back-matter prompts must explicitly forbid `contents.md` and
   any hand-written TOC. They must describe the generated TOC as a
   `build_book.py`/typesetter responsibility.
-- Chapter, asset, layout-review, and compile prompts must state the 7 x 10
-  inch layout contract: referenced images/diagrams and Markdown tables are
-  capped at 7 inches wide and 7 inches high. Layout prompts must tell the
+- Chapter, asset, layout-review, and compile prompts must state the 8.5 x 11
+  inch US Letter layout contract: referenced images/diagrams and Markdown
+  tables are capped at 8.5 inches wide and 7.7 inches high. Layout prompts must tell the
   agent to edit existing files and then submit only the short summary.
 
 ## 8. Data flow
@@ -340,7 +341,7 @@ not trusted from model arguments.
 No front-matter or back-matter agent writes `contents.md`. The generated
 `build_book.py` excludes that filename and invokes the typesetting toolchain's
 TOC generation. Both layout-review phases reject any referenced image/diagram
-or Markdown table exceeding 7 inches in width or 7 inches in height.
+or Markdown table exceeding 8.5 inches in width or 7.7 inches in height.
 
 ### AC-6 — Durable resume
 
@@ -360,7 +361,7 @@ all receipts, and restores the checkpoint successfully.
   chapter coverage; canonical chapter path/count/reference validation; asset
   minimum and Unsplash provenance rules; front/back scans and `contents.md`
   rejection; image dimension/attribute and table width/height layout rules;
-  builder 7 x 10 defaults and generated-TOC source filtering; builder/PDF
+  builder 8.5 x 11 defaults and generated-TOC source filtering; builder/PDF
   checks; rejection behavior; path/symlink containment; checkpoint codec.
 - **Integration:** execute every gate against a temporary output tree, assert
   no gate creates missing artifacts, assert deterministic inventories and
