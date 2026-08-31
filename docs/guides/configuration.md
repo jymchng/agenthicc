@@ -89,7 +89,7 @@ code needing provider-specific branches.
 [execution]
 profile = "modal_kimi"
 max_output_tokens = 32768
-transport_max_retries = 3
+transport_max_retries = 10
 llm_sdk_max_retries = 2
 
 [providers.modal_kimi]
@@ -160,7 +160,7 @@ the code rather than hard-coding them in support material.
 | `context_windows` | `{}` | Model id → context window under `[memory.context_windows]` |
 | `prompt_cache` | true | Enable provider prompt-cache integration where supported |
 | `file_cache` | true | Enable freshness-validated workspace file cache |
-| `transport_max_retries` | 3 | Transient provider-stream retry count; preserves the latest committed/current conversation prefix |
+| `transport_max_retries` | 10 | Transient provider-stream retry count; preserves the latest committed/current conversation prefix |
 | `transport_retry_base_delay_s` | 1.0 | Exponential transport-retry base delay; provider `retry_after` hints are honored |
 | `transport_retry_max_total_s` | 0 | Optional provider-step retry wall-clock ceiling |
 | `llm_sdk_max_retries` | 2 | Provider SDK retry count |

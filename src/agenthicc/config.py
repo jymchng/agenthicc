@@ -955,7 +955,7 @@ class ExecutionSettings:
     #   llm_sdk_max_retries — SDK/transport internal retry inside LLMConfig;
     #     handles clean pre-stream 429/5xx.  Kept low to avoid a large
     #     multiplier with the turn-level retry.
-    transport_max_retries: int = 3
+    transport_max_retries: int = 10
     transport_retry_base_delay_s: float = 1.0
     transport_retry_max_total_s: float = 0.0  # wall-clock ceiling; 0 = no cap
     llm_sdk_max_retries: int = 2
@@ -2036,7 +2036,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         context_windows=_context_windows,
         prompt_cache=_as_bool(ex.get("prompt_cache"), True),
         file_cache=_as_bool(ex.get("file_cache"), True),
-        transport_max_retries=_as_int(ex.get("transport_max_retries"), 3),
+        transport_max_retries=_as_int(ex.get("transport_max_retries"), 10),
         transport_retry_base_delay_s=_as_float(ex.get("transport_retry_base_delay_s"), 1.0),
         transport_retry_max_total_s=_as_float(ex.get("transport_retry_max_total_s"), 0.0),
         llm_sdk_max_retries=_as_int(ex.get("llm_sdk_max_retries"), 2),

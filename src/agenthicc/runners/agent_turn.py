@@ -1330,7 +1330,7 @@ class AgentTurnRunner:
 
             _ec = ctx.exec_cfg
             _subagent_retry = RetryConfig(
-                max_retries=int(getattr(_ec, "transport_max_retries", 3)),
+                max_retries=int(getattr(_ec, "transport_max_retries", 10)),
                 base_delay_s=float(getattr(_ec, "transport_retry_base_delay_s", 1.0)),
                 max_total_duration_s=float(getattr(_ec, "transport_retry_max_total_s", 0.0)),
             )
@@ -1771,7 +1771,7 @@ class AgentTurnRunner:
                 "top_p": _config_value(ctx.exec_cfg, "top_p", None),
                 "max_completion_tokens": _config_value(ctx.exec_cfg, "max_completion_tokens", None),
                 "request_options": _config_value(ctx.exec_cfg, "request_options", None),
-                "transport_max_retries": _config_value(ctx.exec_cfg, "transport_max_retries", 3),
+                "transport_max_retries": _config_value(ctx.exec_cfg, "transport_max_retries", 10),
                 "transport_retry_base_delay_s": _config_value(
                     ctx.exec_cfg, "transport_retry_base_delay_s", 1.0
                 ),
@@ -2173,7 +2173,7 @@ class AgentTurnRunner:
         # preserve their current projection and use the durable idempotency
         # ledger instead of rolling back to the turn start.
         config = RetryConfig(
-            max_retries=max(0, int(getattr(exec_cfg, "transport_max_retries", 3))),
+            max_retries=max(0, int(getattr(exec_cfg, "transport_max_retries", 10))),
             base_delay_s=max(0.0, float(getattr(exec_cfg, "transport_retry_base_delay_s", 1.0))),
             max_total_duration_s=float(getattr(exec_cfg, "transport_retry_max_total_s", 0.0)),
         )

@@ -149,9 +149,9 @@ class TestErrorTaxonomy:
 
 
 class TestExecutionSettingsRetryFields:
-    def test_default_max_retries_is_three(self) -> None:
+    def test_default_max_retries_is_ten(self) -> None:
         cfg = ExecutionSettings()
-        assert cfg.transport_max_retries == 3
+        assert cfg.transport_max_retries == 10
 
     def test_default_base_delay_is_one(self) -> None:
         cfg = ExecutionSettings()
@@ -199,6 +199,11 @@ class TestRunWithTransportRetry:
             max_total_duration_s=max_total,
             jitter=False,
         )
+
+    def test_shared_retry_config_defaults_to_five_retries(self) -> None:
+        from agenthicc.runners.retry import RetryConfig
+
+        assert RetryConfig().max_retries == 10
 
     async def test_success_on_first_attempt(self) -> None:
         from agenthicc.runners.retry import run_with_transport_retry

@@ -74,7 +74,7 @@ class RetryConfig:
         in ``[0.75, 1.25]`` to avoid synchronised retries.
     """
 
-    max_retries: int = 3
+    max_retries: int = 10
     base_delay_s: float = 1.0
     max_total_duration_s: float = 0.0
     jitter: bool = True

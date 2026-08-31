@@ -2883,7 +2883,7 @@ class ExecutionSettings:
     profile: str = ""               # selected [providers.<name>] profile
     api_key_env: str = ""            # explicit legacy environment reference
     timeout_s: float = 3600.0  # one-hour provider request deadline by default
-    transport_max_retries: int = 3  # transient provider-stream retries
+    transport_max_retries: int = 10  # transient provider-stream retries
     transport_retry_base_delay_s: float = 1.0
     transport_retry_max_total_s: float = 0.0
     llm_sdk_max_retries: int = 2
