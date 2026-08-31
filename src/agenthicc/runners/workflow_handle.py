@@ -145,6 +145,58 @@ class WorkflowRunHandle:
         self.context = context
         self.context_ready = False
 
+    def sync_context_cursor(self) -> bool:
+        """Synchronize the handle with the latest forward context cursor.
+
+        A provider error can escape from a runner before its normal phase-loop
+        boundary calls :meth:`update_phase`.  In that window the typed context
+        may already identify the active phase while the handle still contains
+        the bootstrap phase.  Failure finalization must checkpoint the active
+        phase, not the workflow's initial default.
+
+        This helper is deliberately forward-only.  It will not turn a stale
+        or partially restored context into an implicit rewind.  Backward
+        movement is owned by an explicit evidence-invalidation/reconciliation
+        decision in the workflow runner.
+        """
+        context = self.context
+        if context is None:
+            return False
+
+        phase_value = getattr(context, "current_phase", None)
+        phase_from_context = phase_value.strip().lower() if isinstance(phase_value, str) else ""
+        state = getattr(context, "state", None)
+        state_name = getattr(state, "name", None)
+        phases = tuple(getattr(self.workflow, "phases", ()))
+        phase_names = [str(getattr(candidate, "name", "")).strip().lower() for candidate in phases]
+        phase_from_state = state_name.strip().lower() if isinstance(state_name, str) else ""
+        # Some custom typed contexts expose both fields but use an enum whose
+        # member names are not the declarative PhaseSpec names. Prefer that
+        # enum only when it maps to the workflow graph; otherwise use the
+        # explicit current_phase cursor rather than losing a valid later phase.
+        phase = (
+            phase_from_state
+            if phase_from_state and (not phase_names or phase_from_state in phase_names)
+            else phase_from_context
+        )
+        if not phase:
+            return False
+        if phase_names and phase not in phase_names:
+            return False
+        candidate_index = phase_names.index(phase) if phase in phase_names else self.phase_index
+        if self.current_phase is not None and candidate_index < self.phase_index:
+            return False
+
+        changed = self.current_phase != phase or self.phase_index != candidate_index
+        self.current_phase = phase
+        self.phase_index = candidate_index
+        iteration = getattr(context, "phase_iteration", self.phase_iteration)
+        if isinstance(iteration, int) and not isinstance(iteration, bool) and iteration >= 0:
+            if iteration != self.phase_iteration:
+                changed = True
+            self.phase_iteration = iteration
+        return changed
+
     def update_phase(
         self,
         phase: str | None,
@@ -311,7 +363,11 @@ class WorkflowRunHandle:
             # possibly a fallback envelope). Do not replace its more precise
             # storage/invariant diagnostic with a later cleanup message.
             return None
-        if self.lifecycle == "paused" and self.failure_kind == normalized_kind and self.last_error:
+        if self.lifecycle == "paused" and self.failure_kind and self.last_error:
+            # A runner, TUI wrapper, timeout handler, and cleanup callback can
+            # all observe the same exception.  Once a paused disposition has
+            # been committed, preserve its first precise cursor/category even
+            # if a later observer classifies the same error differently.
             load_checkpoint = getattr(self.checkpoint_store, "load", None)
             if callable(load_checkpoint):
                 try:
@@ -322,6 +378,11 @@ class WorkflowRunHandle:
                     pass
             return None
 
+        # Keep the failure checkpoint anchored to the runner's typed cursor.
+        # The handle is initialized at the first phase before the runner has
+        # had a chance to enter its real phase loop, so relying only on the
+        # handle fields can incorrectly save INIT after a later-phase error.
+        self.sync_context_cursor()
         safe_error = self._safe_failure_message(error)
         self.last_error = safe_error
         self.failure_kind = normalized_kind

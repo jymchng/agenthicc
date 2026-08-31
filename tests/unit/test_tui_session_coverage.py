@@ -129,6 +129,49 @@ def test_workflow_run_listing_is_newest_first_and_resume_delegates() -> None:
     assert resumed == ["newer"]
 
 
+@pytest.mark.asyncio
+async def test_tui_does_not_fall_through_to_new_workflow_when_recovery_exists() -> None:
+    """A continuation cannot silently become a new INIT workflow run."""
+
+    session, ctx, _workspace, _input = _make_session()
+    from agenthicc.tui.runtime.mode_manager import RuntimeMode
+
+    ctx.app_state.active_mode.set(RuntimeMode("Plan", default_workflow="demo"))
+    calls: list[str] = []
+
+    class Demo:
+        name = "demo"
+        phases = ()
+
+        @classmethod
+        def build_params(cls, raw: object) -> object:
+            return raw
+
+        @classmethod
+        def build_runner(cls, config: object, mode: object) -> object:
+            class Runner:
+                async def run(self, intent: str) -> None:
+                    calls.append(intent)
+
+            return Runner()
+
+    ctx.workflow_registry.register(Demo)  # type: ignore[arg-type]
+    session._workflow_recovery_records = {
+        "saved-run": SimpleNamespace(
+            run_id="saved-run",
+            workflow_name="demo",
+            current_phase="architecture",
+        )
+    }
+    session._refresh_workflow_recovery_records = lambda: None  # type: ignore[method-assign]
+
+    await session.run_turn("continue")
+
+    assert calls == []
+    assert session._workflow_handle is None
+    assert "can be resumed" in (ctx.app_state.conversation.notification() or "")
+
+
 def test_tui_routing_workflow_commands_and_skill_reload(monkeypatch: pytest.MonkeyPatch) -> None:
     from agenthicc.skills.loader import SkillDef, SkillDiscoveryResult
     from agenthicc.runners import tui_session

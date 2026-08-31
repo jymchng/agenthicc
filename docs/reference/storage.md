@@ -279,6 +279,30 @@ backward. It contains an intent digest rather than raw user intent, is capped
 and mode 600, and is removed by an explicit workflow reset; it is never used
 to fabricate a context for resume.
 
+For a transient provider response such as HTTP 429, the durable sequence is:
+
+```text
+provider step in phase P
+  -> typed context cursor is synchronized to P
+  -> paused checkpoint(session_id, run_id, P, revision=N+1)
+  -> run claim released
+  -> exact run selected after restart
+  -> latest checkpoint rehydrated
+  -> runner.resume(context) at P
+```
+
+`INIT` is therefore a valid recovery cursor only when it was the phase active
+at the failure. A session ID identifies the shared conversation, while the
+workflow `run_id` identifies the phase graph and typed state; restoring one
+without the other is incomplete. The TUI and headless entry points use the
+same recovery coordinator and reject ambiguous or unsafe records rather than
+falling through to a fresh run.
+
+Checkpoint writes are monotonic. Replaying the same finalizer with an
+identical revision and payload is idempotent; a different payload at the same
+revision is rejected as a conflict, preventing a late cleanup callback from
+overwriting the saved phase with stale `INIT` state.
+
 Workflow claims are published differently from ordinary checkpoints: the
 complete, fsynced JSON metadata is installed atomically, so a process killed
 while acquiring a claim cannot leave an empty or partially written `.claim`

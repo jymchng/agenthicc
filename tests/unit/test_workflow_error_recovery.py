@@ -71,6 +71,13 @@ def test_typed_failure_becomes_error_paused_checkpoint(tmp_path: Path) -> None:
         assert repeated is not None
         assert repeated.revision == revision
         assert store.load(handle.run_id).revision == revision  # type: ignore[union-attr]
+        duplicate_observer = handle.finalize_failure(
+            "generic cleanup failure",
+            kind="workflow_error",
+        )
+        assert duplicate_observer is not None
+        assert duplicate_observer.revision == revision
+        assert duplicate_observer.failure_kind == "provider_transient"
     finally:
         handle.conversation.close()
 

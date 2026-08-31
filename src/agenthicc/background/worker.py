@@ -292,6 +292,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             _HeadlessApprovalService,
             _close_headless_session,
             execute_workflow,
+            _select_headless_workflow_resume,
         )
         from agenthicc.runners.tui_session import _build_session_context  # noqa: PLC0415
         from agenthicc.runners.session_lease import SessionOpenCoordinator  # noqa: PLC0415
@@ -350,7 +351,16 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
 
         async def _execute() -> tuple[SessionStatus, str | None, str, tuple[str, ...]]:
             if request.workflow_name:
-                result = await execute_workflow(session, request.workflow_name, request.intent)
+                resume_run_id = _select_headless_workflow_resume(session, request.workflow_name)
+                if resume_run_id is None:
+                    result = await execute_workflow(session, request.workflow_name, request.intent)
+                else:
+                    result = await execute_workflow(
+                        session,
+                        request.workflow_name,
+                        request.intent,
+                        resume_run_id=resume_run_id,
+                    )
                 status = (
                     SessionStatus.COMPLETED if result.status == "complete" else SessionStatus.FAILED
                 )

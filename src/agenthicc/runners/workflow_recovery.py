@@ -321,6 +321,57 @@ class WorkflowRecoveryCoordinator:
             if record.recoverable
         ]
 
+    def select_for_resume(
+        self,
+        *,
+        workflow_name: str | None = None,
+        workflow_registry: "WorkflowRegistry | None" = None,
+        conversation: "SessionConversation | None" = None,
+        provider_profile: str | None = None,
+        workspace_root: str | None = None,
+    ) -> WorkflowRecoveryRecord | None:
+        """Select one current recoverable run for a resume operation.
+
+        Selection is intentionally separate from :meth:`rehydrate`: callers
+        may use this method to render a choice, while rehydration reloads the
+        checkpoint and claims it immediately before execution.  A non-empty
+        recovery record with no safe resume is an error, never an implicit
+        invitation to start a replacement workflow.
+        """
+        records = self.inspect(
+            workflow_registry=workflow_registry,
+            conversation=conversation,
+            provider_profile=provider_profile,
+            workspace_root=workspace_root,
+        )
+        candidates = [record for record in records if record.recoverable]
+        if len(candidates) > 1:
+            choices = ", ".join(record.run_id for record in candidates[:8])
+            suffix = " …" if len(candidates) > 8 else ""
+            raise ValueError(
+                "multiple recoverable workflows are present; select one explicitly: "
+                f"{choices}{suffix}"
+            )
+        if candidates:
+            selected = candidates[0]
+            if workflow_name is not None and selected.workflow_name != workflow_name:
+                raise ValueError(
+                    f"session has recoverable workflow {selected.workflow_name!r} "
+                    f"(run {selected.run_id}); it cannot be replaced implicitly by "
+                    f"{workflow_name!r}"
+                )
+            return selected
+
+        invalid = [record for record in records if not record.recoverable]
+        if invalid:
+            matching = [record for record in invalid if record.workflow_name == workflow_name]
+            record = matching[0] if matching else invalid[0]
+            raise ValueError(
+                f"workflow recovery is unavailable for run {record.run_id!r}: "
+                f"{record.error_code or 'not_recoverable'}: {record.display_error}"
+            )
+        return None
+
     def rehydrate(
         self,
         record: WorkflowRecoveryRecord,

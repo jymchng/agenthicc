@@ -108,11 +108,19 @@ class WorkflowCheckpointStore:
             raise CheckpointValidationError("checkpoint belongs to a different session")
         path = self.path_for(checkpoint.run_id)
         existing = self.load(checkpoint.run_id)
-        if existing is not None and checkpoint.revision < existing.revision:
-            raise CheckpointValidationError(
-                f"checkpoint revision {checkpoint.revision} is older than "
-                f"the durable revision {existing.revision}"
-            )
+        if existing is not None:
+            if checkpoint.revision < existing.revision:
+                raise CheckpointValidationError(
+                    f"checkpoint revision {checkpoint.revision} is older than "
+                    f"the durable revision {existing.revision}"
+                )
+            if checkpoint.revision == existing.revision:
+                if checkpoint.to_dict() != existing.to_dict():
+                    raise CheckpointValidationError(
+                        f"checkpoint revision {checkpoint.revision} conflicts with "
+                        "the durable checkpoint"
+                    )
+                return path
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(path.parent, 0o700)

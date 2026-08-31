@@ -156,6 +156,186 @@ async def test_execute_workflow_uses_plugin_factory_and_reports_phases() -> None
     assert session.processor.drained is True
 
 
+async def test_execute_workflow_resume_uses_existing_run_and_runner_resume(
+    tmp_path, monkeypatch
+) -> None:
+    from agenthicc.runners.headless import execute_workflow
+    from agenthicc.runners.workflow_handle import WorkflowRunHandle
+
+    # Load the recovery module before replacing the store constructor.  Its
+    # type alias is intentionally imported at module scope; importing it only
+    # after the patch would leak the test lambda into later TUI tests.
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: F401
+
+    resumed_contexts: list[object] = []
+
+    class ResumeWorkflow(WorkflowPlugin):
+        name = "resume_demo"
+        phases = [PhaseSpec(name="plan", agent_type="planner")]
+
+        @classmethod
+        def build_runner(cls, config, mode_manager):
+            class _Runner:
+                async def run(self, intent: str) -> object:
+                    raise AssertionError("an existing workflow must not call run()")
+
+                async def resume(self, context: object) -> object:
+                    resumed_contexts.append(context)
+                    config.app_state.workflow_run.set(
+                        WorkflowRun(
+                            run_id="resume-run",
+                            workflow_name=cls.name,
+                            intent="original intent",
+                            current_phase=None,
+                            status="complete",
+                        )
+                    )
+                    return context
+
+            return _Runner()
+
+    session = _make_session(ResumeWorkflow)
+    session.cfg.execution = SimpleNamespace(profile="")
+    conversation = SessionConversation.open(
+        "session-1",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    store = WorkflowCheckpointStore("session-1", root=tmp_path / "sessions")
+    handle = WorkflowRunHandle.create(
+        run_id="resume-run",
+        workflow=ResumeWorkflow,
+        conversation=conversation,
+        intent="original intent",
+        checkpoint_store=store,
+    )
+    handle.attach_context(
+        WorkflowContext(
+            intent="original intent",
+            run_id="resume-run",
+            workflow_name=ResumeWorkflow.name,
+            current_phase="plan",
+            phase_iteration=2,
+        )
+    )
+    handle.update_phase("plan", 0, 2)
+    handle.release_claim()
+    session.session_conversation = conversation
+    monkeypatch.setattr(
+        "agenthicc.runners.workflow_checkpoint_store.WorkflowCheckpointStore",
+        lambda _session_id: store,
+    )
+    processor_task = asyncio.create_task(session.processor.run())
+    try:
+        await asyncio.sleep(0)
+        result = await execute_workflow(
+            session,
+            ResumeWorkflow.name,
+            "continue",
+            resume_run_id="resume-run",
+        )
+    finally:
+        await session.processor.stop()
+        await processor_task
+        conversation.close()
+
+    assert result.run_id == "resume-run"
+    assert result.status == "complete"
+    assert len(resumed_contexts) == 1
+    assert isinstance(resumed_contexts[0], WorkflowContext)
+    assert resumed_contexts[0].current_phase == "plan"
+    checkpoint = store.load("resume-run")
+    assert checkpoint is not None
+    assert checkpoint.status == "complete"
+
+
+async def test_execute_workflow_pauses_429_at_typed_phase_then_resumes_same_run(
+    tmp_path, monkeypatch
+) -> None:
+    from agenthicc.runners.headless import execute_workflow
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: F401
+
+    resumed_contexts: list[object] = []
+
+    class RateLimitedWorkflow(WorkflowPlugin):
+        name = "rate_limited_demo"
+        phases = [PhaseSpec(name="init"), PhaseSpec(name="architecture")]
+
+        @classmethod
+        def build_runner(cls, config, mode_manager):
+            class _Runner:
+                async def run(self, intent: str) -> object:
+                    context = config.workflow_handle.context
+                    assert isinstance(context, WorkflowContext)
+                    context.current_phase = "architecture"
+                    context.phase_iteration = 4
+                    config.workflow_handle.attach_context(context)
+                    raise RuntimeError("429 Rate limit exceeded")
+
+                async def resume(self, context: object) -> object:
+                    resumed_contexts.append(context)
+                    config.app_state.workflow_run.set(
+                        WorkflowRun(
+                            run_id=context.run_id,
+                            workflow_name=cls.name,
+                            intent="original intent",
+                            current_phase=None,
+                            status="complete",
+                        )
+                    )
+                    return context
+
+            return _Runner()
+
+    session = _make_session(RateLimitedWorkflow)
+    session.cfg.execution = SimpleNamespace(profile="")
+    conversation = SessionConversation.open(
+        "session-1",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    store = WorkflowCheckpointStore("session-1", root=tmp_path / "sessions")
+    monkeypatch.setattr(
+        "agenthicc.runners.workflow_checkpoint_store.WorkflowCheckpointStore",
+        lambda _session_id: store,
+    )
+    session.session_conversation = conversation
+    processor_task = asyncio.create_task(session.processor.run())
+    try:
+        await asyncio.sleep(0)
+        failed = await execute_workflow(session, RateLimitedWorkflow.name, "original intent")
+        assert failed.status == "paused"
+        assert failed.error is not None and "429" in failed.error
+        assert failed.run_id
+
+        paused = store.load(failed.run_id)
+        assert paused is not None
+        assert paused.status == "paused"
+        assert paused.failure_kind == "provider_transient"
+        assert paused.current_phase == "architecture"
+        assert paused.phase_index == 1
+        assert paused.phase_iteration == 4
+
+        resumed = await execute_workflow(
+            session,
+            RateLimitedWorkflow.name,
+            "continue",
+            resume_run_id=failed.run_id,
+        )
+        assert resumed.status == "complete"
+        assert resumed.run_id == failed.run_id
+        assert len(resumed_contexts) == 1
+        assert isinstance(resumed_contexts[0], WorkflowContext)
+        assert resumed_contexts[0].current_phase == "architecture"
+        completed = store.load(failed.run_id)
+        assert completed is not None
+        assert completed.status == "complete"
+    finally:
+        await session.processor.stop()
+        await processor_task
+        conversation.close()
+
+
 async def test_execute_workflow_rejects_unknown_and_empty_intents() -> None:
     from agenthicc.runners.headless import execute_workflow
 

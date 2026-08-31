@@ -174,6 +174,54 @@ def test_rehydrate_uses_latest_checkpoint_after_discovery_snapshot_is_stale(
         conversation.close()
 
 
+def test_select_for_resume_returns_one_valid_run_and_rejects_ambiguous_runs(
+    tmp_path: Path,
+) -> None:
+    conversation = _conversation(tmp_path)
+    try:
+        store, first = _running_checkpoint(tmp_path, conversation)
+        coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
+        registry = WorkflowRegistry()
+        registry.register(CodePlan)
+
+        selected = coordinator.select_for_resume(
+            workflow_name=CodePlan.name,
+            workflow_registry=registry,
+            conversation=conversation,
+            provider_profile="default",
+        )
+        assert selected is not None
+        assert selected.run_id == first.run_id
+
+        second = WorkflowRunHandle.create(
+            run_id="run-2",
+            workflow=CodePlan,
+            conversation=conversation,
+            intent="another workflow",
+            checkpoint_store=store,
+            provider_profile="default",
+        )
+        second.attach_context(
+            CodePlanContext(
+                intent="another workflow",
+                run_id="run-2",
+                state=CodePlanState.PLAN,
+                phase_iteration=1,
+                shared_memory=conversation.memory,
+            )
+        )
+        second.update_phase("plan", 0, 1)
+        with pytest.raises(ValueError, match="multiple recoverable"):
+            coordinator.select_for_resume(
+                workflow_name=CodePlan.name,
+                workflow_registry=registry,
+                conversation=conversation,
+                provider_profile="default",
+            )
+    finally:
+        conversation.close()
+
+
 def test_live_claim_prevents_duplicate_resume_and_release_is_owner_checked(
     tmp_path: Path,
 ) -> None:
@@ -310,7 +358,14 @@ def test_recovery_fails_closed_for_profile_and_cursor_mismatch(tmp_path: Path) -
     try:
         store, handle = _running_checkpoint(tmp_path, conversation)
         checkpoint = handle.save_checkpoint(reason="profile")
-        store.save(replace(checkpoint, provider_profile="modal-prod", conversation_cursor=4))
+        store.save(
+            replace(
+                checkpoint,
+                provider_profile="modal-prod",
+                conversation_cursor=4,
+                revision=checkpoint.revision + 1,
+            )
+        )
         coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
         profile_record = coordinator.inspect(conversation=conversation, provider_profile="local")[0]
         # Cursor validation is intentionally ordered before provider selection:
@@ -325,7 +380,9 @@ def test_recovery_rejects_a_different_workspace_identity(tmp_path: Path) -> None
     try:
         store, handle = _running_checkpoint(tmp_path, conversation)
         checkpoint = handle.save_checkpoint(reason="workspace")
-        store.save(replace(checkpoint, workspace_root="/project/old"))
+        store.save(
+            replace(checkpoint, workspace_root="/project/old", revision=checkpoint.revision + 1)
+        )
         registry = WorkflowRegistry()
         registry.register(CodePlan)
         record = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store).inspect(
@@ -343,7 +400,13 @@ def test_incompatible_checkpoint_can_be_audited_as_discarded(tmp_path: Path) -> 
     try:
         store, handle = _running_checkpoint(tmp_path, conversation)
         checkpoint = handle.save_checkpoint(reason="incompatible")
-        store.save(replace(checkpoint, provider_profile="removed-profile"))
+        store.save(
+            replace(
+                checkpoint,
+                provider_profile="removed-profile",
+                revision=checkpoint.revision + 1,
+            )
+        )
         coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
         registry = WorkflowRegistry()
         registry.register(CodePlan)

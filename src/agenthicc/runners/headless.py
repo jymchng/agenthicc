@@ -124,12 +124,44 @@ def _resolve_headless_session(
     return selected
 
 
+def _select_headless_workflow_resume(
+    session: "SessionContext",
+    workflow_name: str,
+) -> str | None:
+    """Resolve one durable workflow run for a resumed headless session.
+
+    A session resume restores the conversation journal, but that is not enough
+    to restore a workflow cursor.  This resolver deliberately returns a
+    ``run_id`` selection rather than a checkpoint snapshot; ``execute_workflow``
+    reloads and claims the latest bytes immediately before dispatch.  Returning
+    ``None`` means there is no workflow recovery record and a caller that
+    explicitly requested a new run may use ``runner.run(intent)``.
+    """
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: PLC0415
+
+    conversation = getattr(session, "session_conversation", None)
+    if conversation is None:
+        return None
+    workspace_scope = getattr(session, "workspace_scope", None)
+    workspace_root = str(getattr(workspace_scope, "primary_root", "") or "")
+    coordinator = WorkflowRecoveryCoordinator(session.session_id)
+    record = coordinator.select_for_resume(
+        workflow_name=workflow_name,
+        workflow_registry=session.workflow_registry,
+        conversation=conversation,
+        provider_profile=getattr(session.cfg.execution, "profile", ""),
+        workspace_root=workspace_root,
+    )
+    return record.run_id if record is not None else None
+
+
 async def execute_workflow(
     session: "SessionContext",
     workflow_name: str,
     intent: str,
     *,
     completed_turns: int = 0,
+    resume_run_id: str | None = None,
 ) -> WorkflowExecutionResult:
     """Execute one registered workflow using an existing session context.
 
@@ -154,21 +186,63 @@ async def execute_workflow(
         raise ValueError("Workflow intent must not be empty")
 
     workflow_handle = None
+    resuming = resume_run_id is not None
     session_conversation = getattr(session, "session_conversation", None)
     session_service = getattr(session, "session_service", None)
+    if resuming and session_conversation is None:
+        raise ValueError("workflow resume requires the durable session conversation")
     if session_conversation is not None:
-        workflow_handle = WorkflowRunHandle.create(
-            run_id=uuid.uuid4().hex,
-            workflow=workflow_cls,
-            conversation=session_conversation,
-            intent=intent,
-            checkpoint_store=WorkflowCheckpointStore(session.session_id),
-            browser_manager=getattr(session, "browser_manager", None),
-            provider_profile=session.cfg.execution.profile,
-            workspace_root=str(
-                getattr(getattr(session, "workspace_scope", None), "primary_root", "") or ""
-            ),
-        )
+        checkpoint_store = WorkflowCheckpointStore(session.session_id)
+        if resuming:
+            from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: PLC0415
+
+            coordinator = WorkflowRecoveryCoordinator(
+                session.session_id,
+                checkpoint_store=checkpoint_store,
+            )
+            records = coordinator.inspect(
+                workflow_registry=session.workflow_registry,
+                conversation=session_conversation,
+                provider_profile=session.cfg.execution.profile,
+                workspace_root=str(
+                    getattr(getattr(session, "workspace_scope", None), "primary_root", "") or ""
+                ),
+            )
+            record = next(
+                (candidate for candidate in records if candidate.run_id == resume_run_id),
+                None,
+            )
+            if record is None or not record.recoverable:
+                reason = record.display_error if record is not None else "run was not found"
+                raise ValueError(f"workflow run {resume_run_id!r} is not recoverable: {reason}")
+            if record.workflow_name != workflow_cls.name:
+                raise ValueError(
+                    f"workflow run {resume_run_id!r} belongs to {record.workflow_name!r}, "
+                    f"not {workflow_cls.name!r}"
+                )
+            workflow_handle = coordinator.rehydrate(
+                record,
+                workflow=workflow_cls,
+                conversation=session_conversation,
+                browser_manager=getattr(session, "browser_manager", None),
+                owner_id=f"headless:{os.getpid()}:{resume_run_id}",
+            )
+        else:
+            workflow_handle = WorkflowRunHandle.create(
+                run_id=uuid.uuid4().hex,
+                workflow=workflow_cls,
+                conversation=session_conversation,
+                intent=intent,
+                checkpoint_store=checkpoint_store,
+                browser_manager=getattr(session, "browser_manager", None),
+                provider_profile=session.cfg.execution.profile,
+                workspace_root=str(
+                    getattr(getattr(session, "workspace_scope", None), "primary_root", "") or ""
+                ),
+            )
+    effective_intent = (
+        workflow_handle.original_intent if resuming and workflow_handle is not None else intent
+    )
     error: str | None = None
     runner_result: object | None = None
     try:
@@ -176,13 +250,13 @@ async def execute_workflow(
         # bootstrap context is deliberately diagnostic-only until the runner
         # attaches its typed context, but it lets build_params/build_runner
         # failures retain a run id and a durable explanation.
-        if workflow_handle is not None:
+        if workflow_handle is not None and not resuming:
             from agenthicc.workflows.plugin import WorkflowContext  # noqa: PLC0415
 
             _phase_specs = getattr(workflow_cls, "phases", ())
             workflow_handle.attach_bootstrap_context(
                 WorkflowContext(
-                    intent=intent,
+                    intent=effective_intent,
                     run_id=workflow_handle.run_id,
                     workflow_name=workflow_cls.name,
                     current_phase=(
@@ -198,7 +272,7 @@ async def execute_workflow(
             initializer = getattr(workflow_cls, "create_initial_context", None)
             if callable(initializer):
                 initial_context = initializer(
-                    intent,
+                    effective_intent,
                     workflow_handle.run_id,
                     getattr(session, "session_memory", None),
                 )
@@ -206,6 +280,9 @@ async def execute_workflow(
                     workflow_handle.attach_context(initial_context)
                     if _phase_specs:
                         workflow_handle.update_phase(_phase_specs[0].name, 0, 0)
+        elif workflow_handle is not None:
+            workflow_handle.mark_resuming()
+            workflow_handle.persist_checkpoint(reason="resuming")
 
         try:
             workspace_scope = session.workspace_scope
@@ -249,9 +326,28 @@ async def execute_workflow(
                 session.session_id,
                 source="headless",
                 kind="workflow_started",
-                payload={"workflow": workflow_name, "intent": intent},
+                payload={"workflow": workflow_name, "intent": effective_intent},
             )
-        runner_result = await runner.run(intent)
+        runner_result = (
+            await runner.resume(workflow_handle.context)
+            if resuming and workflow_handle is not None
+            else await runner.run(intent)
+        )
+        # Built-in runners persist this boundary themselves, but a plugin
+        # runner is allowed to return a successful result without knowing
+        # about the session owner's lifecycle bookkeeping.  Do not leave a
+        # successfully returned run in ``running``/``resuming``: that would
+        # make the next ``--continue`` discover it as an interrupted run and
+        # could replay work.  This mirrors the TUI's normal-return safety net.
+        if workflow_handle is not None and workflow_handle.lifecycle in {
+            "running",
+            "resuming",
+        }:
+            workflow_run_after_return = session.app_state.workflow_run()
+            if getattr(workflow_run_after_return, "status", None) != "failed":
+                workflow_handle.mark_terminal("complete")
+                if workflow_handle.checkpoint_supported:
+                    workflow_handle.save_checkpoint(reason="complete")
     except (asyncio.CancelledError, KeyboardInterrupt):
         if workflow_handle is not None:
             workflow_handle.finalize_failure("cancelled", kind="user_cancelled")
@@ -441,7 +537,17 @@ async def run_headless_workflow(
         )
         processor_task = asyncio.create_task(session.processor.run(), name="headless-processor")
         await asyncio.sleep(0)
-        return await execute_workflow(session, workflow_name, intent)
+        resume_run_id = (
+            _select_headless_workflow_resume(session, workflow_name)
+            if resume_id is not None
+            else None
+        )
+        return await execute_workflow(
+            session,
+            workflow_name,
+            intent,
+            resume_run_id=resume_run_id,
+        )
     finally:
         if terminal_token is not None:
             reset_current_terminal_manager(terminal_token)
@@ -517,11 +623,17 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
             if not intent:
                 continue
             try:
+                resume_run_id = (
+                    _select_headless_workflow_resume(session, workflow_name)
+                    if resume_id is not None or completed_turns > 0
+                    else None
+                )
                 result = await execute_workflow(
                     session,
                     workflow_name,
                     intent,
                     completed_turns=completed_turns,
+                    resume_run_id=resume_run_id,
                 )
             except Exception as exc:  # noqa: BLE001
                 result = WorkflowExecutionResult(

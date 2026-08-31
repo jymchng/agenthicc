@@ -366,6 +366,14 @@ Session artifacts live below `~/.agenthicc/sessions/`:
 
 Direct chat, Plan mode, `code_plan`, and `create_workflow` share the session's stable conversation ID and journal-backed provider memory. Workflow phase state is checkpointed separately, while the reactive conversation store remains a UI projection.
 
+If a workflow receives a transient provider error such as HTTP 429, agenthicc
+saves the same workflow `run_id` and the active typed phase before returning to
+idle. `continue`, `/workflow resume`, `--continue`, and `--resume` then reload
+that checkpoint and call the workflow's `resume(context)` path at the saved
+phase. They do not create a new run or replay `INIT`; `INIT` is used only for a
+new run or when it was the actual phase at failure. See the [workflow guide](./docs/guides/workflows.md#pause-crash-recovery-and-workflow-resume)
+for the recovery data flow and failure cases.
+
 If multiple workflow checkpoints are recoverable, the TUI wraps the complete
 run IDs in its recovery notice so an exact `/workflow resume <run-id>` command
 can be entered.

@@ -2636,6 +2636,41 @@ class TUISession:
     def _start_workflow_continuation(self, text: str) -> bool:
         """Start a paused workflow with one ordinary user continuation."""
         handle = self._workflow_handle
+        if handle is None:
+            # Recovery discovery normally attaches the sole candidate during
+            # startup.  It can still be empty here when the checkpoint was
+            # written after construction, when a picker was dismissed, or
+            # when this process was handed a session without an in-memory
+            # handle.  An ordinary ``continue`` must resolve that durable
+            # record before it is allowed to fall through to the new-run path.
+            self._refresh_workflow_recovery_records()
+            candidates = list(self._workflow_recovery_records.values())
+            if len(candidates) == 1:
+                try:
+                    handle = self._rehydrate_workflow_record(candidates[0], claim=False)
+                    self._workflow_handle = handle
+                except Exception as exc:  # noqa: BLE001
+                    self._ctx.app_state.conversation.notify_transient(
+                        f"⚠ Cannot restore workflow {candidates[0].run_id!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    return True
+            elif len(candidates) > 1:
+                choices = ", ".join(record.run_id for record in candidates[:8])
+                suffix = " …" if len(candidates) > 8 else ""
+                self._ctx.app_state.conversation.notify_transient(
+                    "⚠ Multiple workflows can be resumed. Choose one explicitly: "
+                    f"/workflow resume <run-id> ({choices}{suffix})"
+                )
+                return True
+            elif self._workflow_recovery_errors:
+                run_id, record = next(iter(self._workflow_recovery_errors.items()))
+                self._ctx.app_state.conversation.notify_transient(
+                    f"⚠ Cannot resume {run_id!r}: {record.error_code}: {record.display_error}"
+                )
+                return True
+            else:
+                return False
         if handle is None or handle.lifecycle not in {"paused", "pausing"}:
             return False
         if not handle.checkpoint_supported:
@@ -2799,6 +2834,41 @@ class TUISession:
                     await startup.wait_for(*required_phases)
 
                 _phase_specs = getattr(_plugin_cls, "phases", ())
+                # A missing in-memory handle is not proof that a session has
+                # no workflow to recover.  Refresh durable records at this
+                # boundary and block the implicit new-run branch whenever a
+                # recoverable or diagnostic record exists.  This is the last
+                # guard against a transient provider failure becoming a fresh
+                # INIT run when the user types an ordinary continuation.
+                if (
+                    self._workflow_handle is None
+                    or self._workflow_handle.workflow_name != _plugin_cls.name
+                ):
+                    self._refresh_workflow_recovery_records()
+                    if self._workflow_recovery_records:
+                        records = list(self._workflow_recovery_records.values())
+                        if len(records) == 1:
+                            record = records[0]
+                            self._ctx.app_state.conversation.notify_transient(
+                                f"⚠ Workflow '{record.workflow_name}' can be resumed at "
+                                f"{record.current_phase or 'its saved state'}; use "
+                                f"/workflow resume {record.run_id}."
+                            )
+                        else:
+                            choices = ", ".join(record.run_id for record in records[:8])
+                            suffix = " …" if len(records) > 8 else ""
+                            self._ctx.app_state.conversation.notify_transient(
+                                "⚠ Multiple workflows can be resumed. Choose one explicitly: "
+                                f"/workflow resume <run-id> ({choices}{suffix})"
+                            )
+                        return
+                    if self._workflow_recovery_errors:
+                        run_id, record = next(iter(self._workflow_recovery_errors.items()))
+                        self._ctx.app_state.conversation.notify_transient(
+                            f"⚠ Cannot resume {run_id!r}: {record.error_code}: "
+                            f"{record.display_error}"
+                        )
+                        return
                 if (
                     self._workflow_handle is None
                     or self._workflow_handle.workflow_name != _plugin_cls.name

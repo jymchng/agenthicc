@@ -11,7 +11,7 @@ from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore
 from agenthicc.runners.workflow_handle import WorkflowRunHandle
 from agenthicc.workflows.checkpoint import CheckpointValidationError, WorkflowCheckpoint
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
-from agenthicc.workflows.plugin import PhaseSpec, WorkflowPlugin
+from agenthicc.workflows.plugin import PhaseSpec, WorkflowContext, WorkflowPlugin
 
 from .test_session_workflow_durability import _conversation
 
@@ -117,3 +117,62 @@ def test_workflow_handle_lifecycle_and_browser_checkpoint_hooks(tmp_path: Path) 
     restored.mark_terminal("failed", error="failure")
     assert restored.last_error == "failure"
     conversation.close()
+
+
+def test_failure_finalization_syncs_the_forward_typed_phase(tmp_path: Path) -> None:
+    """A late provider error must not be checkpointed as the bootstrap phase."""
+
+    class Plugin(WorkflowPlugin):
+        name = "cursor_plugin"
+        phases = [PhaseSpec(name="init"), PhaseSpec(name="architecture")]
+
+    conversation = _conversation(tmp_path)
+    store = WorkflowCheckpointStore("session-1", root=tmp_path / "checkpoints")
+    handle = WorkflowRunHandle.create(
+        run_id="cursor-run",
+        workflow=Plugin,
+        conversation=conversation,
+        intent="continue at the active phase",
+        checkpoint_store=store,
+    )
+    handle.attach_context(
+        WorkflowContext(
+            intent="continue at the active phase",
+            run_id="cursor-run",
+            workflow_name=Plugin.name,
+            current_phase="architecture",
+            phase_iteration=4,
+        )
+    )
+    # Simulate a runner that attached its typed context but had not reached
+    # the normal phase-loop checkpoint before the provider raised.
+    handle.update_phase("init", 0, 0, persist=False)
+
+    checkpoint = handle.finalize_failure("429 rate limit", kind="provider_transient")
+
+    assert checkpoint is not None
+    assert checkpoint.current_phase == "architecture"
+    assert checkpoint.phase_index == 1
+    assert checkpoint.phase_iteration == 4
+    assert checkpoint.status == "paused"
+    conversation.close()
+
+
+def test_checkpoint_store_accepts_idempotent_replay_and_rejects_same_revision_conflict(
+    tmp_path: Path,
+) -> None:
+    """Duplicate finalizers cannot replace a checkpoint at the same revision."""
+
+    store = WorkflowCheckpointStore("session-1", root=tmp_path)
+    checkpoint = _checkpoint()
+    path = store.save(checkpoint)
+    assert store.save(checkpoint) == path
+
+    conflicting = WorkflowCheckpoint(
+        **{
+            **checkpoint.__dict__,
+            "current_phase": "later",
+        }
+    )
+    with pytest.raises(CheckpointValidationError, match="conflicts"):
+        store.save(conflicting)

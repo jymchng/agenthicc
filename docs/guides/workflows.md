@@ -128,6 +128,35 @@ handled by this path too; they do not merely close the visible turn.
 labels are normalized to `workflow_error` rather than becoming ad hoc recovery
 states.
 
+#### A provider error never means “start at INIT”
+
+A transient provider response such as HTTP 429 is a failure of the current
+provider step, not a request to construct a new workflow. The session owner
+first synchronizes the durable handle cursor with the runner's typed context,
+then writes the paused checkpoint and releases the live run claim. On the next
+`continue`, `/workflow resume`, `--continue`, or `--resume`, the recovery
+coordinator selects that exact `run_id`, reloads its newest checkpoint, and
+dispatches `runner.resume(restored_context)`:
+
+```text
+phase P provider call
+  -> 429 / transient transport error
+  -> sync typed context.current_phase = P
+  -> checkpoint(session_id, run_id, phase=P, status=paused)
+  -> release run claim
+  -> select the same run_id after restart
+  -> rehydrate the same context and shared conversation
+  -> runner.resume(context) at P
+```
+
+`INIT` is selected only for an explicitly new run, or when the actual saved
+cursor is `INIT`. Session transcript restoration by itself is not workflow
+restoration, so a missing, ambiguous, corrupt, or incompatible workflow
+checkpoint is reported as a recovery diagnostic; it is never silently treated
+as permission to start another run. A successful transition from `P` to `Q`
+is checkpointed before `Q` begins, so an error after that boundary resumes at
+`Q`, while an error before the boundary resumes at `P`.
+
 If an error happens before a typed context exists, or encoding/storage fails,
 the store writes a mode-600 `recovery-error.json` diagnostic beside the run
 checkpoint when possible. This fallback contains only the run/workflow
