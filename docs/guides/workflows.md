@@ -1258,6 +1258,39 @@ artifacts but do not mutate the application. The typed contracts live in
 `agenthicc.workflows.reconstruct_site.research`; implementation and later
 validation consume the resulting `fidelity_baseline` by artifact reference.
 
+The research handoff is deliberately split between detailed files and a small
+transition payload. Each research phase prompt tells the agent to use the
+ordinary workspace `write_file` tool and save its complete findings as
+Markdown under the run's target directory before calling its transition tool:
+
+| Phase | Required Markdown handoff | Transition call |
+| --- | --- | --- |
+| `init` | `<output_dir>/research/initial_state/initial-state.md` | `submit_initial_state(...)` |
+| `recon` | `<output_dir>/research/reconnaissance/route-inventory.md` | `submit_route_inventory(summary)` |
+| `visual_research` | `<output_dir>/research/visual/visual-observations.md` | `submit_visual_spec(summary)` |
+| `interaction_analysis` | `<output_dir>/research/interaction/interaction-analysis.md` | `submit_interaction_inventory(summary)` |
+| `content_assets` | `<output_dir>/research/content_assets/asset-inventory.md` | `submit_asset_inventory(summary)` |
+| `responsive_research` | `<output_dir>/research/responsive/responsive-observations.md` | `submit_responsive_research(summary)` |
+| `architecture` | `<output_dir>/research/architecture/architecture.md` | `submit_architecture(summary)` |
+| `design_system` | `<output_dir>/research/design_system/design-system.md` | `submit_design_system(summary)` |
+
+For `recon` through `design_system`, `summary` is the only required
+transition-tool parameter. It is a short handoff describing what the agent
+submitted; it is not a replacement for the detailed Markdown. The transition
+tools only record that summary and release the phase boundary. They do not
+create, read, validate, or require the Markdown files, so an agent can write
+multiple documents when one file is not enough. The runner may retain compact
+internal evidence and checkpoint the summaries, but it never treats that
+internal record as the agent's research body. `init` is the intentional setup
+exception because it must collect the reference URL and output directory that
+the later prompts use.
+
+The same handoff rule applies to the later implementation phases that expose a
+`submit_*` transition: the phase prompt tells the agent to write the work and
+evidence into the relevant project files or documentation before submitting its
+short summary. The transition records the summary and changes state; it is not
+a file-creation mechanism.
+
 Every run writes a durable evidence package below the authorized workspace:
 
 ```text

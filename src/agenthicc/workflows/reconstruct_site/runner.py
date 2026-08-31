@@ -239,6 +239,15 @@ class ReconstructSiteRunner(PhaseRunner):
     # before a profile is selected.  The active value is published from the
     # selected plan in ``_publish_phase``.
     total_phases = len(RECONSTRUCT_PHASE_PLAN.definitions)
+    _SUMMARY_RESEARCH_PHASES = (
+        "recon",
+        "visual_research",
+        "interaction_analysis",
+        "content_assets",
+        "responsive_research",
+        "architecture",
+        "design_system",
+    )
 
     def __init__(self, config: "WorkflowConfig", mode_manager: "ModeManager | None" = None) -> None:
         super().__init__(config, mode_manager)
@@ -285,7 +294,7 @@ class ReconstructSiteRunner(PhaseRunner):
             # semantics while real WorkflowConfig instances use the explicit
             # application default below.
             profile = ReconstructProfile.PRODUCTION.value
-        elif "static=True" in context.artifacts.get("initial_state", ""):
+        elif "static=True" in context.phase_summaries.get("init", ""):
             profile = ReconstructProfile.STATIC.value
         else:
             profile = ReconstructProfile.APPLICATION.value
@@ -402,18 +411,62 @@ class ReconstructSiteRunner(PhaseRunner):
 
         gate_started = time.monotonic()
         store = self._ensure_evidence(context)
-        matrix = self._coverage(context)
-        context.unresolved_research = list(matrix.blocking_cells())
+        summary_only = self._summary_only_research(context)
+        matrix: CoverageMatrix | None = None
+        if not summary_only:
+            matrix = self._coverage(context)
+            context.unresolved_research = list(matrix.blocking_cells())
         # Publishing before the first gate turn gives the agent and the user a
         # durable report to inspect. Repeated attempts are idempotent unless
         # research changed or a re-entry invalidated the baseline.
         self._publish_baseline(context, store, max(1, context.phase_attempt))
+
+        def validate_gate_submission(action: str, payload: Mapping[str, object]) -> str | None:
+            """Reject an invalid approval before telling the agent it worked."""
+            baseline_id = str(payload.get("baseline_artifact_id", "")).strip()
+            if baseline_id != context.research_baseline_id:
+                return "research approval referenced a stale baseline"
+            if summary_only:
+                return None
+            current = matrix or self._coverage(context)
+            gate = ResearchGate(context.profile)
+            try:
+                if action == "approve":
+                    gate.approve(
+                        current,
+                        baseline_artifact_id=baseline_id,
+                        summary=str(payload.get("summary", "")),
+                    )
+                else:
+                    raw_exceptions = payload.get("exception_ids", [])
+                    exception_ids = (
+                        [str(item) for item in raw_exceptions if isinstance(item, str)]
+                        if isinstance(raw_exceptions, list)
+                        else []
+                    )
+                    gate.approve_degraded(
+                        current,
+                        exception_ids=exception_ids,
+                        rationale=str(payload.get("rationale", "")),
+                    )
+            except ResearchValidationError as exc:
+                return str(exc)
+            return None
+
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event = asyncio.Event()
             data: dict[str, object] = {}
-            matrix = self._coverage(context)
-            context.unresolved_research = list(matrix.blocking_cells())
-            report = json.dumps(matrix.compact_digest(), sort_keys=True)
+            if not summary_only:
+                matrix = self._coverage(context)
+                context.unresolved_research = list(matrix.blocking_cells())
+                report_data: object = matrix.compact_digest()
+            else:
+                report_data = {
+                    "mode": "summary_only",
+                    "phase_summaries": dict(context.phase_summaries),
+                    "note": "Detailed findings are in the agent-owned Markdown files named by each phase.",
+                }
+            report = json.dumps(report_data, sort_keys=True)
             await self.run_phase(
                 intent=context.intent,
                 text=(
@@ -421,7 +474,11 @@ class ReconstructSiteRunner(PhaseRunner):
                     "approve explicit degraded exceptions, or reject with the earliest "
                     "phase that can resolve the findings.\n\n" + report
                     if attempt == 1
-                    else "Call an appropriate research-gate transition tool now."
+                    else (
+                        "The previous gate submission was not accepted: "
+                        f"{context.fail_reason or 'review the report again'}. "
+                        "Do not repeat the same approval until the issue is resolved.\n\n" + report
+                    )
                 ),
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
@@ -439,7 +496,7 @@ class ReconstructSiteRunner(PhaseRunner):
                 mode="Yolo",
                 max_turns=15,
                 shared_memory=memory,
-                tools=_make_research_gate_tools(event, data),
+                tools=_make_research_gate_tools(event, data, validator=validate_gate_submission),
             )
             if not event.is_set():
                 continue
@@ -456,26 +513,47 @@ class ReconstructSiteRunner(PhaseRunner):
                         }
                     )
                     continue
-                gate = ResearchGate(context.profile)
+                decision: dict[str, object]
                 try:
-                    if action == "approve":
-                        decision = gate.approve(
-                            matrix,
-                            baseline_artifact_id=baseline_id,
-                            summary=str(data.get("summary", "")),
-                        )
+                    if summary_only:
+                        exception_ids = data.get("exception_ids", [])
+                        decision = {
+                            "status": (
+                                "approved_degraded" if action == "approve_degraded" else "approved"
+                            ),
+                            "approved": True,
+                            "profile": context.profile,
+                            "summary": str(data.get("summary", data.get("rationale", ""))),
+                            "baseline_artifact_id": baseline_id,
+                            "blocking_cell_ids": [],
+                            "exception_ids": (
+                                [str(item) for item in exception_ids if isinstance(item, str)]
+                                if isinstance(exception_ids, list)
+                                else []
+                            ),
+                        }
                     else:
-                        raw_exceptions = data.get("exception_ids", [])
-                        exception_ids = (
-                            [str(item) for item in raw_exceptions if isinstance(item, str)]
-                            if isinstance(raw_exceptions, list)
-                            else []
-                        )
-                        decision = gate.approve_degraded(
-                            matrix,
-                            exception_ids=exception_ids,
-                            rationale=str(data.get("rationale", "")),
-                        )
+                        gate = ResearchGate(context.profile)
+                        if matrix is None:
+                            raise ResearchValidationError("research coverage is unavailable")
+                        if action == "approve":
+                            decision = gate.approve(
+                                matrix,
+                                baseline_artifact_id=baseline_id,
+                                summary=str(data.get("summary", "")),
+                            ).to_dict()
+                        else:
+                            raw_exceptions = data.get("exception_ids", [])
+                            exception_ids = (
+                                [str(item) for item in raw_exceptions if isinstance(item, str)]
+                                if isinstance(raw_exceptions, list)
+                                else []
+                            )
+                            decision = gate.approve_degraded(
+                                matrix,
+                                exception_ids=exception_ids,
+                                rationale=str(data.get("rationale", "")),
+                            ).to_dict()
                 except ResearchValidationError as exc:
                     context.fail_reason = str(exc)
                     context.known_issues.append(
@@ -486,13 +564,16 @@ class ReconstructSiteRunner(PhaseRunner):
                         }
                     )
                     continue
-                decision = dataclasses.replace(decision, baseline_artifact_id=baseline_id)
-                context.research_gate_status = decision.status
-                context.research_gate_decision = decision.to_dict()
+                decision["baseline_artifact_id"] = baseline_id
+                context.research_gate_status = str(decision.get("status", "approved"))
+                context.research_gate_decision = decision
                 context.research_exceptions = [
-                    {"exception_id": item, "status": "accepted"} for item in decision.exception_ids
+                    {"exception_id": item, "status": "accepted"}
+                    for item in decision.get("exception_ids", [])
                 ]
-                context.unresolved_research = list(decision.blocking_cell_ids)
+                context.unresolved_research = [
+                    str(item) for item in decision.get("blocking_cell_ids", [])
+                ]
                 context.last_transition = action
                 context.research_metrics["gate_duration_ms"] = int(
                     (time.monotonic() - gate_started) * 1000
@@ -546,6 +627,20 @@ class ReconstructSiteRunner(PhaseRunner):
         )
         context.coverage_matrix = matrix.to_dict()
         return matrix
+
+    def _summary_only_research(self, context: ReconstructContext) -> bool:
+        """Return whether research uses Markdown handoffs instead of payloads.
+
+        Research submission tools intentionally accept only a summary.  The
+        detailed route, visual, interaction, asset, responsive, architecture,
+        and design-system material lives in the agent-owned Markdown files
+        named by each phase prompt.  This mode does not inspect those files;
+        it only tracks that each phase submitted its handoff summary.
+        """
+        return all(
+            context.phase_summaries.get(phase, "").strip()
+            for phase in self._SUMMARY_RESEARCH_PHASES
+        )
 
     def _viewports(self, context: ReconstructContext) -> tuple[ViewportSpec, ...]:
         """Return the run-pinned viewport matrix, validating old checkpoints."""
@@ -938,6 +1033,9 @@ class ReconstructSiteRunner(PhaseRunner):
         )
 
     def _summary_for(self, context: ReconstructContext, phase_name: str) -> str:
+        summary = context.phase_summaries.get(phase_name, "").strip()
+        if summary:
+            return summary
         value = context.artifacts.get(phase_name, "")
         if value and not value.endswith((".md", ".json")):
             return value
@@ -1004,26 +1102,33 @@ class ReconstructSiteRunner(PhaseRunner):
             return {
                 "design_tokens": context.design_tokens,
                 "observations": context.visual_observations,
+                "summary": context.phase_summaries.get(phase_name, ""),
             }
         if phase_name == "interaction_analysis":
             return {
                 "interactions": context.interaction_inventory,
                 "traces": context.interaction_traces,
+                "summary": context.phase_summaries.get(phase_name, ""),
             }
         if phase_name == "content_assets":
-            return context.asset_inventory
+            return {
+                "assets": context.asset_inventory,
+                "summary": context.phase_summaries.get(phase_name, ""),
+            }
         if phase_name == "responsive_research":
             return {
                 "observations": context.responsive_inventory,
                 "breakpoints": context.responsive_breakpoints,
+                "summary": context.phase_summaries.get(phase_name, ""),
             }
         if phase_name == "design_system":
             return {
                 "design_tokens": context.design_tokens,
                 "components": context.component_inventory,
+                "summary": context.phase_summaries.get(phase_name, ""),
             }
         if phase_name == "architecture":
-            return context.architecture
+            return context.architecture or context.phase_summaries.get(phase_name, "")
         if phase_name == "research_gate":
             return context.research_gate_decision or {
                 "status": context.research_gate_status,
@@ -1151,6 +1256,51 @@ class ReconstructSiteRunner(PhaseRunner):
         self, context: ReconstructContext, store: ReconstructEvidenceStore, attempt: int
     ) -> object:
         """Publish the normalized baseline and coverage report once per attempt."""
+        if self._summary_only_research(context):
+            # The detailed research is intentionally owned by the agent in the
+            # target directory.  Keep the internal gate checkpoint small and
+            # durable without making this path inspect or validate those files.
+            handoff = {
+                "mode": "summary_only",
+                "scope": {
+                    "reference_url": context.target_url,
+                    "target_directory": context.target_directory,
+                    "intent": context.intent,
+                },
+                "phase_summaries": dict(
+                    (name, context.phase_summaries[name]) for name in self._SUMMARY_RESEARCH_PHASES
+                ),
+            }
+            coverage_record = store.put_json(
+                "research_coverage_report",
+                handoff,
+                phase="research_gate",
+                attempt=attempt,
+            )
+            baseline_record = store.put_json(
+                "fidelity_baseline",
+                {**handoff, "coverage_artifact_id": coverage_record.artifact_id},
+                phase="research_gate",
+                attempt=attempt,
+            )
+            context.research_baseline = {
+                **handoff,
+                "artifact_id": baseline_record.artifact_id,
+            }
+            context.research_baseline_id = baseline_record.artifact_id
+            context.required_artifact_ids = [
+                *dict.fromkeys(
+                    [
+                        *context.required_artifact_ids,
+                        coverage_record.artifact_id,
+                        baseline_record.artifact_id,
+                    ]
+                )
+            ]
+            context.artifact_manifest_revision = store.manifest.revision
+            context.artifacts["research_coverage_report"] = coverage_record.relative_path
+            context.artifacts["fidelity_baseline"] = baseline_record.relative_path
+            return baseline_record
         matrix = self._coverage(context)
         source_cells = tuple(sorted(matrix.cells))
         coverage_record = store.put_json(
@@ -1248,6 +1398,9 @@ class ReconstructSiteRunner(PhaseRunner):
                 ]
             elif kind == "visual_spec":
                 if isinstance(value, dict):
+                    summary = value.get("summary")
+                    if isinstance(summary, str) and summary.strip():
+                        context.phase_summaries["visual_research"] = summary.strip()
                     tokens = value.get("design_tokens", value)
                     if isinstance(tokens, dict):
                         context.design_tokens = tokens
@@ -1262,6 +1415,9 @@ class ReconstructSiteRunner(PhaseRunner):
                         item for item in value if isinstance(item, dict)
                     ]
                 elif isinstance(value, dict):
+                    summary = value.get("summary")
+                    if isinstance(summary, str) and summary.strip():
+                        context.phase_summaries["interaction_analysis"] = summary.strip()
                     interactions = value.get("interactions", [])
                     traces = value.get("traces", [])
                     if isinstance(interactions, list):
@@ -1275,9 +1431,16 @@ class ReconstructSiteRunner(PhaseRunner):
             elif kind == "asset_inventory":
                 if isinstance(value, list):
                     context.asset_inventory = [item for item in value if isinstance(item, dict)]
+                elif isinstance(value, dict):
+                    summary = value.get("summary")
+                    if isinstance(summary, str) and summary.strip():
+                        context.phase_summaries["content_assets"] = summary.strip()
             elif kind == "design_system":
                 if not isinstance(value, dict):
                     continue
+                summary = value.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    context.phase_summaries["design_system"] = summary.strip()
                 tokens = value.get("design_tokens", context.design_tokens)
                 if isinstance(tokens, dict):
                     context.design_tokens = tokens
@@ -1288,6 +1451,9 @@ class ReconstructSiteRunner(PhaseRunner):
                     ]
             elif kind == "responsive_research":
                 if isinstance(value, dict):
+                    summary = value.get("summary")
+                    if isinstance(summary, str) and summary.strip():
+                        context.phase_summaries["responsive_research"] = summary.strip()
                     observations = value.get("observations", [])
                     breakpoints = value.get("breakpoints", [])
                     if isinstance(observations, list):
@@ -1315,6 +1481,21 @@ class ReconstructSiteRunner(PhaseRunner):
                     ) from exc
             elif kind == "research_coverage_report":
                 if isinstance(value, dict):
+                    if value.get("mode") == "summary_only":
+                        raw_summaries = value.get("phase_summaries", {})
+                        if isinstance(raw_summaries, Mapping):
+                            context.phase_summaries.update(
+                                {
+                                    str(name): str(summary)
+                                    for name, summary in raw_summaries.items()
+                                    if isinstance(summary, str)
+                                }
+                            )
+                        # Summary-only handoffs intentionally do not become a
+                        # fake CoverageMatrix on resume.  The phase summaries
+                        # and the agent-owned Markdown paths are the durable
+                        # handoff for this mode.
+                        continue
                     try:
                         matrix = CoverageMatrix.from_dict(value)
                     except ResearchValidationError:
@@ -1335,6 +1516,21 @@ class ReconstructSiteRunner(PhaseRunner):
                     context.unresolved_research = list(matrix.blocking_cells())
             elif kind == "fidelity_baseline":
                 if isinstance(value, dict):
+                    if value.get("mode") == "summary_only":
+                        context.research_baseline = dict(value)
+                        baseline_records = [
+                            item
+                            for item in store.manifest.artifacts
+                            if item.kind == kind and item.status == "complete"
+                        ]
+                        baseline_record = max(
+                            baseline_records,
+                            key=lambda item: (item.created_at, item.artifact_id),
+                            default=None,
+                        )
+                        if baseline_record is not None:
+                            context.research_baseline_id = baseline_record.artifact_id
+                        continue
                     try:
                         baseline = FidelityBaseline.from_dict(value)
                     except ResearchValidationError:

@@ -19,7 +19,7 @@ import asyncio
 import dataclasses
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit, urlunsplit
@@ -50,6 +50,42 @@ def _safe_reference_url(value: str) -> str:
         return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
     except ValueError:
         return ""
+
+
+def _research_notes_prompt(output_dir: str, note_type: str, filename: str) -> str:
+    """Return the agent instruction for one research handoff.
+
+    Research notes are deliberately agent-owned workspace artefacts.  This
+    helper only contributes prompt text: research submission tools accept the
+    handoff summary and do not create or validate these files.
+    """
+    root = str(output_dir).strip().rstrip("/\\") or "<output_dir>"
+    return (
+        "MANDATORY RESEARCH NOTES: before calling the phase transition tool, use the normal "
+        "workspace `write_file` tool "
+        f"to write substantive Markdown findings under `{root}/research/{note_type}/`. "
+        f"At minimum create `{root}/research/{note_type}/{filename}`; add more Markdown "
+        "files when the findings are too large for one document. Include concrete "
+        "observations, evidence or source references, uncertainties, and implications "
+        "for implementation. Do not leave findings only in conversation text or "
+        "transition-tool arguments. The phase transition tool records the handoff but "
+        "does not create or validate these research files."
+    )
+
+
+def _research_notes_path(output_dir: str, note_type: str, filename: str) -> str:
+    """Return the documented agent-owned path without touching the filesystem."""
+    root = str(output_dir).strip().rstrip("/\\") or "<output_dir>"
+    return f"{root}/research/{note_type}/{filename}"
+
+
+def _submission_handoff_prompt(tool_call: str) -> str:
+    """Tell a phase agent to persist the work before submitting its summary."""
+    return (
+        f"Before calling {tool_call}, write down the complete work and evidence being "
+        "submitted in the relevant project files or documentation. Then call "
+        f"{tool_call}. "
+    )
 
 
 # Stable workflow policy.  Keep phase-specific instructions and current
@@ -181,6 +217,10 @@ class ReconstructContext:
 
     # Artifact paths (route_inventory.md, visual_spec.md, architecture.md, ...)
     artifacts: dict[str, str] = dataclasses.field(default_factory=dict)
+    # Short handoff summaries are the only payload accepted by research
+    # submission tools.  The detailed submission remains in the agent-owned
+    # Markdown files named by the phase prompt.
+    phase_summaries: dict[str, str] = dataclasses.field(default_factory=dict)
 
     # Session memory is injected by the session and deliberately excluded from
     # the checkpoint payload. The restore hook reattaches the supplied object.
@@ -289,71 +329,24 @@ def _make_recon_tools(
 
     @tool_control
     @tool()
-    async def submit_route_inventory(
-        routes: list[dict[str, object]],
-        summary: str,
-    ) -> dict[str, object]:
-        """Record the discovered route inventory and advance to visual research.
+    async def submit_route_inventory(summary: str) -> dict[str, object]:
+        """Record the route-inventory handoff and advance to visual research.
 
         Args:
-            routes: One entry per discovered route with keys: route, purpose,
-                layout, components, interactions, data_requirements,
-                responsive_considerations.
-            summary: Site-level reconnaissance summary (nav, footer, menus,
-                modals, forms, search, filters, tabs, cards, tables, pagination,
-                loading/error/empty states, auth UI, responsive behaviour).
+            summary: Short description of the findings written to the
+                reconnaissance Markdown files.
         """
-        if not routes:
-            return {
-                "ok": False,
-                "error": "routes must not be empty.",
-                "fix": "Inventory every discoverable major route first.",
-            }
-        normalized_routes: list[dict[str, object]] = []
-        for route in routes:
-            if not isinstance(route, dict) or not str(route.get("route", "")).strip():
-                return {
-                    "ok": False,
-                    "error": "each route must be an object with a non-empty route.",
-                    "fix": "Record the canonical route or surface identifier.",
-                }
-            item = dict(route)
-            status = str(item.get("coverage_status", item.get("status", "observed"))).strip()
-            if status not in {
-                "observed",
-                "discovered_not_observed",
-                "unavailable",
-                "excluded",
-                "not_applicable",
-            }:
-                return {
-                    "ok": False,
-                    "error": f"invalid route coverage_status: {status!r}.",
-                    "fix": "Use observed, discovered_not_observed, unavailable, excluded, or not_applicable.",
-                }
-            if (
-                status != "observed"
-                and not str(item.get("reason", item.get("limitations", ""))).strip()
-            ):
-                return {
-                    "ok": False,
-                    "error": f"route {item['route']!r} needs a reason for status {status!r}.",
-                    "fix": "Explain why the candidate was not fully observed.",
-                }
-            item["coverage_status"] = status
-            normalized_routes.append(item)
         if not summary.strip():
             return {
                 "ok": False,
                 "error": "summary must not be empty.",
                 "fix": "Summarise the site-level reconnaissance.",
             }
-        data["routes"] = normalized_routes
         data["summary"] = summary.strip()
         event.set()
         return {
             "ok": True,
-            "message": f"Route inventory recorded ({len(routes)} routes). Visual research next.",
+            "message": "Route-inventory handoff recorded. Visual research next.",
         }
 
     return [submit_route_inventory]
@@ -369,39 +362,25 @@ def _make_visual_research_tools(
 
     @tool_control
     @tool()
-    async def submit_visual_spec(
-        design_tokens: dict[str, object],
-        summary: str,
-        observations: list[dict[str, object]] | None = None,
-    ) -> dict[str, object]:
-        """Record the quantified visual design inventory and advance.
+    async def submit_visual_spec(summary: str) -> dict[str, object]:
+        """Record the visual-research handoff and advance.
 
         Args:
-            design_tokens: Concrete measured tokens (typography, spacing,
-                containers, grids, colors, borders, shadows, radii, icons,
-                image treatment, breakpoints). Values must be measured, not
-                vague ("clean modern design" is not acceptable).
-            summary: Narrative of the visual spec with concrete observations.
-            observations: Optional per-route/viewport/state measurements. Each
-                observation should identify its coverage cell or source route.
+            summary: Short description of the measured findings written to the
+                visual-research Markdown files.
         """
-        if not design_tokens:
-            return {
-                "ok": False,
-                "error": "design_tokens must not be empty.",
-                "fix": "Extract concrete measured visual tokens from the reference.",
-            }
         if not summary.strip():
             return {
                 "ok": False,
                 "error": "summary must not be empty.",
                 "fix": "Describe the visual spec with concrete observations.",
             }
-        data["design_tokens"] = design_tokens
         data["summary"] = summary.strip()
-        data["visual_observations"] = observations or []
         event.set()
-        return {"ok": True, "message": "Visual spec recorded. Interaction analysis next."}
+        return {
+            "ok": True,
+            "message": "Visual-research handoff recorded. Interaction analysis next.",
+        }
 
     return [submit_visual_spec]
 
@@ -416,43 +395,24 @@ def _make_interaction_analysis_tools(
 
     @tool_control
     @tool()
-    async def submit_interaction_inventory(
-        interactions: list[dict[str, object]],
-        summary: str,
-        traces: list[dict[str, object]] | None = None,
-    ) -> dict[str, object]:
-        """Record the interaction/behaviour catalogue and advance.
+    async def submit_interaction_inventory(summary: str) -> dict[str, object]:
+        """Record the interaction-analysis handoff and advance.
 
         Args:
-            interactions: One entry per interaction with keys: interaction,
-                trigger, expected_behaviour, visual_state, data_dependency,
-                url_or_state_change.
-            summary: Narrative of how the site actually behaves (hover/focus/
-                active, dropdowns, transitions, modals, drawers, accordions,
-                tabs, carousels, forms+validation, loading, API requests,
-                infinite scroll, pagination, URL/query state, animations,
-                keyboard).
-            traces: Optional action/state traces linked to coverage cells.
+            summary: Short description of the behaviour findings written to
+                the interaction-analysis Markdown files.
         """
-        if not interactions:
-            return {
-                "ok": False,
-                "error": "interactions must not be empty.",
-                "fix": "Catalogue every observable interaction of the reference.",
-            }
         if not summary.strip():
             return {
                 "ok": False,
                 "error": "summary must not be empty.",
                 "fix": "Summarise the interaction analysis.",
             }
-        data["interactions"] = interactions
         data["summary"] = summary.strip()
-        data["interaction_traces"] = traces or []
         event.set()
         return {
             "ok": True,
-            "message": "Interaction inventory recorded. Content/assets next.",
+            "message": "Interaction-analysis handoff recorded. Content/assets next.",
         }
 
     return [submit_interaction_inventory]
@@ -468,33 +428,22 @@ def _make_content_assets_tools(
 
     @tool_control
     @tool()
-    async def submit_asset_inventory(
-        assets: list[dict[str, object]],
-        summary: str,
-    ) -> dict[str, object]:
-        """Record the asset inventory and advance.
+    async def submit_asset_inventory(summary: str) -> dict[str, object]:
+        """Record the content/assets research handoff and advance.
 
         Args:
-            assets: One entry per asset with keys: name, type, dimensions,
-                format, usage, reuse_or_recreate, source.
-            summary: Reuse-vs-recreate strategy and legal note.
+            summary: Short description of the inventory written to the
+                content-assets Markdown files.
         """
-        if not assets:
-            return {
-                "ok": False,
-                "error": "assets must not be empty.",
-                "fix": "Inventory logos, icons, images, illustrations, fonts, videos, SVGs.",
-            }
         if not summary.strip():
             return {
                 "ok": False,
                 "error": "summary must not be empty.",
                 "fix": "Describe the reuse/recreate strategy.",
             }
-        data["assets"] = assets
         data["summary"] = summary.strip()
         event.set()
-        return {"ok": True, "message": "Asset inventory recorded. Architecture next."}
+        return {"ok": True, "message": "Content/assets handoff recorded. Responsive research next."}
 
     return [submit_asset_inventory]
 
@@ -509,40 +458,24 @@ def _make_responsive_research_tools(
 
     @tool_control
     @tool()
-    async def submit_responsive_research(
-        observations: list[dict[str, object]],
-        breakpoints: list[dict[str, object]],
-        summary: str,
-    ) -> dict[str, object]:
-        """Record cross-viewport observations and advance to architecture.
+    async def submit_responsive_research(summary: str) -> dict[str, object]:
+        """Record the responsive-research handoff and advance.
 
         Args:
-            observations: One entry per route/viewport comparison. Include
-                surface, viewport, state, layout changes, visibility, overflow,
-                typography, image, and touch-target observations.
-            breakpoints: Observed breakpoint intervals and the evidence for
-                each interval.
-            summary: Concrete responsive behavior summary.
+            summary: Short description of the breakpoint and viewport findings
+                written to the responsive-research Markdown files.
         """
-        if not observations:
-            return {
-                "ok": False,
-                "error": "observations must not be empty.",
-                "fix": "Compare every in-scope surface across the viewport matrix.",
-            }
         if not summary.strip():
             return {
                 "ok": False,
                 "error": "summary must not be empty.",
                 "fix": "Describe the observed breakpoint and reflow behavior.",
             }
-        data["responsive_observations"] = observations
-        data["responsive_breakpoints"] = breakpoints
         data["summary"] = summary.strip()
         event.set()
         return {
             "ok": True,
-            "message": "Responsive research recorded. Architecture planning next.",
+            "message": "Responsive-research handoff recorded. Architecture planning next.",
         }
 
     return [submit_responsive_research]
@@ -551,6 +484,7 @@ def _make_responsive_research_tools(
 def _make_research_gate_tools(
     event: asyncio.Event,
     data: dict[str, object],
+    validator: Callable[[str, Mapping[str, object]], str | None] | None = None,
 ) -> list[Callable[..., object]]:
     """Return explicit approval/rejection tools for the research gate."""
     from lauren_ai._tools import tool
@@ -569,6 +503,16 @@ def _make_research_gate_tools(
                 "error": "summary and baseline_artifact_id are required.",
                 "fix": "Resolve all blocking cells, then approve the current baseline.",
             }
+        if validator is not None:
+            error = validator(
+                "approve",
+                {
+                    "summary": summary.strip(),
+                    "baseline_artifact_id": baseline_artifact_id.strip(),
+                },
+            )
+            if error is not None:
+                return {"ok": False, "error": error, "fix": "Resolve the reported gate issue."}
         data.update(
             {
                 "action": "approve",
@@ -587,7 +531,24 @@ def _make_research_gate_tools(
         baseline_artifact_id: str,
     ) -> dict[str, object]:
         """Approve only explicitly unavailable research cells."""
-        if not exception_ids or not rationale.strip() or not baseline_artifact_id.strip():
+        if not rationale.strip() or not baseline_artifact_id.strip():
+            return {
+                "ok": False,
+                "error": "exception_ids, rationale, and baseline_artifact_id are required.",
+                "fix": "List each accepted unavailable cell and explain the limitation.",
+            }
+        if validator is not None:
+            error = validator(
+                "approve_degraded",
+                {
+                    "exception_ids": exception_ids,
+                    "rationale": rationale.strip(),
+                    "baseline_artifact_id": baseline_artifact_id.strip(),
+                },
+            )
+            if error is not None:
+                return {"ok": False, "error": error, "fix": "Resolve the reported gate issue."}
+        elif not exception_ids:
             return {
                 "ok": False,
                 "error": "exception_ids, rationale, and baseline_artifact_id are required.",
@@ -606,10 +567,7 @@ def _make_research_gate_tools(
 
     @tool_control
     @tool()
-    async def reject_research_baseline(
-        findings: list[dict[str, object]],
-        target_phase: str,
-    ) -> dict[str, object]:
+    async def reject_research_baseline(findings: list[str], target_phase: str) -> dict[str, object]:
         """Reject the baseline and request targeted research re-entry."""
         if not findings:
             return {
@@ -646,25 +604,22 @@ def _make_architecture_tools(
 
     @tool_control
     @tool()
-    async def submit_architecture(architecture: str) -> dict[str, object]:
-        """Record the technical architecture document and advance.
+    async def submit_architecture(summary: str) -> dict[str, object]:
+        """Record the architecture-research handoff and advance.
 
         Args:
-            architecture: Full architecture doc — App Router structure,
-                server/client component split, layouts, loading/error
-                boundaries, data-fetching architecture, query keys, API
-                abstraction, state management, reusable components, shared
-                UI primitives.
+            summary: Short description of the architecture decisions written
+                to the architecture Markdown files.
         """
-        if not architecture.strip():
+        if not summary.strip():
             return {
                 "ok": False,
-                "error": "architecture must not be empty.",
-                "fix": "Design the target Next.js architecture before implementation.",
+                "error": "summary must not be empty.",
+                "fix": "Describe the architecture decisions before advancing.",
             }
-        data["architecture"] = architecture.strip()
+        data["summary"] = summary.strip()
         event.set()
-        return {"ok": True, "message": "Architecture recorded. Design system next."}
+        return {"ok": True, "message": "Architecture handoff recorded. Design system next."}
 
     return [submit_architecture]
 
@@ -679,38 +634,22 @@ def _make_design_system_tools(
 
     @tool_control
     @tool()
-    async def submit_design_system(
-        design_tokens: dict[str, object],
-        component_map: dict[str, object],
-        summary: str,
-    ) -> dict[str, object]:
-        """Record the design tokens + shadcn/ui component mapping and advance.
+    async def submit_design_system(summary: str) -> dict[str, object]:
+        """Record the design-system research handoff and advance.
 
         Args:
-            design_tokens: Typography/spacing/color/border/radius/shadow/
-                breakpoints/container scales and button/input/card/nav variants.
-            component_map: Reference UI pattern -> customized shadcn/ui
-                primitive mapping (never default shadcn styling).
-            summary: How the reference design maps through tokens → Tailwind /
-                CSS variables → shadcn primitives → app components.
+            summary: Short description of the design-system decisions written
+                to the design-system Markdown files.
         """
-        if not design_tokens or not component_map:
-            return {
-                "ok": False,
-                "error": "design_tokens and component_map must not be empty.",
-                "fix": "Extract the full design system and map patterns to shadcn/ui.",
-            }
         if not summary.strip():
             return {
                 "ok": False,
                 "error": "summary must not be empty.",
                 "fix": "Describe the token → Tailwind → shadcn → component pipeline.",
             }
-        data["design_tokens"] = design_tokens
-        data["component_map"] = component_map
         data["summary"] = summary.strip()
         event.set()
-        return {"ok": True, "message": "Design system recorded. Bootstrap next."}
+        return {"ok": True, "message": "Design-system handoff recorded. Bootstrap next."}
 
     return [submit_design_system]
 
@@ -929,7 +868,7 @@ def _make_visual_validation_tools(
     @tool_control
     @tool()
     async def visual_rejected(
-        discrepancies: list[dict[str, object]],
+        discrepancies: list[dict[str, str]],
         target_phase: str = "",
     ) -> dict[str, object]:
         """Signal that visual discrepancies were found and re-enter a phase.
@@ -985,7 +924,7 @@ def _make_interaction_validation_tools(
     @tool_control
     @tool()
     async def interaction_rejected(
-        discrepancies: list[dict[str, object]],
+        discrepancies: list[dict[str, str]],
         target_phase: str = "",
     ) -> dict[str, object]:
         """Signal that interaction discrepancies were found and re-enter a phase.
@@ -1041,7 +980,7 @@ def _make_accessibility_tools(
     @tool_control
     @tool()
     async def a11y_rejected(
-        issues: list[dict[str, object]],
+        issues: list[dict[str, str]],
         target_phase: str = "",
     ) -> dict[str, object]:
         """Signal that accessibility issues were found and re-enter a phase.
@@ -1096,7 +1035,7 @@ def _make_performance_tools(
     @tool_control
     @tool()
     async def perf_rejected(
-        issues: list[dict[str, object]],
+        issues: list[dict[str, str]],
         target_phase: str = "",
     ) -> dict[str, object]:
         """Signal that performance issues were found and re-enter a phase.
@@ -1151,7 +1090,7 @@ def _make_fidelity_pass_tools(
     @tool_control
     @tool()
     async def fidelity_rejected(
-        discrepancies: list[dict[str, object]],
+        discrepancies: list[dict[str, str]],
         target_phase: str = "",
     ) -> dict[str, object]:
         """Signal that fidelity discrepancies remain and re-enter a phase.
@@ -2339,7 +2278,9 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "route_exclusion, dynamic_content_policy, unavailable_behavior, "
                     "fidelity_exceptions). Only a successful transition-tool call changes "
                     "phase; prose such as 'done' never advances the workflow. Do NOT start "
-                    "coding yet."
+                    "coding yet. First write the initial state you are submitting to the "
+                    "required research Markdown file, then call the transition tool.\n\n"
+                    + _research_notes_prompt("<output_dir>", "initial_state", "initial-state.md")
                 ),
                 mode="Yolo",
                 max_turns=10,
@@ -2364,10 +2305,13 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "unavailable_behavior": str(data.get("unavailable_behavior", "report")),
                     "fidelity_exceptions": str(data.get("fidelity_exceptions", "")),
                 }
-                ctx.artifacts["initial_state"] = (
+                ctx.phase_summaries["init"] = (
                     f"url={ctx.target_url}; dir={ctx.target_directory}; "
                     f"static={data.get('reference_is_static')}; "
                     f"api={data.get('reproduce_api_or_mock')}"
+                )
+                ctx.artifacts["initial_state"] = _research_notes_path(
+                    ctx.target_directory, "initial_state", "initial-state.md"
                 )
                 ctx.completed_phases.append("init")
                 ctx.last_transition = "submit_initial_state"
@@ -2386,7 +2330,7 @@ class ReconstructSiteRunner(CodePlanRunner):
                 text=(
                     f"Reference URL: {ctx.target_url}\n\nPerform reconnaissance."
                     if attempt == 1
-                    else "Call submit_route_inventory(routes, summary) now."
+                    else "Call submit_route_inventory(summary) now."
                 ),
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
@@ -2398,9 +2342,12 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "inventory (route, purpose, layout, major components, interactions, data "
                     "requirements, responsive considerations) and record the site's "
                     "information architecture. Then call "
-                    "submit_route_inventory(routes, summary). Only a successful "
+                    "submit_route_inventory(summary). Only a successful "
                     "transition-tool call changes phase; prose never advances the workflow. "
-                    "Do NOT start coding — this is discovery only."
+                    "Do NOT start coding — this is discovery only.\n\n"
+                    + _research_notes_prompt(
+                        ctx.target_directory, "reconnaissance", "route-inventory.md"
+                    )
                 ),
                 mode="Yolo",
                 max_turns=35,
@@ -2408,15 +2355,17 @@ class ReconstructSiteRunner(CodePlanRunner):
                 tools=_make_recon_tools(event, data),
             )
             if event.is_set():
-                raw_routes = data.get("routes", [])
-                if isinstance(raw_routes, list):
-                    ctx.route_inventory = [r for r in raw_routes if isinstance(r, dict)]
-                    ctx.pages_to_implement = [
-                        str(r.get("route", "")).strip()
-                        for r in ctx.route_inventory
-                        if str(r.get("route", "")).strip()
-                    ]
-                ctx.artifacts["route_inventory"] = "route_inventory.md"
+                ctx.phase_summaries["recon"] = str(data.get("summary", ""))
+                if not ctx.route_inventory:
+                    requested = str(ctx.research_scope.get("desired_routes", ""))
+                    routes = [item.strip() for item in requested.split(",") if item.strip()]
+                    if not routes:
+                        routes = ["/"]
+                    ctx.route_inventory = [{"route": route} for route in routes]
+                    ctx.pages_to_implement = routes
+                ctx.artifacts["route_inventory"] = _research_notes_path(
+                    ctx.target_directory, "reconnaissance", "route-inventory.md"
+                )
                 ctx.completed_phases.append("recon")
                 ctx.last_transition = "submit_route_inventory"
                 return ReconstructState.VISUAL_RESEARCH
@@ -2435,7 +2384,7 @@ class ReconstructSiteRunner(CodePlanRunner):
                     f"Reference URL: {ctx.target_url}\n\nCapture screenshots and measure "
                     "the visual design."
                     if attempt == 1
-                    else "Call submit_visual_spec(design_tokens, summary) now."
+                    else "Call submit_visual_spec(summary) now."
                 ),
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
@@ -2451,8 +2400,11 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "navigation, cards, buttons, forms, tables, overlays, and responsive "
                     "layouts. Extract CONCRETE measured observations (e.g. max-width ≈ X, "
                     "card radius ≈ X, padding ≈ Y) — never vague 'clean modern design'. "
-                    "Then call submit_visual_spec(design_tokens, summary). Only a successful "
-                    "transition-tool call changes phase; prose never advances the workflow."
+                    "Then call submit_visual_spec(summary). Only a successful "
+                    "transition-tool call changes phase; prose never advances the workflow.\n\n"
+                    + _research_notes_prompt(
+                        ctx.target_directory, "visual", "visual-observations.md"
+                    )
                 ),
                 mode="Yolo",
                 max_turns=30,
@@ -2460,15 +2412,10 @@ class ReconstructSiteRunner(CodePlanRunner):
                 tools=_make_visual_research_tools(event, data),
             )
             if event.is_set():
-                tokens = data.get("design_tokens", {})
-                if isinstance(tokens, dict):
-                    ctx.design_tokens = tokens
-                raw_observations = data.get("visual_observations", [])
-                if isinstance(raw_observations, list):
-                    ctx.visual_observations = [
-                        item for item in raw_observations if isinstance(item, dict)
-                    ]
-                ctx.artifacts["visual_spec"] = "visual_spec.md"
+                ctx.phase_summaries["visual_research"] = str(data.get("summary", ""))
+                ctx.artifacts["visual_spec"] = _research_notes_path(
+                    ctx.target_directory, "visual", "visual-observations.md"
+                )
                 ctx.completed_phases.append("visual_research")
                 ctx.last_transition = "submit_visual_spec"
                 return ReconstructState.INTERACTION_ANALYSIS
@@ -2488,7 +2435,7 @@ class ReconstructSiteRunner(CodePlanRunner):
                 text=(
                     f"Reference URL: {ctx.target_url}\n\nAnalyse how the site actually behaves."
                     if attempt == 1
-                    else "Call submit_interaction_inventory(interactions, summary) now."
+                    else "Call submit_interaction_inventory(summary) now."
                 ),
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
@@ -2500,9 +2447,12 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "animations, keyboard interactions. Document each as: interaction, "
                     "trigger, expected behaviour, visual state, data dependency, "
                     "URL/state change. Reproduce the EXPERIENCE, not just the static "
-                    "appearance. Then call submit_interaction_inventory(interactions, "
-                    "summary). Only a successful transition-tool call changes phase; prose "
-                    "never advances the workflow."
+                    "appearance. Then call submit_interaction_inventory(summary). Only a "
+                    "successful transition-tool call changes phase; prose never advances "
+                    "the workflow.\n\n"
+                    + _research_notes_prompt(
+                        ctx.target_directory, "interaction", "interaction-analysis.md"
+                    )
                 ),
                 mode="Yolo",
                 max_turns=30,
@@ -2510,13 +2460,10 @@ class ReconstructSiteRunner(CodePlanRunner):
                 tools=_make_interaction_analysis_tools(event, data),
             )
             if event.is_set():
-                raw = data.get("interactions", [])
-                if isinstance(raw, list):
-                    ctx.interaction_inventory = [i for i in raw if isinstance(i, dict)]
-                raw_traces = data.get("interaction_traces", [])
-                if isinstance(raw_traces, list):
-                    ctx.interaction_traces = [item for item in raw_traces if isinstance(item, dict)]
-                ctx.artifacts["interaction_inventory"] = "interaction_inventory.md"
+                ctx.phase_summaries["interaction_analysis"] = str(data.get("summary", ""))
+                ctx.artifacts["interaction_inventory"] = _research_notes_path(
+                    ctx.target_directory, "interaction", "interaction-analysis.md"
+                )
                 ctx.completed_phases.append("interaction_analysis")
                 ctx.last_transition = "submit_interaction_inventory"
                 return ReconstructState.CONTENT_ASSETS
@@ -2534,7 +2481,7 @@ class ReconstructSiteRunner(CodePlanRunner):
                 text=(
                     f"Reference URL: {ctx.target_url}\n\nInventory content and assets."
                     if attempt == 1
-                    else "Call submit_asset_inventory(assets, summary) now."
+                    else "Call submit_asset_inventory(summary) now."
                 ),
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
@@ -2544,9 +2491,12 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "formats — never invent them. Classify each asset as reusable "
                     "legitimately or to be recreated (note the legal basis), and identify an "
                     "equivalent or implementation strategy for assets that must not be "
-                    "copied. Then call submit_asset_inventory(assets, summary). Only a "
+                    "copied. Then call submit_asset_inventory(summary). Only a "
                     "successful transition-tool call changes phase; prose never advances "
-                    "the workflow."
+                    "the workflow.\n\n"
+                    + _research_notes_prompt(
+                        ctx.target_directory, "content_assets", "asset-inventory.md"
+                    )
                 ),
                 mode="Yolo",
                 max_turns=25,
@@ -2554,10 +2504,10 @@ class ReconstructSiteRunner(CodePlanRunner):
                 tools=_make_content_assets_tools(event, data),
             )
             if event.is_set():
-                raw = data.get("assets", [])
-                if isinstance(raw, list):
-                    ctx.asset_inventory = [a for a in raw if isinstance(a, dict)]
-                ctx.artifacts["asset_inventory"] = "asset_inventory.md"
+                ctx.phase_summaries["content_assets"] = str(data.get("summary", ""))
+                ctx.artifacts["asset_inventory"] = _research_notes_path(
+                    ctx.target_directory, "content_assets", "asset-inventory.md"
+                )
                 ctx.completed_phases.append("content_assets")
                 ctx.last_transition = "submit_asset_inventory"
                 return ReconstructState.RESPONSIVE_RESEARCH
@@ -2578,7 +2528,7 @@ class ReconstructSiteRunner(CodePlanRunner):
                     f"Reference URL: {ctx.target_url}\n\nCompare every surface across mobile, "
                     "tablet, and desktop viewports."
                     if attempt == 1
-                    else "Call submit_responsive_research(observations, breakpoints, summary) now."
+                    else "Call submit_responsive_research(summary) now."
                 ),
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
@@ -2590,8 +2540,12 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "details. Use screenshots and measured observations when browser "
                     "access is available. Do not implement anything and do not infer mobile "
                     "behavior from desktop alone. Then call "
-                    "submit_responsive_research(observations, breakpoints, summary). Only "
+                    "submit_responsive_research(summary). Only "
                     "a successful transition-tool call changes phase; prose never advances."
+                    "\n\n"
+                    + _research_notes_prompt(
+                        ctx.target_directory, "responsive", "responsive-observations.md"
+                    )
                 ),
                 mode="Yolo",
                 max_turns=30,
@@ -2599,17 +2553,10 @@ class ReconstructSiteRunner(CodePlanRunner):
                 tools=_make_responsive_research_tools(event, data),
             )
             if event.is_set():
-                raw_observations = data.get("responsive_observations", [])
-                raw_breakpoints = data.get("responsive_breakpoints", [])
-                if isinstance(raw_observations, list):
-                    ctx.responsive_inventory = [
-                        item for item in raw_observations if isinstance(item, dict)
-                    ]
-                if isinstance(raw_breakpoints, list):
-                    ctx.responsive_breakpoints = [
-                        item for item in raw_breakpoints if isinstance(item, dict)
-                    ]
-                ctx.artifacts["responsive_research"] = "responsive_research.md"
+                ctx.phase_summaries["responsive_research"] = str(data.get("summary", ""))
+                ctx.artifacts["responsive_research"] = _research_notes_path(
+                    ctx.target_directory, "responsive", "responsive-observations.md"
+                )
                 ctx.completed_phases.append("responsive_research")
                 ctx.last_transition = "submit_responsive_research"
                 return ReconstructState.ARCHITECTURE
@@ -2627,7 +2574,7 @@ class ReconstructSiteRunner(CodePlanRunner):
                 text=(
                     "Design the target Next.js application architecture before implementation."
                     if attempt == 1
-                    else "Call submit_architecture(architecture) now."
+                    else "Call submit_architecture(summary) now."
                 ),
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
@@ -2637,8 +2584,11 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "data-fetching architecture, TanStack Query keys, API abstraction, "
                     "state management, reusable components, and shared UI primitives. "
                     "Write the architecture document, then call "
-                    "submit_architecture(architecture). Only a successful transition-tool "
-                    "call changes phase; prose never advances the workflow."
+                    "submit_architecture(summary). Only a successful transition-tool "
+                    "call changes phase; prose never advances the workflow.\n\n"
+                    + _research_notes_prompt(
+                        ctx.target_directory, "architecture", "architecture.md"
+                    )
                 ),
                 mode="Yolo",
                 max_turns=25,
@@ -2646,8 +2596,10 @@ class ReconstructSiteRunner(CodePlanRunner):
                 tools=_make_architecture_tools(event, data),
             )
             if event.is_set():
-                ctx.architecture = str(data.get("architecture", ""))
-                ctx.artifacts["architecture"] = "architecture.md"
+                ctx.phase_summaries["architecture"] = str(data.get("summary", ""))
+                ctx.artifacts["architecture"] = _research_notes_path(
+                    ctx.target_directory, "architecture", "architecture.md"
+                )
                 ctx.completed_phases.append("architecture")
                 ctx.last_transition = "submit_architecture"
                 return ReconstructState.DESIGN_SYSTEM
@@ -2665,7 +2617,7 @@ class ReconstructSiteRunner(CodePlanRunner):
                 text=(
                     "Translate the reference visual language into a reusable design system."
                     if attempt == 1
-                    else "Call submit_design_system(design_tokens, component_map, summary) now."
+                    else "Call submit_design_system(summary) now."
                 ),
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
@@ -2678,9 +2630,12 @@ class ReconstructSiteRunner(CodePlanRunner):
                     "reference. Follow the pipeline: reference design → design tokens → "
                     "Tailwind configuration / CSS variables → shadcn/ui primitives → "
                     "reusable application components. Then call "
-                    "submit_design_system(design_tokens, component_map, summary). Only a "
+                    "submit_design_system(summary). Only a "
                     "successful transition-tool call changes phase; prose never advances "
-                    "the workflow."
+                    "the workflow.\n\n"
+                    + _research_notes_prompt(
+                        ctx.target_directory, "design_system", "design-system.md"
+                    )
                 ),
                 mode="Yolo",
                 max_turns=25,
@@ -2688,15 +2643,10 @@ class ReconstructSiteRunner(CodePlanRunner):
                 tools=_make_design_system_tools(event, data),
             )
             if event.is_set():
-                tokens = data.get("design_tokens", {})
-                if isinstance(tokens, dict):
-                    ctx.design_tokens = tokens
-                comp_map = data.get("component_map", {})
-                if isinstance(comp_map, dict):
-                    ctx.component_inventory = [
-                        {"pattern": k, "primitive": v} for k, v in comp_map.items()
-                    ]
-                ctx.artifacts["design_system"] = "design_system.md"
+                ctx.phase_summaries["design_system"] = str(data.get("summary", ""))
+                ctx.artifacts["design_system"] = _research_notes_path(
+                    ctx.target_directory, "design_system", "design-system.md"
+                )
                 ctx.completed_phases.append("design_system")
                 ctx.last_transition = "submit_design_system"
                 return ReconstructState.RESEARCH_GATE
@@ -3355,7 +3305,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the SQLITE_DB phase of reconstruct_site. "
                     "Introduce a SQLite database with realistic mocked/seed data for local development. "
-                    "Call submit_sqlite(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_sqlite(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -3438,7 +3389,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the PRISMA phase of reconstruct_site. "
                     "Introduce Prisma as the ORM/schema/migration layer over SQLite. "
-                    "Call submit_prisma(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_prisma(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -3521,7 +3473,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the TANSTACK_QUERY phase of reconstruct_site. "
                     "Introduce TanStack Query as the client data layer: QueryClient, provider, query functions, mutations, query keys, cache invalidation, loading/error/empty/mutation states. UI must consume data through TanStack Query; Prisma must stay server-only. "
-                    "Call submit_tanstack(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_tanstack(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -3604,7 +3557,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the ENV_CONFIG phase of reconstruct_site. "
                     "Create and configure .env.local, .env.example, .env.prod, and .env.netlify and update .gitignore. Every variable must have detailed comments (purpose, scope, how to generate/obtain, format, local vs prod). No real secrets. "
-                    "Call submit_env(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_env(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -3685,7 +3639,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the DOCKER phase of reconstruct_site. "
                     "Create a Dockerfile (multi-stage where appropriate), docker-compose.yaml, docker-compose-dev.yaml, .dockerignore, and Docker docs under docs/. "
-                    "Call submit_docker(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_docker(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -3768,7 +3723,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the NETLIFY phase of reconstruct_site. "
                     "Create/refine netlify.toml (build command including prisma generate, publish dir, redirects, headers, functions where needed). Document the SQLite production limitation. "
-                    "Call submit_netlify(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_netlify(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -3851,7 +3807,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the CADDY phase of reconstruct_site. "
                     "Create a Caddyfile reverse proxy (documented placeholder domain, HTTPS, headers, compression, WebSocket upgrade where needed) and Caddy docs under docs/. "
-                    "Call submit_caddy(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_caddy(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -3932,7 +3889,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the PACKAGE_COMMANDS phase of reconstruct_site. "
                     "Enhance package.json with development, quality (lint/typecheck/test/check), database (db:generate/migrate/migrate:deploy/seed/reset/studio), Docker, and deployment commands. "
-                    "Call submit_package(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_package(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -4015,7 +3973,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the SCRIPTS phase of reconstruct_site. "
                     "Create purposeful Bash automation under scripts/ (env, database, development, quality, Docker, deployment, diagnostics) and docs/scripts.md. Every script must be robust and safe. "
-                    "Call submit_scripts(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_scripts(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -4098,7 +4057,8 @@ class ReconstructSiteRunner(CodePlanRunner):
                 system_prompt=(
                     "You are in the DOCS phase of reconstruct_site. "
                     "Write comprehensive docs/ covering overview, getting started, architecture, source code, components, data model, Prisma, TanStack Query, env variables, development workflow, testing, Docker, Caddy, Netlify, deployment, bash automation, package commands, troubleshooting, security, operations, reconstruction decisions. Use real commands and paths. "
-                    "Call submit_docs(summary). Only a successful transition-tool call "
+                    + _submission_handoff_prompt("submit_docs(summary)")
+                    + "Only a successful transition-tool call "
                     "changes phase; prose never advances the workflow."
                 ),
                 mode="Yolo",
@@ -4264,7 +4224,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "reference_url, target_directory, constraints, desired_routes, "
                 "auth_required, reference_is_static, reproduce_api_or_mock). Only a "
                 "successful transition-tool call changes phase; prose never advances the "
-                "workflow."
+                "workflow. First write the initial state you are submitting to the required "
+                "research Markdown file.\n\n"
+                + _research_notes_prompt("<output_dir>", "initial_state", "initial-state.md")
             ),
         ),
         PhaseSpec(
@@ -4276,9 +4238,11 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             on_reject="recon",
             system_prompt_override=(
                 "You are in the RECON phase of reconstruct_site. Inventory the reference "
-                "website and call submit_route_inventory(routes, summary). Only a "
+                "website and call submit_route_inventory(summary). First write the complete "
+                "route inventory to the required research Markdown files. Only a "
                 "successful transition-tool call changes phase; prose never advances the "
-                "workflow. Do NOT start coding."
+                "workflow. Do NOT start coding.\n\n"
+                + _research_notes_prompt("<output_dir>", "reconnaissance", "route-inventory.md")
             ),
         ),
         PhaseSpec(
@@ -4291,9 +4255,11 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the VISUAL_RESEARCH phase of reconstruct_site. Extract "
                 "concrete measured visual tokens and observations for each route, viewport, "
-                "state, and interaction cell. Call submit_visual_spec(design_tokens, "
-                "summary, observations). Only a successful transition-tool call changes "
-                "phase; prose never advances the workflow."
+                "state, and interaction cell. First write the complete findings to the "
+                "required research Markdown files, then call submit_visual_spec(summary). "
+                "Only a successful transition-tool call changes phase; prose never advances "
+                "the workflow.\n\n"
+                + _research_notes_prompt("<output_dir>", "visual", "visual-observations.md")
             ),
         ),
         PhaseSpec(
@@ -4305,10 +4271,12 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             on_reject="interaction_analysis",
             system_prompt_override=(
                 "You are in the INTERACTION_ANALYSIS phase of reconstruct_site. Catalogue "
-                "how the site behaves, trace observable state changes, and call "
-                "submit_interaction_inventory(interactions, summary, traces). Only a "
+                "how the site behaves and trace observable state changes. First write the "
+                "complete findings to the required research Markdown files, then call "
+                "submit_interaction_inventory(summary). Only a "
                 "successful transition-tool call changes phase; prose never advances the "
-                "workflow."
+                "workflow.\n\n"
+                + _research_notes_prompt("<output_dir>", "interaction", "interaction-analysis.md")
             ),
         ),
         PhaseSpec(
@@ -4320,9 +4288,11 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             on_reject="content_assets",
             system_prompt_override=(
                 "You are in the CONTENT_ASSETS phase of reconstruct_site. Inventory "
-                "content/assets with real dimensions and call submit_asset_inventory("
-                "assets, summary). Only a successful transition-tool call changes phase; "
-                "prose never advances the workflow."
+                "content/assets with real dimensions. First write the complete inventory "
+                "to the required research Markdown files, then call "
+                "submit_asset_inventory(summary). Only a successful transition-tool call "
+                "changes phase; prose never advances the workflow.\n\n"
+                + _research_notes_prompt("<output_dir>", "content_assets", "asset-inventory.md")
             ),
         ),
         PhaseSpec(
@@ -4337,9 +4307,11 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "every reference surface across the configured mobile, tablet, and "
                 "desktop viewports. Record measured reflow, breakpoints, visibility, "
                 "overflow, touch-target, sticky, and safe-area behavior, then call "
-                "submit_responsive_research(observations, breakpoints, summary). Do not "
+                "submit_responsive_research(summary). First write the complete findings to "
+                "the required research Markdown files. Do not "
                 "code. Only a successful transition-tool call changes phase; prose never "
-                "advances the workflow."
+                "advances the workflow.\n\n"
+                + _research_notes_prompt("<output_dir>", "responsive", "responsive-observations.md")
             ),
         ),
         PhaseSpec(
@@ -4351,9 +4323,11 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             on_reject="architecture",
             system_prompt_override=(
                 "You are in the ARCHITECTURE phase of reconstruct_site. Write the target "
-                "Next.js architecture and call submit_architecture(architecture). Only a "
+                "Next.js architecture to the required research Markdown files, then call "
+                "submit_architecture(summary). Only a "
                 "successful transition-tool call changes phase; prose never advances the "
-                "workflow."
+                "workflow.\n\n"
+                + _research_notes_prompt("<output_dir>", "architecture", "architecture.md")
             ),
         ),
         PhaseSpec(
@@ -4365,9 +4339,11 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             on_reject="design_system",
             system_prompt_override=(
                 "You are in the DESIGN_SYSTEM phase of reconstruct_site. Extract design "
-                "tokens + shadcn/ui component map and call submit_design_system("
-                "design_tokens, component_map, summary). Only a successful transition-tool "
-                "call changes phase; prose never advances the workflow."
+                "tokens + shadcn/ui component map. First write the complete findings to the "
+                "required research Markdown files, then call submit_design_system(summary). "
+                "Only a successful transition-tool call changes phase; prose never advances "
+                "the workflow.\n\n"
+                + _research_notes_prompt("<output_dir>", "design_system", "design-system.md")
             ),
         ),
         PhaseSpec(
@@ -4550,7 +4526,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             system_prompt_override=(
                 "You are in the SQLITE_DB phase of reconstruct_site. Introduce a "
                 "SQLite database with realistic mocked/seed data for local "
-                "development. Call submit_sqlite(summary). Only a successful "
+                "development. "
+                + _submission_handoff_prompt("submit_sqlite(summary)")
+                + "Only a successful "
                 "transition-tool call changes phase; prose never advances the workflow."
             ),
         ),
@@ -4579,8 +4557,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             on_reject="prisma",
             system_prompt_override=(
                 "You are in the PRISMA phase of reconstruct_site. Introduce Prisma as "
-                "the ORM/schema/migration layer over SQLite. Call submit_prisma(summary). "
-                "Only a successful transition-tool call changes phase; prose never "
+                "the ORM/schema/migration layer over SQLite. "
+                + _submission_handoff_prompt("submit_prisma(summary)")
+                + "Only a successful transition-tool call changes phase; prose never "
                 "advances the workflow."
             ),
         ),
@@ -4612,8 +4591,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "TanStack Query as the client data layer (QueryClient, provider, query "
                 "functions, mutation functions, query keys, cache invalidation, "
                 "loading/error/empty/mutation states). UI must consume data through "
-                "TanStack Query; Prisma must stay server-only. Call "
-                "submit_tanstack(summary). Only a successful transition-tool call "
+                "TanStack Query; Prisma must stay server-only. "
+                + _submission_handoff_prompt("submit_tanstack(summary)")
+                + "Only a successful transition-tool call "
                 "changes phase; prose never advances the workflow."
             ),
         ),
@@ -4646,7 +4626,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "configure .env.local, .env.example, .env.prod, .env.netlify, and "
                 "update .gitignore. Every variable must have detailed comments "
                 "(purpose, scope, how to generate/obtain, format, local vs prod). No "
-                "real secrets. Call submit_env(summary). Only a successful "
+                "real secrets. "
+                + _submission_handoff_prompt("submit_env(summary)")
+                + "Only a successful "
                 "transition-tool call changes phase; prose never advances the workflow."
             ),
         ),
@@ -4677,7 +4659,8 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "You are in the DOCKER phase of reconstruct_site. Create Dockerfile "
                 "(multi-stage where appropriate), docker-compose.yaml, "
                 "docker-compose-dev.yaml, .dockerignore, and Docker docs under docs/. "
-                "Call submit_docker(summary). Only a successful transition-tool call "
+                + _submission_handoff_prompt("submit_docker(summary)")
+                + "Only a successful transition-tool call "
                 "changes phase; prose never advances the workflow."
             ),
         ),
@@ -4708,7 +4691,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "You are in the NETLIFY phase of reconstruct_site. Create/refine "
                 "netlify.toml (build command incl. prisma generate, publish dir, "
                 "redirects, headers, functions where needed). Document the SQLite "
-                "production limitation. Call submit_netlify(summary). Only a "
+                "production limitation. "
+                + _submission_handoff_prompt("submit_netlify(summary)")
+                + "Only a "
                 "successful transition-tool call changes phase; prose never advances "
                 "the workflow."
             ),
@@ -4741,7 +4726,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "You are in the CADDY phase of reconstruct_site. Create a Caddyfile "
                 "reverse proxy (documented placeholder domain, HTTPS, headers, "
                 "compression, WebSocket upgrade where needed) and Caddy docs under "
-                "docs/. Call submit_caddy(summary). Only a successful transition-tool "
+                "docs/. "
+                + _submission_handoff_prompt("submit_caddy(summary)")
+                + "Only a successful transition-tool "
                 "call changes phase; prose never advances the workflow."
             ),
         ),
@@ -4771,7 +4758,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "You are in the PACKAGE_COMMANDS phase of reconstruct_site. Enhance "
                 "package.json with development, quality (lint/typecheck/test/check), "
                 "database (db:generate/migrate/migrate:deploy/seed/reset/studio), "
-                "Docker, and deployment commands. Call submit_package(summary). Only "
+                "Docker, and deployment commands. "
+                + _submission_handoff_prompt("submit_package(summary)")
+                + "Only "
                 "a successful transition-tool call changes phase; prose never advances "
                 "the workflow."
             ),
@@ -4803,7 +4792,9 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "You are in the SCRIPTS phase of reconstruct_site. Create purposeful "
                 "Bash automation under scripts/ (env, database, development, quality, "
                 "Docker, deployment, diagnostics) and docs/scripts.md. Every script "
-                "must be robust and safe. Call submit_scripts(summary). Only a "
+                "must be robust and safe. "
+                + _submission_handoff_prompt("submit_scripts(summary)")
+                + "Only a "
                 "successful transition-tool call changes phase; prose never advances "
                 "the workflow."
             ),
@@ -4839,7 +4830,8 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 "development workflow, testing, Docker, Caddy, Netlify, deployment, "
                 "bash automation, package commands, troubleshooting, security, "
                 "operations, reconstruction decisions. Use real commands and paths. "
-                "Call submit_docs(summary). Only a successful transition-tool call "
+                + _submission_handoff_prompt("submit_docs(summary)")
+                + "Only a successful transition-tool call "
                 "changes phase; prose never advances the workflow."
             ),
         ),
@@ -4920,6 +4912,7 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             "interaction_discrepancies": list(context.interaction_discrepancies),
             "last_transition": context.last_transition,
             "artifacts": dict(context.artifacts),
+            "phase_summaries": dict(context.phase_summaries),
             "infra_status": dict(context.infra_status),
         }
 
@@ -4973,6 +4966,7 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             interaction_discrepancies=_dict_list(payload.get("interaction_discrepancies")),
             last_transition=str(payload.get("last_transition", "")),
             artifacts=_str_dict(payload.get("artifacts")),
+            phase_summaries=_str_dict(payload.get("phase_summaries")),
             infra_status=_str_dict(payload.get("infra_status")),
             shared_memory=memory,
         )

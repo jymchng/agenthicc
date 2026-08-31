@@ -50,6 +50,7 @@ against the current source before implementing them.
 - [PRD-180 — Subagent Artifact Writing and Reliable Research Handoffs](prd-180-subagent-artifact-writing-and-research-handoffs.md)
 - [PRD-181 — Simplified make_book Phase Transition Tools](prd-181-simplified-make-book-phase-transitions.md)
 - [PRD-182 — Durable Preservation of Failed Mid-Turn Conversation State](prd-182-durable-mid-turn-preservation.md)
+- [PRD-183 — Idempotent reconstruct_site Research-Gate Decisions](prd-183-reconstruct-site-idempotent-research-gate.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

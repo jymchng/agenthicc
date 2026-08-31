@@ -588,7 +588,8 @@ async def test_reconstruct_site_full_driver_covers_dynamic_page_and_infrastructu
 
     context = await runner.run("reconstruct https://example.test")
     assert context.state is ReconstructState.COMPLETE
-    assert context.page_index == 1
+    assert context.page_index == 2
+    assert context.pages_to_implement == ["/", "/about"]
     assert context.implementation_status["/"] == "implemented"
     assert context.infra_status["sqlite"] == "verified"
     assert context.infra_status["docs"] == "verified"
