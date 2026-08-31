@@ -27,7 +27,8 @@ State graph::
                             failed deterministic validation — fix and retry)
     SUMMARIZE → COMPLETE
     EXITED    (terminal — agent exited without authoring)
-    FAILED    (terminal — a phase exhausted retries or hit a permanent error)
+    FAILED    (runner-local unsuccessful outcome; the session owner may pause
+               a valid typed context for resume)
 """
 
 from __future__ import annotations
@@ -50,7 +51,9 @@ class CreateWorkflowState(Enum):
     SUMMARIZE = auto()
     COMPLETE = auto()  # terminal — success
     EXITED = auto()  # terminal — agent exited without authoring
-    FAILED = auto()  # terminal — exhausted retries or permanent error
+    # A phase-level failure is terminal for this state machine, but a valid
+    # typed context is still resumable when the session owner finalizes it.
+    FAILED = auto()
 
     @property
     def is_terminal(self) -> bool:

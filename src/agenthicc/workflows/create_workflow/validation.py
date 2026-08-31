@@ -698,6 +698,30 @@ def _check_error_recovery_contract(source: str, errors: list[str], *, strict: bo
                         "prevents the framework from creating an error checkpoint."
                     )
 
+    # Resumability is determined by the framework's durable typed-context
+    # capability, not by a generated runner's exception classification. Keep
+    # this contract enforceable so a generated workflow cannot accidentally
+    # reproduce the old "error -> terminal failed -> fresh INIT" path by
+    # opting out at the call site. The keyword remains accepted by the runtime
+    # for source compatibility with older integrations, but is intentionally a
+    # no-op for ordinary workflow failures.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not any(
+            isinstance(item, ast.keyword)
+            and item.arg == "recoverable"
+            and isinstance(item.value, ast.Constant)
+            and item.value.value is False
+            for item in node.keywords
+        ):
+            continue
+        errors.append(
+            "generated workflows must not pass recoverable=False for ordinary workflow "
+            "exceptions; typed context and durable checkpoint capability determine resume."
+        )
+        break
+
 
 def _check_phase_lifecycle_contract(source: str, errors: list[str], *, strict: bool) -> None:
     """Require the shared annotation/boundary contract for new custom runners."""

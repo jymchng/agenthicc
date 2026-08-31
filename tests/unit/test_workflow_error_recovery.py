@@ -82,6 +82,68 @@ def test_typed_failure_becomes_error_paused_checkpoint(tmp_path: Path) -> None:
         handle.conversation.close()
 
 
+@pytest.mark.parametrize("exception_type", [ValueError, RuntimeError, OSError, LookupError])
+def test_every_ordinary_exception_type_uses_workflow_resumability(
+    tmp_path: Path, exception_type: type[Exception]
+) -> None:
+    """Resume depends on durable state, never on the exception class."""
+    handle, store = _handle(tmp_path)
+    try:
+        handle.attach_context(
+            CodePlanContext(
+                intent=handle.original_intent,
+                run_id=handle.run_id,
+                state=CodePlanState.EXECUTE,
+                phase_iteration=3,
+                shared_memory=handle.conversation.memory,
+            )
+        )
+        handle.update_phase("execute", index=1, iteration=3)
+        assert handle.resumable is True
+
+        checkpoint = handle.finalize_failure(
+            exception_type("arbitrary workflow failure"),
+            kind="unclassified_extension_error",
+        )
+
+        assert checkpoint is not None
+        assert checkpoint.status == "paused"
+        assert checkpoint.failure_kind == "workflow_error"
+        assert checkpoint.current_phase == "execute"
+        assert WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store).recoverable(
+            conversation=handle.conversation
+        )
+    finally:
+        handle.conversation.close()
+
+
+def test_legacy_recoverable_false_cannot_disable_a_valid_resume_checkpoint(
+    tmp_path: Path,
+) -> None:
+    """The old hint remains accepted but durable capability owns the policy."""
+    handle, _store = _handle(tmp_path)
+    try:
+        handle.attach_context(
+            CodePlanContext(
+                intent=handle.original_intent,
+                run_id=handle.run_id,
+                state=CodePlanState.EXECUTE,
+                shared_memory=handle.conversation.memory,
+            )
+        )
+        handle.update_phase("execute", index=1)
+        checkpoint = handle.finalize_failure(
+            ValueError("failure classification must not disable resume"),
+            kind="configuration",
+            recoverable=False,
+        )
+        assert checkpoint is not None
+        assert checkpoint.status == "paused"
+        assert checkpoint.current_phase == "execute"
+    finally:
+        handle.conversation.close()
+
+
 def test_bootstrap_failure_writes_diagnostic_only_fallback(tmp_path: Path) -> None:
     handle, store = _handle(tmp_path)
     try:

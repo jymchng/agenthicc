@@ -119,6 +119,52 @@ async def test_workflow_runner_uses_session_memory_and_persists_terminal_checkpo
     conversation.close()
 
 
+async def test_arbitrary_phase_exception_is_finalized_at_the_active_phase(
+    tmp_path: Path,
+    processor: EventProcessor,
+) -> None:
+    """A non-provider exception cannot become a rejected phase or fresh run."""
+
+    class Workflow(WorkflowPlugin):
+        name = "arbitrary_error_workflow"
+        phases = [PhaseSpec(name="architecture"), PhaseSpec(name="init")]
+
+    conversation = SessionConversation.open(
+        "session-arbitrary-error",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    store = WorkflowCheckpointStore("session-arbitrary-error", root=tmp_path / "checkpoints")
+    handle = WorkflowRunHandle.create(
+        run_id="arbitrary-error-run",
+        workflow=Workflow,
+        conversation=conversation,
+        intent="preserve this phase",
+        checkpoint_store=store,
+    )
+    app = TUIAppState.create()
+    runner = WorkflowRunner(Workflow, _config(app, processor, conversation, handle))
+
+    async def broken_phase(spec: PhaseSpec, intent: str, context: object) -> PhaseOutput:
+        raise ValueError("phase state is invalid")
+
+    runner._run_phase = broken_phase  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="phase state is invalid"):
+        await runner.run("preserve this phase")
+
+    checkpoint = handle.finalize_failure(
+        ValueError("phase state is invalid"),
+        kind="validation_error",
+        recoverable=False,
+    )
+    assert checkpoint is not None
+    assert checkpoint.status == "paused"
+    assert checkpoint.current_phase == "architecture"
+    assert checkpoint.run_id == "arbitrary-error-run"
+    assert app.workflow_run().status == "failed"
+    conversation.close()
+
+
 async def test_resume_reuses_checkpoint_context_and_current_phase(
     tmp_path: Path,
     processor: EventProcessor,

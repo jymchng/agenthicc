@@ -347,6 +347,10 @@ class CodePlanRunner(BaseWorkflowRunner):
             wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
             self._cfg.conv_store.append_event("error", {"message": str(exc)})
+            # Preserve the session-owned failure boundary. A typed context has
+            # already been attached before phase work, so the owner can pause
+            # this exact run for any unexpected exception here.
+            raise
 
         if handle is not None:
             if wf_run.status in {"complete", "exited"}:
@@ -480,11 +484,11 @@ class CodePlanRunner(BaseWorkflowRunner):
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as exc:
-                # PRD-117: only permanent errors reach here — _stream() swallows
-                # transient errors and returns normally.  Exit immediately with a
-                # clear diagnostic instead of the generic "exhausted N attempts".
+                # A turn error is already retry-exhausted at the provider-step
+                # boundary. Preserve its diagnostic and stop this phase so the
+                # session owner can checkpoint the active typed context.
                 ctx.fail_reason = f"{type(exc).__name__}: {exc}"
-                log.error("_plan permanent error on attempt %d: %s", attempt, exc)
+                log.error("_plan turn error on attempt %d: %s", attempt, exc)
                 return CodePlanState.FAILED
 
             # Exit takes priority — check before plan finalization.
@@ -553,9 +557,10 @@ class CodePlanRunner(BaseWorkflowRunner):
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as exc:
-                # PRD-117: permanent error — exit immediately with clear reason.
+                # Stop this phase after a retry-exhausted turn error. The
+                # session owner finalizes the already-attached context.
                 ctx.fail_reason = f"{type(exc).__name__}: {exc}"
-                log.error("_execute permanent error on attempt %d: %s", attempt, exc)
+                log.error("_execute turn error on attempt %d: %s", attempt, exc)
                 return CodePlanState.FAILED
 
             command_error = self._command_gate_error(ctx.command_outcomes)
@@ -624,9 +629,10 @@ class CodePlanRunner(BaseWorkflowRunner):
             except (asyncio.CancelledError, KeyboardInterrupt):
                 raise
             except Exception as exc:
-                # PRD-117: permanent error — exit immediately with clear reason.
+                # Stop this phase after a retry-exhausted turn error. The
+                # session owner finalizes the already-attached context.
                 ctx.fail_reason = f"{type(exc).__name__}: {exc}"
-                log.error("_review permanent error on attempt %d: %s", attempt, exc)
+                log.error("_review turn error on attempt %d: %s", attempt, exc)
                 return CodePlanState.FAILED
 
             if review_event.is_set():
@@ -644,7 +650,7 @@ class CodePlanRunner(BaseWorkflowRunner):
         return CodePlanState.FAILED
 
     async def _summarize(self, ctx: CodePlanContext) -> CodePlanState:
-        """Single turn; always returns COMPLETE."""
+        """Run the summary turn, returning FAILED if that turn errors."""
         from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
 
         self._set_phase("summarize", 3, ctx)
@@ -671,6 +677,8 @@ class CodePlanRunner(BaseWorkflowRunner):
             raise
         except Exception as exc:
             log.error("_summarize error: %s", exc)
+            ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+            return CodePlanState.FAILED
         return CodePlanState.COMPLETE
 
     # ── public extension API (PRD-114) ────────────────────────────────────────

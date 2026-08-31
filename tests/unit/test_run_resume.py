@@ -357,7 +357,8 @@ async def test_failed_turn_marker_retains_prior_context(tmp_path) -> None:
     runner._stream_with_retry = fail_once  # type: ignore[method-assign]
     active_runner = SimpleNamespace(_transport=None, supports_step_recovery=True)
 
-    await runner._stream(object(), "continue", active_runner)  # type: ignore[arg-type]
+    with pytest.raises(TransientTransportError, match="late provider failure"):
+        await runner._stream(object(), "continue", active_runner)  # type: ignore[arg-type]
 
     assert memory._messages == [
         {"role": "user", "content": "earlier request"},

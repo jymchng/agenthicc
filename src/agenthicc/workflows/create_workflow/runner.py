@@ -119,6 +119,14 @@ session memory for every phase, retry, and resume; never create a second
 conversation or replace the session memory. Provider TTL expiry, connection
 changes, stable-contract changes, and history compaction may intentionally
 invalidate reuse.
+
+Treat resumability as a workflow capability, never as a provider-only feature:
+every ordinary exception (including tool errors, timeouts, ValueError, OSError,
+cancellation, and unknown extension exceptions) must reach the framework
+failure finalizer. With typed context and durable checkpoint support, preserve
+the active phase and resume through resume(context); failure_kind is diagnostic
+only. Never pass recoverable=False or turn an exception into a rejected output,
+successful completion, or a fresh INIT run.
 """.strip()
 
 # ── system prompts ────────────────────────────────────────────────────────────
@@ -194,9 +202,13 @@ _RUNNER_GUIDE: str = (
     "to config.workflow_handle before the first provider or tool call. Do not swallow "
     "exceptions or mark a failed run complete; let the framework's failure finalizer "
     "persist an error-paused checkpoint or a diagnostic-only fallback.\n"
-    "  15. A recoverable error must preserve the current state, phase iteration, "
+    "  15. Every ordinary exception — provider, transport, tool, timeout, ValueError, "
+    "OSError, cancellation, or an unknown workflow exception — must use the same "
+    "resumability path. Exception labels are diagnostic only. When typed context and "
+    "checkpoint storage are available, preserve the current state, phase iteration, "
     "artefacts, and run_id. resume(context) must use the supplied context and the "
-    "same session memory, and must be safe to repeat after another error.\n"
+    "same session memory, and must be safe to repeat after another error. Never pass "
+    "recoverable=False or otherwise disable resume for an ordinary workflow failure.\n"
     "  16. If a workflow truly requires a deferred session resource, declare its "
     "readiness phase names in the plugin's required_startup_phases tuple and let "
     "the framework await them. Keep optional integrations out of that tuple; use "
@@ -375,7 +387,10 @@ _GENERATE_PROMPT: str = (
     "session, including on resume; use WorkflowConfig.conversation_id unchanged for "
     "every phase and retry; never instantiate a fresh ShortTermMemory or a second "
     "conversation when an injected session object exists. The restore hook must attach "
-    "its memory argument to the context.\n\n"
+    "its memory argument to the context. Every ordinary exception must be allowed to "
+    "reach the framework failure finalizer; do not convert provider/tool/timeout, "
+    "ValueError, OSError, cancellation, or unknown exceptions into rejected output, "
+    "successful completion, or a fresh run. Do not pass recoverable=False.\n\n"
     "When the complete directory is on disk, call mark_generation_complete(summary, path) "
     "with the exact path you wrote to. Do not call it before the file is written."
 )
@@ -614,6 +629,10 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
             self._cfg.conv_store.append_event("error", {"message": str(exc)})
+            # Preserve the session-owned failure boundary. The typed context
+            # is already attached, so an unexpected exception remains a
+            # resumable checkpoint opportunity rather than a fresh-run signal.
+            raise
 
         if handle is not None:
             if wf_run.status in {"complete", "exited"}:
@@ -888,7 +907,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 raise
             except Exception as exc:
                 ctx.fail_reason = f"{type(exc).__name__}: {exc}"
-                log.error("_design permanent error on attempt %d: %s", attempt, exc)
+                log.error("_design turn error on attempt %d: %s", attempt, exc)
                 return CreateWorkflowState.FAILED
 
             # Exit takes priority — check before design finalization.
@@ -1021,7 +1040,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 raise
             except Exception as exc:
                 ctx.fail_reason = f"{type(exc).__name__}: {exc}"
-                log.error("_generate permanent error on attempt %d: %s", attempt, exc)
+                log.error("_generate turn error on attempt %d: %s", attempt, exc)
                 return CreateWorkflowState.FAILED
 
             if generate_event.is_set():
@@ -1267,7 +1286,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 raise
             except Exception as exc:
                 ctx.fail_reason = f"{type(exc).__name__}: {exc}"
-                log.error("_validate permanent error on attempt %d: %s", attempt, exc)
+                log.error("_validate turn error on attempt %d: %s", attempt, exc)
                 return CreateWorkflowState.FAILED
 
             if not validate_event.is_set():
@@ -1360,7 +1379,7 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
         return CreateWorkflowState.FAILED
 
     async def _summarize(self, ctx: CreateWorkflowContext) -> CreateWorkflowState:
-        """Single turn; always returns COMPLETE."""
+        """Run the summary turn, returning FAILED if that turn errors."""
         from agenthicc.workflows.code_plan.phase_tools import make_questions_tool  # noqa: PLC0415
 
         self._set_phase("summarize", _PHASE_INDEX["summarize"], ctx)
@@ -1390,6 +1409,8 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
             raise
         except Exception as exc:
             log.error("_summarize error: %s", exc)
+            ctx.fail_reason = f"{type(exc).__name__}: {exc}"
+            return CreateWorkflowState.FAILED
 
         ctx.add_artifact(
             PhaseArtifact(

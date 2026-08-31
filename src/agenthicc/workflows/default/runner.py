@@ -296,40 +296,33 @@ class WorkflowRunner(BaseWorkflowRunner):
                             peer_specs.append(peer_spec)
                     outputs = await asyncio.gather(
                         *[self._run_phase(ps, intent, context) for ps in peer_specs],
-                        return_exceptions=True,
                     )
                     parallel_gate_error: str | None = None
                     for ps, output in zip(peer_specs, outputs):
-                        if isinstance(output, BaseException):
-                            log.error("Parallel phase %r failed: %s", ps.name, output)
-                            parallel_gate_error = (
-                                f"Phase {ps.name!r} failed: {type(output).__name__}: {output}"
+                        gate_error = self._command_gate_error(ps, output)
+                        if gate_error is not None:
+                            parallel_gate_error = gate_error
+                            output = dataclasses.replace(
+                                output,
+                                approved=False,
+                                metadata={
+                                    **output.metadata,
+                                    "command_gate_error": gate_error,
+                                },
                             )
-                        else:
-                            gate_error = self._command_gate_error(ps, output)
-                            if gate_error is not None:
-                                parallel_gate_error = gate_error
-                                output = dataclasses.replace(
-                                    output,
-                                    approved=False,
-                                    metadata={
-                                        **output.metadata,
-                                        "command_gate_error": gate_error,
-                                    },
-                                )
-                            context.add_output(output)
-                            record = PhaseRunRecord(
-                                phase_name=ps.name,
-                                role=ps.agent_type,
-                                approved=output.approved,
-                                output_summary=output.full_text[:200],
-                                iteration=iteration_counts.get(ps.name, 1),
-                                duration_s=output.duration_s,
-                            )
-                            wf_run = dataclasses.replace(
-                                wf_run,
-                                phase_history=wf_run.phase_history + [record],
-                            )
+                        context.add_output(output)
+                        record = PhaseRunRecord(
+                            phase_name=ps.name,
+                            role=ps.agent_type,
+                            approved=output.approved,
+                            output_summary=output.full_text[:200],
+                            iteration=iteration_counts.get(ps.name, 1),
+                            duration_s=output.duration_s,
+                        )
+                        wf_run = dataclasses.replace(
+                            wf_run,
+                            phase_history=wf_run.phase_history + [record],
+                        )
                     _processed_parallel.update(ps.name for ps in peer_specs)
                     if parallel_gate_error is not None:
                         wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
@@ -449,6 +442,11 @@ class WorkflowRunner(BaseWorkflowRunner):
             self._cfg.conv_store.append_event(
                 "error", {"message": f"Workflow '{self._plugin.name}' failed: {exc}"}
             )
+            # The session owner is the single failure boundary. Re-raising
+            # preserves the original exception category and lets it checkpoint
+            # the already-attached typed context instead of treating this as a
+            # normal completed runner return.
+            raise
 
     # ── resume helpers ────────────────────────────────────────────────────────
 
@@ -704,7 +702,11 @@ class WorkflowRunner(BaseWorkflowRunner):
                             attempt,
                             exc,
                         )
-                        break
+                        # A provider/tool/phase exception is not a rejected
+                        # phase. Let the session owner checkpoint the typed
+                        # cursor; turning it into a synthetic output could
+                        # route to on_reject or accidentally complete the run.
+                        raise
                     if execute_event.is_set():
                         break
 
@@ -735,7 +737,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                             attempt,
                             exc,
                         )
-                        break
+                        raise
                     if review_event.is_set():
                         break
 
@@ -767,7 +769,7 @@ class WorkflowRunner(BaseWorkflowRunner):
                             attempt,
                             exc,
                         )
-                        break
+                        raise
                     if plan_event.is_set():
                         break
 
@@ -777,15 +779,10 @@ class WorkflowRunner(BaseWorkflowRunner):
             raise
         except Exception as exc:
             log.error("Phase %r agent error: %s", spec.name, exc)
-            return PhaseOutput(
-                phase_name=spec.name,
-                role=spec.agent_type,
-                full_text=f"[Phase error: {exc}]",
-                approved=False,
-                metadata={"command_outcomes": list(command_outcomes)} if command_outcomes else {},
-                agent_id="error",
-                duration_s=time.monotonic() - t0,
-            )
+            # Do not encode an exception as an ordinary rejected output. The
+            # owner must see the original exception so its typed context is
+            # persisted as an error-paused checkpoint at this phase.
+            raise
         finally:
             if spec.mode_override and self._mode_manager is not None:
                 self._mode_manager.restore(_original_mode)

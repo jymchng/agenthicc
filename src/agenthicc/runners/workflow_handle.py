@@ -145,6 +145,19 @@ class WorkflowRunHandle:
         self.context = context
         self.context_ready = False
 
+    @property
+    def resumable(self) -> bool:
+        """Whether this run currently has the prerequisites for resume.
+
+        Resumability is a workflow capability, not an exception classification.
+        A ``ValueError``, provider error, tool error, timeout, cancellation, or
+        an unknown workflow exception follows the same decision: if the runner
+        attached a valid typed context and the checkpoint store is available,
+        the failure can be paused and resumed.  The property deliberately does
+        not inspect ``failure_kind``.
+        """
+        return self.context_ready and self.context is not None and self.checkpoint_supported
+
     def sync_context_cursor(self) -> bool:
         """Synchronize the handle with the latest forward context cursor.
 
@@ -335,9 +348,8 @@ class WorkflowRunHandle:
                 }
             )
         except Exception:
-            # The caller has already classified this as non-recoverable. The
-            # in-memory fields and UI event still explain the failure when the
-            # filesystem cannot accept even the fallback record.
+            # The in-memory fields and UI event still explain the failure when
+            # the filesystem cannot accept even the fallback record.
             return
 
     def finalize_failure(
@@ -351,9 +363,17 @@ class WorkflowRunHandle:
         """Persist one idempotent workflow failure disposition.
 
         Valid typed contexts become ``paused`` and remain eligible for exact
-        resume. Missing/unsupported contexts and checkpoint failures become a
-        terminal diagnostic with a fallback envelope. Repeated callers return
-        without changing a committed terminal/paused disposition.
+        resume, regardless of the exception category. Missing/unsupported
+        contexts and checkpoint failures become a terminal diagnostic with a
+        fallback envelope. Repeated callers return without changing a
+        committed terminal/paused disposition.
+
+        ``recoverable`` is retained as a source-compatible, deprecated
+        argument for older integrations. It is intentionally not used to
+        disable resumability: exception classification is diagnostic, while
+        the typed-context/checkpoint capability is authoritative. A workflow
+        is non-resumable only when that capability is unavailable or its
+        checkpoint cannot be durably written.
         """
         normalized_kind = _normalize_failure_kind(kind)
         if self.lifecycle in {"complete", "discarded"}:
@@ -391,12 +411,11 @@ class WorkflowRunHandle:
         self.pause_reason = normalized_kind
         self.error_revision += 1
 
-        can_resume = (
-            recoverable
-            and self.context_ready
-            and self.context is not None
-            and self.checkpoint_supported
-        )
+        # Keep the legacy parameter source-compatible, but do not let a caller
+        # accidentally downgrade an otherwise resumable workflow. All ordinary
+        # exception kinds use the same policy; only durable capability decides.
+        del recoverable
+        can_resume = self.resumable
         if can_resume:
             self.lifecycle = "paused"
             self.pause_requested = True

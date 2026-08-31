@@ -1851,6 +1851,9 @@ a second conversation.
 journal-backed provider memory shared by direct turns and workflow phases.
 `WorkflowRunHandle` owns workflow-specific context, lifecycle, phase cursor, and
 checkpoint identity without duplicating provider messages.
+Its `resumable` property reports the durable capability required for exact
+resume (typed context plus an available checkpoint store); it deliberately does
+not inspect the exception category.
 
 `WorkflowRecoveryCoordinator` and `WorkflowRecoveryRecord` provide the
 session-owned, fail-closed recovery boundary for `/workflow resume`. They scan
@@ -1865,13 +1868,16 @@ phase-one run when a recoverable checkpoint is incompatible.
 (`provider_transient`, `tool_transient`, `phase_execution`, `timeout`,
 `user_cancelled`, `checkpoint_storage`, `workflow_invariant`, and related
 categories); unknown extension labels fail closed to `workflow_error`.
-Provider, tool, phase, timeout, cancellation, and setup failures with a valid
-typed context become structured `paused` checkpoints with a failure kind and
-monotonic error revision. Failures before typed context initialization, or
-checkpoint serialization/storage failures, write a bounded diagnostic-only
-`recovery-error.json` fallback when possible. `WorkflowPlugin.create_initial_context()`
-is an optional hook for custom plugins that can construct typed state before
-runner setup; the framework always creates a durable bootstrap identity first.
+Every ordinary provider, tool, phase, timeout, cancellation, validation, or
+unknown workflow exception with a valid typed context becomes a structured
+`paused` checkpoint with a diagnostic failure kind and monotonic error revision;
+the exception category never disables resume. Failures before typed context
+initialization, or checkpoint serialization/storage failures, write a bounded
+diagnostic-only `recovery-error.json` fallback when possible. The legacy
+`recoverable` finalizer hint remains source-compatible but cannot downgrade a
+valid typed checkpoint. `WorkflowPlugin.create_initial_context()` is an
+optional hook for custom plugins that can construct typed state before runner
+setup; the framework always creates a durable bootstrap identity first.
 
 ### ReconstructProfile
 
@@ -2115,7 +2121,7 @@ class CreateWorkflowState(Enum):
     SUMMARIZE = auto()
     COMPLETE = auto()   # terminal — success
     EXITED = auto()     # terminal — agent exited without authoring
-    FAILED = auto()     # terminal — exhausted retries or permanent error
+    FAILED = auto()     # runner-local failure; valid typed context remains resumable
 
     @property
     def is_terminal(self) -> bool

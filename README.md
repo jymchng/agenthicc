@@ -265,7 +265,11 @@ agents must not write `contents.md`.
 
 Transition tools in generated runners must use the canonical bare `@tool_control` decorator imported from `agenthicc.tools.capabilities`, above `@tool()`. The authoring inspection tool `describe_transition_tool_pattern` shows the exact form, and strict validation catches factory-local import or decorator mistakes before the workflow is accepted.
 
-If a selected workflow still fails during startup, the TUI renders the exception as an error event, marks the workflow run failed, and discards the failed handle so the next message can retry it cleanly.
+If a selected workflow fails before it can attach typed context, the TUI renders
+the exception as an error event and stores a diagnostic-only failure; there is
+no safe state from which to resume. Once typed context is attached, ordinary
+startup and phase exceptions are paused and resume the same run instead of
+discarding it for a fresh attempt.
 
 ---
 
@@ -366,12 +370,15 @@ Session artifacts live below `~/.agenthicc/sessions/`:
 
 Direct chat, Plan mode, `code_plan`, and `create_workflow` share the session's stable conversation ID and journal-backed provider memory. Workflow phase state is checkpointed separately, while the reactive conversation store remains a UI projection.
 
-If a workflow receives a transient provider error such as HTTP 429, agenthicc
-saves the same workflow `run_id` and the active typed phase before returning to
-idle. `continue`, `/workflow resume`, `--continue`, and `--resume` then reload
-that checkpoint and call the workflow's `resume(context)` path at the saved
-phase. They do not create a new run or replay `INIT`; `INIT` is used only for a
-new run or when it was the actual phase at failure. See the [workflow guide](./docs/guides/workflows.md#pause-crash-recovery-and-workflow-resume)
+If a workflow receives any ordinary exception — including a transient provider
+error such as HTTP 429, a tool error, timeout, `ValueError`, `OSError`, or
+cancellation — agenthicc saves the same workflow `run_id` and active typed
+phase before returning to idle. `continue`, `/workflow resume`, `--continue`,
+and `--resume` then reload that checkpoint and call the workflow's
+`resume(context)` path at the saved phase. They do not create a new run or
+replay `INIT`; `INIT` is used only for a new run or when it was the actual phase
+at failure. A failure is diagnostic-only only when typed state is unavailable or
+the checkpoint cannot be durably written. See the [workflow guide](./docs/guides/workflows.md#pause-crash-recovery-and-workflow-resume)
 for the recovery data flow and failure cases.
 
 If multiple workflow checkpoints are recoverable, the TUI wraps the complete

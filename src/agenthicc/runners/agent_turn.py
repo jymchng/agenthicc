@@ -2058,15 +2058,16 @@ class AgentTurnRunner:
                 # Do NOT call fail_turn/close_turn here — the finally block handles
                 # state cleanup idempotently, preventing the double-fail bug.
                 ctx.conv_store.append_event("error", {"message": f"{type(exc).__name__}: {exc}"})
-            if _is_permanent_error(exc):
-                # PRD-117: HTTP 4xx errors are structurally permanent — retrying
-                # will always produce the same failure.  Re-raise so the phase
-                # loop can exit immediately instead of exhausting its retry cap.
-                # _stream()'s finally block still runs → close_turn() is called.
-                raise
-            # Transient errors that survive step-scoped retry are swallowed here
-            # so workflow runners can apply their existing recoverable-error
-            # policy without rolling back this turn's committed steps.
+            # Every exception that survives the provider-step retry policy must
+            # cross the agent-turn boundary.  Workflow owners need the original
+            # exception to finalize one durable pause for the already-attached
+            # typed context; swallowing a 429, timeout, tool error, ValueError,
+            # or unknown extension exception makes the phase look like a normal
+            # return and can send it through a fresh INIT path.  Permanence still
+            # controls retry eligibility inside _stream_with_retry, but it never
+            # controls workflow resumability.
+            # _stream()'s finally block still runs → close_turn() is called.
+            raise
         finally:
             if usage_tracker is not None:
                 lifecycle = (

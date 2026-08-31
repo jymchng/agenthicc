@@ -12,10 +12,13 @@ class BaseWorkflowRunner(abc.ABC):
     a concrete runner must attach its serializable typed context to
     ``config.workflow_handle`` before its first provider or tool call. Runtime
     exceptions should escape to ``WorkflowRunHandle.finalize_failure()`` so the
-    TUI and headless owner make one recoverable/terminal disposition. Runners
-    may report phase state and artifacts, but must not replace that finalizer
-    with an independent terminal-failure checkpoint. ``resume()`` must dispatch
-    the supplied context directly and never call ``run(context.intent)``.
+    TUI and headless owner make one recoverable/terminal disposition. Every
+    ordinary exception type is eligible for resume when the typed context and
+    checkpoint store are available; the exception category is diagnostic only.
+    Runners may report phase state and artifacts, but must not replace that
+    finalizer with an independent terminal-failure checkpoint. ``resume()``
+    must dispatch the supplied context directly and never call
+    ``run(context.intent)``.
 
     ``run()`` returns the runner's typed context object so that subclasses
     can call ``ctx = await super().run(intent)`` and continue with additional
@@ -43,5 +46,6 @@ class BaseWorkflowRunner(abc.ABC):
 
         Implementations must dispatch from the restored phase/state and may not
         implement resume as ``run(original_intent)``; doing so would repeat
-        earlier phases and side effects.
+        earlier phases and side effects. This applies after every recoverable
+        exception category, not only provider or transport failures.
         """

@@ -1,7 +1,7 @@
 ---
-title: "PRD-184: Preserve the active workflow phase after transient errors"
+title: "PRD-184: Preserve the active workflow phase after workflow exceptions"
 status: Implemented
-version: 1.0.0
+version: 1.1.0
 date: 2026-08-31
 scope: "workflow error recovery, phase cursors, checkpoint reconciliation, and continue/resume dispatch"
 related_prds:
@@ -17,6 +17,7 @@ related_prds:
 tags:
   - workflows
   - error-recovery
+  - universal-resumability
   - rate-limits
   - checkpoints
   - resume
@@ -24,12 +25,13 @@ tags:
   - reconstruct_site
 ---
 
-# PRD-184 — Preserve the active workflow phase after transient errors
+# PRD-184 — Preserve the active workflow phase after workflow exceptions
 
 ## 1. Executive summary
 
-When a provider returns a recoverable error in the middle of a workflow, such
-as HTTP 429 `RateLimitError`, the next `continue` or resume operation must
+When any ordinary workflow exception occurs in the middle of a workflow, such
+as HTTP 429 `RateLimitError`, a tool exception, `ValueError`, `OSError`, a
+timeout, or cancellation, the next `continue` or resume operation must
 continue the same workflow run at its last safe phase. It must not create a
 new run, generate a new evidence manifest, call `run(intent)` again, or inject
 the `INIT` prompt merely because the process or agent turn was interrupted.
@@ -56,14 +58,34 @@ forgot the work.
 This PRD defines an investigation and implementation plan for one authoritative
 workflow resume decision. It extends the recovery and mid-turn durability
 contracts from PRD-170, PRD-173, and PRD-182. It does not replace those
-contracts, create a second conversation store, or make every transient provider
-error automatically retry forever.
+contracts, create a second conversation store, or make failures automatically
+retry forever.
 
 The central invariant is:
 
-> A recoverable workflow error resumes the existing `(session_id, run_id)` at
-> the latest validated safe phase boundary. Only an explicit reset or a new
-> user-selected workflow run may start at `INIT`.
+> An ordinary workflow error with durable typed state resumes the existing
+> `(session_id, run_id)` at the latest validated safe phase boundary. Only an
+> explicit reset or a new user-selected workflow run may start at `INIT`.
+
+### 1.1 Universal resumability policy
+
+Resumability is a workflow capability, not a property of an exception class or
+provider label. Once a runner has attached its typed context and the durable
+checkpoint store is available, every ordinary `Exception` subclass follows the
+same path: capture the typed cursor, persist an error-paused checkpoint, release
+the claim, and offer exact resume. This includes provider and transport errors,
+rate limits, tool/MCP/browser errors, timeouts, validation failures,
+`ValueError`, `OSError`, `LookupError`, and unknown extension exceptions.
+
+`failure_kind` remains useful for diagnostics, metrics, and user messaging, but
+it must never select a fresh run or a phase rewind. A checkpoint is
+diagnostic-only only when the typed context was never available, the workflow
+cannot be validated, or checkpoint serialization/storage genuinely failed. The
+policy cannot promise resume after durable state itself is unavailable; it must
+report that condition explicitly and must never pretend a fresh `INIT` run is a
+continuation. Process-control exceptions such as `SystemExit` are not swallowed;
+the existing cancellation/interrupt boundary records them when execution can
+unwind safely.
 
 ## 2. Problem statement
 
@@ -161,7 +183,7 @@ checkpoint model. The following paths are distinct:
 | Path | Current behaviour | Risk exposed by a 429 |
 |---|---|---|
 | New TUI workflow message | creates a new `WorkflowRunHandle` with a new UUID, initializes the first phase, and calls `runner.run(intent)` | correct for a new run, incorrect if recovery discovery failed or the paused handle was detached |
-| Same-process ordinary `continue` | `_start_workflow_continuation()` can use the attached paused handle and dispatch `_resume_workflow_task()` | correct only while the exact paused handle remains attached and classified as recoverable |
+| Same-process ordinary `continue` | `_start_workflow_continuation()` can use the attached paused handle and dispatch `_resume_workflow_task()` | safe only when it uses the exact paused handle; durable recovery must cover a detached handle |
 | Explicit `/workflow resume` | finds or rehydrates a recovery record, claims it, then calls `runner.resume(context)` | safe in principle, but selection and rehydration must be authoritative at execution time |
 | TUI process restart | startup discovers records and may attach one paused handle without claiming it | multiple, invalid, stale, or mismatched records can prevent attachment; a later ordinary message can then look like a new run |
 | Headless workflow execution | `execute_workflow()` currently creates a new `WorkflowRunHandle` and calls `runner.run(intent)` for the supplied intent | `--continue` may restore the session but still start a new workflow run instead of resuming the saved workflow run |
@@ -284,6 +306,11 @@ For a phase `P`:
 - only an explicit reset, a new run command, or a validated incompatible
   checkpoint may prevent exact resume.
 
+The exception's concrete type does not alter these rules. The `recoverable`
+compatibility argument accepted by the failure finalizer is advisory/deprecated
+and cannot disable resumability for a valid typed workflow; durable capability
+and checkpoint validation are authoritative.
+
 ### 4.3 Anti-rewind invariant
 
 For one `run_id`, a durable checkpoint revision may not move to an earlier
@@ -294,8 +321,8 @@ earlier phase than the latest safe cursor.
 
 ## 5. Goals
 
-1. Resume the same workflow run after a recoverable 429 or other transient
-   error.
+1. Resume the same workflow run after a 429 or any other ordinary exception
+   when durable typed state is available.
 2. Preserve the latest validated phase, typed context, phase iteration,
    artifacts, evidence manifest, and committed conversation/tool history.
 3. Make `continue`, `/workflow resume`, `--continue`, and `--resume` use one
@@ -377,7 +404,7 @@ provider/tool operation. On failure:
 ```text
 same session_id + same run_id
   -> capture execution snapshot
-  -> classify and redact transient error
+  -> classify and redact ordinary workflow exception
   -> persist paused checkpoint at snapshot phase
   -> persist error revision and safe boundary
   -> emit one failure event
@@ -490,16 +517,20 @@ The reconciler must return both the selected cursor and a provenance object:
 The example is illustrative; IDs and unbounded content must not be exposed in
 normal logs or prompts.
 
-### 7.7 Correct 429 handling
+### 7.7 Correct error handling, with 429 as the regression case
 
-Rate-limit and transient transport errors must:
+Rate-limit and transient transport errors are the reported regression case, but
+they must use the same workflow-finalization contract as every other ordinary
+exception. They must:
 
-- be classified as recoverable provider failures unless policy or context
-  integrity makes resume unsafe;
+- retain the `provider_transient` diagnostic category, without using that
+  category to decide whether the workflow is resumable;
 - be persisted with bounded provider/status metadata and no secret headers;
 - leave committed conversation/tool steps intact under PRD-182;
 - avoid busy retry loops after the configured retry/deadline budget;
-- mark the workflow `paused`, not a fresh `INIT` run;
+- mark the workflow `paused`, not a fresh `INIT` run, when typed context and
+  durable checkpointing are available; otherwise emit an explicit
+  diagnostic-only recovery-unavailable result;
 - display the active phase and exact run ID; and
 - resume through the coordinator after the user chooses `continue` or resume.
 
@@ -507,15 +538,28 @@ The provider retry mechanism may retry the failed internal provider step when
 safe. It must not re-run completed phase transitions or side-effecting tools
 without the idempotency rules from PRD-169 and PRD-182.
 
+### 7.7.1 Universal exception boundary
+
+After the provider-step retry budget is exhausted, the canonical agent-turn
+runner must propagate every ordinary exception to the workflow owner. It may
+use exception type and bounded message metadata for diagnostics and retry
+classification, but it must not swallow an exception merely because it is not a
+known provider or transport failure. This includes ordinary programming and
+integration failures such as `ValueError`, `TypeError`, `OSError`, `LookupError`,
+tool/MCP/browser exceptions, validation errors, and unknown extension errors.
+The owner then applies the same typed-context/checkpoint capability decision and
+either pauses the run for exact resume or emits a diagnostic-only unavailable
+disposition when durable recovery is impossible.
+
 ### 7.8 TUI and headless behaviour
 
 #### TUI
 
-- After a recoverable error, retain a recovery record even if the in-memory
-  handle is detached.
-- Ordinary `continue` on a session with exactly one recoverable workflow must
+- After an ordinary workflow error with a valid typed context, retain a
+  recovery record even if the in-memory handle is detached.
+- Ordinary `continue` on a session with exactly one resumable workflow must
   invoke the same path as `/workflow resume <run-id>`.
-- If there are multiple recoverable runs, do not pick the newest by guess; show
+- If there are multiple resumable runs, do not pick the newest by guess; show
   a selection UI or require an explicit run ID.
 - If there is a recovery record but it is invalid, do not start a new workflow
   implicitly. Show the diagnostic and require reset/new run.
@@ -534,10 +578,10 @@ without the idempotency rules from PRD-169 and PRD-182.
 #### Headless execution
 
 The headless workflow executor must accept an optional resume disposition. When
-the selected session contains a valid recoverable run, it must rehydrate and
+the selected session contains a valid resumable run, it must rehydrate and
 call `runner.resume(context)`. It must not unconditionally generate a UUID and
 call `runner.run(intent)`. New headless runs continue to use `run(intent)` only
-when no recoverable run was selected and the invocation is explicitly a new
+when no resumable run was selected and the invocation is explicitly a new
 run.
 
 ### 7.9 Evidence and manifest identity
@@ -574,8 +618,8 @@ manifest ID appear in the same recovery explanation.
 - every transition records the next state before entering the next phase;
 - generated contexts contain a phase cursor, phase attempts, outputs, and
   resume provenance sufficient for exact restoration;
-- generated phase prompts explain that a transient error means “continue from
-  the saved phase,” not “restart the workflow”;
+- generated phase prompts explain that any ordinary exception means “continue
+  from the saved phase,” not “restart the workflow”;
 - generated tools are idempotent or receipt-backed; and
 - generated validation rejects runners that initialize `INIT` on resume, ignore
   the supplied checkpoint context, or create a second workflow identity.
@@ -640,7 +684,7 @@ Schema migration requirements:
 All workflow resume-capable entry points shall use the same coordinator and
 return an explicit new-run, resume, unavailable, or ambiguous disposition.
 
-### FR-2 — No implicit fresh run after recoverable error
+### FR-2 — No implicit fresh run after a resumable error
 
 If a valid recoverable run exists for the selected session, ordinary
 continuation, `--continue`, `--resume`, and session selection shall not create a
@@ -648,9 +692,9 @@ new run or call `runner.run(intent)`.
 
 ### FR-3 — Stable identity
 
-A recoverable error and its resume shall preserve the same session ID,
-conversation ID, workflow name, run ID, evidence manifest ID, and workflow
-intent.
+Any ordinary exception with a valid typed checkpoint and its resume shall
+preserve the same session ID, conversation ID, workflow name, run ID, evidence
+manifest ID, and workflow intent.
 
 ### FR-4 — Exact active phase
 
@@ -674,10 +718,15 @@ Runner, TUI, headless, timeout, and cleanup paths may observe the same error,
 but only one failure disposition may be committed for a checkpoint revision.
 Later observers shall not overwrite a more precise phase/cursor.
 
-### FR-8 — Recoverable provider errors
+### FR-8 — Universal exception resumability
 
-429 and equivalent transient errors shall pause a valid workflow run with a
-bounded diagnostic and make it eligible for exact resume.
+Every ordinary workflow exception shall pause a valid typed workflow run with a
+bounded diagnostic and make it eligible for exact resume. The exception class
+and diagnostic category (including `provider_transient`, `tool_transient`,
+`timeout`, `configuration`, `phase_execution`, and unknown labels normalized to
+`workflow_error`) must not change the resume path. A missing typed context or a
+failed checkpoint write shall produce a diagnostic-only record and an explicit
+unavailable disposition.
 
 ### FR-9 — Shared conversation preservation
 
@@ -827,9 +876,9 @@ reset from automatic error recovery.
 
 ### AC-16 — Generated workflow
 
-Generate a workflow with `create_workflow`, inject a transient error in each
-generated phase, restart, and resume. Every phase must receive the restored
-context and never restart through `run(intent)`.
+Generate a workflow with `create_workflow`, inject an ordinary exception in
+each generated phase, restart, and resume. Every phase must receive the
+restored context and never restart through `run(intent)`.
 
 ### AC-17 — User-visible correctness
 
@@ -843,6 +892,19 @@ Run <run-id> is saved. Use /workflow resume <run-id> or continue.
 It must not display a successful completion, a generic fresh-run message, or a
 claim that the workflow is at `INIT` unless the checkpoint actually says so.
 
+### AC-18 — Every ordinary exception remains resumable
+
+Using the same active workflow phase and typed context, inject each of
+`ValueError`, `RuntimeError`, `OSError`, `LookupError`, a provider/transport
+exception, a tool exception, `asyncio.TimeoutError`, and cooperative
+cancellation. Each failure shall produce the same `paused`/resume disposition,
+preserve the run ID and active phase, and resume through `resume(context)`.
+No case may be converted into a rejected phase output, successful completion,
+terminal failure, new run, or `INIT` restart solely because of its exception
+class. If the checkpoint store is intentionally made unavailable, the result
+shall instead be a clearly diagnostic-only record; that is a persistence failure,
+not an exception-class exception.
+
 ## 11. Testing strategy
 
 Tests must use temporary session/workflow stores, fake providers, deterministic
@@ -853,6 +915,8 @@ network rate limit, browser, MCP server, or pre-existing home directory.
 
 - failure classification maps 429/rate-limit transport errors to
   `provider_transient`;
+- all ordinary exception classes use the same resumability decision, while
+  `failure_kind` remains diagnostic-only;
 - execution snapshot captures the latest handle/context phase rather than the
   workflow's first phase;
 - checkpoint revision writes are monotonic and same-payload idempotent;
@@ -867,6 +931,8 @@ network rate limit, browser, MCP server, or pre-existing home directory.
 - a diagnostic-only record cannot become an implicit new workflow; and
 - generated runner validation rejects `resume()` implementations that call
   `run(intent)` or replace the restored context.
+- generated runner validation rejects swallowed broad exception handlers and
+  explicit attempts to disable resumability for ordinary workflow failures.
 
 ### 11.2 Integration tests
 
@@ -879,7 +945,7 @@ network rate limit, browser, MCP server, or pre-existing home directory.
 - manifest A/B conflict;
 - atomic transition ordering and crash injection between each commit step;
 - duplicate failure finalization and claim release;
-- rate-limit pause with shared conversation/journal preservation;
+- arbitrary-exception pause with shared conversation/journal preservation;
 - provider retry after a committed tool step;
 - multiple paused runs and deterministic selection;
 - invalid plugin/profile/workspace/context recovery diagnostics; and
@@ -954,7 +1020,8 @@ new run — explicitly selected by the user
 - Reconciliation must be bounded in time and avoid repeatedly scanning large
   artifact trees on every provider turn.
 - Atomic writes and directory fsync semantics remain in the checkpoint store.
-- A transient error must not cause an unbounded automatic retry loop.
+- An ordinary exception must not cause an unbounded automatic retry loop; it
+  must create one resumable pause when durable state is available.
 - The failure finalizer must be idempotent under cancellation and cleanup races.
 - If durable state cannot be written, the system must say recovery is
   unavailable rather than pretending that a fresh run is a continuation.
@@ -973,7 +1040,9 @@ new run — explicitly selected by the user
    checkpoint schema migration, not for silently reverting to fresh-run
    behaviour.
 
-Existing terminal `failed` and diagnostic-only records remain non-resumable.
+Existing terminal `failed` and diagnostic-only records remain non-resumable when
+they genuinely lack a valid typed checkpoint or durable storage. Ordinary
+workflow exception categories are not terminal by policy.
 Existing valid paused/running checkpoints are migrated with a provenance value
 of `legacy_checkpoint` and are reconciled conservatively. If their phase cannot
 be proven safe, the user receives a diagnostic rather than an automatic rewind.
@@ -982,8 +1051,9 @@ be proven safe, the user receives a diagnostic rather than an automatic rewind.
 
 ### Assumptions
 
-- A 429 is recoverable by default when typed context and checkpoint storage are
-  valid.
+- Every ordinary workflow exception is resumable by default when typed context
+  and checkpoint storage are valid; a 429 is one representative regression
+  case.
 - The existing session conversation remains the only provider-facing history;
   workflow checkpoints store pointers and typed state, not a second transcript.
 - Explicit reset is the intended escape hatch for a truly incompatible or
@@ -1011,8 +1081,9 @@ be proven safe, the user receives a diagnostic rather than an automatic rewind.
   distinguishes confirmed causes from ruled-out hypotheses.
 - TUI, headless, `--continue`, `--resume`, and `/workflow resume` use the same
   workflow-run recovery coordinator.
-- A recoverable 429 resumes the same run at the exact active phase.
-- No generic failure path can silently call `run(intent)` for a recoverable run.
+- A 429 and every other ordinary exception with valid typed state resume the
+  same run at the exact active phase.
+- No generic failure path can silently call `run(intent)` for a resumable run.
 - Checkpoint, typed context, evidence, journal, manifest, and kernel state have
   deterministic reconciliation with provenance.
 - Generic error handling cannot rewind a run to `INIT`.
@@ -1043,12 +1114,23 @@ workflow stores:
 - `WorkflowCheckpointStore.save()` rejects stale revisions, treats identical
   same-revision writes as idempotent, and rejects conflicting same-revision
   payloads.
+- `WorkflowRunHandle.resumable` makes the policy explicit: exception category
+  is not consulted. The legacy `recoverable` argument remains accepted for
+  compatibility but cannot downgrade a valid typed checkpoint.
+- The canonical agent-turn boundary now propagates every ordinary exception
+  after provider-step retry/cleanup, so workflow owners can apply the universal
+  finalizer instead of mistaking a swallowed turn for phase progress.
+- Generic declarative phase execution re-raises ordinary exceptions instead of
+  encoding them as rejected output, and summary phases return a failure state
+  instead of converting a failed turn into successful completion.
 
-Verification includes the 429 regression in
-`tests/unit/test_workflow_cli.py`, cursor/finalizer and checkpoint-store tests
-in `tests/unit/test_checkpoint_lifecycle_edges.py`, recovery selection tests in
-`tests/unit/test_workflow_recovery.py`, TUI anti-fallback coverage in
-`tests/unit/test_tui_session_coverage.py`, and the existing process-restart
-E2E recovery matrix. The final local run completed with 3,666 tests passed and
-15 skipped; repository-wide format and mypy findings outside this change are
-reported in the implementation handoff.
+Verification includes the 429 headless regression in
+`tests/unit/test_workflow_cli.py`, universal agent-turn propagation in
+`tests/unit/test_permanent_error_exit.py`, arbitrary-phase integration coverage
+in `tests/integration/test_session_workflow_integration.py`, cursor/finalizer
+and checkpoint-store tests in `tests/unit/test_checkpoint_lifecycle_edges.py`,
+recovery selection tests in `tests/unit/test_workflow_recovery.py`, TUI
+anti-fallback coverage in `tests/unit/test_tui_session_coverage.py`, and the
+existing process-restart E2E recovery matrix. The final local run completed
+with 3,677 tests passed and 15 skipped; repository-wide format and mypy
+findings outside this change are reported in the implementation handoff.

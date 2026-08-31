@@ -269,9 +269,10 @@ path; terminal completion, failure, reset, and clean shutdown release it.
 
 Workflow error checkpoints retain structured `pause_reason`, `failure_kind`,
 bounded sanitized failure text, the last safe phase boundary, and an error
-revision. A valid typed context is stored with `status="paused"`, making a
-provider, tool, phase, timeout, or unexpected-cancellation error recoverable
-without restarting phase one. During startup, a bootstrap checkpoint with
+revision. A valid typed context is stored with `status="paused"`, making every
+ordinary provider, tool, phase, timeout, validation, cancellation, or unknown
+workflow exception recoverable without restarting phase one. The exception
+category is diagnostic only. During startup, a bootstrap checkpoint with
 `context_ready=false` is intentionally diagnostic-only. If context encoding or
 the primary checkpoint write fails, `recovery-error.json` records the safe run
 identity and error category atomically. Its record revision cannot move

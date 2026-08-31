@@ -121,7 +121,9 @@ class ReleaseState(Enum):
     VERIFY = auto()
     REPORT = auto()
     COMPLETE = auto()  # terminal
-    FAILED = auto()  # terminal
+    # Terminal for this local state machine; the session owner can still
+    # checkpoint a valid typed context for resume.
+    FAILED = auto()
 
     @property
     def is_terminal(self) -> bool:
@@ -1063,7 +1065,11 @@ def make_inspection_tools(
                 "reconcile checkpoint, verified receipts, and journal state before any "
                 "resume prompt; transcript summaries are advisory only",
                 "do not swallow phase exceptions or mark a failed run complete; let the "
-                "framework failure finalizer own error disposition and persistence",
+                "framework failure finalizer own error disposition and persistence; every "
+                "ordinary exception type uses the same resumability path when typed "
+                "context and checkpoint storage are available",
+                "do not pass recoverable=False or otherwise disable resumability for an "
+                "ordinary workflow exception; failure_kind is diagnostic only",
             ],
             "turn_api": (
                 "Subclass CodePlanRunner and call the public "
@@ -1128,7 +1134,9 @@ def make_inspection_tools(
             ],
             "failure_rule": (
                 "PhaseBoundaryError must propagate to the framework failure finalizer. "
-                "Never swallow save_checkpoint errors or call the next provider turn."
+                "Never swallow save_checkpoint errors or call the next provider turn. "
+                "All ordinary exception classes use this same finalizer; exception "
+                "classification must not turn a valid typed run into a fresh INIT run."
             ),
             "resume_rule": (
                 "resume(context) reattaches the supplied session memory and conversation_id, "

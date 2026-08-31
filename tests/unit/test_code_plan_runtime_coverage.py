@@ -129,7 +129,8 @@ async def test_individual_phase_success_rejection_exit_and_summary_error() -> No
         raise RuntimeError("summary unavailable")
 
     runner._run_turn = broken_turn  # type: ignore[method-assign]
-    assert await runner._summarize(ctx) is CodePlanState.COMPLETE
+    assert await runner._summarize(ctx) is CodePlanState.FAILED
+    assert "summary unavailable" in ctx.fail_reason
 
 
 @pytest.mark.asyncio
@@ -300,8 +301,8 @@ async def test_run_and_resume_failure_and_completed_phase_paths() -> None:
         raise RuntimeError("phase crashed")
 
     runner._plan = broken_plan  # type: ignore[method-assign]
-    result = await runner.run("intent")
-    assert result.fail_reason == ""
+    with pytest.raises(RuntimeError, match="phase crashed"):
+        await runner.run("intent")
     assert runner._cfg.app_state.workflow_run().status == "failed"
 
     async def summarize(_ctx: CodePlanContext) -> CodePlanState:

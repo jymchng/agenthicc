@@ -849,6 +849,27 @@ class SwallowRunner(BaseWorkflowRunner):
     assert any("silently returning" in error for error in report.errors)
 
 
+def test_generated_runner_validation_rejects_disabling_resumability(tmp_path: Path) -> None:
+    source = (
+        _RUNNER_SOURCE
+        + """
+
+    async def finalize_error(self, error):
+        self._cfg.workflow_handle.finalize_failure(error, recoverable=False)
+"""
+    )
+    path = tmp_path / "disable_resume_workflow.py"
+    path.write_text(source, encoding="utf-8")
+    report = validate_workflow_file(
+        str(path),
+        expected_name="demo",
+        root=tmp_path,
+        strict_cache_contract=True,
+    )
+    assert not report.ok
+    assert any("recoverable=False" in error for error in report.errors)
+
+
 async def test_describe_runner_pattern_lists_every_required_element() -> None:
     result = await _call(make_inspection_tools(), "describe_runner_pattern")
     assert isinstance(result, dict)
@@ -2105,7 +2126,7 @@ async def test_summarize_completes_and_records_the_artifact() -> None:
     assert artifact.content == "imports cleanly"
 
 
-async def test_summarize_survives_a_turn_error() -> None:
+async def test_summarize_turn_error_returns_failure_for_resume_finalizer() -> None:
     runner = _runner()
     ctx = _generated_ctx()
 
@@ -2113,8 +2134,9 @@ async def test_summarize_survives_a_turn_error() -> None:
         raise RuntimeError("summary model down")
 
     runner._run_turn = turn  # type: ignore[method-assign]
-    assert await runner._summarize(ctx) is CreateWorkflowState.COMPLETE
-    assert "summarize" in ctx.artifacts
+    assert await runner._summarize(ctx) is CreateWorkflowState.FAILED
+    assert "summary model down" in ctx.fail_reason
+    assert "summarize" not in ctx.artifacts
 
 
 async def test_summarize_propagates_cancellation() -> None:
@@ -2215,15 +2237,15 @@ async def test_run_records_failure_and_reports_it_to_the_conversation() -> None:
     assert "create_workflow failed" in str(append.call_args_list[-1])
 
 
-async def test_run_reports_an_unexpected_error_without_raising() -> None:
+async def test_run_reports_an_unexpected_error_and_reraises() -> None:
     runner = _runner()
 
     async def boom(_state: object, _ctx: object) -> None:
         raise RuntimeError("state machine exploded")
 
     runner._dispatch = boom  # type: ignore[method-assign]
-    ctx = await runner.run("author a demo workflow")
-    assert isinstance(ctx, CreateWorkflowContext)
+    with pytest.raises(RuntimeError, match="state machine exploded"):
+        await runner.run("author a demo workflow")
     assert runner._cfg.app_state.workflow_run().status == "failed"
     append = runner._cfg.conv_store.append_event
     assert isinstance(append, MagicMock)

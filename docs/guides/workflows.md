@@ -103,10 +103,11 @@ window from hiding the very history it is meant to preserve.
 
 ### Workflow errors are saved before the TUI returns to idle
 
-All workflow setup, phase, provider, tool, timeout, and unexpected-cancellation
-errors pass through one idempotent failure finalizer. The finalizer captures a
-bounded, redacted diagnostic and the latest safe typed context before it
-publishes the outcome:
+All workflow setup, phase, provider, tool, timeout, cancellation, and other
+ordinary exception types pass through one idempotent failure finalizer. The
+exception class is diagnostic metadata, not a recovery policy. The finalizer
+captures a bounded, redacted diagnostic and the latest safe typed context before
+it publishes the outcome:
 
 ```text
 plugin/workflow setup
@@ -120,27 +121,29 @@ plugin/workflow setup
   -> validate conversation/tool tail and call runner.resume(context)
 ```
 
-Recoverable errors use `status="paused"` with `pause_reason`, `failure_kind`,
-the last safe boundary, and an incrementing error revision. They are listed by
-the recovery coordinator and can be resumed at the same phase. Timeouts are
+Ordinary workflow exceptions use `status="paused"` with `pause_reason`,
+`failure_kind`, the last safe boundary, and an incrementing error revision.
+They are listed by the recovery coordinator and can be resumed at the same
+phase. Timeouts, validation errors, tool failures, and cancellations are
 handled by this path too; they do not merely close the visible turn.
 `WorkflowFailureKind` supplies the stable category vocabulary; unknown custom
 labels are normalized to `workflow_error` rather than becoming ad hoc recovery
 states.
 
-#### A provider error never means “start at INIT”
+#### A workflow exception never means “start at INIT”
 
-A transient provider response such as HTTP 429 is a failure of the current
-provider step, not a request to construct a new workflow. The session owner
-first synchronizes the durable handle cursor with the runner's typed context,
-then writes the paused checkpoint and releases the live run claim. On the next
-`continue`, `/workflow resume`, `--continue`, or `--resume`, the recovery
-coordinator selects that exact `run_id`, reloads its newest checkpoint, and
-dispatches `runner.resume(restored_context)`:
+An HTTP 429 is one example of a failure of the current provider step, not a
+request to construct a new workflow. The same rule applies to tool errors,
+timeouts, `ValueError`, `OSError`, cancellation, and unknown workflow
+exceptions. The session owner first synchronizes the durable handle cursor with
+the runner's typed context, then writes the paused checkpoint and releases the
+live run claim. On the next `continue`, `/workflow resume`, `--continue`, or
+`--resume`, the recovery coordinator selects that exact `run_id`, reloads its
+newest checkpoint, and dispatches `runner.resume(restored_context)`:
 
 ```text
-phase P provider call
-  -> 429 / transient transport error
+phase P provider/tool/workflow operation
+  -> ordinary exception (429, timeout, ValueError, OSError, ...)
   -> sync typed context.current_phase = P
   -> checkpoint(session_id, run_id, phase=P, status=paused)
   -> release run claim
@@ -447,7 +450,15 @@ an ordinary failed phase complete or write a terminal failed checkpoint in
 place of a recoverable error pause. Setup failures without typed context are
 saved as diagnostic-only records.
 
-`describe_runner_pattern()` returns this checklist to the agent.
+`describe_runner_pattern()` returns this checklist to the agent. It explicitly
+requires every ordinary exception to reach the framework finalizer: generated
+runners must not convert exceptions into rejected phase output, successful
+completion, terminal failure, or a fresh `INIT` run. The exception's
+`failure_kind` is for diagnostics only; a valid typed context remains resumable
+regardless of whether the failure was a provider, tool, timeout, validation, or
+unknown extension error. Checkpoint/storage failures are the only exception to
+the resumable outcome, because there is no durable state from which to resume.
+
 `describe_transition_tool_pattern()` returns the canonical handoff-tool
 import/decorator contract, while `show_example_workflow()` returns a complete
 working runner to adapt (pass
@@ -837,6 +848,13 @@ should contain:
    session memory during restore. Every phase prompt must also tell the agent
    to ask focused questions through `ask_user` when requirements are missing or
    materially ambiguous instead of guessing.
+
+Every ordinary exception must reach the framework failure finalizer. A valid
+typed context is resumable regardless of whether the exception came from the
+provider, a tool, validation, a timeout, cancellation, or an unknown extension.
+Do not pass `recoverable=False`, turn an exception into rejected phase output,
+mark the run complete, or start a fresh `INIT` run. Only missing typed state or
+a failed durable checkpoint may produce a diagnostic-only disposition.
 
 Each state function should return the next state explicitly after handling its
 success, retry, rejection, and failure paths. It should update phase events and

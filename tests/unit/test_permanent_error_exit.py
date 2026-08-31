@@ -95,7 +95,7 @@ def test_is_permanent_detects_via_chained_cause() -> None:
     assert _is_permanent_error(outer) is True
 
 
-# ── _stream() re-raises permanent errors ─────────────────────────────────────
+# ── _stream() re-raises all errors after retry/cleanup ───────────────────────
 
 
 @pytest.mark.unit
@@ -157,8 +157,8 @@ async def test_stream_reraises_permanent_error() -> None:
 
 
 @pytest.mark.unit
-async def test_stream_swallows_transient_error() -> None:
-    """_stream() must NOT re-raise 5xx or network errors."""
+async def test_stream_reraises_transient_error() -> None:
+    """_stream() propagates a retry-exhausted 5xx to the workflow owner."""
     from agenthicc.runners.agent_turn import AgentTurnRunner
     from agenthicc.runners.agent_turn_context import AgentTurnContext
     from agenthicc.config import ExecutionSettings
@@ -195,10 +195,56 @@ async def test_stream_swallows_transient_error() -> None:
     mock_runner = MagicMock()
     mock_runner.run_stream = AsyncMock(side_effect=transient_exc)
 
-    # Must NOT raise — transient errors are swallowed
-    await runner._stream(MagicMock(), "test text", mock_runner)
+    with pytest.raises(Exception) as exc_info:
+        await runner._stream(MagicMock(), "test text", mock_runner)
+
+    assert exc_info.value is transient_exc
 
     # Error event still emitted to TUI
+    conv_store.append_event.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("exception_type", [ValueError, OSError, LookupError, RuntimeError])
+async def test_stream_reraises_non_provider_exceptions(exception_type: type[Exception]) -> None:
+    """Workflow resumability is not limited to provider exception classes."""
+    from agenthicc.runners.agent_turn import AgentTurnRunner
+    from agenthicc.runners.agent_turn_context import AgentTurnContext
+    from agenthicc.config import ExecutionSettings
+
+    error = exception_type("phase failure")
+    conv_store = MagicMock()
+    ctx = AgentTurnContext(
+        text="hello",
+        runner=MagicMock(),
+        processor=MagicMock(),
+        session_memory=None,
+        max_agent_turns=1,
+        conv_store=conv_store,
+        app_state=None,
+        exec_cfg=ExecutionSettings(),
+        skills={},
+        mention_cache=MagicMock(),
+        project_plugin_tools=[],
+        mcp_registry=None,
+        active_agent="auto",
+        completed_turns=0,
+        approval_svc=None,
+        output_collector=None,
+        system_prompt_suffix="",
+    )
+    runner = AgentTurnRunner(ctx)
+    runner._turn_active = True
+    runner._model_id = "test-model"
+    runner._model_short = "test"
+
+    mock_runner = MagicMock()
+    mock_runner.run_stream = AsyncMock(side_effect=error)
+
+    with pytest.raises(exception_type) as exc_info:
+        await runner._stream(MagicMock(), "test text", mock_runner)
+
+    assert exc_info.value is error
     conv_store.append_event.assert_called_once()
 
 

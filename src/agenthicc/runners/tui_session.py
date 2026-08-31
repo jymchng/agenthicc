@@ -3189,7 +3189,6 @@ class TUISession:
                 finalize(
                     f"workflow pause checkpoint failed: {type(exc).__name__}: {exc}",
                     kind="checkpoint_storage",
-                    recoverable=False,
                 )
             self._publish_session_event(
                 "workflow_pause_failed",

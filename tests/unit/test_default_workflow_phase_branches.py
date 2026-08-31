@@ -205,8 +205,8 @@ async def test_phase_retry_incomplete_and_agent_error_paths(
         raise RuntimeError("agent failed")
 
     monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", broken)
-    failed = await runner._run_phase(PhaseSpec(name="plain", agent_type="auto"), "intent", context)
-    assert failed.approved is False and "agent failed" in failed.full_text
+    with pytest.raises(RuntimeError, match="agent failed"):
+        await runner._run_phase(PhaseSpec(name="plain", agent_type="auto"), "intent", context)
 
 
 @pytest.mark.asyncio
@@ -235,8 +235,8 @@ async def test_phase_continuation_errors_and_missing_completion(
             name="plan", agent_type="planner", require_plan_finalization=True, max_iterations=1
         ),
     ):
-        output = await runner._run_phase(spec, "intent", context)
-        assert output.approved is False
+        with pytest.raises(RuntimeError, match="turn broke"):
+            await runner._run_phase(spec, "intent", context)
 
     async def no_tools(_text: str, **kwargs: object) -> None:
         collector = kwargs.get("output_collector")
@@ -301,9 +301,10 @@ async def test_workflow_loop_unknown_parallel_cancel_and_human_paths(
         return PhaseOutput("a", "auto", "ok")
 
     parallel._run_phase = parallel_run  # type: ignore[method-assign]
-    await parallel.run("parallel")
-    # A failed parallel branch must fail the workflow rather than silently
-    # advancing with only the successful peer's artefacts.
+    with pytest.raises(RuntimeError, match="parallel failure"):
+        await parallel.run("parallel")
+    # A failed parallel branch must reach the session-owned finalizer rather
+    # than silently advancing with only the successful peer's artefacts.
     assert app.workflow_run().status == "failed"
 
     cancelled = WorkflowRunner(Branches, config, mode)
@@ -374,7 +375,8 @@ async def test_workflow_loop_unknown_parallel_cancel_and_human_paths(
         raise RuntimeError("loop failed")
 
     failed_loop._run_phase = broken_phase  # type: ignore[method-assign]
-    await failed_loop.run("loop failure")
+    with pytest.raises(RuntimeError, match="loop failed"):
+        await failed_loop.run("loop failure")
     assert app.workflow_run().status == "failed"
 
     resume_context = WorkflowContext("intent", "r", UnknownNext.name)
