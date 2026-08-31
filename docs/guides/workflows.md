@@ -331,6 +331,54 @@ executable `/workflow <name>` command without submitting it.
 For the state machine, phase-local transition tools, retry boundaries, and
 extension pattern, see the [`code_plan` structure reference](../reference/code-plan.md).
 
+### `goal_flow`: adding work discovered during implementation
+
+`goal_flow` is a tool-gated clarify → decide → implement/verify → summarize
+workflow. It keeps the ordered goal list in the typed `GoalContext` and uses a
+stable opaque `goal_id` for each record. The numeric `goal_index` shown in
+prompts and the TUI is only a derived position; inserting a record cannot
+reattach an existing attempt, file list, or verification result to another
+goal.
+
+During `IMPLEMENT_GOAL` or `VERIFY_GOAL`, the agent has two additional
+control-capability tools:
+
+```python
+append_goal(goal: str)
+insert_goal(index: int, goal: str)
+```
+
+`append_goal` adds one pending goal at the end. `insert_goal` uses a zero-based
+position in the list as it exists before the call; positions `0` through
+`len(goals)` are valid, including inserting before the current active goal or
+at the end. Both operations preserve the active goal and phase. They are not
+handoffs: after a successful mutation the agent must continue the current
+goal and later call `goal_implemented(...)` or `verify_goal(...)` as usual.
+
+The runner trims and validates goal text, rejects empty/oversized values and
+invalid indices, creates a new ID even for duplicate text, increments the
+`goal_list_revision`, and records a compact mutation receipt. The checkpoint
+is written before a success result is returned. A validation or checkpoint
+failure returns a bounded structured error and leaves both the live context
+and the previous checkpoint unchanged.
+
+After a goal is verified, the scheduler selects the first `pending` record in
+the current order and skips every `verified` record. Therefore a prerequisite
+inserted before an already completed goal is processed, but the completed goal
+is not replayed. `complete_workflow` also rejects a premature success while
+any record is pending or active.
+
+Dynamic goal state is part of the existing workflow checkpoint, not a second
+conversation or memory store. The checkpoint includes the run and session
+identity, active goal ID, stable records, list revision, and a bounded receipt
+window. `--continue`, `--resume`, and TUI recovery rehydrate that context and
+reuse the same `SessionConversation`; legacy checkpoints containing only
+parallel goal arrays are migrated to deterministic legacy IDs at their saved
+cursor. A malformed or ambiguous cursor is reported as a recovery error and
+never restarted at the initial clarification phase. The stable cache contract
+contains only the fixed mutation policy and schemas; the current list and
+evidence remain dynamic context.
+
 ## Command lifecycle gates
 
 Declare command intent in a phase when a build or development server is part

@@ -57,6 +57,8 @@ EventKind = Literal[
     "subagent_pool_result",
     # Generic text line from internal systems (compactor, subagents, etc.)
     "system",
+    # Durable goal-list append/insert projection (PRD-185)
+    "goal_list_mutated",
 ]
 
 

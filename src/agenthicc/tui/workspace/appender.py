@@ -693,6 +693,28 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
         self._console.print()
 
 
+@register_renderer("goal_list_mutated")
+def _render_goal_list_mutated(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """Render a compact notice after a durable goal append or insertion."""
+    from rich.markup import escape as _e
+
+    operation = _text(ev.payload, "operation", "add")
+    index = ev.payload.get("index")
+    count = ev.payload.get("goal_count")
+    if operation == "insert":
+        verb = "Inserted goal"
+    else:
+        verb = "Appended goal"
+    position = f" at {index}" if isinstance(index, int) and not isinstance(index, bool) else ""
+    total = f" ({count} total)" if isinstance(count, int) and not isinstance(count, bool) else ""
+    self._console.print(
+        f"  [dim]⎿[/dim] [cyan]{_e(verb)}[/cyan]{position}{total}; continuing the current goal",
+        markup=True,
+        highlight=False,
+    )
+    self._console.print()
+
+
 # ── Subagent pool renderers (PRD-124 Phase 3) ─────────────────────────────────
 
 

@@ -79,6 +79,12 @@ _PHASE_TRANSITION_TOOL_NAMES = frozenset(
     }
 )
 
+# These tools carry workflow control metadata because they mutate durable
+# workflow state, but they do not end the current phase.  Keeping them out of
+# the transition list prevents the generic prompt helper from telling the
+# agent to stop after merely discovering additional work.
+_NON_TRANSITION_CONTROL_TOOL_NAMES = frozenset({"append_goal", "insert_goal"})
+
 
 _WORKFLOW_USER_QUESTION_REMINDER = (
     "[REQUIREMENTS CLARIFICATION]\n"
@@ -107,6 +113,7 @@ def phase_transition_instruction(
     therefore needs to narrow the list to the current phase.
     """
     available: list[str] = []
+    mutations: list[str] = []
     expected = set(expected_tool_names) if expected_tool_names is not None else None
     for tool in tools:
         name_value: object = getattr(tool, "__name__", "")
@@ -120,12 +127,17 @@ def phase_transition_instruction(
             tool
         )
         is_known_transition = name in _PHASE_TRANSITION_TOOL_NAMES
+        if name in _NON_TRANSITION_CONTROL_TOOL_NAMES:
+            if expected is None or name in expected:
+                if name not in mutations:
+                    mutations.append(name)
+            continue
         if (is_control_tool or is_known_transition) and (expected is None or name in expected):
             if name not in available:
                 available.append(name)
 
     phase_label = f" in the {phase_name!r} phase" if phase_name else ""
-    if not available:
+    if not available and not mutations:
         return (
             "[PHASE TRANSITION TOOLS]\n"
             f"No phase-transition tool is available{phase_label}. Do not claim that the "
@@ -133,16 +145,28 @@ def phase_transition_instruction(
             "runner will apply its declared phase graph after this turn."
         )
 
-    names = ", ".join(f"`{name}`" for name in available)
-    return (
-        "[PHASE TRANSITION TOOLS]\n"
-        f"Available transition tool(s){phase_label}: {names}. Call exactly the "
-        "appropriate tool when this phase's work is complete or a documented branch "
-        "must be taken. A phase changes only after a transition tool call succeeds; "
-        "prose such as 'done' or 'moving to the next phase' never advances the "
-        "workflow. After a successful transition call, stop and let the runner take "
-        "control."
-    )
+    sections: list[str] = []
+    if available:
+        names = ", ".join(f"`{name}`" for name in available)
+        sections.append(
+            "[PHASE TRANSITION TOOLS]\n"
+            f"Available transition tool(s){phase_label}: {names}. Call exactly the "
+            "appropriate tool when this phase's work is complete or a documented branch "
+            "must be taken. A phase changes only after a transition tool call succeeds; "
+            "prose such as 'done' or 'moving to the next phase' never advances the "
+            "workflow. After a successful transition call, stop and let the runner take "
+            "control."
+        )
+    if mutations:
+        names = ", ".join(f"`{name}`" for name in mutations)
+        sections.append(
+            "[GOAL LIST MUTATION TOOLS]\n"
+            f"Available non-transition tool(s){phase_label}: {names}. Use these only "
+            "to record newly discovered concrete work. They do not change phase or "
+            "finish the current goal; after a successful mutation, continue the "
+            "current goal and call its normal transition tool when complete."
+        )
+    return "\n\n".join(sections)
 
 
 # ── WorkflowParams — per-workflow tunable parameters (PRD-111) ───────────────

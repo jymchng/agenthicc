@@ -316,6 +316,43 @@ instructs the user to close or resume the run in the other agenthicc process.
 Legacy claims without a process-start identity retain fail-closed PID
 behaviour.
 
+### `goal_flow` dynamic goal records
+
+`goal_flow` stores its ordered goal list in the normal typed workflow
+checkpoint. The `goal_list_version: 2` section is the canonical representation
+for new runs:
+
+| Field | Meaning |
+|---|---|
+| `goal_records` | Ordered records with stable `goal_id`, text, status, attempts, implementation summary, verification evidence, and affected files |
+| `active_goal_id` | The current non-verified goal; `goal_index` is only a derived compatibility projection |
+| `goal_list_revision` | Starts at `0` after initial planning and increases once per accepted append/insert |
+| `goal_mutation_receipts` | A bounded audit window containing revision, operation, committed index, phase, and active ID |
+
+`GoalStatus` is `pending`, `active`, or `verified`. The checkpoint writer
+persists a new record and receipt through `WorkflowRunHandle.save_checkpoint`
+before `append_goal` or `insert_goal` reports success. The owner lock serializes
+calls in one runner; the checkpoint store's monotonic revision and atomic
+replacement prevent a stale writer from replacing a newer checkpoint. A
+failed validation or write restores the pre-mutation context and does not
+publish a success event.
+
+The records remain compact workflow metadata: provider conversation messages,
+memory objects, live tool handles, and artifact bodies are not copied into
+this section. Receipt retention is capped at 128 records. Goal text is bounded
+by `GoalFlowParams.max_goal_text_chars` (default 4096), and the list is bounded
+by `GoalFlowParams.max_goals` (default 1000); invalid values are rejected
+rather than silently truncated or clamped.
+
+Older checkpoints with only `goals`, parallel evidence/file arrays, and
+`completed_goal_indices` are migrated when decoded. IDs are deterministic
+`legacy-<original-index>-<text-hash>` values, completed indices become
+`verified`, and the saved active cursor becomes `active`. A dynamic checkpoint
+missing its active ID, containing duplicate IDs, invalid statuses, negative
+revisions, malformed receipts, or an active verified record is rejected with a
+recovery diagnostic. It is never treated as permission to start a new
+clarification/INIT run.
+
 ## Project and global stores
 
 | Store | Default location | Data |

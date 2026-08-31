@@ -61,6 +61,12 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "GoalFlowParams": ("agenthicc.workflows.goal_flow.runner", "GoalFlowParams"),
     "GoalFlowRunner": ("agenthicc.workflows.goal_flow.runner", "GoalFlowRunner"),
     "GoalState": ("agenthicc.workflows.goal_flow.runner", "GoalState"),
+    "GoalMutationReceipt": (
+        "agenthicc.workflows.goal_flow.runner",
+        "GoalMutationReceipt",
+    ),
+    "GoalRecord": ("agenthicc.workflows.goal_flow.runner", "GoalRecord"),
+    "GoalStatus": ("agenthicc.workflows.goal_flow.runner", "GoalStatus"),
     "MakeAgenthiccToolWorkflow": (
         "agenthicc.workflows.make_agenthicc_tool",
         "MakeAgenthiccToolWorkflow",

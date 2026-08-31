@@ -64,6 +64,8 @@ The primary entry point is `agenthicc.__main__:main`.
 | `SearchWebTool` / `FetchPageTool` | `agenthicc.skills.web_search` | Native lauren-ai tools for Brave search and visible page-text extraction |
 | `WorkflowPlugin` | `agenthicc.workflows` | Custom workflow definition |
 | `PhaseSpec` | `agenthicc.workflows.plugin` | Declarative phase metadata; `system_prompt_override` replaces the role prompt only in the generic runner and remains dynamic under the cache contract |
+| `GoalFlowWorkflow` / `GoalFlowRunner` | `agenthicc.workflows.goal_flow` | Tool-gated goal decomposition, implementation, verification, stable-ID scheduling, and durable dynamic goal mutation |
+| `GoalRecord` / `GoalStatus` / `GoalMutationReceipt` | `agenthicc.workflows.goal_flow.runner` | Serializable per-goal identity/status/evidence and bounded append/insert audit metadata |
 | `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
 | `StartupCoordinator` / `StartupPhaseReport` / `ReadinessState` | `agenthicc.runners.startup` | Session-scoped progressive startup phases, readiness gates, cancellation, and redacted diagnostics |
 | `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory, transactional tool-exchange recovery, and complete subagent-result persistence |
@@ -169,6 +171,12 @@ and summarize. Approved drafts are atomically published to
 and restored from phase metadata on resume; missing or invalid selections use
 the fail-closed `Safe` default. `create_workflow` design approval remains on
 the legacy plan-review option set.
+
+`goal_flow` exposes `append_goal(goal: str)` and
+`insert_goal(index: int, goal: str)` during implementation and verification.
+They add pending stable-ID records, preserve the active phase, checkpoint
+before success, and never themselves transition the workflow. Verified goals
+are skipped after insertion, and completion is rejected while work remains.
 
 | ReconstructProfile / ReconstructPhasePlan / RECONSTRUCT_PHASE_PLAN / LEGACY_RECONSTRUCT_PHASE_PLAN | agenthicc.workflows.reconstruct_site.evidence_plan | Validated current and PRD-177-compatible phase graphs with shared dispatch metadata |
 | ViewportSpec / CoverageMatrix / FidelityBaseline / ResearchGate | agenthicc.workflows.reconstruct_site.research | Typed route/viewport/state evidence coverage, deterministic baseline hashing, and strict/degraded research-gate decisions |

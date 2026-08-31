@@ -1965,6 +1965,43 @@ sets the handoff event. `CodePlanContext` carries the approved plan, selected
 execute mode, summaries, rejection/failure reasons, command outcomes, and
 shared short-term memory.
 
+### GoalFlowWorkflow / GoalFlowRunner
+
+The built-in `goal_flow` runner evolves `GoalState` through clarify, goal
+decision, implementation, verification, and summary. `GoalContext` uses
+stable `GoalRecord` identities and a derived numeric position so list
+insertions cannot move evidence, attempts, files, or completion onto another
+goal. `GoalStatus` is `pending`, `active`, or `verified`; `GoalMutationReceipt`
+records a bounded audit entry for each list revision.
+
+During implementation and verification, the runner exposes exactly two
+non-transitioning mutation tools: `append_goal(goal: str)` and
+`insert_goal(index: int, goal: str)`. Each adds one pending record, preserves
+the active goal and phase, and checkpoints the mutation before returning
+success. The normal phase handoff tools remain the only way to advance the
+state machine. After verification, the scheduler selects the first pending
+record and skips verified records. `complete_workflow` rejects pending or
+active records, and the checkpoint codec migrates legacy string/parallel-array
+contexts using deterministic IDs at the saved cursor.
+
+### GoalContext
+
+```python
+@dataclass
+class GoalContext:
+    intent: str
+    goal_records: list[GoalRecord]
+    active_goal_id: str = ""
+    goal_list_revision: int = 0
+    goal_mutation_receipts: list[dict[str, object]] = field(default_factory=list)
+```
+
+The full class retains compatibility projections (`goals`, `goal_index`,
+`goal_attempts`, `goal_evidence`, `goal_files`, and
+`completed_goal_indices`). They are derived from `goal_records`, not a second
+source of truth. Workflow checkpoints preserve the same run/session identity
+and shared conversation memory path; they contain bounded goal metadata only.
+
 ### Prompt contracts — `agenthicc.runners.prompt_contract`
 
 `PromptContract` and `build_workflow_prompt_contract()` separate immutable

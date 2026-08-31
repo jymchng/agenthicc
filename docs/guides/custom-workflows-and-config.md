@@ -176,6 +176,19 @@ Its accepted parameter names are `plan_model`, `execute_model`,
 `review_model`, and `summary_model`. Custom workflows choose their own
 names and map them to phase names in `get_phase_models()`.
 
+`goal_flow` accepts optional resource limits for its dynamic goal list:
+
+```toml
+[workflows.goal_flow]
+max_goals = 1000
+max_goal_text_chars = 4096
+```
+
+The limits reject a mutation that would exceed the configured resource
+budget; they never truncate text or silently clamp an insertion index. Goal
+list state itself is checkpointed by the workflow runner, so changing these
+values affects future mutations and does not rewrite an existing checkpoint.
+
 ## Use `create_workflow` to author this shape
 
 The built-in authoring workflow can generate the Python side of this design

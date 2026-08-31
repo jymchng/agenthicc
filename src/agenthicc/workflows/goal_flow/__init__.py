@@ -1,5 +1,23 @@
-"""goal_flow workflow package."""
+"""goal_flow workflow package and its durable goal-list state types."""
 
-from .runner import GoalFlowWorkflow
+from .runner import (
+    GoalContext,
+    GoalFlowParams,
+    GoalFlowRunner,
+    GoalFlowWorkflow,
+    GoalMutationReceipt,
+    GoalRecord,
+    GoalState,
+    GoalStatus,
+)
 
-__all__ = ["GoalFlowWorkflow"]
+__all__ = [
+    "GoalContext",
+    "GoalFlowParams",
+    "GoalFlowRunner",
+    "GoalFlowWorkflow",
+    "GoalMutationReceipt",
+    "GoalRecord",
+    "GoalState",
+    "GoalStatus",
+]

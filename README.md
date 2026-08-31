@@ -194,6 +194,13 @@ Create a specialized workflow with `/workflow create_workflow`. It runs `design 
 
 For non-trivial behavior the agent is guided to create a `code_plan`-style custom runner with typed states, context, per-state functions, explicit `match` transitions, and resumable execution; simple workflows can use declarative `PhaseSpec` values. Run `/workflows reload` and then `/workflow <name>` after authoring.
 
+The built-in `goal_flow` workflow can record necessary work discovered after
+planning. During implementation or verification, the agent may call
+`append_goal(goal)` or `insert_goal(index, goal)`; these calls preserve the
+current goal and phase, checkpoint the updated stable-ID goal list before
+reporting success, and schedule new pending work without replaying verified
+goals. See the [workflow guide](./docs/guides/workflows.md#goal_flow-adding-work-discovered-during-implementation).
+
 ### Workflow inspection tools
 
 Each authoring phase has its own prompt and bounded multi-turn budget; tune the caps with `[execution].authoring_max_phase_turns` and `[execution].authoring_max_generation_attempts`. The agent inspects the real authoring API with built-in tools:

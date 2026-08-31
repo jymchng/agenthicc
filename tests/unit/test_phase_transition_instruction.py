@@ -86,3 +86,16 @@ def test_question_tool_is_not_mislabelled_as_a_phase_transition() -> None:
 
     assert "No phase-transition tool is available" in prompt
     assert "ask_user" not in prompt
+
+
+def test_goal_mutations_are_described_as_non_transition_tools() -> None:
+    prompt = phase_transition_instruction(
+        [_control_tool("append_goal"), _control_tool("insert_goal")],
+        phase_name="implement_goal",
+    )
+
+    assert "[GOAL LIST MUTATION TOOLS]" in prompt
+    assert "`append_goal`" in prompt
+    assert "`insert_goal`" in prompt
+    assert "do not change phase" in prompt
+    assert "[PHASE TRANSITION TOOLS]" not in prompt

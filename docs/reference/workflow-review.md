@@ -27,6 +27,22 @@ validation mode remains compatible with existing manually installed plugins.
 The generated template and smoke path exercise the same annotation, boundary,
 resume, and error-propagation contract.
 
+## PRD-185 dynamic `goal_flow` audit — 2026-08-31
+
+Resolved in the current implementation. `goal_flow` now owns a canonical
+stable-ID `GoalRecord` list, while the historical string/index arrays remain
+derived compatibility projections. `append_goal(goal)` and
+`insert_goal(index, goal)` are available only during implementation and
+verification, are explicitly non-transitioning, and checkpoint their mutation
+before returning success. Verification completes the captured record by ID,
+not by its pre-turn numeric index, so an insertion before the active goal
+cannot verify or replay the wrong record. The checkpoint codec writes a
+versioned list, active ID, monotonic list revision, bounded receipts, and
+migrates legacy parallel-array checkpoints at their saved cursor. Completion
+rejects pending/active records. Unit, integration, and scripted-provider E2E
+tests cover schemas, insertion shifts, rollback, migration, scheduling, and
+normal dynamic completion.
+
 ## Current status audit — 2026-07-29
 
 The findings below originated from an earlier package review. The current

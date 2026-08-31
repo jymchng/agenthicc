@@ -19,7 +19,7 @@ from agenthicc.runners.workflow_handle import WorkflowRunHandle
 from agenthicc.tui.conversation_store import AppState as TUIAppState
 from agenthicc.workflows.config import WorkflowConfig
 from agenthicc.workflows.goal_flow import GoalFlowWorkflow
-from agenthicc.workflows.goal_flow.runner import GoalState
+from agenthicc.workflows.goal_flow.runner import GoalState, GoalStatus
 
 pytestmark = pytest.mark.e2e
 
@@ -174,5 +174,105 @@ async def test_goal_flow_real_turns_checkpoint_each_verified_goal(tmp_path, proc
         assert first.context["fields"]["completed_goal_indices"] == [0, 1]  # type: ignore[index]
         assert len(conversation.messages) >= 1
         assert transport.calls
+    finally:
+        conversation.close()
+
+
+async def test_goal_flow_dynamic_mutations_resume_with_stable_goal_identity(
+    tmp_path: Path,
+    processor,
+) -> None:
+    """Provider-facing mutation tools schedule all discovered work once."""
+    conversation = SessionConversation.open(
+        "goal-flow-dynamic-e2e",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    try:
+        store = WorkflowCheckpointStore("goal-flow-dynamic-e2e", root=tmp_path / "checkpoints")
+        handle = WorkflowRunHandle.create(
+            run_id="goal-dynamic-e2e-run",
+            workflow=GoalFlowWorkflow,
+            conversation=conversation,
+            intent="implement and verify discovered work",
+            checkpoint_store=store,
+        )
+        transport = _script(
+            ("complete_clarification", {"notes": "The work is concrete."}),
+            "Clarification recorded.",
+            ("finalize_goals", {"goals": ["first goal", "second goal"]}),
+            "Goals recorded.",
+            ("append_goal", {"goal": "follow-up goal"}),
+            "The follow-up is queued; continue the active goal.",
+            ("goal_implemented", {"summary": "Implemented first goal.", "files": ["one.py"]}),
+            "Implementation recorded.",
+            ("insert_goal", {"index": 0, "goal": "prerequisite goal"}),
+            "The prerequisite is queued; continue verifying the active goal.",
+            ("verify_goal", {"satisfied": True, "evidence": "First goal tests passed."}),
+            "First goal verified.",
+            ("goal_implemented", {"summary": "Implemented prerequisite.", "files": []}),
+            "Prerequisite implementation recorded.",
+            ("verify_goal", {"satisfied": True, "evidence": "Prerequisite tests passed."}),
+            "Prerequisite verified.",
+            ("goal_implemented", {"summary": "Implemented second goal.", "files": ["two.py"]}),
+            "Second implementation recorded.",
+            ("verify_goal", {"satisfied": True, "evidence": "Second goal tests passed."}),
+            "Second goal verified.",
+            ("goal_implemented", {"summary": "Implemented follow-up.", "files": []}),
+            "Follow-up implementation recorded.",
+            ("verify_goal", {"satisfied": True, "evidence": "Follow-up tests passed."}),
+            "Follow-up verified.",
+            (
+                "complete_workflow",
+                {"summary": "All original and discovered goals are complete.", "files": []},
+            ),
+            "Workflow complete.",
+        )
+        app = TUIAppState.create()
+        config = WorkflowConfig(
+            conv_store=app.conversation,
+            app_state=app,
+            processor=processor,
+            agent_runner=AgentRunnerBase(transport=transport, signals=SignalBus()),
+            approval_svc=None,
+            cfg=AgenthiccConfig(),
+            skills={},
+            plugin_tools=[],
+            mcp_registry=None,
+            mention_cache=MagicMock(),
+            agents_registry=MagicMock(),
+            session_memory=conversation.memory,
+            conversation_id=conversation.conversation_id,
+            workflow_handle=handle,
+        )
+
+        from agenthicc.workflows.goal_flow.runner import GoalFlowRunner
+
+        result = await GoalFlowRunner(config, None).run("implement and verify discovered work")
+
+        assert result.state is GoalState.COMPLETE
+        assert [record.text for record in result.goal_records] == [
+            "prerequisite goal",
+            "first goal",
+            "second goal",
+            "follow-up goal",
+        ]
+        assert all(record.status is GoalStatus.VERIFIED for record in result.goal_records)
+        assert len({record.goal_id for record in result.goal_records}) == 4
+        assert result.goal_list_revision == 2
+        call_dump = str(transport.calls)
+        assert "append_goal" in call_dump
+        assert "insert_goal" in call_dump
+
+        checkpoint = store.load("goal-dynamic-e2e-run")
+        assert checkpoint is not None
+        fields = checkpoint.context["fields"]
+        assert isinstance(fields, dict)
+        assert fields["goal_list_revision"] == 2
+        assert fields["active_goal_id"] == ""  # type: ignore[index]
+        assert all(
+            record["status"] == "verified"
+            for record in fields["goal_records"]  # type: ignore[index]
+        )
     finally:
         conversation.close()

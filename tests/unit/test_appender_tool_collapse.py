@@ -203,6 +203,27 @@ class TestSummaryLine:
 
         assert console.print.call_args_list == []
 
+    def test_goal_mutation_event_is_a_bounded_compact_notice(self):
+        appender, console = _make_appender()
+
+        _flush(
+            appender,
+            [
+                _ev(
+                    "goal_list_mutated",
+                    operation="insert",
+                    index=0,
+                    goal_count=4,
+                    goal_id="secret-goal-id",
+                )
+            ],
+        )
+
+        lines = _str_calls(console)
+        assert any("Inserted goal" in line and "at 0 (4 total)" in line for line in lines)
+        assert all("secret-goal-id" not in line for line in lines)
+        assert console.print.call_args_list[-1].args == ()
+
     def test_second_group_independent(self):
         appender, console = _make_appender()
         # first group: 7 tools → summary on text
