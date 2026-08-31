@@ -33,8 +33,11 @@ One logical user turn may contain multiple provider steps. When available, the
 step-aware `lauren-ai` runner emits `AgentStepStarted`,
 `AgentStepRetryScheduled`, `AgentStepInterrupted`, and `AgentStepCommitted`.
 Agenthicc persists these receipts in `conversation-journal.jsonl`, preserves
-the latest committed provider prefix, and retries only the failed step. A
-whole-stream retry that restores a pre-turn snapshot is not used. Partial
+the latest committed provider prefix, and retries only the failed step. The
+same retry boundary remains safe with older lauren-ai runners that do not emit
+step receipts: agenthicc keeps the current conversation projection and uses
+the idempotency ledger to avoid repeating completed tools. A whole-stream retry
+that restores a pre-turn snapshot is not used. Partial
 stream text is bounded diagnostic/transcript data and is never folded as a
 normal assistant message. A provider failure writes `turn_failed` without
 deleting committed context; `turn_aborted` remains reserved for explicit
@@ -2879,7 +2882,11 @@ class ExecutionSettings:
     base_url: str = ""              # Ollama / custom endpoint
     profile: str = ""               # selected [providers.<name>] profile
     api_key_env: str = ""            # explicit legacy environment reference
-    timeout_s: float = 60.0
+    timeout_s: float = 3600.0  # one-hour provider request deadline by default
+    transport_max_retries: int = 3  # transient provider-stream retries
+    transport_retry_base_delay_s: float = 1.0
+    transport_retry_max_total_s: float = 0.0
+    llm_sdk_max_retries: int = 2
     temperature: float = 1.0
     top_p: float | None = None
     max_completion_tokens: int | None = None

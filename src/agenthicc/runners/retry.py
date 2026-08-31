@@ -2,10 +2,11 @@
 
 ``run_with_transport_retry`` handles atomic/stateless calls and remains
 available to workflow phases, composite calls, direct TUI turns, and subagent
-workers. It snapshots the conversation memory before each callable attempt
-and restores it on a transient network error. Multi-step streaming turns must
-be retried by lauren-ai at the provider-step boundary; agenthicc deliberately
-does not wrap those turns in a whole-turn retry.
+workers. It snapshots the conversation memory before each callable attempt and
+restores it on a transient network error. Multi-step streaming callers can
+provide a checkpoint for the latest committed provider step, allowing
+agenthicc to retry with installed lauren-ai versions that have no internal
+provider-step retry loop.
 
 Bounds and safety:
 
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import random
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -44,6 +46,19 @@ __all__ = ["RetryConfig", "run_with_transport_retry"]
 #: Minimum execution window (seconds) that must remain before a turn-timeout
 #: deadline for a retry to be worth scheduling.
 _MIN_EXEC_WINDOW_S: float = 2.0
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """Return a finite, non-negative provider retry-after hint, if present."""
+    for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if candidate is None:
+            continue
+        value = getattr(candidate, "retry_after", None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            seconds = float(value)
+            if math.isfinite(seconds) and seconds >= 0:
+                return seconds
+    return None
 
 
 @dataclass(frozen=True)
@@ -134,8 +149,15 @@ async def run_with_transport_retry(
 
             # 3. Compute backoff with optional jitter.
             delay = config.base_delay_s * (2**attempt)
+            retry_after = _retry_after_seconds(exc)
+            if retry_after is not None:
+                # Providers use this hint to protect rate limits. Never retry
+                # before the requested window has elapsed; exponential
+                # backoff remains the fallback for errors without a hint.
+                delay = max(delay, retry_after)
             if config.jitter and delay > 0:
-                delay *= random.uniform(0.75, 1.25)  # noqa: S311 — not security-sensitive
+                jittered = delay * random.uniform(0.75, 1.25)  # noqa: S311 — not security-sensitive
+                delay = max(retry_after or 0.0, jittered)
 
             now = time.monotonic()
 

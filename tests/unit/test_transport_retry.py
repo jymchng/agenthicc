@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -90,6 +91,22 @@ class TestIsTransientNetworkError:
 
         e = TransportError("bad request", status_code=400)
         assert not _is_transient_network_error(e)
+
+    def test_rate_limit_status_is_transient_without_special_exception(self) -> None:
+        error = Exception("rate limited")
+        error.status_code = 429  # type: ignore[attr-defined]
+        assert _is_transient_network_error(error)
+
+    def test_server_status_is_transient_without_special_exception(self) -> None:
+        error = Exception("upstream unavailable")
+        error.status_code = 503  # type: ignore[attr-defined]
+        assert _is_transient_network_error(error)
+
+    def test_rate_limit_error_type_name_is_transient(self) -> None:
+        class RateLimitError(Exception):
+            pass
+
+        assert _is_transient_network_error(RateLimitError("too many requests"))
 
     def test_plain_exception_not_transient(self) -> None:
         assert not _is_transient_network_error(ValueError("bad input"))
@@ -429,6 +446,113 @@ class TestRunWithTransportRetry:
 
         await run_with_transport_retry(fn, config=self._config(max_retries=1), memory=None)
         assert calls[0] == 2
+
+    async def test_provider_retry_after_hint_is_honored(self) -> None:
+        from agenthicc.runners.retry import run_with_transport_retry
+        from lauren_ai._exceptions import TransientTransportError
+
+        calls = [0]
+        sleep_delays: list[float] = []
+
+        async def fn():
+            calls[0] += 1
+            if calls[0] == 1:
+                raise TransientTransportError("rate limited", status_code=429, retry_after=7.0)
+
+        async def fake_sleep(delay: float) -> None:
+            sleep_delays.append(delay)
+
+        with patch("asyncio.sleep", new=fake_sleep):
+            await run_with_transport_retry(fn, config=self._config(max_retries=1, base_delay=1.0))
+
+        assert calls[0] == 2
+        assert sleep_delays == [7.0]
+
+    async def test_stream_wrapper_uses_configured_retries(self) -> None:
+        from agenthicc.config import ExecutionSettings
+        from agenthicc.runners.agent_turn import AgentTurnRunner
+        from agenthicc.runners.agent_turn_context import AgentTurnContext
+        from lauren_ai._exceptions import TransientTransportError
+
+        ctx = AgentTurnContext(
+            text="hello",
+            runner=SimpleNamespace(),
+            processor=None,  # type: ignore[arg-type]
+            exec_cfg=ExecutionSettings(
+                transport_max_retries=1,
+                transport_retry_base_delay_s=0.0,
+            ),
+        )
+        runner = AgentTurnRunner(ctx)
+        calls = [0]
+
+        async def stream_once() -> None:
+            calls[0] += 1
+            if calls[0] == 1:
+                raise TransientTransportError("temporarily unavailable", status_code=429)
+
+        await runner._stream_with_retry(stream_once)
+        assert calls[0] == 2
+
+    async def test_stream_retry_preserves_user_and_prior_messages_on_old_runner(
+        self, tmp_path
+    ) -> None:
+        """A pre-step-recovery runner must not erase the valid memory prefix."""
+        from lauren_ai import CompletionChunk
+        from lauren_ai._exceptions import TransientTransportError
+        from agenthicc.memory.journal import ConversationJournal
+        from agenthicc.memory.journaled import JournaledShortTermMemory
+        from agenthicc.runners.agent_turn import AgentTurnRunner
+        from agenthicc.runners.agent_turn_context import AgentTurnContext
+
+        journal = ConversationJournal(tmp_path / "conversation.jsonl")
+        memory = JournaledShortTermMemory(journal)
+        memory.add_user("earlier request")
+        memory.add_assistant({"role": "assistant", "content": "completed work"})
+
+        class OldRunner:
+            supports_step_recovery = False
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def run_stream(self, _agent, message, **kwargs):  # noqa: ANN001
+                self.calls += 1
+                kwargs["memory"].add_user(message)
+
+                async def stream():
+                    if self.calls == 1:
+                        raise TransientTransportError("rate limited", status_code=429)
+                    yield CompletionChunk(delta="recovered")
+                    yield CompletionChunk(stop_reason="end_turn")
+
+                return stream()
+
+        active_runner = OldRunner()
+        ctx = AgentTurnContext(
+            text="continue",
+            runner=SimpleNamespace(_signals=None),  # type: ignore[arg-type]
+            processor=None,  # type: ignore[arg-type]
+            session_memory=memory,
+            conv_store=MagicMock(),
+            exec_cfg=ExecutionSettings(
+                transport_max_retries=1,
+                transport_retry_base_delay_s=0.0,
+            ),
+        )
+        runner = AgentTurnRunner(ctx)
+        runner._intent_id = "retrying-turn"
+        runner._agent_id = "agent-retrying"
+        runner._model_id = "test-model"
+
+        await runner._stream(object(), "continue", active_runner)  # type: ignore[arg-type]
+
+        assert active_runner.calls == 2
+        assert [
+            message["content"] for message in memory._messages if message.get("role") == "user"
+        ] == ["earlier request", "continue"]
+        assert memory._messages[1]["content"] == "completed work"
+        journal.close()
 
 
 # ── build_llm_config uses llm_sdk_max_retries (gap 4) ─────────────────────────

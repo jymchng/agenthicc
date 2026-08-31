@@ -103,6 +103,11 @@ SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama", "litellm")
 _CONTEXT_RESERVE_MIN: int = 4_000
 _DEFAULT_CONTEXT_WINDOW: int = 200_000
 _DEFAULT_MAX_OUTPUT_TOKENS: int = 32_768
+# Provider requests may legitimately take several minutes on large prompts,
+# reasoning models, or cold-started remote endpoints.  Keep the per-request
+# timeout generous by default; callers can still lower it globally or per
+# provider profile when they need a strict deadline.
+_DEFAULT_LLM_TIMEOUT_S: float = 3_600.0
 
 # lauren-ai 1.3.1 exposes provider configuration but not a context-window
 # registry.  Keep the compatibility table at this integration boundary so a
@@ -944,8 +949,9 @@ class ExecutionSettings:
     file_cache: bool = True
     # Transport retry on transient network errors (PRD-126)
     # Two independent layers (see prd-126):
-    #   transport_max_retries — TURN-level retry with memory snapshot-rollback;
-    #     the primary, memory-safe mechanism for mid-stream ReadTimeouts.
+    #   transport_max_retries — TURN-level retry with a latest-step/current-
+    #     projection checkpoint; the primary, memory-safe mechanism for
+    #     mid-stream ReadTimeouts and rate limits.
     #   llm_sdk_max_retries — SDK/transport internal retry inside LLMConfig;
     #     handles clean pre-stream 429/5xx.  Kept low to avoid a large
     #     multiplier with the turn-level retry.
@@ -964,7 +970,7 @@ class ExecutionSettings:
     default_query: dict[str, object] = field(default_factory=dict, repr=False)
     client_options: dict[str, object] = field(default_factory=dict, repr=False)
     request_options: object | None = field(default=None, repr=False)
-    timeout_s: float = 60.0
+    timeout_s: float = _DEFAULT_LLM_TIMEOUT_S
     temperature: float = 1.0
     top_p: float | None = None
     max_completion_tokens: int | None = None
@@ -2053,7 +2059,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
             _section(ex.get("client_options")), path="execution.client_options"
         ),
         request_options=execution_request_options,
-        timeout_s=_as_float(ex.get("timeout_s"), 60.0),
+        timeout_s=_as_float(ex.get("timeout_s"), _DEFAULT_LLM_TIMEOUT_S),
         temperature=_as_float(ex.get("temperature"), 1.0),
         top_p=_optional_float(ex.get("top_p"), "execution.top_p"),
         max_completion_tokens=(

@@ -28,8 +28,19 @@ profile's `model` in config. Verify with `agenthicc config show`.
 
 **Symptom:** `429` errors.
 
-**Fix:** configure `request_options.max_retries` / `timeout_s` on the
-provider profile, or switch to a profile with higher limits.
+**Fix:** transient provider requests use a one-hour timeout by default. The
+active stream is retried up to three times with exponential backoff, and a
+provider `retry_after` hint is honored. If a provider needs a different
+deadline or retry policy, configure the execution settings or active provider
+profile:
+
+```toml
+[execution]
+timeout_s = 3600
+transport_max_retries = 3
+transport_retry_base_delay_s = 1.0
+llm_sdk_max_retries = 2
+```
 
 ## Config validation failures
 

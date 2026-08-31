@@ -56,6 +56,11 @@ from before `T:0`. This is the key difference between a safe retry and the old
 whole-stream rollback that made a later provider error erase earlier assistant
 and tool-result messages.
 
+Agenthicc owns this retry boundary so the guarantee also holds with older
+lauren-ai releases that do not emit step receipts: those retries retain the
+current memory projection and use the idempotency ledger to avoid repeating
+completed side effects.
+
 `AgentStepStarted`, `AgentStepRetryScheduled`, `AgentStepInterrupted`, and
 `AgentStepCommitted` are emitted by the provider runner. The session adapter
 projects those receipts into the journal and advances the safe checkpoint only
@@ -68,12 +73,12 @@ For a failed turn, the live memory therefore remains the valid prefix
 `H, U, committed steps`, and the next user message is appended to that same
 session conversation exactly once. `turn_failed` is distinct from
 `turn_aborted`: the former means a provider/tool error while preserving
-context, while the latter is reserved for explicit cancellation. An older
-`lauren-ai` runner that cannot expose provider-step recovery is not wrapped in
-a destructive whole-turn retry; it fails with its retained memory projection.
-The step-scoped retry path becomes active when the installed runner advertises
-the step-recovery capability; the companion lauren-ai implementation in this
-workspace does so.
+context, while the latter is reserved for explicit cancellation. When the
+installed runner exposes provider-step recovery, the session adapter persists
+and restores the latest committed checkpoint. When it does not, the retry
+keeps the current projection rather than rolling back to the turn start; the
+durable idempotency ledger protects already-completed tools. In both cases the
+logical user message is sent exactly once per retry attempt.
 
 An explicit turn interruption preserves the valid assistant/tool exchanges
 that completed before cancellation. If the interrupted tail contains an

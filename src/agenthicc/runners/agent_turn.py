@@ -149,9 +149,9 @@ def _is_transient_network_error(exc: BaseException) -> bool:
 
     Checks for :class:`~lauren_ai._exceptions.TransientTransportError` and
     common timeout / connection error type names anywhere in the exception
-    chain (``__cause__`` and ``__context__``).  The lauren-ai streaming runner
-    retries these at the current provider-step boundary; the outer agenthicc
-    turn no longer performs a destructive whole-turn rollback.
+    chain (``__cause__`` and ``__context__``).  HTTP 408, 425, 429, and 5xx
+    responses are also transient.  The streaming turn retries from its latest
+    safe provider-step boundary, without a destructive whole-turn rollback.
 
     :param exc: The exception raised by the LLM transport or SDK.
     :return: ``True`` when the error is a retriable network-level failure.
@@ -177,6 +177,7 @@ def _is_transient_network_error(exc: BaseException) -> bool:
             # anthropic / openai SDK
             "APITimeoutError",
             "APIConnectionError",
+            "RateLimitError",
             # generic
             "NetworkError",
             "RemoteDisconnected",
@@ -189,6 +190,9 @@ def _is_transient_network_error(exc: BaseException) -> bool:
             return True
     except ImportError:
         pass
+    status = _http_status_code(exc)
+    if status in {408, 425, 429} or (status is not None and 500 <= status < 600):
+        return True
     for candidate in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
         if candidate is None:
             continue
@@ -1714,14 +1718,15 @@ class AgentTurnRunner:
                 base_cursor=getattr(_journal, "cursor", None),
             )
 
-        # PRD-182: the provider-step runner owns retries.  The outer callable is
-        # deliberately not retried because it can contain several committed
-        # provider/tool steps.  Re-running it from a pre-turn snapshot would
-        # erase the context needed by the next step.
+        # PRD-182: retries must preserve the committed provider/tool prefix.
+        # Step-aware lauren-ai runners advance an explicit checkpoint; older
+        # runners retain their current memory projection and rely on the
+        # idempotency ledger instead of rolling back to the start of the turn.
         _attempt_number = [0]
         _partial_stream_text: list[str] = []
         _stream_seeded_user = [False]
         _resume_existing_turn = [ctx.resume_turn_id is not None]
+        _safe_snapshot_includes_user = [False]
         _partial_fragment_recorded = [False]
         _output_attempt_start = [
             len(ctx.output_collector) if ctx.output_collector is not None else 0
@@ -1766,9 +1771,9 @@ class AgentTurnRunner:
                 "top_p": _config_value(ctx.exec_cfg, "top_p", None),
                 "max_completion_tokens": _config_value(ctx.exec_cfg, "max_completion_tokens", None),
                 "request_options": _config_value(ctx.exec_cfg, "request_options", None),
-                "transport_max_retries": _config_value(ctx.exec_cfg, "transport_max_retries", 0),
+                "transport_max_retries": _config_value(ctx.exec_cfg, "transport_max_retries", 3),
                 "transport_retry_base_delay_s": _config_value(
-                    ctx.exec_cfg, "transport_retry_base_delay_s", 0.5
+                    ctx.exec_cfg, "transport_retry_base_delay_s", 1.0
                 ),
                 "transport_retry_max_total_s": _config_value(
                     ctx.exec_cfg, "transport_retry_max_total_s", 0.0
@@ -1805,9 +1810,20 @@ class AgentTurnRunner:
                 event_sinks.append(_ToolRecoveryEventSink(ctx.conv_store))
             if _step_sink is not None:
                 event_sinks.append(_step_sink)
+            resume_existing_turn = _resume_existing_turn[0] or _safe_snapshot_includes_user[0]
+            attempt_message = "" if resume_existing_turn else agent_text
+            compatibility_seed_snapshot = (
+                ctx.session_memory.snapshot()
+                if (
+                    resume_existing_turn
+                    and ctx.session_memory is not None
+                    and hasattr(ctx.session_memory, "snapshot")
+                )
+                else None
+            )
             stream = await active_runner.run_stream(
                 agent_instance,
-                agent_text,
+                attempt_message,
                 conversation_id=ctx.conversation_id or None,
                 run_id=self._intent_id,
                 memory=ctx.session_memory,
@@ -1817,14 +1833,29 @@ class AgentTurnRunner:
                     # A crash/recovery or compatibility retry starts from a
                     # memory projection that already contains this logical
                     # turn's user message. Ordinary turns add it in Lauren.
-                    "_agenthicc_resume_existing_turn": _resume_existing_turn[0]
+                    "_agenthicc_resume_existing_turn": resume_existing_turn
                 },
                 event_sinks=event_sinks or None,
             )
             # ``run_stream`` seeds the user message before returning its async
-            # generator.  Remember that fact so an older-runner context
-            # overflow retry does not append the same user message twice.
+            # generator.  On a retry from a committed step, the empty
+            # compatibility seed must not reach the provider or become part of
+            # the durable conversation, so restore the current projection
+            # immediately. This removes only the synthetic empty user message
+            # that older lauren-ai versions append unconditionally.
             _stream_seeded_user[0] = True
+            if (
+                compatibility_seed_snapshot is not None
+                and ctx.session_memory is not None
+                and hasattr(ctx.session_memory, "restore")
+            ):
+                ctx.session_memory.restore(compatibility_seed_snapshot)
+            if not self._step_recovery_supported:
+                # The pre-1.6 runner has no step receipt to advance a
+                # checkpoint, but its stream still seeded this logical user
+                # message. The next retry should reuse the current projection
+                # rather than append the message again.
+                _safe_snapshot_includes_user[0] = True
             async for chunk in stream:
                 if chunk.delta:
                     local_turn.append(chunk.delta)
@@ -1891,13 +1922,14 @@ class AgentTurnRunner:
         )
         _latest_safe_snapshot = turn_snapshot
         self._step_recovery_supported = bool(
-            getattr(active_runner, "supports_step_recovery", False)
+            getattr(active_runner, "supports_step_recovery", False) and _journal is not None
         )
 
         def _advance_safe_step(step_id: str) -> None:
             nonlocal _latest_safe_snapshot
             if ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot"):
                 _latest_safe_snapshot = ctx.session_memory.snapshot()
+                _safe_snapshot_includes_user[0] = True
             self._last_committed_step = step_id
 
         def _begin_step(step_id: str) -> None:
@@ -2012,6 +2044,11 @@ class AgentTurnRunner:
                     force=True,
                 )
                 if compacted:
+                    if ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot"):
+                        _safe_snapshot_includes_user[0] = (
+                            _stream_seeded_user[0] or _resume_existing_turn[0]
+                        )
+                        _latest_safe_snapshot = ctx.session_memory.snapshot()
                     if contract is not None:
                         agent_text = self._prepare_cache_stable_message(base_agent_text)
                     try:
@@ -2118,32 +2155,31 @@ class AgentTurnRunner:
     # ── transport retry wrapper (PRD-126) ─────────────────────────────────────
 
     async def _stream_with_retry(self, stream_once: Callable[[], Awaitable[None]]) -> None:
-        """Run one streaming invocation without whole-turn retry.
+        """Run one streaming invocation with safe transport retries.
 
         Delegates to the shared :func:`~agenthicc.runners.retry.run_with_transport_retry`.
-        The shared helper remains the compatibility boundary for atomic calls,
-        but this method sets ``max_retries=0`` because a streaming invocation
-        can contain multiple provider/tool steps. Lauren-ai owns retrying the
-        current provider step, where it can restore only that step's checkpoint.
-        Reads provider-step bounds from ``ctx.exec_cfg``.
+        The helper restores the latest committed provider-step checkpoint when
+        the installed lauren-ai runner exposes one; otherwise its idempotency
+        ledger prevents already-completed tool side effects from running twice.
+        Reads retry bounds from ``ctx.exec_cfg``.
         """
         from agenthicc.runners.retry import RetryConfig, run_with_transport_retry  # noqa: PLC0415
 
         ctx = self._ctx
         exec_cfg = ctx.exec_cfg
-        # A multi-step run must be retried by lauren-ai at its provider-step
-        # boundary. The outer callable is deliberately never retried: if an
-        # older runner lacks that capability, failing once is safer than
-        # restoring a pre-turn snapshot and erasing committed work.
+        # agenthicc owns this boundary because lauren-ai releases without
+        # provider-step retries still need to recover transient stream errors.
+        # A step-aware runner supplies the latest safe snapshot; older runners
+        # preserve their current projection and use the durable idempotency
+        # ledger instead of rolling back to the turn start.
         config = RetryConfig(
-            max_retries=0,
-            base_delay_s=float(getattr(exec_cfg, "transport_retry_base_delay_s", 1.0)),
+            max_retries=max(0, int(getattr(exec_cfg, "transport_max_retries", 3))),
+            base_delay_s=max(0.0, float(getattr(exec_cfg, "transport_retry_base_delay_s", 1.0))),
             max_total_duration_s=float(getattr(exec_cfg, "transport_retry_max_total_s", 0.0)),
         )
 
-        # These callbacks remain wired for compatibility with the shared helper
-        # and for defensive future callers. They are not invoked by this
-        # multi-step path because ``max_retries`` is intentionally zero.
+        # On rollback, reset turn-local side effects and promote the ledger's
+        # completed calls so a retried provider turn replays them safely.
         reset_fns: list[Callable[[], None]] = []
         _ledger = getattr(self, "_turn_ledger", None)
         if _ledger is not None:
@@ -2160,6 +2196,17 @@ class AgentTurnRunner:
         if self._reset_attempt_output is not None:
             reset_fns.append(self._reset_attempt_output)
 
+        if self._step_recovery_supported:
+            checkpoint_provider = self._safe_snapshot_provider
+        elif ctx.session_memory is not None and hasattr(ctx.session_memory, "snapshot"):
+            # Older lauren-ai versions do not expose committed-step receipts.
+            # Snapshot the *current* projection after a failure so retrying the
+            # provider cannot erase earlier assistant/tool messages. The
+            # idempotency ledger handles calls that completed before the error.
+            checkpoint_provider = ctx.session_memory.snapshot
+        else:
+            checkpoint_provider = None
+
         await run_with_transport_retry(
             stream_once,
             config=config,
@@ -2167,7 +2214,7 @@ class AgentTurnRunner:
             deadline_monotonic=ctx.retry_deadline_monotonic,
             on_retry=self._emit_retry,
             reset_fns=reset_fns,
-            checkpoint_provider=self._safe_snapshot_provider,
+            checkpoint_provider=checkpoint_provider,
         )
 
     async def _emit_retry(

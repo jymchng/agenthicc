@@ -49,7 +49,7 @@ Provider connections are modeled as profiles (`ProviderProfile`):
 | `base_url` | API base URL |
 | `api_key` / `api_key_env` | Inline key or env var name |
 | `default_headers` / `default_query` | Extra HTTP headers / query params |
-| `timeout_s` / `max_retries` | Request timeout / retry count |
+| `timeout_s` / `max_retries` | Request timeout (default 3600 seconds) / retry count |
 | `temperature` / `top_p` / `max_completion_tokens` | Sampling params |
 | `request_options` | Extra body/headers/query per request |
 | `capabilities` | Feature flags |

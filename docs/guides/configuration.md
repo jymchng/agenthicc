@@ -97,7 +97,7 @@ provider = "openai"                 # OpenAI-compatible, including Modal
 model = "moonshotai/Kimi-K3"
 base_url = "https://your-endpoint.modal.run/v1"
 api_key_env = "MODAL_API_KEY"
-timeout_s = 120.0
+timeout_s = 3600.0                   # one-hour provider request deadline
 temperature = 0.3
 top_p = 0.95
 max_completion_tokens = 16384
@@ -154,13 +154,14 @@ the code rather than hard-coding them in support material.
 | `authoring_max_generation_attempts` | 20 | Maximum complete source-generation attempts for `create_*` authoring |
 | `authoring_max_phase_turns` | 20 | Maximum agent sub-turns in one `create_*` phase; phase definitions may request less |
 | `max_output_tokens` | 32768 | Completion-token ceiling for one LLM round-trip |
+| `timeout_s` | 3600 | Provider request timeout in seconds; applies to the active profile unless overridden |
 | `turn_timeout_s` | 0 | Per-turn watchdog in seconds; zero disables it |
 | `auto_compact` | true | Enable proactive model-aware conversation compaction |
 | `context_windows` | `{}` | Model id → context window under `[memory.context_windows]` |
 | `prompt_cache` | true | Enable provider prompt-cache integration where supported |
 | `file_cache` | true | Enable freshness-validated workspace file cache |
-| `transport_max_retries` | 3 | Provider-step transport retry count; never retries a whole multi-step turn |
-| `transport_retry_base_delay_s` | 1.0 | Exponential provider-step retry base delay |
+| `transport_max_retries` | 3 | Transient provider-stream retry count; preserves the latest committed/current conversation prefix |
+| `transport_retry_base_delay_s` | 1.0 | Exponential transport-retry base delay; provider `retry_after` hints are honored |
 | `transport_retry_max_total_s` | 0 | Optional provider-step retry wall-clock ceiling |
 | `llm_sdk_max_retries` | 2 | Provider SDK retry count |
 

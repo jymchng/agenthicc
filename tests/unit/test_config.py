@@ -124,6 +124,7 @@ class TestLoadConfig:
         assert config.execution.agent_pool_size == 16
         assert config.execution.authoring_max_generation_attempts == 20
         assert config.execution.authoring_max_phase_turns == 20
+        assert config.execution.timeout_s == 3600.0
         assert config.security.sandbox_mode is True
         assert config.security.allowed_paths == ["/workspace"]
         assert config.security.max_tool_cpu_seconds == 30
@@ -137,6 +138,26 @@ class TestLoadConfig:
         assert config.hooks == {}
         assert config.tools.allowed == []
         assert config.tools.denied == []
+
+    def test_provider_request_timeout_default_is_overridable(self, tmp_path):
+        project = tmp_path / "agenthicc.toml"
+        project.write_text("[execution]\ntimeout_s = 7200\n")
+
+        config = load_config(project_path=project, user_path=tmp_path / "missing.toml")
+
+        assert config.execution.timeout_s == 7200.0
+
+    def test_provider_request_timeout_is_forwarded_to_llm_client(self):
+        from agenthicc.config import ExecutionSettings, build_llm_config
+
+        execution = ExecutionSettings(
+            provider="anthropic",
+            model="claude-haiku-4-5",
+            api_key="test-key",
+        )
+
+        assert execution.timeout_s == 3600.0
+        assert build_llm_config(execution).timeout == 3600.0
 
     def test_authoring_generation_attempts_are_configurable(self, tmp_path):
         project = tmp_path / "agenthicc.toml"

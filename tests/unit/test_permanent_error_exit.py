@@ -170,12 +170,15 @@ async def test_stream_reraises_transient_error() -> None:
     ctx = AgentTurnContext(
         text="hello",
         runner=MagicMock(),
-        processor=MagicMock(),
+        processor=None,
         session_memory=None,
         max_agent_turns=1,
         conv_store=conv_store,
         app_state=None,
-        exec_cfg=ExecutionSettings(),
+        exec_cfg=ExecutionSettings(
+            transport_max_retries=1,
+            transport_retry_base_delay_s=0.0,
+        ),
         skills={},
         mention_cache=MagicMock(),
         project_plugin_tools=[],
@@ -200,8 +203,12 @@ async def test_stream_reraises_transient_error() -> None:
 
     assert exc_info.value is transient_exc
 
-    # Error event still emitted to TUI
-    conv_store.append_event.assert_called_once()
+    # A retry notice and the final error event are both emitted to the TUI.
+    assert mock_runner.run_stream.await_count == 2
+    error_events = [
+        call for call in conv_store.append_event.call_args_list if call.args[0] == "error"
+    ]
+    assert len(error_events) == 1
 
 
 @pytest.mark.unit
