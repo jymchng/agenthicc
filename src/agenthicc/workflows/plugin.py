@@ -25,6 +25,7 @@ from agenthicc.tools.capabilities import ToolCapability, get_tool_capabilities
 
 if TYPE_CHECKING:
     from agenthicc.workflows.base_runner import BaseWorkflowRunner
+    from agenthicc.workflows.checkpoint import WorkflowCheckpointTopology
     from agenthicc.workflows.config import WorkflowConfig
     from agenthicc.tui.runtime.mode_manager import ModeManager
 
@@ -495,6 +496,22 @@ class WorkflowPlugin(abc.ABC):
     def phase_names(cls) -> list[str]:
         """Return an ordered list of phase names."""
         return [p.name for p in cls.phases]
+
+    @classmethod
+    def resolve_checkpoint_topology(
+        cls, context_payload: Mapping[str, object]
+    ) -> "WorkflowCheckpointTopology":
+        """Return the phase graph that gives meaning to checkpoint indexes.
+
+        Fixed declarative workflows inherit this implementation.  A workflow
+        whose runner filters, profiles, or otherwise computes its phases must
+        override it and derive the same ordered graph from the persisted
+        context that its runner will use after restart.
+        """
+        del context_payload
+        from agenthicc.workflows.checkpoint import topology_from_phase_specs
+
+        return topology_from_phase_specs(cls.name, tuple(cls.phases))
 
     # ── Factory classmethods (override to return specialised objects) ─────────
 

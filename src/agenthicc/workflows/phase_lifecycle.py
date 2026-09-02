@@ -191,7 +191,7 @@ def checkpoint_phase_boundary(
     completed = completed_phase.strip()[:128]
     next_name = next_phase.strip()[:128] if isinstance(next_phase, str) else ""
     reason = f"phase_boundary:{completed}:{safe_outcome}"
-    boundary_key = "|".join(
+    requested_boundary_key = "|".join(
         (completed, next_name, str(phase_index), str(phase_iteration), safe_outcome)
     )
     try:
@@ -219,9 +219,21 @@ def checkpoint_phase_boundary(
         marker = object.__getattribute__(context, "last_boundary")
     except AttributeError:
         marker = None
-    if isinstance(marker, dict) and marker.get("boundary_key") == boundary_key:
-        if marker.get("durable") is True:
-            return None
+    if (
+        isinstance(marker, dict)
+        and marker.get("completed_phase") == completed
+        and marker.get("next_phase", "") == (next_phase or None)
+        and marker.get("phase_iteration") == phase_iteration
+        and marker.get("outcome") == safe_outcome
+        and marker.get("durable") is True
+    ):
+        return None
+    if (
+        isinstance(marker, dict)
+        and marker.get("boundary_key") == requested_boundary_key
+        and marker.get("durable") is True
+    ):
+        return None
 
     try:
         handle.attach_context(context)
@@ -234,8 +246,28 @@ def checkpoint_phase_boundary(
             phase_iteration,
             persist=False,
         )
+        # WorkflowRunHandle derives this value from the active checkpoint
+        # topology. Use that canonical coordinate for deduplication and the
+        # auxiliary journal too; a caller's raw index may belong to the full
+        # registry rather than a profile-filtered plan.
+        effective_phase_index = getattr(handle, "phase_index", phase_index)
+        if not isinstance(effective_phase_index, int) or isinstance(effective_phase_index, bool):
+            effective_phase_index = phase_index
+        boundary_key = "|".join(
+            (
+                completed,
+                next_name,
+                str(effective_phase_index),
+                str(phase_iteration),
+                safe_outcome,
+            )
+        )
         checkpoint = handle.save_checkpoint(reason=reason)
         if isinstance(marker, dict):
+            marker["completed_phase"] = completed
+            marker["next_phase"] = next_phase
+            marker["phase_iteration"] = phase_iteration
+            marker["outcome"] = safe_outcome
             marker["boundary_key"] = boundary_key
             marker["durable"] = True
             try:
@@ -261,7 +293,7 @@ def checkpoint_phase_boundary(
                 object.__getattribute__(handle, "workflow_name"),
                 completed_phase=completed,
                 next_phase=next_phase,
-                phase_index=phase_index,
+                phase_index=effective_phase_index,
                 phase_iteration=phase_iteration,
                 outcome=safe_outcome,
                 plan_version=str(plan_version),

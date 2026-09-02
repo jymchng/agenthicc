@@ -822,6 +822,52 @@ the primary checkpoint has already made the transition safe.
 runners are statically validated and smoke-tested for this annotation,
 boundary, resume, and failure contract before publication.
 
+#### Profile-aware checkpoint topology
+
+`current_phase` is the semantic cursor; `phase_index` is only its position in
+the active graph for this run. A workflow that executes every declared
+`PhaseSpec` can use the inherited topology resolver. A workflow that filters,
+skips, generates, or reorders phases must persist its selector/profile and
+plan version in its typed context and implement the same resolver contract:
+
+```python
+from agenthicc.workflows.checkpoint import topology_from_phase_specs
+
+@classmethod
+def resolve_checkpoint_topology(cls, context_payload):
+    fields = context_payload.get("fields", context_payload)
+    selected = tuple(fields.get("active_phase_names", cls.phase_names()))
+    phases = tuple(spec for spec in cls.phases if spec.name in selected)
+    return topology_from_phase_specs(
+        cls.name,
+        phases,
+        topology_version="my-workflow.v1",
+        profile=str(fields.get("profile", "default")),
+    )
+```
+
+`WorkflowCheckpoint` stores the resolved topology version, fingerprint,
+profile, and ordered phase names. The workflow handle derives the index from
+that topology at phase entry, boundary, and failure; the lifecycle journal
+uses the same derived value. Recovery restores the typed context first,
+resolves the active graph without calling the provider, and then checks the
+phase name/index pair against that graph. It never compares a profile-local
+index with the full registry list.
+
+Recovery distinguishes a context mismatch from a topology mismatch and from a
+valid phase with a wrong index. Older checkpoints without topology fields are
+accepted only when the workflow can unambiguously resolve the graph from the
+saved context; their first successful checkpoint writes the metadata while
+preserving the same run, conversation, and artifact identities. If a dynamic
+graph cannot be reconstructed safely, the checkpoint remains inspectable and
+is reported as `checkpoint_topology_metadata_missing`; it is never reset to
+`INIT` implicitly.
+
+The built-in `reconstruct_site` runner resolves its `static`, `application`,
+`production`, and `custom` active plans from the persisted plan version,
+profile, and selected phase names. Thus, for example, `final_validation` in a
+static run has the active-plan index `19`, not the full registry index `40`.
+
 The framework codecs cover `WorkflowContext`, `CodePlanContext`, and
 `CreateWorkflowContext`. A plugin with a custom runner/context must opt in
 explicitly; `create_workflow` rejects a generated custom runner that omits

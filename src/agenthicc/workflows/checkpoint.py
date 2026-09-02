@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import json
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -17,9 +18,12 @@ if TYPE_CHECKING:
 __all__ = [
     "CHECKPOINT_SCHEMA_VERSION",
     "CheckpointValidationError",
+    "WorkflowCheckpointTopology",
     "WorkflowCheckpoint",
     "context_from_payload",
     "context_to_payload",
+    "resolve_workflow_checkpoint_topology",
+    "topology_from_phase_specs",
     "workflow_fingerprint",
 ]
 
@@ -28,6 +32,181 @@ CHECKPOINT_SCHEMA_VERSION = 1
 
 class CheckpointValidationError(ValueError):
     """Raised when a checkpoint cannot be trusted or rehydrated."""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowCheckpointTopology:
+    """The executable phase graph used by one workflow run.
+
+    ``WorkflowPlugin.phases`` is the complete registry topology.  A runner
+    may execute a profile-filtered or otherwise dynamically selected subset of
+    that graph, so a checkpoint must retain the topology that gave meaning to
+    its phase index.  The graph is intentionally metadata only: it contains
+    phase names and edges, never prompts, artifacts, credentials, or memory.
+    """
+
+    workflow_name: str
+    topology_version: str
+    profile: str
+    phase_names: tuple[str, ...]
+    next_phases: tuple[str | None, ...] = ()
+    reject_phases: tuple[str | None, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, str)
+            for value in (self.workflow_name, self.topology_version, self.profile)
+        ):
+            raise CheckpointValidationError("checkpoint topology identity fields must be strings")
+        if not all(isinstance(name, str) for name in self.phase_names):
+            raise CheckpointValidationError("checkpoint topology phase names must be strings")
+        if len(self.phase_names) > 4096:
+            raise CheckpointValidationError("checkpoint topology contains too many phases")
+        if any(len(name) > 256 for name in self.phase_names):
+            raise CheckpointValidationError("checkpoint topology phase name is too long")
+        if not self.workflow_name.strip():
+            raise CheckpointValidationError("checkpoint topology requires a workflow name")
+        if not self.topology_version.strip():
+            raise CheckpointValidationError("checkpoint topology requires a version")
+        if len(self.workflow_name) > 256 or len(self.topology_version) > 256:
+            raise CheckpointValidationError("checkpoint topology identity is too long")
+        if len(self.profile) > 256:
+            raise CheckpointValidationError("checkpoint topology profile is too long")
+        if not self.phase_names:
+            raise CheckpointValidationError("checkpoint topology must contain a phase")
+        if any(not name.strip() for name in self.phase_names):
+            raise CheckpointValidationError("checkpoint topology phase names must be non-empty")
+        if len(set(self.phase_names)) != len(self.phase_names):
+            raise CheckpointValidationError("checkpoint topology contains duplicate phases")
+        if self.next_phases and len(self.next_phases) != len(self.phase_names):
+            raise CheckpointValidationError("checkpoint topology next edges have the wrong length")
+        if self.reject_phases and len(self.reject_phases) != len(self.phase_names):
+            raise CheckpointValidationError(
+                "checkpoint topology rejection edges have the wrong length"
+            )
+        known = set(self.phase_names)
+        for edge in (*self.next_phases, *self.reject_phases):
+            if edge is not None and edge not in known:
+                raise CheckpointValidationError(
+                    f"checkpoint topology references unknown phase {edge!r}"
+                )
+
+    @property
+    def topology_fingerprint(self) -> str:
+        """Return a stable fingerprint of the active graph and profile."""
+        raw = json.dumps(
+            {
+                "workflow_name": self.workflow_name,
+                "topology_version": self.topology_version,
+                "profile": self.profile,
+                "phases": [
+                    {
+                        "name": name,
+                        "next": self.next_phases[index] if self.next_phases else None,
+                        "reject": self.reject_phases[index] if self.reject_phases else None,
+                    }
+                    for index, name in enumerate(self.phase_names)
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    @property
+    def index(self) -> Mapping[str, int]:
+        """Return the active phase-to-index mapping."""
+        return {name: index for index, name in enumerate(self.phase_names)}
+
+    def index_for(self, phase_name: str) -> int:
+        """Return the index for a phase, rejecting phases outside this graph."""
+        try:
+            return self.index[phase_name]
+        except KeyError as exc:
+            raise CheckpointValidationError(
+                f"phase {phase_name!r} is absent from the checkpoint topology"
+            ) from exc
+
+
+def topology_from_phase_specs(
+    workflow_name: str,
+    phases: Sequence[object],
+    *,
+    topology_version: str = "workflow-phases.v1",
+    profile: str = "",
+) -> WorkflowCheckpointTopology:
+    """Build a checkpoint topology from declarative phase-like objects.
+
+    The helper accepts both :class:`PhaseSpec` (``next``/``on_reject``) and
+    specialized plan definitions (``next_phase``/``retry_phase``).  Keeping
+    this adapter here gives generic and specialized runners one contract.
+    """
+    materialized = tuple(phases)
+    names = tuple(str(getattr(phase, "name", "")) for phase in materialized)
+    next_phases = tuple(
+        _normalise_topology_edge(_optional_phase_attribute(phase, "next", "next_phase"), names)
+        for phase in materialized
+    )
+    reject_phases = tuple(
+        _normalise_topology_edge(
+            _optional_phase_attribute(phase, "on_reject", "retry_phase"), names
+        )
+        for phase in materialized
+    )
+    return WorkflowCheckpointTopology(
+        workflow_name=workflow_name,
+        topology_version=topology_version,
+        profile=profile,
+        phase_names=names,
+        next_phases=next_phases,
+        reject_phases=reject_phases,
+    )
+
+
+def _optional_phase_attribute(phase: object, primary: str, fallback: str) -> str | None:
+    value = getattr(phase, primary, None)
+    if value is None:
+        value = getattr(phase, fallback, None)
+    return str(value) if isinstance(value, str) else None
+
+
+def _normalise_topology_edge(edge: str | None, phase_names: tuple[str, ...]) -> str | None:
+    """Represent a declarative terminal target as the topology's terminal edge."""
+    if edge is None or edge in phase_names:
+        return edge
+    if edge.strip().lower() in {"complete", "completed", "done", "exited", "failed", "blocked"}:
+        return None
+    return edge
+
+
+def resolve_workflow_checkpoint_topology(
+    workflow: type[object], context_payload: Mapping[str, object]
+) -> WorkflowCheckpointTopology:
+    """Resolve the exact topology for a checkpoint context.
+
+    Specialized workflows override ``resolve_checkpoint_topology`` when their
+    active phase graph depends on persisted context.  Fixed declarative
+    workflows use the complete ``phases`` list by default.
+    """
+    resolver = getattr(workflow, "resolve_checkpoint_topology", None)
+    if callable(resolver):
+        topology = resolver(dict(context_payload))
+    else:  # pragma: no cover - every WorkflowPlugin inherits the resolver
+        topology = topology_from_phase_specs(
+            str(getattr(workflow, "name", workflow.__qualname__)),
+            tuple(getattr(workflow, "phases", ())),
+        )
+    if not isinstance(topology, WorkflowCheckpointTopology):
+        raise CheckpointValidationError(
+            f"workflow {getattr(workflow, 'name', workflow.__qualname__)!r} returned invalid "
+            "checkpoint topology metadata"
+        )
+    workflow_name = str(getattr(workflow, "name", workflow.__qualname__))
+    if topology.workflow_name != workflow_name:
+        raise CheckpointValidationError(
+            "checkpoint topology workflow name does not match the loaded workflow"
+        )
+    return topology
 
 
 def _as_int(value: object, default: int) -> int:
@@ -372,6 +551,13 @@ class WorkflowCheckpoint:
     failure_message: str | None = None
     last_safe_boundary: str | None = None
     error_revision: int = 0
+    # The topology actually used by the runner.  These optional fields keep
+    # schema-v1 checkpoints readable while allowing profile-aware runners to
+    # distinguish an active index from the registry's full index.
+    topology_version: str = ""
+    topology_fingerprint: str = ""
+    topology_profile: str = ""
+    topology_phase_names: tuple[str, ...] = ()
     created_at: float = field(default_factory=time.time)
     schema_version: int = CHECKPOINT_SCHEMA_VERSION
 
@@ -407,6 +593,10 @@ class WorkflowCheckpoint:
             "failure_message": self.failure_message,
             "last_safe_boundary": self.last_safe_boundary,
             "error_revision": self.error_revision,
+            "topology_version": self.topology_version,
+            "topology_fingerprint": self.topology_fingerprint,
+            "topology_profile": self.topology_profile,
+            "topology_phase_names": list(self.topology_phase_names),
             "created_at": self.created_at,
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -509,6 +699,37 @@ class WorkflowCheckpoint:
             raise CheckpointValidationError("last_safe_boundary must be a string or null")
         if isinstance(last_safe_boundary, str) and len(last_safe_boundary) > 256:
             raise CheckpointValidationError("last_safe_boundary is too long")
+        topology_version = raw.get("topology_version", "")
+        topology_fingerprint = raw.get("topology_fingerprint", "")
+        topology_profile = raw.get("topology_profile", "")
+        topology_phase_names_raw = raw.get("topology_phase_names", [])
+        if not all(
+            isinstance(value, str)
+            for value in (topology_version, topology_fingerprint, topology_profile)
+        ):
+            raise CheckpointValidationError("checkpoint topology metadata must be strings")
+        if any(
+            len(value) > 256 for value in (topology_version, topology_fingerprint, topology_profile)
+        ):
+            raise CheckpointValidationError("checkpoint topology metadata is too long")
+        if not isinstance(topology_phase_names_raw, list) or not all(
+            isinstance(value, str) for value in topology_phase_names_raw
+        ):
+            raise CheckpointValidationError("checkpoint topology phase names must be a string list")
+        if len(topology_phase_names_raw) > 4096 or any(
+            len(value) > 256 for value in topology_phase_names_raw
+        ):
+            raise CheckpointValidationError("checkpoint topology phase names are too large")
+        topology_phase_names = tuple(topology_phase_names_raw)
+        has_topology_metadata = bool(
+            topology_version or topology_fingerprint or topology_profile or topology_phase_names
+        )
+        if has_topology_metadata and (
+            not topology_version or not topology_fingerprint or not topology_phase_names
+        ):
+            raise CheckpointValidationError("checkpoint topology metadata is incomplete")
+        if topology_phase_names and len(set(topology_phase_names)) != len(topology_phase_names):
+            raise CheckpointValidationError("checkpoint topology contains duplicate phases")
         error_revision = raw.get("error_revision", 0)
         if (
             not isinstance(error_revision, int)
@@ -556,5 +777,9 @@ class WorkflowCheckpoint:
             failure_message=failure_message,
             last_safe_boundary=last_safe_boundary,
             error_revision=error_revision,
+            topology_version=topology_version,
+            topology_fingerprint=topology_fingerprint,
+            topology_profile=topology_profile,
+            topology_phase_names=topology_phase_names,
             created_at=float(raw.get("created_at", time.time()) or time.time()),
         )

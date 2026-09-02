@@ -558,6 +558,74 @@ def _check_checkpoint_contract(
         )
 
 
+def _check_checkpoint_topology_contract(
+    plugin: type[WorkflowPlugin],
+    source: str,
+    errors: list[str],
+    *,
+    strict: bool,
+) -> None:
+    """Validate the phase-coordinate contract for generated workflows.
+
+    A fixed ``PhaseSpec`` list inherits the framework resolver.  A runner that
+    filters or computes its active phases must expose a resolver based on
+    persisted context; otherwise a numeric checkpoint cursor has no stable
+    meaning after a restart.
+    """
+    if not strict:
+        return
+    from agenthicc.workflows.checkpoint import (  # noqa: PLC0415
+        CheckpointValidationError,
+        resolve_workflow_checkpoint_topology,
+    )
+
+    resolver_overridden = _overrides_plugin_method(plugin, "resolve_checkpoint_topology")
+    dynamic_markers = (
+        "active_phase_names",
+        "selected_phases",
+        "phase_filter",
+        "skipped_phases",
+        "profiled",
+        "profile=",
+    )
+    appears_dynamic = any(marker in source for marker in dynamic_markers)
+    try:
+        topology = resolve_workflow_checkpoint_topology(
+            plugin,
+            {"kind": "WorkflowContext", "fields": {}},
+        )
+    except (CheckpointValidationError, TypeError, ValueError) as exc:
+        if not resolver_overridden:
+            errors.append(
+                "generated workflows with a dynamic or unresolvable phase topology must "
+                "override resolve_checkpoint_topology(context_payload) and derive the active "
+                f"phase order from persisted context ({type(exc).__name__}: {exc})."
+            )
+        else:
+            errors.append(
+                "resolve_checkpoint_topology(context_payload) must resolve a safe active graph "
+                f"from checkpoint data ({type(exc).__name__}: {exc})."
+            )
+        return
+
+    declared_names = {
+        str(getattr(phase, "name", ""))
+        for phase in (plugin.phases if isinstance(plugin.phases, list) else ())
+    }
+    unknown = sorted(set(topology.phase_names).difference(declared_names))
+    if unknown:
+        errors.append(
+            "resolve_checkpoint_topology() returned phases not declared by the plugin: "
+            f"{unknown}. The active topology must be an ordered view of the canonical plan."
+        )
+    if appears_dynamic and not resolver_overridden:
+        errors.append(
+            "this workflow appears to select or skip phases dynamically but inherits the "
+            "fixed-list checkpoint resolver; implement resolve_checkpoint_topology() and "
+            "persist the selector/plan version in the typed context."
+        )
+
+
 def _check_runner(
     plugin: type[WorkflowPlugin],
     namespace: dict[str, object],
@@ -1382,6 +1450,12 @@ def validate_workflow_file(
     phase_names = _check_phases(target, errors, warnings)
     _check_phase_capabilities(target, errors)
     _check_runner(target, namespace, errors, warnings, len(phase_names))
+    _check_checkpoint_topology_contract(
+        target,
+        "\n".join(sources.values()),
+        errors,
+        strict=strict_cache_contract,
+    )
     if _has_custom_runner(target):
         _check_resume_does_not_restart("\n".join(sources.values()), errors)
         _check_error_recovery_contract(

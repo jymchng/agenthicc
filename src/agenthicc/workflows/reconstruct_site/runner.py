@@ -30,6 +30,7 @@ from agenthicc.workflows.phase_lifecycle import (
     publish_phase_annotation,
     reconcile_phase_cursor,
 )
+from agenthicc.workflows.checkpoint import CheckpointValidationError
 from .evidence import (
     ArtifactRecord,
     EvidenceIntegrityError,
@@ -110,6 +111,7 @@ from agenthicc.workflows.reconstruct_site.research import (
 
 if TYPE_CHECKING:
     from agenthicc.tui.runtime.mode_manager import ModeManager
+    from agenthicc.workflows.checkpoint import WorkflowCheckpointTopology
     from agenthicc.workflows.config import WorkflowConfig
 
 log = logging.getLogger(__name__)
@@ -176,6 +178,9 @@ class ReconstructContext(PhaseContext):
 
     plan_version: str = PHASE_PLAN_VERSION
     profile: str = ReconstructProfile.STATIC.value
+    # Persist the selected ordered names because custom profiles cannot be
+    # reconstructed safely from the complete registry alone.
+    active_phase_names: list[str] = dataclasses.field(default_factory=list)
     phase_attempt: int = 0
     phase_attempts: dict[str, int] = dataclasses.field(default_factory=dict)
     artifact_manifest_path: str = ""
@@ -319,6 +324,7 @@ class ReconstructSiteRunner(PhaseRunner):
         context.plan_version = plan.version
         context.skipped_reasons = {item.name: item.reason for item in plan.skipped}
         context.skipped_phases = list(context.skipped_reasons)
+        context.active_phase_names = list(plan.names)
         return plan
 
     def _restore_persisted_plan_version(self, context: ReconstructContext) -> None:
@@ -2126,6 +2132,45 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
     phases = PhaseWorkflow.phases
 
     @classmethod
+    def resolve_checkpoint_topology(
+        cls, context_payload: Mapping[str, object]
+    ) -> "WorkflowCheckpointTopology":
+        """Resolve the profile-filtered graph before validating a checkpoint."""
+        fields = context_payload.get("fields", context_payload)
+        if not isinstance(fields, Mapping):
+            raise CheckpointValidationError(
+                "reconstruct checkpoint context fields must be an object"
+            )
+        profile = str(fields.get("profile", ReconstructProfile.STATIC.value) or "").strip().lower()
+        plan_version = str(fields.get("plan_version", PHASE_PLAN_VERSION) or PHASE_PLAN_VERSION)
+        if plan_version == LEGACY_PHASE_PLAN_VERSION:
+            source = LEGACY_RECONSTRUCT_PHASE_PLAN
+        elif plan_version == PHASE_PLAN_VERSION:
+            source = RECONSTRUCT_PHASE_PLAN
+        else:
+            raise CheckpointValidationError(
+                f"unsupported reconstruct phase-plan version {plan_version!r}"
+            )
+        raw_active = fields.get("active_phase_names", [])
+        active_names = (
+            tuple(str(name) for name in raw_active if isinstance(name, str) and name.strip())
+            if isinstance(raw_active, list)
+            else ()
+        )
+        try:
+            plan = source.active(
+                profile,
+                active_names,
+                require_research_gate=source is RECONSTRUCT_PHASE_PLAN,
+            )
+        except (PhasePlanError, TypeError, ValueError) as exc:
+            raise CheckpointValidationError(
+                f"cannot resolve reconstruct checkpoint topology: {exc}"
+            ) from exc
+        plan = dataclasses.replace(plan, version=plan_version)
+        return plan.checkpoint_topology(cls.name)
+
+    @classmethod
     def build_runner(
         cls, config: "WorkflowConfig", mode_manager: "ModeManager | None"
     ) -> ReconstructSiteRunner:
@@ -2206,6 +2251,7 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
                 {
                     "plan_version": context.plan_version,
                     "profile": context.profile,
+                    "active_phase_names": list(context.active_phase_names),
                     "phase_attempt": context.phase_attempt,
                     "phase_attempts": dict(context.phase_attempts),
                     "artifact_manifest_path": context.artifact_manifest_path,
@@ -2290,6 +2336,12 @@ class ReconstructSiteWorkflow(WorkflowPlugin):
             ("resume_resolution_reason", ""),
         ):
             values[name] = str(payload.get(name, default) or default)
+        raw_active_names = payload.get("active_phase_names", [])
+        values["active_phase_names"] = (
+            [str(name) for name in raw_active_names if isinstance(name, str) and name.strip()]
+            if isinstance(raw_active_names, list)
+            else []
+        )
         values["resume_reconciled"] = bool(payload.get("resume_reconciled", False))
         for name in ("phase_attempt", "artifact_manifest_revision", "reentry_count"):
             try:

@@ -15,8 +15,10 @@ from agenthicc.runners.prompt_contract import PromptContract
 from agenthicc.workflows.checkpoint import (
     CheckpointValidationError,
     WorkflowCheckpoint,
+    WorkflowCheckpointTopology,
     context_from_payload,
     context_to_payload,
+    resolve_workflow_checkpoint_topology,
     workflow_fingerprint,
 )
 
@@ -101,6 +103,10 @@ class WorkflowRunHandle:
     failure_message: str | None = None
     last_safe_boundary: str | None = None
     error_revision: int = 0
+    topology_version: str = ""
+    topology_fingerprint: str = ""
+    topology_profile: str = ""
+    topology_phase_names: tuple[str, ...] = ()
     claim_owner_id: str | None = field(default=None, repr=False)
 
     @classmethod
@@ -158,6 +164,26 @@ class WorkflowRunHandle:
         """
         return self.context_ready and self.context is not None and self.checkpoint_supported
 
+    def set_checkpoint_topology(self, topology: WorkflowCheckpointTopology) -> None:
+        """Attach the run's active topology metadata to this handle."""
+        if topology.workflow_name != self.workflow_name:
+            raise CheckpointValidationError(
+                "checkpoint topology workflow name does not match the run handle"
+            )
+        self.topology_version = topology.topology_version
+        self.topology_fingerprint = topology.topology_fingerprint
+        self.topology_profile = topology.profile
+        self.topology_phase_names = topology.phase_names
+
+    def _resolve_checkpoint_topology(self) -> WorkflowCheckpointTopology | None:
+        """Resolve and remember the graph for the currently attached context."""
+        if self.workflow is None or self.context is None:
+            return None
+        payload = context_to_payload(self.context, workflow=self.workflow)
+        topology = resolve_workflow_checkpoint_topology(self.workflow, payload)
+        self.set_checkpoint_topology(topology)
+        return topology
+
     def sync_context_cursor(self) -> bool:
         """Synchronize the handle with the latest forward context cursor.
 
@@ -180,8 +206,21 @@ class WorkflowRunHandle:
         phase_from_context = phase_value.strip().lower() if isinstance(phase_value, str) else ""
         state = getattr(context, "state", None)
         state_name = getattr(state, "name", None)
-        phases = tuple(getattr(self.workflow, "phases", ()))
-        phase_names = [str(getattr(candidate, "name", "")).strip().lower() for candidate in phases]
+        try:
+            topology = self._resolve_checkpoint_topology()
+        except (CheckpointValidationError, TypeError, ValueError):
+            # Keep the typed cursor available for the failure diagnostic. The
+            # subsequent checkpoint build remains strict and will fail closed
+            # rather than persisting an index whose topology is unknown.
+            topology = None
+        phase_names = (
+            list(topology.phase_names)
+            if topology is not None
+            else [
+                str(getattr(candidate, "name", "")).strip().lower()
+                for candidate in tuple(getattr(self.workflow, "phases", ()))
+            ]
+        )
         phase_from_state = state_name.strip().lower() if isinstance(state_name, str) else ""
         # Some custom typed contexts expose both fields but use an enum whose
         # member names are not the declarative PhaseSpec names. Prefer that
@@ -228,6 +267,13 @@ class WorkflowRunHandle:
         self.current_phase = phase
         self.phase_index = index
         self.phase_iteration = iteration
+        if self.context is not None:
+            topology = self._resolve_checkpoint_topology()
+            if topology is not None and phase is not None:
+                # The caller's index is a progress hint. The named active
+                # topology is authoritative, which prevents profile-filtered
+                # runs from persisting a registry-relative index.
+                self.phase_index = topology.index_for(phase)
         if persist and self.context is not None and self.checkpoint_supported:
             self.persist_checkpoint(reason="phase_started")
 
@@ -467,6 +513,9 @@ class WorkflowRunHandle:
         if self.context is None:
             raise ValueError("cannot checkpoint a workflow before its context exists")
         context_payload = context_to_payload(self.context, workflow=self.workflow)
+        topology = self._resolve_checkpoint_topology()
+        if topology is not None and self.current_phase is not None:
+            self.phase_index = topology.index_for(self.current_phase)
         browser_payload: dict[str, object] = {}
         if self.browser_manager is not None:
             exporter = getattr(self.browser_manager, "checkpoint_payload", None)
@@ -504,6 +553,10 @@ class WorkflowRunHandle:
             failure_message=self.failure_message,
             last_safe_boundary=self.last_safe_boundary,
             error_revision=self.error_revision,
+            topology_version=self.topology_version,
+            topology_fingerprint=self.topology_fingerprint,
+            topology_profile=self.topology_profile,
+            topology_phase_names=self.topology_phase_names,
         )
 
     def save_checkpoint(self, *, reason: str = "") -> WorkflowCheckpoint:
@@ -561,16 +614,11 @@ class WorkflowRunHandle:
         }:
             return
         phase = state_name.lower()
-        phases = getattr(self.workflow, "phases", ())
-        index = next(
-            (i for i, candidate in enumerate(phases) if getattr(candidate, "name", "") == phase),
-            self.phase_index,
-        )
         self.current_phase = phase
-        self.phase_index = index
         iteration = getattr(context, "phase_iteration", self.phase_iteration)
         if isinstance(iteration, int) and iteration >= 0:
             self.phase_iteration = iteration
+        self.sync_context_cursor()
         self.persist_checkpoint(reason=reason)
 
     @classmethod
@@ -633,6 +681,10 @@ class WorkflowRunHandle:
             failure_message=checkpoint.failure_message,
             last_safe_boundary=checkpoint.last_safe_boundary,
             error_revision=checkpoint.error_revision,
+            topology_version=checkpoint.topology_version,
+            topology_fingerprint=checkpoint.topology_fingerprint,
+            topology_profile=checkpoint.topology_profile,
+            topology_phase_names=checkpoint.topology_phase_names,
         )
         if browser_manager is not None:
             importer = getattr(browser_manager, "restore_checkpoint", None)
@@ -643,4 +695,33 @@ class WorkflowRunHandle:
             memory=conversation.memory,
             workflow=workflow,
         )
+        # New checkpoints already carry this metadata. For schema-v1 records
+        # written before topology persistence, resolve it from the restored
+        # context so the first successful save migrates the record safely.
+        # Direct callers of from_checkpoint receive the same fail-closed
+        # topology validation as the recovery coordinator.
+        saved_topology = (
+            handle.topology_version,
+            handle.topology_fingerprint,
+            handle.topology_profile,
+            handle.topology_phase_names,
+        )
+        topology = handle._resolve_checkpoint_topology()
+        if topology is not None:
+            saved_has_topology = bool(
+                saved_topology[0] or saved_topology[1] or saved_topology[2] or saved_topology[3]
+            )
+            if saved_has_topology and saved_topology != (
+                topology.topology_version,
+                topology.topology_fingerprint,
+                topology.profile,
+                topology.phase_names,
+            ):
+                raise ValueError("workflow checkpoint topology does not match its context")
+            if checkpoint.current_phase is not None:
+                expected_index = topology.index_for(checkpoint.current_phase)
+                if expected_index != checkpoint.phase_index:
+                    raise ValueError(
+                        "workflow checkpoint phase index does not match its active topology"
+                    )
         return handle

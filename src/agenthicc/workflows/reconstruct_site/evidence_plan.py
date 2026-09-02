@@ -12,6 +12,10 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agenthicc.workflows.checkpoint import WorkflowCheckpointTopology
 
 __all__ = [
     "LEGACY_PHASE_PLAN_VERSION",
@@ -145,6 +149,19 @@ class ActiveReconstructPlan:
         for item in self.definitions[position:]:
             kinds.update(item.artifact_kinds)
         return frozenset(kinds)
+
+    def checkpoint_topology(
+        self, workflow_name: str = "reconstruct_site"
+    ) -> "WorkflowCheckpointTopology":
+        """Return the profile-filtered graph used for checkpoint indexes."""
+        from agenthicc.workflows.checkpoint import topology_from_phase_specs
+
+        return topology_from_phase_specs(
+            workflow_name,
+            self.definitions,
+            topology_version=self.version,
+            profile=self.profile.value,
+        )
 
 
 class ReconstructPhasePlan:

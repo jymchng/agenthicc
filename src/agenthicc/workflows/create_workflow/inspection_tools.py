@@ -84,6 +84,7 @@ from agenthicc.workflows.phase_lifecycle import (
     publish_phase_annotation,
     reconcile_phase_cursor,
 )
+from agenthicc.workflows.checkpoint import topology_from_phase_specs
 from agenthicc.workflows.plugin import PhaseSpec, WorkflowParams, WorkflowPlugin
 
 if TYPE_CHECKING:
@@ -566,6 +567,14 @@ class ReleaseCheckWorkflow(WorkflowPlugin):
     ]
 
     @classmethod
+    def resolve_checkpoint_topology(cls, context_payload):
+        """Return the same ordered graph used by the runner after restart."""
+        del context_payload
+        return topology_from_phase_specs(
+            cls.name, tuple(cls.phases), topology_version="release_check.v1"
+        )
+
+    @classmethod
     def checkpoint_context_to_payload(cls, context: object) -> dict[str, object]:
         """Encode resumable state without duplicating provider memory."""
         if not isinstance(context, ReleaseContext):
@@ -1042,6 +1051,13 @@ def make_inspection_tools(
                 "checkpoint_context_to_payload(context) and "
                 "checkpoint_context_from_payload(payload, memory=None) on the plugin; "
                 "omit session memory from JSON and reattach the supplied memory on restore",
+                "fixed PhaseSpec lists may inherit the checkpoint topology resolver; if the "
+                "runner filters, skips, generates, or reorders phases, implement a pure "
+                "resolve_checkpoint_topology(context_payload) method and persist the "
+                "selected phase names, profile, and plan version",
+                "derive phase_index from the active topology for annotations, phase entry, "
+                "boundaries, failures, and resume; never use a full-registry index for a "
+                "profile-filtered graph",
                 "phase tool factories that set an asyncio.Event; the state method checks "
                 "the event after the turn returns and never parses the agent's prose",
                 "each phase prompt names its @tool_control transition tool(s) and says "
@@ -1121,6 +1137,7 @@ def make_inspection_tools(
             ],
             "entry_order": [
                 "set typed state and increment phase iteration/attempt",
+                "resolve and attach the active checkpoint topology before deriving the index",
                 "attach typed context to config.workflow_handle",
                 "publish_phase_annotation(config, annotation, context)",
                 "run the bounded inner agent-turn loop",
@@ -1181,6 +1198,19 @@ def make_inspection_tools(
                 "        )\n"
                 "    except PhaseBoundaryError:\n"
                 "        raise  # the framework failure finalizer owns recovery"
+            ),
+            "topology_source": (
+                "from agenthicc.workflows.checkpoint import topology_from_phase_specs\n\n"
+                "@classmethod\n"
+                "def resolve_checkpoint_topology(cls, context_payload):\n"
+                "    fields = context_payload.get('fields', context_payload)\n"
+                "    selected = tuple(fields.get('active_phase_names', cls.phase_names()))\n"
+                "    # Rebuild the exact ordered active graph; do not use the full registry index.\n"
+                "    phases = tuple(spec for spec in cls.phases if spec.name in selected)\n"
+                "    return topology_from_phase_specs(\n"
+                "        cls.name, phases, topology_version='workflow.v1',\n"
+                "        profile=str(fields.get('profile', 'default')),\n"
+                "    )"
             ),
             "do_not": [
                 "do not put runtime annotation values into CACHE_CONTRACT",
@@ -1271,6 +1301,9 @@ def make_inspection_tools(
                 "Use PhaseAnnotation/publish_phase_annotation for the runtime phase projection "
                 "and checkpoint_phase_boundary after every transition; do not put either "
                 "dynamic value into CACHE_CONTRACT.",
+                "For filtered or dynamic phases, persist the selector and resolve the same "
+                "active topology during recovery; the full plugin registry is not the "
+                "checkpoint index coordinate system.",
                 "Reconcile durable checkpoint/receipt/journal state before any resume prompt; "
                 "transcript summaries are advisory only.",
                 "Inherit WorkflowConfig.workspace_scope/workspace_access for every phase and "

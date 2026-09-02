@@ -15,7 +15,7 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, tool records, subagent worker/pool results, and versioned usage records | Rebuild memory, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns, and recover complete subagent results |
 | `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
 | `<id>/.owner.lock` | `SessionOwnerLease` | Short per-session critical section for owner publication, stale replacement, and release | OS advisory lock; never held for the session lifetime |
-| `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, phase/branch cursor, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
+| `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, semantic phase cursor, active topology version/fingerprint/profile/name snapshot, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
 | `<id>/workflows/<run>/recovery-error.json` | `WorkflowCheckpointStore` | Bounded, redacted diagnostic for setup, context, or checkpoint-storage failures that cannot produce a typed checkpoint | Display diagnosis after restart; never resumable by itself |
 | `<id>/workflows/<run>/.claim` | `WorkflowCheckpointStore` | Atomic live-owner lease metadata (PID/host/owner/process-start identity only) | Prevent duplicate resume; reclaim only provably dead local claims |
 | `~/.agenthicc/session-service/index.json` | `SessionEventStore` | Bounded redacted metadata projection: id, project root, lifecycle, timestamps, sequence, capabilities, and file fingerprint | Atomic rebuild from authoritative service JSONL files; never used as event truth |
@@ -159,6 +159,25 @@ are kept under the session directory with restrictive permissions. Corrupt,
 unreadable, stale, or plugin-mismatched checkpoints fail closed. Workflow
 contexts have no framework-imposed serialized byte ceiling; they must still be
 JSON-compatible, and available filesystem capacity is the practical limit.
+
+### Active workflow checkpoint topology
+
+`WorkflowCheckpoint.phase_index` is an index into the active phase graph for
+that run, not necessarily an index into the plugin registry's complete
+`PhaseSpec` list. New checkpoints also store `topology_version`,
+`topology_fingerprint`, `topology_profile`, and `topology_phase_names`. The
+snapshot contains only ordered phase names and graph identity; it contains no
+prompts, messages, artifact bodies, credentials, or provider tokens.
+
+Fixed declarative workflows use the inherited
+`WorkflowPlugin.resolve_checkpoint_topology()` implementation. A profiled or
+dynamic workflow reconstructs the graph from persisted typed context through
+that resolver. The handle derives the index before phase-entry, boundary, and
+failure writes, so lifecycle journal records and TUI annotations use the same
+coordinate. Recovery resolves the topology without provider calls and rejects
+changed topology identity or a name/index mismatch. A pre-topology checkpoint
+is migrated only when the resolver can determine its graph unambiguously; an
+ambiguous record remains inspectable and is never silently reset to `INIT`.
 
 ### Phase-boundary lifecycle
 

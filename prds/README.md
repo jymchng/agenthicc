@@ -53,6 +53,7 @@ against the current source before implementing them.
 - [PRD-183 — Idempotent reconstruct_site Research-Gate Decisions](prd-183-reconstruct-site-idempotent-research-gate.md)
 - [PRD-184 — Preserve the Active Workflow Phase After Transient Errors](prd-184-preserve-workflow-phase-after-errors.md)
 - [PRD-185 — Dynamic goal-list mutation for goal_flow](prd-185-goal-flow-dynamic-goal-list.md)
+- [PRD-186 — Profile-aware workflow checkpoint topology](prd-186-profile-aware-workflow-checkpoint-topology.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -288,6 +289,13 @@ workflow policies.
 It also requires resume reconciliation from verified durable state before any
 phase prompt, preventing stale cursors or transcript summaries from restarting
 completed phases.
+
+PRD-186 specifies the profile-aware checkpoint topology contract exposed by the
+`reconstruct_site` resume failure. It separates the full plugin registry graph
+from the active profile/custom graph, persists the active topology identity,
+derives phase indexes within that topology, validates the same coordinate
+during recovery, and migrates unambiguous pre-topology checkpoints without
+silently restarting a run at `INIT`.
 
 ## Existing PRDs
 

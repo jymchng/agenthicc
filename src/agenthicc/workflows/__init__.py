@@ -25,6 +25,10 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "WorkflowEntry": ("agenthicc.workflows.plugin", "WorkflowEntry"),
     "WorkflowParams": ("agenthicc.workflows.plugin", "WorkflowParams"),
     "WorkflowPlugin": ("agenthicc.workflows.plugin", "WorkflowPlugin"),
+    "WorkflowCheckpointTopology": (
+        "agenthicc.workflows.checkpoint",
+        "WorkflowCheckpointTopology",
+    ),
     "WorkflowRun": ("agenthicc.workflows.plugin", "WorkflowRun"),
     "_parse_output_schema": ("agenthicc.workflows.plugin", "_parse_output_schema"),
     "WorkflowRegistry": ("agenthicc.workflows.registry", "WorkflowRegistry"),
@@ -136,6 +140,7 @@ __all__ = [
     "WorkflowEntry",
     "WorkflowParams",
     "WorkflowPlugin",
+    "WorkflowCheckpointTopology",
     "WorkflowRun",
     "PhaseRunRecord",
     "_parse_output_schema",

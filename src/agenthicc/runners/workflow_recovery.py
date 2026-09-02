@@ -19,6 +19,7 @@ from agenthicc.workflows.checkpoint import (
     CheckpointValidationError,
     WorkflowCheckpoint,
     context_from_payload,
+    resolve_workflow_checkpoint_topology,
     workflow_fingerprint,
 )
 
@@ -416,6 +417,27 @@ class WorkflowRecoveryCoordinator:
             if checkpoint.conversation_id != conversation.conversation_id:
                 raise ValueError("workflow checkpoint belongs to a different session conversation")
 
+            # The picker record is intentionally only a snapshot. Revalidate
+            # the latest bytes against the workflow supplied by the caller so
+            # a topology/profile edit between inspection and Enter cannot be
+            # turned into a resume with stale coordinates.
+            from agenthicc.workflows.registry import WorkflowRegistry
+
+            latest_registry = WorkflowRegistry()
+            latest_registry.register(workflow)
+            validation_code, validation_error = self._validate_recovery(
+                checkpoint,
+                workflow_registry=latest_registry,
+                conversation=conversation,
+                provider_profile=None,
+                workspace_root=None,
+            )
+            if validation_code is not None:
+                raise ValueError(
+                    f"workflow recovery validation failed: {validation_code}: "
+                    f"{validation_error or 'checkpoint is not recoverable'}"
+                )
+
             # Reconcile the provider-facing message projection before the
             # workflow adds its resume instruction. Completed tool results are
             # already durable and are not executed again; only an unanswered
@@ -510,6 +532,52 @@ class WorkflowRecoveryCoordinator:
                     "plugin_fingerprint_mismatch",
                     f"workflow {checkpoint.workflow_name!r} changed since this run was saved",
                 )
+            try:
+                topology = resolve_workflow_checkpoint_topology(workflow, checkpoint.context)
+            except (CheckpointValidationError, TypeError, ValueError) as exc:
+                # A dynamic workflow without enough persisted selector
+                # metadata cannot give phase_index a trustworthy meaning.
+                return (
+                    "checkpoint_topology_metadata_missing",
+                    "saved workflow topology cannot be reconstructed safely: "
+                    f"{type(exc).__name__}: {exc}",
+                )
+            has_topology_metadata = bool(
+                checkpoint.topology_version
+                or checkpoint.topology_fingerprint
+                or checkpoint.topology_profile
+                or checkpoint.topology_phase_names
+            )
+            if has_topology_metadata:
+                if (
+                    checkpoint.topology_version != topology.topology_version
+                    or checkpoint.topology_fingerprint != topology.topology_fingerprint
+                    or checkpoint.topology_profile != topology.profile
+                    or checkpoint.topology_phase_names != topology.phase_names
+                ):
+                    return (
+                        "checkpoint_topology_mismatch",
+                        "saved checkpoint topology differs from the active workflow topology "
+                        f"(saved_version={checkpoint.topology_version!r}, "
+                        f"current_version={topology.topology_version!r}, "
+                        f"saved_profile={checkpoint.topology_profile!r}, "
+                        f"current_profile={topology.profile!r})",
+                    )
+            if checkpoint.current_phase is not None:
+                try:
+                    expected_index = topology.index_for(checkpoint.current_phase)
+                except CheckpointValidationError:
+                    return (
+                        "checkpoint_topology_mismatch",
+                        f"saved phase {checkpoint.current_phase!r} is not in the active workflow "
+                        "topology",
+                    )
+                if expected_index != checkpoint.phase_index:
+                    return (
+                        "checkpoint_phase_index_mismatch",
+                        "checkpoint phase index does not match the active workflow topology "
+                        f"(saved={checkpoint.phase_index}, expected={expected_index})",
+                    )
             if conversation is not None:
                 try:
                     restored = context_from_payload(
@@ -561,16 +629,6 @@ class WorkflowRecoveryCoordinator:
                     return (
                         "checkpoint_phase_mismatch",
                         "checkpoint phase does not match the saved workflow context",
-                    )
-                phases = getattr(workflow, "phases", ())
-                phase_names = [getattr(phase, "name", "") for phase in phases]
-                if (
-                    checkpoint.current_phase in phase_names
-                    and phase_names.index(checkpoint.current_phase) != checkpoint.phase_index
-                ):
-                    return (
-                        "checkpoint_phase_mismatch",
-                        "checkpoint phase index does not match the workflow topology",
                     )
                 context_iteration = getattr(restored, "phase_iteration", None)
                 if (

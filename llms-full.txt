@@ -1882,6 +1882,33 @@ valid typed checkpoint. `WorkflowPlugin.create_initial_context()` is an
 optional hook for custom plugins that can construct typed state before runner
 setup; the framework always creates a durable bootstrap identity first.
 
+### WorkflowCheckpointTopology
+
+```python
+@dataclass(frozen=True, slots=True)
+class WorkflowCheckpointTopology:
+    workflow_name: str
+    topology_version: str
+    profile: str
+    phase_names: tuple[str, ...]
+    next_phases: tuple[str | None, ...] = ()
+    reject_phases: tuple[str | None, ...] = ()
+```
+
+This is the active phase coordinate system for one workflow run. A fixed
+declarative plugin inherits `WorkflowPlugin.resolve_checkpoint_topology()`;
+profiled, filtered, generated, or reordered workflows override that method
+and reconstruct the same ordered graph from checkpoint context. The handle
+derives `phase_index` from `phase_names`, and checkpoints persist the topology
+version, fingerprint, profile, and ordered names. Recovery validates against
+this active topology rather than the complete registry `PhaseSpec` list.
+
+`topology_from_phase_specs()` adapts declarative `PhaseSpec` and specialized
+phase definitions to this value. `resolve_workflow_checkpoint_topology()` is
+the framework resolver used by checkpoint persistence and recovery. Resolver
+execution is pure and contains no provider calls, prompts, artifacts, memory,
+or secrets.
+
 ### ReconstructProfile
 
 ~~~python
