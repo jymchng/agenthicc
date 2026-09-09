@@ -693,6 +693,47 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
         self._console.print()
 
 
+@register_renderer("network_retry")
+def _render_network_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """Render a compact, readable provider retry notice.
+
+    Transport exceptions often contain nested SDK dictionaries, provider
+    names, status codes, and chained exception reprs.  That representation is
+    useful in debug logs but makes the scroll buffer noisy and hard to scan.
+    The retry producer supplies already-bounded, user-facing fields instead.
+    """
+    from rich.markup import escape as _e  # noqa: PLC0415
+
+    attempt = max(1, int(_number(ev.payload, "attempt", 1)))
+    max_retries = max(attempt, int(_number(ev.payload, "max_retries", attempt)))
+    delay = max(0.0, _number(ev.payload, "delay_s"))
+    reason = _text(ev.payload, "reason", "Temporary network problem")
+    detail = _text(ev.payload, "detail")
+    status_code = ev.payload.get("status_code")
+    status = (
+        f"HTTP {status_code}"
+        if isinstance(status_code, int) and not isinstance(status_code, bool)
+        else ""
+    )
+
+    self._console.print(
+        "[yellow]⟳[/yellow] [bold]Network issue[/bold] "
+        f"[dim]retry {attempt}/{max_retries} in[/dim] "
+        f"[cyan]{delay:.1f}s[/cyan]",
+        markup=True,
+        highlight=False,
+    )
+    metadata = " · ".join(part for part in (reason, status) if part)
+    self._console.print(
+        f"  [dim]{_e(metadata)}[/dim]" if metadata else "  [dim]Retrying…[/dim]",
+        markup=True,
+        highlight=False,
+    )
+    if detail and detail.casefold() != reason.casefold():
+        self._console.print(f"  [dim]{_e(detail)}[/dim]", markup=True, highlight=False)
+    self._console.print()
+
+
 @register_renderer("goal_list_mutated")
 def _render_goal_list_mutated(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """Render a compact notice after a durable goal append or insertion."""

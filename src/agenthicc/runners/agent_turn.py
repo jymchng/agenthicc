@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
@@ -142,6 +143,45 @@ def _http_status_code(exc: BaseException) -> int | None:
         if isinstance(code, int):
             return code
     return None
+
+
+def _network_retry_reason(exc: BaseException) -> str:
+    """Return a short user-facing category for a transient provider error."""
+    status = _http_status_code(exc)
+    raw = f"{type(exc).__name__} {exc}".casefold()
+
+    if "timeout" in raw:
+        return "Request timed out"
+    if "unavailable" in raw or "overloaded" in raw or (status is not None and 500 <= status < 600):
+        return "Provider temporarily unavailable"
+    if status == 429 or "rate_limit" in raw or "rate limit" in raw:
+        return "Rate limit reached"
+    if any(term in raw for term in ("connect", "connection", "remote disconnected")):
+        return "Connection interrupted"
+    return "Temporary network problem"
+
+
+def _network_retry_detail(exc: BaseException) -> str:
+    """Extract a bounded provider message without exposing wrapper reprs.
+
+    SDK exception strings commonly contain a useful nested ``message`` field
+    followed by transport/provider metadata.  Only that field (or a short
+    plain exception message) is sent to the UI; the complete exception remains
+    available through debug logging.
+    """
+    raw = " ".join(str(exc).split())
+    if not raw:
+        return ""
+
+    match = re.search(r"[\"']message[\"']\s*:\s*[\"']([^\"']+)[\"']", raw)
+    if match:
+        return match.group(1).strip()[:240]
+
+    if len(raw) <= 160 and not any(
+        marker in raw.casefold() for marker in ("provider=", "caused by:", "status_code=")
+    ):
+        return raw
+    return ""
 
 
 def _is_transient_network_error(exc: BaseException) -> bool:
@@ -2224,20 +2264,29 @@ class AgentTurnRunner:
         ctx = self._ctx
         if ctx.conv_store is not None:
             ctx.conv_store.append_event(
-                "system",
+                "network_retry",
                 {
-                    "text": f"⟳ Network error — retrying ({attempt}/{max_retries})…",
+                    "attempt": attempt,
+                    "max_retries": max_retries,
+                    "delay_s": delay,
+                    "reason": _network_retry_reason(exc),
+                    "detail": _network_retry_detail(exc),
+                    "status_code": _http_status_code(exc),
                 },
             )
         import logging as _logging  # noqa: PLC0415
 
-        _logging.getLogger(__name__).warning(
+        # The scroll appender is the user-facing notification surface.  Keep
+        # the full exception for debug logs rather than printing a nested SDK
+        # repr into the transcript alongside the compact retry event.
+        _logging.getLogger(__name__).debug(
             "Transient network error on attempt %d/%d, retrying in %.1fs: %s: %s",
             attempt,
             max_retries,
             delay,
             type(exc).__name__,
             exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
         )
         if ctx.processor is not None:
             from agenthicc.kernel import Event  # noqa: PLC0415

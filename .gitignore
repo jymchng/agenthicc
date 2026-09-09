@@ -229,3 +229,4 @@ uv.lock
 
 # Created by cassette
 password_generator/
+tests/.cassette/

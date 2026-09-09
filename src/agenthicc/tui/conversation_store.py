@@ -57,6 +57,8 @@ EventKind = Literal[
     "subagent_pool_result",
     # Generic text line from internal systems (compactor, subagents, etc.)
     "system",
+    # Structured transient provider retry notice (PRD-187).
+    "network_retry",
     # Durable goal-list append/insert projection (PRD-185)
     "goal_list_mutated",
 ]

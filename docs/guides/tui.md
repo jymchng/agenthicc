@@ -69,6 +69,12 @@ When a tool group is collapsed, its `...and N more tool calls` line is flushed
 to the scroll buffer at the next conversation boundary and immediately when
 the agent is interrupted; it is never left only in the live status footer.
 
+Transient provider failures use a structured retry notice rather than dumping
+the SDK exception representation into the transcript. The scroll buffer shows
+the retry number and delay, a short category such as `Request timed out` or
+`Provider temporarily unavailable`, and a bounded provider message when one is
+available. Full chained exception details remain at debug log level.
+
 ## Modes
 
 The selectable mode cycle is **Safe → Plan → Yolo → Safe**. Safe is the default:
