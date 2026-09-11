@@ -140,7 +140,7 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/stop` stops all |
 | `/mode [name]` | Show or change the operating mode |
-| `/workflow <name> \| reset` | Select a workflow (the interactive picker autocompletes registered names); use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
+| `/workflow <name> \| resume [run-id] \| reset [run-id]` | Select a workflow, resume the latest eligible run when `run-id` is omitted, or reset a workflow; use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
 | `/model [provider] [model]` | Inspect or switch the model selection |
 | `/config` | Open the configuration overlay |
 | `/init` | Preview or explicitly write managed project `AGENTS.md` guidance |
@@ -161,7 +161,9 @@ tool registry is kept active.
 `/workflows runs` opens a paginated list of paused and interrupted workflow
 checkpoints, newest first. Select a run with the arrow keys, then press Enter
 to rehydrate and resume it through the same validation and live-owner claim
-path as `/workflow resume <run-id>`.
+path as `/workflow resume <run-id>`. `/workflow resume` without an ID selects
+the latest eligible durable checkpoint; provide an ID when you deliberately
+want to resume an older run.
 
 Large bracketed pastes stay condensed in the composer. Backspace removes the whole paste when the cursor is immediately after its closing `]`; elsewhere it keeps normal character-wise editing. Home and End navigate the visible, single-line placeholder, so typing at either side keeps the original pasted content intact.
 
@@ -390,9 +392,11 @@ at failure. A failure is diagnostic-only only when typed state is unavailable or
 the checkpoint cannot be durably written. See the [workflow guide](./docs/guides/workflows.md#pause-crash-recovery-and-workflow-resume)
 for the recovery data flow and failure cases.
 
-If multiple workflow checkpoints are recoverable, the TUI wraps the complete
-run IDs in its recovery notice so an exact `/workflow resume <run-id>` command
-can be entered.
+If multiple workflow checkpoints are recoverable, `/workflow resume` selects
+the newest by durable activity time, checkpoint revision, and a stable run-ID
+tie-breaker. The TUI still wraps the complete run IDs in its recovery notice
+so an exact `/workflow resume <run-id>` command can be entered for an older
+run.
 
 If `/workflow resume` reports `run_already_claimed`, another live agenthicc
 process owns that workflow run. Close or resume it in that process before

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import math
 import os
 import sys
 import uuid
@@ -1642,7 +1643,7 @@ class TUISession:
             suffix = " …" if len(candidates) > 5 else ""
             self._ctx.app_state.conversation.notification.set(
                 f"{len(candidates)} workflows can be resumed ({choices}{suffix}). "
-                "Use /workflow resume <run-id>."
+                "Use /workflow resume for the latest, or /workflow resume <run-id> for a specific run."
             )
             return
 
@@ -1697,9 +1698,48 @@ class TUISession:
         return sorted(
             records,
             key=lambda record: (
-                -(record.checkpoint.created_at if record.checkpoint is not None else 0.0),
+                -self._workflow_record_activity_timestamp(record),
+                -self._workflow_record_revision(record),
                 record.run_id,
             ),
+        )
+
+    @staticmethod
+    def _workflow_record_activity_timestamp(record: object) -> float:
+        """Read latest-run ordering metadata with a test/plugin-safe fallback."""
+        value = getattr(record, "activity_timestamp", None)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            checkpoint = getattr(record, "checkpoint", None)
+            value = getattr(checkpoint, "updated_at", None)
+            if value is None:
+                value = getattr(checkpoint, "created_at", 0.0)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return 0.0
+        timestamp = float(value)
+        return timestamp if math.isfinite(timestamp) else 0.0
+
+    @staticmethod
+    def _workflow_record_revision(record: object) -> int:
+        """Read the checkpoint revision for deterministic list ordering."""
+        value = getattr(record, "checkpoint_revision", None)
+        if not isinstance(value, int) or isinstance(value, bool):
+            checkpoint = getattr(record, "checkpoint", None)
+            value = getattr(checkpoint, "revision", 0)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    def _select_latest_workflow_record(self) -> WorkflowRecoveryRecord | None:
+        """Select the newest durable recoverable run for omitted-ID resume."""
+        conversation = getattr(self._ctx, "session_conversation", None)
+        if conversation is None:
+            return None
+        active_profile = getattr(self._ctx.cfg.execution, "profile", "")
+        workspace_scope = getattr(self._ctx, "workspace_scope", None)
+        workspace_root = str(getattr(workspace_scope, "primary_root", "") or "")
+        return self._workflow_recovery.select_latest_for_resume(
+            workflow_registry=self._ctx.workflow_registry,
+            conversation=conversation,
+            provider_profile=active_profile,
+            workspace_root=workspace_root,
         )
 
     def _resume_workflow_from_overlay(self, run_id: str) -> bool:
@@ -2296,8 +2336,12 @@ class TUISession:
         """Handle /workflow <name> | reset | resume [run-id]."""
         name = args.strip()
         conv = self._ctx.app_state.conversation
-        if name == "resume" or name.startswith("resume "):
-            run_id = name.partition(" ")[2].strip() or None
+        resume_parts = name.split()
+        if resume_parts and resume_parts[0] == "resume":
+            if len(resume_parts) > 2:
+                conv.notify_transient("⚠ Usage: /workflow resume [run-id]")
+                return True
+            run_id = resume_parts[1] if len(resume_parts) == 2 else None
             return self._handle_workflow_resume(run_id)
         if not name or name == "reset" or name.startswith("reset "):
             requested_reset_id = name.partition(" ")[2].strip() or None
@@ -2421,12 +2465,38 @@ class TUISession:
         return True
 
     def _handle_workflow_resume(self, run_id: str | None) -> bool:
-        """Claim and resume one paused or process-interrupted workflow."""
+        """Claim and resume one paused or process-interrupted workflow.
+
+        An omitted ID selects the newest eligible durable checkpoint, then
+        follows the same explicit-ID path so claims and revalidation cannot
+        drift between the two command forms.
+        """
         conv = self._ctx.app_state.conversation
         if self._agent_task is not None and not self._agent_task.done():
             conv.notify_transient("⚠ Cannot resume a workflow while another run is active")
             return True
         handle = self._workflow_handle
+        if run_id is None:
+            try:
+                selected = self._select_latest_workflow_record()
+            except Exception as exc:  # noqa: BLE001
+                conv.notify_transient(
+                    f"⚠ Cannot resume the latest workflow run: {type(exc).__name__}: {exc}"
+                )
+                return True
+            if selected is not None:
+                run_id = selected.run_id
+                conv.notify_transient(
+                    f"↻ Selected latest recoverable run '{selected.run_id}' "
+                    f"({selected.workflow_name or 'workflow'} at "
+                    f"{selected.current_phase or 'saved state'})"
+                )
+            elif getattr(self._ctx, "session_conversation", None) is not None:
+                # A fresh durable scan is authoritative. Do not fall back to
+                # a stale startup projection when it reports no candidate.
+                self._workflow_recovery_records = {}
+                handle = None
+
         if run_id is not None:
             # Recovery records are a discovery snapshot.  If this command is
             # selecting a run that is not the live in-memory handle, refresh
@@ -2491,7 +2561,7 @@ class TUISession:
                 choices = ", ".join(record.run_id for record in candidates[:8])
                 suffix = " …" if len(candidates) > 8 else ""
                 conv.notify_transient(
-                    "⚠ Multiple workflows can be resumed. Choose one explicitly: "
+                    "⚠ Multiple workflows can be resumed. "
                     f"/workflow resume <run-id> ({choices}{suffix})"
                 )
                 return True
@@ -2664,7 +2734,7 @@ class TUISession:
                 suffix = " …" if len(candidates) > 8 else ""
                 self._ctx.app_state.conversation.notify_transient(
                     "⚠ Multiple workflows can be resumed. Choose one explicitly: "
-                    f"/workflow resume <run-id> ({choices}{suffix})"
+                    f"/workflow resume for the latest, or /workflow resume <run-id> ({choices}{suffix})"
                 )
                 return True
             elif self._workflow_recovery_errors:
@@ -2862,8 +2932,8 @@ class TUISession:
                             choices = ", ".join(record.run_id for record in records[:8])
                             suffix = " …" if len(records) > 8 else ""
                             self._ctx.app_state.conversation.notify_transient(
-                                "⚠ Multiple workflows can be resumed. Choose one explicitly: "
-                                f"/workflow resume <run-id> ({choices}{suffix})"
+                                "⚠ Multiple workflows can be resumed. "
+                                f"/workflow resume for the latest, or /workflow resume <run-id> ({choices}{suffix})"
                             )
                         return
                     if self._workflow_recovery_errors:
@@ -3343,7 +3413,7 @@ class TUISession:
                 ids = ", ".join(recovery_records)
                 self._ctx.app_state.conversation.notification.set(
                     f"{len(recovery_records)} workflows can be resumed. "
-                    f"Use /workflow resume <run-id>: {ids}"
+                    f"Use /workflow resume for the latest, or /workflow resume <run-id>: {ids}"
                 )
             return
         from agenthicc.kernel.state import NodeStatus  # noqa: PLC0415

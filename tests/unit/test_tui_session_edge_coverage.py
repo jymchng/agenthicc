@@ -109,6 +109,48 @@ def test_session_reload_failure_paths_and_workflow_resume_guards(
     assert session._handle_workflow_resume(None) is True
 
 
+def test_workflow_resume_without_id_selects_latest_and_uses_explicit_guard() -> None:
+    from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError
+
+    session, ctx, _workspace, _input = _make_session()
+
+    class Demo:
+        name = "demo"
+
+    class Handle:
+        run_id = "latest-run"
+        workflow_name = "demo"
+        lifecycle = "paused"
+        checkpoint_supported = True
+        context = object()
+        claim_owner_id = None
+
+        def claim(self, _owner_id: str) -> None:
+            raise WorkflowClaimError("already claimed")
+
+    record = SimpleNamespace(
+        run_id="latest-run",
+        workflow_name="demo",
+        current_phase="architecture",
+    )
+    ctx.workflow_registry.register(Demo)  # type: ignore[arg-type]
+    session._workflow_handle = Handle()  # type: ignore[assignment]
+    session._select_latest_workflow_record = lambda: record  # type: ignore[method-assign]
+
+    assert session.route("/workflow resume") is True
+    notification = ctx.app_state.conversation.notification() or ""
+    assert "run_already_claimed" in notification
+    assert "latest-run" in notification
+
+
+def test_workflow_resume_rejects_more_than_one_run_id_argument() -> None:
+    session, ctx, _workspace, _input = _make_session()
+
+    assert session.route("/workflow resume run-a run-b") is True
+    notification = ctx.app_state.conversation.notification() or ""
+    assert notification == "⚠ Usage: /workflow resume [run-id]"
+
+
 def test_workflow_claim_error_is_reported_without_repeating_exception_type() -> None:
     from agenthicc.runners.workflow_checkpoint_store import WorkflowClaimError
 

@@ -374,16 +374,19 @@ class WorkflowRunsOverlay(Overlay):
         self._selected = 0
 
     @staticmethod
-    def _sort_key(record: WorkflowRecoveryRecord) -> tuple[float, str]:
+    def _sort_key(record: WorkflowRecoveryRecord) -> tuple[float, int, str]:
         return (
             -WorkflowRunsOverlay._created_at(record),
+            -WorkflowRunsOverlay._revision(record),
             record.run_id,
         )
 
     @staticmethod
     def _created_at(record: WorkflowRecoveryRecord) -> float:
         checkpoint = record.checkpoint
-        value: object = checkpoint.created_at if checkpoint is not None else None
+        value: object = getattr(checkpoint, "updated_at", None) if checkpoint is not None else None
+        if value is None and checkpoint is not None:
+            value = checkpoint.created_at
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return 0.0
         try:
@@ -391,6 +394,14 @@ class WorkflowRunsOverlay(Overlay):
         except OverflowError:
             return 0.0
         return timestamp if math.isfinite(timestamp) else 0.0
+
+    @staticmethod
+    def _revision(record: WorkflowRecoveryRecord) -> int:
+        value: object = getattr(record, "checkpoint_revision", None)
+        if not isinstance(value, int) or isinstance(value, bool):
+            checkpoint = record.checkpoint
+            value = getattr(checkpoint, "revision", 0) if checkpoint is not None else 0
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
     @property
     def page_count(self) -> int:

@@ -209,7 +209,9 @@ def _cmd_mcp(ctx: CommandContext) -> bool:
                 result = await manager.doctor(name)
                 ctx.console.print(json.dumps(result, sort_keys=True, indent=2), markup=False)
                 return
-            ctx.console.print(f"/mcp {action} complete{f' for {name}' if name else ''}.", markup=False)
+            ctx.console.print(
+                f"/mcp {action} complete{f' for {name}' if name else ''}.", markup=False
+            )
         except Exception as exc:  # noqa: BLE001
             ctx.console.print(f"/mcp {action} failed: {type(exc).__name__}: {exc}", markup=False)
 
@@ -454,8 +456,7 @@ def _cmd_startup(ctx: CommandContext) -> bool:
         elapsed = report.get("elapsed_s")
         elapsed_text = f"{float(elapsed):.3f}s" if isinstance(elapsed, (int, float)) else "—"
         ctx.console.print(
-            f"{report.get('name', 'unknown')}: {report.get('state', 'unknown')} "
-            f"({elapsed_text})",
+            f"{report.get('name', 'unknown')}: {report.get('state', 'unknown')} ({elapsed_text})",
             markup=False,
         )
     return True
@@ -1045,7 +1046,7 @@ BUILTIN_COMMANDS: list[Command] = [
     ),
     Command(
         name="/workflow",
-        description="Switch the active workflow within the current mode",
+        description="Switch workflow, or resume the latest saved run",
         argument_hint="<name> | resume [run-id] | reset [run-id]",
         group="Built-in",
         # No handler: /workflow is intercepted in TUISession.route() before

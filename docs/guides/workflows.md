@@ -49,10 +49,11 @@ terminal boundary. If the process disappears while a checkpoint is `running` or
 plugin fingerprint, profile, workspace, journal cursor, and typed context, and
 offers it without invoking the model.
 
-Use `/workflow resume` when exactly one recoverable run exists, or
-`/workflow resume <run-id>` when the notification lists more than one. An
-ordinary message continues the selected paused run using the same policy as an
-Esc pause; it never silently creates a fresh phase-one run. Use
+Use `/workflow resume` to continue the latest eligible recoverable run. The
+run ID is optional: the command is equivalent to
+`/workflow resume <latest-run-id>`. An ordinary message continues the selected
+paused run using the same policy as an Esc pause; it never silently creates a
+fresh phase-one run. Use
 `/workflow reset` to always clear the session-local workflow override so
 subsequent turns use the active mode's default workflow. Use
 `/workflow reset <run-id>` to write a terminal discarded checkpoint for a
@@ -65,13 +66,16 @@ contains `run_already_claimed`, another live agenthicc owner still has the run;
 close that process or resume the run there before retrying. The protection is
 intentional: forcibly taking a live claim could duplicate tool side effects.
 
-When multiple workflows are recoverable, the TUI recovery notice wraps the
-complete run IDs instead of ellipsizing them. Copy one into
-`/workflow resume <run-id>` to select the intended run.
+When multiple workflows are recoverable, omitted-ID resume selects the newest
+durable checkpoint by activity time, checkpoint revision, and a stable run-ID
+tie-breaker. The TUI recovery notice still wraps the complete run IDs instead
+of ellipsizing them. Copy one into `/workflow resume <run-id>` when you need to
+select an older run deliberately.
 
-An explicit `/workflow resume <run-id>` refreshes the durable checkpoint index
-before reporting `run_not_found`; startup discovery is only a snapshot. The
-TUI also resolves a unique run ID copied from a claim diagnostic (including
+Both omitted-ID and explicit-ID resume refresh and revalidate the durable
+checkpoint before claiming it; startup discovery is only a snapshot. The
+latest selector never uses directory order or filesystem mtime. The TUI also
+resolves a unique run ID copied from a claim diagnostic (including
 the trailing ID in `tui:...:<run-id>`) and common terminal-font substitutions
 such as `O`/`0` and `l`/`1`. It always resumes the canonical stored ID and never
 uses these substitutions when they would match more than one run. A claim

@@ -55,6 +55,7 @@ against the current source before implementing them.
 - [PRD-185 — Dynamic goal-list mutation for goal_flow](prd-185-goal-flow-dynamic-goal-list.md)
 - [PRD-186 — Profile-aware workflow checkpoint topology](prd-186-profile-aware-workflow-checkpoint-topology.md)
 - [PRD-187 — OpenCode Go session identity propagation](prd-187-opencode-go-session-identity.md)
+- [PRD-188 — Resume the latest recoverable workflow run](prd-188-workflow-resume-latest-run.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -304,6 +305,11 @@ OpenCode Go and compatible gateways. It reuses the existing
 transport at construction time, preserves it across turns, workflows,
 subagents, retries, and resume, and keeps dynamic identity headers separate
 from static secret headers.
+
+PRD-188 implements the optional-run-ID `/workflow resume` contract. Omitted
+IDs select the newest eligible durable workflow checkpoint using persisted
+activity time, revision, and a stable run-ID tie-breaker, then reuse the same
+validated explicit-ID recovery path without creating a new run.
 
 ## Existing PRDs
 

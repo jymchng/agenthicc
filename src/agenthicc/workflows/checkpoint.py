@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -233,6 +234,24 @@ def _as_float(value: object, default: float) -> float:
         except ValueError:
             return default
     return default
+
+
+def _checkpoint_timestamp(value: object, *, field_name: str, default: float) -> float:
+    """Parse one finite checkpoint timestamp or fail closed."""
+    candidate: str | int | float
+    if value is None:
+        candidate = default
+    elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        candidate = value
+    else:
+        raise CheckpointValidationError(f"{field_name} must be a finite number")
+    try:
+        timestamp = float(candidate)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise CheckpointValidationError(f"{field_name} must be a finite number") from exc
+    if not math.isfinite(timestamp):
+        raise CheckpointValidationError(f"{field_name} must be a finite number")
+    return timestamp
 
 
 def _as_metadata(value: object) -> dict[str, object]:
@@ -559,6 +578,10 @@ class WorkflowCheckpoint:
     topology_profile: str = ""
     topology_phase_names: tuple[str, ...] = ()
     created_at: float = field(default_factory=time.time)
+    # ``updated_at`` is the durable activity clock used when selecting the
+    # latest recoverable run.  It is optional on disk for schema-v1
+    # compatibility; old records fall back to ``created_at`` when loaded.
+    updated_at: float = field(default_factory=time.time)
     schema_version: int = CHECKPOINT_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, object]:
@@ -598,6 +621,7 @@ class WorkflowCheckpoint:
             "topology_profile": self.topology_profile,
             "topology_phase_names": list(self.topology_phase_names),
             "created_at": self.created_at,
+            "updated_at": self.updated_at,
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         payload["content_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -745,6 +769,12 @@ class WorkflowCheckpoint:
         phase = raw.get("current_phase")
         if phase is not None and not isinstance(phase, str):
             raise CheckpointValidationError("current_phase must be a string or null")
+        created_at = _checkpoint_timestamp(
+            raw.get("created_at"), field_name="created_at", default=time.time()
+        )
+        updated_at = _checkpoint_timestamp(
+            raw.get("updated_at", created_at), field_name="updated_at", default=created_at
+        )
         return cls(
             run_id=str(raw["run_id"]),
             workflow_name=str(raw["workflow_name"]),
@@ -781,5 +811,6 @@ class WorkflowCheckpoint:
             topology_fingerprint=topology_fingerprint,
             topology_profile=topology_profile,
             topology_phase_names=topology_phase_names,
-            created_at=float(raw.get("created_at", time.time()) or time.time()),
+            created_at=created_at,
+            updated_at=updated_at,
         )

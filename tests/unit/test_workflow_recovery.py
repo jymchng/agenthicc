@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -218,6 +219,123 @@ def test_select_for_resume_returns_one_valid_run_and_rejects_ambiguous_runs(
                 conversation=conversation,
                 provider_profile="default",
             )
+    finally:
+        conversation.close()
+
+
+def test_select_latest_for_resume_uses_durable_activity_then_revision_and_id(
+    tmp_path: Path,
+) -> None:
+    """Omitted-ID selection is deterministic even when several runs exist."""
+    conversation = _conversation(tmp_path)
+    try:
+        store, first = _running_checkpoint(tmp_path, conversation)
+        first_checkpoint = first.save_checkpoint(reason="first")
+
+        second = WorkflowRunHandle.create(
+            run_id="run-2",
+            workflow=CodePlan,
+            conversation=conversation,
+            intent="another workflow",
+            checkpoint_store=store,
+            provider_profile="default",
+        )
+        second.attach_context(
+            CodePlanContext(
+                intent="another workflow",
+                run_id="run-2",
+                state=CodePlanState.PLAN,
+                phase_iteration=1,
+                shared_memory=conversation.memory,
+            )
+        )
+        second.update_phase("plan", 0, 1)
+        second_checkpoint = second.save_checkpoint(reason="second")
+
+        # Deliberately write the records in the opposite order from their
+        # desired selection order. The selector must use durable metadata,
+        # never the checkpoint-directory enumeration order.
+        store.save(
+            replace(first_checkpoint, updated_at=100.0, revision=first_checkpoint.revision + 1)
+        )
+        store.save(
+            replace(second_checkpoint, updated_at=200.0, revision=second_checkpoint.revision + 1)
+        )
+
+        registry = WorkflowRegistry()
+        registry.register(CodePlan)
+        coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
+        selected = coordinator.select_latest_for_resume(
+            workflow_registry=registry,
+            conversation=conversation,
+            provider_profile="default",
+        )
+        assert selected is not None
+        assert selected.run_id == "run-2"
+        assert selected.activity_timestamp == 200.0
+    finally:
+        conversation.close()
+
+
+def test_select_latest_for_resume_uses_revision_and_stable_id_tie_breakers(
+    tmp_path: Path,
+) -> None:
+    conversation = _conversation(tmp_path)
+    try:
+        store, first = _running_checkpoint(tmp_path, conversation)
+        first_checkpoint = first.save_checkpoint(reason="first")
+        second = WorkflowRunHandle.create(
+            run_id="run-2",
+            workflow=CodePlan,
+            conversation=conversation,
+            intent="another workflow",
+            checkpoint_store=store,
+            provider_profile="default",
+        )
+        second.attach_context(
+            CodePlanContext(
+                intent="another workflow",
+                run_id="run-2",
+                state=CodePlanState.PLAN,
+                phase_iteration=1,
+                shared_memory=conversation.memory,
+            )
+        )
+        second.update_phase("plan", 0, 1)
+        second_checkpoint = second.save_checkpoint(reason="second")
+        store.save(replace(first_checkpoint, updated_at=100.0, revision=9))
+        store.save(replace(second_checkpoint, updated_at=100.0, revision=8))
+
+        registry = WorkflowRegistry()
+        registry.register(CodePlan)
+        coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
+        selected = coordinator.select_latest_for_resume(
+            workflow_registry=registry,
+            conversation=conversation,
+            provider_profile="default",
+        )
+        assert selected is not None
+        assert selected.run_id == "run-1"
+    finally:
+        conversation.close()
+
+
+def test_old_checkpoint_without_updated_at_uses_created_at_fallback(tmp_path: Path) -> None:
+    conversation = _conversation(tmp_path)
+    try:
+        store, handle = _running_checkpoint(tmp_path, conversation)
+        checkpoint = handle.save_checkpoint(reason="legacy")
+        raw = checkpoint.to_dict()
+        raw.pop("updated_at")
+        unsigned = dict(raw)
+        unsigned.pop("content_hash", None)
+        raw["content_hash"] = hashlib.sha256(
+            json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        store.path_for(handle.run_id).write_text(json.dumps(raw), encoding="utf-8")
+        loaded = store.load(handle.run_id)
+        assert loaded is not None
+        assert loaded.updated_at == loaded.created_at
     finally:
         conversation.close()
 

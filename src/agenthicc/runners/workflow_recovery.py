@@ -9,8 +9,9 @@ fail-closed rules.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from agenthicc.runners.workflow_checkpoint_store import (
     WorkflowCheckpointStore,
@@ -26,6 +27,7 @@ from agenthicc.workflows.checkpoint import (
 if TYPE_CHECKING:
     from agenthicc.runners.session_conversation import SessionConversation
     from agenthicc.runners.workflow_handle import WorkflowRunHandle
+    from agenthicc.workflows.plugin import WorkflowPlugin
     from agenthicc.workflows.registry import WorkflowRegistry
 
 __all__ = [
@@ -100,6 +102,23 @@ class WorkflowRecoveryRecord:
             return self.checkpoint.revision
         value = self.fallback_error.get("record_revision") if self.fallback_error else None
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    @property
+    def activity_timestamp(self) -> float:
+        """Return the durable activity time used for latest-run selection.
+
+        Schema-v1 checkpoints written before ``updated_at`` existed fall back
+        to their creation time. Invalid values are treated as oldest rather
+        than being allowed to perturb deterministic ordering.
+        """
+        checkpoint = self.checkpoint
+        if checkpoint is None:
+            return 0.0
+        value = getattr(checkpoint, "updated_at", checkpoint.created_at)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        timestamp = float(value)
+        return timestamp if math.isfinite(timestamp) else 0.0
 
     @property
     def journal_cursor(self) -> int:
@@ -296,7 +315,8 @@ class WorkflowRecoveryCoordinator:
 
         records.sort(
             key=lambda item: (
-                -(item.checkpoint.created_at if item.checkpoint is not None else 0.0),
+                -item.activity_timestamp,
+                -item.checkpoint_revision,
                 item.run_id,
             )
         )
@@ -373,6 +393,39 @@ class WorkflowRecoveryCoordinator:
             )
         return None
 
+    def select_latest_for_resume(
+        self,
+        *,
+        workflow_registry: "WorkflowRegistry | None" = None,
+        conversation: "SessionConversation | None" = None,
+        provider_profile: str | None = None,
+        workspace_root: str | None = None,
+    ) -> WorkflowRecoveryRecord | None:
+        """Select the newest eligible run for omitted-ID resume.
+
+        Selection does not claim or mutate a run. The caller must rehydrate
+        through the normal guarded path, which reloads and validates the
+        checkpoint immediately before execution.
+        """
+        records = self.inspect(
+            workflow_registry=workflow_registry,
+            conversation=conversation,
+            provider_profile=provider_profile,
+            workspace_root=workspace_root,
+        )
+        candidates = [record for record in records if record.recoverable]
+        if candidates:
+            return candidates[0]
+
+        invalid = [record for record in records if not record.recoverable]
+        if invalid:
+            record = invalid[0]
+            raise ValueError(
+                f"workflow recovery is unavailable for run {record.run_id!r}: "
+                f"{record.error_code or 'not_recoverable'}: {record.display_error}"
+            )
+        return None
+
     def rehydrate(
         self,
         record: WorkflowRecoveryRecord,
@@ -424,7 +477,7 @@ class WorkflowRecoveryCoordinator:
             from agenthicc.workflows.registry import WorkflowRegistry
 
             latest_registry = WorkflowRegistry()
-            latest_registry.register(workflow)
+            latest_registry.register(cast("type[WorkflowPlugin]", workflow))
             validation_code, validation_error = self._validate_recovery(
                 checkpoint,
                 workflow_registry=latest_registry,
