@@ -69,6 +69,81 @@ def test_set_secret_legacy_execution_header_reaches_openai_transport(tmp_path, m
     assert llm_config.default_headers["Modal-Key"] == "header-secret"
 
 
+def test_opencode_go_session_header_reaches_transport_configuration(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "agenthicc.toml"
+    path.write_text(
+        textwrap.dedent(
+            """
+            [execution]
+            profile = "opencode_go"
+
+            [providers.opencode_go]
+            provider = "openai"
+            protocol = "opencode-go"
+            model = "kimi-k3"
+            base_url = "https://opencode.ai/zen/go/v1"
+            api_key_env = "OPENCODE_API_KEY"
+            session_header = "x-opencode-session"
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCODE_API_KEY", "api-key")
+
+    config = load_config(project_path=path, user_path=tmp_path / "missing.toml")
+    config.resolve_provider_profile()
+    from lauren_ai._transport._openai import OpenAITransport
+
+    transport = OpenAITransport(
+        build_llm_config(config.execution, conversation_id="stable-e2e-session"),
+        client=_FakeClient(),
+    )
+
+    assert transport._config.default_headers["x-opencode-session"] == "stable-e2e-session"
+
+
+def test_openai_transport_passes_session_header_to_sdk_client(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "agenthicc.toml"
+    path.write_text(
+        textwrap.dedent(
+            """
+            [execution]
+            profile = "opencode_go"
+
+            [providers.opencode_go]
+            provider = "openai"
+            model = "kimi-k3"
+            base_url = "https://opencode.ai/zen/go/v1"
+            api_key = "api-key"
+            session_header = "x-opencode-session"
+            """
+        ),
+        encoding="utf-8",
+    )
+    config = load_config(project_path=path, user_path=tmp_path / "missing.toml")
+    config.resolve_provider_profile()
+    llm_config = build_llm_config(config.execution, conversation_id="sdk-session")
+
+    from lauren_ai._transport import _openai
+    from lauren_ai._transport._openai import OpenAITransport
+
+    captured: dict[str, object] = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        _openai,
+        "_require_openai",
+        lambda: SimpleNamespace(AsyncOpenAI=FakeAsyncOpenAI),
+    )
+    transport = OpenAITransport(llm_config)
+    transport.get_client()
+
+    assert captured["default_headers"] == {"x-opencode-session": "sdk-session"}
+
+
 class _FakeStream:
     def __init__(self) -> None:
         self._chunks = [

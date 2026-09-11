@@ -281,6 +281,7 @@ PROVIDER_ENV_SHORTCUTS: dict[str, tuple[str, str]] = {
 # secrets without writing those secrets into journals or checkpoints.
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_MAX_SESSION_ID_BYTES = 256
 _PROFILE_KEYS = {
     "provider",
     "model",
@@ -288,6 +289,7 @@ _PROFILE_KEYS = {
     "api_key",
     "api_key_env",
     "default_headers",
+    "session_header",
     "default_query",
     "client_options",
     "request_options",
@@ -474,6 +476,72 @@ def _validate_header_value(value: str, *, path: str) -> str:
     if "\r" in value or "\n" in value:
         raise ValueError(f"{path} must not contain CR/LF characters")
     return value
+
+
+def _parse_session_header(value: object, *, path: str) -> str:
+    """Parse an optional dynamic session-header name."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{path} must be a string")
+    name = value.strip()
+    if not name:
+        return ""
+    return _validate_header_name(name, path=path)
+
+
+def _validate_session_identity(value: str, *, path: str = "conversation_id") -> str:
+    """Validate the value that will be sent as a dynamic session header."""
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{path} must be a non-empty safe identifier")
+    try:
+        value_bytes = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{path} must be a valid UTF-8 identifier") from exc
+    if len(value_bytes) > _MAX_SESSION_ID_BYTES:
+        raise ValueError(f"{path} must be no more than {_MAX_SESSION_ID_BYTES} UTF-8 bytes")
+    if (
+        value in {".", ".."}
+        or any(separator in value for separator in ("/", "\\"))
+        or "\x00" in value
+        or "\r" in value
+        or "\n" in value
+    ):
+        raise ValueError(f"{path} must be a non-empty safe identifier")
+    return value
+
+
+def _attach_session_header(
+    headers: Mapping[str, str],
+    *,
+    header_name: str,
+    conversation_id: str | None,
+) -> dict[str, str]:
+    """Copy static headers and attach one configured session identity."""
+    header_name = _parse_session_header(header_name, path="session_header")
+    if not header_name:
+        return dict(headers)
+    if conversation_id is None:
+        raise ValueError(
+            f"{header_name!r} requires a session conversation_id before the provider transport "
+            "can be constructed"
+        )
+    identity = _validate_session_identity(conversation_id)
+    conflict = _header_collision(headers, header_name)
+    if conflict is not None:
+        raise ValueError(
+            f"session_header {header_name!r} conflicts with static header {conflict!r}; "
+            "remove the static header and let agenthicc supply the session identity"
+        )
+    result = dict(headers)
+    result[header_name] = identity
+    return result
+
+
+def _header_collision(headers: Mapping[str, object], header_name: str) -> str | None:
+    """Return a case-insensitive matching header name, if one exists."""
+    lowered = header_name.casefold()
+    return next((name for name in headers if name.casefold() == lowered), None)
 
 
 def _validate_base_url(value: str, *, path: str = "base_url") -> str:
@@ -672,6 +740,9 @@ class ProviderProfile:
     max_completion_tokens: int | None = None
     protocol: str = ""
     capabilities: dict[str, bool] = field(default_factory=dict)
+    # Appended after the original fields to preserve positional construction
+    # compatibility for downstream callers of this public dataclass.
+    session_header: str = ""
 
     @classmethod
     def from_mapping(cls, name: str, raw: Mapping[str, object]) -> "ProviderProfile":
@@ -706,6 +777,9 @@ class ProviderProfile:
             headers[header_name] = _parse_secret_or_string(
                 value, path=f"providers.{name}.default_headers.{header_name}"
             )
+        session_header = _parse_session_header(
+            raw.get("session_header"), path=f"providers.{name}.session_header"
+        )
 
         def option_map(key: str) -> dict[str, object]:
             value = raw.get(key, {})
@@ -745,6 +819,7 @@ class ProviderProfile:
             "ollama",
             "openai",
             "openai-compatible",
+            "opencode-go",
             "anthropic",
             "ollama",
             "litellm",
@@ -798,6 +873,7 @@ class ProviderProfile:
             api_key=api_key,
             api_key_env=api_key_env,
             default_headers=headers,
+            session_header=session_header,
             default_query=option_map("default_query"),
             client_options=client_options,
             request_options=request_options,
@@ -823,6 +899,7 @@ class ProviderProfile:
             "default_headers": {
                 name: redact(value) for name, value in self.default_headers.items()
             },
+            "session_header": self.session_header,
             "default_query": _redact_value(self.default_query),
             "client_options": _redact_value(self.client_options),
             "request_options": self.request_options.redacted() if self.request_options else None,
@@ -856,6 +933,9 @@ class ProviderProfile:
             )
             for name, value in self.default_headers.items()
         }
+        session_header = _parse_session_header(
+            self.session_header, path=f"providers.{self.name}.session_header"
+        )
         request_options = self.request_options.resolve(env) if self.request_options else None
         return ResolvedProviderProfile(
             name=self.name,
@@ -864,6 +944,7 @@ class ProviderProfile:
             base_url=self.base_url,
             api_key=api_key,
             default_headers=MappingProxyType(dict(headers)),
+            session_header=session_header,
             default_query=_freeze_mapping(self.default_query),
             client_options=_freeze_mapping(self.client_options),
             request_options=request_options,
@@ -898,6 +979,7 @@ class ResolvedProviderProfile:
     max_completion_tokens: int | None
     protocol: str
     capabilities: Mapping[str, bool]
+    session_header: str = ""
 
 
 @dataclass
@@ -978,6 +1060,9 @@ class ExecutionSettings:
     _resolved_profile: ResolvedProviderProfile | None = field(
         default=None, repr=False, compare=False
     )
+    # Appended after the original fields to preserve positional construction
+    # compatibility for downstream callers of this public dataclass.
+    session_header: str = ""
 
     def effective_model(self) -> str:
         return self.model or PROVIDER_DEFAULT_MODELS.get(self.provider, self.model)
@@ -1465,6 +1550,10 @@ class AgenthiccConfig:
                     environ=env,
                     path="execution.default_headers",
                 )
+                _parse_session_header(
+                    self.execution.session_header,
+                    path="execution.session_header",
+                )
                 if isinstance(self.execution.request_options, RequestOptionSettings):
                     self.execution.request_options.resolve(env)
             return None
@@ -1499,6 +1588,12 @@ class AgenthiccConfig:
                     self.execution.default_headers,
                     environ=env,
                     path="execution.default_headers",
+                )
+            ),
+            session_header=(
+                profile.session_header
+                or _parse_session_header(
+                    self.execution.session_header, path="execution.session_header"
                 )
             ),
             default_query=_freeze_mapping(
@@ -2015,6 +2110,9 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         execution_headers[header_name] = _parse_secret_or_string(
             value, path=f"execution.default_headers.{header_name}"
         )
+    execution_session_header = _parse_session_header(
+        ex.get("session_header"), path="execution.session_header"
+    )
     execution_request_raw = ex.get("request_options")
     execution_request_options = (
         RequestOptionSettings.from_mapping(execution_request_raw, path="execution.request_options")
@@ -2051,6 +2149,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         api_key_env=_as_str(ex.get("api_key_env"), ""),
         base_url=_as_str(ex.get("base_url"), ""),
         default_headers=execution_headers,
+        session_header=execution_session_header,
         default_query=cast(
             dict[str, object],
             _copy_option_value(_section(ex.get("default_query")), path="execution.default_query"),
@@ -2374,19 +2473,26 @@ def load_config(
 # ── LLM transport builder ─────────────────────────────────────────────────
 
 
-def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
+def build_llm_config(
+    execution: ExecutionSettings,
+    *,
+    conversation_id: str | None = None,
+) -> LLMConfig:
     """Build a :class:`~lauren_ai._config.LLMConfig` from agenthicc execution settings.
 
     Supports all providers that lauren-ai knows about:
     ``anthropic``, ``openai``, ``ollama``, ``litellm``.
 
     :param execution: The resolved execution settings (provider, model, api_key, base_url).
+    :param conversation_id: Stable session conversation identity used when the
+        selected profile configures a dynamic session header.
     :raises ValueError: When the provider string is not recognised.
     :returns: A ``LLMConfig`` instance ready to pass to ``_build_transport()``.
     """
     import dataclasses  # noqa: PLC0415
     import os  # noqa: PLC0415
     from lauren_ai._config import LLMConfig  # noqa: PLC0415
+    from lauren_ai._transport import RequestOptions  # noqa: PLC0415
 
     llm_fields = {field.name for field in dataclasses.fields(LLMConfig)}
     required_fields = {
@@ -2450,11 +2556,31 @@ def build_llm_config(execution: ExecutionSettings) -> LLMConfig:
             path="execution.default_headers",
         )
     )
+    session_header = resolved.session_header if resolved else execution.session_header
+    default_headers = _attach_session_header(
+        default_headers,
+        header_name=session_header,
+        conversation_id=conversation_id,
+    )
     default_query = dict(resolved.default_query) if resolved else dict(execution.default_query)
     client_options = dict(resolved.client_options) if resolved else dict(execution.client_options)
     request_options = resolved.request_options if resolved else execution.request_options
     if isinstance(request_options, RequestOptionSettings):
         request_options = request_options.resolve()
+    if session_header:
+        if isinstance(request_options, RequestOptions):
+            request_headers = request_options.extra_headers
+            conflict = (
+                _header_collision(request_headers, session_header)
+                if request_headers is not None
+                else None
+            )
+            if conflict is not None:
+                raise ValueError(
+                    f"session_header {session_header!r} conflicts with request_options "
+                    f"extra header {conflict!r}; remove the static header and let agenthicc "
+                    "supply the session identity"
+                )
     timeout = (
         resolved.timeout_s if resolved and resolved.timeout_s is not None else execution.timeout_s
     )

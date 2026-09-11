@@ -112,6 +112,46 @@ reasoning_effort = "none"
 vendor_trace = true
 ```
 
+### OpenCode Go and session-aware gateways
+
+OpenCode Go requires every request in a conversation to carry the same
+`x-opencode-session` value. Bind that header to agenthicc's stable session
+conversation ID by configuring the header name on the selected profile:
+
+```toml
+[execution]
+profile = "opencode_go"
+
+[providers.opencode_go]
+provider = "openai"
+protocol = "opencode-go"
+model = "kimi-k3"
+base_url = "https://opencode.ai/zen/go/v1"
+api_key = { env = "OPENCODE_API_KEY" }
+session_header = "x-opencode-session"
+timeout_s = 3600.0
+```
+
+The value is not a secret and should not be entered in TOML. agenthicc fills
+it from the current session's conversation ID when the session-owned lauren-ai
+transport is created. The same value is reused for direct turns, workflows,
+subagents, retries, compaction, `--continue`, and `--resume`. A new session
+gets a new identity; resuming a saved session reuses its existing identity.
+
+The binding is generic and works with another gateway-specific header name by
+changing `session_header`. It is opt-in, so existing profiles send no dynamic
+header. Do not also define the same header (case-insensitively) under
+`default_headers`; startup rejects that ambiguous configuration. Header names
+and session IDs are validated before the provider transport is constructed,
+and the session ID is limited to 256 UTF-8 bytes and cannot contain path
+separators, NUL, or CR/LF characters.
+
+OpenCode Go's `MissingSessionID` response is a permanent HTTP 400 and is not
+retried. agenthicc reports the missing binding and points to
+`[execution].session_header` or `providers.<profile>.session_header`. After
+changing the configuration, restart the session so its provider transport is
+rebuilt with the binding.
+
 `provider = "openai"` selects lauren-ai's OpenAI transport; no Modal SDK is
 required. `base_url` can point at any compatible gateway, vLLM server, or
 private endpoint. Secret values should use `{ env = "NAME" }` references (or

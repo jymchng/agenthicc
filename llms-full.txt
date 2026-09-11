@@ -2547,12 +2547,13 @@ class ProviderProfile:
     timeout_s: float | None; max_retries: int | None
     temperature: float | None; top_p: float | None
     max_completion_tokens: int | None; protocol: str
-    capabilities: dict[str, bool]
+    capabilities: dict[str, bool]; session_header: str = ""
 
 @dataclass(frozen=True, slots=True)
 class ResolvedProviderProfile:
     name: str; provider: str; model: str; base_url: str
     api_key: str | None; request_options: object | None
+    session_header: str = ""
 ```
 
 Profiles are selected with `[execution].profile` and defined under
@@ -2843,7 +2844,9 @@ Network failures use the same recoverable result shape as `SearchWebTool`.
 ### build_llm_config
 
 ```python
-def build_llm_config(execution: ExecutionSettings) -> LLMConfig: ...
+def build_llm_config(
+    execution: ExecutionSettings, *, conversation_id: str | None = None
+) -> LLMConfig: ...
 ```
 
 Builds a `lauren_ai.LLMConfig` from agenthicc execution settings.
@@ -2855,6 +2858,11 @@ cfg = load_config()
 llm = build_llm_config(cfg.execution)
 # → LLMConfig(provider="anthropic", model="claude-opus-4-8", ...)
 ```
+
+When a profile or execution settings value configures `session_header`, the
+builder attaches the supplied stable `conversation_id` as that HTTP header.
+For example, OpenCode Go uses `session_header = "x-opencode-session"`; omit
+the binding to preserve legacy provider behavior.
 
 The builder passes profile `default_headers`, `default_query`,
 `client_options`, sampling (`temperature`, `top_p`, and
@@ -2918,6 +2926,7 @@ class ExecutionSettings:
     top_p: float | None = None
     max_completion_tokens: int | None = None
     default_headers: dict[str, str] = field(default_factory=dict)
+    session_header: str = ""  # dynamic header name; value is conversation_id at transport build
     default_query: dict[str, object] = field(default_factory=dict)
     client_options: dict[str, object] = field(default_factory=dict)
     request_options: object | None = None

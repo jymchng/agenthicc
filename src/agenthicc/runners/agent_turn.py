@@ -184,6 +184,19 @@ def _network_retry_detail(exc: BaseException) -> str:
     return ""
 
 
+def _missing_opencode_session_diagnostic(exc: BaseException) -> str | None:
+    """Return an actionable diagnostic for OpenCode Go's 400 response."""
+    status = _http_status_code(exc)
+    raw = str(exc).casefold()
+    if status != 400 or "x-opencode-session" not in raw or "missing" not in raw:
+        return None
+    return (
+        "The provider requires x-opencode-session. Configure "
+        '[execution].session_header = "x-opencode-session" or '
+        "providers.<profile>.session_header and restart the session."
+    )
+
+
 def _is_transient_network_error(exc: BaseException) -> bool:
     """Return ``True`` for transient network errors that are safe to retry.
 
@@ -2134,7 +2147,19 @@ class AgentTurnRunner:
                 # Emit one well-formatted error event with the exception class name.
                 # Do NOT call fail_turn/close_turn here — the finally block handles
                 # state cleanup idempotently, preventing the double-fail bug.
-                ctx.conv_store.append_event("error", {"message": f"{type(exc).__name__}: {exc}"})
+                missing_session_diagnostic = _missing_opencode_session_diagnostic(exc)
+                if missing_session_diagnostic is not None:
+                    ctx.conv_store.append_event(
+                        "error",
+                        {
+                            "message": "Provider session identity is missing",
+                            "detail": missing_session_diagnostic,
+                        },
+                    )
+                else:
+                    ctx.conv_store.append_event(
+                        "error", {"message": f"{type(exc).__name__}: {exc}"}
+                    )
             # Every exception that survives the provider-step retry policy must
             # cross the agent-turn boundary.  Workflow owners need the original
             # exception to finalize one durable pause for the already-attached

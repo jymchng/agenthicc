@@ -54,6 +54,7 @@ against the current source before implementing them.
 - [PRD-184 — Preserve the Active Workflow Phase After Transient Errors](prd-184-preserve-workflow-phase-after-errors.md)
 - [PRD-185 — Dynamic goal-list mutation for goal_flow](prd-185-goal-flow-dynamic-goal-list.md)
 - [PRD-186 — Profile-aware workflow checkpoint topology](prd-186-profile-aware-workflow-checkpoint-topology.md)
+- [PRD-187 — OpenCode Go session identity propagation](prd-187-opencode-go-session-identity.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -296,6 +297,13 @@ from the active profile/custom graph, persists the active topology identity,
 derives phase indexes within that topology, validates the same coordinate
 during recovery, and migrates unambiguous pre-topology checkpoints without
 silently restarting a run at `INIT`.
+
+PRD-187 specifies the missing stable `x-opencode-session` propagation for
+OpenCode Go and compatible gateways. It reuses the existing
+`SessionConversation.conversation_id`, binds it to the session-owned lauren-ai
+transport at construction time, preserves it across turns, workflows,
+subagents, retries, and resume, and keeps dynamic identity headers separate
+from static secret headers.
 
 ## Existing PRDs
 

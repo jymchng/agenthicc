@@ -133,6 +133,10 @@ def _provider_profile(lines: list[str], prefix: str) -> None:
     _comment(lines, 'api_key = { env = "OPENAI_API_KEY" }')
     _field(lines, "api_key_env", "", "alternative to api_key = { env = ... }")
     _comment(lines, 'default_headers = { "Authorization" = { env = "AUTH_TOKEN" } }')
+    _comment(
+        lines,
+        'session_header = "x-opencode-session"  # bind the stable session ID for OpenCode Go',
+    )
     _comment(lines, "default_query = { }")
     _comment(lines, "client_options = { follow_redirects = true, http2 = true }")
     _field(

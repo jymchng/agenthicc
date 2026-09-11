@@ -875,7 +875,11 @@ async def _build_session_context_impl(
         # transport.  This keeps secrets out of durable session/workflow state
         # and re-reads rotated environment values on every resume.
         cfg.resolve_provider_profile(requires_tools=True)
-        llm_cfg = build_llm_config(cfg.execution)
+        # ``session_id`` is the same validated identity later used by
+        # SessionConversation.conversation_id.  Pass it at transport
+        # construction so dynamic provider headers (for example
+        # x-opencode-session) are stable across every turn and retry.
+        llm_cfg = build_llm_config(cfg.execution, conversation_id=session_id)
     except ValueError as exc:
         console.print(
             f"[red]LLM config error: {exc}[/red]\n"

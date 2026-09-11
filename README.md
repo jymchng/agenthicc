@@ -538,6 +538,11 @@ base_url = "https://your-endpoint.modal.run/v1"
 api_key_env = "MODAL_API_KEY"
 ```
 
+For OpenCode Go, add `session_header = "x-opencode-session"` to the profile.
+agenthicc fills that header from the stable session conversation ID on every
+request, including resumed sessions; see the
+[configuration guide](docs/guides/configuration.md#opencode-go-and-session-aware-gateways).
+
 Use `agenthicc config validate` before a run; secret values are never printed. For one-off credentials, use `--set-secret PATH=ENV_VAR`; it stores only an environment-variable reference and resolves the value at provider startup.
 
 ---

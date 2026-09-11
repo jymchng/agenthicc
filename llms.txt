@@ -46,7 +46,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `EventProcessor` | `agenthicc.kernel` | MPSC queue and reducer loop |
 | `root_reducer` | `agenthicc.kernel` | Pure event-to-state reducer |
 | `load_config` | `agenthicc.config` | TOML/env/CLI configuration loader |
-| `ProviderProfile` / `SecretReference` / `RequestOptionSettings` | `agenthicc.config` | Typed provider profiles, environment-backed secrets, and request options |
+| `ProviderProfile` / `SecretReference` / `RequestOptionSettings` | `agenthicc.config` | Typed provider profiles, environment-backed secrets, request options, and optional dynamic session headers |
 | `ResolvedProviderProfile` | `agenthicc.config` | Runtime profile with secrets resolved at session startup |
 | `PermissionChecker` | `agenthicc.security` | Ordered fail-closed policy evaluator |
 | `MemoryRouter` | `agenthicc.memory` | Three-tier memory dispatcher |
