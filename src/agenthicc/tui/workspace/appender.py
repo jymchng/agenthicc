@@ -603,7 +603,7 @@ def _render_error(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     msg = _text(ev.payload, "message")
     detail = _text(ev.payload, "detail")
     self._console.print(
-        f"\n[red bold]ERROR[/red bold] {_e(msg)}",
+        f"[red bold]ERROR[/red bold] {_e(msg)}",
         markup=True,
         highlight=False,
     )

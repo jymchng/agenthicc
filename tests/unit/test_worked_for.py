@@ -172,3 +172,30 @@ class TestTurnCompleteRenderer:
         stub._console = console
         _render_turn_complete(stub, ev)
         assert "Worked for" not in buf.getvalue()
+
+    def test_activity_duration_then_error_has_one_blank_line(self) -> None:
+        from rich.console import Console  # noqa: PLC0415
+        from agenthicc.tui.conversation_store import AppState, ConversationEvent  # noqa: PLC0415
+        from agenthicc.tui.workspace.appender import ScrollBufferAppender  # noqa: PLC0415
+
+        console = Console(record=True, markup=False, no_color=True)
+        appender = ScrollBufferAppender(AppState.create(), console)
+        appender._render_one(
+            ConversationEvent(
+                event_id="activity",
+                kind="activity_complete",
+                payload={"elapsed_s": 2.0},
+            )
+        )
+        appender._render_one(
+            ConversationEvent(
+                event_id="error",
+                kind="error",
+                payload={"message": "MCP server 'asyncmove' failed to start"},
+            )
+        )
+
+        rendered = console.export_text()
+        suffix = rendered.split("Total wall clock time since last IDLE: 2 seconds", 1)[1]
+        assert suffix.startswith("\n\nERROR MCP server 'asyncmove' failed to start")
+        assert not suffix.startswith("\n\n\n")
