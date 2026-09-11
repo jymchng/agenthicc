@@ -537,6 +537,10 @@ def render_file_diff(
         _summary(n_added, n_removed),
         Text(""),
         Padding(table, pad=(0, 0, 0, 2)),
+        # Keep the complete Update block separate from the next assistant
+        # response.  The empty item before the table separates the summary
+        # from the rows; this one separates the rows from following output.
+        Text(""),
     )
 
 

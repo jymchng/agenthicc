@@ -44,3 +44,9 @@ async def test_conversation_stream_preserves_summary_and_collapses_large_replace
     assert "new 10" in output and "new 12" in output
     assert "old 4" not in output and "new 9" not in output
     assert "finished" in output
+
+    lines = output.splitlines()
+    last_diff_line = next(index for index, line in enumerate(lines) if "new 12" in line)
+    finished_line = next(index for index, line in enumerate(lines) if "finished" in line)
+    assert lines[last_diff_line + 1] == ""
+    assert last_diff_line < finished_line
