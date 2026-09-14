@@ -289,3 +289,33 @@ The `/create-commands` skill is independent of `create_workflow`; it gives the
 agent project-specific guidance for producing a trusted `Command` export.
 Review generated code and reload the command registry after placing a trusted
 plugin in `.agenthicc/commands/`.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A command in `.agenthicc/commands/` is not available | Project extension discovery is deferred until after the first TUI frame | Wait for the shell phase to be `ready`, then `/commands reload` |
+| A slash command you wrote is never suggested | It was not discovered or its name collides | Check for a name collision with a builtin, and inspect the discovery result rather than the log tail |
+| `/workflow` or `/compact` errors when invoked | Both carry `handler=None` deliberately | They are intercepted in `TUISession.route()`; their registry entries exist so the picker can display and complete them |
+| A documented command is missing from autocomplete | It is not in `BUILTIN_COMMANDS` | The registry holds 23 entries; `/background` (alias `/bg`) is injected separately and `/create-tools` and `/create-commands` come from bootstrap skills |
+| `agenthicc trust cli` did not protect your slash-command plugin | It covers `.agenthicc/cli/` plugins, not normal TUI slash-command plugins | Apply the same manual review to `.agenthicc/commands/` code: loading it is code execution |
+| Arguments are not parsed as expected | There is no shared argument grammar | Use the command's own `argument_hint` and handler; do not assume shell-style quoting |
+| A command's output interleaves badly during a turn | Commands that print while a turn renders | Prefer structured state updates over direct printing in a long-running turn |
+| A command works in the TUI but not in a script | Slash commands are a TUI surface | For scripts use the CLI (`agenthicc ...`) or the client-neutral `session` group |
+| Reload does not pick up an edited command | Timestamps or a cached discovery result | Confirm the file mtime changed and that the path is the one actually scanned |
+| A command name is rejected as invalid | Names are canonicalised | Use a lowercase kebab-case name, matching the skill-name rules |
+
+### Enumerate the registry instead of guessing
+
+Count the `BUILTIN_COMMANDS` list literal rather than grepping for command
+names: `/model` and `/models` are separate entries, and the file also contains
+command names inside handler strings and printed messages that are not registry
+entries. Then add the two surfaces that live outside that literal —
+`/background`/`/bg` and the `/create-*` bootstrap skills — for the full list.
+
+### Slash commands are not a security boundary
+
+`.agenthicc/commands/` holds Python code. `agenthicc trust cli` protects
+`.agenthicc/cli/` plugins only, so a slash-command plugin is *not* covered by
+that manifest. Treat it exactly like any other project code you intend to
+import, and review it before use.

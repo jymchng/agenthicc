@@ -21,6 +21,7 @@ TUISession                 EventProcessor
                              workflow/agent turns
                                      │
                        capability-gated tools and memory
+```
 
 The client-neutral session service sits beside this runtime as the shared
 coordination and projection boundary:
@@ -41,7 +42,6 @@ subscriptions. It does not replace frozen kernel `AppState`, the reducer,
 workflow runners, or the existing session journals. The loopback transport
 (`LocalSessionServer`) and `HttpSessionClient` are adapters over this same
 in-process service; installing agenthicc does not start a listening socket.
-```
 
 The headless runner uses the kernel directly and currently handles stdin
 intent submission. The TUI runner adds the larger session graph: configuration,
@@ -231,3 +231,93 @@ paths: `CommandOutcome` derives success only from a zero exit, records the
 deadline owner and cleanup result, and distinguishes finite command exit from
 service readiness. `wait_terminal` is observational and never kills a process
 because its observer timed out; explicit stop controls own termination.
+
+## Inspecting the architecture from a shell
+
+Every claim on this page can be re-derived from the installed package without
+starting a session. This snippet is read-only and runs in about a second:
+
+```bash
+PYTHONPATH=src python - <<'PY'
+import dataclasses
+import agenthicc.kernel as kernel
+from agenthicc.kernel.reducer import _HANDLERS
+
+print("kernel exports:", len(kernel.__all__))
+print("AppState fields:", [f.name for f in dataclasses.fields(kernel.AppState)])
+print("reducer handlers:", len(_HANDLERS))
+print("EffectType members:", [e.name for e in kernel.EffectType])
+PY
+```
+
+```text
+kernel exports: 22
+AppState fields: ['session_id', 'run_id', 'intents', 'workflows', 'tasks', 'agents', 'tools', 'hooks', 'snapshot_index', 'settings', 'policy', 'agent_types']
+reducer handlers: 20
+EffectType members: ['spawn_agent', 'execute_tool', 'update_tui', 'persist_snapshot', 'emit_signal', 'start_workflow_node', 'assign_task']
+```
+
+Two facts worth pinning down while you are here. `kernel.AppState` lives in
+`src/agenthicc/kernel/state.py` and is *not* the same object as the reactive
+`tui/conversation_store.py` `AppState`; the field list above is the kernel one.
+And the reducer dispatches on the string `event_type`, not on the `EffectType`
+enum — `EffectType` describes the *effects the reducer emits*, which is why the
+two lists above do not line up one-to-one.
+
+To see which process-level resources a running session has opened, use the
+startup report instead of importing internals:
+
+```bash
+PYTHONPATH=src python -m agenthicc --headless < /dev/null
+```
+
+```text
+{"status": "ready", "mode": "headless", "session_id": "4c783bb1ff244a66bf3243d28aead0da"}
+```
+
+The output is one JSON object per line, so it pipes cleanly into `jq` or any
+line-oriented consumer. `session_id` changes on every run; the keys and the
+`"status": "ready"` value do not, because the headless runner answers `--help`
+and `--version` before command discovery and emits this readiness record before
+reading stdin. The process exits 0 even with no input, which is what makes it a
+safe smoke test.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `AttributeError` when reading `AppState` fields | You imported the reactive TUI `AppState` from `tui/conversation_store.py` instead of the frozen kernel one | Import from `agenthicc.kernel` (or `agenthicc.kernel.state`) and check `AppState.__module__` |
+| `processor.emit()` seems to do nothing | `EventProcessor.run()` was never scheduled, or the state was read before `drain()` | Schedule `await processor.run()` before the first `emit()` and `await processor.drain()` before reading state |
+| Effects are emitted but nothing happens | An `Effect` is a descriptor; something has to consume it | Pair the reducer with an effect executor such as `EffectExecutor` or `NoOpEffectExecutor` |
+| Mermaid blocks render as literal text | `mkdocs.yml` has no mermaid `custom_fences` entry | Keep diagrams as balanced ```text ASCII blocks, as this page does |
+| A code fence swallows the following paragraphs | A nested fence of the same length; CommonMark closes on the first matching ``` | Never nest same-length fences — close the outer block first |
+| `restore_from_log()` returns less state than expected | Malformed trailing JSONL lines are skipped by the recovery policy | Inspect the log tail; the durable prefix is replayed and corrupt entries are dropped |
+
+### The state did not change after an event
+
+State transitions happen only inside the reducer. Mutating the object you hold a
+reference to cannot work: `AppState` is a frozen dataclass, so assignment raises
+`dataclasses.FrozenInstanceError`. Read the new state returned by the processor,
+not the one you passed in.
+
+### Two `AppState` classes look identical
+
+They are different types with the same name. Confirm which one you have:
+
+```bash
+PYTHONPATH=src python -c "import agenthicc.kernel as k; print(k.AppState.__module__)"
+```
+
+```text
+agenthicc.kernel.state
+```
+
+If your output names a `tui` module, you imported the reactive store.
+
+### A background or workflow operation never becomes ready
+
+Startup is staged by `runners.startup.StartupCoordinator`, and an operation
+waits at its declared dependency boundary. A failed *optional* phase is reported
+as degraded without blocking unrelated local work; a failed *required* resource
+keeps its fail-closed behavior. See the [startup guide](startup.md) for the
+readiness states and the `/startup` report.

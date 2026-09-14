@@ -158,3 +158,43 @@ owner is deliberately protected.
 - [Workflows](workflows.md)
 - [Extensions](plugins.md)
 - [Storage reference](../reference/storage.md)
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `agenthicc --version` prints something unexpected | A wrapper or an installed console script is being used instead of the checkout | Run `PYTHONPATH=src python -m agenthicc --version`; the literal expected string is `agenthicc 0.1.0` |
+| Configuration appears to be ignored | A second config file, or CLI overrides applied in a different order | Check the resolved path with `agenthicc mcp list --json`, whose `path` field names the file actually read |
+| A mode name is rejected in the TUI | `/mode` accepts the selectable names and their aliases | Use `Safe`, `Plan`, or `Yolo`, or an alias such as `auto`, `guard`, `ask`, `review`. `Replay` is internal and not selectable |
+| A project command is unavailable | Project commands are discovered only on the normal session path | `--help` and `--version` deliberately skip discovery; run a normal session to see them |
+| Session history is not where you left it | The session store is keyed by project root | Run from the same directory, or resume explicitly with `--resume ID` |
+| A run starts a new session every time | `--continue` was not passed | `--continue` resumes the most recent session for the current directory |
+| A permission prompt appears in a script | Safe mode with an operator-less caller | Headless denies by default; pass `--dangerously-skip-permissions` only inside a sandbox you control |
+| Model or provider settings have no effect | The active profile or provider/model resolution disagrees with the config | Validate with `agenthicc config validate`, then `config show`; exact `[execution]` keys win over the library fallback |
+| A custom workflow name is not found | It is not registered in the workflow table | Check the real list with `agenthicc workflows list`; eight builtins ship in the box |
+| Generated files land in the wrong place | A relative working directory | Pass explicit paths; the process working directory is never changed by the runtime |
+
+### Eight workflows, not five
+
+The README's workflow table under-reports the registry. The builtin table
+declares eight: `code_plan` (alias `Plan`), `copy_website`, `create_workflow`,
+`goal_flow`, `make_agenthicc_tool`, `make_book`, `reconstruct_site`, and
+`site_imitate`. Always confirm with a real listing rather than quoting a table.
+
+### `--headless` without `--workflow`
+
+This does not raise. It exits 0 and emits a readiness record with no
+`workflow` key:
+
+```bash
+PYTHONPATH=src python -m agenthicc --headless < /dev/null
+```
+
+```text
+{"status": "ready", "mode": "headless", "session_id": "4c783bb1ff244a66bf3243d28aead0da"}
+```
+
+`session_id` is a fresh identifier on every run — the keys, and the
+`"status": "ready"` value, are what stay stable. Because no workflow was
+selected, per-line records for stdin input are `IntentCreated`-class events,
+not a `WorkflowRunCompleted` summary.

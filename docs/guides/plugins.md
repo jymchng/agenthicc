@@ -204,3 +204,62 @@ connectivity.
 
 The long-term extension SDK, generated catalog, and unified trust contract are
 PRD-138 P1.6/P2.4 work.
+
+## Try it
+
+The plugin settings that govern discovery, trust, and installation are ordinary
+configuration fields:
+
+```bash
+PYTHONPATH=src python -m agenthicc config validate
+```
+
+```text
+Configuration is valid: legacy execution settings (anthropic/deepseek-v4.1-flash)
+```
+
+That command is the cheapest way to confirm a `[plugins]` block is at least
+syntactically acceptable before you debug discovery. To see the exact trust
+manifest path a project will use:
+
+```bash
+PYTHONPATH=src python -m agenthicc mcp list --json
+```
+
+```text
+{"path": "/root/python_projects/agenthicc/.agenthicc/agenthicc.toml", "servers": []}
+```
+
+The `path` field shows how agenthicc resolves "the project's config file" for
+the current directory, which is the same resolution rule the plugin and
+extension surfaces use.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A project extension is never loaded | Discovery is deferred until after the first TUI frame, or `strict_cli_shadow` rejected it | Run `/commands reload` or `/tools reload` after the shell phase is `ready`; check the CLI shadow diagnostic |
+| A plugin import fails silently | Failed imports are recorded rather than raised | Read the discovery result and its recorded failure; check the module name and any missing optional dependency |
+| `allowed_modules` blocks a legitimate plugin | It is an allow-list | Add the module, or remove the restriction for that project — deliberately, not by disabling the control |
+| A trust decision is prompted on every launch | The recorded hash changed | Re-review the code; a changed hash is the signal, so do not auto-accept |
+| A plugin was installed without your intent | `auto_install` is enabled | Keep dependency auto-install disabled, especially in unattended/headless environments |
+| A plugin disappeared after an upgrade | `install_target` resolution or `timeout_seconds` interrupted discovery | Check `install_target` and raise `timeout_seconds` for a slow import |
+| A CLI shadowing conflict appears | `strict_cli_shadow` is enforcing precedence | Rename the project command or relax the setting knowingly |
+| `disabled` has no effect | It expects the exact registered name | List the plugin by its registered name and re-run discovery |
+| Diagnostics contain a credential | Bound the record yourself | Trust and audit records must never leak credentials; redact at the boundary |
+| An extension works locally but not in CI | CI has a different config or trust file | Point `trust_file` and `audit_file` at CI-appropriate paths and commit neither secrets nor an unreviewed manifest |
+
+### Discovery debugging
+
+Read the discovery result rather than the log tail. The result distinguishes a
+module that failed to import, a dependency that is absent, and a trust decision
+that was declined — three different fixes that all look like "the plugin did
+not load" in a scrolling log.
+
+### Trust is not a sandbox
+
+Project-local tools, agents, modes, workflows, skills, and commands are Python
+code, so loading them is code execution. A trust manifest records a decision
+about code you already read; it does not constrain what that code can reach.
+Review before use, and keep the manifest and audit records under
+`.agenthicc/` out of version control when they contain machine-specific data.

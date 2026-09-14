@@ -109,3 +109,72 @@ TUI slash-command plugins. See the [user-defined commands guide](commands.md).
 - Are inputs and outputs bounded?
 - Is untrusted plugin code or dependency installation involved?
 - Are denial and trust decisions visible in logs and tests?
+
+## Try it
+
+Capability metadata is the approval boundary, so it is worth printing the exact
+set your build exposes:
+
+```bash
+PYTHONPATH=src python -c "
+from agenthicc.tools.capabilities import ToolCapability
+print(len(ToolCapability), 'capabilities')
+print(sorted(c.name for c in ToolCapability))
+"
+```
+
+```text
+9 capabilities
+['CONTROL', 'EXECUTE', 'GIT_READ', 'GIT_WRITE', 'NETWORK', 'READ', 'SEARCH', 'UNDECLARED', 'WRITE']
+```
+
+The most consequential entry is `UNDECLARED`: a tool with no capability
+decorator lands there, which prompts in Safe and is blocked in Plan. Treat a
+missing decorator as a security defect, not a default.
+
+The security-relevant configuration can be validated without opening a session:
+
+```bash
+PYTHONPATH=src python -m agenthicc config validate
+```
+
+```text
+Configuration is valid: legacy execution settings (anthropic/deepseek-v4.1-flash)
+```
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A tool is silently allowed in Safe | It declares no capability metadata, or the mode was changed mid-turn | Undecorated tools are `UNDECLARED`, which prompts. Blocked capabilities are read live on every call, so a mode change applies from the next call |
+| A tool is blocked in Plan but prompts in Safe | That is the designed asymmetry | Safe prompts for the restricted set `{WRITE, GIT_WRITE, EXECUTE, NETWORK, UNDECLARED}`; Plan hard-blocks it; Yolo allows all |
+| `--dangerously-skip-permissions` did not make a write happen | It auto-approves ordinary prompts only | It does not turn Safe into Yolo and does not bypass an outside-workspace approval. Plan still hard-blocks side effects |
+| `--dangerously-skip-permissions` will not persist from TOML | Intentionally unsupported | It is a per-invocation CLI escape hatch by design; keep it in the command line |
+| A read outside the workspace is refused with no prompt | Plan denies outside-scope access without prompting | Use Safe to get the approval overlay, or add the real path to `[security].allowed_paths` |
+| Headless run hangs on an approval | Safe mode with no operator attached | Headless denies by default. Supply an explicit scope-aware approval adapter, or run in Yolo inside a sandbox you control |
+| An absolute or symlinked path escapes the workspace | Correct rejection | All modes reject `..` traversal, absolute paths outside the workspace, and symlinks resolving outside it, and revalidate the canonical target immediately before I/O |
+| A browser tool reaches an arbitrary host | `allow_all_domains` defaults to true for this local profile | Set `[tools] browser_backend` appropriately and `allow_all_domains = false` with `allowed_domains` to restore hostname and private-address restrictions |
+| A browser tool tries to fill a password field | Refused by design | Browser tools cannot execute raw JavaScript, select a proxy, read cookies/storage, or fill password/token/card-like fields |
+| A project tool file ran without a trust prompt | The `.agenthicc/tools/` discovery path imports project tool files without calling the trust helper | This is a known gap. Review project tool files before use; a trust manifest is not an automatic boundary for user-defined tools today |
+| Plugin dependencies were installed unexpectedly | `auto_install` enabled | Keep dependency auto-install disabled in unattended/headless environments; the normal tool scanner skips missing dependencies rather than installing them |
+| `agenthicc trust cli` did not protect a slash-command plugin | It protects `.agenthicc/cli/` plugins, not normal TUI slash-command plugins | For `.agenthicc/commands/` apply the same manual review you apply to any project Python code |
+| A denial is invisible during debugging | Denials should be observable | Check the approval overlay and the audit record under `.agenthicc/`; enable verbose behaviour output if you need the decision trail |
+
+### Which layer actually decides
+
+An allow at one layer does not bypass a stricter layer. Order of authority:
+capability metadata and mode filters gate tool selection; `PermissionChecker`
+and `ToolCapabilityGate` authorize; `ApprovalService` obtains the user
+decision; `WorkspaceScope`/`WorkspaceAccessPolicy` bound paths before
+`WorkspaceView` performs the final check; `NetworkGuard` bounds destinations.
+When a call is refused, identify the layer from the error rather than disabling
+the strictest one.
+
+### Grants are per operation and do not accumulate
+
+An outside-workspace approval offers target-once, target-this-turn,
+target-this-session, or deny. Even target-this-session does not imply write,
+execute, or network capability approval — those are separate decisions.
+Recorded approvals include the canonical target and operation, and cassette
+replay matches those fields exactly, so a replay against a different outside
+target is rejected rather than silently approved.

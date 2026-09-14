@@ -126,3 +126,63 @@ generated module must keep optional imports inside a phase/tool factory and
 declare the readiness dependency for any operation that needs it. Import-time
 side effects, eager provider/browser/MCP construction, and private parallel
 session stores are invalid workflow implementations.
+
+## Try it
+
+The side-effect-free parser can be exercised directly, and the configuration
+snapshot can be validated without opening a session:
+
+```bash
+PYTHONPATH=src python -m agenthicc --version
+```
+
+```text
+agenthicc 0.1.0
+```
+
+```bash
+PYTHONPATH=src python -m agenthicc config validate
+```
+
+```text
+Configuration is valid: legacy execution settings (anthropic/deepseek-v4.1-flash)
+```
+
+The trailing description reflects your own configured provider and model, so it
+differs per machine; the `Configuration is valid: ` prefix and a zero exit code
+do not. `--version` never builds the full parser, which is why it answers even
+when a project extension is broken.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `agenthicc --version` is slow | A project extension or durable store is being loaded | It should not be: `--version` and `--help` are answered before command discovery (`src/agenthicc/cli/parser.py:100-108`). Check for a shell alias or wrapper that runs something else first |
+| A new TUI shows a `Startup` indicator that never clears | A deferred phase is still `loading`, or one reached `failed` | Run `/startup` for the bounded phase report; a failed *optional* phase renders as `degraded` and does not block local work |
+| An operation blocks waiting for a dependency | It declared a required-resource dependency, such as the MCP catalogue | That is correct fail-closed behavior. Fix the dependency rather than retrying the operation |
+| A project tool or slash command is missing right after launch | Project extension discovery is deferred until after the first frame | Wait for the shell phase to become `ready`, then `/tools reload` or `/commands reload` |
+| Listing sessions replays a large history | A missing, stale, or incompatible `index.json` forced a rebuild | Expected after an upgrade. The index is a projection, never a second source of truth; the JSONL files stay authoritative |
+| Two processes fight over the session index | Writes use a short cross-process advisory lock | Retry; a failed index update still lets the event append succeed and repairs on next access |
+| Browser or MCP work fails while everything else is fine | Optional modules and processes are lazy by design | Missing optional dependencies should affect only the browser/MCP operation. Install the relevant extra if you need it |
+| `What's new` says `No list` | The remote changelog fetch timed out, returned non-JSON, or failed schema validation | Local static content plus the last-known-good cache still render. Check network reachability or set `AGENTHICC_CHANGELOG_CACHE` for an isolated cache path |
+
+### Measure before blaming the runtime
+
+Startup benchmarks deliberately run isolated child processes and report p50/p95,
+so process-spawn overhead is not counted as application work:
+
+```bash
+uv run python scripts/benchmark_startup.py --samples 5 --offline
+```
+
+If p50 is fine but p95 spikes, look at the deferred optional phases rather than
+at the bootstrap phase. Use a temporary home and synthetic event logs for
+repeatable numbers.
+
+### A generated workflow breaks startup laziness
+
+Generated workflows must keep optional imports inside a phase or tool factory
+and declare a readiness dependency for anything they need. An import-time side
+effect, an eagerly constructed provider/browser/MCP client, or a private
+parallel session store is not a valid workflow implementation — it defeats the
+first-frame guarantee for every session, not just its own.

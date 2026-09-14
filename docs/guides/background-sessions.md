@@ -167,3 +167,76 @@ The gate enforces at least 90% coverage across the background package, the
 background CLI commands, and the background manager workspace. The ordinary
 full-package coverage report remains useful for tracking unrelated legacy and
 platform-specific surfaces.
+
+## Try it
+
+Background sessions are inspectable without opening the manager TUI:
+
+```bash
+PYTHONPATH=src python -m agenthicc jobs list --json
+```
+
+```text
+[
+  {
+    "approval_decision": null,
+    "approval_request": "Workflow Design Review",
+    "artifact_dir": "/root/.agenthicc/sessions/e8bc3147-02e5-4648-a16d-a8ad43e8e708",
+    "attempt": 1,
+    "cancellation_reason": "foreground handoff requested",
+    ...
+  }
+]
+```
+
+The field names are the contract: `artifact_dir` names the durable location to
+inspect, `attempt` distinguishes a retry from a first run, and
+`cancellation_reason` tells you *why* a job stopped rather than only that it
+did. `approval_request`/`approval_decision` are the pairing you need to
+understand a job parked on an approval.
+
+To see the entry points the runtime exposes:
+
+```bash
+PYTHONPATH=src python -m agenthicc jobs --help
+```
+
+```text
+usage: agenthicc jobs [-h] <subcommand> ...
+```
+
+Accepted subcommands are `list`, `status`, `cancel`, `resume`, `retry`,
+`approve`, `reject`, `input`, `rename`, `labels`, `purge`, `archive`, `delete`,
+and `restore`.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A job is stuck and no prompt is visible | It is parked on an approval | `agenthicc jobs status JOB --json` shows the pending approval; then `jobs approve` or `jobs reject` |
+| A job needs an answer, not an approval | It is waiting on input | Use `agenthicc jobs input JOB ...` to supply it |
+| A cancelled job cannot be found | Cancelled work may have moved to the trash | `agenthicc jobs list --trash` lists recoverable sessions; `jobs restore` brings one back |
+| A job list is cluttered with old entries | They have not been archived or purged | `jobs archive JOB` to keep it out of the default list, `jobs purge` to remove it deliberately |
+| `agenthicc agents` behaves like `agenthicc jobs` | They are the same manager | Expected: both are registered entry points to the background-session manager, and `jobs <subcommand>` is the scriptable form |
+| `/bg` is missing from the command picker | It is injected outside `BUILTIN_COMMANDS` | `/background` and `/bg` come from the background integration; check that the integration loaded |
+| A background job wrote to an unexpected place | `cwd` was relative at submit time | Pass an explicit working directory to `run --background`; inspect `artifact_dir` in the job record |
+| A job shows `attempt: 2` unexpectedly | It was retried | Compare with `jobs status --json`; a retry after a cancellation may be intentional, so confirm before assuming a crash |
+| A stale job is still listed as running | Stale detection is lease-based | Check the worker lease; a dead worker is reclaimed rather than silently reported as healthy |
+| Killing the parent session left child processes alive | Detached terminals are owned by the session's terminal manager | Cancelling a detached parent asks the terminal registry to stop its exact child groups. Inspect with `/ps` and stop with `/stop <terminal-id>` |
+| Background state disappeared after a restart | The store holds only the rebuildable lifecycle index | The index is rebuilt from durable owners (kernel events, conversation events, workflow phase state), so a lost index is recoverable |
+| Archiving lost the audit trail | Archive moves the listing entry | Workflow phase state, approvals, and memory keep their own owners; the index was never the audit trail |
+
+### A job is a control-plane record, not a runtime
+
+`BackgroundStore` owns only the rebuildable lifecycle index. `BackgroundSupervisor`
+owns worker leases, bounded process creation, cancellation, stale detection, and
+control requests; the worker itself builds the normal session and delegates to
+the canonical agent-turn runner or the headless workflow runner. So "the job is
+wedged" is usually one of three distinct things: a lease problem, a control
+request that was never answered, or a turn that is genuinely running.
+
+### Manage the index, not the state
+
+`purge` and `delete` remove listing entries. If you need the history for
+forensics, export or inspect before purging — the lifecycle index is explicitly
+rebuildable and is not the durable record of what happened.

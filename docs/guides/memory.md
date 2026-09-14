@@ -166,3 +166,60 @@ never be served stale content.
 
 See the [storage reference](../reference/storage.md) for paths and recovery
 guarantees.
+
+## Try it
+
+The three tiers and the router are importable, and each reports the module that
+actually implements it — useful when a traceback names a layer instead of the
+router:
+
+```bash
+PYTHONPATH=src python -c "
+from agenthicc.memory import MemoryRouter, SessionMemoryLayer, ProjectMemoryLayer, GlobalMemoryLayer
+print('router:', MemoryRouter.__module__)
+print('session:', SessionMemoryLayer.__module__)
+print('project:', ProjectMemoryLayer.__module__)
+print('global:', GlobalMemoryLayer.__module__)
+"
+```
+
+```text
+router: agenthicc.memory.router
+session: agenthicc.memory.layers
+project: agenthicc.memory.layers
+global: agenthicc.memory.layers
+```
+
+`MemoryRouter` is the only supported dispatch point. Reaching into a layer
+directly is reserved for that layer's own implementation and tests.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A value written in the TUI is gone in the next process | It was stored in the session tier, whose lifetime is the process | Use `scope="project"` or `scope="global"` for anything that must outlive the run |
+| A value is gone after the TTL you set | The session tier applies per-entry TTL | Re-read before use, or store in a durable tier; check `[memory] session_ttl_seconds` |
+| Two projects see each other's values | It was written to the global tier | Use a namespace, or write to the project tier |
+| Artifacts appear duplicated | Artifacts are content-addressed by hash | Identical content intentionally maps to one object; do not expect a new object per publish |
+| An unrelated artifact was overwritten | You bypassed the content-addressed publish API | Publish through the router; content addressing is what prevents silent clobbering |
+| `SemanticIndex` returns poor results | It fell back to bag-of-words because no lauren-ai store was available | Expected for tests and offline use; configure a real vector backend for production |
+| A resumed session replays an incomplete turn | `conversation-journal.jsonl` has a trailing partial turn | Expected. The journal is folded to the last committed provider step and the incomplete turn is re-driven |
+| A retried turn erases earlier assistant or tool messages | Something restored a pre-turn snapshot | That is the old whole-stream rollback. Retry discards only the *uncommitted* attempt; never a snapshot from before the last committed step |
+| `ToolConversationIntegrityError` before any network call | Unknown, duplicate, empty, or ambiguous tool-result IDs | Correct fail-closed behavior. Fix the tool-call batch; a batch needs unique non-empty call IDs and exactly one result each |
+| Resume fails with an upgrade message | The installed lauren-ai lacks the transaction contract | Upgrade lauren-ai; agenthicc requires `validate_tool_history()`, `repair_tool_history()`, `begin_tool_exchange()`, `commit_tool_exchange()`, and `abort_tool_exchange()` |
+| `read_file` returns stale content | The file changed but the cache entry still matched | It cannot: the cache is used only when path, mtime, size, and encoding all match. If this happens, report it — the cache must never serve changed content |
+| An empty compaction summary | The provider split its output budget and returned no final text | Agenthicc already retries the summary with a larger completion budget, then falls back to bounded local recent history |
+| Compaction happened at a surprising moment | The provider returned a context-length 400 | The current committed projection is compacted once and the request retried, preserving earlier provider steps |
+
+### The journal is durable, the projection is not
+
+The live memory projection is a fold over `conversation-journal.jsonl`. When
+the two disagree, the journal wins. That is why a corrupt trailing line is
+ignored after the durable prefix rather than failing the resume.
+
+### Memory grew without a visible cause
+
+Set the context budget from the model-aware source of truth
+(`ExecutionSettings.effective_usable_budget()`) rather than a second scalar
+token limit. Adding an independent cap without reconciling it against
+`[memory.context_windows]` is how trimming and compaction drift apart.

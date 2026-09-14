@@ -113,3 +113,59 @@ the release gate implemented by `noxfile.py`, not as a measure of feature
 completeness. Use coverage to identify untested boundaries, not as a substitute
 for failure-mode tests. Avoid live network, real credentials, and
 nondeterministic wall-clock assertions.
+
+## Try it
+
+The fastest end-to-end check that the test environment is wired correctly is a
+targeted subset rather than the whole suite:
+
+```bash
+.venv/bin/python -m pytest tests/ -q -k "skill or llms"
+```
+
+```text
+........................................................................ [ 66%]
+....................................                                     [100%]
+108 passed, 3685 deselected in 4.69s
+```
+
+Counts vary as the suite grows; `0 failed` and a nonzero `passed` are the
+signals. To install the tooling in a fresh checkout:
+
+```bash
+uv sync --extra dev
+```
+
+That extra is what provides `pytest`, `pytest-asyncio`, `pytest-timeout`,
+`hypothesis`, `httpx`, and the docs toolchain (`mkdocs`, `mkdocs-material`,
+`pymdown-extensions`).
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Tests pass locally and fail in CI | CI runs the Nox sessions, which may add flags | Reproduce with the session, e.g. `nox -s tests` or `nox -s tests_unit` |
+| An async test never runs | Missing the async plugin marker | The dev extra provides `pytest-asyncio`; keep the project's own asyncio configuration rather than adding per-file event loops |
+| `ModuleNotFoundError` for an optional integration | The optional extra is not installed | Install the matching extra (`mcp`, `playwright`, `cloakbrowser`, `cloud`, `book`) or skip the focused test |
+| A test hangs forever | A missing timeout | `pytest-timeout` is in the dev extra; give subprocess and terminal tests an explicit bound |
+| A test depends on real network access | A live provider was called | Use cassettes and the recording approval services instead of reaching the network |
+| A test asserts against the TUI's old rendered-frame contract | The `render_frame_ansi`/`pyte` contract is historical and removed | Assert on structured state (`tui/conversation_store.py`), not on rendered frames |
+| Approval tests are flaky | A real approval service is being exercised | Use the recording or mock approval service so prompts are deterministic |
+| Results differ between runs | A shared temporary directory or a real user cache | Use temporary homes and project directories; set `AGENTHICC_CHANGELOG_CACHE` to isolate the changelog cache |
+| `llms_check` fails after a code change | A new public kernel symbol has no `### Symbol` heading | Add the heading to `llms-full.txt`, or remove the symbol from `kernel.__all__` — do not weaken the check |
+| The docs build fails in strict mode | A warning is treated as an error | Fix the warning; keep `mkdocs build --strict` in the gate rather than downgrading it |
+
+### Test the boundaries, not the happy path
+
+The recurring failure modes in this codebase are the interesting ones: a
+cancellation that left an unanswered tool call, a corrupt trailing JSONL line,
+a resume that must not duplicate a side effect, and a permission decision made
+by the wrong layer. Prefer a test that fails closed over one that asserts a
+convenient default.
+
+### Cassette replay is exact
+
+Recorded approvals include the canonical target and operation, and replay
+matches those fields exactly. A replayed approval for a *different* outside
+target is rejected by design, so a cassette edited to broaden a grant will fail
+rather than silently approve.

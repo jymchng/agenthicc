@@ -50,3 +50,64 @@ records exist. Canonical records take precedence when both formats are
 present, preventing double counting. Corrupt trailing journal lines are
 ignored after the durable prefix. If a journal write fails, the live snapshot
 is retained but reports `durability=degraded`.
+
+## Try it
+
+The ledger is a real importable class, and its own module path is the first
+thing to confirm when a report looks wrong:
+
+```bash
+PYTHONPATH=src python -c "
+from agenthicc.runners.usage_ledger import UsageLedger
+print('ledger module:', UsageLedger.__module__)
+print('methods:', [m for m in dir(UsageLedger) if not m.startswith('_')][:14])
+"
+```
+
+```text
+ledger module: agenthicc.runners.usage_ledger
+methods: ['begin_call', 'commit_call', ...]
+```
+
+The method names are the lifecycle: a provisional call is begun, chunk usage
+updates it in place, and the per-call completion signal commits that same call.
+Confirm the exact surface with `dir()` on your installed version rather than
+trusting a method list from memory.
+
+`/usage` itself is a TUI command: it is local and immediate, can run while an
+agent, workflow, or subagent is active, and never calls the provider or queues a
+user message. Its leading fields stay compatible with existing consumers:
+
+```text
+Usage: input=123 output=45 total=168 cost=$0.6789 state=running queued=2 ...
+```
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Tokens show as `unknown` or `partial` | The provider reported no usage for that call | Expected. A missing report is never rendered as a fabricated zero, and a provider-supplied zero stays a known zero |
+| `cost_status=estimated` where you expected `complete` | Cost was derived rather than reported | Check the record's cost provenance; estimation is a provenance label, not a rounding error |
+| Double-counted totals after a resume | Legacy `tokens` events in `conversation.jsonl` were read alongside canonical records | Canonical records take precedence when both formats exist; do not add a second summation path |
+| Totals reset after resuming a workflow | The checkpoint stores workflow state and the conversation cursor, not usage totals | On resume, journal records are folded before the first new turn, so a new run extends the restored total. If it reset, something bypassed the ledger |
+| A cancelled call vanished from the report | Cancellation preserves reported values | It marks the call cancelled rather than dropping it; an empty provider response is the only case that stays unavailable |
+| The same call appears twice | Duplicate completion signals | Duplicates are idempotent. If you see a doubled total, look for a second accumulator, not a duplicate signal |
+| `/usage` returns instantly with stale numbers | It is reading the live projection | That is by design: the reactive store is a projection of the ledger, so `/usage` never blocks on the provider. Check `durability` — `degraded` means a journal write failed |
+| `durability=degraded` | A journal write failed | The live snapshot is retained but not durable. Investigate disk space and permissions before trusting the totals across a restart |
+| A custom phase is missing from the totals | It bypassed `_run_agent_turn()` and called a provider directly | Use the standard phase runner, or call the ledger API explicitly — otherwise the call is outside the accounting contract |
+| A generated workflow does not report usage | It did not receive `WorkflowConfig.usage_ledger` | The standard `_run_agent_turn()` contract forwards the ledger to every phase; keep that call path |
+| Only some provider calls are counted | The category was not attributed | Each record carries run, model, category, source, lifecycle, cache-token fields, and cost provenance; verify the category is being set |
+
+### The ledger never stores prompts or responses
+
+Records carry counts, categories, provenance, and lifecycle — never content. A
+report that appears to contain conversation text means something else is logging
+it, and that is a leak worth fixing immediately.
+
+### Compaction counts too
+
+The default session total includes direct turns, every standard workflow phase,
+standard subagent workers, and manual or automatic compaction. If your mental
+model omits compaction, a total will look high by exactly the compaction cost —
+which is why the estimate should be reconciled against the categories rather
+than against a single number.

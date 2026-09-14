@@ -401,3 +401,66 @@ The `/create-tools` skill is independent of `create_workflow`; it gives the
 agent project-specific guidance for producing a Lauren `@tool`-decorated
 `TOOLS` export. Review generated code and reload the tool registry after
 placing a trusted plugin in `.agenthicc/tools/`.
+
+## Try it
+
+Two read-only commands cover most questions about the tool surface. First, the
+capability enum that decides approval:
+
+```bash
+PYTHONPATH=src python -c "
+from agenthicc.tools.capabilities import ToolCapability
+print(len(ToolCapability), 'capabilities:', sorted(c.name for c in ToolCapability))
+"
+```
+
+```text
+9 capabilities: ['CONTROL', 'EXECUTE', 'GIT_READ', 'GIT_WRITE', 'NETWORK', 'READ', 'SEARCH', 'UNDECLARED', 'WRITE']
+```
+
+Second, the terminal and session control tools that a project tool is most
+likely to interact with:
+
+```bash
+PYTHONPATH=src python -c "
+import agenthicc.tools.exec as ex
+print([n for n in dir(ex) if 'Outcome' in n or 'Terminal' in n][:8])
+"
+```
+
+```text
+['CommandOutcome', 'InspectTerminalTool', 'StopTerminalTool', 'WaitTerminalReadinessTool', 'WaitTerminalTool']
+```
+
+`UNDECLARED` in the first list is the one to watch: a tool that forgets its
+capability decorator lands there and therefore prompts in Safe and is blocked
+in Plan.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A project tool never appears for the agent | Project tool discovery is deferred until after the first TUI frame | Wait for the shell phase to be `ready`, then `/tools reload`; check the phase report with `/startup` |
+| A tool is allowed where you expected a prompt | It declares no capability metadata and therefore is `UNDECLARED` | Add an explicit capability decorator. Treat a missing decorator as a defect, not a default |
+| The agent calls a tool with malformed arguments | The input schema is the contract | Declare a precise schema; boundary values enter as `object` or recursive JSON and must be narrowed immediately |
+| A tool result looks like success but the command failed | Human-readable output is not the signal | Read the structured outcome: success derives only from exit code `0` |
+| A tool hangs a turn | No timeout was declared | Bound the work, and for services declare lifecycle and a readiness probe |
+| A tool returned a mapping but nothing happened | Subprocess results are not side effects | Perform the mutation and return evidence of it; validate by re-reading state |
+| A tool reads a path outside the workspace and is refused | The workspace boundary applies to tools | Add the real path to `[security].allowed_paths`, or get a mode-aware grant in Safe |
+| A tool wrote a credential-shaped value into output | Redaction covers display and persistence previews only | Never emit credentials; keep raw values out of tool results |
+| `parameters` are accepted but every call is refused | Approval filtering is separate from input validation | Check the active mode and the capability the call requires |
+| A tool silently skipped because a dependency is missing | The normal scanner skips missing dependencies rather than installing them | Install the dependency; do not enable plugin dependency auto-install in unattended environments |
+| A tool shadows a built-in with the same name | Name collisions are resolved by registry precedence | Rename the project tool; a shadowed built-in is a debugging trap, not a feature |
+
+### Capability gates are re-read on every call
+
+Blocked capabilities are read live, so a mode change applies from the next call
+even inside a single turn. If a tool suddenly starts prompting, check whether
+the mode changed rather than whether the tool changed.
+
+### A tool that needs network access
+
+Network tools must use the shared HTTP client so connect and read timeout
+policy stays consistent, and they remain subject to `NetworkGuard`. An empty
+`network_allow_list` denies outbound destinations — that is a policy decision,
+not a bug.

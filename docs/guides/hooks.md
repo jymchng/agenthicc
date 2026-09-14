@@ -61,3 +61,67 @@ If lifecycle hooks are reintroduced, first specify:
 Until a broader lifecycle contract is approved, do not expand these adapters
 into a second hook engine or import the historical PRD examples as if they
 were current APIs. Track any new lifecycle semantics in PRD-138 P2.4.
+
+## Try it
+
+The adapters are real importable objects — this is the fastest way to confirm
+which module owns the compatibility layer:
+
+```bash
+PYTHONPATH=src python -c "
+from agenthicc.tools.hooks import HookRegistry, LifecycleHook, HookRunner
+print('registry:', HookRegistry.__module__)
+print('hook:', LifecycleHook.__module__)
+print('runner:', HookRunner.__module__)
+"
+```
+
+```text
+registry: agenthicc.tools.hooks
+hook: agenthicc.tools.hooks
+runner: agenthicc.tools.hooks
+```
+
+All three live in one adapter module. If you were expecting a separate hook
+engine package, that absence is the point: dispatch, ordering, approval
+signals, and provider result semantics stay with lauren-ai's executor.
+
+To see the policy surfaces that actually govern a tool call, inspect the
+capability enum:
+
+```bash
+PYTHONPATH=src python -c "
+from agenthicc.tools.capabilities import ToolCapability
+print(sorted(c.name for c in ToolCapability))
+"
+```
+
+```text
+['CONTROL', 'EXECUTE', 'GIT_READ', 'GIT_WRITE', 'NETWORK', 'READ', 'SEARCH', 'UNDECLARED', 'WRITE']
+```
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `ImportError: cannot import name 'LifecycleHook'` | Importing it from a kernel or TUI module | Import from `agenthicc.tools.hooks`; the kernel's `HookRegistered` event is a compatibility shape, not the adapter |
+| A hook never fires | The adapter only translates configuration for lauren-ai's executor | Register through the lauren-ai hook path; the adapter cannot add a dispatch stage that the executor does not own |
+| Hook ordering is not what you configured | Ordering is owned by lauren-ai | Express ordering in the canonical contract rather than expecting the adapter to reorder |
+| A hook raises and the turn continues | Failure isolation belongs to the executor | Decide the intended failure semantics for your hook, and test that a raised error produces the outcome you expect |
+| A tool runs with no capability metadata | No decorator means `UNDECLARED` | Add explicit metadata. `UNDECLARED` prompts in Safe and is blocked in Plan |
+| A hook sees a credential | Diagnostics must stay bounded | Prompts, arguments, outputs, and credentials are never copied into hook diagnostics; do not log them yourself |
+| A kernel `HookRegistered` event exists but nothing changed | Correct — the event is compatibility-only | Do not build new behavior on it |
+
+### Do not add a second hook engine
+
+The guide's own advice is the rule: expand the adapters only when a lauren-ai
+hook needs agenthicc configuration or test integration. A parallel lifecycle
+engine would duplicate dispatch, run twice against the same tool call, and
+produce two competing audit trails.
+
+### The historical PRD examples are not current APIs
+
+The "proposed future hook contract" list in this guide is a specification of
+what would need to be decided *before* a lifecycle contract exists. Importing
+those sketches as if they were shipped modules is the exact mistake this
+section exists to prevent.

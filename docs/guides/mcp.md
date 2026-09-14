@@ -190,3 +190,77 @@ still fails closed, but the manager waits for the other eligible servers to
 settle and preserves their status for diagnosis. Repeating `/mcp reload` or
 redrawing the transcript does not repeat the same generation's failure notice;
 an explicit new connect/reload generation may produce a new notice.
+
+## Try it
+
+The server registry is a plain TOML-backed list, so listing is read-only and
+safe to run anywhere:
+
+```bash
+PYTHONPATH=src python -m agenthicc mcp list --json
+```
+
+```text
+{"path": "/root/python_projects/agenthicc/.agenthicc/agenthicc.toml", "servers": []}
+```
+
+`path` names the exact file the command read, which is the single most useful
+field when a server you added "does not exist": you are usually editing a
+different project root or have not passed `--global`/`--project`.
+
+Adding a server is validated before anything is written:
+
+```bash
+PYTHONPATH=src python -m agenthicc mcp add --help
+```
+
+```text
+usage: agenthicc mcp add [-h] [--global] [--project] [--transport TRANSPORT]
+                         [--token-env TOKEN_ENV]
+                         [--reconnect-attempts RECONNECT_ATTEMPTS]
+                         [--reconnect-delay-seconds RECONNECT_DELAY_SECONDS]
+                         [--no-auto-connect]
+                         SOURCE
+```
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A server you added is missing from `mcp list` | You wrote it to a different scope or project root | Check the `path` field in `mcp list --json`; pass `--global` or `--project` explicitly to `mcp add` |
+| `--transport ws` is rejected at runtime though the CLI accepted it | The two layers use different vocabularies | The CLI accepts `stdio`, `ws`, `websocket`, `streamable`, `http`; the runtime accepts `stdio`, `streamable_http`, `sse`, `ws`. Use a runtime spelling such as `streamable_http` |
+| A server connects but exposes no tools | The handshake succeeded and the catalogue is empty or still loading | Run `mcp doctor [NAME]`; the catalogue starts in the background and an operation that declares a required MCP dependency waits for it |
+| `mcp add` fails with a validation error and nothing is written | CLI validation runs before persistence | Read the error: the source or transport is invalid. This is fail-closed by design |
+| A token appears in a config file | A literal token was passed instead of an environment reference | Use `--token-env ENV_VAR`; credentials belong in the environment, never in TOML |
+| Reconnects hammer a failing server | Default retry policy is too eager for your server | Set `--reconnect-attempts` and `--reconnect-delay-seconds` on `mcp add` |
+| A server connects immediately when you did not want it to | Auto-connect is on by default | Pass `--no-auto-connect` and drive the lifecycle with `mcp connect`/`mcp disconnect` |
+| Session start is delayed by every configured server | Optional connections are started in the background, but a declared required dependency is awaited | Make the dependency optional, or accept the wait; required resources keep fail-closed semantics |
+| `agenthicc doctor` is not a command | Diagnostics are subcommand-scoped | Use `mcp doctor [NAME]`, not a top-level `doctor` |
+| A previously working server fails after an upgrade | Transport alias or dependency drift | `mcp doctor --json` first, then `mcp refresh`, then `mcp logout`/`mcp auth` if the credential expired |
+
+### The transport-alias trap
+
+This is the single most common MCP misconfiguration, because the CLI and the
+runtime deliberately accept different spelling sets. `agenthicc mcp add
+--transport ws ...` can be accepted and stored, and then the runtime rejects
+`ws` at connect time — or vice versa. When diagnosing, verify which layer
+produced the error before editing the config.
+
+### Diagnostic ladder
+
+Work outward, one step at a time, and stop at the first failure:
+
+```bash
+PYTHONPATH=src python -m agenthicc mcp list --json      # is it configured, and where?
+PYTHONPATH=src python -m agenthicc mcp doctor --json    # dependency/transport health
+PYTHONPATH=src python -m agenthicc mcp refresh NAME     # re-read the catalogue
+```
+
+Only after those pass should you suspect the tool surface; a *connection*
+problem cannot be fixed by editing a tool allow-list.
+
+### Deny by default
+
+An unavailable MCP server does not fall back to a local implementation. The
+choice is fail-closed: the dependent operation reports the missing required
+resource rather than silently proceeding without the tools it declared.

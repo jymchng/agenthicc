@@ -387,3 +387,71 @@ For transitions, retries, parallel phases, resume state, and generic-runner
 caveats, see [Workflows](workflows.md). For provider credentials,
 configuration-file discovery, and security settings, see
 [Configuration](configuration.md).
+
+## Try it
+
+The workflow registry is the part of this guide most worth verifying from a
+shell, because the documentation's own table has historically under-reported
+it:
+
+```bash
+PYTHONPATH=src python -m agenthicc workflows list
+```
+
+```text
+code_plan [builtin] — Plan → Execute → Review → Summary  (single agent, shared memory)
+  phases: plan → execute → review → summarize
+  modes: Plan
+copy_website [builtin] — Study a website with Playwright, then rebuild it with Next.js, ...
+  phases: extract_target → site_study → design_spec → scaffold → implement_layout → ...
+  modes: manual
+create_workflow [builtin] — Design → Generate → Validate → Summary  (author a new custom workflow)
+  phases: design → generate → validate → summarize
+  modes: manual
+goal_flow [builtin] — Clarify intent into goals, implement and verify each goal, then summarize.
+  phases: clarify → decide_goals → implement_goal → verify_goal → summarize
+  modes: manual
+```
+
+The listing is authoritative: eight builtins are declared in the lazy builtin
+table, and each entry prints its phase chain and its modes. Note that
+`copy_website`'s `modes: manual` means it is not offered by the automatic mode
+cycle — it is an explicit choice.
+
+Custom configuration is validated the same way as any other:
+
+```bash
+PYTHONPATH=src python -m agenthicc config validate
+```
+
+```text
+Configuration is valid: legacy execution settings (anthropic/deepseek-v4.1-flash)
+```
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A custom workflow is not in `workflows list` | It is not registered in the builtin table or plugin discovery | Verify the registered name, then run a normal session so project discovery runs |
+| A workflow runs but every phase is skipped | The phase chain declares no transitions to reach them | Give each `PhaseSpec` an explicit transition; the runner follows declarations, not prose |
+| A generated workflow fails to import | An optional import at module scope | Keep optional imports inside a phase or tool factory, and declare a readiness dependency |
+| A workflow phase advanced after a failed command | `require_successful_commands` was not set | Set it on the `PhaseSpec`; failed, timed-out, cancelled, rejected, and orphaned outcomes then stop the phase before its `next` transition |
+| A preview service phase ends immediately | The wait policy defaulted to foreground | Use `terminal_wait_policy="background"` with `command_lifecycle="service"` |
+| A `PhaseSpec` raises at construction | `__post_init__` validation rejects inconsistent fields | Read the message; the validation traps are deliberate and catch contradictory declarations |
+| An override in `[workflows.<name>]` is ignored | The section name must match the registered workflow name | Check `workflows list` for the exact name, then match it in TOML |
+| A resumed run repeats work | Checkpoint topology was not resolved | Use the checkpoint codecs and `resolve_checkpoint_topology` rather than assuming a linear chain |
+| Prompt caching behaves inconsistently | The cache contract was broken by reordering the stable prefix | The stable system policy plus deterministic stable-tool schemas form the reusable prefix; dynamic context is appended after it |
+| A workflow name is ambiguous with an alias | Aliases resolve at the registry boundary | `code_plan` also answers to `Plan`; prefer the canonical name in configuration |
+
+### Eight builtins, and the README says five
+
+`code_plan` (alias `Plan`), `copy_website`, `create_workflow`, `goal_flow`,
+`make_agenthicc_tool`, `make_book`, `reconstruct_site`, `site_imitate`. Do not
+quote a five-row table; run `workflows list`.
+
+### Phase declarations are the contract
+
+A `WorkflowPlugin` exposes phase specifications and a runner; the runner
+consumes *structured outcomes*, never human-readable output. If a workflow
+"works" but does not advance, the transitions are wrong. If it advances when it
+should not, a requirement flag is missing.

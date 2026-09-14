@@ -235,3 +235,81 @@ dispatched, even if a stale skill record is manually present in a registry.
 
 Avoid asserting against the old `render_frame_ansi` or `screen.buffer` contract;
 those belong to the removed prompt-toolkit implementation.
+
+## Try it
+
+The TUI itself is interactive-only, so verify the pieces it composes from a
+plain shell. The version line comes from the side-effect-free parser:
+
+```bash
+PYTHONPATH=src python -m agenthicc --version
+```
+
+```text
+agenthicc 0.1.0
+```
+
+The slash-command registry the TUI completes and dispatches from is a plain
+list literal, so its size is a stable fact:
+
+```bash
+PYTHONPATH=src python -c "
+import ast, pathlib
+tree = ast.parse(pathlib.Path('src/agenthicc/commands/builtins.py').read_text())
+for node in ast.walk(tree):
+    if isinstance(node, ast.AnnAssign) and getattr(node.target, 'id', None) == 'BUILTIN_COMMANDS':
+        print('BUILTIN_COMMANDS entries:', len(node.value.elts))
+"
+```
+
+```text
+BUILTIN_COMMANDS entries: 23
+```
+
+That count is *not* the whole command surface: `/background` (alias `/bg`) is
+injected separately by the background integration, and `/create-tools` and
+`/create-commands` come from bootstrap skills.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| A project slash command is missing right after launch | Extension discovery is deferred until after the first TUI frame | Wait for the shell phase to be `ready`, then `/commands reload` |
+| `/workflow` or `/compact` appears in the picker but errors when run | Both are registry entries with `handler=None` on purpose | They are intercepted in `TUISession.route()` so they can reach session-local state; they are listed so the picker can display and complete them |
+| A command the docs mention does not autocomplete | It is not in `BUILTIN_COMMANDS` and is not injected | Check the source of truth for the command: `BUILTIN_COMMANDS`, the background integration for `/background`, or bootstrap skills for `/create-*` |
+| Output is garbled or the layout breaks after a resize | A stale frame from a partial render | Redraw, and report it — rendering is Rich Live based, so a broken layout is a bug rather than a terminal limitation |
+| The UI looks frozen during a long turn | The animation frame is intentionally quiet while idle or while a prompt owns the terminal | Check `/status` and `/ps`; use `Esc` to cancel the awaited operation if the turn is genuinely stuck |
+| `Esc` did not stop the thing you wanted | It cancels the terminal currently being awaited | Use `/stop <terminal-id>` to stop one exact owned process group |
+| A modal overlay is dismissed accidentally | Approvals and overlays capture input | Answer the overlay deliberately; a grant now applies only to the scope you choose |
+| Input pastes as multiple submissions | Bracketed paste handling | Use the paste state the input panel maintains rather than sending raw newlines |
+| The first frame takes a long time on a slow network or big store | That is exactly what progressive startup prevents | The first frame should not wait on MCP, browsers, or history replay. If it does, inspect `/startup` for a phase that is loaded synchronously |
+| Sessions from an older runtime generation do not appear | Two indexes exist | `sessions list` merges the historical project-local index with the current user-wide TUI index by design |
+
+### Which `AppState` am I looking at?
+
+There are two types with that name. The TUI's reactive container lives in
+`tui/conversation_store.py` and holds conversation turns, scroll events,
+token/cost/activity signals, input buffer and paste state, the active runtime
+mode, overlay and approval state, and workflow progress. The frozen kernel
+model (`agenthicc.kernel.AppState`) holds intents, workflows, tasks, agents,
+tools, hooks, settings, and policy. Terminal-only state belongs in the
+reactive container and must never be written to the event log.
+
+```bash
+PYTHONPATH=src python -c "import agenthicc.kernel as k; print(k.AppState.__module__)"
+```
+
+```text
+agenthicc.kernel.state
+```
+
+If your traceback names a `tui` module for `AppState`, you are holding the
+reactive store, not the kernel state.
+
+### A feature is invisible after a restart
+
+`TUISession` and workflow runners emit kernel events for durable domain changes
+and update reactive signals for immediate presentation. If a change survived in
+the session but not after restart, it was written to the reactive side.
+Consolidating this boundary is tracked as PRD-138 P0.3, so state which model is
+authoritative and how replay behaves before adding a field to either.

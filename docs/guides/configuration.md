@@ -496,3 +496,40 @@ implemented and tested.
 3. Define its security and precedence semantics.
 4. Add merge, validation, and effective-value tests.
 5. Update this table, README examples, `llms-full.txt`, and the changelog.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| An override on the command line does nothing | Precedence is CLI over environment over file, and the key must be `section.key` | Pass `--set execution.model=...` exactly; validate with `agenthicc config validate` |
+| A secret ends up in the file | A literal value was used instead of an environment reference | Use `--set-secret section.key=ENV_VAR`; the value is read from the environment, never stored |
+| Validation passes but a value is still wrong | Validation checks the schema, not your intent | `config validate` confirms syntax and known keys; `config show` (or `config profiles`) shows what actually resolved |
+| The wrong config file is read | A relative path or a different project root | Pass `--config PATH`, and confirm with the `path` field of `agenthicc mcp list --json` |
+| A section is ignored | The section name is not one of the recognised ones | Real sections: `execution`, `providers`, `behaviour`, `hooks`, `tools`, `memory`, `security`, `api`, `plugins`, `skills`, `agents`, `storage`, `workflows.<name>` |
+| A `[behavior]` section has no effect | The real key is spelled `behaviour` with a British `-our` | Rename the section. This is a config key, not prose, so it must stay byte-accurate in every example |
+| A profile is not applied | Profiles select a bundle of execution settings | List them with `agenthicc config profiles`, then select one with `[execution] profile` |
+| A new config file is needed | None exists or it was moved | `agenthicc config init` creates one; `--force` overwrites, so inspect first |
+| Two different `timeout` keys are confusing | `timeout_s` is the LLM timeout while `turn_timeout_s` governs a turn | This naming inversion is real. Set both deliberately, or set neither |
+
+### Validate, then show, then test
+
+Those are three different questions and the order matters:
+
+```bash
+PYTHONPATH=src python -m agenthicc config validate
+```
+
+```text
+Configuration is valid: legacy execution settings (anthropic/deepseek-v4.1-flash)
+```
+
+`validate` answers "is this acceptable?". `config show` answers "what resolved?".
+Neither answers "does the provider accept it?" — for that, run a real turn and
+watch the first request fail or succeed.
+
+### Generated configuration must stay parseable
+
+`WorkflowConfig` and generated workflows read the same snapshot the runner
+passed into session construction, so a config that only *looks* right can still
+break a generated workflow. Keep generated TOML minimal and validate it, rather
+than round-tripping a hand-edited file through several tools.
