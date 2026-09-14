@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, cast
 
 if TYPE_CHECKING:
     from lauren_ai._transport._mock import MockTransport
@@ -52,6 +52,7 @@ class CassetteEntry:
     response_content: str
     response_stop_reason: str
     response_tool_calls: list[dict[str, object]]  # [{"name", "tool_use_id", "input"}]
+    response_reasoning_content: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> CassetteEntry:
@@ -61,6 +62,12 @@ class CassetteEntry:
         names = [str(name) for name in raw_names] if isinstance(raw_names, list) else []
         raw_calls = resp.get("tool_calls", [])
         calls = raw_calls if isinstance(raw_calls, list) else []
+        raw_reasoning_content = resp.get("reasoning_content")
+        if raw_reasoning_content is not None and not isinstance(raw_reasoning_content, str):
+            raise ValueError("cassette response reasoning_content must be a string when present")
+        reasoning_content = (
+            raw_reasoning_content if isinstance(raw_reasoning_content, str) else None
+        )
         return cls(
             index=_integer(d.get("index")),
             model=str(d.get("model", "")),
@@ -68,6 +75,7 @@ class CassetteEntry:
             response_content=str(resp.get("content", "")),
             response_stop_reason=str(resp.get("stop_reason", "end_turn")),
             response_tool_calls=[call for call in calls if isinstance(call, dict)],
+            response_reasoning_content=reasoning_content,
         )
 
 
@@ -89,6 +97,7 @@ class ApprovalEntry:
     @classmethod
     def from_dict(cls, d: dict[str, object]) -> ApprovalEntry:
         raw_mode = d.get("mode")
+        raw_scope_grant = d.get("scope_grant")
         raw_workspace = d.get("workspace_access", [])
         workspace_access: list[dict[str, str | None]] = []
         if isinstance(raw_workspace, list):
@@ -123,7 +132,7 @@ class ApprovalEntry:
             remember=bool(d.get("remember", False)),
             remember_all=bool(d.get("remember_all", False)),
             mode=raw_mode if isinstance(raw_mode, str) else None,
-            scope_grant=(d["scope_grant"] if isinstance(d.get("scope_grant"), str) else None),
+            scope_grant=raw_scope_grant if isinstance(raw_scope_grant, str) else None,
             workspace_access=tuple(workspace_access),
         )
 
@@ -241,6 +250,19 @@ class SessionCassette:
         mock = MockTransport()
         for entry in sorted(self.entries, key=lambda e: e.index):
             chunks: list[CompletionChunk] = []
+
+            if entry.response_reasoning_content is not None:
+                try:
+                    chunks.append(
+                        cast(Any, CompletionChunk)(
+                            reasoning_content_delta=entry.response_reasoning_content,
+                        )
+                    )
+                except TypeError as exc:
+                    raise RuntimeError(
+                        "reasoning-enabled cassette replay requires a lauren-ai release "
+                        "with CompletionChunk.reasoning_content_delta"
+                    ) from exc
 
             if entry.response_tool_calls:
                 for tc in entry.response_tool_calls:

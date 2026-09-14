@@ -199,6 +199,11 @@ class RecordingTransport:
                 ],
             },
         }
+        reasoning_content = vars(completion).get("reasoning_content")
+        if isinstance(reasoning_content, str):
+            # This is provider replay metadata, not visible assistant text.
+            # It is recorded only when the provider actually returned it.
+            entry["response"]["reasoning_content"] = reasoning_content
         self._append(entry)
 
     def _record_from_chunks(
@@ -208,6 +213,8 @@ class RecordingTransport:
         chunks: list[CompletionChunk],
     ) -> None:
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        reasoning_present = False
         stop_reason: str = "end_turn"
         # tool_use_id -> {name, input_json}
         partial: dict[str, dict[str, str]] = {}
@@ -215,6 +222,10 @@ class RecordingTransport:
         for chunk in chunks:
             if chunk.delta:
                 content_parts.append(chunk.delta)
+            reasoning_delta = vars(chunk).get("reasoning_content_delta")
+            if isinstance(reasoning_delta, str):
+                reasoning_parts.append(reasoning_delta)
+                reasoning_present = True
             if chunk.stop_reason:
                 stop_reason = chunk.stop_reason
             tcd = chunk.tool_call_delta
@@ -254,6 +265,8 @@ class RecordingTransport:
                 "tool_calls": tool_calls,
             },
         }
+        if reasoning_present:
+            entry["response"]["reasoning_content"] = "".join(reasoning_parts)
         self._append(entry)
 
     def _append(self, entry: dict[str, Any]) -> None:

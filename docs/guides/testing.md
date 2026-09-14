@@ -65,6 +65,13 @@ uv run pytest tests/unit/test_reconstruct_research_prd178.py tests/integration/t
 `agenthicc.testing` provides `SessionCassette`, mock approvals, and
 `run_headless_replay()` for deterministic scenarios.
 
+Provider replay regressions should also cover reasoning-enabled
+OpenAI-compatible gateways: record the assistant's optional
+`reasoning_content`, replay the matching tool result, and assert that the
+second request contains the exact field without rendering it as transcript
+text. The PRD-190 fake-gateway tests are fully offline and do not require
+Console Go credentials.
+
 ## TUI and terminal tests
 
 Test signal and conversation mutations without a terminal. Test Rich rendering

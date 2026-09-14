@@ -152,6 +152,23 @@ retried. agenthicc reports the missing binding and points to
 changing the configuration, restart the session so its provider transport is
 rebuilt with the binding.
 
+#### Reasoning-content replay
+
+OpenAI-compatible reasoning models can return a hidden
+`reasoning_content` field alongside an assistant tool call. Console Go and
+similar gateways require that exact field to be passed back when the tool
+result is followed by another model request. lauren-ai preserves it on the
+assistant conversation message and agenthicc carries it through the session
+journal, workflow checkpoints, retries, `--continue`, and `--resume`.
+
+The field is intentionally not rendered as assistant text and is not included
+in ordinary TUI diagnostics. Do not try to fix this error by increasing
+retries: the provider's HTTP 400 is non-transient. Update to a lauren-ai
+release with reasoning-content round-trip support, or start a fresh session if
+the existing journal was created by a version that already discarded the
+field. The `x-opencode-session` header and `reasoning_content` payload solve
+different requirements and should both remain configured for OpenCode Go.
+
 `provider = "openai"` selects lauren-ai's OpenAI transport; no Modal SDK is
 required. `base_url` can point at any compatible gateway, vLLM server, or
 private endpoint. Secret values should use `{ env = "NAME" }` references (or

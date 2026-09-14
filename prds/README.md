@@ -57,6 +57,7 @@ against the current source before implementing them.
 - [PRD-187 — OpenCode Go session identity propagation](prd-187-opencode-go-session-identity.md)
 - [PRD-188 — Resume the latest recoverable workflow run](prd-188-workflow-resume-latest-run.md)
 - [PRD-189 — Scrollable Ask User Questions](prd-189-scrollable-ask-user-questions.md)
+- [PRD-190 — OpenAI-compatible reasoning_content round-trip](prd-190-opencode-go-reasoning-content-roundtrip.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -317,6 +318,14 @@ applies the existing plan-review scrolling pattern to `ask_user` question text,
 adding wrapped literal lines, fixed-height viewports, bounded keyboard
 scrolling, resize-safe redraws, and regression coverage without changing the
 question or answer contract.
+
+PRD-190 proposes the missing OpenAI-compatible reasoning-content round-trip.
+The OpenAI adapter currently accounts for reasoning tokens but drops the
+assistant message's `reasoning_content`, so a subsequent tool-result request
+can be rejected by Console Go. The PRD extends the canonical completion and
+memory contracts, preserves the field through journals/checkpoints/resume, and
+emits it only from the OpenAI-compatible serializer while keeping the
+Anthropic thinking-block contract in PRD-137 separate.
 
 ## Existing PRDs
 
