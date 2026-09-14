@@ -1,377 +1,289 @@
 ---
-skill: running-the-tui
+name: running-the-tui
 version: 1.0.0
-tags: [tui, terminal, prompt_toolkit, headless]
-summary: Complete guide to the Agenthicc interactive TUI — layout, key bindings, slash commands, HITL approval, and headless JSON-lines mode.
+tags: [tui, terminal, rich, slash-commands, approvals]
+description: >-
+  Operate the interactive Rich Live terminal workspace: the scroll buffer and pinned
+  composer layout, modes, overlays, slash commands, input handling, approval flows,
+  background sessions, and the platform terminal backends.
 ---
 
 # Skill: Running the TUI
 
-
-## Required: LLM API Key
-
-Before running, set your LLM provider API key:
-
-```bash
-# Anthropic Claude (default — recommended)
-export ANTHROPIC_API_KEY="sk-ant-api03-..."
-
-# OpenAI (also set provider in config)
-export OPENAI_API_KEY="sk-..."
-
-# Ollama (local, no key needed)
-# Just have `ollama serve` running
-```
-
-To pin a model, add to `.agenthicc/agenthicc.toml`:
-
-```toml
-[execution]
-model = "claude-sonnet-4-6"   # faster/cheaper than opus
-```
-
-Or override at launch: `agenthicc --set execution.model=claude-haiku-4-5`
+The interactive UI is a **Rich `Live` workspace**. It is not the older
+terminal-input design that some historical notes describe: there is no separate
+application module, no standalone transcript model, and no third-party prompt
+framework. Everything below is the current `src/agenthicc/tui/` tree.
 
 ## When to use this skill
 
 Use this skill when you need to:
-- Launch and navigate the interactive full-screen TUI
-- Understand the layout and what each region displays
-- Submit intents, read the transcript, and approve HITL prompts
-- Use slash commands (`/status`, `/history`) and their menu overlays
-- Run in headless JSON-lines mode for CI or scripted pipelines
-- Configure key bindings or troubleshoot common TUI issues
+
+- Launch and navigate the interactive workspace
+- Understand what owns the screen and where to add a new region
+- Switch execution modes and know what each one permits
+- Use slash commands, `$` skills, and `@` mentions
+- Trace how a tool approval reaches an overlay
+- Fix the classic failure modes (duplicated frames, stuck spinner, resize)
 
 ---
 
-## Full annotated layout
+## Runtime components
 
+Each of these is a real module; keep new code inside this layering.
+
+| Component | Location | Responsibility |
+|---|---|---|
+| Reactive state | `src/agenthicc/tui/conversation_store.py` | `ConversationStore`, `InputState`, `AppState` |
+| Workspace root | `src/agenthicc/tui/workspace/workspace.py` | Owns the single `Live` block |
+| Scroll buffer | `src/agenthicc/tui/workspace/appender.py` | `ScrollBufferAppender`, prints above the Live block |
+| Live components | `src/agenthicc/tui/workspace/components.py` | `StatusComponent`, `ComposerComponent`, `FooterComponent` |
+| Overlay host | `src/agenthicc/tui/workspace/overlay.py` | `OverlayHost.show()` / `.hide()` |
+| Overlay widgets | `src/agenthicc/tui/workspace/overlays/` | One class per overlay kind |
+| Input session | `src/agenthicc/tui/input/unified_session.py` | `UnifiedInputSession`, one raw-mode lifetime |
+| Input buffer | `src/agenthicc/tui/input/buffer.py` | `InputBuffer` — pure text/cursor value object |
+| Capabilities | `src/agenthicc/tui/input/capabilities.py` | `IDLE_CAPABILITIES`, `STREAMING_CAPABILITIES` |
+| Prompt rendering | `src/agenthicc/tui/input/renderer.py` | `build_prompt()`, `PROMPT_CHAR`, `CURSOR_CHAR` |
+| Width helpers | `src/agenthicc/tui/rendering.py` | `visible_len()`, `fit()` |
+| Terminal backends | `src/agenthicc/tui/terminal/` | `TerminalBackend` protocol, POSIX/Windows |
+| Triggers | `src/agenthicc/tui/trigger.py`, `src/agenthicc/tui/triggers/` | Slash commands and `@` mentions |
+
+### The Live block
+
+`Workspace` starts **one** Rich `Live` block for the whole application lifetime
+(`src/agenthicc/tui/workspace/workspace.py:45`). Its docstring states the invariant plainly:
+the block "starts ONCE at application startup and stops ONCE at shutdown. It
+NEVER starts/stops per agent turn."
+
+That is deliberate. Starting and stopping `Live` per turn causes a cursor race
+that corrupts the display. Two constructor choices back it up:
+`auto_refresh=False` (no background refresh thread racing `console.print()`)
+and `transient=True` (clean teardown).
+
+All redraws are explicit, driven by signal subscriptions through `_redraw()`
+(`src/agenthicc/tui/workspace/workspace.py:284`). If you add a region, subscribe to the
+relevant signal and redraw — do not spin up a second `Live`.
+
+### Screen model
+
+```text
+terminal
+├── scroll buffer            ← ScrollBufferAppender, ordinary printed output
+│   ├── idle/session headers
+│   ├── agent text
+│   ├── tool results and collapsed tool groups
+│   └── workflow / system / retry notifications
+└── one permanent Live block
+    ├── blank separator
+    ├── status component
+    ├── composer  OR  active overlay
+    ├── border
+    └── footer
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  1  ● agent:planner  09:41:22                                        │  ← [1] Turn header
-│     > parsing intent: "refactor the auth module"                     │  ← [2] Turn lines
-│     > identified 4 tasks                                             │
-│       [tool] agent_spawn  ⣾ running...                               │  ← [3] Tool call (spinner)
-│       [tool] task_create  ✓  38ms                                    │  ← [4] Tool call (success)
-│       [tool] task_create  ✓  41ms                                    │
-│       [tool] task_create  ✓  39ms                                    │
-│     → tokens: 892  cost: $0.002                                      │  ← [5] Turn footer
-│  ────────────────────────────────────────────────────────────        │  ← [6] Separator
-│     ● agent:worker-1  09:41:24                                       │
-│     > writing tests for AuthService                                  │
-│       [tool] file_write  ✓  102ms                                    │
-│       [tool] application_log  ✓  2ms                                 │
-│     → tokens: 1,240  cost: $0.003                                    │
-│  ────────────────────────────────────────────────────────────        │
-│     ● agent:worker-2  09:41:25                                       │
-│     > refactoring AuthService._validate                              │
-│       [tool] file_read   ✓  8ms                                      │
-│       [tool] file_write  ⣻ running...                                │  ← spinner animates
-│                                                                      │
-│  [STATUS MENU FLOATS HERE WHEN /status IS TYPED — see §Menus]        │  ← [7] Menu overlay
-│                                                                      │
-├──────────────────────────────────────────────────────────────────────┤
-│  3 agents | $0.005 | 2,132 tok                          [row rows-1] │  ← [8] Status line
-├──────────────────────────────────────────────────────────────────────┤
-│ > _                                                     [row rows]   │  ← [9] Input bar (pinned)
-└──────────────────────────────────────────────────────────────────────┘
-```
 
-### Callout legend
-
-| # | Region | Source | Notes |
-|---|---|---|---|
-| 1 | Turn header | `AgentTurnEntry.header()` | `● agent:<name>  HH:MM:SS` |
-| 2 | Turn lines | `AgentTurnEntry.lines` | Prefixed `  > ` in `render()` |
-| 3 | Tool call (running) | `ToolCallEntry.render()` | Braille spinner `SPINNER_FRAMES` |
-| 4 | Tool call (done) | `ToolCallEntry.render()` | `✓` + duration in ms |
-| 5 | Turn footer | `AgentTurnEntry.footer()` | `→ tokens: N  cost: $X.XXX` |
-| 6 | Separator | `SEPARATOR = "─" * 60` | Inserted between turns |
-| 7 | Menu overlay | `render_menu()` | `Float(bottom=2)` — never touches input bar |
-| 8 | Status line | `render_status()` | Agent count, cumulative cost, total tokens |
-| 9 | Input bar | `input_window` | Pinned to last row; prefix `INPUT_PROMPT = "> "` |
+`Workspace.start()` is called once, before the processor and input loop begin;
+`Workspace.stop()` runs once during teardown. `Workspace.flush_scroll()`
+(`:186`) drains the scroll buffer, and `Workspace.replay_transcript(events)`
+(`:196`) feeds historical turns through the same renderers.
 
 ---
 
-## Submitting intents
+## Modes
 
-Type your intent in the input bar and press **Enter**:
+The selectable cycle is **Safe → Plan → Yolo → Safe**. `Safe` is the default
+(`src/agenthicc/modes/builtin.py:62,73,84`).
 
-```
-> refactor the auth module to use JWT
-```
-
-The text is passed to `on_input(text)` which emits `IntentCreated` to the kernel.
-The transcript updates as agents begin working.
-
-Empty input is ignored. To submit a blank line deliberately, use `/noop` (not a
-built-in command — it will be passed to `on_input` as a no-op string).
-
----
-
-## Reading the transcript
-
-The transcript region auto-scrolls to the tail (most recent activity) and is
-clipped to `rows - 2` visible lines. Each agent's output is grouped into turns
-separated by a `─` line.
-
-Tool call states:
-
-| Symbol | Meaning |
+| Mode | Behaviour |
 |---|---|
-| `.` | `PENDING` — registered but not started |
-| `⣾⣽⣻⢿⡿⣟⣯⣷` | `RUNNING` — animated Braille spinner |
-| `✓` | `SUCCESS` — completed with duration |
-| `✗` | `FAILURE` — completed with error message |
+| `Safe` | Reads, searches, and git reads run directly; writes, git changes, commands, network, and unannotated tools require approval |
+| `Plan` | Read-only; hard-blocks the mutating capabilities |
+| `Yolo` | Tools run without per-action approval |
 
-The spinner advances every ~100ms via `TranscriptModel.advance_spinner()` called
-from a background timer task.
+Compatibility aliases are accepted but not displayed: `Auto` → `Yolo`;
+`Guard` and `Ask` → `Safe`; `Review` → `Plan`. `Debug` is **not** an alias and
+is rejected. Replay is an internal state and is not selectable.
+
+Press **Shift+Tab** to cycle. `/mode [name]` performs an explicit switch and
+reports the canonical choices when given an unknown name.
+
+---
+
+## Input and triggers
+
+`UnifiedInputSession` enters raw mode once and dispatches each key through the
+active capability list (`src/agenthicc/tui/input/unified_session.py:49`). The session has an
+`InputMode` (`:44`) that selects the capability list:
+
+- **IDLE** — `IDLE_CAPABILITIES` (`src/agenthicc/tui/input/capabilities.py:487`): triggers,
+  history, cursor movement, paste, mode cycling, submission.
+- **STREAMING** — `STREAMING_CAPABILITIES` (`:505`): a reduced set so you can
+  still queue input or interrupt while a turn runs.
+
+The triggers are:
+
+| Trigger | Picker |
+|---|---|
+| `/` | Command picker, backed by the unified command registry |
+| `$` | Skill picker, backed by discovered skills |
+| `@` | Project file / mention picker |
+
+`PROMPT_CHAR = "❯"` and `CURSOR_CHAR = "▌"` are the composer glyphs
+(`src/agenthicc/tui/input/renderer.py:12-13`). `InputBuffer` is a pure value object — mutate
+it only through its named methods, never by poking the buffer list
+(`src/agenthicc/tui/input/buffer.py:10`).
+
+ESC cancels the active turn and returns the pipeline to IDLE immediately, even
+while async cleanup finishes; this keeps the double-Ctrl+C exit path responsive.
 
 ---
 
 ## Slash commands
 
-Type a slash command and press **Enter** to open its menu overlay. Press **Escape**
-to dismiss.
+Canonical definitions live in `commands/builtins.py`. Stateful commands such as
+`/workflow` and `/compact` are deliberately intercepted by `TUISession` because
+they need session fields. The completion constants in
+`src/agenthicc/tui/input/completions.py` are compatibility adapters over the canonical
+registry — do not add new commands there.
 
-### `/status` — Agent Status overlay
+Skills are triggered with `$skill-name` or `$alias` and are intentionally kept
+out of the `/` picker. `/skills` and `/skills reload` remain slash commands for
+inspecting and refreshing them.
 
-```
-┌─────────────────────────────────────────────────┐
-│  /status — Agent Status                         │
-│  ├─ planner (agent:a1b2c3d4)                    │
-│  ├─ worker-1 (agent:e5f6a7b8)                   │
-│  ├─ worker-2 (agent:c9d0e1f2)                   │
-└─────────────────────────────────────────────────┘
- 3 agents | $0.005 | 2,132 tok                      ← status line stays here
-> _                                                 ← input bar stays here
-```
+Commands that affect the run without sending a message:
 
-The overlay floats at `Float(bottom=2, right=0)` — two rows above the terminal
-bottom — so it can never obscure the status line or input bar.
-
-### `/history` — Event Log overlay
-
-```
-┌─────────────────────────────────────────────────┐
-│  /history — Event Log                           │
-│  ● agent:planner  09:41:22                      │
-│    > parsing intent: "refactor the auth module" │
-│    > identified 4 tasks                         │
-│      [tool] agent_spawn  ⣾ running...           │
-│      [tool] task_create  ✓  38ms                │
-│      [tool] task_create  ✓  41ms                │
-│    → tokens: 892  cost: $0.002                  │
-│  ────────────────────────────────               │
-│  ● agent:worker-1  09:41:24                     │
-└─────────────────────────────────────────────────┘
- 3 agents | $0.005 | 2,132 tok
-> _
-```
-
-Shows the last 10 rendered transcript lines. Useful for reviewing recent activity
-without scrolling.
-
-### Dismissing menus
-
-- Press **Escape** to dismiss any open menu overlay
-- Type any non-slash input and press **Enter** (the menu is cleared on submit)
-- Type a different slash command to switch menus
-
----
-
-## HITL approval walkthrough
-
-Human-in-the-loop (HITL) approval is triggered when a tool's `PermissionRule` has
-`action = "require_confirmation"`. The TUI displays the pending call in the
-transcript as a `PENDING` tool call entry and an approval prompt appears in the
-input bar region:
-
-```
-  [tool] file_write  .  [AWAITING APPROVAL]
-─────────────────────────────────────────────
- Approve tool call 'file_write' on '/workspace/src/auth.py'? [y/N]
-> _
-```
-
-**Step-by-step:**
-
-1. A `PENDING` tool entry appears in the current agent turn.
-2. The status line shows `WAITING FOR APPROVAL`.
-3. Type `y` and press **Enter** to approve; type `n` or press **Enter** on empty
-   to reject.
-4. On approval: the tool call transitions to `RUNNING`, then `SUCCESS` or `FAILURE`.
-5. On rejection: the tool call transitions to `FAILURE` with error `"rejected by operator"`.
-
-The kernel emits `ToolApprovalResponse` with `approved: true/false`; the executor
-proceeds or raises `Rejection`.
-
----
-
-## Headless mode
-
-Run without a terminal using `run_headless`. Each kernel event is emitted as one
-JSON line to `output_stream`.
-
-```python
-import asyncio
-import sys
-from agenthicc.tui.app import run_headless
-
-async def main():
-    # event_queue is fed by your kernel bridge
-    await run_headless(event_queue, output_stream=sys.stdout)
-
-asyncio.run(main())
-```
-
-Example output lines:
-
-```json
-{"ts": 1735689600.123, "event_type": "IntentCreated", "event_id": "a1b2c3", "payload": {"intent_id": "i1", "raw_text": "refactor auth"}, "source_agent_id": null}
-{"ts": 1735689601.456, "event_type": "AgentSpawnRequest", "event_id": "d4e5f6", "payload": {"agent_id": "w1", "agent_type": "worker"}, "source_agent_id": null}
-{"ts": 1735689602.789, "event_type": "TaskCreated", "event_id": "g7h8i9", "payload": {"task_id": "t1", "description": "write tests"}, "source_agent_id": "w1"}
-```
-
-Stop headless mode by putting `None` onto the queue:
-
-```python
-await event_queue.put(None)
-```
-
-### Parsing headless output
-
-```python
-import json
-import subprocess
-
-proc = subprocess.Popen(
-    ["python", "-m", "agenthicc", "--headless"],
-    stdout=subprocess.PIPE, text=True
-)
-for line in proc.stdout:
-    record = json.loads(line)
-    print(record["event_type"], record["ts"])
-```
-
----
-
-## Key bindings
-
-| Key | Action |
+| Command | Effect |
 |---|---|
-| **Enter** | Submit input text; open menu if slash command |
-| **Escape** | Dismiss open menu overlay |
-| **Ctrl-C** | Exit the TUI application |
-| **Ctrl-D** | (handled by prompt_toolkit buffer) — clear input |
-| **Up / Down** | Scroll input history (prompt_toolkit default) |
-| **Ctrl-W** | Delete word before cursor (prompt_toolkit default) |
-| **Ctrl-U** | Clear input to start of line (prompt_toolkit default) |
-
-Key bindings are defined in `build_app` via `KeyBindings`:
-
-```python
-kb = KeyBindings()
-
-@kb.add("escape")
-def _dismiss(event):
-    ui_state["menu_visible"] = False
-    ui_state["active_menu"] = None
-
-@kb.add("c-c")
-def _exit(event):
-    event.app.exit()
-```
-
-To add custom bindings, pass a modified `KeyBindings` object to `build_app`.
+| `/usage` | Local token/cost snapshot, no message sent |
+| `/config` | Opens the configuration overlay immediately, even during a response |
+| `/cancel`, `/interrupt` | Cancels the active run |
+| `/bg`, `/background` | Background-session control plane |
+| `/status` | Agent status overlay |
+| `/commands`, `/skills` | Registry listings kept inside the overlay |
 
 ---
 
-## Common issues
+## Overlays and approvals
 
-### TUI does not start / ImportError
+The workspace can show help, command/skill/tool/workflow listings,
+configuration, trigger picker, plan review, questions, terminal lists, and
+generic tool approval overlays. All of them live under
+`src/agenthicc/tui/workspace/overlays/` — for example `HelpOverlay`,
+`CommandListOverlay`, `SkillListOverlay`, `ConfigMenuOverlay`,
+`PlanApprovalOverlay`, `QuestionsOverlay`, and `ApprovalOverlay`.
 
-```
-RuntimeError: prompt_toolkit is not installed; use run_headless() instead
-```
+`OverlayHost` exposes exactly `show(overlay)`, `hide()`, and a `widget`
+property (`src/agenthicc/tui/workspace/overlay.py:51-64`).
 
-Install the TUI extra:
+**Rule:** an overlay never writes to the terminal directly. It updates its own
+state or invokes a callback and lets the workspace redraw. New approval kinds
+need an overlay class, a registry entry, and tests for approve/reject, cancel,
+and resize.
 
-```bash
-pip install "agenthicc[tui]"
-# or
-uv sync --extra tui
-```
+### How an approval reaches its overlay
 
-### Input bar disappears after resize
-
-The ANSI renderer always pins the input bar to `row rows`. If you observe it
-moving, check that your terminal resize handler calls `app.renderer.reset()` or
-re-renders the frame.
-
-### Spinner is not animating
-
-The spinner requires a background task calling `model.advance_spinner()` every
-~100ms. Ensure the spinner task is running:
+`ApprovalRequest.kind` (`src/agenthicc/tools/approval.py:44`) selects the
+overlay. `TUISession._wire_approval_overlay()` builds a registry mapping kind →
+class and falls back to `ApprovalOverlay`
+(`src/agenthicc/runners/tui_session.py:1864-1872`):
 
 ```python
-async def spin():
-    while True:
-        model.advance_spinner()
-        app.invalidate()
-        await asyncio.sleep(0.1)
-
-asyncio.create_task(spin())
+_overlay_registry = {
+    "plan_review": PlanApprovalOverlay,
+    "questions": QuestionsOverlay,
+}
+_overlay_default = ApprovalOverlay
 ```
 
-### Menu overlay covers transcript content
+Add a new kind by extending that dict — there is no `if`/`elif` chain to edit.
+The status line reflects the pending kind with a stable waiting label rather
+than the animated Thinking state (`src/agenthicc/tui/workspace/components.py:99-101`):
 
-This is by design — the overlay floats at `Float(bottom=2, right=0)` and is
-anchored above the status line. It is always dismissable with **Escape**.
+| `kind` | Status label |
+|---|---|
+| `questions` | `Waiting for your answer` |
+| `plan_review` | `Waiting for plan approval` |
+| anything else | `Waiting for approval` |
 
-### Cost shows $0.000
+A background terminal in the foreground shows `Waiting for background terminal`
+(`:152`). While the animated states are idle, complete, or errored, no frame
+ticks are published — the spinner label is `Thinking` (`:16`) — which stops
+captured terminals from accumulating identical idle panels.
 
-Cost is populated from `AgentTurnEntry.cost_usd`. Ensure your agent runner bridge
-sets this field when the turn is closed:
+---
 
-```python
-turn = model.append_turn(agent_id, agent_name)
-# ... after run completes ...
-turn.cost_usd = completion.usage.cost_usd
-turn.tokens = completion.usage.total_tokens
-```
+## Resumed transcripts
 
-### render_frame_ansi for testing
+When the workspace opens an existing session, the newest **20** complete turns
+are loaded from the tail of the session log and handed to
+`ScrollBufferAppender` in order (`Workspace.replay_transcript`). This bounded
+projection keeps startup fast on a very large log.
 
-Use `render_frame_ansi` in tests to get a deterministic ANSI frame without a real
-terminal:
+Set `[behaviour] resume_transcript_turns = N` to change the count
+(`src/agenthicc/config.py:1363`); `0` requests the complete visual transcript.
+The setting is presentation-only — it does not trim provider memory, usage,
+workflow state, or the durable event log. Replay does not append to
+`ConversationStore`, so events are not written to `conversation.jsonl` twice.
 
-```python
-from agenthicc.tui.app import render_frame_ansi
-from agenthicc.tui.transcript import TranscriptModel
+---
 
-model = TranscriptModel()
-model.append_turn("agent-1", "planner")
-model.append_line("agent-1", "hello world")
+## Terminal backends
 
-frame = render_frame_ansi(model, cols=80, rows=24)
-# frame contains ANSI escape sequences; strip them for text assertions
-import re
-text = re.sub(r'\x1b\[[^m]*m|\x1b\[\d+;\d+H|\x1b\[2J|\x1b\[H', '', frame)
-assert "hello world" in text
-```
+`get_backend()` is the single permitted platform branch
+(`src/agenthicc/tui/terminal/backend.py:49`): `os.name == "nt"` yields `WindowsBackend`
+(msvcrt), otherwise `PosixBackend` (termios/tty). The module docstring is
+explicit that no feature code may import `msvcrt`, `termios`, or `tty` directly.
+
+All application code goes through the `TerminalBackend` protocol (`:24`). The
+Windows backend uses `ReadConsoleInputW` so Shift+Tab keeps its modifier, and
+POSIX raw mode is a no-op for non-TTY descriptors and restores the previous
+terminal state on exit.
+
+Resize is handled by `_on_sigwinch` → `_schedule_resize_redraw` →
+`_flush_resize_redraw` → `_reset_live_after_resize`
+(`src/agenthicc/tui/workspace/workspace.py:389,367,383,339`), which
+debounces to one repaint and clears Rich's pre-resize geometry first.
+
+---
+
+## Testing UI changes
+
+- Test conversation and signal mutations as unit tests against
+  `ConversationStore`.
+- Test `ScrollBufferAppender._flush_batch()` with a fake or captured `Rich`
+  console when adding an event renderer.
+- Test input capabilities with synthetic `Key` values.
+- Test workspace startup/shutdown and non-TTY input in integration tests.
+- Test terminal backends with pure key-decoding cases on Linux, and real
+  interactive behaviour only where the platform is available.
+
+Use `visible_len()` and `fit()` from `src/agenthicc/tui/rendering.py` in any component that
+builds markup. Markup wider than the terminal desyncs Rich's cursor
+repositioning and makes the Live block overwrite content above it.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Duplicated status lines / torn frames | A second `Live` started per turn | Only `Workspace.start()` may own `Live` |
+| Content above the panel gets overwritten | Markup exceeds terminal width | Route every `render(cols)` through `fit()` |
+| Spinner keeps redrawing when idle | Frame ticks published in a static state | Only publish ticks for thinking/tool/recovery/compaction |
+| Duplicate frames after resize | Live geometry not reset | Keep the SIGWINCH debounce path; don't redraw directly |
+| An overlay leaves the screen blank | Overlay wrote to the terminal itself | Update state and call `overlays.hide()` instead |
+| Prompt input is not editable | Another consumer holds raw mode | Ensure `UnifiedInputSession` owns the single raw-mode lifetime |
+| Shift+Tab does not cycle modes | Input backend not interactive, or old Windows backend | Verify the Windows `ReadConsoleInputW` backend is in use |
 
 ---
 
 ## Key points
 
-- `INPUT_PROMPT = "> "` is the literal prefix shown in the input bar every row.
-- `MENU_COMMANDS = {"/status": "status", "/history": "history"}` — only these two
-  slash commands open overlays; any other `/text` is passed to `on_input` unchanged.
-- `detect_slash_command(text)` returns the menu name or `None`.
-- The menu overlay is a `Float(bottom=2, right=0)` — it never displaces the status
-  line or input bar because those are fixed-height rows in the `HSplit`.
-- `run_headless` works with zero terminal dependencies; use it in CI pipelines.
-- `render_frame_ansi` is the test hook for frame-accurate assertions without pyte.
-- `build_app` raises `RuntimeError` if `prompt_toolkit` is not installed; check
-  `PROMPT_TOOLKIT_AVAILABLE` before calling.
+- The UI is **Rich Live**; there is no `src/agenthicc/tui/app.py`, no separate transcript
+  model, and no prompt-toolkit dependency.
+- One `Live` block for the entire application lifetime; start and stop it once.
+- `auto_refresh=False` and `transient=True` are load-bearing, not cosmetic.
+- Overlays update state and let the workspace redraw; they never print directly.
+- Approval routing is a `kind` → overlay-class registry, extended by adding a
+  dict entry.
+- Modes cycle Safe → Plan → Yolo with aliases accepted but not displayed.
+- All width-sensitive rendering must use `visible_len()` / `fit()`.
