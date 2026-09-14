@@ -181,7 +181,7 @@ declares eight: `code_plan` (alias `Plan`), `copy_website`, `create_workflow`,
 `goal_flow`, `make_agenthicc_tool`, `make_book`, `reconstruct_site`, and
 `site_imitate`. Always confirm with a real listing rather than quoting a table.
 
-### `--headless` without `--workflow`
+### Headless without a workflow
 
 This does not raise. It exits 0 and emits a readiness record with no
 `workflow` key:

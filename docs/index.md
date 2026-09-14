@@ -17,6 +17,8 @@ capability-gated tools.
   TUI or headless session.
 - [Architecture](guides/architecture.md) — understand the kernel, runners,
   reactive UI state, tools, and persistence.
+- [Architecture diagram](guides/architecture-diagram.md) — the same boundaries
+  as a diagram, with every node mapped to a real file.
 - [Configuration](guides/configuration.md) — config discovery, precedence,
   providers, security, memory, and MCP.
 - [Connecting MCP servers](guides/mcp.md) — install MCP support, register
@@ -64,6 +66,9 @@ capability-gated tools.
 - [API status](reference/api.md) — why there is no server API package.
 - [Documentation fact base](reference/fact-base.md) — the `path:line`
   provenance register behind these claims.
+- [Glossary](glossary.md) — every domain term defined with a source citation.
+- [Troubleshooting index](reference/troubleshooting-index.md) — symptom-first
+  navigation across the usage pages and the guide traps.
 - [PRD-138 roadmap](https://github.com/agenthicc/agenthicc/blob/main/prds/prd-138-repository-improvement-roadmap.md) — the
   evidence-backed improvement backlog.
 - [`llms-full.txt`](https://github.com/agenthicc/agenthicc/blob/main/llms-full.txt) — public symbol reference for AI tools.
