@@ -1,29 +1,50 @@
 # Current repository state
 
-This is the maintainer-facing state audit for the checkout at commit
-`4052c66` (29 July 2026). It records what is implemented, what is only a
-compatibility boundary, and what remains roadmap work. It is intentionally
-separate from historical PRDs: a PRD can describe a proposed design without
-being a description of the running package.
+This is the maintainer-facing state audit for the checkout. It records what is
+implemented, what is only a compatibility boundary, and what remains roadmap
+work. It is intentionally separate from historical PRDs: a PRD can describe a
+proposed design without being a description of the running package.
+
+!!! warning "Snapshot date"
+    The audit below was re-derived from commit `332987a` (14 September 2026).
+    The **counts** and **commit reference** are the fastest-moving parts of this
+    page, so re-run the commands in
+    [Re-deriving the evidence snapshot](#re-deriving-the-evidence-snapshot)
+    before quoting them. The architectural statements are far more stable.
 
 ## Evidence snapshot
 
-The audit used the current source tree, package metadata, Nox sessions, and
-the test layout as its evidence. The checkout contains:
+The audit used the current source tree, package metadata, and the test layout as
+its evidence. The checkout contains:
 
 | Area | Current evidence | Meaning |
 |---|---:|---|
-| Python source files | 208 | Broad runtime and integration surface under `src/agenthicc/` |
-| Python test files | 195 | Unit, integration, and E2E coverage |
-| Markdown docs | 29 | User, contributor, architecture, guide, and reference docs |
-| PRDs/research docs | 156 | Historical and proposed product/design records |
-| Package version | `0.1.0` | Still hard-coded in `pyproject.toml` |
-| Supported Python | `>=3.11` | Nox exercises 3.12 and 3.13 |
-| Declared extras | `cloud`, `dev` | There are no separate `tui`, `api`, or `all` extras |
+| Python source files | 261 | Broad runtime and integration surface under `src/agenthicc/` |
+| Python test files | 315 | Unit, integration, and E2E coverage |
+| Markdown docs | 51 | User, contributor, architecture, guide, and reference docs |
+| PRD/research docs | 192 | Historical and proposed product/design records |
+| Package version | `0.1.0` | Declared in `pyproject.toml:7` |
+| Supported Python | `>=3.11` | `pyproject.toml:10` |
+| Declared extras | `cloud`, `book`, `cloakbrowser`, `playwright`, `mcp`, `dev` | There is no `tui`, `api`, or `all` extra |
 
-The full local verification baseline currently passes with 2,754 tests passed
-and 15 skipped. That proves the checked-in test contracts, not that every
-roadmap concern below is solved.
+Passing local test counts are deliberately **not** recorded here: they change
+with every commit, they depend on how the suite is selected, and a stale number
+invites the reader to trust this page instead of running the suite. Run
+`uv run nox` (or `pytest tests/ -q`) for the authoritative figure.
+
+### Re-deriving the evidence snapshot
+
+```bash
+git rev-parse --short HEAD
+find src -name '*.py'   | wc -l
+find tests -name '*.py' | wc -l
+find docs -name '*.md'  | wc -l
+find prds -name '*.md'  | wc -l
+PYTHONPATH=src python -c \
+  "from agenthicc.tui.runtime.mode_manager import SELECTABLE_MODE_NAMES, MODE_ALIASES; \
+   print(SELECTABLE_MODE_NAMES, MODE_ALIASES)"
+python -c "import tomllib; print(list(tomllib.load(open('pyproject.toml','rb'))['project']['optional-dependencies']))"
+```
 
 ## Supported runtime surfaces
 
@@ -68,10 +89,24 @@ layer and needs both event and presentation tests.
 
 ## Workflow reality
 
-The built-in workflows have specialized runners:
+`src/agenthicc/workflows/` contains **nine** built-in packages:
+
+| Package | Runner shape |
+|---|---|
+| `default` | Generic `WorkflowRunner` over a declarative `PhaseSpec` graph |
+| `code_plan` | `CodePlanRunner` with a typed `CodePlanState` loop |
+| `create_workflow` | Typed authoring state, direct source generation, deterministic validation, resume/retry |
+| `copy_website` | Playwright study phase, then implementation, responsive, and parity validation |
+| `reconstruct_site` | Deeper reference-site reconstruction: research, architecture, infrastructure, implementation, validation |
+| `site_imitate` | Visual imitation path (complementary to `copy_website`; not an alias) |
+| `goal_flow` | Dynamic goal list with `append_goal`/`insert_goal` mutation tools and stable-ID records |
+| `make_book` | Long-form document authoring |
+| `make_agenthicc_tool` | Scaffolds a project-local agenthicc tool |
+
+Reliable detail per package:
 
 - `code_plan` uses `CodePlanRunner` and a typed `CodePlanState` loop for
-  `plan → execute → review → summarize`.
+  `plan → execute → review → summarize`; see [`code_plan` structure](code-plan.md).
 - `create_workflow` uses its own typed authoring state, phase artifacts, direct
   source generation, deterministic validation, and resume/retry rules.
 - `copy_website` studies a target with Playwright before rebuilding it through
@@ -79,8 +114,16 @@ The built-in workflows have specialized runners:
 - `reconstruct_site` performs a deeper reference-site reconstruction with
   research, architecture, infrastructure, implementation, and validation
   phases.
+- `goal_flow` maintains a canonical stable-ID `GoalRecord` list; the historical
+  string/index arrays remain derived compatibility projections.
 - Generic `WorkflowRunner` executes declarative `PhaseSpec` graphs and supports
   model overrides, command gates, human phases, parallel phases, and resume.
+
+Enumerate the current set from source rather than from this page:
+
+```bash
+ls -d src/agenthicc/workflows/*/ | sed 's|.*/workflows/||; s|/$||'
+```
 
 See [the workflow comparison guide](../guides/workflows.md#website-reconstruction-workflows-choosing-the-right-one)
 for the intended boundary between `site_imitate`, `copy_website`, and
@@ -132,23 +175,42 @@ documented owner.
 
 ## Documentation and release-gate findings
 
-The maintained README and guides now describe the Rich TUI, headless stdin
-interface, session service, three modes, current workflow authoring path, and
-the absent historical API explicitly. The following remain open and are tracked
-by PRD-138:
+The maintained README and guides describe the Rich TUI, the headless stdin
+interface, the session service, three selectable modes (`Safe`, `Plan`, `Yolo`
+— plus the aliases `auto`→`Yolo`, `guard`/`ask`→`Safe`, `review`→`Plan`), the
+current workflow authoring path, and the absent historical API explicitly.
 
-1. `llms-full.txt` is checked for headings by an embedded Nox script, but there
-   is no source-to-reference generator or complete stale-section verifier.
-2. MkDocs is not declared in `pyproject.toml`, and there is no default Nox docs
+These findings were re-checked by execution at commit `332987a`:
+
+1. `mkdocs build --strict` **fails**: `docs/guides/workflows.md` links to
+   `../../prds/prd-178-reconstruct-site-ui-fidelity-research.md`, a target
+   outside the MkDocs docs directory, which MkDocs rejects and which aborts the
+   build in strict mode. Reproduce with `python -m mkdocs build --strict`.
+2. Six pages exist but are **absent from the `mkdocs.yml` nav**, so they are
+   unreachable by navigation: `guides/exploratory-tool-calls.md`,
+   `guides/startup.md`, `guides/usage-accounting.md`,
+   `reference/fact-base.md`, `reference/usage-ledger.md`, and
+   `reference/verification-baseline.md`. MkDocs lists them under
+   "The following pages exist in the docs directory, but are not included in
+   the `nav` configuration".
+3. One stale anchor: `guides/workflows.md` cites
+   `../reference/code-plan.md#cache-stable-workflow-turns`, but
+   `reference/code-plan.md` contains no such heading. MkDocs reports this as
+   non-fatal even in strict mode.
+4. `llms-full.txt` is checked for headings by an embedded Nox script
+   (`nox -s llms_check`), but there is no source-to-reference generator and no
+   complete stale-section verifier.
+5. MkDocs is not declared in `pyproject.toml`, and there is no default Nox docs
    build/link-check session. A clean checkout cannot claim a reproducible docs
-   release gate until P0.5 is completed.
-3. The package and CLI version are maintained independently; release metadata
-   can drift from `pyproject.toml`.
-4. The workflow findings in
-   [`workflow-review.md`](workflow-review.md) need code-level revalidation and
-   status updates rather than being treated as current bugs by default.
-5. PRD-138 P0.2 still owns the decision to implement a supported server API or
-   remove compatibility-only API configuration and historical references.
+   release gate until a docs session exists.
+6. The package version and the CLI's `--version` string are maintained
+   independently; release metadata can drift from `pyproject.toml`.
+7. The workflow findings in [`workflow-review.md`](workflow-review.md) were
+   mechanically re-checked: 21 of 33 remain open, 7 are resolved, and 2 need
+   targeted revalidation. Treat that page's prose as the original record and its
+   status table as current.
+8. PRD-138 P0.2 still owns the decision to implement a supported server API or
+   to remove compatibility-only API configuration and historical references.
 
 ## How to use this document
 

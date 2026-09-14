@@ -1,13 +1,22 @@
 # `code_plan` workflow structure
 
 `code_plan` is the repository's reference implementation for a workflow whose
-progress is controlled by typed state and explicit phase tools. Its runner is
-`src/agenthicc/workflows/code_plan/runner.py`; its state and cross-phase data
-are in `state.py`; and its phase-local tools are in `phase_tools.py`.
+progress is controlled by typed state and explicit phase tools. It lives in
+`src/agenthicc/workflows/code_plan/`:
+
+| File | Role |
+|---|---|
+| `definition.py` | The `WorkflowPlugin` declaration: phases, agents, mode bindings, and the runner factory |
+| `state.py` | `CodePlanState` (the routing vocabulary) and `CodePlanContext` (the typed cross-phase handoff) |
+| `runner.py` | `CodePlanRunner`: the loop, phase methods, retry policy, and lifecycle events |
+| `phase_tools.py` | The per-phase transition tools the model may call |
+
+Callers should import from `agenthicc.workflows.code_plan`, not from the
+individual modules, so the package's own export list stays authoritative.
 
 ## State and context
 
-`CodePlanState` is the complete routing vocabulary:
+`CodePlanState` is the complete routing vocabulary, with **7** members:
 
 ```text
 PLAN ───────────────→ EXECUTE ─────────────→ REVIEW ─────────────→ SUMMARIZE ─→ COMPLETE
@@ -47,6 +56,17 @@ The complete phase-state contract is:
 | `fail_reason` | Permanent error or exhausted-gate diagnostic |
 | `command_outcomes` | Structured results used to gate required command execution |
 | `shared_memory` | One `ShortTermMemory` instance shared across all phases and retries |
+| `state` | The current `CodePlanState`, duplicated from the loop variable so a phase method can read where it is |
+| `phase_iteration` | Bounded per-phase attempt counter, used to decide when retries are exhausted |
+
+That is the complete field list of `CodePlanContext`
+(`state.py`). Re-derive it with:
+
+```bash
+PYTHONPATH=src python -c \
+  "import dataclasses; from agenthicc.workflows.code_plan.state import CodePlanContext; \
+   print([f.name for f in dataclasses.fields(CodePlanContext)])"
+```
 
 The same context object is passed to each phase function. Phase tools write
 structured values into it indirectly through their closure data, and the phase
@@ -64,9 +84,10 @@ memory as part of the normal agent-turn retry boundary. When an approval
 service is active, `_run_turn()` calls `ensure_valid()` before the phase begins.
 
 `CodePlanRunner._base_tools()` extends the mode/capability-filtered project and
-MCP tools with four memory tools. They remain available even when a backing
-router or index is absent; in that case the tool returns a structured
-availability error instead of raising:
+MCP tools with four memory tools (`src/agenthicc/workflows/memory_tools.py`,
+`src/agenthicc/workflows/code_plan/runner.py:1000-1017`). They remain available even when a backing router or
+index is absent; in that case the tool returns a structured availability error
+instead of raising:
 
 | Tool | Purpose |
 |---|---|
@@ -74,6 +95,19 @@ availability error instead of raising:
 | `memory_read(key, scope, namespace)` | Retrieve a previously stored value |
 | `semantic_search(query, top_k)` | Search semantically indexed prior agent output and decisions |
 | `publish_artifact(content, content_type)` | Store idempotent, content-addressed project artifacts |
+
+The four names above are exactly what `make_memory_tools()` returns. The
+degraded-mode payloads are `{"ok": false, "error": "memory_not_available"}` for
+the memory tools, `{"found": false, "value": None, "error":
+"memory_not_available"}` for `memory_read`, and `{"results": [], "error":
+"semantic_index_not_available"}` for `semantic_search`.
+
+!!! note "The memory bundle is cached, then copied"
+    `_base_tools()` builds the plugin/MCP/memory tool list once into
+    `self._tool_bundle_cache` and returns a copy, because the memory tool
+    schemas are stable and the cache must not be mutated by a caller
+    (`src/agenthicc/workflows/code_plan/runner.py:1007-1017`). Adding a project tool after the first phase turn
+    will not be visible to later phases of the same run.
 
 Short-term memory is the live context passed to the model. `memory_write` and
 `memory_read` use the routed session/project/global tiers when those services
@@ -124,6 +158,13 @@ _summarize(ctx) -> CodePlanState.COMPLETE
 `run()` owns routing and lifecycle events; each method owns the work and retry
 policy for its phase. This separation makes it possible to test a phase in
 isolation by supplying a context and a mocked phase tool invocation.
+
+`resume(context)` (`src/agenthicc/workflows/code_plan/runner.py:362`) runs a second, structurally identical
+`while not state.is_terminal` / `match state` loop over the restored context
+(`src/agenthicc/workflows/code_plan/runner.py:400-409`). Both loops delegate to the same four phase methods, so a
+phase cannot behave differently depending on whether the run started fresh or
+resumed — except that `resume()` rebuilds memory rather than reusing the
+original in-process `ShortTermMemory`.
 
 ## Phase functions and turn budgets
 

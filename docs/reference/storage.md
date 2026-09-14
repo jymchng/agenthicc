@@ -5,12 +5,17 @@ have the same replay guarantees.
 
 ## Session files
 
-The default root is `~/.agenthicc/sessions/`.
+The default root is `~/.agenthicc/sessions/`. Note the layout asymmetry: the
+**kernel event log sits beside** the session directory as one file, while every
+other per-session artifact lives **inside** it.
 
 | Path | Owner | Contents | Recovery |
 |---|---|---|---|
-| `<id>.jsonl` | kernel `EventProcessor` | Serialized domain events | `restore_from_log()` folds valid events |
-| `<id>/metadata.json` | `tui.runtime.session_log` | cwd, model, timestamps | Session discovery/index |
+| `~/.agenthicc/sessions/<id>.jsonl` | kernel `EventProcessor` | Serialized domain events | `restore_from_log()` folds valid events |
+| `~/.agenthicc/sessions/<id>/` | session runner | The per-session artifact directory | — |
+| `~/.agenthicc/sessions/<id>/metadata.json` | `tui.runtime.session_log` | cwd, model, timestamps | Session discovery/index |
+| `~/.agenthicc/sessions/index.json` | `SessionOpenCoordinator` | Session index used by discovery and `--continue` selection | Rebuilt from session directories |
+| `~/.agenthicc/sessions/index.lock` | `SessionOpenCoordinator` | Short session-index read/modify/write critical section | OS advisory lock; never held for a turn or TUI lifetime |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
 | `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, hashed tool records, idempotent tool-recovery receipts, subagent worker/pool results, and versioned usage records | Rebuild memory, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns without replaying completed side effects, and recover complete subagent results |
 | `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
@@ -21,11 +26,47 @@ The default root is `~/.agenthicc/sessions/`.
 | `~/.agenthicc/session-service/index.json` | `SessionEventStore` | Bounded redacted metadata projection: id, project root, lifecycle, timestamps, sequence, capabilities, and file fingerprint | Atomic rebuild from authoritative service JSONL files; never used as event truth |
 | `~/.agenthicc/session-service/index.lock` | `SessionEventStore` | Short cross-process index merge lock | OS advisory lock; never held for session or turn lifetime |
 | `index.lock` | `SessionOpenCoordinator` | Short session-index read/modify/write critical section | OS advisory lock; never held for a turn or TUI lifetime |
-| `<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
+| `~/.agenthicc/sessions/<id>/cassette/` | testing/recording services | LLM and approval fixtures | Deterministic replay |
+
+!!! warning "`index.lock` appears twice and means two different locks"
+    `~/.agenthicc/sessions/index.lock` guards the *saved-session* index used by
+    the picker and `--continue`. `~/.agenthicc/session-service/index.lock`
+    guards the *client-neutral* service index. They are separate files with
+    separate owners and separate lifetimes. Every path in this page is written
+    with its full root for that reason.
+
+!!! warning "The kernel snapshot path is working-directory relative"
+    `SystemSettings.snapshot_path` defaults to the literal
+    `.agenthicc/snapshot.json` (`src/agenthicc/kernel/state.py:139`), a
+    **cwd-relative** path, whereas the session runner passes an absolute
+    `event_log_path` for the kernel log
+    (`src/agenthicc/runners/tui_session.py:797-799`). A snapshot is therefore
+    not scoped to the session directory the way the journal is. Do not assume
+    `<id>/snapshot.json` exists.
 
 The session runner currently places the kernel log beside the session directory
 and the conversation stores inside the directory. Keep these names distinct in
 support tooling.
+
+### Path provenance
+
+Each location above is built by a real source expression, not inferred from
+prose. Re-derive them with:
+
+```bash
+grep -rn 'Path.home() / ".agenthicc"' src/agenthicc --include=*.py
+```
+
+| Location | Built at |
+|---|---|
+| `~/.agenthicc/sessions/` | `src/agenthicc/runners/session_lease.py:51-54`, `src/agenthicc/memory/journal.py:55`, `src/agenthicc/sessions.py:18` |
+| `~/.agenthicc/sessions/<id>.jsonl` | `src/agenthicc/runners/tui_session.py:797` |
+| `~/.agenthicc/sessions/<id>/conversation.jsonl` | `src/agenthicc/tui/runtime/session_log.py:182` |
+| `~/.agenthicc/sessions/index.json`, `index.lock` | `src/agenthicc/runners/session_lease.py:492-493` |
+| `~/.agenthicc/session-service/` | `src/agenthicc/session_service/store.py:56` |
+| `~/.agenthicc/background/` | `src/agenthicc/background/store.py:25-26` |
+| `~/.agenthicc/background/terminals/` | `src/agenthicc/background/terminals.py:349` |
+| `~/.agenthicc/cassettes` (default `--record-cassette`) | `src/agenthicc/cli/parser.py:61` |
 
 ## Session ownership and resume races
 
@@ -367,7 +408,8 @@ publish a success event.
 
 The records remain compact workflow metadata: provider conversation messages,
 memory objects, live tool handles, and artifact bodies are not copied into
-this section. Receipt retention is capped at 128 records. Goal text is bounded
+this section. Receipt retention is capped at 128 records
+(`src/agenthicc/workflows/goal_flow/runner.py:63`). Goal text is bounded
 by `GoalFlowParams.max_goal_text_chars` (default 4096), and the list is bounded
 by `GoalFlowParams.max_goals` (default 1000); invalid values are rejected
 rather than silently truncated or clamped.
@@ -405,6 +447,42 @@ the current session context before assuming a custom path is active.
 - Session memory and in-process semantic fallback are not durable by themselves.
 - Cassettes can contain prompts, outputs, paths, and approval data; treat them
   as sensitive test artifacts.
+
+## Retention and bounds
+
+Every bound below is a literal default read from source, not a policy
+aspiration. Change a value by editing the cited default (or the corresponding
+config key); nothing else in this table is enforced by convention.
+
+| Bound | Default | Defined at |
+|---|---|---|
+| `goal_flow` mutation receipts kept in context | `128` records | `src/agenthicc/workflows/goal_flow/runner.py:63` (`_MAX_MUTATION_RECEIPTS`) |
+| `goal_flow` goals per run | `1000` (configurable up to `10000`) | `src/agenthicc/workflows/goal_flow/runner.py:57-58` |
+| `goal_flow` goal text | `4096` chars (configurable up to `65536`) | `src/agenthicc/workflows/goal_flow/runner.py:56,59` |
+| Kernel snapshot cadence | every `100` events | `src/agenthicc/kernel/state.py:137` (`snapshot_every_n_events`) |
+| Background activity payload | `64_000` bytes | `src/agenthicc/background/settings.py:30` (`max_activity_bytes`) |
+| Background trash retention | `30` days | `src/agenthicc/background/settings.py:31` (`trash_retention_days`) |
+| Concurrent background workers | `2` (`2` per project) | `src/agenthicc/background/settings.py:24-25` |
+| Background staleness threshold | `30.0` s | `src/agenthicc/background/settings.py:27` (`stale_after_s`) |
+| Concurrent background terminals | `4` (`8` per project) | `src/agenthicc/background/settings.py:33-34` |
+| Terminal stored output | `64_000` bytes (floor `1024`) | `src/agenthicc/background/settings.py:35`; `src/agenthicc/background/terminals.py:74,531` |
+| Terminal record retention | `30` days | `src/agenthicc/background/settings.py:38`; pruned via `src/agenthicc/background/terminals.py:421` |
+
+Two bounds deserve a caveat:
+
+- The terminal and background values are **configurable**, so a deployment may
+  differ. `src/agenthicc/background/terminals.py:531` clamps output to `max(1024, configured)`, and
+  `src/agenthicc/background/terminals.py:535` clamps retention with `max(0, configured)` — a retention of
+  `0` means "do not prune".
+- Workflow contexts have **no** framework-imposed serialized byte ceiling
+  (see below); filesystem capacity is the practical limit.
+
+Confirm the current values in your checkout with:
+
+```bash
+grep -n 'max_activity_bytes\|trash_retention_days\|terminal_max_output_bytes\|terminal_retention_days' \
+  src/agenthicc/background/settings.py
+```
 
 Completed provider calls are stored as `kind: "usage_record"` entries with
 `schema_version: 1`. The message fold ignores these entries; the usage fold
@@ -448,14 +526,15 @@ storage lifecycle work in PRD-138 P1.3 is implemented.
 
 ## Background-session registry
 
-Background execution adds a local registry at `~/.agenthicc/background/`:
+Background execution adds a local registry at `~/.agenthicc/background/`
+(`src/agenthicc/background/store.py:25-26`):
 
 | Path | Owner | Contents | Recovery |
 |---|---|---|---|
 | `events.jsonl` | `background.BackgroundStore` | Ordered create/update/delete lifecycle events | Replayed on every read |
 | `registry.lock` | `BackgroundStore` | Cross-process advisory lock | Recreated automatically |
 | `requests/<id>.json` | `BackgroundSupervisor` | Mode-600 worker launch request | Read once by the owned worker |
-| `trash/<id>-<nonce>/` | `BackgroundStore` | Exact deleted artifacts and manifest | `agenthicc jobs restore <id>` |
+| `trash/<id>-<nonce>/` | `BackgroundStore` | Exact deleted artifacts plus `manifest.json` | `agenthicc jobs restore <id>` |
 
 The background registry is a rebuildable index, not a second conversation or
 workflow journal. Session artifacts remain under `~/.agenthicc/sessions/<id>/`

@@ -46,13 +46,24 @@ capability-gated tools.
 
 ## Reference
 
-- [CLI](reference/cli.md) — global flags and subcommands.
-- [Kernel](reference/kernel.md) — events, reducers, processor, persistence.
+- [Reference index](reference/index.md) — every specification page, register,
+  and baseline in one place.
+- [CLI](reference/cli.md) — every global flag, command group, and built-in
+  command, validated against the argument parser.
+- [Kernel](reference/kernel.md) — the 22 exported symbols, the 20 event
+  handlers, reducer purity, and persistence guarantees.
 - [Storage](reference/storage.md) — session, journal, memory, cache, and
-  cassette files.
+  cassette files, with their retention bounds and path provenance.
+- [`code_plan` structure](reference/code-plan.md) — the reference typed-phase
+  workflow.
+- [Workflow package review](reference/workflow-review.md) — historical audit of
+  `src/agenthicc/workflows/` with a per-finding current status.
 - [Current repository state](reference/repository-state.md) — evidence-backed
-  architecture boundaries, supported surfaces, and remaining documentation or
-  release-gate risks.
+  architecture boundaries, supported surfaces, and remaining release-gate
+  risks.
+- [API status](reference/api.md) — why there is no server API package.
+- [Documentation fact base](reference/fact-base.md) — the `path:line`
+  provenance register behind these claims.
 - [PRD-138 roadmap](https://github.com/agenthicc/agenthicc/blob/main/prds/prd-138-repository-improvement-roadmap.md) — the
   evidence-backed improvement backlog.
 - [`llms-full.txt`](https://github.com/agenthicc/agenthicc/blob/main/llms-full.txt) — public symbol reference for AI tools.
