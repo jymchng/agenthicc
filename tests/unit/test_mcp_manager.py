@@ -14,6 +14,7 @@ from agenthicc.tools.mcp_manager import (
     McpServerState,
     McpSessionManager,
 )
+from agenthicc.tui.conversation_store import ConversationStore
 
 pytestmark = pytest.mark.unit
 
@@ -89,6 +90,14 @@ def _factory(bridges: dict[str, FakeBridge]):
 
 def _config(name: str, **kwargs: object) -> McpServerConfig:
     return McpServerConfig(name=name, url="fake-server", **kwargs)
+
+
+class EventRecorder:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    async def emit(self, event: object) -> None:
+        self.events.append(event)
 
 
 def test_required_auto_connect_servers_excludes_optional_and_manual_servers() -> None:
@@ -170,6 +179,72 @@ async def test_required_failure_isolated_and_reported() -> None:
     assert "required" in exc_info.value.failures
     assert manager.status("required")["status"] == McpServerState.FAILED.value
     assert manager.status("optional")["status"] == McpServerState.READY.value
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_startup_generation_is_attached_to_one_optional_failure_event() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    events = EventRecorder()
+    manager = McpSessionManager(
+        [_config("asyncmove"), _config("healthy")],
+        event_processor=events,  # type: ignore[arg-type]
+        bridge_factory=_factory(bridges),
+    )
+    bridges["asyncmove"].fail = "connection refused"
+
+    await manager.start_all()
+
+    failures = [
+        event for event in events.events if getattr(event, "event_type", "") == "McpServerFailed"
+    ]
+    assert len(failures) == 1
+    assert failures[0].payload["server"] == "asyncmove"  # type: ignore[attr-defined]
+    assert failures[0].payload["generation_id"] == 1  # type: ignore[attr-defined]
+    assert failures[0].payload["event_id"]  # type: ignore[attr-defined]
+    assert failures[0].payload["status"] == "failed_optional"  # type: ignore[attr-defined]
+    assert manager.status("healthy")["status"] == McpServerState.READY.value
+    assert manager.status("asyncmove")["generation_id"] == 1
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_optional_failure_is_projected_once_into_the_tui_store() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    store = ConversationStore()
+    projected: list[object] = []
+    store.on_event(projected.append)
+    manager = McpSessionManager(
+        [_config("asyncmove")],
+        conversation_store=store,
+        bridge_factory=_factory(bridges),
+    )
+    bridges["asyncmove"].fail = "connection refused"
+
+    await manager.start_all()
+    await manager.start_all()
+
+    failures = [event for event in projected if getattr(event, "kind", "") == "mcp_server_failure"]
+    assert len(failures) == 2
+    assert failures[0].payload["server"] == "asyncmove"  # type: ignore[attr-defined]
+    assert failures[0].payload["generation_id"] == 1  # type: ignore[attr-defined]
+    assert failures[1].payload["generation_id"] == 2  # type: ignore[attr-defined]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stale_startup_generation_cannot_publish_catalog() -> None:
+    bridges: dict[str, FakeBridge] = {}
+    manager = McpSessionManager([_config("slow")], bridge_factory=_factory(bridges))
+    bridges["slow"].delay = 0.05
+    generation = manager._begin_generation()
+    task = asyncio.create_task(manager.start_server("slow", _generation_id=generation))
+    await asyncio.sleep(0.005)
+    manager._begin_generation()
+    await task
+
+    assert manager.all_tools() == []
+    assert manager.status("slow")["status"] != McpServerState.READY.value
     await manager.shutdown()
 
 

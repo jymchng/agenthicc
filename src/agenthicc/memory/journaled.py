@@ -24,7 +24,7 @@ from lauren_ai._memory import ShortTermMemory
 if TYPE_CHECKING:
     from lauren_ai._memory import ToolExchange, ToolResultRecord
 
-from agenthicc.memory.journal import ConversationJournal
+from agenthicc.memory.journal import ConversationJournal, tool_exchange_recovery_event_id
 from agenthicc.memory.tool_history import repair_non_adjacent_tool_history
 
 __all__ = ["JournaledShortTermMemory"]
@@ -304,6 +304,11 @@ class JournaledShortTermMemory(ShortTermMemory):
             exchange.exchange_id,
             call_count=len(exchange.call_ids),
             repaired=repaired,
+            event_id=(
+                tool_exchange_recovery_event_id(exchange.exchange_id, "repaired")
+                if repaired
+                else tool_exchange_recovery_event_id(exchange.exchange_id, "aborted")
+            ),
         )
 
     @property

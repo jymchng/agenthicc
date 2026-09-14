@@ -37,6 +37,7 @@ legacy lifecycle marker.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -48,9 +49,16 @@ __all__ = [
     "fold_path",
     "fold_resume_state",
     "journal_path_for",
+    "tool_exchange_recovery_event_id",
 ]
 
 _SESSIONS_DIR = Path.home() / ".agenthicc" / "sessions"
+
+
+def tool_exchange_recovery_event_id(exchange_id: str, event: str = "repaired") -> str:
+    """Derive the PRD-191 stable ID without requiring a new lauren-ai API."""
+    value = f"lauren-ai:tool-exchange:{event}:{exchange_id}"
+    return f"tool-exchange-{event}:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:32]}"
 
 
 @dataclass(frozen=True)
@@ -628,17 +636,51 @@ class ConversationJournal:
         *,
         call_count: int,
         repaired: bool,
+        event_id: str = "",
     ) -> None:
-        """Persist an interrupted exchange and whether it was repaired."""
+        """Persist an interrupted exchange and its idempotent recovery ID."""
         self._write(
             {
                 "seq": self._seq,
                 "kind": "tool_exchange_aborted",
+                "schema_version": 2,
                 "exchange_id": exchange_id,
                 "call_count": call_count,
                 "repaired": repaired,
+                "event_id": str(event_id)[:128],
             }
         )
+
+    def fold_tool_exchange_recoveries(self) -> list[dict[str, object]]:
+        """Return valid durable tool-recovery receipts in journal order.
+
+        Older journals do not have ``event_id``.  They remain readable; only
+        records with the new stable identity participate in replay
+        deduplication.  A malformed trailing record is treated as an
+        interrupted append, matching the normal journal folding contract.
+        """
+        if not self._path.exists():
+            return []
+        records: list[dict[str, object]] = []
+        with self._path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    break
+                if not isinstance(entry, dict):
+                    continue
+                if (
+                    entry.get("kind") == "tool_exchange_aborted"
+                    and entry.get("repaired") is True
+                    and isinstance(entry.get("event_id"), str)
+                    and entry["event_id"]
+                ):
+                    records.append({str(key): value for key, value in entry.items()})
+        return records
 
     # ── subagent output durability ──────────────────────────────────────────
 

@@ -1101,6 +1101,7 @@ async def _build_session_context_impl(
             mcp_manager = McpSessionManager(
                 (),
                 event_processor=processor,
+                conversation_store=app_state.conversation,
                 workspace_root=Path.cwd(),
                 network_guard=(
                     NetworkGuard(cfg.security.network_allow_list)

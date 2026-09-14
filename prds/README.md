@@ -58,6 +58,7 @@ against the current source before implementing them.
 - [PRD-188 — Resume the latest recoverable workflow run](prd-188-workflow-resume-latest-run.md)
 - [PRD-189 — Scrollable Ask User Questions](prd-189-scrollable-ask-user-questions.md)
 - [PRD-190 — OpenAI-compatible reasoning_content round-trip](prd-190-opencode-go-reasoning-content-roundtrip.md)
+- [PRD-191 — Idempotent interrupted-tool recovery and MCP startup isolation](prd-191-idempotent-interrupted-tool-recovery-and-mcp-startup-isolation.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -326,6 +327,12 @@ can be rejected by Console Go. The PRD extends the canonical completion and
 memory contracts, preserves the field through journals/checkpoints/resume, and
 emits it only from the OpenAI-compatible serializer while keeping the
 Anthropic thinking-block contract in PRD-137 separate.
+
+PRD-191 implements idempotent interrupted-tool recovery and generation-scoped MCP
+startup isolation. It addresses repeated recovery notices after one tool
+interruption, preserves completed work and pending interactions across resume,
+and ensures an unavailable optional MCP server such as `asyncmove` cannot
+create an error storm or prevent healthy tools from loading.
 
 ## Existing PRDs
 

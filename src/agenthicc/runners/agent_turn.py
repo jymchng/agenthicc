@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, TypeVar, cast
 
 from agenthicc.runners.agent_turn_context import AgentTurnContext
 from agenthicc.runners.prompt_contract import PromptBlock
+from agenthicc.runners.recovery_projection import ToolRecoveryProjector
 from agenthicc.memory.tool_history import repair_non_adjacent_tool_history
 from agenthicc.tools.hooks import (
     AfterToolHookDecision,
@@ -649,31 +650,13 @@ class _ToolOutputCaptureHook(LifecycleHook):
 class _ToolRecoveryEventSink:
     """Translate shared recovery signals into headless/session events."""
 
-    def __init__(self, conv_store: object) -> None:
-        self._conv_store = conv_store
+    def __init__(self, projector: ToolRecoveryProjector) -> None:
+        self._projector = projector
 
     async def on_signal(self, signal: object) -> None:
         if type(signal).__name__ != "ToolExchangeRepaired":
             return
-        append_event = getattr(self._conv_store, "append_event", None)
-        if not callable(append_event):
-            return
-        append_event(
-            "tool_exchange_repaired",
-            {
-                "exchange_id": getattr(signal, "exchange_id", ""),
-                "call_count": int(getattr(signal, "call_count", 0) or 0),
-            },
-        )
-        append_event(
-            "system",
-            {
-                "text": (
-                    "Tool execution was interrupted; incomplete tool results were "
-                    "recorded so the session can continue safely."
-                )
-            },
-        )
+        self._projector.project_repaired(signal)
 
 
 class _TurnRecoveryEventSink:
@@ -803,6 +786,14 @@ class AgentTurnRunner:
         self._tool_ready: dict[str, bool] = {}
         self._workspace_access: dict[str, dict[str, object]] = {}
         self._file_snapshots: dict[str, tuple[str, str]] = {}
+        self._recovery_projector: ToolRecoveryProjector | None = (
+            ToolRecoveryProjector(
+                ctx.conv_store,
+                getattr(ctx.session_memory, "journal", None),
+            )
+            if ctx.conv_store is not None
+            else None
+        )
 
         # Content produced during the turn.
         self._skill_suffix: str = ""
@@ -816,6 +807,19 @@ class AgentTurnRunner:
         self._active_step_id = ""
 
     # ── public entry point ────────────────────────────────────────────────────
+
+    def _project_legacy_recovery(self) -> None:
+        """Project a repair found outside lauren-ai's signal bus once."""
+        projector = self._recovery_projector
+        if projector is None:
+            return
+        exchange = getattr(self._ctx.session_memory, "active_tool_exchange", None)
+        exchange_id = str(getattr(exchange, "exchange_id", "") or "")
+        if exchange_id:
+            projector.project_legacy_repair(
+                exchange_id=exchange_id,
+                call_count=len(getattr(exchange, "call_ids", ()) or ()),
+            )
 
     async def run(self) -> None:
         """Execute the full agent turn under its session workspace policy."""
@@ -1016,24 +1020,9 @@ class AgentTurnRunner:
 
         @signal_decorator(_TER)
         async def _on_tool_exchange_repaired(sig: object) -> None:
-            if self._ctx.conv_store is None:
+            if self._recovery_projector is None:
                 return
-            self._ctx.conv_store.append_event(
-                "tool_exchange_repaired",
-                {
-                    "exchange_id": getattr(sig, "exchange_id", ""),
-                    "call_count": int(getattr(sig, "call_count", 0) or 0),
-                },
-            )
-            self._ctx.conv_store.append_event(
-                "system",
-                {
-                    "text": (
-                        "Tool execution was interrupted; incomplete tool results were "
-                        "recorded so the session can continue safely."
-                    )
-                },
-            )
+            self._recovery_projector.project_repaired(sig)
 
     async def _snapshot_file(self, tid: str, rel_path: str) -> None:
         full = os.path.join(os.getcwd(), rel_path) if not os.path.isabs(rel_path) else rel_path
@@ -1860,7 +1849,8 @@ class AgentTurnRunner:
             if usage_tracker is not None:
                 event_sinks.append(usage_tracker.sink)
             if getattr(ctx.runner, "_signals", None) is None and ctx.conv_store is not None:
-                event_sinks.append(_ToolRecoveryEventSink(ctx.conv_store))
+                if self._recovery_projector is not None:
+                    event_sinks.append(_ToolRecoveryEventSink(self._recovery_projector))
             if _step_sink is not None:
                 event_sinks.append(_step_sink)
             resume_existing_turn = _resume_existing_turn[0] or _safe_snapshot_includes_user[0]
@@ -2064,15 +2054,7 @@ class AgentTurnRunner:
                 )
                 repaired = False
             if repaired and ctx.conv_store:
-                ctx.conv_store.append_event(
-                    "system",
-                    {
-                        "text": (
-                            "Tool execution was interrupted; incomplete tool results were "
-                            "recorded so the session can continue safely."
-                        )
-                    },
-                )
+                self._project_legacy_recovery()
             _record_partial_fragment()
             if ctx.conv_store:
                 ctx.conv_store.close_turn()
@@ -2130,15 +2112,7 @@ class AgentTurnRunner:
                         exc_info=True,
                     )
             if repaired and ctx.conv_store:
-                ctx.conv_store.append_event(
-                    "system",
-                    {
-                        "text": (
-                            "Tool execution was interrupted; incomplete tool results were "
-                            "recorded so the session can continue safely."
-                        )
-                    },
-                )
+                self._project_legacy_recovery()
 
             if turn_completed:
                 return

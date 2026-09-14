@@ -693,6 +693,31 @@ def _render_system(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
         self._console.print()
 
 
+@register_renderer("tool_recovery")
+def _render_tool_recovery(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """Render one concise, redacted interrupted-exchange notice."""
+    from rich.markup import escape as _e  # noqa: PLC0415
+
+    text = _text(
+        ev.payload,
+        "text",
+        "Tool execution was interrupted; incomplete tool results were recorded so the session can continue safely.",
+    )
+    self._console.print(f"[dim]{_e(text)}[/dim]", markup=True, highlight=False)
+    self._console.print()
+
+
+@register_renderer("mcp_server_failure")
+def _render_mcp_server_failure(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """Render one generation-scoped, redacted MCP startup outcome."""
+    from rich.markup import escape as _e  # noqa: PLC0415
+
+    text = _text(ev.payload, "text", "MCP server is unavailable; continuing without its tools.")
+    style = "red" if bool(ev.payload.get("required", False)) else "yellow"
+    self._console.print(f"[{style}]{_e(text)}[/{style}]", markup=True, highlight=False)
+    self._console.print()
+
+
 @register_renderer("network_retry")
 def _render_network_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """Render a compact, readable provider retry notice.

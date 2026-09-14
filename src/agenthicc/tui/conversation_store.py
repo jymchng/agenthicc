@@ -57,6 +57,10 @@ EventKind = Literal[
     "subagent_pool_result",
     # Generic text line from internal systems (compactor, subagents, etc.)
     "system",
+    # One idempotent interrupted tool-exchange recovery projection (PRD-191).
+    "tool_recovery",
+    # One generation-scoped optional/required MCP startup failure (PRD-191).
+    "mcp_server_failure",
     # Structured transient provider retry notice (PRD-187).
     "network_retry",
     # Durable goal-list append/insert projection (PRD-185)
@@ -201,6 +205,10 @@ class ConversationStore:
         # ── internal ──────────────────────────────────────────────────────────
         self._current_turn: ConversationTurn | None = None
         self._event_subscribers: list[Callable[[ConversationEvent], None]] = []
+        # Event IDs are the projection idempotency boundary. Historical
+        # events are seeded during transcript replay so a later recovery
+        # signal cannot append the same notice a second time.
+        self._events_by_id: dict[str, ConversationEvent] = {}
         # Subscribe to detect external notification.set(None) and cancel stacked timers.
         self.notification.subscribe(self._on_notification_externally_cleared)
 
@@ -548,6 +556,10 @@ class ConversationStore:
         payload: dict[str, object],
         event_id: str | None = None,
     ) -> ConversationEvent:
+        if event_id:
+            existing = self._events_by_id.get(event_id)
+            if existing is not None:
+                return existing
         ev = ConversationEvent(
             event_id=event_id or str(uuid.uuid4()),
             kind=kind,
@@ -555,6 +567,7 @@ class ConversationStore:
         )
         if self._current_turn is not None:
             self._current_turn.events.append(ev)
+        self._events_by_id[ev.event_id] = ev
         # Keep tool_group_count in sync before notifying subscribers so any
         # Live-block component that reads it gets the updated value immediately.
         if kind == "tool_complete":
@@ -567,6 +580,15 @@ class ConversationStore:
             except Exception:  # noqa: BLE001
                 pass
         return ev
+
+    def remember_events(self, events: list[ConversationEvent]) -> None:
+        """Seed replayed event IDs without re-emitting or persisting them."""
+        for event in events:
+            self._events_by_id[event.event_id] = event
+
+    def _has_event_id(self, event_id: str) -> bool:
+        """Return whether an event ID is already present in this projection."""
+        return event_id in self._events_by_id
 
     def on_event(
         self,

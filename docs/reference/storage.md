@@ -12,7 +12,7 @@ The default root is `~/.agenthicc/sessions/`.
 | `<id>.jsonl` | kernel `EventProcessor` | Serialized domain events | `restore_from_log()` folds valid events |
 | `<id>/metadata.json` | `tui.runtime.session_log` | cwd, model, timestamps | Session discovery/index |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
-| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, tool records, subagent worker/pool results, and versioned usage records | Rebuild memory, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns, and recover complete subagent results |
+| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, hashed tool records, idempotent tool-recovery receipts, subagent worker/pool results, and versioned usage records | Rebuild memory, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns without replaying completed side effects, and recover complete subagent results |
 | `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
 | `<id>/.owner.lock` | `SessionOwnerLease` | Short per-session critical section for owner publication, stale replacement, and release | OS advisory lock; never held for the session lifetime |
 | `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, semantic phase cursor, active topology version/fingerprint/profile/name snapshot, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
@@ -70,6 +70,15 @@ before provider I/O. A known cancellation/queued-continuation race is also
 repaired by moving its matching late result back beside the assistant call and
 writing one durable reset. Invalid unknown, duplicate, empty, or ambiguous
 non-adjacent exchanges fail closed rather than being silently rewritten.
+
+For repaired exchanges, the `tool_exchange_aborted` record includes a
+versioned, stable `event_id` derived from the opaque exchange identity. The
+same ID is carried by the `ToolExchangeRepaired` lifecycle signal and the
+`tool_recovery` conversation projection. Multiple runner safety-net paths may
+observe the repair, but journal replay and the TUI event store project that ID
+only once. A journal receipt means the repair occurred; the reactive
+conversation log records whether its user-facing notice was projected, so a
+crash between those two writes does not hide the only diagnostic.
 
 ### Provider-step recovery
 

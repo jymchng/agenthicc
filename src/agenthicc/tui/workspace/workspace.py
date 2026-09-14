@@ -205,6 +205,10 @@ class Workspace:
         conv = self._state.conversation
         chunk_size = 64
         first_chunk = True
+        # Replay bypasses ConversationStore.append_event by design. Seed the
+        # event-ID index before rendering so a later resumed recovery signal is
+        # not appended to the durable transcript a second time.
+        conv.remember_events(events)
         conv.transcript_loading.set(True)
         try:
             # Let the Live block render the loading state before the first

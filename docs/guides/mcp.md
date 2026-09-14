@@ -175,3 +175,18 @@ optional server failure is surfaced without preventing healthy MCP servers
 from loading; set `required = true` when startup must fail if that server
 cannot connect. Check network policy for remote URLs and ensure the MCP extra
 is installed in the same environment that runs `agenthicc`.
+
+### Startup generations and failure isolation
+
+Each startup, explicit connect, and reload operation has a monotonic lifecycle
+generation. Server status and lifecycle events include the generation and a
+stable redacted event ID. This prevents a delayed process or network response
+from an older `/mcp reload` from overwriting a newer catalog.
+
+Servers are independent startup fault domains. If an optional server such as
+`asyncmove` cannot start, its failure is recorded once for that generation and
+the session continues with healthy MCP and built-in tools. A required server
+still fails closed, but the manager waits for the other eligible servers to
+settle and preserves their status for diagnosis. Repeating `/mcp reload` or
+redrawing the transcript does not repeat the same generation's failure notice;
+an explicit new connect/reload generation may produce a new notice.

@@ -117,6 +117,7 @@ class McpServerStatus:
     started_at: float | None = None
     last_success_at: float | None = None
     auth_state: str = "not_required"
+    generation_id: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -129,6 +130,7 @@ class McpServerStatus:
             "started_at": self.started_at,
             "last_success_at": self.last_success_at,
             "auth_state": self.auth_state,
+            "generation_id": self.generation_id,
         }
 
 
@@ -166,7 +168,9 @@ class McpCatalogSnapshot:
             ),
         )
         object.__setattr__(self, "prompts", cast(tuple[object, ...], _freeze_value(self.prompts)))
-        object.__setattr__(self, "resources", cast(tuple[object, ...], _freeze_value(self.resources)))
+        object.__setattr__(
+            self, "resources", cast(tuple[object, ...], _freeze_value(self.resources))
+        )
 
     def stable_dict(self) -> dict[str, object]:
         """Return the cache-key representation of this snapshot.
@@ -244,12 +248,14 @@ class McpSessionManager:
         configs: list[McpServerConfig] | tuple[McpServerConfig, ...] = (),
         *,
         event_processor: "EventProcessor | None" = None,
+        conversation_store: object | None = None,
         workspace_root: Path | None = None,
         bridge_factory: BridgeFactory | None = None,
         network_guard: object | None = None,
         refresh_debounce_s: float = 0.05,
     ) -> None:
         self._events = event_processor
+        self._conversation_store = conversation_store
         self._workspace_root = (workspace_root or Path.cwd()).resolve()
         if bridge_factory is not None:
             self._bridge_factory = bridge_factory
@@ -274,6 +280,7 @@ class McpSessionManager:
         self._closed = False
         self._required_failures: dict[str, str] = {}
         self._registration_errors: dict[str, str] = {}
+        self._generation_id = 0
         for config in configs:
             self.register_server(config)
 
@@ -369,13 +376,17 @@ class McpSessionManager:
     async def start_all(self, *, raise_required: bool = True) -> list[AgenthiccMcpTool]:
         """Start all eligible servers concurrently and return visible tools."""
         self._closed = False
+        generation_id = self._begin_generation()
         names = [
             name
             for name in sorted(self._configs)
             if self._configs[name].auto_connect and name not in self._registration_errors
         ]
         tasks = [
-            asyncio.create_task(self.start_server(name), name=f"mcp-start-{name}")
+            asyncio.create_task(
+                self.start_server(name, _generation_id=generation_id),
+                name=f"mcp-start-{name}",
+            )
             for name in names
         ]
         self._lifecycle_tasks.update(cast(asyncio.Task[object], task) for task in tasks)
@@ -385,6 +396,7 @@ class McpSessionManager:
             self._lifecycle_tasks.difference_update(
                 cast(asyncio.Task[object], task) for task in tasks
             )
+        await self._publish_registration_failures(generation_id)
         if raise_required and self._required_failures:
             raise McpRequiredServerError(self._required_failures)
         return self.all_tools()
@@ -393,28 +405,49 @@ class McpSessionManager:
         """Compatibility spelling used by the original registry."""
         return await self.start_all(raise_required=False)
 
-    async def start_server(self, name: str, *, explicit: bool = False) -> list[AgenthiccMcpTool]:
+    async def start_server(
+        self,
+        name: str,
+        *,
+        explicit: bool = False,
+        _generation_id: int | None = None,
+    ) -> list[AgenthiccMcpTool]:
         """Start one configured server and publish its first catalog snapshot."""
         config = self._require_config(name)
+        generation_id = _generation_id if _generation_id is not None else self._generation_id
+        if not self._is_current_generation(generation_id):
+            return []
         if name in self._registration_errors:
             if config.required:
                 self._required_failures[name] = self._registration_errors[name]
             return []
         if not config.enabled:
-            self._set_status(name, state=McpServerState.DISABLED, last_error=None)
+            self._set_status(
+                name,
+                state=McpServerState.DISABLED,
+                last_error=None,
+                generation_id=generation_id,
+            )
             return []
         if not explicit and not config.auto_connect:
             return []
         if self._closed:
             raise McpToolCallError("MCP session manager is shut down")
         async with self._locks[name]:
+            if not self._is_current_generation(generation_id):
+                return []
             if self._statuses[name].state == McpServerState.READY:
                 return self._tools_for_server(name)
             self._required_failures.pop(name, None)
             auth_state = self._auth_state(config)
             if auth_state == "needs_auth":
-                self._set_status(name, state=McpServerState.NEEDS_AUTH, auth_state=auth_state)
-                self._record_failure(name, "authentication required")
+                self._set_status(
+                    name,
+                    state=McpServerState.NEEDS_AUTH,
+                    auth_state=auth_state,
+                    generation_id=generation_id,
+                )
+                self._record_failure(name, "authentication required", generation_id=generation_id)
                 return []
             started_at = time.time()
             self._set_status(
@@ -423,6 +456,7 @@ class McpSessionManager:
                 last_error=None,
                 started_at=started_at,
                 auth_state=auth_state,
+                generation_id=generation_id,
             )
             bridge = self._bridges[name]
             try:
@@ -432,6 +466,9 @@ class McpSessionManager:
                 )
                 instructions = await self._optional_bridge_call(bridge, "get_instructions", "")
                 capabilities = await self._optional_mapping_call(bridge, "capabilities")
+                if not self._is_current_generation(generation_id):
+                    await bridge.disconnect()
+                    return []
                 self._publish(
                     name,
                     schemas,
@@ -455,14 +492,27 @@ class McpSessionManager:
                     last_success_at=now,
                     last_error=None,
                     auth_state="authenticated" if auth_state == "authenticated" else auth_state,
+                    generation_id=generation_id,
                 )
                 await self._emit(
                     "McpServerReady",
-                    {"server": name, "catalog_revision": snapshot.revision, "tool_count": len(snapshot.tools)},
+                    {
+                        "server": name,
+                        "generation_id": generation_id,
+                        "event_id": self._lifecycle_event_id(generation_id, name, "ready"),
+                        "catalog_revision": snapshot.revision,
+                        "tool_count": len(snapshot.tools),
+                    },
                 )
                 return self._tools_for_server(name)
             except asyncio.CancelledError:
-                self._set_status(name, state=McpServerState.CANCELLED, last_error="startup cancelled")
+                if self._is_current_generation(generation_id):
+                    self._set_status(
+                        name,
+                        state=McpServerState.CANCELLED,
+                        last_error="startup cancelled",
+                        generation_id=generation_id,
+                    )
                 raise
             except Exception as exc:  # noqa: BLE001
                 error = self._redact(self._bridge_error(bridge, str(exc)), config)
@@ -470,18 +520,39 @@ class McpSessionManager:
                     await bridge.disconnect()
                 except Exception:  # noqa: BLE001
                     pass
-                state = McpServerState.NEEDS_AUTH if _is_auth_error(error) else McpServerState.FAILED
-                self._set_status(name, state=state, last_error=error)
-                self._record_failure(name, error)
+                state = (
+                    McpServerState.NEEDS_AUTH if _is_auth_error(error) else McpServerState.FAILED
+                )
+                if not self._is_current_generation(generation_id):
+                    return []
+                self._set_status(
+                    name,
+                    state=state,
+                    last_error=error,
+                    generation_id=generation_id,
+                )
+                self._record_failure(name, error, generation_id=generation_id)
+                await self._emit(
+                    "McpServerFailed",
+                    {
+                        "server": name,
+                        "generation_id": generation_id,
+                        "event_id": self._lifecycle_event_id(generation_id, name, "failed"),
+                        "required": config.required,
+                        "status": "failed_required" if config.required else "failed_optional",
+                        "error": error,
+                    },
+                )
                 log.warning("MCP server %r failed to start: %s", name, error)
                 return []
 
     async def connect_server(self, name: str) -> list[AgenthiccMcpTool]:
+        generation_id = self._begin_generation()
         task = asyncio.current_task()
         if task is not None:
             self._lifecycle_tasks.add(cast(asyncio.Task[object], task))
         try:
-            return await self.start_server(name, explicit=True)
+            return await self.start_server(name, explicit=True, _generation_id=generation_id)
         finally:
             if task is not None:
                 self._lifecycle_tasks.discard(cast(asyncio.Task[object], task))
@@ -550,8 +621,7 @@ class McpSessionManager:
                         {
                             "server": name,
                             "catalog_revision": snapshot.revision,
-                            "changed": prior is None
-                            or prior.catalog_hash != snapshot.catalog_hash,
+                            "changed": prior is None or prior.catalog_hash != snapshot.catalog_hash,
                         },
                     )
                     return snapshot
@@ -611,12 +681,11 @@ class McpSessionManager:
         # flag makes the lifecycle operation safe for callers that retain the
         # manager while reopening a session.
         self._closed = False
+        generation_id = self._begin_generation()
 
         current = asyncio.current_task()
         refresh_tasks = {
-            task
-            for task in self._refresh_tasks.values()
-            if task is not current and not task.done()
+            task for task in self._refresh_tasks.values() if task is not current and not task.done()
         }
         for task in refresh_tasks:
             task.cancel()
@@ -644,12 +713,11 @@ class McpSessionManager:
                 self._set_status(
                     name,
                     state=(
-                        McpServerState.DISABLED
-                        if not config.enabled
-                        else McpServerState.STOPPED
+                        McpServerState.DISABLED if not config.enabled else McpServerState.STOPPED
                     ),
                     tool_count=0,
                     last_error=str(exc),
+                    generation_id=generation_id,
                 )
 
         await asyncio.gather(*(_disconnect(name) for name in names))
@@ -660,7 +728,10 @@ class McpSessionManager:
             if self._configs[name].enabled and name not in self._registration_errors
         ]
         tasks = [
-            asyncio.create_task(self.start_server(name, explicit=True), name=f"mcp-reload-{name}")
+            asyncio.create_task(
+                self.start_server(name, explicit=True, _generation_id=generation_id),
+                name=f"mcp-reload-{name}",
+            )
             for name in candidates
         ]
         self._lifecycle_tasks.update(cast(asyncio.Task[object], task) for task in tasks)
@@ -671,6 +742,7 @@ class McpSessionManager:
                 cast(asyncio.Task[object], task) for task in tasks
             )
 
+        await self._publish_registration_failures(generation_id)
         if raise_required and self._required_failures:
             raise McpRequiredServerError(self._required_failures)
         return self.all_tools()
@@ -744,7 +816,8 @@ class McpSessionManager:
                 "catalog_revision": snapshot.revision,
             }
             for name, snapshot in sorted(self._snapshots.items())
-            if snapshot.instructions and self._statuses[name].state in {McpServerState.READY, McpServerState.DEGRADED}
+            if snapshot.instructions
+            and self._statuses[name].state in {McpServerState.READY, McpServerState.DEGRADED}
         ]
 
     def prompt_instructions(self) -> str:
@@ -806,9 +879,7 @@ class McpSessionManager:
             if not tool_name:
                 raise McpToolCallError(f"MCP server {name!r} returned a tool without a name")
             if tool_name in seen_names:
-                raise McpToolCallError(
-                    f"MCP server {name!r} returned duplicate tool {tool_name!r}"
-                )
+                raise McpToolCallError(f"MCP server {name!r} returned duplicate tool {tool_name!r}")
             if not isinstance(schema.input_schema, Mapping):
                 raise McpToolCallError(f"MCP tool {tool_name!r} returned an invalid input schema")
             copied_schema = copy.deepcopy(dict(schema.input_schema))
@@ -819,9 +890,7 @@ class McpSessionManager:
                     f"MCP tool {tool_name!r} returned an unserializable schema"
                 ) from exc
             if schema_size > _MAX_SCHEMA_BYTES:
-                raise McpToolCallError(
-                    f"MCP tool {tool_name!r} returned an oversized input schema"
-                )
+                raise McpToolCallError(f"MCP tool {tool_name!r} returned an oversized input schema")
             seen_names.add(tool_name)
             normalized.append(
                 McpToolSchema(
@@ -862,7 +931,11 @@ class McpSessionManager:
             json.dumps(canonical, sort_keys=True, separators=(",", ":"), default=str).encode()
         ).hexdigest()
         previous = self._snapshots.get(name)
-        revision = previous.revision if previous and previous.catalog_hash == digest else self._revision + 1
+        revision = (
+            previous.revision
+            if previous and previous.catalog_hash == digest
+            else self._revision + 1
+        )
         self._revision = max(self._revision, revision)
         snapshot = McpCatalogSnapshot(
             server_name=name,
@@ -900,7 +973,10 @@ class McpSessionManager:
             owner = candidate_provider.get(provider_name)
             if owner is not None and owner != tool.name:
                 provider_name = _provider_safe_tool_name(tool.name + "#" + digest[:12])
-            if provider_name in candidate_provider and candidate_provider[provider_name] != tool.name:
+            if (
+                provider_name in candidate_provider
+                and candidate_provider[provider_name] != tool.name
+            ):
                 raise McpToolCallError(f"provider tool name collision for {tool.name!r}")
             tool._provider_name_override = provider_name
             candidate_tools[tool.name] = tool
@@ -926,19 +1002,102 @@ class McpSessionManager:
     def _install_change_callback(self, name: str, bridge: McpToolBridge) -> None:
         callback = getattr(bridge, "set_change_callback", None)
         if callable(callback):
+
             async def _changed(*_args: object, **_kwargs: object) -> None:
                 await self.notify_tools_changed(name)
 
             callback(_changed)
 
     async def _emit(self, event_type: str, payload: dict[str, object]) -> None:
+        if event_type == "McpServerFailed":
+            append_event = getattr(self._conversation_store, "append_event", None)
+            if callable(append_event):
+                try:
+                    append_event(
+                        "mcp_server_failure",
+                        {
+                            "server": payload.get("server", ""),
+                            "generation_id": payload.get("generation_id", 0),
+                            "event_id": payload.get("event_id", ""),
+                            "required": bool(payload.get("required", False)),
+                            "text": (
+                                f"MCP server {payload.get('server', '')!r} is unavailable; "
+                                + (
+                                    "startup cannot continue."
+                                    if bool(payload.get("required", False))
+                                    else "continuing without its tools."
+                                )
+                            ),
+                        },
+                        event_id=(
+                            payload.get("event_id")
+                            if isinstance(payload.get("event_id"), str)
+                            else None
+                        ),
+                    )
+                except TypeError:
+                    # Compatibility with pre-PRD-191 conversation-store
+                    # adapters that do not accept the event_id keyword.
+                    append_event(
+                        "mcp_server_failure",
+                        {
+                            "server": payload.get("server", ""),
+                            "generation_id": payload.get("generation_id", 0),
+                            "event_id": payload.get("event_id", ""),
+                            "required": bool(payload.get("required", False)),
+                            "text": (
+                                f"MCP server {payload.get('server', '')!r} is unavailable; "
+                                + (
+                                    "startup cannot continue."
+                                    if bool(payload.get("required", False))
+                                    else "continuing without its tools."
+                                )
+                            ),
+                        },
+                    )
         if self._events is None:
             return
         await self._events.emit(Event.create(event_type, payload))
 
-    def _record_failure(self, name: str, error: str) -> None:
+    def _record_failure(self, name: str, error: str, *, generation_id: int | None = None) -> None:
+        if generation_id is not None and not self._is_current_generation(generation_id):
+            return
         if self._configs[name].required:
             self._required_failures[name] = error
+
+    async def _publish_registration_failures(self, generation_id: int) -> None:
+        """Publish malformed configured servers once per startup generation."""
+        if not self._is_current_generation(generation_id):
+            return
+        for name, error in sorted(self._registration_errors.items()):
+            config = self._configs[name]
+            self._set_status(name, generation_id=generation_id, last_error=error)
+            self._record_failure(name, error, generation_id=generation_id)
+            await self._emit(
+                "McpServerFailed",
+                {
+                    "server": name,
+                    "generation_id": generation_id,
+                    "event_id": self._lifecycle_event_id(generation_id, name, "failed"),
+                    "required": config.required,
+                    "status": "failed_required" if config.required else "failed_optional",
+                    "error": error,
+                },
+            )
+
+    def _begin_generation(self) -> int:
+        self._generation_id += 1
+        self._required_failures.clear()
+        return self._generation_id
+
+    def _is_current_generation(self, generation_id: int) -> bool:
+        return generation_id == self._generation_id
+
+    @staticmethod
+    def _lifecycle_event_id(generation_id: int, name: str, outcome: str) -> str:
+        """Return a stable, redacted event identity for one server outcome."""
+        value = f"agenthicc:mcp:{generation_id}:{name}:{outcome}"
+        return f"mcp-{outcome}:{hashlib.sha256(value.encode('utf-8')).hexdigest()[:32]}"
 
     def _set_status(self, name: str, **changes: object) -> None:
         current = self._require_status(name)
@@ -1010,7 +1169,10 @@ class McpSessionManager:
         secret_env = [
             value
             for key, value in config.resolved_env().items()
-            if key and any(token in key.upper() for token in ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "AUTH"))
+            if key
+            and any(
+                token in key.upper() for token in ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "AUTH")
+            )
         ]
         for value in (
             config.resolved_token(),
@@ -1033,4 +1195,7 @@ class McpSessionManager:
 
 def _is_auth_error(error: str) -> bool:
     value = error.lower()
-    return any(token in value for token in ("401", "403", "unauthorized", "authentication", "auth required"))
+    return any(
+        token in value
+        for token in ("401", "403", "unauthorized", "authentication", "auth required")
+    )

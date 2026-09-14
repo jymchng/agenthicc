@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from agenthicc.tui.runtime.mode_manager import ModeManager
 
 from agenthicc.tui.runtime.session_log import get_session_log_path
+from agenthicc.tui.conversation_store import ConversationEvent
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +51,46 @@ def load_for_replay(session_id: str) -> list[tuple[str, dict[str, object]]]:
     return pairs
 
 
+def _load_events_for_replay(session_id: str) -> list[ConversationEvent]:
+    """Load replay records while retaining their projection identities.
+
+    ``load_for_replay`` remains a pair-based compatibility API.  The active
+    replayer uses the richer event form so ``ConversationStore`` can reject a
+    record that was already projected into this session.
+    """
+    path: Path = get_session_log_path(session_id)
+    if not path.exists():
+        return []
+    events: list[ConversationEvent] = []
+    for index, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            if (
+                isinstance(data, dict)
+                and isinstance(data.get("kind"), str)
+                and isinstance(data.get("payload"), dict)
+            ):
+                event_id = data.get("event_id")
+                events.append(
+                    ConversationEvent(
+                        event_id=(
+                            event_id
+                            if isinstance(event_id, str) and event_id
+                            else f"legacy-replay-{index}"
+                        ),
+                        kind=data["kind"],
+                        payload=data["payload"],
+                        rendered=False,
+                    )
+                )
+        except Exception:  # noqa: BLE001
+            pass
+    return events
+
+
 class ConversationReplayer:
     """Feeds stored session events through the existing render pipeline.
 
@@ -75,8 +116,8 @@ class ConversationReplayer:
 
     async def run(self) -> None:
         """Replay all events then show a completion notification."""
-        pairs = load_for_replay(self._session_id)
-        if not pairs:
+        events = _load_events_for_replay(self._session_id)
+        if not events:
             self._conv_store.notification.set(
                 f"No conversation log found for session {self._session_id[:12]}."
             )
@@ -84,13 +125,23 @@ class ConversationReplayer:
 
         self._conv_store.notification.set(f"⏮ Replaying session {self._session_id[:12]}…")
 
-        for kind, payload in pairs:
-            self._conv_store.append_event(kind, payload)
+        for event in events:
+            try:
+                self._conv_store.append_event(
+                    event.kind,
+                    event.payload,
+                    event_id=event.event_id,
+                )
+            except TypeError:
+                # Older store adapters accepted only (kind, payload).  They
+                # remain supported, while the current store gets the stable
+                # identity needed for replay idempotency.
+                self._conv_store.append_event(event.kind, event.payload)
             # Yield to the event loop so ScrollBufferAppender can flush each
             # render before the next event arrives, keeping the output ordered.
             await asyncio.sleep(0)
 
         self._conv_store.notification.set(
-            f"⏮ Replay complete ({len(pairs)} events) — "
+            f"⏮ Replay complete ({len(events)} events) — "
             "session context restored. Send a message to continue."
         )
