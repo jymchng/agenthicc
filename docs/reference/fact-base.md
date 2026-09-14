@@ -425,6 +425,16 @@ Checked specifically because they are counter-intuitive. Do not delete these.
 | README anchor `#make_book-phase-handoffs` resolves | Heading `#### \`make_book\` phase handoffs`, `docs/guides/workflows.md:259` |
 | README anchor `#pause-crash-recovery-and-workflow-resume` resolves | Heading `### Pause, crash recovery, and \`/workflow resume\``, `docs/guides/workflows.md:41` |
 
+**Correction to an earlier note.** The three README anchor rows above were
+previously labelled "fragile" in planning notes. That label was wrong: all
+three resolve, and they are recorded here as verified-real precisely so they
+are not "fixed" into breakage. The genuine fragility was different — README.md
+lives *outside* the MkDocs `docs/` directory, so `mkdocs build --strict` never
+validated it and no gate covered its 53 local links at all. That gap is now
+closed by the README checker, which resolves every relative link and every
+`path#anchor` against the real MkDocs slug function (see
+`docs/reference/verification-baseline.md`).
+
 ---
 
 ## Stale trees: scope every search before trusting it

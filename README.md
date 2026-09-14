@@ -18,7 +18,9 @@ pip install agenthicc   # or use uv — see Install below
 
 ## What it does
 
-agenthicc runs **agent turns** inside your project with full filesystem, git, and command tooling. It keeps durable session records so you can inspect, resume, and replay work at any time.
+agenthicc runs **agent turns** inside your project with full filesystem, git, and command tooling, and keeps a durable, event-sourced record of every session so work can be inspected, resumed, and replayed. It is state-driven: an immutable kernel folds events into `AppState`, workflows are typed state machines with explicit transitions, and every tool call passes a capability gate before it runs.
+
+New here? Start with the [quickstart](docs/guides/quickstart.md), browse the [glossary](docs/glossary.md), or look up a symptom in the [troubleshooting index](docs/reference/troubleshooting-index.md).
 
 ### Key capabilities
 
@@ -36,13 +38,18 @@ agenthicc runs **agent turns** inside your project with full filesystem, git, an
 
 ### Built-in workflows
 
+All eight registered workflows:
+
 | Workflow | Purpose |
 |---|---|
 | `code_plan` | Plan-and-execute code changes with approval gates |
 | `create_workflow` | Author new workflows interactively |
+| `goal_flow` | Clarify an intent into an ordered goal list, then implement and verify each goal before summarizing |
+| `make_agenthicc_tool` | Scaffold an agenthicc-compatible tool plugin under `.agenthicc/tools/` |
+| `make_book` | Write a technical book chapter by chapter, one phase per chapter |
 | `copy_website` | Study a website with Playwright and rebuild it as a mobile-friendly Next.js application |
 | `reconstruct_site` | Reconstruct a reference website through evidence-first responsive research, implementation, and validation phases |
-| `site_imitate` | Generate mobile-first responsive websites (viewport checks enforced) |
+| `site_imitate` | Generate a mobile-first responsive site from a reference design (viewport checks enforced) |
 
 ---
 
@@ -111,6 +118,26 @@ For an interactive session, `--mode MODE` selects the initial runtime mode and
 `--workflow NAME` selects the initial workflow. The explicit workflow overrides
 the mode's default; with `--headless`, the workflow is run for each non-empty
 stdin line.
+
+### CLI command groups
+
+`agenthicc` takes 12 global flags and exposes 14 top-level command groups. The
+most-used ones:
+
+| Group | Subcommands | Purpose |
+|---|---|---|
+| `workflows` | `list`, `run` | List registered workflows and run one against an intent |
+| `sessions` | `list`, `show`, `inspect`, `export` | Browse and export local session records |
+| `session` | `create`, `list`, `show`, `events`, `send`, `control`, `export`, `serve` | Drive the client-neutral session projection |
+| `jobs` | `list`, `status`, `resume`, `retry`, `cancel`, `approve`, `reject`, `input`, `rename`, `archive`, `restore`, `delete`, `purge`, `labels` | Manage background sessions |
+| `mcp` | `list`, `get`, `add`, `remove`, `connect`, `disconnect`, `refresh`, `auth`, `logout`, `doctor` | Configure and diagnose MCP servers |
+| `config` | `init`, `show`, `validate`, `profiles` | Inspect and validate configuration |
+| `skills` | `add` | Install a skill |
+| `agents` | — | Open the background-session manager (alias of `jobs` UI) |
+| `init`, `run`, `login`, `logout`, `whoami`, `trust cli` | — | Project setup, one-shot runs, and credentials |
+
+See the [CLI reference](./docs/reference/cli.md) for every flag, path, and
+command, validated against the argument parser.
 
 ---
 
@@ -308,7 +335,7 @@ uv run agenthicc session list --json
 uv run agenthicc session show SESSION_ID --json
 uv run agenthicc session events SESSION_ID --after 12
 uv run agenthicc session export SESSION_ID --output session-export.json
-uv run agenthicc session send SESSION_ID --text 'continue the work'
+uv run agenthicc session send SESSION_ID 'continue the work'
 uv run agenthicc session control SESSION_ID cancel
 ```
 
@@ -640,6 +667,10 @@ Nox contains the CI session definitions (`noxfile.py`), including the embedded `
 - [CLI reference](./docs/reference/cli.md)
 - [Kernel reference](./docs/reference/kernel.md)
 - [Storage reference](./docs/reference/storage.md)
+- [Glossary](./docs/glossary.md)
+- [Architecture diagram](./docs/guides/architecture-diagram.md)
+- [Troubleshooting index](./docs/reference/troubleshooting-index.md)
+- [Using agenthicc (full manual)](./docs/usage/index.md)
 - [Repository improvement PRD](./prds/prd-138-repository-improvement-roadmap.md)
 
 AI-assisted contributors should also read [`AGENTS.md`](./AGENTS.md), [`CLAUDE.md`](./CLAUDE.md), [`llms.txt`](./llms.txt), and [`llms-full.txt`](./llms-full.txt).
