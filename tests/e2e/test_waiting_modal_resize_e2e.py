@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from typing import Any
 
 import pytest
@@ -133,4 +135,58 @@ async def test_resize_storm_repaints_one_current_waiting_modal(
     finally:
         service.respond(allowed=True)
         await request_task
+        workspace.stop()
+
+
+@pytest.mark.asyncio
+async def test_long_question_can_be_scrolled_and_answered_through_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real workspace exposes the full question without changing its answer."""
+    monkeypatch.setattr(
+        "agenthicc.tui.workspace.overlays.questions.shutil.get_terminal_size",
+        lambda _fallback=(80, 24): os.terminal_size((40, 24)),
+    )
+    app_state = AppState.create()
+    service = ApprovalService(app_state)
+    console = Console(record=True, force_terminal=False, width=40)
+    workspace = Workspace(app_state, console)
+    workspace.start()
+    request = ApprovalRequest(
+        tool_name="ask_user",
+        tool_use_id="e2e-long-question",
+        tool_input={
+            "questions": [
+                {
+                    "id": "decision",
+                    "text": " ".join(f"requirement-{i}" for i in range(80)),
+                    "options": ["Proceed"],
+                }
+            ]
+        },
+        capabilities=frozenset(),
+        event=asyncio.Event(),
+        kind="questions",
+    )
+    request_task = asyncio.create_task(service.request_approval(request))
+
+    try:
+        await asyncio.sleep(0)
+        workspace.overlays.show(QuestionsOverlay(request, service, workspace.overlays.hide))
+        await asyncio.sleep(0)
+        for _ in range(100):
+            workspace.overlays.handle_key(Key.CHAR, "]")
+        rendered = _render_text(console, workspace._build())
+        assert "requirement-79" in rendered
+        assert "[/] scroll" in rendered
+        assert not request_task.done()
+
+        workspace.overlays.handle_key(Key.ENTER, "")
+        response = await request_task
+        assert response.allowed is True
+        assert json.loads(response.message) == {"decision": "Proceed"}
+    finally:
+        if not request_task.done():
+            service.respond(allowed=False)
+            await request_task
         workspace.stop()

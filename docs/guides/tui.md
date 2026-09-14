@@ -196,6 +196,20 @@ should update its state/callback and let the workspace redraw. New approval
 kinds need an overlay class, registry entry, and tests for approve/reject,
 cancel, and terminal resize behaviour.
 
+### Reading long `ask_user` questions
+
+The Questions overlay wraps long or multi-line question text to the current
+terminal width and keeps it in a fixed-height viewport. In SELECTING mode,
+press `[` to scroll up one question line and `]` to scroll down one line;
+`↑`/`↓` remain option navigation and `←`/`→` remain question navigation. A
+range indicator shows when more question text is above or below the viewport.
+
+When entering an `Other` answer, Page Up/Page Down scroll the question by one
+viewport while `[` and `]` remain ordinary answer characters. Question text is
+rendered literally, so model text such as `[red]` is not interpreted as Rich
+markup. Scrolling and resizing change presentation state only; the answer
+payload and approval response remain unchanged.
+
 ## Slash commands
 
 The canonical command definitions are in `commands/builtins.py`. Stateful

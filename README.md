@@ -125,6 +125,11 @@ The current TUI is implemented by `tui/workspace/Workspace` and consists of:
 
 The workspace treats terminal resizing as one settled repaint, clearing Rich's previous geometry before redrawing so an active Plan Review is not duplicated in the scrollback. While approvals, plan reviews, or questions are waiting, the status animation and cached active-work timer stay fixed; the wall-clock duration is retained for turn telemetry.
 
+Long `ask_user` questions wrap inside a fixed-height viewport. In the
+selection view, `[` and `]` scroll the question text while `↑`/`↓` continue to
+navigate options; free-text answers use Page Up/Page Down for question scrolling
+so literal brackets remain available in the answer.
+
 Idle sessions do not publish animation frames or repaint the unchanged Live status at the session tick rate, preventing duplicate idle panels in captured terminal output. Approval, plan-review, and question waits likewise retain their wall-clock telemetry without repainting an unchanged prompt every tick.
 
 Tool completions use the same operation-style header as file updates: reads, searches, commands, and other tools show a `● Operation(...)` header, a result summary, and a bounded numbered output preview. File changes retain their unified diff preview; long contiguous change blocks are abbreviated to six edge rows with a single `...` omission marker. Collapsed tool-group summaries are also flushed to the scroll buffer when an active agent is interrupted.

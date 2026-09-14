@@ -56,6 +56,7 @@ against the current source before implementing them.
 - [PRD-186 — Profile-aware workflow checkpoint topology](prd-186-profile-aware-workflow-checkpoint-topology.md)
 - [PRD-187 — OpenCode Go session identity propagation](prd-187-opencode-go-session-identity.md)
 - [PRD-188 — Resume the latest recoverable workflow run](prd-188-workflow-resume-latest-run.md)
+- [PRD-189 — Scrollable Ask User Questions](prd-189-scrollable-ask-user-questions.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -310,6 +311,12 @@ PRD-188 implements the optional-run-ID `/workflow resume` contract. Omitted
 IDs select the newest eligible durable workflow checkpoint using persisted
 activity time, revision, and a stable run-ID tie-breaker, then reuse the same
 validated explicit-ID recovery path without creating a new run.
+
+PRD-189 implements the long-question rendering fix in `QuestionsOverlay`. It
+applies the existing plan-review scrolling pattern to `ask_user` question text,
+adding wrapped literal lines, fixed-height viewports, bounded keyboard
+scrolling, resize-safe redraws, and regression coverage without changing the
+question or answer contract.
 
 ## Existing PRDs
 

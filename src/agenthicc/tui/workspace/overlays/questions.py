@@ -11,15 +11,15 @@ State machine:
 
 Height stability
 ----------------
-The options area is always rendered as exactly ``_opt_rows`` lines (computed
-dynamically from the terminal height), padded with blank rows when a question
-has fewer options than the tallest question.  This keeps the overlay height
-constant while navigating between questions.
+The question and options areas are always rendered as fixed-size viewports
+computed from the terminal dimensions. Both viewports are padded with blank
+rows, and the question viewport has a separate indicator row. This keeps the
+overlay height constant while navigating, scrolling, and changing questions.
 
-Fixed overhead = 19 lines: workspace (blank+status+top-border=5) +
-overlay chrome (header+top-border+nav+2-blanks+question+blank-after-options+
-bottom-border+hint=9) + workspace (bottom-border+footer+margin=5).
-opt_rows = min(max_opts_any_question, max(1, rows − 19)).
+Question text is wrapped into literal Rich ``Text`` rows and cached by
+terminal width. The selecting view uses ``[`` and ``]`` for one-line question
+scrolling; the typing view reserves Page Up/Page Down for question scrolling so
+literal brackets remain available in the answer buffer.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
+    from rich.text import Text
     from agenthicc.tools.approval import ApprovalRequest, ApprovalService
 
 from agenthicc.tui.cbreak_reader import Key
@@ -38,6 +39,8 @@ from agenthicc.tui.workspace.overlays.prompt import PromptOverlay
 
 _BORDER = "─"
 _OTHER_LABEL = "Other — type your answer"
+_MAX_QUESTION_ROWS = 12
+_LAYOUT_OVERHEAD = 20
 
 
 def _str_option(opt: object) -> str:
@@ -72,6 +75,7 @@ class _QState:
     answer: str = ""  # confirmed answer (option label or typed text)
     answered: bool = False
     opt_scroll: int = 0  # index of first visible option in the viewport
+    question_scroll: int = 0  # first visible wrapped question line
 
 
 class _Mode(Enum):
@@ -112,8 +116,13 @@ class QuestionsOverlay(PromptOverlay):
         ]
         self._states: list[_QState] = [_QState() for _ in self._questions]
 
-        # Cached from last render — read by _handle_selecting.
+        # Cached from the last render — read by the keyboard handlers. Question
+        # lines are presentation-only and are never included in the answer or
+        # approval payload.
         self._opt_rows: int = 2
+        self._question_rows: int = 1
+        self._question_width: int = 0
+        self._question_lines: dict[int, list[Text]] = {}
 
     # ── Overlay interface ──────────────────────────────────────────────────────
 
@@ -126,6 +135,9 @@ class QuestionsOverlay(PromptOverlay):
             s.answer = ""
             s.answered = False
             s.opt_scroll = 0
+            s.question_scroll = 0
+        self._question_width = 0
+        self._question_lines.clear()
 
     def on_unmount(self) -> None:
         pass
@@ -183,6 +195,119 @@ class QuestionsOverlay(PromptOverlay):
         self._service.respond(allowed=True, message=json.dumps(answers))
         self._close()
 
+    def _prepare_question_lines(self, width: int) -> None:
+        """Wrap every question at *width* and invalidate stale width caches."""
+        from rich.console import Console  # noqa: PLC0415
+        from rich.text import Text  # noqa: PLC0415
+
+        width = max(1, width)
+        if self._question_width != width:
+            self._question_width = width
+            self._question_lines.clear()
+        if len(self._question_lines) == len(self._questions):
+            return
+
+        console = Console(width=width, highlight=False, color_system=None)
+        for index, question in enumerate(self._questions):
+            # Text() deliberately treats model content as literal text. In
+            # particular, a question containing ``[red]`` must not inject
+            # Rich markup into the waiting modal.
+            wrapped = list(
+                Text(question.text).wrap(
+                    console,
+                    width=width,
+                    overflow="fold",
+                    no_wrap=False,
+                )
+            )
+            self._question_lines[index] = wrapped or [Text("")]
+
+    def _selecting_layout(self, rows: int) -> tuple[int, int]:
+        """Return fixed ``(question_rows, option_rows)`` for SELECTING."""
+        max_question_lines = max(
+            (len(lines) for lines in self._question_lines.values()),
+            default=1,
+        )
+        max_options = max((len(self._opts(i)) for i in range(len(self._questions))), default=1)
+        # Reserve one row for the question range indicator. The remaining
+        # content budget is split deterministically so both viewports retain
+        # at least one row even on a very short terminal.
+        budget = max(3, rows - _LAYOUT_OVERHEAD)
+        option_rows = min(max_options, max(1, budget // 2))
+        question_rows = min(_MAX_QUESTION_ROWS, max(1, max_question_lines))
+        question_rows = min(question_rows, max(1, budget - option_rows - 1))
+        return question_rows, option_rows
+
+    def _typing_layout(self, rows: int, question_lines: int) -> int:
+        """Return the fixed question viewport height for TYPING."""
+        budget = max(1, rows - _LAYOUT_OVERHEAD)
+        return min(_MAX_QUESTION_ROWS, max(1, question_lines), budget)
+
+    def _prepare_question_view(self, *, selecting: bool) -> tuple[list[Text], int]:
+        """Prepare the current question and return its lines and row budget."""
+        term = shutil.get_terminal_size((80, 24))
+        width = max(1, term.columns - 4)
+        self._prepare_question_lines(width)
+        q_idx = self._current
+        if selecting:
+            question_rows, option_rows = self._selecting_layout(term.lines)
+            self._question_rows = question_rows
+            self._opt_rows = option_rows
+        else:
+            question_rows = self._typing_layout(term.lines, len(self._question_lines[q_idx]))
+            self._question_rows = question_rows
+        # A resize can happen while any question is selected. Clamp every
+        # presentation offset now so returning to another question cannot
+        # reveal a stale range from the previous terminal geometry.
+        for index in range(len(self._questions)):
+            self._clamp_question_scroll(index)
+        return self._question_lines[q_idx], question_rows
+
+    def _clamp_question_scroll(self, q_idx: int) -> None:
+        """Keep the current question offset inside its prepared viewport."""
+        lines = self._question_lines.get(q_idx, [])
+        state = self._states[q_idx]
+        max_scroll = max(0, len(lines) - self._question_rows)
+        state.question_scroll = max(0, min(state.question_scroll, max_scroll))
+
+    def _render_question_view(self, q_idx: int, rows: int) -> list[RenderableType]:
+        """Render a fixed-height, indented question viewport and indicator."""
+        from rich.text import Text  # noqa: PLC0415
+
+        lines = self._question_lines[q_idx]
+        state = self._states[q_idx]
+        self._clamp_question_scroll(q_idx)
+        scroll = state.question_scroll
+        visible = lines[scroll : scroll + rows]
+        rendered: list[RenderableType] = []
+        for line in visible:
+            prefixed = Text("  ")
+            prefixed.append_text(line)
+            rendered.append(prefixed)
+        rendered.extend(Text("") for _ in range(rows - len(visible)))
+
+        if len(lines) > rows:
+            first = scroll + 1
+            last = min(scroll + rows, len(lines))
+            above = scroll > 0
+            below = last < len(lines)
+            prefix = "↑ · " if above else ""
+            suffix = " · ↓" if below else ""
+            rendered.append(
+                Text(f"  {prefix}lines {first}–{last} of {len(lines)}{suffix}", style="dim")
+            )
+        else:
+            rendered.append(Text(""))
+        return rendered
+
+    def _scroll_question(self, delta: int) -> None:
+        """Move the current question viewport without changing answer state."""
+        selecting = self._mode == _Mode.SELECTING
+        self._prepare_question_view(selecting=selecting)
+        state = self._states[self._current]
+        max_scroll = max(0, len(self._question_lines[self._current]) - self._question_rows)
+        state.question_scroll = max(0, min(state.question_scroll + delta, max_scroll))
+
     def _clamp_opt_scroll(self, q_idx: int) -> None:
         """Ensure opt_scroll keeps the cursor inside the visible options window."""
         st = self._states[q_idx]
@@ -205,15 +330,8 @@ class QuestionsOverlay(PromptOverlay):
 
         term = shutil.get_terminal_size((80, 24))
         cols = term.columns
-        rows = term.lines
         border_w = min(cols, 66)
-
-        # Max options (including "Other") across all questions.
-        max_opts = max((len(self._opts(i)) for i in range(len(self._questions))), default=2)
-        # Overhead = 17 lines (18 minus the 1-row workspace Layout margin).
-        # Overhead = 19 fixed rows; floor at 1 so the footer always fits.
-        opt_rows = min(max_opts, max(1, rows - 19))
-        self._opt_rows = opt_rows  # read by _handle_selecting
+        question_lines, question_rows = self._prepare_question_view(selecting=True)
 
         lines: list[RenderableType] = []
 
@@ -239,14 +357,14 @@ class QuestionsOverlay(PromptOverlay):
         lines.append(Text(""))
 
         # Question text
-        q = self._questions[q_idx]
         st = self._states[q_idx]
-        lines.append(Text(f"  {q.text}"))
+        lines.extend(self._render_question_view(q_idx, question_rows))
         lines.append(Text(""))
 
         # Options viewport — always exactly opt_rows lines.
         opts = self._opts(q_idx)
         n = len(opts)
+        opt_rows = self._opt_rows
         self._clamp_opt_scroll(q_idx)
         scroll = st.opt_scroll
         end = min(scroll + opt_rows, n)
@@ -281,10 +399,11 @@ class QuestionsOverlay(PromptOverlay):
         lines.append(Text(""))
         lines.append(Text(_BORDER * border_w, style="dim"))
 
+        scroll_hint = "   [/] scroll" if len(question_lines) > question_rows else ""
         if self._all_answered():
-            hint = "  ↑↓ option   ←→ question   Enter SUBMIT ALL   Esc cancel"
+            hint = f"  ↑↓ option   ←→ question{scroll_hint}   Enter SUBMIT ALL   Esc cancel"
         else:
-            hint = "  ↑↓ option   ←→ question   Enter confirm   Esc cancel"
+            hint = f"  ↑↓ option   ←→ question{scroll_hint}   Enter confirm   Esc cancel"
         lines.append(Text(hint, style="dim"))
 
         return Group(*lines)
@@ -303,6 +422,10 @@ class QuestionsOverlay(PromptOverlay):
         opt_rows = self._opt_rows
 
         match key:
+            case Key.CHAR if ch == "[":
+                self._scroll_question(-1)
+            case Key.CHAR if ch == "]":
+                self._scroll_question(1)
             case Key.UP:
                 st.cursor = (st.cursor - 1) % n
                 if st.cursor == n - 1:  # wrapped to bottom
@@ -350,7 +473,7 @@ class QuestionsOverlay(PromptOverlay):
 
         cols = shutil.get_terminal_size((80, 24)).columns
         border_w = min(cols, 66)
-        q = self._questions[self._current]
+        question_lines, question_rows = self._prepare_question_view(selecting=False)
         lines: list[RenderableType] = []
 
         lines.append(
@@ -361,17 +484,22 @@ class QuestionsOverlay(PromptOverlay):
         )
         lines.append(Text(_BORDER * border_w, style="dim"))
         lines.append(Text(""))
-        lines.append(Text(f"  {q.text}"))
+        lines.extend(self._render_question_view(self._current, question_rows))
         lines.append(Text(""))
         lines.append(Text.from_markup(f"  {self._render_prompt_line()}"))
         lines.append(Text(""))
         lines.append(Text(_BORDER * border_w, style="dim"))
-        lines.append(Text("  Enter confirm   Esc back", style="dim"))
+        scroll_hint = "   PageUp/PageDown scroll" if len(question_lines) > question_rows else ""
+        lines.append(Text(f"  Enter confirm   Esc back{scroll_hint}", style="dim"))
 
         return Group(*lines)
 
     def _handle_typing(self, key: Key, ch: str) -> bool:
         match key:
+            case Key.PAGE_UP:
+                self._scroll_question(-self._question_rows)
+            case Key.PAGE_DOWN:
+                self._scroll_question(self._question_rows)
             case Key.ENTER:
                 text = self._prompt_text.strip()
                 if text:
