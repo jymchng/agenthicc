@@ -4,36 +4,60 @@ agenthicc provides tiered memory with durable conversation journaling.
 
 ## Tiers
 
-Verified in `src/agenthicc/memory/layers.py`:
-
-| Tier | Backing | Scope |
+| Tier | Scope | Lifetime |
 |---|---|---|
-| **Session** | In-process LRU cache | Current session |
-| **Project** | SQLite-backed | Current project / working directory |
-| **Global** | Persistent | User home |
+| **Session** | The current session | The process |
+| **Project** | The current project / working directory | Durable |
+| **Global** | The user | Durable |
+
+`MemoryRouter` (`src/agenthicc/memory/router.py`) is the supported dispatch
+point; the three layers live in `src/agenthicc/memory/layers.py`. Reaching into
+a layer directly is reserved for that layer's own implementation and tests.
+
+!!! warning "A session-scoped write does not survive the process"
+    Use `scope="project"` or `scope="global"` for anything that must outlive
+    the run, and use a namespace to keep unrelated values apart in the global
+    tier.
 
 ## Conversation journaling
 
-- `journal.py` — durable event journal for conversation history.
-- `journaled.py` — journaled memory operations.
-- `tool_history.py` — history of tool calls (used for replay).
-- `compactor.py` — compacts old context when the window grows.
-- `vector.py` — semantic search over stored entries.
-- `router.py` — routes memory requests to the right tier.
+The memory package owns these modules:
 
-## Auto behavior
+| Module | Role |
+|---|---|
+| `journal.py` | The durable conversation journal |
+| `journaled.py` | Journaled memory operations |
+| `tool_history.py` | Tool-call history, used for replay |
+| `compactor.py` | Bounds context when the window grows |
+| `vector.py` | Semantic search over stored entries |
+| `router.py` | Routes a request to the right tier |
+| `layers.py` | The session / project / global tiers |
 
-- Conversation journaling records turns durably so interrupted/resumed turns
-  can replay tool results.
-- Compaction summarizes older context to stay within the model window.
-- Semantic search (vector) surfaces relevant stored facts.
+The journal is authoritative and the live projection is a fold over it.
+
+## Automatic behaviour
+
+- Journaling records turns durably so an interrupted or resumed turn can replay
+  its tool results instead of losing them.
+- Compaction summarises older context to stay inside the model window. Manual
+  `/compact` uses the same bounded map-reduce summariser, retries an empty
+  final response, then falls back to bounded local recent history.
+- Semantic search surfaces relevant stored facts.
 
 ## From the TUI
 
-- `/memory`-related functionality is exposed through the memory system; the
-  agent can `remember`/`recall` facts across turns.
+Memory is a **tool** surface, not a slash command — there is no `/memory`
+command in the registry. The agent reads and writes memory during a turn, and
+you can inspect the result through the transcript and `/usage`.
+
+!!! danger "Never store credentials or unbounded tool output"
+    Keep project memory inside the project's `.agenthicc/` directory, treat
+    global memory as user data when collecting diagnostics, and redact before
+    writing. A record with a credential-shaped value means something upstream
+    failed to sanitise it.
 
 ## Next
 
 - [Tools →](09-tools.md)
 - [Configuration →](02-configuration.md)
+- Depth: [Memory guide](../guides/memory.md)

@@ -1,74 +1,109 @@
 # Configuration
 
-agenthicc reads a TOML config file with environment-variable and `--set`
-overrides. This guide documents the surface verified against
-`src/agenthicc/config.py`.
+agenthicc reads TOML with environment-variable and CLI overrides.
 
-## Config file locations (precedence, highest first)
+## Precedence, lowest to highest
 
-1. A config file passed with `--config <path>`
-2. `.agenthicc/agenthicc.toml` in the project directory
-3. `agenthicc.toml` in the project directory
-4. User config (`~/.config/agenthicc/agenthicc.toml`)
-5. Built-in defaults
+1. Hardcoded defaults
+2. `~/.agenthicc/agenthicc.toml` — user-global defaults
+3. `.agenthicc/agenthicc.toml` — per-project overrides
+4. `AGENTHICC_*` environment variables
+5. `--set` / `--set-secret` CLI overrides
+
+Project config always wins over user-global config, mirroring the Git
+`~/.gitconfig` / `.git/config` layering model. Scalars are overwritten, lists
+are replaced, and tables are merged recursively.
+
+`--config PATH` selects an explicit file instead of searching.
+
+### Files searched, in order
+
+The search stops at the first match in each scope (`src/agenthicc/config.py:79-89`):
+
+| Scope | Candidates |
+|---|---|
+| Project | `.agenthicc/agenthicc.toml`, `.agenthicc/.agenthicc.toml`, `agenthicc.toml`, `.agenthicc.toml` |
+| User | `~/.agenthicc/agenthicc.toml`, `~/.agenthicc/.agenthicc.toml`, `~/.agenthicc.toml` |
+
+!!! warning "There is no XDG location"
+    Configuration does **not** live under `~/.config/agenthicc/`. The user scope
+    is `~/.agenthicc/`.
 
 ## Managing config from the CLI
 
 ```bash
-agenthicc config show          # print the resolved config
-agenthicc config validate      # validate the current config
-agenthicc config profiles      # show provider profiles
-agenthicc config init          # create a commented config template
+agenthicc config show          # print the resolved configuration
+agenthicc config validate      # check the current configuration
+agenthicc config profiles      # list provider profiles
+agenthicc config init          # write a commented template
 ```
 
-(Verified: `config show | validate | profiles | init` in
-`src/agenthicc/cli/commands/config.py`.)
+`config set` is not one of them. `config init` accepts `--force` to overwrite.
 
-## CLI overrides
+## Overrides
 
 ```bash
-agenthicc --set section.key=value        # override any config key
-agenthicc --set-secret section.key=ENV_VAR  # set a secret from an env var
-agenthicc --config path/to/agenthicc.toml  # explicit config file
+agenthicc --set section.key=value           # override any config key
+agenthicc --set-secret section.key=ENV_VAR  # point a secret at an env var
+agenthicc --config path/to/agenthicc.toml   # explicit config file
 ```
 
-- `--set KEY=VALUE` can be repeated and overrides a dotted key.
-- `--set-secret KEY=ENV_VAR` points a secret key at an environment variable
-  (never put secrets in the config file).
-
-(Verified in `src/agenthicc/cli/parser.py`.)
+- `--set` can be repeated and takes a dotted `section.key`.
+- `--set-secret` never stores the value: it records which environment variable
+  to read at runtime.
 
 ## Provider profiles
 
-Provider connections are modeled as profiles (`ProviderProfile`):
+A named connection is a `ProviderProfile` (`src/agenthicc/config.py:723`):
 
 | Field | Meaning |
 |---|---|
+| `name` | Profile name, used to select it |
 | `provider` | `anthropic` / `openai` / `ollama` / `litellm` |
 | `model` | Model id |
 | `base_url` | API base URL |
-| `api_key` / `api_key_env` | Inline key or env var name |
+| `api_key` / `api_key_env` | Inline key, or the name of an env var |
 | `default_headers` / `default_query` | Extra HTTP headers / query params |
-| `session_header` | Dynamic header name populated with the stable session conversation ID |
-| `timeout_s` / `max_retries` | Request timeout (default 3600 seconds) / retry count |
-| `temperature` / `top_p` / `max_completion_tokens` | Sampling params |
-| `request_options` | Extra body/headers/query per request |
-| `capabilities` | Feature flags |
+| `client_options` / `request_options` | Extra client and per-request options |
+| `timeout_s` | Request timeout for this profile |
+| `max_retries` | Retry budget for this profile |
+| `temperature` / `top_p` / `max_completion_tokens` | Sampling parameters |
+| `protocol` | Wire protocol override |
+| `capabilities` | Feature flags detected or declared for the provider |
+| `session_header` | Header populated with the stable session conversation ID |
 
-(Verified: `ProviderProfile` and `RequestOptionSettings` in
-`src/agenthicc/config.py`.)
+!!! warning "Do not confuse profile fields with execution fields"
+    `timeout_s` on a **profile** has no default of its own; the
+    `[execution]` table carries `timeout_s = 3600.0` plus
+    `provider_capabilities`, `transport_max_retries`, and
+    `transport_retry_base_delay_s`. A profile's `capabilities` are copied into
+    `execution.provider_capabilities` when the profile is resolved. Set a value
+    in the table that actually owns it.
+
+!!! danger "`timeout_s` is the LLM timeout, not the turn timeout"
+    `timeout_s` governs the provider request; `turn_timeout_s` governs a turn
+    (default `0.0`, meaning no turn deadline). Set both deliberately, or
+    neither. `transport_max_retries` (default 10),
+    `transport_retry_base_delay_s` (default 1.0), and `llm_sdk_max_retries`
+    (default 2) control retries.
 
 ## Secrets
 
-`SecretReference` resolves a config value from an environment variable at
-runtime. Use `api_key_env` in a profile or `--set-secret key=ENV_VAR` so keys
-never appear in `agenthicc.toml`.
+`SecretReference` resolves a value from an environment variable at runtime. Use
+`api_key_env` in a profile, or `--set-secret key=ENV_VAR` at the command line,
+so keys never appear in `agenthicc.toml`.
 
-## Environment variables
+## Sections
 
-- `ANTHROPIC_API_KEY` — default Anthropic key
-- `OPENAI_API_KEY` — default OpenAI key
+The recognised top-level sections are `execution`, `providers`, `behaviour`,
+`hooks`, `tools`, `memory`, `security`, `api`, `plugins`, `skills`, `agents`,
+`storage`, and `workflows.<name>`.
+
+!!! danger "`[behaviour]` keeps its British `-our`"
+    The section key is `behaviour` in code. It is a config key, not prose, so it
+    must stay byte-accurate in every example and migration note.
 
 ## Next
 
-[Your first task →](03-first-task.md)
+- [Your first task →](03-first-task.md)
+- Depth: [Configuration guide](../guides/configuration.md)

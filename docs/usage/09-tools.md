@@ -1,42 +1,66 @@
 # Tools
 
-agenthicc provides class-based tools with capability metadata, approvals,
-path and network guards, shared HTTP safety helpers, and an optional
-CloakBrowser adapter.
+agenthicc ships class-based tools with capability metadata, workspace and
+network boundaries, and bounded output. Everything a tool may do is declared
+through `ToolCapability` (see [Security](10-security.md)).
 
-## Tool categories
+## Built-in tools
 
-| Category | Tools |
-|---|---|
-| **Filesystem** | read, write, edit, list, search, glob, tree, diff, file metadata |
-| **Git** | status, diff, log, show, blame, branch, add, commit, push, stash |
-| **Command** | shell/command execution with guards and timeouts |
-| **MCP** | tools contributed by connected MCP servers |
-| **Dynamic** | runtime-created scripted tools |
+The filesystem group (14):
 
-## Safety contracts
+```text
+append_file  copy_file  delete_file  file_exists  get_file_info
+grep_files   list_directory  make_directory  move_file  patch_file
+read_file    read_lines  search_files  write_file
+```
 
-- **Capability** — each tool declares capabilities; the active mode's policy
-  gates them.
-- **Path** — path traversal and network guards on file/URL tools.
-- **Approval** — risk levels route through the approval system.
-- **Timeout/retry** — HTTP safety helpers with timeouts and retries.
-- **Bounded output** — tool results are bounded so the transcript never
-  floods.
+The git group (11):
+
+```text
+ git_add  git_blame  git_branch  git_checkout  git_commit  git_diff
+git_grep  git_log   git_show   git_stash    git_status
+```
+
+!!! note "There is no `git_push` tool"
+    The git surface is read-plus-local-mutation. Pushing is not exposed as a
+    tool; a network push is a `NETWORK` capability decision, and agenthicc
+    does not ship one by default.
+
+Also available: command/terminal execution with guards and deadlines, tools
+contributed by connected MCP servers, browser tools (CloakBrowser or
+Playwright), Outlook and document-introspection tools, and project-defined
+tools discovered from `.agenthicc/tools/`.
+
+## What is enforced on every call
+
+- **Capability** — declared per tool; the active mode gates it.
+- **Path** — workspace resolution with traversal and symlink escape
+  prevention, revalidated before I/O.
+- **Network** — allow-list checks against exact hostnames and subdomains.
+- **Approval** — capability decisions route through the session approval
+  service and its TUI overlays.
+- **Deadline and cleanup** — command execution derives success only from a
+  zero exit and records the deadline owner.
+- **Bounded output** — results are capped so the transcript cannot flood.
 
 ## MCP tools
 
-Connect MCP servers via `agenthicc mcp` (or the `/mcp` TUI command); their
-tools join the same registry and inherit the same approval/path/capability
-gates. See [MCP guide](../guides/mcp.md).
+Connect servers with `agenthicc mcp` (or the `/mcp` TUI command). Their tools
+join the same registry and inherit the same capability, path, and approval
+gates as built-ins. See [Connecting MCP servers](../guides/mcp.md).
 
-## Custom tools
+## Project tools
 
-Tools are class-based: implement the tool contract with input/output schema,
-capability metadata, and risk level, then register it. Plugin loaders can add
-tools at runtime.
+Tools are class-based: implement the tool contract with an input/output
+schema, add capability metadata, and register it. Project tools are discovered
+from `.agenthicc/tools/` after the first TUI frame.
 
-## Related
+!!! warning "A project tool is code execution"
+    Review project tool files before use. The discovery path imports them
+    without a trust prompt, and `agenthicc trust cli` covers `.agenthicc/cli/`,
+    not `.agenthicc/tools/`.
 
-- [Security →](10-security.md)
-- [MCP guide](../guides/mcp.md)
+## Next
+
+- [Security](10-security.md)
+- [User-defined tools](../guides/tools.md) — full authoring reference
