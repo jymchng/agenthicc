@@ -66,10 +66,10 @@ The primary entry point is `agenthicc.__main__:main`.
 | `PhaseSpec` | `agenthicc.workflows.plugin` | Declarative phase metadata; `system_prompt_override` replaces the role prompt only in the generic runner and remains dynamic under the cache contract |
 | `GoalFlowWorkflow` / `GoalFlowRunner` | `agenthicc.workflows.goal_flow` | Tool-gated goal decomposition, implementation, verification, stable-ID scheduling, and durable dynamic goal mutation |
 | `GoalRecord` / `GoalStatus` / `GoalMutationReceipt` | `agenthicc.workflows.goal_flow.runner` | Serializable per-goal identity/status/evidence and bounded append/insert audit metadata |
-| `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners` | Session-wide provider memory and resumable workflow ownership |
+| `SessionConversation` / `WorkflowRunHandle` | `agenthicc.runners.session_conversation` / `agenthicc.runners.workflow_handle` | Session-wide provider memory and resumable workflow ownership |
 | `StartupCoordinator` / `StartupPhaseReport` / `ReadinessState` | `agenthicc.runners.startup` | Session-scoped progressive startup phases, readiness gates, cancellation, and redacted diagnostics |
-| `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory` | Durable provider memory, transactional tool-exchange recovery, and complete subagent-result persistence |
-| `WorkflowCheckpoint` / `WorkflowCheckpointTopology` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners` | Versioned workflow context checkpoints and active profile-aware phase coordinates with structured error pauses and diagnostic fallback records |
+| `JournaledShortTermMemory` / `ConversationJournal` | `agenthicc.memory.journaled` / `agenthicc.memory.journal` | Durable provider memory, transactional tool-exchange recovery, and complete subagent-result persistence |
+| `WorkflowCheckpoint` / `WorkflowCheckpointTopology` / `WorkflowCheckpointStore` | `agenthicc.workflows.checkpoint` / `agenthicc.runners.workflow_checkpoint_store` | Versioned workflow context checkpoints and active profile-aware phase coordinates with structured error pauses and diagnostic fallback records |
 | `PhaseAnnotation` / `ResumeResolution` / `checkpoint_phase_boundary` | `agenthicc.workflows.phase_lifecycle` | Shared runtime phase projection, fail-closed completed-boundary checkpointing, and idempotent pre-prompt cursor reconciliation |
 | `WorkflowFailureKind` | `agenthicc.runners.workflow_handle` | Typed stable categories for workflow failure finalization and diagnostics |
 | `WorkflowRecoveryCoordinator` / `WorkflowRecoveryRecord` | `agenthicc.runners.workflow_recovery` | Fail-closed interrupted/error-paused discovery, validation, claims, and typed rehydration |
@@ -79,7 +79,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `execute_workflow` | `agenthicc.runners.headless` | Execute a registered workflow in a session |
 | `run_headless_workflow` | `agenthicc.runners.headless` | Build, run, and close one headless workflow session |
 | `Workspace` | `agenthicc.tui.workspace` | Rich Live UI root |
-| `UnifiedInputSession` | `agenthicc.tui.input` | Lifetime input/raw-mode loop |
+| `UnifiedInputSession` | `agenthicc.tui.input.unified_session` | Lifetime input/raw-mode loop |
 | `ModeManager` / `ModeRegistry` / `RuntimeMode` | `agenthicc.tui.runtime` | Canonical Safe/Plan/Yolo selection, aliases, lifecycle state, and capability policy |
 | `ToolCapability` / `classify_tool_capabilities` | `agenthicc.tools.capabilities` | Capability taxonomy and fail-closed metadata classification |
 | `tool_exploratory` / `is_exploratory_tool` | `agenthicc.tools.capabilities` | Presentation-only marker and safe classification for derived TUI grouping |
@@ -135,6 +135,62 @@ using an order-insensitive key containing role, task, and context. See
 `docs/guides/subagents.md` for the source-level lifecycle, result contract,
 and failure semantics.
 
+## Module index
+
+Every public module below imports cleanly and is documented in `llms-full.txt`.
+
+| Module | Purpose |
+|---|---|
+| `agenthicc.__main__` | Console-script entry point — argv parsing, command dispatch, and TUI/headless selection |
+| `agenthicc.kernel` | Agenthicc kernel — event-sourced AppState (PRD-01). |
+| `agenthicc.types` | Shared structural types for open data crossing Agenthicc boundaries. |
+| `agenthicc.config` | TOML configuration loading and merging for Agenthicc (PRD-07, PRD-21). |
+| `agenthicc.config_template` | Generate a complete, inert TOML configuration template. |
+| `agenthicc.security` | Security policy evaluation for tool calls (PRD-07, PRD-19). |
+| `agenthicc.tools` | Agenthicc tool layer — lazy public exports. |
+| `agenthicc.tools.approval` | Tool approval system — soft-block requiring explicit human confirmation (PRD-78). |
+| `agenthicc.tools.capabilities` | Tool capability taxonomy and pre-built capability decorators (PRD-76). |
+| `agenthicc.tools.context` | Agenthicc names for lauren-ai's canonical tool contexts. |
+| `agenthicc.tools.executor` | Agenthicc adapter around lauren-ai's canonical tool executor. |
+| `agenthicc.tools.hooks` | Compatibility helpers built on lauren-ai's canonical tool hooks. |
+| `agenthicc.tools.sandbox` | Sandbox primitives: filesystem workspace view and network guard (PRD-04). |
+| `agenthicc.tools.workspace_access` | Mode-aware workspace path resolution and access authorization. |
+| `agenthicc.memory` | Agenthicc three-tier memory architecture (PRD-05). |
+| `agenthicc.memory.journal` | Durable conversation journal (PRD-129 Phases 2 & 3). |
+| `agenthicc.memory.journaled` | Journaled ShortTermMemory (PRD-129 Phase 2). |
+| `agenthicc.runners` | Runner subsystems — headless execution, session leases, startup phases, usage ledger (namespace package with no re-exports) |
+| `agenthicc.runners.headless` | Headless runner — emits kernel events as JSON lines to stdout. |
+| `agenthicc.runners.startup` | Session startup phases and readiness gates (PRD-176). |
+| `agenthicc.workflows` | Workflow system (PRD-87, PRD-112, PRD-116). |
+| `agenthicc.workflows.checkpoint` | Serializable workflow checkpoints and context codecs (PRD-156). |
+| `agenthicc.workflows.create_workflow` | create_workflow — the meta-workflow that authors new custom workflows. |
+| `agenthicc.tui.workspace` | TUI workspace package (PRD-60). |
+| `agenthicc.tui.input` | tui.input — reactive input session components. |
+| `agenthicc.tui.runtime` | TUI reactive runtime — commands and mode manager. |
+| `agenthicc.session_service` | Client-neutral session service and transport adapters (PRD-150). |
+| `agenthicc.skills.loader` | Validated skill discovery, compatibility, and permission helpers (PRD-22/139). |
+| `agenthicc.skills.web_search` | Lauren-ai web-search tools backed by Brave Search and HTTP page fetching. |
+| `agenthicc.subagents` | Concurrent typed subagents for agenthicc (PRD-124). |
+| `agenthicc.background` | Durable local background-session services (PRD-141). |
+| `agenthicc.agents` | Agents system — named, reusable @agent(...)-decorated classes (PRD-87). |
+| `agenthicc.modes` | Mode system for agenthicc — operating modes that shape agent behaviour. |
+| `agenthicc.agent_tools` | Built-in @tool() functions available to every agenthicc agent session. |
+| `agenthicc.mentions` | @mention parsing and file content injection (PRD-32, PRD-33). |
+| `agenthicc.auth` | OAuth device-flow client, token bundle, and keyring/file-backed token store |
+| `agenthicc.ads` | Rotating sponsor-ad records and TTL cache for the status-line presentation |
+| `agenthicc.project_bootstrap` | Safe project scaffold and guidance bootstrap for ``agenthicc init`` and ``/init``. |
+| `agenthicc.testing` | agenthicc.testing — cassette-based regression test utilities. |
+| `agenthicc.reactive` | Reactive primitives: Signal and Computed. |
+| `agenthicc.sessions` | Session index persistence — CRUD helpers for .agenthicc/sessions.json. |
+| `agenthicc.commands` | Unified Command System (PRD-44, PRD-45). |
+| `agenthicc.tools.exec` | Command execution tools: bash, python, run_command, run_tests (PRD-16). |
+| `agenthicc.tools.fs` | Filesystem tools: read, write, delete, search, grep, patch, etc. (PRD-14). |
+| `agenthicc.tools.git` | Git tools for structured git operations (PRD-15). |
+| `agenthicc.tools.introspect` | Self-inspection of agenthicc's own documentation and source code. |
+| `agenthicc.tools.outlook` | Microsoft Outlook tools via Graph API (PRD-17). |
+| `agenthicc.tools.cloakbrowser` | Optional CloakBrowser integration. |
+| `agenthicc.tools.playwright` | Optional Microsoft Playwright browser integration. |
+
 ## Persistence
 
 Session artifacts are under `~/.agenthicc/sessions/`: kernel JSONL, conversation
@@ -178,6 +234,8 @@ They add pending stable-ID records, preserve the active phase, checkpoint
 before success, and never themselves transition the workflow. Verified goals
 are skipped after insertion, and completion is rejected while work remains.
 
+| Symbol | Module | Role |
+|---|---|---|
 | ReconstructProfile / ReconstructPhasePlan / RECONSTRUCT_PHASE_PLAN / LEGACY_RECONSTRUCT_PHASE_PLAN | agenthicc.workflows.reconstruct_site.evidence_plan | Validated current and PRD-177-compatible phase graphs with shared dispatch metadata |
 | ViewportSpec / CoverageMatrix / FidelityBaseline / ResearchGate | agenthicc.workflows.reconstruct_site.research | Typed route/viewport/state evidence coverage, deterministic baseline hashing, and strict/degraded research-gate decisions |
 | ReconstructEvidenceStore / EvidenceManifest | agenthicc.workflows.reconstruct_site.evidence | Atomic, hash-addressed research, validation, and browser screenshot evidence for one reconstruct run |
@@ -206,6 +264,8 @@ turn calls that bypass the contract.
 Every session also carries five read-only self-inspection tools so the agent reads
 the current API instead of remembering it:
 
+| Tool | Module | Role |
+|---|---|---|
 | list_agenthicc_docs / read_agenthicc_doc / search_agenthicc_docs | agenthicc.tools.introspect | The `docs/` tree plus `llms.txt`, `llms-full.txt`, `README.md`; bounded windows and capped searches |
 | inspect_agenthicc_source / search_agenthicc_source | agenthicc.tools.introspect | Any `agenthicc` module or symbol, resolved by path + `ast` with no imports; private names included |
 

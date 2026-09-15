@@ -1155,7 +1155,7 @@ This means phase-specific instructions can change from `plan` to `execute`
 without deliberately invalidating the stable system prefix. Do not put phase
 state, rolling summaries, user answers, or per-phase artifacts into
 `stable_system_prompt`/the stable contract. The custom-runner cache contract
-is described in [Cache-stable workflow turns](../reference/code-plan.md#cache-stable-workflow-turns).
+is described in [Cache-stable workflow turns](#cache-stable-workflow-turns) above.
 
 ### Custom runner boundary
 
@@ -1479,7 +1479,7 @@ This preserves unaffected route/asset research while forcing dependent work to
 be revalidated.
 
 The research-fidelity contract is implemented in
-[PRD-178](../../prds/prd-178-reconstruct-site-ui-fidelity-research.md). It
+[PRD-178](https://github.com/agenthicc/agenthicc/blob/main/prds/prd-178-reconstruct-site-ui-fidelity-research.md). It
 requires the opening research phases to account for every in-scope
 route/surface, viewport, visual state, interaction trace, responsive rule, and
 asset before implementation begins, with a tool-controlled completeness gate.

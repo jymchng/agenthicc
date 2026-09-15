@@ -82,6 +82,7 @@ nav:
   - Guides:
       - Quickstart: guides/quickstart.md
       - Architecture: guides/architecture.md
+      - Architecture diagram: guides/architecture-diagram.md
       - Configuration: guides/configuration.md
       - Connecting MCP servers: guides/mcp.md
       - Project bootstrap: guides/project-bootstrap.md
@@ -100,6 +101,9 @@ nav:
       - Testing: guides/testing.md
       - Type safety: guides/type-safety.md
       - Hooks and lifecycle status: guides/hooks.md
+      - Startup and readiness: guides/startup.md
+      - Exploratory tool-call presentation: guides/exploratory-tool-calls.md
+      - Usage accounting: guides/usage-accounting.md
   - Reference:
       - CLI: reference/cli.md
       - Kernel: reference/kernel.md
@@ -109,6 +113,11 @@ nav:
       - API status: reference/api.md
       - Current repository state: reference/repository-state.md
       - Workflow review: reference/workflow-review.md
+      - Glossary: glossary.md
+      - Troubleshooting index: reference/troubleshooting-index.md
+      - Usage ledger reference: reference/usage-ledger.md
+      - Documentation fact base: reference/fact-base.md
+      - Verification baseline: reference/verification-baseline.md
   - Compatibility:
       - TUI architecture pointer: tui-architecture.md
   - Contributing: contributing.md

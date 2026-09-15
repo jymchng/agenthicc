@@ -180,29 +180,40 @@ interface, the session service, three selectable modes (`Safe`, `Plan`, `Yolo`
 — plus the aliases `auto`→`Yolo`, `guard`/`ask`→`Safe`, `review`→`Plan`), the
 current workflow authoring path, and the absent historical API explicitly.
 
-These findings were re-checked by execution at commit `332987a`:
+These findings were re-checked by execution at commit `332987a`, and the
+`mkdocs build --strict` and navigation findings below were re-checked again
+after the documentation campaign's navigation fixes:
 
-1. `mkdocs build --strict` **fails**: `docs/guides/workflows.md` links to
+1. `mkdocs build --strict` **now exits 0 with zero warnings**. It previously
+   aborted on one `WARNING`: `docs/guides/workflows.md` linked to
    `../../prds/prd-178-reconstruct-site-ui-fidelity-research.md`, a target
-   outside the MkDocs docs directory, which MkDocs rejects and which aborts the
-   build in strict mode. Reproduce with `python -m mkdocs build --strict`.
-2. Six pages exist but are **absent from the `mkdocs.yml` nav**, so they are
-   unreachable by navigation: `guides/exploratory-tool-calls.md`,
-   `guides/startup.md`, `guides/usage-accounting.md`,
-   `reference/fact-base.md`, `reference/usage-ledger.md`, and
-   `reference/verification-baseline.md`. MkDocs lists them under
-   "The following pages exist in the docs directory, but are not included in
-   the `nav` configuration".
-3. One stale anchor: `guides/workflows.md` cites
-   `../reference/code-plan.md#cache-stable-workflow-turns`, but
-   `reference/code-plan.md` contains no such heading. MkDocs reports this as
-   non-fatal even in strict mode.
+   outside the MkDocs docs directory. The link now uses the repository's
+   absolute GitHub-URL convention for PRDs, matching `docs/index.md`,
+   `docs/guides/architecture.md`, and `docs/reference/workflow-review.md`.
+   Reproduce with `python -m mkdocs build --strict`.
+2. **No page is absent from the `mkdocs.yml` nav**, and no nav target lacks a
+   file. Nine pages were previously unreachable by navigation: `glossary.md`,
+   `guides/architecture-diagram.md`, `guides/exploratory-tool-calls.md`,
+   `guides/startup.md`, `guides/usage-accounting.md`, `reference/fact-base.md`,
+   `reference/troubleshooting-index.md`, `reference/usage-ledger.md`, and
+   `reference/verification-baseline.md`. All nine are now wired in, so MkDocs no
+   longer prints its "not included in the `nav` configuration" notice. The first
+   three were created by this campaign and were themselves orphans until this
+   fix.
+3. The one stale anchor is **repaired**: `guides/workflows.md` cited
+   `../reference/code-plan.md#cache-stable-workflow-turns`, but the
+   `Cache-stable workflow turns` heading lives in `guides/workflows.md` itself,
+   not in `reference/code-plan.md`. The citation is now the in-page anchor
+   `#cache-stable-workflow-turns`. MkDocs reported this at `INFO` level, so it
+   never failed the build, but the anchor was genuinely broken.
 4. `llms-full.txt` is checked for headings by an embedded Nox script
    (`nox -s llms_check`), but there is no source-to-reference generator and no
    complete stale-section verifier.
-5. MkDocs is not declared in `pyproject.toml`, and there is no default Nox docs
-   build/link-check session. A clean checkout cannot claim a reproducible docs
-   release gate until a docs session exists.
+5. There is no default Nox docs build/link-check session, so a clean checkout
+   cannot yet claim a reproducible docs release gate. The related claim that
+   MkDocs is undeclared is **false**: `mkdocs>=1.6` and `mkdocs-material>=9.5`
+   are declared in the `dev` extra (`pyproject.toml:37-39`). The missing piece is
+   the session, not the dependency.
 6. The package version and the CLI's `--version` string are maintained
    independently; release metadata can drift from `pyproject.toml`.
 7. The workflow findings in [`workflow-review.md`](workflow-review.md) were

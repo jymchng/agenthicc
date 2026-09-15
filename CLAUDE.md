@@ -65,9 +65,27 @@ uv run agenthicc config show
 uv run agenthicc sessions list
 ```
 
-`noxfile.py` defines CI sessions and an embedded `llms-full.txt` check. Keep
-those sessions aligned with the extras and tools declared by `pyproject.toml`;
-the current mismatch is tracked as PRD-138 P0.5.
+`noxfile.py` defines the CI sessions and embeds the `llms-full.txt` symbol
+check. Every session installs only the declared `dev` extra: TUI and API
+modules are base-package code with no separate extras, and the documentation
+toolchain (MkDocs, MkDocs Material, pymdown-extensions) is part of `dev`.
+Enumerate them with `uv run nox --list`: `tests` (3.12 and 3.13), `tests_unit`,
+`tests_integration`, `tests_e2e`, `coverage`, `lint`, `format`, `typecheck`,
+`typecheck_contracts`, `type_audit`, `build`, `build_check`, `llms_check`, and
+`clean`.
+
+## Surfaces and gates
+
+| Surface | Paths | Gate |
+|---|---|---|
+| Documentation | `docs/`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `skills/`, `llms.txt`, `llms-full.txt` | `uv run mkdocs build --strict`; `uv run nox -s llms_check` when public symbols change |
+| Source | `src/`, `tests/`, `scripts/`, `noxfile.py`, `pyproject.toml`, `.github/`, `mkdocs.yml` | `uv run nox -s lint`, `-s typecheck`, `-s type_audit`, and the unit/integration/E2E sessions |
+
+A documentation-only change needs the documentation gate and nothing else.
+`README.md` is outside `docs/`, so `mkdocs build --strict` never reads it and
+its links must be checked separately. `mkdocs.yml` is site configuration: a nav
+edit is a source-surface change. `prds/` and `CHANGELOG.md` are historical and
+user-visible records, not current API documentation.
 
 ## Ownership map
 
@@ -170,9 +188,17 @@ the current mismatch is tracked as PRD-138 P0.5.
 | Unit | `tests/unit/` | Pure reducers, parsers, registries, configuration, rendering, security |
 | Integration | `tests/integration/` | Real processor, memory/database, plugin/tool/workflow boundaries |
 | E2E | `tests/e2e/` | Full session, cassettes, TUI/runtime and cross-component behaviour |
+| Performance | `tests/performance/` | The reconstruct-site performance case |
+| Fixtures | `tests/fixtures/` | Shared non-test data used by the suites above |
 
-Pytest uses `asyncio_mode = "auto"`. Use the shared fixtures and mark tests
-with the configured `unit`, `integration`, or `e2e` marker where appropriate.
+`tests/conftest.py` and `tests/conftest_cassette.py` hold the shared state,
+processor, and cassette fixtures. `pyproject.toml` sets `asyncio_mode = "auto"`,
+`testpaths = ["tests"]`, `timeout = 60`, and the `unit`, `integration`, `e2e`,
+`cloakbrowser`, and `playwright` markers. The Nox sessions that drive these
+directories are `tests_unit`, `tests_integration`, `tests_e2e`, and `coverage`.
+
+Use the shared fixtures and mark tests with the configured `unit`,
+`integration`, or `e2e` marker where appropriate.
 
 ## Documentation rule
 

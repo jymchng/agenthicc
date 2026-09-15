@@ -61,9 +61,48 @@ uv run agenthicc
 uv run agenthicc --headless
 ```
 
-`noxfile.py` is the CI session definition. It currently contains dependency
-and documentation-check drift tracked in PRD-138; do not claim the all-session
-Nox command is a clean-checkout gate until that work is complete.
+`noxfile.py` is the CI session definition. Every session installs only the
+declared `dev` extra: TUI and API modules ship in the base package with no
+separate extras, and the documentation toolchain (MkDocs, MkDocs Material,
+pymdown-extensions) is part of `dev`. List the real sessions with
+`uv run nox --list`:
+
+| Nox session | Runs |
+|---|---|
+| `tests` (3.12, 3.13) | Full suite, parametrised over the supported Pythons |
+| `tests_unit` | `pytest tests/unit` |
+| `tests_integration` | `pytest tests/integration` (ignores `test_cassette_replay.py`) |
+| `tests_e2e` | `pytest tests/e2e` |
+| `coverage` | Full suite with `--cov-fail-under=90` |
+| `lint` | `ruff check` and `ruff format --check` |
+| `format` | `ruff format`, applying changes in place |
+| `typecheck` | `mypy src/agenthicc` |
+| `typecheck_contracts` | mypy over the typing boundary and ratchet tests |
+| `type_audit` | `scripts/type_audit.py --check docs/reference/type-safety-baseline.json` |
+| `build` | `uv build` (wheel and sdist) |
+| `build_check` | `twine check dist/*` |
+| `llms_check` | Every `agenthicc.__all__` symbol has a `###` heading in `llms-full.txt` |
+| `clean` | Remove build, test, and coverage artifacts |
+
+## Surfaces and gates
+
+Two surfaces carry different review cost. Identify which one a change belongs
+to before you start, and run that surface's gate.
+
+| Surface | Paths | Gate |
+|---|---|---|
+| Documentation | `docs/`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `skills/`, `llms.txt`, `llms-full.txt` | `uv run mkdocs build --strict`; `uv run nox -s llms_check` when public symbols change |
+| Source | `src/`, `tests/`, `scripts/`, `noxfile.py`, `pyproject.toml`, `.github/`, `mkdocs.yml` | The full matrix: `uv run nox -s lint`, `-s typecheck`, `-s type_audit`, and the unit/integration/E2E sessions |
+
+Three details matter here:
+
+- `mkdocs.yml` is site *configuration*, not a documentation page. Editing nav
+  wiring changes the docs build and belongs to the source surface even though
+  the artifact it controls is documentation.
+- `README.md` sits outside `docs/`, so `mkdocs build --strict` never validates
+  it. Its links and anchors need checking separately.
+- `prds/` and `CHANGELOG.md` are historical and user-visible records. Update
+  them for provenance, but do not treat a PRD as current API documentation.
 
 ## By-task lookup
 
@@ -174,6 +213,8 @@ uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.
 uv run pytest tests/ -q
 ```
 
-Also run `uv run nox -s llms_check` when public exports change. A clean release
-gate additionally requires a successful docs build, package build/check, and
-the unit/integration/E2E matrix once the P0 packaging work in PRD-138 lands.
+Also run `uv run nox -s llms_check` when public exports change. A full release
+gate additionally requires a successful docs build (`uv run mkdocs build
+--strict`), package build and check (`uv run nox -s build`, then
+`uv run nox -s build_check`), and the unit/integration/E2E matrix
+(`uv run nox -s tests`).

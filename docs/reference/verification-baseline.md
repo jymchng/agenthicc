@@ -107,9 +107,17 @@ no reader can reach them by clicking:
 | `docs/reference/fact-base.md` | Documentation fact base | added by the preceding step |
 | `docs/reference/verification-baseline.md` | Documentation verification baseline | this page; added by the current step |
 
-Five pages were orphaned before this work began; the last two are new pages
-added by it. All six must be reachable from the nav before the strict build is
-clean, which is why the repair is tracked as its own goal.
+Five pages were orphaned before this work began and the last two are new pages
+added by it. The table above is the state recorded at the time; note that its
+introduction and its own quoted output disagree on the arithmetic.
+
+!!! success "Resolved — all pages are now in the nav"
+    Every page above is wired into `mkdocs.yml`, together with three later
+    additions (`glossary.md`, `guides/architecture-diagram.md`,
+    `reference/troubleshooting-index.md`) that were orphaned by the same cause.
+    Re-measured against the tree at that commit, the build reported **nine**
+    unreachable pages; the current tree reports **none**, and MkDocs no longer
+    prints its "not included in the `nav` configuration" notice.
 
 **Stale anchor** — `docs/guides/workflows.md:1158` links to
 `../reference/code-plan.md#cache-stable-workflow-turns`, but `code-plan.md` has
@@ -117,7 +125,9 @@ no heading with that anchor. Its headings are: State and context; Memory
 lifecycle and memory tools; The runner loop; Phase functions and turn budgets;
 Phase prompt ownership; Phase-local transition tools; Planning; Execution;
 Review; Tool result and failure contract; Summary; Adding a phase safely;
-Definition metadata versus runtime behavior.
+Definition metadata versus runtime behavior. The heading the link meant,
+`Cache-stable workflow turns`, is in `docs/guides/workflows.md` itself, so the
+citation is now the in-page anchor `#cache-stable-workflow-turns`.
 
 ---
 

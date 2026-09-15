@@ -13,7 +13,8 @@ Use it two ways:
   [Re-verifying this page](#re-verifying-this-page) and compare the counts.
 
 Everything below was read from the working tree at commit
-`332987a` (`main`), not from historical PRDs or release notes.
+`077bfbc` (`main`) plus the documentation edits not yet committed on top of it,
+not from historical PRDs or release notes.
 
 !!! info "Scope of this page"
     This is a map, not a tutorial. It records *where* something is defined and
@@ -45,7 +46,7 @@ ToolRegistration  Workflow  WorkflowNode  restore_from_log  root_reducer
     `nox -s llms_check` (`noxfile.py:244`) collects
     `agenthicc.__all__` *and* `agenthicc.kernel.__all__`. Because the
     top-level list is `None`, the enforced set is exactly the 22 kernel
-    symbols above. `llms-full.txt` currently carries 206 `###` headings, so
+    symbols above. `llms-full.txt` currently carries 355 `###` headings, so
     the check passes with wide margin — but do not delete kernel headings.
 
 ### Other public packages
@@ -204,12 +205,12 @@ Declared in the lazy builtin table, each entry as
 `src/agenthicc/workflows/code_plan/definition.py:56`, and `create_workflow` at
 `src/agenthicc/workflows/create_workflow/definition.py:77`.
 
-!!! warning "The README workflow table is incomplete"
-    `README.md` lists only five workflows (`code_plan`, `create_workflow`,
-    `copy_website`, `reconstruct_site`, `site_imitate`). The registry declares
-    eight. `goal_flow`, `make_book`, and `make_agenthicc_tool` are missing from
-    that table even though the README documents `goal_flow` and `make_book` in
-    detail further down the page.
+!!! note "The README workflow table now matches the registry"
+    The README table (`README.md:45-52`) lists all eight registered workflows,
+    so registry and README agree on the built-in set. The defect recorded
+    earlier — a five-row table against an eight-entry registry — is closed.
+    The feature-summary row at `README.md:32` names five of the eight as
+    examples.
 
 Registry mechanics live in `src/agenthicc/workflows/registry.py`
 (`register`, `register_lazy`, `register_alias` at lines 28, 53, 94).
@@ -317,23 +318,22 @@ skills against anything else produces files that silently lose their metadata.
 | A non-directory in the skills root | reported as `ignored-entry` | observed on `skills/README.md` |
 | Discovery roots | project `<project>/.agenthicc/skills`, user `~/.agenthicc/skills`; project scope wins | `loader.py:587-588`, `loader.py:670` |
 
-!!! bug "Every `SKILL.md` in `skills/` currently fails this schema"
-    All five skills use `skill:` and `summary:` frontmatter. Neither is in
-    `_KNOWN_FIELDS`, so the loader emits `unknown-frontmatter-field` for each,
-    then `missing-name` and `missing-description`, and falls back to the
-    directory name with an empty description. Running the loader against this
-    repository's `skills/` directory produces **16 diagnostics**:
+!!! success "Every `SKILL.md` in `skills/` now satisfies this schema"
+    All ten skills under `skills/` declare a canonical `name` and a real
+    `description`, so the loader reports **one** diagnostic — the non-directory
+    entry `skills/README.md`:
 
     ```text
-    skills/extending-with-hooks/SKILL.md: unknown field(s): skill, summary (unknown-frontmatter-field)
-    skills/extending-with-hooks/SKILL.md: name is missing; directory name is used (missing-name)
-    skills/extending-with-hooks/SKILL.md: description is missing (missing-description)
-    ... the same three for headless-api, running-the-tui, testing-agenthicc, and using-memory ...
     skills/README.md: skill root entry is not a directory (ignored-entry)
     ```
 
-    This is a documentation defect, not a code defect — the loader is behaving
-    as designed. See the [stale reference register](#stale-reference-register).
+    Earlier revisions used `skill:` and `summary:` frontmatter. Neither is a
+    known field, so the loader emitted `unknown-frontmatter-field`, then
+    `missing-name` and `missing-description`, and fell back to the directory
+    name with an empty description — 16 diagnostics across five skills. That
+    was a documentation defect, not a code defect: the loader behaved as
+    designed. The skills were rewritten against the source; see the
+    [stale reference register](#stale-reference-register).
 
 ---
 
@@ -356,40 +356,47 @@ contents are held to the same accuracy bar as `docs/`.
 
 ### Site configuration
 
-`mkdocs.yml` drives the published site. The nav currently resolves: **no nav
-entry points at a missing file**.
+`mkdocs.yml` drives the published site. `mkdocs build --strict` exits 0 with
+zero warnings and zero errors, and its `nav` lists **54** entries for the
+**54** pages under `docs/`: every page is reachable from the nav, and no nav
+entry points at a missing file.
 
-Four pages exist but are **absent from the nav**, so they are unreachable by
-navigation:
-
-| Orphan page | Title | File |
-|---|---|---|
-| `docs/guides/exploratory-tool-calls.md` | Exploratory tool-call presentation | `docs/guides/exploratory-tool-calls.md:1` |
-| `docs/guides/startup.md` | Startup and readiness | `docs/guides/startup.md:1` |
-| `docs/guides/usage-accounting.md` | Usage accounting and `/usage` | `docs/guides/usage-accounting.md:1` |
-| `docs/reference/usage-ledger.md` | Usage ledger reference | `docs/reference/usage-ledger.md:1` |
-
-`README.md` links to `./docs/guides/startup.md`, so a reader following the
-README reaches a page the site navigation does not offer.
+Earlier revisions of this page recorded four orphaned pages —
+`docs/guides/exploratory-tool-calls.md`, `docs/guides/startup.md`,
+`docs/guides/usage-accounting.md`, and `docs/reference/usage-ledger.md` — that
+were reachable only by direct link (and, for `startup.md`, from the README).
+All four are now in the nav.
 
 ---
 
 ## Stale reference register
 
-Verified-absent symbols and modules. `src/agenthicc/api/` does not exist on
-disk; the modules below are named in prose but are not importable.
+Symbols and modules that are **verified absent**. The API package directory
+`src/agenthicc/api/` does not exist on disk, and the TUI symbols below were
+removed when the TUI moved to a Rich Live workspace. None is importable, and — because `skills/` was rewritten
+against the source — no skill names any of them. Every surviving mention warns
+the reader that the thing is gone.
 
-| Symbol / module | Status | Referenced in |
+| Symbol / module | Status | Where it is named now |
 |---|---|---|
-| `agenthicc.api.server` | **absent** — no `src/agenthicc/api/` package | `skills/headless-api/SKILL.md:24,51,323`; `skills/testing-agenthicc/SKILL.md:272` |
-| `create_app` | **absent** | `skills/headless-api/SKILL.md:5,21,24,33,36,51,62,277,289,323,328,352,368`; `skills/testing-agenthicc/SKILL.md:272,277` |
-| FastAPI / REST / WebSocket server | **absent** — no ASGI app, no API extra | `skills/headless-api/SKILL.md` (whole document) |
-| `agenthicc.tui.app` | **absent** — no `tui/app.py` | `skills/running-the-tui/SKILL.md:219,350` |
-| `TranscriptModel` | **absent** — no `tui/transcript.py` | `skills/running-the-tui/SKILL.md:127,351,353`; `skills/testing-agenthicc/SKILL.md:240,243,246` |
-| `render_frame_ansi` | **absent** | `skills/running-the-tui/SKILL.md:344,346,350,357,375` |
-| `agenthicc.tui.transcript` | **absent** | `skills/running-the-tui/SKILL.md:351`; `skills/testing-agenthicc/SKILL.md:243` |
-| `EventBusTestHarness` | **absent** — not in `agenthicc.testing.__all__` | `skills/testing-agenthicc/SKILL.md:5,15,62,107,110,318`; `skills/README.md:30` |
-| `prompt_toolkit` / `build_app` | **absent** — the TUI is Rich Live based | `skills/running-the-tui/SKILL.md:4,266-269,295,376` |
+| `agenthicc.api.server` | **absent** — no `src/agenthicc/api/` package | `docs/reference/api.md` states the absence |
+| `create_app` | **absent** — no ASGI app | `docs/reference/api.md` states the absence |
+| FastAPI / REST / WebSocket server | **absent** — no ASGI app, no API extra | `docs/reference/api.md` states the absence |
+| `agenthicc.tui.app` | **absent** — no `tui/app.py` | `docs/index.md:10` warns it is historical |
+| `TranscriptModel` | **absent** — no `tui/transcript.py` | `docs/tui-architecture.md`, `docs/guides/tui.md:4` |
+| `render_frame_ansi` | **absent** — the prompt-toolkit renderer is gone | `docs/guides/testing.md:82` |
+| `agenthicc.tui.transcript` | **absent** — no `tui/transcript.py` | `CLAUDE.md:31`, `llms.txt:296` |
+| `prompt_toolkit` / `build_app` | **absent** — the TUI is Rich Live based | `docs/guides/tui.md:4` |
+
+This table previously pointed at `SKILL.md` files under `skills/`, because those
+skills asserted the absent symbols as current. The skills were rewritten in the
+same campaign that produced this page, so those rows described a state that no
+longer exists. Re-check with:
+
+```bash
+# expect no matches: these four symbols are absent from every skill
+grep -rln 'create_app\|TranscriptModel\|render_frame_ansi\|prompt_toolkit' skills/
+```
 
 ### Correctly historical references — do **not** "fix" these
 
@@ -404,11 +411,13 @@ the thing does not exist. Removing them would delete the warning.
 | `docs/guides/testing.md:82` | States the removed `render_frame_ansi`/`pyte` contract is not current |
 | `docs/index.md:10` | Warns about the absent API and historical TUI implementation |
 | `CLAUDE.md:31` | Records that `tui.transcript` is absent |
-| `llms.txt:236` | Names `tui.transcript`/`tui.events` as historical |
+| `llms.txt:296` | Names `tui.transcript`/`tui.events` as historical |
 
-The pattern is sound: `docs/`, `README.md`, `CLAUDE.md`, and `llms.txt` warn
-about absence; only `skills/` asserts presence. That asymmetry is the single
-largest accuracy defect in the documentation set.
+The asymmetry this table documents — `docs/`, `README.md`, `CLAUDE.md`, and
+`llms.txt` warned about the absence while `skills/` asserted presence — was the
+single largest accuracy defect in the documentation set. It is now closed: the
+skills were rewritten against the source, and no skill names any symbol in the
+register above.
 
 ### Claims that look stale but are verified real
 
@@ -421,6 +430,7 @@ Checked specifically because they are counter-intuitive. Do not delete these.
 | `agenthicc agents` and `agenthicc jobs` both exist | Both registered, `src/agenthicc/cli/commands/background.py:117,124` |
 | A TUI command picker sees `/workflow` and `/compact` | Both are registry entries with `handler=None`, intercepted in `TUISession.route()` |
 | `name_that_ui.py` exists | Present at `src/agenthicc/workflows/name_that_ui.py` — older notes said it was missing |
+| `EventBusTestHarness` exists | A pytest fixture defined at `tests/conftest.py:89`, used to drive the kernel event bus from tests — it is *not* part of the `agenthicc.testing` public API, and an earlier register row wrongly called it absent |
 | README anchor `#goal_flow-adding-work-discovered-during-implementation` resolves | Heading `### \`goal_flow\`: adding work discovered during implementation`, `docs/guides/workflows.md:338` |
 | README anchor `#make_book-phase-handoffs` resolves | Heading `#### \`make_book\` phase handoffs`, `docs/guides/workflows.md:259` |
 | README anchor `#pause-crash-recovery-and-workflow-resume` resolves | Heading `### Pause, crash recovery, and \`/workflow resume\``, `docs/guides/workflows.md:41` |
@@ -450,8 +460,8 @@ nothing warns you, but `grep -r`, `find`, and `rglob` will happily return them.
 | `site/` | Rendered MkDocs output | gitignored |
 | `.venv/` | Installed packages, including an installed `agenthicc` | gitignored |
 
-All three are ignored per `.gitignore:11` (`build/`), `:13` (`dist/`), and
-`:227` (`site/`).
+All four are gitignored: `.gitignore:11` (`build/`), `:13` (`dist/`), `:155`
+(`.venv`), and `:227` (`site/`).
 
 !!! danger "This bit already"
     Drafting this page, a helper that walked the tree resolved the bare
@@ -501,7 +511,7 @@ sed -n '31,50p' src/agenthicc/skills/loader.py
 # 7. Config sections
 sed -n '1491,1503p' src/agenthicc/config.py
 
-# 8. llms-full.txt heading count (expect >= 22)
+# 8. llms-full.txt heading count (expect 355)
 grep -c '^### ' llms-full.txt
 ```
 
@@ -528,8 +538,8 @@ passing strings raises `TypeError`. `skills` is a `dict[str, SkillDef]` keyed by
 slug (`src/agenthicc/skills/loader.py:156`), so iterate `.items()` when you want
 the validated definition rather than the key.
 
-On an unmodified checkout this prints five skills with `description=''` and 16
-diagnostics.
+On an unmodified checkout this prints ten skills, each with a real
+`description`, and one diagnostic (`skills/README.md`, `ignored-entry`).
 
 ## Related
 

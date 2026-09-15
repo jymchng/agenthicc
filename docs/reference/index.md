@@ -32,11 +32,11 @@ are expected to be read with their date in mind, or re-generated.
 | [Workflow package review](workflow-review.md) | Historical audit of `src/agenthicc/workflows/`, with a current status table per finding |
 | `type-safety-baseline.json` | Machine-readable type-check baseline consumed by tooling (not a rendered page) |
 
-!!! warning "These five pages are absent from the site navigation"
-    `fact-base.md`, `verification-baseline.md`, `usage-ledger.md`, and
-    `workflow-review.md` are not listed in the `mkdocs.yml` nav, so MkDocs
-    reports them as unreachable pages. They are still buildable and linkable by
-    URL. Reaching them by navigation is tracked as a separate navigation task.
+!!! note "Every page here is in the site navigation"
+    All of these pages are listed in the `mkdocs.yml` nav, so MkDocs publishes
+    them without an unreachable-page notice. This section is the canonical
+    pointer for the operational records below; the rendered navigation also
+    lists them individually under **Reference**.
 
 ## Cross-links into the guides
 

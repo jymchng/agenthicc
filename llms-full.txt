@@ -753,7 +753,7 @@ one of `unknown`, `denied`, `approval_required`, `timeout`, `network`,
 
 ---
 
-### ToolCapability and classify_tool_capabilities
+### ToolCapability and classify_tool_capabilities — `agenthicc.tools.capabilities`
 
 ```python
 class ToolCapability(str, Enum):
@@ -896,7 +896,7 @@ turn. Capability memories apply only to capability-bearing tool approvals; an
 empty-capability plan review is never silently auto-approved by remembered
 permissions.
 
-## Shared boundary types — `agenthicc.types`
+## Shared boundary types — `agenthicc.types`, tool contracts, and runtime guards
 
 ### JsonScalar
 
@@ -924,14 +924,14 @@ JsonObject = dict[str, JsonValue]
 JSON object alias. Open data is narrowed into an owned dataclass, protocol, or
 validated record before core runtime code consumes it.
 
-### ToolCallContext and ToolContext
+### ToolCallContext and ToolContext — `agenthicc.tools.context`
 
 These names re-export lauren-ai's canonical `ToolCallContext` and
 `ToolContext`; Agenthicc does not define a competing context type.
 
 ---
 
-### LifecycleHook
+### LifecycleHook — `agenthicc.tools.hooks`
 
 ```python
 class LifecycleHook(lauren_ai.ToolHook):
@@ -963,7 +963,7 @@ define a competing recovery or rejection protocol for tool execution.
 
 ---
 
-### HookRegistry
+### HookRegistry — `agenthicc.tools.hooks`
 
 ```python
 class HookRegistry:
@@ -976,7 +976,7 @@ Configuration helper for lauren-ai hooks. `stage` is `before`, `after`, or
 
 ---
 
-### HookRunner
+### HookRunner — `agenthicc.tools.hooks`
 
 ```python
 class HookRunner:
@@ -1005,7 +1005,7 @@ production execution goes through lauren-ai's executor.
 
 ---
 
-### LaurenToolHookAdapter
+### LaurenToolHookAdapter — `agenthicc.tools.hooks`
 
 ```python
 class LaurenToolHookAdapter(LifecycleHook):
@@ -1017,7 +1017,7 @@ objects.
 
 ---
 
-### AgenthiccToolExecutor
+### AgenthiccToolExecutor — `agenthicc.tools.executor`
 
 ```python
 class AgenthiccToolExecutor:
@@ -1040,7 +1040,7 @@ metadata, sandbox handles, timing, and stable error categories. `event_sink`,
 when supplied, receives lauren-ai `ToolCallStarted` and `ToolCallComplete`
 signals. `ToolExecutor` is an alias for this class.
 
-### ToolMetadata and catalog
+### ToolMetadata — `agenthicc.tools.executor`
 
 ```python
 @dataclass(frozen=True)
@@ -1063,7 +1063,7 @@ runner and idempotency layer.
 
 ---
 
-### AgenthiccToolExecutor.execute
+### AgenthiccToolExecutor.execute — `agenthicc.tools.executor`
 
 ```python
 async def execute(
@@ -1083,7 +1083,7 @@ calls resume via lauren's `execute_approved()` path.
 **Return**: `ToolResultEnvelope` — inspect `.ok`, `.value`, `.error`, and
 `.error_kind`.
 
-### ToolErrorKind and ApprovalDecision
+### ToolErrorKind and ApprovalDecision — `agenthicc.tools.executor`
 
 `ToolErrorKind` is a string enum with `unknown`, `denied`,
 `approval_required`, `timeout`, `network`, `provider`, and `execution` values.
@@ -1091,7 +1091,7 @@ calls resume via lauren's `execute_approved()` path.
 
 ---
 
-### AgenthiccToolExecutor.execute_parallel
+### AgenthiccToolExecutor.execute_parallel — `agenthicc.tools.executor`
 
 ```python
 async def execute_parallel(
@@ -1104,7 +1104,7 @@ async def execute_parallel(
 Execute multiple registered calls concurrently via `asyncio.gather`, preserving
 input order.
 
-### normalize_result
+### normalize_result — `agenthicc.tools.executor`
 
 ```python
 def normalize_result(raw: object) -> ToolResult: ...
@@ -1113,7 +1113,7 @@ def normalize_result(raw: object) -> ToolResult: ...
 Normalize Agenthicc envelopes, lauren results, JSON error payloads, and plain
 values for adapter-level inspection.
 
-### ToolSandbox and ResourceLimits
+### ToolSandbox and ResourceLimits — `agenthicc.tools.sandbox`
 
 ```python
 @dataclass(frozen=True)
@@ -1144,7 +1144,7 @@ denies all hosts.
 
 ---
 
-### WorkspaceView
+### WorkspaceView — `agenthicc.tools.sandbox`
 
 ```python
 class WorkspaceView:
@@ -1153,7 +1153,7 @@ class WorkspaceView:
 
 Path-prefix sandbox. All operations are restricted to paths under `root`.
 
-### WorkspaceScope and WorkspaceAccessPolicy
+### WorkspaceScope and WorkspaceAccessPolicy — `agenthicc.tools.workspace_access`
 
 ```python
 class WorkspaceScope: ...
@@ -1177,7 +1177,7 @@ before the scope decision.
 
 ---
 
-### WorkspaceView.resolve
+### WorkspaceView.resolve — `agenthicc.tools.sandbox`
 
 ```python
 def resolve(self, path: str | Path) -> Path
@@ -1188,7 +1188,7 @@ resolved path escapes the root (symlink attacks included).
 
 ---
 
-### WorkspaceView.read_text
+### WorkspaceView.read_text — `agenthicc.tools.sandbox`
 
 ```python
 def read_text(self, path: str | Path, encoding: str = "utf-8") -> str
@@ -1199,7 +1199,7 @@ Read a file inside the workspace. Raises `PermissionError` for out-of-bounds pat
 
 ---
 
-### WorkspaceView.write_text
+### WorkspaceView.write_text — `agenthicc.tools.sandbox`
 
 ```python
 def write_text(self, path: str | Path, text: str, encoding: str = "utf-8") -> None
@@ -1210,7 +1210,7 @@ Raises `PermissionError` for out-of-bounds paths.
 
 ---
 
-### NetworkGuard
+### NetworkGuard — `agenthicc.tools.sandbox`
 
 ```python
 class NetworkGuard:
@@ -1318,23 +1318,30 @@ Remove `key`. No-op if absent.
 
 ---
 
-### ProjectMemoryLayer.publish_artifact
+### ProjectMemoryLayer.put_artifact
 
 ```python
-def publish_artifact(self, workflow_id: str, name: str, data: bytes) -> None
+async def put_artifact(
+    self,
+    content: bytes | str,
+    *,
+    content_type: str = "text/plain",
+    published_by: str | None = None,
+) -> ArtifactRecord
 ```
 
-Store a binary artifact keyed by `(workflow_id, name)`. Upserts on conflict.
+Store an artifact, content-addressed by its sha256 digest. Idempotent: storing
+identical content yields the same `artifact_id`.
 
 ---
 
 ### ProjectMemoryLayer.get_artifact
 
 ```python
-def get_artifact(self, workflow_id: str, name: str) -> bytes | None
+async def get_artifact(self, artifact_id: str) -> ArtifactRecord | None
 ```
 
-Retrieve a binary artifact or `None` if not found.
+Retrieve an artifact by its content-addressed id, or `None` if not found.
 
 ---
 
@@ -1379,22 +1386,99 @@ Route to the appropriate tier by prefix and write the value.
 ### MemoryRouter.publish_artifact
 
 ```python
-def publish_artifact(self, workflow_id: str, name: str, data: bytes) -> None
+async def publish_artifact(
+    self,
+    content: str | bytes,
+    content_type: str = "text/plain",
+    published_by: str | None = None,
+) -> dict[str, object]
 ```
 
-Publish `data` as a named artifact on the project tier.
+Store a content-addressed artifact on the project tier. Returns
+`{"artifact_id": <sha256 hex>, "size_bytes": int}`.
 
 ---
 
 ### MemoryRouter.read_artifact
 
 ```python
-def read_artifact(self, workflow_id: str, name: str) -> bytes | None
+async def read_artifact(
+    self,
+    artifact_id: str,
+    agent_id: str | None = None,
+) -> dict[str, object]
 ```
 
-Read a named artifact from the project tier. Returns `None` if not found.
+Fetch an artifact by id from the project tier.
 
 ---
+
+## Conversation journal — `agenthicc.memory.journal`
+
+Durable conversation journal (PRD-129 Phases 2 & 3).
+
+### ConversationJournal
+
+```python
+class ConversationJournal
+```
+
+Append-only, ``fsync``-ed JSONL journal of conversation transitions.
+
+### IncompleteTurn
+
+```python
+@dataclass
+class IncompleteTurn
+```
+
+Fields: `turn_id`, `user_message`, `base_count`, `tool_records`, `last_committed_step`, `last_committed_cursor`, `interrupted_step_id`, `interrupted_attempt_id`.
+
+A turn that was started but never completed — recovered on resume.
+
+### fold_path
+
+```python
+def fold_path(path: Path) -> tuple[list[object], str | None]
+```
+
+Fold a journal file into ``(messages, summary)``.
+
+### fold_resume_state
+
+```python
+def fold_resume_state(path: Path) -> IncompleteTurn | None
+```
+
+Find the last incomplete turn in a journal, or ``None`` if all complete.
+
+### journal_path_for
+
+```python
+def journal_path_for(session_id: str) -> Path
+```
+
+Return the durable journal path for *session_id*.
+
+### tool_exchange_recovery_event_id
+
+```python
+def tool_exchange_recovery_event_id(exchange_id: str, event: str = 'repaired') -> str
+```
+
+Derive the PRD-191 stable ID without requiring a new lauren-ai API.
+
+## Journaled short-term memory — `agenthicc.memory.journaled`
+
+Journaled ShortTermMemory (PRD-129 Phase 2).
+
+### JournaledShortTermMemory
+
+```python
+class JournaledShortTermMemory(ShortTermMemory)
+```
+
+``ShortTermMemory`` that durably journals every append and reset.
 
 ## Current TUI — `agenthicc.tui.workspace` and reactive state
 
@@ -1425,7 +1509,7 @@ During `--continue` or `--resume SESSION_ID`, its `transcript_loading` signal
 drives the `Loading transcript…` status while `Workspace` replays history to
 `ScrollBufferAppender` in responsive chunks.
 
-### UnifiedInputSession
+### UnifiedInputSession — `agenthicc.tui.input.unified_session`
 
 `tui.input.unified_session.UnifiedInputSession` owns one raw-terminal lifetime
 and dispatches keys through declared IDLE/STREAMING capability lists. POSIX and
@@ -1780,7 +1864,7 @@ Structured, bounded conflict metadata for human and JSON renderers. Its owner
 diagnostics contain only PID, host, entrypoint, acquisition time, and bounded
 age; they do not contain session content, prompts, tool arguments, or secrets.
 
-### execute_workflow
+### execute_workflow — `agenthicc.runners.headless`
 
 ```python
 async def execute_workflow(
@@ -1796,7 +1880,7 @@ Construct the selected plugin through `WorkflowPlugin.build_runner` and run it
 using an already-running event processor and session context. Unknown workflow
 names and empty intents raise `ValueError`; a missing LLM raises `RuntimeError`.
 
-### run_headless_workflow
+### run_headless_workflow — `agenthicc.runners.headless`
 
 ```python
 async def run_headless_workflow(
@@ -1909,7 +1993,7 @@ the framework resolver used by checkpoint persistence and recovery. Resolver
 execution is pure and contains no provider calls, prompts, artifacts, memory,
 or secrets.
 
-### ReconstructProfile
+### ReconstructProfile — `agenthicc.workflows.reconstruct_site.evidence_plan`
 
 ~~~python
 class ReconstructProfile(StrEnum):
@@ -1924,7 +2008,7 @@ skip infrastructure, application adds the data/API layer, production enables
 the complete infrastructure graph, and custom requires a validated ordered
 phase selection. Skipped phases are recorded in the evidence manifest.
 
-### ReconstructPhaseDefinition / ReconstructPhasePlan / ActiveReconstructPlan
+### ReconstructPhaseDefinition / ReconstructPhasePlan / ActiveReconstructPlan — `agenthicc.workflows.reconstruct_site.evidence_plan`
 
 These immutable types are defined in
 agenthicc.workflows.reconstruct_site.evidence_plan. The phase plan is the
@@ -1937,7 +2021,7 @@ resume selects it when the persisted plan version is
 `LEGACY_PHASE_PLAN_VERSION`, so old runs do not silently gain new research
 phases.
 
-### ReconstructEvidenceStore
+### ReconstructEvidenceStore — `agenthicc.workflows.reconstruct_site.evidence`
 
 agenthicc.workflows.reconstruct_site.evidence.ReconstructEvidenceStore owns
 one workspace-scoped, revisioned evidence manifest for a reconstruct run.
@@ -2064,6 +2148,86 @@ packages, so relative imports from local tool modules work and are fully
 removed on reload. The registry discovers these packages in both
 `~/.agenthicc/workflows/` and `.agenthicc/workflows/`, after built-ins and in
 the existing user-global → project-local precedence order.
+
+## Workflow checkpoints — `agenthicc.workflows.checkpoint`
+
+Serializable workflow checkpoints and context codecs (PRD-156).
+
+### CHECKPOINT_SCHEMA_VERSION
+
+```python
+CHECKPOINT_SCHEMA_VERSION = 1
+```
+
+### CheckpointValidationError
+
+```python
+class CheckpointValidationError(ValueError)
+```
+
+Raised when a checkpoint cannot be trusted or rehydrated.
+
+### WorkflowCheckpointTopology
+
+```python
+@dataclass
+class WorkflowCheckpointTopology
+```
+
+Fields: `workflow_name`, `topology_version`, `profile`, `phase_names`, `next_phases`, `reject_phases`.
+
+The executable phase graph used by one workflow run.
+
+### WorkflowCheckpoint
+
+```python
+@dataclass
+class WorkflowCheckpoint
+```
+
+Fields: `run_id`, `workflow_name`, `conversation_id`, `intent`, `status`, `current_phase`, `phase_index`, `phase_iteration`, … (36 fields total).
+
+Versioned workflow metadata pointing into session history.
+
+### context_from_payload
+
+```python
+def context_from_payload(payload: dict[str, object], *, memory: ShortTermMemory | None = None, workflow: type[object] | None = None) -> object
+```
+
+Restore one built-in workflow context and attach shared memory.
+
+### context_to_payload
+
+```python
+def context_to_payload(context: object, *, workflow: type[object] | None = None) -> dict[str, object]
+```
+
+Encode one supported workflow context without serializing memory.
+
+### resolve_workflow_checkpoint_topology
+
+```python
+def resolve_workflow_checkpoint_topology(workflow: type[object], context_payload: Mapping[str, object]) -> WorkflowCheckpointTopology
+```
+
+Resolve the exact topology for a checkpoint context.
+
+### topology_from_phase_specs
+
+```python
+def topology_from_phase_specs(workflow_name: str, phases: Sequence[object], *, topology_version: str = 'workflow-phases.v1', profile: str = '') -> WorkflowCheckpointTopology
+```
+
+Build a checkpoint topology from declarative phase-like objects.
+
+### workflow_fingerprint
+
+```python
+def workflow_fingerprint(plugin: type[object]) -> str
+```
+
+Return a stable fingerprint for the declared workflow topology.
 
 ## Plan approval modes — `agenthicc.tools.approval`
 
@@ -2465,6 +2629,22 @@ class SourceLocation:
 
 Each has an `as_dict()` returning the JSON-serializable shape the tools emit.
 
+## Command-line entry point — `agenthicc.__main__`
+
+Entry point for ``python -m agenthicc`` and the ``agenthicc`` command.
+
+### main
+
+```python
+def main() -> None
+```
+
+Parse argv into a `CLIContext` plus namespace and dispatch one of three paths:
+a registry-resolved `_entry` command when the parser attached one, the headless
+runner over `asyncio.run` when `ctx.headless` is set, otherwise the Rich Live
+TUI session. `_call`, `_run_headless`, and `_run_tui` are private lazy wrappers
+that defer the CLI/runner imports; only `main` is public.
+
 ## Config — `agenthicc.config`
 
 ### load_config
@@ -2502,7 +2682,7 @@ class AgenthiccConfig:
     def redacted_dict(self) -> dict[str, object]: ...
 ```
 
-### build_commented_config_template
+### build_commented_config_template — `agenthicc.config_template`
 
 ```python
 def build_commented_config_template() -> str
@@ -2566,7 +2746,7 @@ subagents.
 
 ---
 
-### PermissionChecker
+### PermissionChecker — `agenthicc.security`
 
 ```python
 class PermissionChecker:
@@ -2581,6 +2761,1086 @@ Evaluate `tool_name` against `policy.permission_rules` top-to-bottom using
 matches. Raises `Rejection` when the action is `"deny"`.
 
 ---
+
+## Background sessions and terminals — `agenthicc.background`
+
+Durable local background-session services (PRD-141).
+
+### ACTIVE_STATUSES
+
+```python
+ACTIVE_STATUSES = frozenset
+```
+
+### TERMINAL_STATUSES
+
+```python
+TERMINAL_STATUSES = frozenset
+```
+
+### BackgroundSession
+
+```python
+@dataclass
+class BackgroundSession
+```
+
+Fields: `session_id`, `title`, `cwd`, `workflow_name`, `intent`, `status`,
+`created_at`, `started_at`, `last_active`, `state_changed_at`, … (35 fields
+total).
+
+### BackgroundStore
+
+```python
+class BackgroundStore
+```
+
+Durable registry whose authoritative history is ``events.jsonl``.
+
+### BackgroundSupervisor
+
+```python
+class BackgroundSupervisor
+```
+
+Own worker processes and expose idempotent lifecycle operations.
+
+### BackgroundInputService
+
+```python
+class BackgroundInputService
+```
+
+Named input boundary for integrations that do not need approvals.
+
+### BackgroundSettings
+
+```python
+@dataclass
+class BackgroundSettings
+```
+
+Fields: `enabled`, `store_path`, `max_workers`, `max_workers_per_project`,
+`cancel_grace_s`, `stale_after_s`, `wall_timeout_s`, `max_activity_bytes`,
+`trash_retention_days`, `terminals_enabled`, … (16 fields total).
+
+### InvalidSessionTransition
+
+```python
+class InvalidSessionTransition
+```
+
+Raised when a lifecycle operation would violate the state contract.
+
+### SessionNotFound
+
+```python
+class SessionNotFound
+```
+
+Raised when a requested background session is not in the registry.
+
+### SessionStatus
+
+```python
+class SessionStatus
+```
+
+Members: `QUEUED`, `STARTING`, `RUNNING`, `WAITING_APPROVAL`,
+`WAITING_INPUT`, `RETRYING`, `CANCELLING`, `COMPLETED`, … (13 members).
+
+### background_enabled
+
+```python
+def background_enabled(settings: 'BackgroundSettings') -> 'bool'
+```
+
+Return whether background execution is enabled for this invocation.
+
+### load_background_settings
+
+```python
+def load_background_settings(*, config_path: 'str | None' = None, overrides: 'tuple[str, ...]' = (), cwd: 'Path | None' = None, config: 'object | None' = None) -> 'BackgroundSettings'
+```
+
+Load local/global ``[background]`` settings with CLI overrides.
+
+### TerminalManager
+
+```python
+class TerminalManager
+```
+
+Own background terminal process groups for one agent session.
+
+### TerminalRecord
+
+```python
+@dataclass
+class TerminalRecord
+```
+
+Fields: `terminal_id`, `session_id`, `project_root`, `cwd`, `kind`,
+`command`, `label`, `state`, `created_at`, `tool_call_id`, … (35 fields
+total).
+
+### TerminalState
+
+```python
+class TerminalState
+```
+
+Members: `STARTING`, `RUNNING`, `STOPPING`, `EXITED`, `FAILED`, `TIMED_OUT`,
+`CANCELLED`, `SPAWN_FAILED`, … (11 members).
+
+### TerminalStore
+
+```python
+class TerminalStore
+```
+
+Small fsync'd JSONL registry for terminal lifecycle records.
+
+### get_current_terminal_manager
+
+```python
+def get_current_terminal_manager() -> "'TerminalManager | None'"
+```
+
+Return the terminal manager bound to the current agent turn.
+
+### reset_current_terminal_manager
+
+```python
+def reset_current_terminal_manager(token: "contextvars.Token['TerminalManager | None']") -> 'None'
+```
+
+Restore the manager binding captured before a session started.
+
+### set_current_terminal_manager
+
+```python
+def set_current_terminal_manager(manager: "'TerminalManager | None'") -> "contextvars.Token['TerminalManager | None']"
+```
+
+Bind a manager to the current task; callers must reset the token.
+
+### legal_transition
+
+```python
+def legal_transition(current: 'SessionStatus', target: 'SessionStatus') -> 'bool'
+```
+
+Return whether *current* may move to *target*.
+
+## Concurrent typed subagents — `agenthicc.subagents`
+
+Concurrent typed subagents for agenthicc (PRD-124).
+
+### DEFAULT_SUBAGENT_TIMEOUT_S
+
+```python
+DEFAULT_SUBAGENT_TIMEOUT_S = 3600.0
+```
+
+### SubagentTypeSpec
+
+```python
+@dataclass
+class SubagentTypeSpec
+```
+
+Fields: `name`, `allowed_tools`, `max_turns`, `system_prompt`,
+`max_turn_time_s`.
+
+### SubagentAggregator
+
+```python
+class SubagentAggregator
+```
+
+Base class for custom result aggregators (PRD-124 Phase 5).
+
+### SubagentTypeRegistry
+
+```python
+class SubagentTypeRegistry
+```
+
+Maps type name → SubagentTypeSpec and optionally → SubagentAggregator.
+
+### DEFAULT_REGISTRY
+
+```python
+DEFAULT_REGISTRY = <agenthicc.subagents.types.SubagentTypeRegistry object at 0x7df3d2626120>
+```
+
+### SubagentTask
+
+```python
+@dataclass
+class SubagentTask
+```
+
+Fields: `task_id`, `agent_type`, `task_description`, `context`.
+
+### SubagentResult
+
+```python
+@dataclass
+class SubagentResult
+```
+
+Fields: `task_id`, `agent_type`, `label`, `ok`, `text`, `error`,
+`duration_ms`, `tool_calls`, `changed_paths`.
+
+### AggregatedResult
+
+```python
+@dataclass
+class AggregatedResult
+```
+
+Fields: `pool_id`, `total`, `succeeded`, `failed`, `text`.
+
+### SubagentWorker
+
+```python
+class SubagentWorker
+```
+
+Executes one SubagentTask using an isolated AgentRunnerBase instance.
+
+### SubagentPool
+
+```python
+class SubagentPool
+```
+
+Runs a set of SubagentTasks concurrently bounded by *max_concurrent*.
+
+### run_pool
+
+```python
+def run_pool(tasks: 'list[SubagentTask]', parent_runner: 'AgentRunnerBase', parent_model: 'str', all_tools: 'list[object]', max_concurrent: 'int' = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: 'SubagentTypeRegistry' = <agenthicc.subagents.types.SubagentTypeRegistry object at 0x7df3d2626120>, tool_registry: 'ToolRegistry | None' = None, usage_ledger: "'UsageLedger | None'" = None, conversation_id: 'str' = '', parent_run_id: 'str' = '', provider_options: 'Mapping[str, object] | None' = None, timeout_s: 'float | None' = None, approval_svc: "'ApprovalService | None'" = None, workspace_access: "'WorkspaceAccessPolicy | None'" = None, conversation_journal: "'ConversationJournal | None'" = None, task_fingerprint: 'str' = '') -> 'AggregatedResult'
+```
+
+Create a SubagentPool and run it.  Convenience wrapper.
+
+### make_spawn_subagents_tool
+
+```python
+def make_spawn_subagents_tool(parent_runner: 'AgentRunnerBase', parent_model: str, all_tools: list[object], max_concurrent: int = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: agenthicc.subagents.types.SubagentTypeRegistry | None = None, tool_registry: 'ToolRegistry | None' = None, retry_config: 'RetryConfig | None' = None, usage_ledger: 'UsageLedger | None' = None, conversation_id: str = '', parent_run_id: str = '', provider_options: collections.abc.Mapping[str, object] | None = None, approval_svc: 'ApprovalService | None' = None, workspace_access: 'WorkspaceAccessPolicy | None' = None, conversation_journal: 'ConversationJournal | None' = None) -> collections.abc.Callable[..., object]
+```
+
+Return a ``spawn_subagents`` @tool()-decorated function.
+
+## Agent definitions and registry — `agenthicc.agents`
+
+Agents system — named, reusable @agent(...)-decorated classes (PRD-87).
+
+### AgentDefinition
+
+```python
+@dataclass
+class AgentDefinition
+```
+
+Fields: `name`, `agent_class`, `allowed_capabilities`, `source`.
+
+### AgentPlugin
+
+```python
+class AgentPlugin
+```
+
+ABC for user/project agent plugins.
+
+### READ_CAPS
+
+```python
+READ_CAPS = frozenset
+```
+
+### WRITE_CAPS
+
+```python
+WRITE_CAPS = frozenset
+```
+
+### ROLE_DEFAULT_ALLOWED
+
+```python
+ROLE_DEFAULT_ALLOWED = dict
+```
+
+### AgentsRegistry
+
+```python
+class AgentsRegistry
+```
+
+Maps agent type names to AgentDefinition instances.
+
+### build_agents_registry
+
+```python
+def build_agents_registry(project_dir: 'Path | None' = None, user_dir: 'Path | None' = None, *, load_external: 'bool' = True) -> 'AgentsRegistry'
+```
+
+Build the agents registry: builtin → user-global → project-local.
+
+## Modes and mode plugins — `agenthicc.modes`
+
+Mode system for agenthicc — operating modes that shape agent behaviour.
+
+### Mode
+
+```python
+@dataclass
+class Mode
+```
+
+Fields: `name`, `label`, `description`, `colour`, `system_patch`,
+`tool_filter`, `pre_hook`, `post_hook`, `source_id`, `shortcut_hint`.
+
+### ModeHook
+
+```python
+ModeHook = typing.Callable[[str, object], str]
+```
+
+### ModeManager
+
+```python
+class ModeManager
+```
+
+Manages the currently active :class:`Mode` for a session.
+
+### ModeRegistry
+
+```python
+class ModeRegistry
+```
+
+Ordered registry of :class:`Mode` instances.
+
+### ToolFilter
+
+```python
+ToolFilter = typing.Callable[[str, dict[str, object]], bool]
+```
+
+### BUILTIN_MODES
+
+```python
+BUILTIN_MODES = list
+```
+
+### build_default_registry
+
+```python
+def build_default_registry() -> 'ModeRegistry'
+```
+
+Return the legacy adapter registry in Safe → Plan → Yolo order.
+
+### ModeLoadResult
+
+```python
+@dataclass
+class ModeLoadResult
+```
+
+Fields: `path`, `modes`, `error`, `missing_deps`.
+
+### ModePluginSet
+
+```python
+@dataclass
+class ModePluginSet
+```
+
+Fields: `results`.
+
+### discover_mode_plugins
+
+```python
+def discover_mode_plugins(project_dir: 'Path | str | None' = None, user_dir: 'Path | str | None' = None) -> 'ModePluginSet'
+```
+
+Discover mode plugins and return a :class:`ModePluginSet`.
+
+## Built-in agent tools — `agenthicc.agent_tools`
+
+Built-in @tool() functions available to every agenthicc agent session.
+
+### append_file
+
+```python
+def append_file(path: str, content: str) -> dict[str, object]
+```
+
+Append text to the end of an existing file.
+
+### copy_file
+
+```python
+def copy_file(source: str, destination: str) -> dict[str, object]
+```
+
+Copy a file to a new location within the workspace.
+
+### delete_file
+
+```python
+def delete_file(path: str) -> dict[str, object]
+```
+
+Delete a file from the workspace.
+
+### file_exists
+
+```python
+def file_exists(path: str) -> dict[str, object]
+```
+
+Check whether a file or directory exists.
+
+### get_file_info
+
+```python
+def get_file_info(path: str) -> dict[str, object]
+```
+
+Return metadata for a file or directory (size, dates, permissions).
+
+### grep_files
+
+```python
+def grep_files(pattern: str, path: str = '.', max_results: int = 50) -> dict[str, object]
+```
+
+Search file contents for a regex pattern and return matching lines.
+
+### list_directory
+
+```python
+def list_directory(path: str = '.', pattern: str = '*', recursive: bool = False) -> dict[str, object]
+```
+
+List files and directories at a path.
+
+### make_directory
+
+```python
+def make_directory(path: str) -> dict[str, object]
+```
+
+Create a directory (and all missing parent directories).
+
+### move_file
+
+```python
+def move_file(source: str, destination: str) -> dict[str, object]
+```
+
+Move or rename a file within the workspace.
+
+### patch_file
+
+```python
+def patch_file(path: str, old_content: str, new_content: str) -> dict[str, object]
+```
+
+Replace all occurrences of old_content with new_content in a file.
+
+### read_file
+
+```python
+def read_file(path: str, encoding: str = 'utf-8') -> dict[str, object]
+```
+
+Read the full contents of a file.
+
+### read_lines
+
+```python
+def read_lines(path: str, start: int = 1, end: int | None = None) -> dict[str, object]
+```
+
+Read a specific range of lines from a file (1-indexed).
+
+### search_files
+
+```python
+def search_files(pattern: str, path: str = '.', recursive: bool = True) -> dict[str, object]
+```
+
+Find files matching a glob pattern.
+
+### write_file
+
+```python
+def write_file(path: str, content: str, create_parents: bool = True) -> dict[str, object]
+```
+
+Write content to a file (creates parent directories if needed).
+
+### git_add
+
+```python
+def git_add(paths: list[str]) -> dict[str, object]
+```
+
+Stage files for the next commit.
+
+### git_blame
+
+```python
+def git_blame(path: str, start_line: int = 1, end_line: int | None = None) -> dict[str, object]
+```
+
+Show line-by-line authorship of a file.
+
+### git_branch
+
+```python
+def git_branch(pattern: str | None = None) -> dict[str, object]
+```
+
+List branches in the repository.
+
+### git_checkout
+
+```python
+def git_checkout(branch: str, create: bool = False) -> dict[str, object]
+```
+
+Switch to a branch, optionally creating it.
+
+### git_commit
+
+```python
+def git_commit(message: str, author: str | None = None) -> dict[str, object]
+```
+
+Create a commit from currently staged changes.
+
+### git_diff
+
+```python
+def git_diff(path: str | None = None, staged: bool = False, ref: str | None = None) -> dict[str, object]
+```
+
+Show changes between the working tree, index, and commits.
+
+### git_grep
+
+```python
+def git_grep(pattern: str, ref: str = 'HEAD') -> dict[str, object]
+```
+
+Search for a pattern in files tracked by git.
+
+### git_log
+
+```python
+def git_log(n: int = 10, path: str | None = None) -> dict[str, object]
+```
+
+Show recent commit history.
+
+### git_show
+
+```python
+def git_show(ref: str = 'HEAD') -> dict[str, object]
+```
+
+Show a commit's metadata and diff.
+
+### git_stash
+
+```python
+def git_stash(action: str = 'push', message: str | None = None) -> dict[str, object]
+```
+
+Save or restore the current working state.
+
+### git_status
+
+```python
+def git_status() -> dict[str, object]
+```
+
+Show working tree status: branch, staged, unstaged, and untracked files.
+
+### run_bash
+
+```python
+def run_bash(command: str, timeout: float = 30.0, background: bool = False, label: str = '', cwd: str = '', env: dict[str, str] | None = None, lifecycle: str = 'oneshot', readiness: dict[str, str | int | bool | dict[str, str | int | bool]] | None = None) -> dict[str, object]
+```
+
+Execute a bash shell command and return stdout/stderr.
+
+### run_command
+
+```python
+def run_command(argv: list[str], timeout: float = 30.0, background: bool = False, label: str = '', cwd: str = '', env: dict[str, str] | None = None, lifecycle: str = 'oneshot', readiness: dict[str, str | int | bool | dict[str, str | int | bool]] | None = None) -> dict[str, object]
+```
+
+Execute an executable directly (no shell) and return stdout/stderr.
+
+### run_python
+
+```python
+def run_python(code: str, timeout: float = 30.0) -> dict[str, object]
+```
+
+Execute a Python code snippet in a subprocess.
+
+### run_python_expr
+
+```python
+def run_python_expr(expression: str, timeout: float = 10.0) -> dict[str, object]
+```
+
+Evaluate a Python expression and return its repr.
+
+### run_tests
+
+```python
+def run_tests(path: str = 'tests/', framework: str = 'pytest', args: list[str] | None = None, timeout: float = 120.0) -> dict[str, object]
+```
+
+Run the test suite and return pass/fail counts.
+
+### shell
+
+```python
+def shell(command: str, timeout: float = 30.0, background: bool = False, label: str = '', cwd: str = '', env: dict[str, str] | None = None, lifecycle: str = 'oneshot', readiness: dict[str, str | int | bool | dict[str, str | int | bool]] | None = None) -> dict[str, object]
+```
+
+Execute a shell command and return stdout/stderr.
+
+### wait_terminal
+
+```python
+def wait_terminal(terminal_id: str, timeout: float = 0.0) -> dict[str, object]
+```
+
+Wait for an owned background terminal handle.
+
+### inspect_terminal
+
+```python
+def inspect_terminal(terminal_id: str) -> dict[str, object]
+```
+
+Inspect one owned terminal and its bounded output tail.
+
+### wait_terminal_ready
+
+```python
+def wait_terminal_ready(terminal_id: str, readiness: dict[str, str | int | bool | dict[str, str | int | bool]] | None = None) -> dict[str, object]
+```
+
+Wait for an owned service readiness probe without stopping it.
+
+### stop_terminal
+
+```python
+def stop_terminal(terminal_id: str, force: bool = False) -> dict[str, object]
+```
+
+Stop one exact owned terminal, escalating only when needed.
+
+### calendar_events
+
+```python
+def calendar_events(start_date: str, end_date: str) -> list
+```
+
+Retrieve calendar events within a date range.
+
+### create_event
+
+```python
+def create_event(subject: str, start: str, end: str, attendees: list[str] | None = None, body: str | None = None) -> dict
+```
+
+Create a new calendar event in Outlook.
+
+### list_emails
+
+```python
+def list_emails(folder: str = 'Inbox', n: int = 20, unread_only: bool = False) -> list
+```
+
+List emails from an Outlook folder.
+
+### list_folders
+
+```python
+def list_folders() -> list
+```
+
+List all available Outlook mail folders.
+
+### move_email
+
+```python
+def move_email(email_id: str, destination: str) -> dict
+```
+
+Move an email to a different folder.
+
+### read_email
+
+```python
+def read_email(email_id: str) -> dict
+```
+
+Read the full content of an email by ID.
+
+### reply_email
+
+```python
+def reply_email(email_id: str, body: str, reply_all: bool = False) -> dict
+```
+
+Reply to an email.
+
+### search_emails
+
+```python
+def search_emails(query: str, folder: str = 'Inbox', n: int = 20) -> list
+```
+
+Search emails in Outlook by keyword.
+
+### send_email
+
+```python
+def send_email(to: list[str], subject: str, body: str, cc: list[str] | None = None, attachments: list[str] | None = None) -> dict
+```
+
+Send an email via Outlook.
+
+### list_agenthicc_docs
+
+```python
+def list_agenthicc_docs(section: str = '') -> dict[str, object]
+```
+
+List agenthicc's own documentation: path, title, and size of every document.
+
+### read_agenthicc_doc
+
+```python
+def read_agenthicc_doc(path: str, start_line: int = 1, max_lines: int = 400) -> dict[str, object]
+```
+
+Read one agenthicc documentation page, a bounded window at a time.
+
+### search_agenthicc_docs
+
+```python
+def search_agenthicc_docs(query: str, max_results: int = 40, section: str = '') -> dict[str, object]
+```
+
+Search agenthicc's documentation for a phrase and return matching lines.
+
+### inspect_agenthicc_source
+
+```python
+def inspect_agenthicc_source(target: str, include_source: bool = True) -> dict[str, object]
+```
+
+Read the source of any agenthicc module, class, function, or method.
+
+### search_agenthicc_source
+
+```python
+def search_agenthicc_source(query: str, max_results: int = 40, module: str = '') -> dict[str, object]
+```
+
+Search agenthicc's own source code for a pattern and return matching lines.
+
+### mcp_connection_guide
+
+```python
+def mcp_connection_guide(transport: str = 'streamable_http', scope: str = 'project', server_name: str = 'my-server') -> dict[str, object]
+```
+
+Explain how to configure and connect an MCP server in AgentHICC.
+
+### FS_AGENT_TOOLS
+
+```python
+FS_AGENT_TOOLS = list
+```
+
+### GIT_AGENT_TOOLS
+
+```python
+GIT_AGENT_TOOLS = list
+```
+
+### EXEC_AGENT_TOOLS
+
+```python
+EXEC_AGENT_TOOLS = list
+```
+
+### OUTLOOK_AGENT_TOOLS
+
+```python
+OUTLOOK_AGENT_TOOLS = list
+```
+
+### INTROSPECT_AGENT_TOOLS
+
+```python
+INTROSPECT_AGENT_TOOLS = list
+```
+
+### MCP_AGENT_TOOLS
+
+```python
+MCP_AGENT_TOOLS = list
+```
+
+### AGENT_TOOLS
+
+```python
+AGENT_TOOLS = list
+```
+
+### FS_GROUP
+
+```python
+FS_GROUP = ToolGroup
+```
+
+### GIT_GROUP
+
+```python
+GIT_GROUP = ToolGroup
+```
+
+### EXEC_GROUP
+
+```python
+EXEC_GROUP = ToolGroup
+```
+
+### OUTLOOK_GROUP
+
+```python
+OUTLOOK_GROUP = ToolGroup
+```
+
+### INTROSPECT_GROUP
+
+```python
+INTROSPECT_GROUP = ToolGroup
+```
+
+### MCP_GROUP
+
+```python
+MCP_GROUP = ToolGroup
+```
+
+### BUILTIN_GROUPS
+
+```python
+BUILTIN_GROUPS = list
+```
+
+## Cassette-based test utilities — `agenthicc.testing`
+
+agenthicc.testing — cassette-based regression test utilities.
+
+### SessionCassette
+
+```python
+@dataclass
+class SessionCassette
+```
+
+Fields: `entries`, `approvals`, `intent`.
+
+### CassetteEntry
+
+```python
+@dataclass
+class CassetteEntry
+```
+
+Fields: `index`, `model`, `tool_names_available`, `response_content`,
+`response_stop_reason`, `response_tool_calls`, `response_reasoning_content`.
+
+### ApprovalEntry
+
+```python
+@dataclass
+class ApprovalEntry
+```
+
+Fields: `index`, `kind`, `tool_name`, `allowed`, `message`, `remember`,
+`remember_all`, `mode`, `scope_grant`, `workspace_access`.
+
+### MockApprovalService
+
+```python
+class MockApprovalService
+```
+
+Headless drop-in for :class:`~agenthicc.tools.approval.ApprovalService`.
+
+### ReplayResult
+
+```python
+@dataclass
+class ReplayResult
+```
+
+Fields: `status`, `phases`, `tools_called`, `approvals_consumed`,
+`transport_calls`, `error`.
+
+### run_headless_replay
+
+```python
+def run_headless_replay(cassette: 'SessionCassette', *, intent: 'str | None' = None, cfg: "'AgenthiccConfig | None'" = None) -> 'ReplayResult'
+```
+
+Run *cassette* through
+:class:`~agenthicc.workflows.code_plan.CodePlanRunner`.
+
+## @mention parsing and injection — `agenthicc.mentions`
+
+@mention parsing and file content injection (PRD-32, PRD-33).
+
+### MentionKind
+
+```python
+class MentionKind
+```
+
+Members: `FILE`, `DIRECTORY`, `GLOB`, `URL`, `UNRESOLVED`, `OUT_OF_SCOPE`.
+
+### Mention
+
+```python
+@dataclass
+class Mention
+```
+
+Fields: `raw`, `path`, `kind`, `resolved`, `start`, `end`, `scope_status`,
+`root_id`.
+
+### parse_mentions
+
+```python
+def parse_mentions(text: 'str', cwd: 'Path | None' = None, workspace_scope: "'WorkspaceScope | None'" = None) -> 'list[Mention]'
+```
+
+Extract and classify all @mention tokens from *text*.
+
+### strip_mentions
+
+```python
+def strip_mentions(text: 'str', mentions: 'list[Mention]') -> 'str'
+```
+
+Return *text* with all mention tokens replaced by just the path.
+
+## Authentication and token storage — `agenthicc.auth`
+
+### AuthClient
+
+```python
+class AuthClient
+```
+
+Handles the OAuth PKCE flow and token refresh.
+
+### TokenStore
+
+```python
+class TokenStore
+```
+
+Persist tokens in the OS keychain; fall back to a local file.
+
+### TokenBundle
+
+```python
+@dataclass
+class TokenBundle
+```
+
+Fields: `access_token`, `refresh_token`, `expires_at`, `plan`, `email`,
+`user_id`.
+
+### NotLoggedInError
+
+```python
+class NotLoggedInError
+```
+
+Raised when an authenticated operation is attempted without a token.
+
+## Ad rotation and caching — `agenthicc.ads`
+
+### AdRotator
+
+```python
+class AdRotator
+```
+
+Manages ad fetching, caching, rotation, and dismiss state.
+
+### AdRecord
+
+```python
+@dataclass
+class AdRecord
+```
+
+Fields: `ad_id`, `text`, `cta_url`.
+
+### AdCache
+
+```python
+@dataclass
+class AdCache
+```
+
+Fields: `ads`, `fetched_at`.
+
+## Reactive primitives — `agenthicc.reactive`
+
+Reactive primitives: Signal and Computed.
+
+### Computed
+
+```python
+class Computed
+```
+
+A read-only value derived from one or more Signals.
+
+### Signal
+
+```python
+class Signal
+```
+
+A reactive cell.  Writes notify all subscribers synchronously.
 
 ## Historical REST/WebSocket API — not in the current checkout
 
@@ -2811,7 +4071,7 @@ Built-in skills: `"web_search"` (requires `api_key`), `"docker"`, `"database"`
 (requires `connection_string`). Broken skills log and return `False` without
 raising.
 
-### SearchWebTool
+### SearchWebTool — `agenthicc.skills.web_search`
 
 ```python
 @tool(name="search_web")
@@ -2825,7 +4085,7 @@ limit. The limit is bounded to 20. Transport failures return a recoverable
 `{"ok": False, "error": "<ExceptionType>: <message>", "recoverable": True}`
 result; non-transport errors are raised so callers can diagnose API failures.
 
-### FetchPageTool
+### FetchPageTool — `agenthicc.skills.web_search`
 
 ```python
 @tool(name="fetch_page")
@@ -3031,6 +4291,28 @@ session-owned skill mapping and skill slash-command aliases, and reports
 added/removed skills plus warning and error diagnostics. Existing built-in and
 project commands are never replaced by a colliding skill command.
 
+### _parse_skill
+
+```python
+def _parse_skill(skill_dir: Path) -> SkillDef | None
+```
+
+Compatibility parser for callers that only need one validated skill and do not
+need the structured diagnostics result.
+
+### filter_skills_for_agent
+
+```python
+def filter_skills_for_agent(
+    skills: Mapping[str, SkillDef],
+    agent_type: str,
+    permissions: SkillPermissionSet | None = None,
+) -> dict[str, SkillDef]
+```
+
+Return only skills allowed by both their frontmatter and the active agent's
+configured policy.
+
 ## Busy command policy — `agenthicc.commands`
 
 ```python
@@ -3083,28 +4365,6 @@ Standard workflow phases, generated `create_workflow` workflows, subagents, and
 compaction receive the ledger through `WorkflowConfig` and `_run_agent_turn()`.
 See `docs/guides/usage-accounting.md` and
 `docs/reference/usage-ledger.md` for persistence and quality rules.
-
-### _parse_skill
-
-```python
-def _parse_skill(skill_dir: Path) -> SkillDef | None
-```
-
-Compatibility parser for callers that only need one validated skill and do not
-need the structured diagnostics result.
-
-### filter_skills_for_agent
-
-```python
-def filter_skills_for_agent(
-    skills: Mapping[str, SkillDef],
-    agent_type: str,
-    permissions: SkillPermissionSet | None = None,
-) -> dict[str, SkillDef]
-```
-
-Return only skills allowed by both their frontmatter and the active agent's
-configured policy.
 
 ## Project bootstrap — `agenthicc.project_bootstrap`
 
@@ -3250,6 +4510,21 @@ the event processor or any session/workflow persistence owner.
 listing and lazily replays one selected service session. The authoritative
 JSONL logs remain unchanged; invalid/stale indexes are rebuilt and
 index-write failures do not fail a durable event append.
+
+## Session index — `agenthicc.sessions`
+
+Session index persistence — CRUD helpers for `.agenthicc/sessions.json`.
+
+Two indexes are read and merged: the legacy project-local
+`.agenthicc/sessions.json` and the current user-wide
+`~/.agenthicc/sessions/index.json`, which wins on duplicate session IDs and
+supplies `log_path = ~/.agenthicc/sessions/<id>/conversation.jsonl` for records
+that omit one. List surfaces order merged records by `last_used` descending
+(records without a numeric value sort last) and mark the entry whose `cwd`
+equals the current directory with `*`. `_do_sessions(page=1, page_size=50)`
+prints one page and rejects `page` or `page_size` below 1 with `ValueError`.
+The module declares no `__all__` and has no public re-exports: it is the storage
+helper behind the TUI session list, not a supported import surface.
 
 ## Client-neutral session service — `agenthicc.session_service`
 
