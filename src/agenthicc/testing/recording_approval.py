@@ -57,16 +57,57 @@ class RecordingApprovalService:
         message: str = "",
         mode: str | None = None,
         scope_grant: str | None = None,
+        request_id: str | None = None,
+        outcome: str | None = None,
     ) -> None:
-        kwargs: dict[str, object] = {
-            "remember": remember,
-            "remember_all": remember_all,
-            "message": message,
-            "mode": mode,
-        }
-        if scope_grant is not None:
-            kwargs["scope_grant"] = scope_grant
-        self._inner.respond(allowed, **kwargs)
+        if scope_grant is None and request_id is None and outcome is None:
+            # Keep the pre-timeout adapter call shape for existing recording
+            # consumers and strict mocks; optional lifecycle fields are only
+            # forwarded when the caller actually supplied them.
+            self._inner.respond(
+                allowed,
+                remember=remember,
+                remember_all=remember_all,
+                message=message,
+                mode=mode,
+            )
+        else:
+            self._inner.respond(
+                allowed,
+                remember=remember,
+                remember_all=remember_all,
+                message=message,
+                mode=mode,
+                scope_grant=scope_grant,
+                request_id=request_id,
+                outcome=outcome,
+            )
+
+    def respond_for_request(
+        self,
+        request_id: str,
+        allowed: bool,
+        *,
+        remember: bool = False,
+        remember_all: bool = False,
+        message: str = "",
+        mode: str | None = None,
+        scope_grant: str | None = None,
+        outcome: str | None = None,
+    ) -> bool:
+        """Forward an identity-bound response from an overlay."""
+        return bool(
+            self._inner.respond_for_request(
+                request_id,
+                allowed,
+                remember=remember,
+                remember_all=remember_all,
+                message=message,
+                mode=mode,
+                scope_grant=scope_grant,
+                outcome=outcome,
+            )
+        )
 
     def reset_turn_memory(self) -> None:
         self._inner.reset_turn_memory()
@@ -87,6 +128,9 @@ class RecordingApprovalService:
             "remember": response.remember,
             "remember_all": response.remember_all,
             "scope_grant": response.scope_grant,
+            "outcome": response.outcome,
+            "timed_out": response.timed_out,
+            "request_id": response.request_id,
             "workspace_access": [
                 {
                     "requested": item.requested,

@@ -16,6 +16,15 @@ from typing import TYPE_CHECKING, Iterator, NoReturn, cast
 
 log = logging.getLogger(__name__)
 
+
+def _optional_field(value: object, name: str, default: object = None) -> object:
+    """Read optional fields from lightweight UI test doubles and adapters."""
+    try:
+        return object.__getattribute__(value, name)
+    except AttributeError:
+        return default
+
+
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
     from lauren_ai._config import LLMConfig
@@ -897,6 +906,11 @@ async def _build_session_context_impl(
     app_state.conversation.session_id.set(session_id)
 
     session_log = SessionEventLog(session_id)
+    pending_question_waits: dict[str, dict[str, object]] = {}
+    if resume_id:
+        from agenthicc.tui.runtime.session_log import load_pending_question_waits  # noqa: PLC0415
+
+        pending_question_waits = load_pending_question_waits(session_id)
     app_state.conversation.on_event(session_log.append)
 
     def _project_conversation_event(event: object) -> None:
@@ -935,7 +949,11 @@ async def _build_session_context_impl(
 
     from agenthicc.tools.approval import ApprovalService  # noqa: PLC0415
 
-    approval_svc: ApprovalService = ApprovalService(app_state)
+    approval_svc: ApprovalService = ApprovalService(
+        app_state,
+        question_timeout_s=cfg.tools.question_timeout_s,
+        question_wait_records=pending_question_waits,
+    )
     if cassette_dir is not None:
         from agenthicc.testing.recording_approval import RecordingApprovalService  # noqa: PLC0415
 
@@ -3737,12 +3755,25 @@ class TUISession:
             pass
 
         async def _tick() -> None:
+            question_second: int | None = None
             while True:
                 await asyncio.sleep(0.05)
                 # Approval and question requests suspend the LLM turn while
                 # the overlay owns the terminal. Freeze animation during that
                 # wait so SIGWINCH redraws do not race a changing status bar.
-                ctx.app_state.conversation.tick(paused=ctx.app_state.pending_approval() is not None)
+                pending = ctx.app_state.pending_approval()
+                ctx.app_state.conversation.tick(paused=pending is not None)
+                if _optional_field(pending, "kind") == "questions":
+                    deadline = _optional_field(pending, "deadline_at")
+                    if isinstance(deadline, (int, float)):
+                        import time as _time  # noqa: PLC0415
+
+                        remaining = max(0, int(deadline - _time.time() + 0.999))
+                        if remaining != question_second:
+                            question_second = remaining
+                            self._workspace._redraw()
+                else:
+                    question_second = None
 
         tick_task = asyncio.create_task(_tick())
         try:

@@ -59,6 +59,7 @@ against the current source before implementing them.
 - [PRD-189 — Scrollable Ask User Questions](prd-189-scrollable-ask-user-questions.md)
 - [PRD-190 — OpenAI-compatible reasoning_content round-trip](prd-190-opencode-go-reasoning-content-roundtrip.md)
 - [PRD-191 — Idempotent interrupted-tool recovery and MCP startup isolation](prd-191-idempotent-interrupted-tool-recovery-and-mcp-startup-isolation.md)
+- [PRD-192 — Configurable Ask User timeout and best-effort agent fallback](prd-192-configurable-ask-user-timeout-and-agent-fallback.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -333,6 +334,13 @@ startup isolation. It addresses repeated recovery notices after one tool
 interruption, preserves completed work and pending interactions across resume,
 and ensures an unavailable optional MCP server such as `asyncmove` cannot
 create an error storm or prevent healthy tools from loading.
+
+PRD-192 implements a deadline-aware `ask_user` contract. It adds a configurable
+60-second default timeout owned by `ApprovalService`, distinguishes timeout
+from cancellation, answer, and failure, returns a structured result that lets
+the agent make a best-effort decision with explicit assumptions, keeps all
+security and phase-transition gates, and preserves question state across TUI
+cleanup, background/headless adapters, resume, and generated workflows.
 
 ## Existing PRDs
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import tomllib
 import re
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable, Mapping
@@ -1293,6 +1294,8 @@ class ToolSettings:
     group_exploratory_calls: bool = True
     """Render marked contiguous read-only calls as one ``Explored`` block."""
     http_timeout_s: float = 30.0
+    question_timeout_s: float = 60.0
+    """Maximum wait for one interactive ``ask_user`` request."""
     cloakbrowser: CloakBrowserSettings = field(default_factory=CloakBrowserSettings)
     playwright: PlaywrightSettings = field(default_factory=PlaywrightSettings)
     browser_backend: str = "cloakbrowser"
@@ -1304,6 +1307,14 @@ class ToolSettings:
     Set via [tools] max_live_tool_calls = N in agenthicc.toml."""
 
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.question_timeout_s, bool)
+            or not isinstance(self.question_timeout_s, (int, float))
+            or not math.isfinite(float(self.question_timeout_s))
+            or float(self.question_timeout_s) <= 0
+        ):
+            raise ValueError("tools.question_timeout_s must be a finite number greater than zero")
+        self.question_timeout_s = float(self.question_timeout_s)
         self.browser_backend = self.browser_backend.strip().lower()
         if self.browser_backend not in {"cloakbrowser", "playwright", "none"}:
             raise ValueError(
@@ -1739,9 +1750,7 @@ def deep_merge(base: dict[str, object], override: dict[str, object]) -> dict[str
     return result
 
 
-def _merge_named_mcp_servers(
-    base: list[object], override: list[object]
-) -> list[object]:
+def _merge_named_mcp_servers(base: list[object], override: list[object]) -> list[object]:
     """Merge MCP arrays by stable server name instead of array position."""
     merged: list[object] = list(base)
     positions = {
@@ -2193,6 +2202,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_live_tool_calls=_as_int(to.get("max_live_tool_calls"), 5),
         group_exploratory_calls=_as_bool(to.get("group_exploratory_calls"), True),
         http_timeout_s=_as_float(to.get("http_timeout_s"), 30.0),
+        question_timeout_s=_as_float(to.get("question_timeout_s"), 60.0),
         browser_backend=_as_str(to.get("browser_backend"), "cloakbrowser"),
         cloakbrowser=CloakBrowserSettings(
             enabled=_as_bool(_section(to.get("cloakbrowser")).get("enabled"), True),

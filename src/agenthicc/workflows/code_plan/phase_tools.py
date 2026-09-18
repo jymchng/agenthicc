@@ -17,6 +17,8 @@ Usage (inside WorkflowRunner._run_phase for planner phases)::
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -379,6 +381,30 @@ def _validate_questions(questions: object) -> list[str]:
     return problems
 
 
+def _question_fingerprint(questions: list[_QuestionInput]) -> str:
+    """Hash only bounded question structure, never question text or answers."""
+    identity = [
+        {
+            "id": str(item.get("id", "")),
+            "option_count": len(item.get("options", []))
+            if isinstance(item.get("options"), list)
+            else 0,
+        }
+        for item in questions
+        if isinstance(item, dict)
+    ][:32]
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:32]
+
+
+def _response_field(response: object, name: str, default: object = None) -> object:
+    """Read additive response fields from current and legacy adapters."""
+    try:
+        return object.__getattribute__(response, name)
+    except AttributeError:
+        return default
+
+
 def make_questions_tool(
     approval_svc: ApprovalService | None,
     metadata: dict[str, object] | None = None,
@@ -388,7 +414,7 @@ def make_questions_tool(
     ask_user() presents a QuestionsOverlay to the user and blocks until all
     questions are answered.  Returns a dict mapping question id → answer string.
 
-    approval_svc=None → returns {"cancelled": True} immediately (headless/tests).
+    approval_svc=None → returns a structured cancellation immediately (headless/tests).
     """
     from lauren_ai._tools import tool as _tool  # noqa: PLC0415
     from agenthicc.tools.capabilities import tool_control  # noqa: PLC0415
@@ -471,11 +497,29 @@ def make_questions_tool(
             capabilities=frozenset(),  # human question; no tool side effect
             event=_asyncio.Event(),
             kind="questions",
+            question_fingerprint=_question_fingerprint(questions),
         )
         response = await approval_svc.request_approval(req)
+        if _response_field(response, "timed_out", False) is True:
+            if metadata is not None:
+                metadata["status"] = "timed_out"
+                metadata["fallback_required"] = True
+            return {
+                "timed_out": True,
+                "decision_required": True,
+                "request_id": _response_field(response, "request_id") or req.request_id,
+                "timeout_s": _response_field(response, "timeout_s"),
+                "repeated_timeout": _response_field(response, "repeated_timeout", False),
+                "message": _response_field(response, "message", "")
+                or (
+                    "The user did not answer before the configured deadline; "
+                    "choose the safest reasonable option, state the assumption, "
+                    "and do not ask the same question again solely because it timed out."
+                ),
+            }
         if not response.allowed:
             if metadata is not None:
-                metadata["status"] = "cancelled"
+                metadata["status"] = _response_field(response, "outcome", "") or "cancelled"
             return {"cancelled": True}
         try:
             decoded = _json.loads(response.message)

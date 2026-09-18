@@ -67,6 +67,14 @@ class WorkflowExecutionResult:
         return result
 
 
+def _optional_request_field(value: object, name: str, default: object = None) -> object:
+    """Read an optional approval-request field from legacy adapters."""
+    try:
+        return object.__getattribute__(value, name)
+    except AttributeError:
+        return default
+
+
 class _HeadlessApprovalService:
     """Approval adapter for automation, defaulting to fail closed.
 
@@ -81,6 +89,14 @@ class _HeadlessApprovalService:
 
     async def request_approval(self, req: object) -> object:
         from agenthicc.tools.approval import ApprovalResponse  # noqa: PLC0415
+
+        if _optional_request_field(req, "kind", "tool") == "questions":
+            return ApprovalResponse(
+                allowed=False,
+                outcome="cancelled",
+                message="headless mode has no interactive question adapter",
+                request_id=str(_optional_request_field(req, "request_id", "") or ""),
+            )
 
         # A dangerous-permissions flag is an explicit capability approval for
         # automation, not an implicit expansion of the workspace boundary.

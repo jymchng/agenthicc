@@ -104,7 +104,12 @@ CACHE_CONTRACT = """
 Keep this workflow contract unchanged across phases. Ask the user a focused
 clarifying question through the existing `ask_user` tool whenever required
 information is missing, ambiguous, or would materially change the result.
-Wait for the answer; do not guess. Use the parent session's
+If `ask_user` returns `timed_out=true`, make the safest best-effort decision
+from available context, record the assumption, and do not pretend the user
+answered or repeat the same question solely because it timed out. A timeout is
+not a phase transition or permission approval, and generated workflows must
+not implement their own question timers. Wait for the answer when available;
+do not guess. Use the parent session's
 `WorkflowConfig.workspace_access` policy for every filesystem, mention, Git,
 and command-working-directory access; never construct a second workspace
 scope, allow-list, or unrestricted sandbox inside this workflow. Actual
@@ -1296,7 +1301,9 @@ def make_inspection_tools(
             "authoring_rules": [
                 "Declare a literal CACHE_CONTRACT in runner.py.",
                 "Pass CACHE_CONTRACT as stable_system_prompt=... to every run_phase() call.",
-                "Use the existing ask_user tool for material clarification and wait for its answer.",
+                "Use the existing ask_user tool for material clarification. If it returns "
+                "timed_out=true, make a safest best-effort decision, record the assumption, "
+                "and do not pretend the user answered; do not implement a custom timer.",
                 "Keep actual questions, answers, phase state, and artifacts dynamic.",
                 "Use PhaseAnnotation/publish_phase_annotation for the runtime phase projection "
                 "and checkpoint_phase_boundary after every transition; do not put either "
@@ -1355,7 +1362,8 @@ def make_inspection_tools(
             "required_call": "run_phase(..., stable_system_prompt=CACHE_CONTRACT, system_prompt=phase_prompt)",
             "note": (
                 "Copy the stable CACHE_CONTRACT literally, keep phase-specific data dynamic, "
-                "use the existing ask_user tool for missing or ambiguous requirements, and "
+                "use the existing ask_user tool for missing or ambiguous requirements; handle "
+                "timed_out=true with a best-effort decision and explicit assumption, and "
                 "inherit WorkflowConfig.workspace_scope/workspace_access instead of creating "
                 "a second scope or bypassing authorization."
             ),

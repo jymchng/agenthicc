@@ -25,6 +25,7 @@ literal brackets remain available in the answer buffer.
 from __future__ import annotations
 
 import shutil
+import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Callable
@@ -192,8 +193,28 @@ class QuestionsOverlay(PromptOverlay):
         import json  # noqa: PLC0415
 
         answers = {q.id: s.answer for q, s in zip(self._questions, self._states)}
-        self._service.respond(allowed=True, message=json.dumps(answers))
+        self._respond(allowed=True, message=json.dumps(answers), outcome="answered")
         self._close()
+
+    def _respond(self, *, allowed: bool, message: str, outcome: str) -> None:
+        """Answer this exact request, rejecting stale overlay callbacks."""
+        method = type(self._service).__dict__.get("respond_for_request")
+        if callable(method):
+            self._service.respond_for_request(
+                self._req.request_id or self._req.tool_use_id,
+                allowed,
+                message=message,
+                outcome=outcome,
+            )
+            return
+        # Compatibility with test doubles and older approval adapters.
+        self._service.respond(allowed=allowed, message=message)
+
+    def _remaining_seconds(self) -> int | None:
+        deadline = self._req.deadline_at
+        if not isinstance(deadline, (int, float)):
+            return None
+        return max(0, int(deadline - time.time() + 0.999))
 
     def _prepare_question_lines(self, width: int) -> None:
         """Wrap every question at *width* and invalidate stale width caches."""
@@ -344,6 +365,9 @@ class QuestionsOverlay(PromptOverlay):
                 f"[bold cyan]  ❓ Questions[/bold cyan][dim]  ({n_ans} of {n_total} answered)[/dim]"
             )
         )
+        remaining = self._remaining_seconds()
+        if remaining is not None:
+            lines.append(Text(f"  Waiting for your answer · {remaining}s remaining", style="dim"))
         lines.append(Text(_BORDER * border_w, style="dim"))
 
         # Navigation + dot indicators
@@ -411,7 +435,7 @@ class QuestionsOverlay(PromptOverlay):
     def _handle_selecting(self, key: Key, ch: str) -> bool:
         if not self._questions:
             if key == Key.ESC:
-                self._service.respond(allowed=False, message="")
+                self._respond(allowed=False, message="", outcome="cancelled")
                 self._close()
             return True
 
@@ -458,7 +482,7 @@ class QuestionsOverlay(PromptOverlay):
                     else:
                         self._advance()
             case Key.ESC:
-                self._service.respond(allowed=False, message="")
+                self._respond(allowed=False, message="", outcome="cancelled")
                 self._close()
             case _:
                 pass

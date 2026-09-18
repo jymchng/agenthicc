@@ -182,6 +182,40 @@ def get_session_log_path(session_id: str) -> Path:
     return _SESSIONS_DIR / session_id / "conversation.jsonl"
 
 
+def load_pending_question_waits(session_id: str) -> dict[str, dict[str, object]]:
+    """Return durable, non-sensitive question waits without replaying answers.
+
+    A process can disappear after publishing ``question_wait_started`` but
+    before publishing a terminal event.  The next session construction uses
+    this projection to rehydrate the remaining deadline or reconcile it as
+    expired.  The projection contains only bounded lifecycle metadata; the
+    original question payload remains in the normal agent/workflow journal.
+    """
+    pending: dict[str, dict[str, object]] = {}
+    terminal_kinds = {
+        "question_answered",
+        "question_timed_out",
+        "question_cancelled",
+        "question_wait_failed",
+    }
+    for event in SessionEventLog.load(session_id, kinds=None):
+        if event.kind == "question_wait_started":
+            request_id = event.payload.get("request_id")
+            fingerprint = event.payload.get("question_fingerprint")
+            if (
+                isinstance(request_id, str)
+                and request_id
+                and isinstance(fingerprint, str)
+                and fingerprint
+            ):
+                pending[fingerprint] = dict(event.payload)
+        elif event.kind in terminal_kinds:
+            fingerprint = event.payload.get("question_fingerprint")
+            if isinstance(fingerprint, str) and fingerprint:
+                pending.pop(fingerprint, None)
+    return pending
+
+
 # ── Event log ─────────────────────────────────────────────────────────────────
 
 

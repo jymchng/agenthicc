@@ -122,9 +122,12 @@ changing values into this stable contract, prepend messages to shared history,
 rewrite old conversation entries, or place rolling summaries here.
 
 Ask the user a focused clarifying question through the existing ask_user tool
-whenever a missing or ambiguous requirement could materially change the result;
-wait for the answer instead of guessing. The question policy is stable, while
-each actual question and answer remains dynamic. Prompt caching never replaces
+whenever a missing or ambiguous requirement could materially change the result.
+If ask_user returns timed_out=true, make the safest best-effort decision from
+available context, explicitly state the assumption, and do not pretend the user
+answered or repeat the same question solely because it timed out. A timeout is
+not a phase transition or permission approval. The question policy is stable,
+while each actual question, answer, and timeout remains dynamic. Prompt caching never replaces
 capability filtering, approval, or tool authorization.
 """.strip()
 

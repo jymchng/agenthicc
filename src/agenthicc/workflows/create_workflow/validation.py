@@ -1161,6 +1161,9 @@ def _check_prompt_cache_contract(
     has_question_policy = all(
         marker in source.lower() for marker in ("clarifying", "ambiguous", "do not guess")
     )
+    has_question_timeout_policy = all(
+        marker in source.lower() for marker in ("timed_out", "best-effort", "assumption")
+    )
     has_workspace_policy = "workspace_access" in source
     has_conversation_identity = "conversation_id" in source
 
@@ -1216,6 +1219,11 @@ def _check_prompt_cache_contract(
         errors.append(
             "CACHE_CONTRACT must instruct the workflow agent to ask clarifying questions "
             "for missing or ambiguous requirements and not guess."
+        )
+    if not has_question_timeout_policy:
+        errors.append(
+            "CACHE_CONTRACT must explain timed_out ask_user results, best-effort decisions, "
+            "and explicit assumptions."
         )
     if not has_workspace_policy:
         errors.append(

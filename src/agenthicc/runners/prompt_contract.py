@@ -18,9 +18,9 @@ import dataclasses
 import hashlib
 import inspect
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from agenthicc.tools.base import ToolLike
@@ -49,8 +49,12 @@ DEFAULT_WORKFLOW_CACHE_POLICY = (
     "[REQUIREMENTS CLARIFICATION POLICY]\n"
     "Ask the user a focused clarifying question whenever required information is "
     "missing, ambiguous, or would materially change the result. Use the existing "
-    "`ask_user` tool, wait for its answer, and do not guess over a material ambiguity. "
-    "The question policy is stable; each actual question and answer remains dynamic.\n\n"
+    "`ask_user` tool. If it returns `timed_out=true`, make the safest best-effort "
+    "decision from available context, state the assumption, and do not pretend the "
+    "user answered or repeat the same question solely because it timed out. A timeout "
+    "does not approve permissions or transition a workflow phase; do not guess "
+    "when no safe decision is possible. The question policy "
+    "is stable; each actual question, answer, and timeout remains dynamic.\n\n"
     "[CACHE SAFETY POLICY]\n"
     "Keep stable instructions and stable tool schemas deterministic. Do not insert "
     "messages near the beginning of conversation history, rewrite old messages, or "
@@ -119,7 +123,7 @@ def _tool_schema(tool: object) -> dict[str, object]:
         description = getattr(tool, "description", None)
     if parameters is None:
         try:
-            signature = str(inspect.signature(tool))
+            signature = str(inspect.signature(cast("Callable[..., object]", tool)))
         except (TypeError, ValueError):
             signature = ""
         parameters = {"signature": signature}

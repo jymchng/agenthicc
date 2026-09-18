@@ -111,8 +111,11 @@ summaries here.
 
 Ask the user a focused clarifying question through the existing ask_user tool
 whenever required information is missing, ambiguous, or could materially change
-the generated workflow. Wait for the answer instead of guessing. The question
-policy is stable; each actual question and answer remains dynamic. Prompt
+the generated workflow. If ask_user returns timed_out=true, make the safest
+best-effort decision from available context, explicitly record the assumption,
+and do not pretend the user answered or repeat the same question solely because
+it timed out. A timeout is not a phase transition or permission approval. The question
+policy is stable; each actual question, answer, and timeout remains dynamic. Prompt
 caching never replaces capability filtering, approval, workspace policy, or
 tool authorization. Use the parent session's conversation_id and injected
 session memory for every phase, retry, and resume; never create a second
