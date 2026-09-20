@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.background.terminals import TerminalManager
     from agenthicc.tools.mcp_manager import McpSessionManager
+    from agenthicc.runners.loop_scheduler import LoopManager
 
 __all__ = [
     "Command",
@@ -113,6 +114,7 @@ class CommandContext:
     # reaching into TUISession internals or constructing a second resume path.
     list_workflow_runs: "Callable[[], list[WorkflowRecoveryRecord]] | None" = None
     resume_workflow: "Callable[[str], bool] | None" = None
+    loop_manager: "LoopManager | None" = None
 
 
 # A handler takes a CommandContext and returns True if it handled the command.

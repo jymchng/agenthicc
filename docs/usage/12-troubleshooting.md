@@ -105,6 +105,30 @@ agenthicc sessions show <id>     # inspect the session
 If the tail is too short, raise `[behaviour] resume_transcript_turns`. Remember
 that resume replays presentation-only; the events are not re-persisted.
 
+**Symptom:** a recurring prompt does not run after restarting agenthicc.
+
+**Fix:** this is intentional. Loop records are durable, but a new process does
+not start scheduled work automatically. Reattach the same session explicitly
+with `agenthicc --resume <id>` or `agenthicc --continue`, then inspect it with
+`/loop status`. If the loop is paused, use `/loop resume`; if it is terminal,
+create a new loop. Missed intervals are coalesced into one pending iteration.
+
+**Symptom:** `/loop` reports that it is unavailable or headless mode returns
+`loop_interactive_required`.
+
+**Fix:** recurring loops are a TUI-only feature. Run the command in an
+interactive session; use a CLI/background job or an external scheduler for
+headless automation. A loop cannot contain arbitrary shell commands, unknown
+slash commands, or another `/loop` command.
+
+**Symptom:** `/loops` shows a job but Enter does not start it in this TUI.
+
+**Fix:** check the Session column. A job belonging to another live session is
+protected by the owner lease and must be run from that session. An unowned
+foreign job is marked due so `--resume <session-id>` or `--continue` can run it
+without losing its conversation or workflow state. Jobs in the current session
+wake immediately when the session is idle.
+
 ## MCP server problems
 
 **Symptom:** a configured server exposes no tools, or a tool call fails.

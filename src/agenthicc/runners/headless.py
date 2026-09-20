@@ -638,6 +638,18 @@ async def _run_headless_workflow_stream(ctx: "CLIContext") -> None:
             intent = line.strip()
             if not intent:
                 continue
+            if intent == "/loops" or intent == "/loop" or intent.startswith("/loop "):
+                print(
+                    json.dumps(
+                        {
+                            "event_type": "Error",
+                            "code": "loop_interactive_required",
+                            "message": "Loop scheduling and job management require an interactive TUI session.",
+                        }
+                    ),
+                    flush=True,
+                )
+                continue
             try:
                 resume_run_id = (
                     _select_headless_workflow_resume(session, workflow_name)
@@ -809,6 +821,18 @@ async def _run_headless(ctx: CLIContext | None = None) -> None:
                 break
             text = line.strip()
             if not text:
+                continue
+            if text == "/loops" or text == "/loop" or text.startswith("/loop "):
+                print(
+                    json.dumps(
+                        {
+                            "event_type": "Error",
+                            "code": "loop_interactive_required",
+                            "message": "Loop scheduling and job management require an interactive TUI session.",
+                        }
+                    ),
+                    flush=True,
+                )
                 continue
             intent_id = uuid.uuid4().hex
             command_result = await session_service.submit(

@@ -446,6 +446,9 @@ class FooterComponent:
         # explicit \n in the message) each get their own rendered row.
         raw_notif = conv.notification()
         notif = raw_notif if isinstance(raw_notif, str) else None
+        if not notif:
+            raw_loop_status = conv.loop_status()
+            notif = raw_loop_status if isinstance(raw_loop_status, str) else None
         hints_str: str | Text
         if notif:
             notif_lines = _wrap_notification(notif, cols)
@@ -505,6 +508,10 @@ class FooterComponent:
             notif = self._state.conversation.notification()
             if notif and isinstance(notif, str):
                 extra += max(0, len(_wrap_notification(notif, cols)) - 1)
+            elif self._state.conversation.loop_status():
+                loop_status = self._state.conversation.loop_status()
+                if isinstance(loop_status, str):
+                    extra += max(0, len(_wrap_notification(loop_status, cols)) - 1)
         except Exception:  # noqa: BLE001
             pass
         _wf = self._state.workflow_run()

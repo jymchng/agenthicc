@@ -60,6 +60,7 @@ against the current source before implementing them.
 - [PRD-190 — OpenAI-compatible reasoning_content round-trip](prd-190-opencode-go-reasoning-content-roundtrip.md)
 - [PRD-191 — Idempotent interrupted-tool recovery and MCP startup isolation](prd-191-idempotent-interrupted-tool-recovery-and-mcp-startup-isolation.md)
 - [PRD-192 — Configurable Ask User timeout and best-effort agent fallback](prd-192-configurable-ask-user-timeout-and-agent-fallback.md)
+- [PRD-193 — Session-scoped recurring `/loop` prompts and idle-safe scheduling](prd-193-session-scoped-recurring-loops.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -341,6 +342,13 @@ from cancellation, answer, and failure, returns a structured result that lets
 the agent make a best-effort decision with explicit assumptions, keeps all
 security and phase-transition gates, and preserves question state across TUI
 cleanup, background/headless adapters, resume, and generated workflows.
+
+PRD-193 implements local, session-scoped `/loop` scheduling plus the `/loops`
+job-management table for recurring prompts and registered slash commands. It
+defines immediate-but-idle-safe dispatch, coalesced missed intervals, one
+active loop per session, durable state with explicit resume, owner-lease
+protection, finite lifetime and failure bounds, security-policy inheritance,
+owner-safe run-now/deletion, and deterministic unit/integration/E2E coverage.
 
 ## Existing PRDs
 

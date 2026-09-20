@@ -96,8 +96,51 @@ so keys never appear in `agenthicc.toml`.
 ## Sections
 
 The recognised top-level sections are `execution`, `providers`, `behaviour`,
-`hooks`, `tools`, `memory`, `security`, `api`, `plugins`, `skills`, `agents`,
-`storage`, and `workflows.<name>`.
+`loops`, `hooks`, `tools`, `memory`, `security`, `api`, `plugins`, `skills`,
+`agents`, `storage`, and `workflows.<name>`.
+
+### Recurring `/loop` prompts
+
+The interactive TUI accepts a local, session-scoped recurring prompt:
+
+```text
+/loop 5m Check the deployment and fix a failing health check.
+/loop status
+/loop pause
+/loop resume
+/loop stop
+```
+
+The first iteration is due immediately, but dispatch waits for the session to
+be idle. Missed intervals are coalesced and never create concurrent agent
+turns. A repeated `/loop` replaces the existing loop. State is stored under
+`~/.agenthicc/sessions/<session-id>/loop.json`; it is rehydrated only when the
+session is explicitly resumed. Defaults expire loops after 72 hours and stop
+after repeated scheduler failures. The settings below apply only to the local
+TUI scheduler; setting `enabled = false` blocks creation and resume while
+allowing status/stop/pause controls to inspect existing state. Override finite
+bounds with:
+
+```toml
+[loops]
+enabled = true
+default_interval_s = 600
+min_interval_s = 60
+max_interval_s = 86400
+max_age_s = 259200
+max_prompt_bytes = 16384
+max_consecutive_failures = 3
+busy_poll_s = 1.0
+persist = true
+allow_slash_commands = true
+```
+
+Scheduled prompts reuse the existing conversation, workflow checkpoints,
+approvals, tools, and security policy. Arbitrary shell payloads are not
+accepted; slash-command payloads must name a registered command. Headless mode
+does not schedule loops and emits the structured
+`loop_interactive_required` result instead. Use `/loops` in the TUI to inspect
+all persisted jobs, run one immediately, or delete one after confirmation.
 
 !!! danger "`[behaviour]` keeps its British `-our`"
     The section key is `behaviour` in code. It is a config key, not prose, so it

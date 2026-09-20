@@ -46,6 +46,7 @@ __all__ = [
     "CloakBrowserSettings",
     "PlaywrightSettings",
     "ExecutionSettings",
+    "LoopSettings",
     "MemorySettings",
     "PluginSettings",
     "ProviderProfile",
@@ -1381,6 +1382,49 @@ class BehaviourSettings:
 
 
 @dataclass
+class LoopSettings:
+    """[loops] settings for the local, session-scoped ``/loop`` command.
+
+    Limits are intentionally finite.  A loop is explicit user automation, not
+    an unbounded background daemon, and every iteration still re-evaluates the
+    session's normal security and approval policy.
+    """
+
+    enabled: bool = True
+    default_interval_s: int = 600
+    min_interval_s: int = 60
+    max_interval_s: int = 86_400
+    max_age_s: int = 259_200
+    max_prompt_bytes: int = 16_384
+    max_consecutive_failures: int = 3
+    busy_poll_s: float = 1.0
+    persist: bool = True
+    allow_slash_commands: bool = True
+
+    def validate(self) -> None:
+        """Validate scheduler bounds before a session can use them."""
+
+        if self.default_interval_s <= 0:
+            raise ValueError("loops.default_interval_s must be positive")
+        if self.min_interval_s <= 0:
+            raise ValueError("loops.min_interval_s must be positive")
+        if self.max_interval_s < self.min_interval_s:
+            raise ValueError("loops.max_interval_s must be >= loops.min_interval_s")
+        if not self.min_interval_s <= self.default_interval_s <= self.max_interval_s:
+            raise ValueError(
+                "loops.default_interval_s must be within the configured interval bounds"
+            )
+        if self.max_age_s <= 0:
+            raise ValueError("loops.max_age_s must be positive")
+        if self.max_prompt_bytes <= 0:
+            raise ValueError("loops.max_prompt_bytes must be positive")
+        if self.max_consecutive_failures <= 0:
+            raise ValueError("loops.max_consecutive_failures must be positive")
+        if self.busy_poll_s <= 0:
+            raise ValueError("loops.busy_poll_s must be positive")
+
+
+@dataclass
 class AgentSettings:
     """Per-agent TOML metadata and skill activation policy."""
 
@@ -1514,6 +1558,9 @@ class AgenthiccConfig:
     workflows: dict[str, dict[str, object]] = field(default_factory=dict)
     """Per-workflow tunable parameter overrides loaded from ``[workflows.<name>]``
     TOML sections (PRD-111).  E.g. ``cfg.workflows["code_plan"]["execute_model"]``."""
+    # Appended after the original fields to preserve positional construction
+    # compatibility for downstream callers of this public dataclass.
+    loops: LoopSettings = field(default_factory=LoopSettings)
 
     def to_system_settings(self) -> SystemSettings:
         """Reflect execution settings into the kernel ``SystemSettings``."""
@@ -2339,6 +2386,21 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         resume_transcript_turns=max(0, _as_int(beh.get("resume_transcript_turns"), 20)),
     )
 
+    loop_data = _section(data.get("loops"))
+    loops = LoopSettings(
+        enabled=_as_bool(loop_data.get("enabled"), True),
+        default_interval_s=_as_int(loop_data.get("default_interval_s"), 600),
+        min_interval_s=_as_int(loop_data.get("min_interval_s"), 60),
+        max_interval_s=_as_int(loop_data.get("max_interval_s"), 86_400),
+        max_age_s=_as_int(loop_data.get("max_age_s"), 259_200),
+        max_prompt_bytes=_as_int(loop_data.get("max_prompt_bytes"), 16_384),
+        max_consecutive_failures=_as_int(loop_data.get("max_consecutive_failures"), 3),
+        busy_poll_s=_as_float(loop_data.get("busy_poll_s"), 1.0),
+        persist=_as_bool(loop_data.get("persist"), True),
+        allow_slash_commands=_as_bool(loop_data.get("allow_slash_commands"), True),
+    )
+    loops.validate()
+
     plugin_data = _section(data.get("plugins"))
     plugins = PluginSettings(
         auto_trust=_as_bool(plugin_data.get("auto_trust"), False),
@@ -2384,6 +2446,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         execution=execution,
         providers=providers,
         behaviour=behaviour,
+        loops=loops,
         hooks=hooks,
         tools=tools,
         memory=memory,

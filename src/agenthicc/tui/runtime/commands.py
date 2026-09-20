@@ -26,6 +26,7 @@ class Command:
 @dataclass(frozen=True)
 class SendMessageCommand(Command):
     text: str = ""
+    source: str = "user"
 
 
 @dataclass(frozen=True)

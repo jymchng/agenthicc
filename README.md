@@ -170,6 +170,8 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/help`, `/commands` | Inspect available commands in an overlay |
 | `/tools [reload]`, `/workflows [runs\|reload]` | Inspect tools/workflows, or open the paginated paused-run selector; `/tools` labels each tool `builtin` or `plugin` |
 | `/status`, `/history` | Inspect runtime status and session events |
+| `/loop [interval] <prompt-or-command>` | Schedule a local recurring prompt; use `status`, `pause`, `resume`, or `stop` to control it |
+| `/loops` | Open the table of all persisted schedule jobs; Enter runs the selected job and `d` deletes it after confirmation |
 | `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/stop` stops all |
 | `/mode [name]` | Show or change the operating mode |
 | `/workflow <name> \| resume [run-id] \| reset [run-id]` | Select a workflow, resume the latest eligible run when `run-id` is omitted, or reset a workflow; use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
@@ -473,6 +475,36 @@ be reclaimed only when local process liveness proves it is dead.
 
 Project memory and the workspace file cache live below `.agenthicc/`; global memory defaults to `~/.agenthicc/global.db`. See the [storage reference](./docs/reference/storage.md) before deleting session or project state.
 
+### Recurring session prompts
+
+The interactive TUI supports a local, session-scoped recurring prompt:
+
+```text
+/loop 5m Check the deployment and fix a failing health check.
+/loop status
+/loop pause
+/loop resume
+/loop stop
+```
+
+The first iteration is due immediately but waits for the current turn, tool,
+workflow, approval, or question to become idle. Missed intervals are coalesced
+into one iteration, and a loop never starts a concurrent turn. Repeating
+`/loop` replaces the existing loop for that session. Scheduled prompts reuse
+the same conversation, workflow checkpoints, tools, approvals, and security
+policy as a manually submitted message.
+
+Loops are local and finite by default: they expire after 72 hours and stop
+after repeated scheduler-level failures. Their state is persisted with the
+session, but execution after a process restart requires explicitly resuming
+that session. Configure bounds under `[loops]`; the defaults are shown in the
+configuration example below. Use `/loop status` to inspect a redacted prompt
+preview and `/loop stop` to prevent future iterations.
+Use `/loops` to open a table of every valid persisted schedule job; select a
+row and press Enter to make it due immediately, or press `d` and Enter to
+delete it after confirmation. A live foreign session remains owner-protected
+and must be resumed directly.
+
 ---
 
 ## Configuration example
@@ -505,6 +537,18 @@ network_allow_list = []
 max_live_tool_calls = 5
 group_exploratory_calls = true  # presentation-only grouping of marked reads
 browser_backend = "cloakbrowser"  # cloakbrowser, playwright, or none
+
+[loops]
+enabled = true
+default_interval_s = 600
+min_interval_s = 60
+max_interval_s = 86400
+max_age_s = 259200  # 72 hours
+max_prompt_bytes = 16384
+max_consecutive_failures = 3
+busy_poll_s = 1.0
+persist = true
+allow_slash_commands = true
 
 # Optional browser automation; enabled with liberal local/VPS access by default.
 [tools.cloakbrowser]

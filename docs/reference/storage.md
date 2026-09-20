@@ -18,6 +18,8 @@ other per-session artifact lives **inside** it.
 | `~/.agenthicc/sessions/index.lock` | `SessionOpenCoordinator` | Short session-index read/modify/write critical section | OS advisory lock; never held for a turn or TUI lifetime |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
 | `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, hashed tool records, idempotent tool-recovery receipts, subagent worker/pool results, and versioned usage records | Rebuild memory, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns without replaying completed side effects, and recover complete subagent results |
+| `<id>/loop.json` | `runners.loop_scheduler.LoopStore` | Versioned recurring prompt/command definition, cadence, lifecycle, counters, and bounded error state | Rehydrate an explicit `/loop` after `--resume`/`--continue`; missed intervals are coalesced and stopped/expired records remain terminal |
+| `<id>/loop.lock` | `runners.loop_scheduler.LoopStore` | Short atomic loop-record write lock | OS advisory lock; never held while an agent turn or scheduler callback runs |
 | `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
 | `<id>/.owner.lock` | `SessionOwnerLease` | Short per-session critical section for owner publication, stale replacement, and release | OS advisory lock; never held for the session lifetime |
 | `<id>/workflows/<run>/checkpoint.json` | `WorkflowCheckpointStore` | Versioned workflow context, semantic phase cursor, active topology version/fingerprint/profile/name snapshot, plugin fingerprint, journal cursor, and non-secret provider/profile/workspace identity | Rehydrate an explicitly acknowledged paused or interrupted workflow |
@@ -62,6 +64,7 @@ grep -rn 'Path.home() / ".agenthicc"' src/agenthicc --include=*.py
 | `~/.agenthicc/sessions/` | `src/agenthicc/runners/session_lease.py:51-54`, `src/agenthicc/memory/journal.py:55`, `src/agenthicc/sessions.py:18` |
 | `~/.agenthicc/sessions/<id>.jsonl` | `src/agenthicc/runners/tui_session.py:797` |
 | `~/.agenthicc/sessions/<id>/conversation.jsonl` | `src/agenthicc/tui/runtime/session_log.py:182` |
+| `~/.agenthicc/sessions/<id>/loop.json` and `loop.lock` | `src/agenthicc/runners/loop_scheduler.py:251-256` |
 | `~/.agenthicc/sessions/index.json`, `index.lock` | `src/agenthicc/runners/session_lease.py:492-493` |
 | `~/.agenthicc/session-service/` | `src/agenthicc/session_service/store.py:56` |
 | `~/.agenthicc/background/` | `src/agenthicc/background/store.py:25-26` |
@@ -464,6 +467,10 @@ config key); nothing else in this table is enforced by convention.
 | Background trash retention | `30` days | `src/agenthicc/background/settings.py:31` (`trash_retention_days`) |
 | Concurrent background workers | `2` (`2` per project) | `src/agenthicc/background/settings.py:24-25` |
 | Background staleness threshold | `30.0` s | `src/agenthicc/background/settings.py:27` (`stale_after_s`) |
+| Loop default interval | `600` s (`10` min) | `src/agenthicc/config.py:1394` (`default_interval_s`) |
+| Loop lifetime | `259200` s (`72` hours) | `src/agenthicc/config.py:1397` (`max_age_s`) |
+| Loop payload | `16384` UTF-8 bytes | `src/agenthicc/config.py:1398` (`max_prompt_bytes`) |
+| Loop consecutive failures | `3` | `src/agenthicc/config.py:1399` (`max_consecutive_failures`) |
 | Concurrent background terminals | `4` (`8` per project) | `src/agenthicc/background/settings.py:33-34` |
 | Terminal stored output | `64_000` bytes (floor `1024`) | `src/agenthicc/background/settings.py:35`; `src/agenthicc/background/terminals.py:74,531` |
 | Terminal record retention | `30` days | `src/agenthicc/background/settings.py:38`; pruned via `src/agenthicc/background/terminals.py:421` |

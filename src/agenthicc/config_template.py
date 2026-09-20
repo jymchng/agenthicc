@@ -222,7 +222,17 @@ def build_commented_config_template() -> str:
     _comment(lines, '# Add one [providers."profile-name"] table per endpoint.')
     _provider_profile(lines, "providers")
 
-    for name in ("behaviour", "tools", "memory", "security", "api", "plugins", "skills", "storage"):
+    for name in (
+        "behaviour",
+        "loops",
+        "tools",
+        "memory",
+        "security",
+        "api",
+        "plugins",
+        "skills",
+        "storage",
+    ):
         value = object.__getattribute__(cfg, name)
         if name == "tools":
             _section(lines, "tools")

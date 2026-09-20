@@ -200,7 +200,19 @@ TUI commands are a separate registry from CLI subcommands. The built-ins are
 `/help`, `/commands`, `/tools [reload]`, `/workflows [runs|reload]`, `/status`,
 `/history`, `/mode`, `/workflow`, `/init`, `/model`, `/models`,
 `/skills [reload]`, `/mcp`, `/config`, `/compact`, `/replay`, `/cancel`,
-`/clear`, and `/expand`.
+`/loop`, `/loops`, `/clear`, and `/expand`.
+
+`/loop [interval] <prompt-or-registered-command>` schedules a recurring local
+session prompt. `/loop status`, `/loop pause`, `/loop resume`, and `/loop stop`
+control it. The scheduler is available only in the interactive TUI; it does
+not add a CLI subcommand or a headless background daemon. See the [slash
+command usage page](../usage/06-commands.md#recurring-session-prompts) for
+syntax, safe-dispatch, restart, and payload rules.
+
+`/loops` opens the durable schedule-job table. It shows all valid loop records
+under the session store; Enter requests an immediate run of the selected job,
+and `d` then Enter permanently deletes it after confirmation. Ownership rules
+prevent a live foreign session from being raced.
 
 Default project-authoring skills also provide `/create-tools <instructions>`
 and `/create-commands <instructions>`. They send the supplied instructions to

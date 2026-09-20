@@ -64,6 +64,7 @@ class CommandDispatcher:
             cancel_active=ctx.cancel_active,
             list_workflow_runs=ctx.list_workflow_runs,
             resume_workflow=ctx.resume_workflow,
+            loop_manager=ctx.loop_manager,
         )
 
         # Menu factory always takes precedence; factory receives args via ctx.args.

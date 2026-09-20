@@ -59,6 +59,80 @@ def _cmd_cancel(ctx: CommandContext) -> bool:
     return True
 
 
+def _loop_busy_policy(args: str) -> BusyPolicy:
+    """Keep loop controls responsive while creation waits for a safe turn."""
+
+    action = (args.strip().split(None, 1)[0] if args.strip() else "").lower()
+    if action in {"status", "stop", "pause", "resume"}:
+        return BusyPolicy.IMMEDIATE_CONTROL
+    return BusyPolicy.QUEUE
+
+
+def _cmd_loop(ctx: CommandContext) -> bool:
+    """Create or control the session-scoped recurring prompt loop."""
+
+    manager = ctx.loop_manager
+    if manager is None:
+        ctx.console.print("Loop scheduling is unavailable in this session.", markup=False)
+        return True
+    ctx.console.print(manager.handle_command(ctx.args), markup=False)
+    return True
+
+
+def _cmd_loops(ctx: CommandContext) -> bool:
+    """Open the table of every persisted loop job."""
+
+    manager = ctx.loop_manager
+    if manager is None:
+        ctx.console.print("Loop scheduling is unavailable in this session.", markup=False)
+        return True
+    if ctx.args.strip():
+        ctx.console.print("Usage: /loops", markup=False)
+        return True
+    if ctx.set_pending_menu is not None:
+        from agenthicc.tui.workspace.overlays.loops import LoopJobsOverlay  # noqa: PLC0415
+
+        on_close = ctx.close_overlay if ctx.close_overlay is not None else (lambda: None)
+        ctx.set_pending_menu(
+            LoopJobsOverlay(
+                manager.list_jobs,
+                on_close,
+                manager.run_job_now,
+                manager.delete_job,
+                session_id=manager.session_id,
+            )
+        )
+        return True
+
+    # Command-dispatch tests and non-interactive embedders may not provide an
+    # overlay host. Keep the same data visible as a bounded Rich table.
+    try:
+        from rich import box as _rbox  # noqa: PLC0415
+        from rich.table import Table  # noqa: PLC0415
+
+        table = Table(title="Scheduled Loops", box=_rbox.SIMPLE)
+        table.add_column("Job ID", no_wrap=True)
+        table.add_column("State", no_wrap=True)
+        table.add_column("Session", no_wrap=True)
+        table.add_column("Payload")
+        from agenthicc.runners.loop_scheduler import _redacted_preview  # noqa: PLC0415
+
+        records = manager.list_jobs()
+        for record in records:
+            table.add_row(
+                record.loop_id[:12],
+                record.state.value,
+                "current" if record.session_id == manager.session_id else record.session_id[:12],
+                _redacted_preview(record.payload, limit=100),
+            )
+        if not records:
+            table.add_row("—", "—", "—", "No scheduled loop jobs")
+        ctx.console.print(table)
+    except ImportError:
+        ctx.console.print("No scheduled loop jobs.", markup=False)
+    return True
+
+
 def _cmd_usage(ctx: CommandContext) -> bool:
     """Show the local usage snapshot without contacting the provider."""
     provider = ctx.usage_snapshot
@@ -446,7 +520,8 @@ def _cmd_startup(ctx: CommandContext) -> bool:
     if coordinator is None:
         ctx.console.print("Startup diagnostics are unavailable.", markup=False)
         return True
-    reports = getattr(coordinator, "to_dict", lambda: [])()
+    raw_reports: object = getattr(coordinator, "to_dict", lambda: [])()
+    reports: list[object] = raw_reports if isinstance(raw_reports, list) else []
     if not reports:
         ctx.console.print("No startup phases have been recorded.", markup=False)
         return True
@@ -903,6 +978,23 @@ BUILTIN_COMMANDS: list[Command] = [
         aliases=("/interrupt",),
         busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
         handler=_cmd_cancel,
+    ),
+    Command(
+        name="/loop",
+        description="Schedule a recurring prompt or registered slash command",
+        argument_hint="[interval] <prompt> | status | pause | resume | stop",
+        group="Built-in",
+        busy_policy=BusyPolicy.QUEUE,
+        busy_policy_resolver=_loop_busy_policy,
+        handler=_cmd_loop,
+    ),
+    Command(
+        name="/loops",
+        description="Manage all scheduled loop jobs",
+        argument_hint="",
+        group="Built-in",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_loops,
     ),
     Command(
         name="/clear",

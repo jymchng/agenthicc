@@ -89,6 +89,28 @@ Move long-running work to the background with `/bg` (or `/background`), list
 with `/bg list`, and re-attach with `/bg <n>`. The command-line equivalents
 live under `agenthicc jobs` — see [Background sessions](11-background.md).
 
+## Recurring session prompts
+
+Use `/loop [interval] <prompt>` to schedule a local recurring instruction in
+the current session. Use `/loops` to open the table of all persisted schedule
+jobs. For example:
+
+```text
+/loop 10m Review the current workflow for unresolved failures.
+/loop status
+/loop pause
+/loop resume
+/loop stop
+/loops
+```
+
+The scheduler waits for the TUI session to be idle before dispatching and sends
+the prompt through the same conversation and workflow path as ordinary input.
+It never starts a concurrent turn. In the `/loops` table, Enter makes the
+selected job due immediately and `d` then Enter deletes it after confirmation.
+See [Slash commands](06-commands.md) for validation, persistence, and restart
+semantics.
+
 ## Next
 
 - [Modes →](05-modes.md)

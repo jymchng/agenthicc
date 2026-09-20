@@ -137,6 +137,8 @@ class ConversationStore:
         self.session_id: Signal[str] = Signal("")
         self.model_name: Signal[str] = Signal("")
         self.notification: Signal[str | None] = Signal(None)
+        self.loop_status: Signal[str | None] = Signal(None)
+        """Persistent footer projection for an active session ``/loop``."""
         self.workflow_override: Signal[str | None] = Signal(None)
         """Name of the /workflow-selected override (PRD-114).  None = mode default."""
         self.transcript_loading: Signal[bool] = Signal(False)

@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — session-scoped recurring `/loop` prompts (PRD-193)
+
+- Added the interactive `/loop [interval] <prompt-or-registered-command>`
+  scheduler with idle-safe dispatch, one pending iteration while busy, and no
+  concurrent turns.
+- Added `/loop status`, `/loop pause`, `/loop resume`, and `/loop stop`, with
+  finite lifetime, bounded failure backoff, replacement, and explicit resume
+  semantics after process restart.
+- Persisted loop definitions under each session's `loop.json` with atomic
+  owner-only writes; scheduled turns reuse the normal conversation,
+  checkpoint, approval, permission, and security paths.
+- Documented configuration, command syntax, session storage, troubleshooting,
+  headless behavior, and operational limits across the README and MkDocs usage
+  and reference pages.
+- Added `/loops`, a table-based schedule-job manager with immediate run-now,
+  owner-safe deletion, keyboard navigation, and delete confirmation.
+
 ### Changed — queued input during tool execution
 
 - Ordinary messages queued while the agent is running are now delivered after

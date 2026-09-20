@@ -115,6 +115,7 @@ class Workspace:
             conv.cost_status,
             conv.usage_calls,
             conv.notification,
+            conv.loop_status,
             conv.transcript_loading,
             self._state.active_mode,  # PRD-75: single mode signal
             inp.buf,

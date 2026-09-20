@@ -1397,8 +1397,18 @@ class TUISession:
 
         from agenthicc.commands import CommandDispatcher  # noqa: PLC0415
         from agenthicc.workflows.config import WorkflowConfig  # noqa: PLC0415
+        from agenthicc.runners.loop_scheduler import LoopManager, LoopStore  # noqa: PLC0415
 
         self._cmd_dispatcher = CommandDispatcher(ctx.cmd_registry)
+        self._loop_manager = LoopManager(
+            session_id=ctx.session_id,
+            settings=ctx.cfg.loops,
+            store=LoopStore(_SESSIONS_DIR, ctx.session_id),
+            is_idle=self._loop_is_idle,
+            dispatch=self._dispatch_loop_iteration,
+            event_sink=self._record_loop_event,
+            payload_validator=self._validate_loop_payload,
+        )
         # Built once per session; completed_turns is updated per run via replace().
         self._wf_config_base = WorkflowConfig(
             conv_store=ctx.app_state.conversation,
@@ -1434,6 +1444,64 @@ class TUISession:
     def _set_pending_skill(self, body: str) -> None:
         self._pending_skill_body.clear()
         self._pending_skill_body.append(body)
+
+    def _loop_is_idle(self) -> bool:
+        """Return whether a loop may enqueue one normal user turn."""
+
+        task = self._agent_task
+        if task is not None and not task.done():
+            return False
+        return self._ctx.app_state.pending_approval() is None
+
+    def _record_loop_event(self, kind: str, payload: dict[str, object]) -> None:
+        """Project scheduler lifecycle events through the normal transcript log."""
+
+        self._ctx.app_state.conversation.append_event(kind, payload)
+        manager = vars(self).get("_loop_manager")
+        from agenthicc.runners.loop_scheduler import LoopLifecycle, LoopManager  # noqa: PLC0415
+
+        if isinstance(manager, LoopManager):
+            status = manager.status_text()
+            record = manager.record
+            terminal = record is not None and record.state in {
+                LoopLifecycle.STOPPED,
+                LoopLifecycle.EXPIRED,
+                LoopLifecycle.FAILED,
+            }
+            self._ctx.app_state.conversation.loop_status.set(
+                None if status == "No active loop." or terminal else status
+            )
+
+    def _validate_loop_payload(self, payload: str, kind: object) -> str | None:
+        """Validate scheduled command payloads without executing them."""
+
+        del kind
+        if not payload.startswith("/"):
+            return None
+        command_name = payload.split(None, 1)[0]
+        if command_name == "/loop":
+            return "A loop payload cannot schedule another loop."
+        command = self._ctx.cmd_registry.get(command_name)
+        if command is None:
+            return f"Unknown scheduled command {command_name!r}. Use /help to inspect commands."
+        if command_name in {"/workflow", "/compact"}:
+            return f"Scheduled command {command_name} is not supported by /loop."
+        return None
+
+    async def _dispatch_loop_iteration(self, record: object) -> None:
+        """Submit one loop payload through ``handle_send`` and await its turn."""
+
+        from agenthicc.runners.loop_scheduler import LoopRecord  # noqa: PLC0415
+        from agenthicc.tui.runtime.commands import SendMessageCommand  # noqa: PLC0415
+
+        if not isinstance(record, LoopRecord):
+            raise TypeError("loop dispatch received an invalid record")
+        if not self._loop_is_idle():
+            raise RuntimeError("session became busy before loop dispatch")
+        await self.handle_send(SendMessageCommand(text=record.payload, source="loop"))
+        task = self._agent_task
+        if task is not None and not task.done():
+            await asyncio.shield(task)
 
     def _set_pending_replay(self, session_id: str) -> None:
         self._pending_replay_id = session_id
@@ -2006,6 +2074,7 @@ class TUISession:
             cancel_active=self._cancel_active_task,
             list_workflow_runs=self._list_workflow_runs,
             resume_workflow=self._resume_workflow_from_overlay,
+            loop_manager=vars(self).get("_loop_manager"),
         )
         return bool(self._cmd_dispatcher.dispatch(text, context))
 
@@ -3300,13 +3369,15 @@ class TUISession:
     async def handle_send(self, cmd: "SendMessageCommand") -> None:
         """Route user message: slash → command dispatcher, text → agent."""
         text = cmd.text.strip()
+        source_value = vars(cmd).get("source", "user")
+        source = source_value if isinstance(source_value, str) and source_value else "user"
         if not text:
             return
 
         # Keep the latest accepted natural-language intent available to the
         # background control plane even if it was submitted while another run
         # was still active and therefore entered the FIFO queue.
-        if not text.startswith(("/", "$")):
+        if source == "user" and not text.startswith(("/", "$")):
             self._last_submitted_text = text
 
         if self._agent_task and not self._agent_task.done():
@@ -3323,18 +3394,24 @@ class TUISession:
 
         if isinstance(self, TUISession) and not text.startswith(("/", "$")):
             if self._start_workflow_continuation(text):
-                self._ctx.app_state.conversation.append_event("user_message", {"text": text})
+                self._ctx.app_state.conversation.append_event(
+                    "user_message", {"text": text, "source": source}
+                )
                 return
 
         if self.route(text):
             if self._pending_skill_body:
                 body = self._pending_skill_body.pop()
-                self._ctx.app_state.conversation.append_event("user_message", {"text": text})
+                self._ctx.app_state.conversation.append_event(
+                    "user_message", {"text": text, "source": source}
+                )
                 turn_id = f"turn_{uuid.uuid4().hex}"
                 publish_event = getattr(self, "_publish_session_event", None)
                 if callable(publish_event):
                     publish_event(
-                        "turn_queued", {"text": body, "client_id": "tui"}, turn_id=turn_id
+                        "turn_queued",
+                        {"text": body, "client_id": "tui", "source": source},
+                        turn_id=turn_id,
                     )
                     task = self.agent_task_body(body, turn_id=turn_id)
                 else:
@@ -3343,11 +3420,17 @@ class TUISession:
                     self._activate_streaming_input()
                 self._agent_task = asyncio.create_task(task, name="agent-turn")
             return
-        self._ctx.app_state.conversation.append_event("user_message", {"text": text})
+        self._ctx.app_state.conversation.append_event(
+            "user_message", {"text": text, "source": source}
+        )
         turn_id = f"turn_{uuid.uuid4().hex}"
         publish_event = getattr(self, "_publish_session_event", None)
         if callable(publish_event):
-            publish_event("turn_queued", {"text": text, "client_id": "tui"}, turn_id=turn_id)
+            publish_event(
+                "turn_queued",
+                {"text": text, "client_id": "tui", "source": source},
+                turn_id=turn_id,
+            )
             task = self.agent_task_body(text, turn_id=turn_id)
         else:
             task = self.agent_task_body(text)
@@ -3740,6 +3823,9 @@ class TUISession:
         # PRD-129 Phase 3: auto-resume a direct turn the prior session left
         # interrupted (no-op on a clean start or when a workflow was in progress).
         self._maybe_resume_interrupted_turn()
+        loop_manager = vars(self).get("_loop_manager")
+        if loop_manager is not None:
+            await loop_manager.start(rehydrate=bool(vars(ctx).get("resumed", False)))
         ad_task: asyncio.Task[object] | None = None
         try:
             from agenthicc.auth import AuthClient  # noqa: PLC0415
@@ -3784,6 +3870,8 @@ class TUISession:
             # session; otherwise Windows may leave its executor/terminal wait
             # alive during asyncio shutdown.
             self._msg_queue.clear()
+            if loop_manager is not None:
+                await loop_manager.shutdown()
             agent_task = self._agent_task
             if agent_task is not None and not agent_task.done():
                 agent_task.cancel()

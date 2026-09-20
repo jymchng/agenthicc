@@ -90,6 +90,19 @@ Detached long-running work managed with `/bg` or `agenthicc jobs ...`. The
 manager keeps a rebuildable lifecycle index; the underlying events, approvals,
 and memory remain under their own owners.
 
+## Can I run a prompt repeatedly in the same session?
+
+Yes, in the interactive TUI use `/loop [interval] <prompt>` or a registered
+slash command, for example `/loop 10m /status`. The first iteration waits for
+the session to become idle, missed intervals are coalesced, and the loop uses
+the same conversation, workflow checkpoints, permissions, and approvals as
+ordinary input. `/loop status`, `/loop pause`, `/loop resume`, and `/loop stop`
+control it. One loop is allowed per session; it expires after 72 hours by
+default. State is persisted, but execution after a process restart requires an
+explicit `--resume`/`--continue`. Use `/loops` to view all persisted schedule
+jobs in a table; Enter makes the selected job due immediately and `d` plus
+Enter deletes it after confirmation. Headless mode does not run `/loop`.
+
 ## How do I contribute?
 
 Read `CONTRIBUTING.md` and `docs/contributing.md`. Write a PRD under `prds/`,
