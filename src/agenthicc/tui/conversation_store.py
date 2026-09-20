@@ -71,6 +71,10 @@ EventKind = Literal[
     "question_wait_failed",
     # Durable goal-list append/insert projection (PRD-185)
     "goal_list_mutated",
+    # Runtime goal_flow phase-plan controls (PRD-194)
+    "phase_control_requested",
+    "phase_plan_mutated",
+    "phase_control_rejected",
 ]
 
 

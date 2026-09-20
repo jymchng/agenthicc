@@ -781,6 +781,78 @@ def _render_goal_list_mutated(self: ScrollBufferAppender, ev: ConversationEvent)
     self._console.print()
 
 
+def _phase_control_label(operation: str) -> str:
+    """Return a bounded human label for a PRD-194 phase operation."""
+    return {
+        "postpone": "Postponed phase",
+        "skip": "Skipped phase",
+        "bring_forward": "Brought phase forward",
+        "delete": "Deleted phase",
+    }.get(operation, "Changed phase")
+
+
+def _bounded_phase_id(value: object) -> str:
+    """Keep opaque IDs readable without allowing a TUI line to grow unbounded."""
+    text = str(value).strip()
+    return text if len(text) <= 20 else f"{text[:17]}…"
+
+
+@register_renderer("phase_control_requested")
+def _render_phase_control_requested(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """Render one compact safe-boundary request notice."""
+    from rich.markup import escape as _e
+
+    operation = _text(ev.payload, "operation", "change")
+    phase_id = _bounded_phase_id(ev.payload.get("phase_id", "unknown"))
+    reason = _text(ev.payload, "reason")[:160]
+    self._console.print(
+        f"  [dim]⎿[/dim] [yellow]{_e(_phase_control_label(operation))}[/yellow] "
+        f"[dim]{_e(phase_id)} at safe boundary[/dim]",
+        markup=True,
+        highlight=False,
+    )
+    if reason:
+        self._console.print(f"    [dim]{_e(reason)}[/dim]", markup=True, highlight=False)
+    self._console.print()
+
+
+@register_renderer("phase_plan_mutated")
+def _render_phase_plan_mutated(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """Render one compact committed phase-plan notice."""
+    from rich.markup import escape as _e
+
+    operation = _text(ev.payload, "operation", "change")
+    phase_id = _bounded_phase_id(ev.payload.get("phase_id", "unknown"))
+    disposition = _text(ev.payload, "disposition", "updated")
+    reason = _text(ev.payload, "reason")[:160]
+    self._console.print(
+        f"  [dim]⎿[/dim] [cyan]{_e(_phase_control_label(operation))}[/cyan] "
+        f"[dim]{_e(phase_id)} → {_e(disposition)}; checkpointed[/dim]",
+        markup=True,
+        highlight=False,
+    )
+    if reason:
+        self._console.print(f"    [dim]{_e(reason)}[/dim]", markup=True, highlight=False)
+    self._console.print()
+
+
+@register_renderer("phase_control_rejected")
+def _render_phase_control_rejected(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """Render one bounded rejected phase-control notice."""
+    from rich.markup import escape as _e
+
+    operation = _text(ev.payload, "operation", "change")
+    phase_id = _bounded_phase_id(ev.payload.get("phase_id", "unknown"))
+    error_code = _text(ev.payload, "error_code", "rejected")
+    self._console.print(
+        f"  [dim]⎿[/dim] [red]Phase control rejected[/red] "
+        f"[dim]{_e(operation)} {_e(phase_id)} ({_e(error_code)})[/dim]",
+        markup=True,
+        highlight=False,
+    )
+    self._console.print()
+
+
 # ── Subagent pool renderers (PRD-124 Phase 3) ─────────────────────────────────
 
 

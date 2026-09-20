@@ -17,9 +17,11 @@ from agenthicc.workflows.goal_flow.runner import (
     GoalContext,
     GoalFlowParams,
     GoalFlowRunner,
+    GoalRecord,
     GoalState,
     GoalStatus,
     _make_goal_mutation_tools,
+    _make_phase_control_tools,
     _make_clarify_tools,
     _make_decide_goals_tools,
     _make_implement_tools,
@@ -611,3 +613,217 @@ async def test_complete_workflow_rejects_pending_goal_without_setting_transition
     assert result["error_code"] == "pending_goals"
     assert not event.is_set()
     assert data == {}
+
+
+@pytest.mark.asyncio
+async def test_phase_control_tools_have_exact_stable_id_contract() -> None:
+    calls: list[tuple[str, str, str]] = []
+
+    async def callback(operation: str, phase_id: str, reason: str) -> dict[str, object]:
+        calls.append((operation, phase_id, reason))
+        return {"ok": True, "control_requested": operation == "skip"}
+
+    event = asyncio.Event()
+    tools = _make_phase_control_tools(callback, event)
+    assert [tool.__name__ for tool in tools] == [
+        "postpone_phase",
+        "skip_phase",
+        "bring_forward_phase",
+        "delete_phase",
+    ]
+
+    from lauren_ai._tools import TOOL_META
+
+    for tool in tools:
+        schema = getattr(tool, TOOL_META).parameters["input_schema"]
+        assert schema["type"] == "object"
+        assert schema["required"] == ["phase_id", "reason"]
+        assert schema["additionalProperties"] is False
+        assert set(schema["properties"]) == {"phase_id", "reason"}
+
+    assert await tools[1](phase_id="stable-id", reason="needs to be deferred") == {
+        "ok": True,
+        "control_requested": True,
+    }
+    assert calls == [("skip", "stable-id", "needs to be deferred")]
+    assert event.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "expected_status"),
+    [
+        ("_postpone_phase", GoalStatus.POSTPONED),
+        ("_skip_phase", GoalStatus.SKIPPED),
+        ("_delete_phase", GoalStatus.DELETED),
+    ],
+)
+async def test_pending_phase_controls_are_durable_and_keep_active_goal(
+    tmp_path: Path,
+    method_name: str,
+    expected_status: GoalStatus,
+) -> None:
+    runner, context, store, conversation = _runner_and_context(tmp_path)
+    try:
+        context.state = GoalState.IMPLEMENT_GOAL
+        active_id = context.active_goal_id
+        target_id = context.goal_records[1].goal_id
+
+        result = await getattr(runner, method_name)(context, target_id, "plan changed")
+
+        assert result["ok"] is True
+        assert result["phase_id"] == target_id
+        assert context.active_goal_id == active_id
+        assert context.goal_records[1].status is expected_status
+        assert context.goal_list_revision == 1
+        assert context.goal_mutation_receipts[-1]["operation"] == method_name.removeprefix(
+            "_"
+        ).removesuffix("_phase")
+        checkpoint = store.load("goal-run")
+        assert checkpoint is not None
+        assert checkpoint.reason == "phase_plan_mutated"
+        fields = checkpoint.context["fields"]
+        assert isinstance(fields, dict)
+        assert fields["goal_records"][1]["status"] == expected_status.value  # type: ignore[index]
+    finally:
+        conversation.close()
+
+
+@pytest.mark.asyncio
+async def test_bring_forward_promotes_postponed_phase_without_reordering_active_goal(
+    tmp_path: Path,
+) -> None:
+    runner, context, _store, conversation = _runner_and_context(tmp_path)
+    try:
+        context.state = GoalState.VERIFY_GOAL
+        target = context.goal_records[1]
+        postponed = await runner._postpone_phase(context, target.goal_id, "wait for prerequisite")
+        assert postponed["ok"] is True
+        brought = await runner._bring_forward_phase(
+            context, target.goal_id, "prerequisite is ready"
+        )
+
+        assert brought["ok"] is True
+        assert target.status is GoalStatus.PENDING
+        assert context.active_goal_id == context.goal_records[0].goal_id
+        assert [record.goal_id for record in context.goal_records] == [
+            context.goal_records[0].goal_id,
+            target.goal_id,
+        ]
+        assert context.goal_list_revision == 2
+    finally:
+        conversation.close()
+
+
+@pytest.mark.asyncio
+async def test_active_control_is_checkpointed_then_finalized_at_safe_boundary(
+    tmp_path: Path,
+) -> None:
+    runner, context, store, conversation = _runner_and_context(tmp_path)
+    try:
+        context.state = GoalState.IMPLEMENT_GOAL
+        active = context.active_record()
+        assert active is not None
+        result = await runner._skip_phase(context, active.goal_id, "not required")
+
+        assert result["ok"] is True
+        assert result["control_requested"] is True
+        assert active.control_request == {
+            "operation": "skip",
+            "reason": "not required",
+            "phase": "IMPLEMENT_GOAL",
+        }
+        requested = store.load("goal-run")
+        assert requested is not None
+        requested_fields = requested.context["fields"]
+        assert isinstance(requested_fields, dict)
+        assert requested.reason == "phase_control_requested"
+        assert requested_fields["goal_records"][0]["control_request"]["operation"] == "skip"  # type: ignore[index]
+
+        restored = GoalFlowWorkflow.checkpoint_context_from_payload(
+            requested_fields,
+            conversation.memory,
+        )
+        assert restored.goal_records[0].control_request is not None
+        assert restored.active_goal_id == active.goal_id
+
+        next_state = await runner._finalize_active_control(context)
+        assert next_state is GoalState.IMPLEMENT_GOAL
+        assert context.goal_records[0].status is GoalStatus.SKIPPED
+        assert context.active_goal_id == context.goal_records[1].goal_id
+        assert context.goal_list_revision == 1
+        finalized = store.load("goal-run")
+        assert finalized is not None
+        assert finalized.reason == "phase_plan_mutated"
+        assert finalized.context["fields"]["goal_records"][0]["control_request"] is None  # type: ignore[index]
+    finally:
+        conversation.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "expected_status"),
+    [
+        ("_postpone_phase", GoalStatus.POSTPONED),
+        ("_delete_phase", GoalStatus.DELETED),
+    ],
+)
+async def test_active_postpone_and_delete_finalize_to_next_goal(
+    tmp_path: Path,
+    method_name: str,
+    expected_status: GoalStatus,
+) -> None:
+    runner, context, _store, conversation = _runner_and_context(tmp_path)
+    try:
+        context.state = GoalState.VERIFY_GOAL
+        active = context.active_record()
+        assert active is not None
+        requested = await getattr(runner, method_name)(context, active.goal_id, "plan changed")
+        assert requested["control_requested"] is True
+
+        next_state = await runner._finalize_active_control(context)
+        assert next_state is GoalState.IMPLEMENT_GOAL
+        assert context.goal_records[0].status is expected_status
+        assert context.goal_records[1].status is GoalStatus.ACTIVE
+        assert context.active_goal_id == context.goal_records[1].goal_id
+    finally:
+        conversation.close()
+
+
+def test_checkpoint_codec_round_trips_new_dispositions_and_rejects_bad_active_cursor() -> None:
+    context = GoalContext(
+        intent="control phases",
+        state=GoalState.SUMMARIZE,
+        goal_records=[
+            GoalRecord(goal_id="verified", text="done", status=GoalStatus.VERIFIED),
+            GoalRecord(goal_id="skipped", text="skip", status=GoalStatus.SKIPPED),
+            GoalRecord(goal_id="deleted", text="remove", status=GoalStatus.DELETED),
+            GoalRecord(goal_id="postponed", text="later", status=GoalStatus.POSTPONED),
+        ],
+    )
+    payload = GoalFlowWorkflow.checkpoint_context_to_payload(context)
+    restored = GoalFlowWorkflow.checkpoint_context_from_payload(payload)
+    assert [record.status for record in restored.goal_records] == [
+        GoalStatus.VERIFIED,
+        GoalStatus.SKIPPED,
+        GoalStatus.DELETED,
+        GoalStatus.POSTPONED,
+    ]
+    assert restored.active_goal_id == ""
+
+    with pytest.raises(ValueError, match="terminal or postponed"):
+        GoalFlowWorkflow.checkpoint_context_from_payload(
+            {**payload, "state": "IMPLEMENT_GOAL", "active_goal_id": "postponed"}
+        )
+
+
+def test_goal_flow_params_include_phase_control_bounds() -> None:
+    params = GoalFlowWorkflow.build_params(
+        {
+            "max_phase_control_reason_chars": 300,
+            "max_phase_mutation_receipts": 40,
+        }
+    )
+    assert isinstance(params, GoalFlowParams)
+    assert params.max_phase_control_reason_chars == 300
+    assert params.max_phase_mutation_receipts == 40

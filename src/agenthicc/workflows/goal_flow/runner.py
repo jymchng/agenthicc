@@ -61,6 +61,11 @@ _MAX_RECORD_TEXT_CHARS = 16_384
 _MAX_RECORD_FILES = 256
 _MAX_RECORD_FILE_PATH_CHARS = 1_024
 _MAX_MUTATION_RECEIPTS = 128
+_DEFAULT_MAX_PHASE_CONTROL_REASON_CHARS = 2_048
+_MAX_CONFIGURED_PHASE_CONTROL_REASON_CHARS = 16_384
+_MAX_CONFIGURED_MUTATION_RECEIPTS = 1_024
+
+_PHASE_CONTROL_OPERATIONS = ("postpone", "skip", "bring_forward", "delete")
 
 
 def _positive_int(value: object, default: int) -> int:
@@ -125,6 +130,14 @@ These are durable non-transition operations: they do not finish the current
 goal or change phase. Continue the active goal and use its normal transition
 tool after the current work is complete.
 
+[RUNTIME PHASE CONTROL POLICY]
+During implementation or verification, use postpone_phase(phase_id, reason),
+skip_phase(phase_id, reason), bring_forward_phase(phase_id, reason), or
+delete_phase(phase_id, reason) when the ordered plan must change. Always use
+the stable phase_id shown in the dynamic goal list and provide a concise
+reason. Controls of the active phase are safe-boundary requests; after making
+one, start no new work and let the runner finalize it.
+
 [WORKSPACE POLICY]
 Use the parent session's `WorkflowConfig.workspace_scope` and
 `WorkflowConfig.workspace_access` unchanged for every filesystem, mention, Git,
@@ -156,7 +169,24 @@ class GoalStatus(str, Enum):
 
     PENDING = "pending"
     ACTIVE = "active"
+    POSTPONED = "postponed"
     VERIFIED = "verified"
+    SKIPPED = "skipped"
+    DELETED = "deleted"
+
+    @property
+    def is_terminal(self) -> bool:
+        """Whether this disposition is no longer executable."""
+        return self in {
+            GoalStatus.VERIFIED,
+            GoalStatus.SKIPPED,
+            GoalStatus.DELETED,
+        }
+
+    @property
+    def is_unresolved(self) -> bool:
+        """Whether the plan still contains work that is not terminal."""
+        return not self.is_terminal
 
 
 @dataclasses.dataclass
@@ -177,6 +207,10 @@ class GoalRecord:
     files: list[str] = dataclasses.field(default_factory=list)
     created_revision: int = 0
     created_phase: str = "decide_goals"
+    # An active control request is written before an agent turn returns.  It
+    # is intentionally kept on the record so a process restart can finalize
+    # the request without guessing from conversation prose.
+    control_request: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         """Normalize values restored from JSON or compatibility callers."""
@@ -184,11 +218,23 @@ class GoalRecord:
             self.status = GoalStatus(str(self.status))
         self.attempts = max(0, self.attempts) if isinstance(self.attempts, int) else 0
         self.files = [str(path) for path in self.files if isinstance(path, str)]
+        if self.control_request is not None:
+            if not isinstance(self.control_request, Mapping):
+                self.control_request = None
+            else:
+                self.control_request = {
+                    str(key): str(value)
+                    for key, value in self.control_request.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                }
 
     def to_payload(self) -> dict[str, object]:
         """Return a JSON-safe checkpoint representation."""
         return {
             "goal_id": self.goal_id,
+            # ``phase_id`` is the provider-facing name used by PRD-194. Keep
+            # ``goal_id`` as the PRD-185/checkpoint compatibility field.
+            "phase_id": self.goal_id,
             "text": self.text,
             "status": self.status.value,
             "attempts": self.attempts,
@@ -197,19 +243,32 @@ class GoalRecord:
             "files": list(self.files),
             "created_revision": self.created_revision,
             "created_phase": self.created_phase,
+            "control_request": (
+                dict(self.control_request) if self.control_request is not None else None
+            ),
         }
 
 
 @dataclasses.dataclass(frozen=True)
 class GoalMutationReceipt:
-    """Bounded audit record for one committed append/insert operation."""
+    """Bounded audit record for one committed goal or phase-plan mutation."""
 
     revision: int
-    operation: Literal["append", "insert"]
+    operation: Literal[
+        "append",
+        "insert",
+        "postpone",
+        "skip",
+        "bring_forward",
+        "delete",
+    ]
     goal_id: str
     index: int
     phase: str
     active_goal_id: str | None
+    previous_status: str | None = None
+    new_status: str | None = None
+    reason: str = ""
 
     def to_payload(self) -> dict[str, object]:
         """Return a JSON-safe receipt payload."""
@@ -217,9 +276,13 @@ class GoalMutationReceipt:
             "revision": self.revision,
             "operation": self.operation,
             "goal_id": self.goal_id,
+            "phase_id": self.goal_id,
             "index": self.index,
             "phase": self.phase,
             "active_goal_id": self.active_goal_id,
+            "previous_status": self.previous_status,
+            "new_status": self.new_status,
+            "reason": self.reason,
         }
 
 
@@ -269,7 +332,13 @@ class GoalContext:
         """Build stable records for legacy constructors and synchronize views."""
         if self.goal_records:
             self.goal_records = [
-                dataclasses.replace(record, files=list(record.files))
+                dataclasses.replace(
+                    record,
+                    files=list(record.files),
+                    control_request=(
+                        dict(record.control_request) if record.control_request is not None else None
+                    ),
+                )
                 for record in self.goal_records
             ]
             self._sync_legacy_views()
@@ -301,7 +370,7 @@ class GoalContext:
         self.goal_records = records
         if not self.active_goal_id and records:
             active_index = min(max(self.goal_index, 0), len(records) - 1)
-            if records[active_index].status is not GoalStatus.VERIFIED:
+            if not records[active_index].status.is_terminal:
                 self.active_goal_id = records[active_index].goal_id
         self._sync_legacy_views()
 
@@ -323,25 +392,35 @@ class GoalContext:
         if self.active_goal_id:
             for index, record in enumerate(self.goal_records):
                 if record.goal_id == self.active_goal_id:
-                    if record.status is not GoalStatus.VERIFIED:
+                    if not record.status.is_terminal and record.status is not GoalStatus.POSTPONED:
                         record.status = GoalStatus.ACTIVE
                         self.goal_index = index
                         return record
                     break
         index = min(max(self.goal_index, 0), len(self.goal_records) - 1)
         record = self.goal_records[index]
-        if record.status is GoalStatus.VERIFIED:
-            record = next(
+        if record.status.is_terminal or record.status is GoalStatus.POSTPONED:
+            candidate = next(
                 (
-                    candidate
-                    for candidate in self.goal_records
-                    if candidate.status is not GoalStatus.VERIFIED
+                    item
+                    for item in self.goal_records
+                    if item.status in {GoalStatus.PENDING, GoalStatus.ACTIVE}
                 ),
-                record,
+                None,
             )
+            if candidate is None:
+                candidate = next(
+                    (item for item in self.goal_records if item.status is GoalStatus.POSTPONED),
+                    None,
+                )
+                if candidate is not None:
+                    candidate.status = GoalStatus.PENDING
+            if candidate is None:
+                self.active_goal_id = ""
+                return None
+            record = candidate
             index = self.goal_records.index(record)
-        if record.status is not GoalStatus.VERIFIED:
-            record.status = GoalStatus.ACTIVE
+        record.status = GoalStatus.ACTIVE
         self.active_goal_id = record.goal_id
         self.goal_index = index
         return record
@@ -353,10 +432,30 @@ class GoalContext:
                 return index, record
         return None
 
+    def next_schedulable(self, *, exclude_goal_id: str = "") -> tuple[int, GoalRecord] | None:
+        """Return the next pending goal, promoting postponed work if needed.
+
+        Promotion is deterministic: list order is the tie-breaker and a
+        postponed record is promoted only when no ordinary pending record
+        remains.  Terminal records are never selected.
+        """
+        for index, record in enumerate(self.goal_records):
+            if record.goal_id != exclude_goal_id and record.status is GoalStatus.PENDING:
+                return index, record
+        for index, record in enumerate(self.goal_records):
+            if record.goal_id != exclude_goal_id and record.status is GoalStatus.POSTPONED:
+                record.status = GoalStatus.PENDING
+                return index, record
+        return None
+
+    def unresolved_records(self) -> list[GoalRecord]:
+        """Return pending, active, and postponed records in list order."""
+        return [record for record in self.goal_records if record.status.is_unresolved]
+
     def goal_list_text(self) -> str:
         """Render the ordered goal list for dynamic phase context."""
         return "\n".join(
-            f"{index + 1}. [{record.status.value}] {record.text}"
+            f"{index + 1}. [phase_id={record.goal_id}] [{record.status.value}] {record.text}"
             for index, record in enumerate(self.goal_records)
         )
 
@@ -365,9 +464,9 @@ class GoalContext:
         if self.active_goal_id:
             for record in self.goal_records:
                 if record.goal_id == self.active_goal_id:
-                    if record.status is not GoalStatus.VERIFIED:
+                    if record.status.is_unresolved and record.status is not GoalStatus.POSTPONED:
                         record.status = GoalStatus.ACTIVE
-                elif record.status is GoalStatus.ACTIVE:
+                elif record.status is GoalStatus.ACTIVE and record.control_request is None:
                     record.status = GoalStatus.PENDING
         self.goals = [record.text for record in self.goal_records]
         self.goal_attempts = [record.attempts for record in self.goal_records]
@@ -391,7 +490,13 @@ class GoalContext:
         """Capture mutable goal state for atomic mutation rollback."""
         return {
             "goal_records": [
-                dataclasses.replace(record, files=list(record.files))
+                dataclasses.replace(
+                    record,
+                    files=list(record.files),
+                    control_request=(
+                        dict(record.control_request) if record.control_request is not None else None
+                    ),
+                )
                 for record in self.goal_records
             ],
             "goals": list(self.goals),
@@ -410,7 +515,13 @@ class GoalContext:
         raw_records = snapshot.get("goal_records", [])
         records = raw_records if isinstance(raw_records, list) else []
         self.goal_records = [
-            dataclasses.replace(record, files=list(record.files))
+            dataclasses.replace(
+                record,
+                files=list(record.files),
+                control_request=(
+                    dict(record.control_request) if record.control_request is not None else None
+                ),
+            )
             for record in records
             if isinstance(record, GoalRecord)
         ]
@@ -744,6 +855,94 @@ def _make_goal_mutation_tools(
     return [append_goal, insert_goal]
 
 
+def _make_phase_control_tools(
+    callback: Callable[[str, str, str], Awaitable[dict[str, object]]],
+    event: asyncio.Event | None = None,
+) -> list[ToolLike]:
+    """Return the four runtime phase-plan control tools.
+
+    ``phase_id`` is the opaque stable ID shown in the dynamic goal table, not
+    the numeric position.  The callback owns all validation and persistence.
+    An active-phase request sets *event* only after its durable request record
+    has been written; ordinary pending-plan mutations deliberately do not end
+    the current agent phase.
+    """
+    from lauren_ai._tools import TOOL_META, ToolMeta, tool
+    from agenthicc.tools.capabilities import tool_control
+
+    def _wrap(operation: str, name: str, description: str) -> ToolLike:
+        async def invoke(phase_id: str, reason: str) -> dict[str, object]:
+            result = await callback(operation, phase_id, reason)
+            if event is not None and result.get("control_requested") is True:
+                event.set()
+            return result
+
+        invoke.__name__ = name
+        invoke.__doc__ = description
+        decorated = tool_control(tool()(invoke))
+        return decorated
+
+    tools = [
+        _wrap(
+            "postpone",
+            "postpone_phase",
+            """Defer a planned phase until the other eligible phases have run.
+
+            Args:
+                phase_id: The stable phase ID from the current goal list.
+                reason: Why this phase should be deferred.
+            """,
+        ),
+        _wrap(
+            "skip",
+            "skip_phase",
+            """Skip a planned phase without claiming that it was verified.
+
+            Args:
+                phase_id: The stable phase ID from the current goal list.
+                reason: Why this phase is not required or cannot be run.
+            """,
+        ),
+        _wrap(
+            "bring_forward",
+            "bring_forward_phase",
+            """Move a pending or postponed phase to the front of eligible work.
+
+            Args:
+                phase_id: The stable phase ID from the current goal list.
+                reason: Why this phase should be handled earlier.
+            """,
+        ),
+        _wrap(
+            "delete",
+            "delete_phase",
+            """Logically delete a planned phase while retaining its history.
+
+            Args:
+                phase_id: The stable phase ID from the current goal list.
+                reason: Why this phase should be removed from future work.
+            """,
+        ),
+    ]
+
+    # Tighten the provider-facing contract explicitly.  The callable
+    # annotations provide the portable types; these keywords prevent models
+    # from smuggling a numeric index or unrelated control fields into a call.
+    for function in tools:
+        metadata = cast(ToolMeta, vars(function)[TOOL_META])
+        input_schema = metadata.parameters.get("input_schema")
+        if isinstance(input_schema, dict):
+            input_schema["additionalProperties"] = False
+            properties = input_schema.get("properties")
+            if isinstance(properties, dict):
+                for key in ("phase_id", "reason"):
+                    value = properties.get(key)
+                    if isinstance(value, dict):
+                        value["type"] = "string"
+            input_schema["required"] = ["phase_id", "reason"]
+    return tools
+
+
 class GoalFlowRunner(CodePlanRunner):
     """State-machine runner for goal_flow.
 
@@ -779,6 +978,32 @@ class GoalFlowRunner(CodePlanRunner):
             max_text = _DEFAULT_MAX_GOAL_TEXT_CHARS
         return min(max_goals, _MAX_CONFIGURED_GOALS), min(max_text, _MAX_CONFIGURED_GOAL_TEXT_CHARS)
 
+    def _phase_control_limits(self) -> tuple[int, int]:
+        """Return configured ``(reason_chars, receipt_count)`` limits."""
+        params = self._cfg.params
+        reason_chars = (
+            params.max_phase_control_reason_chars
+            if isinstance(params, GoalFlowParams)
+            else _DEFAULT_MAX_PHASE_CONTROL_REASON_CHARS
+        )
+        receipt_count = (
+            params.max_phase_mutation_receipts
+            if isinstance(params, GoalFlowParams)
+            else _MAX_MUTATION_RECEIPTS
+        )
+        if not isinstance(reason_chars, int) or isinstance(reason_chars, bool) or reason_chars < 1:
+            reason_chars = _DEFAULT_MAX_PHASE_CONTROL_REASON_CHARS
+        if (
+            not isinstance(receipt_count, int)
+            or isinstance(receipt_count, bool)
+            or receipt_count < 1
+        ):
+            receipt_count = _MAX_MUTATION_RECEIPTS
+        return (
+            min(reason_chars, _MAX_CONFIGURED_PHASE_CONTROL_REASON_CHARS),
+            min(receipt_count, _MAX_CONFIGURED_MUTATION_RECEIPTS),
+        )
+
     @staticmethod
     def _mutation_error(code: str, message: str, fix: str) -> dict[str, object]:
         """Return a bounded, actionable goal-mutation rejection."""
@@ -789,6 +1014,27 @@ class GoalFlowRunner(CodePlanRunner):
             "fix": fix[:512],
             "message": f"{message[:400]} Fix: {fix[:400]}",
         }
+
+    def _emit_phase_control_rejected(
+        self,
+        operation: str,
+        phase_id: str,
+        error_code: str,
+    ) -> None:
+        """Project one bounded phase-control rejection into the journal."""
+        try:
+            conv_store = self._cfg.conv_store
+        except AttributeError:
+            return
+        append_event = conv_store.append_event
+        append_event(
+            "phase_control_rejected",
+            {
+                "operation": operation,
+                "phase_id": phase_id[:128] if isinstance(phase_id, str) else "",
+                "error_code": error_code,
+            },
+        )
 
     async def _append_goal(self, ctx: GoalContext, goal: str) -> dict[str, object]:
         """Append one goal through the shared atomic mutation path."""
@@ -802,6 +1048,28 @@ class GoalFlowRunner(CodePlanRunner):
     ) -> dict[str, object]:
         """Insert one goal through the shared atomic mutation path."""
         return await self._mutate_goal(ctx, operation="insert", goal=goal, index=index)
+
+    async def _postpone_phase(
+        self, ctx: GoalContext, phase_id: str, reason: str
+    ) -> dict[str, object]:
+        """Postpone a pending or active planned phase."""
+        return await self._control_phase(ctx, "postpone", phase_id, reason)
+
+    async def _skip_phase(self, ctx: GoalContext, phase_id: str, reason: str) -> dict[str, object]:
+        """Skip a pending or active planned phase."""
+        return await self._control_phase(ctx, "skip", phase_id, reason)
+
+    async def _bring_forward_phase(
+        self, ctx: GoalContext, phase_id: str, reason: str
+    ) -> dict[str, object]:
+        """Bring a pending or postponed planned phase forward."""
+        return await self._control_phase(ctx, "bring_forward", phase_id, reason)
+
+    async def _delete_phase(
+        self, ctx: GoalContext, phase_id: str, reason: str
+    ) -> dict[str, object]:
+        """Logically delete a pending or active planned phase."""
+        return await self._control_phase(ctx, "delete", phase_id, reason)
 
     async def _mutate_goal(
         self,
@@ -907,7 +1175,7 @@ class GoalFlowRunner(CodePlanRunner):
             ctx.goal_mutation_receipts = [
                 *ctx.goal_mutation_receipts,
                 receipt.to_payload(),
-            ][-_MAX_MUTATION_RECEIPTS:]
+            ][-self._phase_control_limits()[1] :]
             ctx._sync_legacy_views()
             handle.attach_context(ctx)
             try:
@@ -948,6 +1216,430 @@ class GoalFlowRunner(CodePlanRunner):
                     "the new goal is pending."
                 ),
             }
+
+    async def _control_phase(
+        self,
+        ctx: GoalContext,
+        operation: str,
+        phase_id: str,
+        reason: str,
+    ) -> dict[str, object]:
+        """Apply or durably request one phase-plan control operation."""
+        async with self._goal_mutation_lock:
+
+            def reject(code: str, message: str, fix: str) -> dict[str, object]:
+                result = self._mutation_error(code, message, fix)
+                self._emit_phase_control_rejected(operation, phase_id, code)
+                return result
+
+            if ctx.state not in {GoalState.IMPLEMENT_GOAL, GoalState.VERIFY_GOAL}:
+                return reject(
+                    "phase_control_unavailable_phase",
+                    "Phase controls are available only after the initial goal list is finalized.",
+                    "Call this tool during IMPLEMENT_GOAL or VERIFY_GOAL with a stable phase_id.",
+                )
+            if operation not in _PHASE_CONTROL_OPERATIONS:
+                return reject(
+                    "phase_control_unknown_operation",
+                    "The requested phase control is not supported.",
+                    "Use postpone_phase, skip_phase, bring_forward_phase, or delete_phase.",
+                )
+            if not isinstance(phase_id, str) or not phase_id.strip():
+                return reject(
+                    "phase_id_invalid",
+                    "The phase was rejected: phase_id must be a non-empty stable ID.",
+                    "Copy phase_id exactly from the current ordered phase list.",
+                )
+            if not isinstance(reason, str) or not reason.strip():
+                return reject(
+                    "phase_control_reason_empty",
+                    "The phase control was rejected: reason must not be empty.",
+                    "Explain briefly why this phase should be changed.",
+                )
+            reason = reason.strip()
+            max_reason_chars, _receipt_limit = self._phase_control_limits()
+            if len(reason) > max_reason_chars:
+                return reject(
+                    "phase_control_reason_too_long",
+                    f"The phase control was rejected: reason exceeds {max_reason_chars} characters.",
+                    "Provide a concise reason for the phase-plan change.",
+                )
+            record = next(
+                (
+                    candidate
+                    for candidate in ctx.goal_records
+                    if candidate.goal_id == phase_id.strip()
+                ),
+                None,
+            )
+            if record is None:
+                return reject(
+                    "phase_id_unknown",
+                    "The phase was rejected: phase_id is not in the current goal list.",
+                    "Use a phase_id from the latest ordered goal list shown in the prompt.",
+                )
+
+            handle = self._cfg.workflow_handle
+            if handle is None or not handle.checkpoint_supported:
+                return reject(
+                    "phase_control_checkpoint_unavailable",
+                    "The phase control was not applied because durable checkpointing is unavailable.",
+                    "Resume this workflow with durable checkpoint storage enabled.",
+                )
+            if handle.claim_owner_id is not None:
+                claim_owner = handle.checkpoint_store.claim_owner(handle.run_id)
+                if claim_owner != handle.claim_owner_id:
+                    return reject(
+                        "phase_control_checkpoint_conflict",
+                        "The phase control was rejected because this owner no longer holds the run claim.",
+                        "Resume the run through its live owner before changing the phase plan.",
+                    )
+
+            current_status = record.status
+            if current_status is GoalStatus.POSTPONED and operation == "postpone":
+                return {
+                    "ok": True,
+                    "operation": operation,
+                    "phase_id": record.goal_id,
+                    "disposition": current_status.value,
+                    "idempotent": True,
+                    "message": "Phase is already postponed; no change was needed.",
+                }
+            if operation == "postpone" and current_status is GoalStatus.ACTIVE:
+                alternatives = [
+                    candidate
+                    for candidate in ctx.goal_records
+                    if candidate.goal_id != record.goal_id and candidate.status.is_unresolved
+                ]
+                if not alternatives:
+                    return reject(
+                        "phase_control_no_alternative",
+                        "The active phase cannot be postponed because it is the only unresolved phase.",
+                        "Finish it, skip it with a documented reason, or add another goal first.",
+                    )
+                if record.control_request is not None:
+                    if record.control_request.get("operation") == operation:
+                        return {
+                            "ok": True,
+                            "operation": operation,
+                            "phase_id": record.goal_id,
+                            "control_requested": True,
+                            "disposition": "control_requested",
+                            "idempotent": True,
+                            "message": "The same active phase control is already checkpointed.",
+                        }
+                    return reject(
+                        "phase_control_already_requested",
+                        "A different active phase control is already waiting for the safe boundary.",
+                        "Allow the current control to finish before requesting another control.",
+                    )
+                return await self._request_active_control(ctx, record, operation, reason)
+            if current_status is GoalStatus.ACTIVE:
+                if operation == "bring_forward":
+                    return reject(
+                        "phase_control_active_bring_forward",
+                        "The active phase is already being handled and cannot be brought forward.",
+                        "Use bring_forward_phase for a pending or postponed phase.",
+                    )
+                if record.control_request is not None:
+                    if record.control_request.get("operation") == operation:
+                        return {
+                            "ok": True,
+                            "operation": operation,
+                            "phase_id": record.goal_id,
+                            "control_requested": True,
+                            "disposition": "control_requested",
+                            "idempotent": True,
+                            "message": "The same active phase control is already checkpointed.",
+                        }
+                    return reject(
+                        "phase_control_already_requested",
+                        "A different active phase control is already waiting for the safe boundary.",
+                        "Allow the current control to finish before requesting another control.",
+                    )
+                return await self._request_active_control(ctx, record, operation, reason)
+            if current_status.is_terminal:
+                if operation in {"skip", "delete"}:
+                    return {
+                        "ok": True,
+                        "operation": operation,
+                        "phase_id": record.goal_id,
+                        "disposition": current_status.value,
+                        "idempotent": True,
+                        "message": f"Phase is already {current_status.value}; no change was needed.",
+                    }
+                    return reject(
+                        "phase_control_terminal",
+                        f"The phase is already terminal ({current_status.value}) and cannot be reordered.",
+                        "Choose a pending or postponed phase from the current list.",
+                    )
+            if operation == "bring_forward" and current_status is GoalStatus.PENDING:
+                first_pending = next(
+                    (
+                        candidate
+                        for candidate in ctx.goal_records
+                        if candidate.status is GoalStatus.PENDING
+                        and candidate.goal_id != ctx.active_goal_id
+                    ),
+                    None,
+                )
+                if first_pending is record:
+                    return {
+                        "ok": True,
+                        "operation": operation,
+                        "phase_id": record.goal_id,
+                        "disposition": current_status.value,
+                        "idempotent": True,
+                        "message": "Phase is already next among eligible work; no change was needed.",
+                    }
+
+            snapshot = ctx.goal_snapshot()
+            previous_status = current_status.value
+            if operation == "postpone":
+                record.status = GoalStatus.POSTPONED
+            elif operation == "skip":
+                record.status = GoalStatus.SKIPPED
+            elif operation == "delete":
+                record.status = GoalStatus.DELETED
+            elif operation == "bring_forward":
+                record.status = GoalStatus.PENDING
+                position = ctx.goal_records.index(record)
+                first_pending_position = next(
+                    (
+                        candidate_index
+                        for candidate_index, candidate in enumerate(ctx.goal_records)
+                        if candidate.goal_id != record.goal_id
+                        and candidate.status is GoalStatus.PENDING
+                    ),
+                    position,
+                )
+                if position > first_pending_position:
+                    ctx.goal_records.insert(
+                        first_pending_position,
+                        ctx.goal_records.pop(position),
+                    )
+
+            result = await self._commit_phase_mutation(
+                ctx,
+                record,
+                operation=cast(Literal["postpone", "skip", "bring_forward", "delete"], operation),
+                previous_status=previous_status,
+                reason=reason,
+                snapshot=snapshot,
+            )
+            return result
+
+    async def _request_active_control(
+        self,
+        ctx: GoalContext,
+        record: GoalRecord,
+        operation: str,
+        reason: str,
+    ) -> dict[str, object]:
+        """Checkpoint an active-phase request before ending the agent turn."""
+        snapshot = ctx.goal_snapshot()
+        record.control_request = {
+            "operation": operation,
+            "reason": reason,
+            "phase": ctx.state.name,
+        }
+        handle = self._cfg.workflow_handle
+        assert handle is not None  # checked by _control_phase
+        handle.attach_context(ctx)
+        try:
+            handle.save_checkpoint(reason="phase_control_requested")
+        except Exception as exc:  # noqa: BLE001
+            ctx.restore_goal_snapshot(snapshot)
+            handle.attach_context(ctx)
+            self._emit_phase_control_rejected(
+                operation,
+                record.goal_id,
+                "phase_control_checkpoint_unavailable",
+            )
+            return self._mutation_error(
+                "phase_control_checkpoint_unavailable",
+                f"The phase control was not requested because its checkpoint failed: {type(exc).__name__}.",
+                "Retry the phase control after durable checkpoint storage is available.",
+            )
+        self._cfg.conv_store.append_event(
+            "phase_control_requested",
+            {
+                "operation": operation,
+                "phase_id": record.goal_id,
+                "reason": reason,
+                "phase": ctx.state.name,
+            },
+        )
+        return {
+            "ok": True,
+            "operation": operation,
+            "phase_id": record.goal_id,
+            "control_requested": True,
+            "disposition": "control_requested",
+            "message": (
+                "The active phase control was checkpointed. Stop starting new work; "
+                "the runner will apply it at this safe boundary."
+            ),
+        }
+
+    async def _commit_phase_mutation(
+        self,
+        ctx: GoalContext,
+        record: GoalRecord,
+        *,
+        operation: Literal["postpone", "skip", "bring_forward", "delete"],
+        previous_status: str,
+        reason: str,
+        snapshot: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Commit a non-active plan change through the existing checkpoint."""
+        handle = self._cfg.workflow_handle
+        if handle is None or not handle.checkpoint_supported:  # pragma: no cover - caller guard
+            ctx.restore_goal_snapshot(snapshot)
+            return self._mutation_error(
+                "phase_control_checkpoint_unavailable",
+                "The phase control could not be checkpointed.",
+                "Resume with durable checkpoint storage enabled.",
+            )
+        revision = ctx.goal_list_revision + 1
+        index = ctx.goal_records.index(record)
+        receipt = GoalMutationReceipt(
+            revision=revision,
+            operation=operation,
+            goal_id=record.goal_id,
+            index=index,
+            phase=ctx.state.name,
+            active_goal_id=ctx.active_goal_id or None,
+            previous_status=previous_status,
+            new_status=record.status.value,
+            reason=reason,
+        )
+        ctx.goal_list_revision = revision
+        ctx.goal_mutation_receipts = [
+            *ctx.goal_mutation_receipts,
+            receipt.to_payload(),
+        ][-self._phase_control_limits()[1] :]
+        ctx._sync_legacy_views()
+        handle.attach_context(ctx)
+        try:
+            handle.save_checkpoint(reason="phase_plan_mutated")
+        except Exception as exc:  # noqa: BLE001
+            ctx.restore_goal_snapshot(snapshot)
+            handle.attach_context(ctx)
+            self._emit_phase_control_rejected(
+                operation,
+                record.goal_id,
+                "phase_control_checkpoint_unavailable",
+            )
+            return self._mutation_error(
+                "phase_control_checkpoint_unavailable",
+                f"The phase control was not applied because its checkpoint failed: {type(exc).__name__}.",
+                "Retry the phase control after durable checkpoint storage is available.",
+            )
+        self._cfg.conv_store.append_event(
+            "phase_plan_mutated",
+            {
+                "operation": operation,
+                "phase_id": record.goal_id,
+                "previous_status": previous_status,
+                "disposition": record.status.value,
+                "reason": reason,
+                "goal_list_revision": revision,
+                "phase": ctx.state.name,
+            },
+        )
+        return {
+            "ok": True,
+            "operation": operation,
+            "phase_id": record.goal_id,
+            "disposition": record.status.value,
+            "goal_list_revision": revision,
+            "index": ctx.goal_records.index(record),
+            "message": f"Phase is now {record.status.value}; the plan was checkpointed.",
+        }
+
+    async def _finalize_active_control(self, ctx: GoalContext) -> GoalState | None:
+        """Apply a checkpointed active request exactly once at a safe boundary."""
+        record = ctx.active_record()
+        if record is None or record.control_request is None:
+            return None
+        request = dict(record.control_request)
+        operation = request.get("operation", "")
+        reason = request.get("reason", "")
+        if operation not in _PHASE_CONTROL_OPERATIONS:
+            raise RuntimeError("checkpoint contains an unknown active phase control")
+        snapshot = ctx.goal_snapshot()
+        previous_status = record.status.value
+        record.control_request = None
+        if operation == "postpone":
+            record.status = GoalStatus.POSTPONED
+        elif operation == "skip":
+            record.status = GoalStatus.SKIPPED
+        elif operation == "delete":
+            record.status = GoalStatus.DELETED
+        else:  # bring_forward is rejected while active and cannot be persisted here.
+            raise RuntimeError("active bring-forward request is invalid")
+
+        next_item = ctx.next_schedulable(exclude_goal_id=record.goal_id)
+        if next_item is None:
+            ctx.active_goal_id = ""
+            next_state = GoalState.SUMMARIZE
+        else:
+            ctx.goal_index, next_record = next_item
+            next_record.status = GoalStatus.ACTIVE
+            ctx.active_goal_id = next_record.goal_id
+            next_state = GoalState.IMPLEMENT_GOAL
+        revision = ctx.goal_list_revision + 1
+        index = ctx.goal_records.index(record)
+        receipt = GoalMutationReceipt(
+            revision=revision,
+            operation=cast(Literal["postpone", "skip", "bring_forward", "delete"], operation),
+            goal_id=record.goal_id,
+            index=index,
+            phase=ctx.state.name,
+            active_goal_id=ctx.active_goal_id or None,
+            previous_status=previous_status,
+            new_status=record.status.value,
+            reason=reason,
+        )
+        ctx.goal_list_revision = revision
+        ctx.goal_mutation_receipts = [
+            *ctx.goal_mutation_receipts,
+            receipt.to_payload(),
+        ][-self._phase_control_limits()[1] :]
+        ctx.state = next_state
+        ctx._sync_legacy_views()
+        handle = self._cfg.workflow_handle
+        if handle is None or not handle.checkpoint_supported:  # pragma: no cover - request guard
+            ctx.restore_goal_snapshot(snapshot)
+            raise RuntimeError("active phase control cannot finalize without checkpointing")
+        handle.attach_context(ctx)
+        handle.update_phase(
+            next_state.name.lower(),
+            self._phase_index(next_state),
+            ctx.phase_iteration,
+            persist=False,
+        )
+        try:
+            handle.save_checkpoint(reason="phase_plan_mutated")
+        except Exception:
+            ctx.restore_goal_snapshot(snapshot)
+            handle.attach_context(ctx)
+            raise
+        self._cfg.conv_store.append_event(
+            "phase_plan_mutated",
+            {
+                "operation": operation,
+                "phase_id": record.goal_id,
+                "previous_status": previous_status,
+                "disposition": record.status.value,
+                "reason": reason,
+                "goal_list_revision": revision,
+                "next_state": next_state.name,
+                "phase": ctx.state.name,
+            },
+        )
+        return next_state
 
     # ------------------------------------------------------------------ driver
     async def run(self, intent: str) -> GoalContext:
@@ -1086,11 +1778,11 @@ class GoalFlowRunner(CodePlanRunner):
         if index < 0 or index >= len(ctx.goal_records):
             raise ValueError(f"goal completion index is out of range: {goal_index!r}")
         record = ctx.goal_records[index]
-        if record.status is GoalStatus.VERIFIED:
+        if record.status.is_terminal:
             return
 
         record.status = GoalStatus.VERIFIED
-        pending = ctx.first_pending()
+        pending = ctx.next_schedulable(exclude_goal_id=record.goal_id)
         if pending is None:
             ctx.active_goal_id = ""
         else:
@@ -1196,6 +1888,9 @@ class GoalFlowRunner(CodePlanRunner):
     async def _implement_goal(self, ctx: GoalContext, memory: "ShortTermMemory") -> GoalState:
         """Loop until goal_implemented fires; return VERIFY_GOAL or FAILED."""
         self._active_phase_name = "implement_goal"
+        recovered_control = await self._finalize_active_control(ctx)
+        if recovered_control is not None:
+            return recovered_control
         record = ctx.active_record()
         if record is None:
             ctx.fail_reason = "implement phase has no active goal"
@@ -1212,6 +1907,14 @@ class GoalFlowRunner(CodePlanRunner):
                 _make_goal_mutation_tools(
                     lambda goal: self._append_goal(ctx, goal),
                     lambda index, goal: self._insert_goal(ctx, index, goal),
+                )
+            )
+            phase_tools.extend(
+                _make_phase_control_tools(
+                    lambda operation, phase_id, reason: self._control_phase(
+                        ctx, operation, phase_id, reason
+                    ),
+                    event,
                 )
             )
             await self.run_phase(
@@ -1232,6 +1935,13 @@ class GoalFlowRunner(CodePlanRunner):
                     "queue it at the end or insert_goal(index, goal) to place it at a "
                     "specific zero-based position. A goal mutation is not a phase "
                     "transition: continue the current goal. When the current goal is "
+                    "no longer appropriate, use postpone_phase(phase_id, reason), "
+                    "skip_phase(phase_id, reason), bring_forward_phase(phase_id, reason), "
+                    "or delete_phase(phase_id, reason), using the exact stable phase_id "
+                    "shown in the goal list. Controls for the active phase are applied "
+                    "at a safe boundary; after requesting one, do not start more work. "
+                    "For another pending or postponed phase, the control changes the "
+                    "plan immediately but does not interrupt the active phase. When the "
                     "implemented, call goal_implemented(summary, files). Only a "
                     "successful goal_implemented(summary, files) call changes phase; "
                     "prose such as 'done' never advances the workflow. You MUST call it."
@@ -1241,6 +1951,10 @@ class GoalFlowRunner(CodePlanRunner):
                 shared_memory=memory,
                 tools=phase_tools,
             )
+            if record.control_request is not None:
+                controlled_state = await self._finalize_active_control(ctx)
+                if controlled_state is not None:
+                    return controlled_state
             if event.is_set():
                 record.attempts += 1
                 record.implementation_summary = str(data.get("summary", ""))
@@ -1257,6 +1971,9 @@ class GoalFlowRunner(CodePlanRunner):
     async def _verify_goal(self, ctx: GoalContext, memory: "ShortTermMemory") -> GoalState:
         """Loop until verify_goal fires; branch to next goal, retry, or FAILED."""
         self._active_phase_name = "verify_goal"
+        recovered_control = await self._finalize_active_control(ctx)
+        if recovered_control is not None:
+            return recovered_control
         record = ctx.active_record()
         if record is None:
             ctx.fail_reason = "verify phase has no active goal"
@@ -1271,6 +1988,14 @@ class GoalFlowRunner(CodePlanRunner):
                 _make_goal_mutation_tools(
                     lambda goal: self._append_goal(ctx, goal),
                     lambda index, goal: self._insert_goal(ctx, index, goal),
+                )
+            )
+            phase_tools.extend(
+                _make_phase_control_tools(
+                    lambda operation, phase_id, reason: self._control_phase(
+                        ctx, operation, phase_id, reason
+                    ),
+                    event,
                 )
             )
             await self.run_phase(
@@ -1290,6 +2015,11 @@ class GoalFlowRunner(CodePlanRunner):
                     "necessary missing work, call append_goal(goal) or "
                     "insert_goal(index, goal); these tools do not change phase, so "
                     "continue verifying the current goal. Then call "
+                    "postpone_phase(phase_id, reason), skip_phase(phase_id, reason), "
+                    "bring_forward_phase(phase_id, reason), or delete_phase(phase_id, reason) "
+                    "when the ordered plan needs control, using an exact stable phase_id. "
+                    "An active-phase control is applied only at this safe boundary; after "
+                    "requesting one, start no new work. "
                     "verify_goal(satisfied, evidence). Only a successful "
                     "verify_goal(satisfied, evidence) call changes phase; prose such as "
                     "'done' never advances the workflow. You MUST call it."
@@ -1298,6 +2028,10 @@ class GoalFlowRunner(CodePlanRunner):
                 shared_memory=memory,
                 tools=phase_tools,
             )
+            if record.control_request is not None:
+                controlled_state = await self._finalize_active_control(ctx)
+                if controlled_state is not None:
+                    return controlled_state
             if event.is_set():
                 satisfied = bool(data.get("satisfied", False))
                 evidence = str(data.get("evidence", ""))
@@ -1306,7 +2040,7 @@ class GoalFlowRunner(CodePlanRunner):
                     # Loop back to the same goal's implementation phase (unbounded).
                     ctx._sync_legacy_views()
                     return GoalState.IMPLEMENT_GOAL
-                pending = ctx.first_pending()
+                pending = ctx.next_schedulable(exclude_goal_id=record.goal_id)
                 if pending is None:
                     next_state = GoalState.SUMMARIZE
                 else:
@@ -1329,19 +2063,21 @@ class GoalFlowRunner(CodePlanRunner):
     ) -> GoalState:
         """Loop until complete_workflow fires; return COMPLETE or FAILED."""
         self._active_phase_name = "summarize"
-        if any(record.status is not GoalStatus.VERIFIED for record in ctx.goal_records):
-            ctx.fail_reason = "summarize phase reached with pending or active goals"
+        if any(record.status.is_unresolved for record in ctx.goal_records):
+            ctx.fail_reason = "summarize phase reached with pending, postponed, or active goals"
             return GoalState.FAILED
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             event: asyncio.Event = asyncio.Event()
             data: dict[str, object] = {}
             goals_block = "\n".join(
-                f"- {g}  [attempts={ctx.goal_attempts[i]}]" for i, g in enumerate(ctx.goals)
+                f"- {record.text}  [phase_id={record.goal_id}] "
+                f"[disposition={record.status.value}] [attempts={record.attempts}]"
+                for record in ctx.goal_records
             )
             await self.run_phase(
                 intent=ctx.intent,
                 text=(
-                    f"All goals satisfied:\n{goals_block}\n\n"
+                    f"All planned phases have terminal dispositions:\n{goals_block}\n\n"
                     f"Files affected so far: {ctx.files_affected}"
                     if attempt == 1
                     else "Call complete_workflow(summary, files) now."
@@ -1349,7 +2085,8 @@ class GoalFlowRunner(CodePlanRunner):
                 stable_system_prompt=CACHE_CONTRACT,
                 system_prompt=(
                     "You are in the SUMMARIZE phase of goal_flow. Write a concise final "
-                    "summary of everything that was done and every file affected, then "
+                    "summary distinguishing verified, skipped, and deleted phases, "
+                    "including everything that was done and every file affected, then "
                     "call complete_workflow(summary, files). Only a successful "
                     "complete_workflow(summary, files) call changes phase; prose such as "
                     "'done' never advances the workflow. You MUST call it."
@@ -1360,7 +2097,7 @@ class GoalFlowRunner(CodePlanRunner):
                     event,
                     data,
                     can_complete=lambda: all(
-                        record.status is GoalStatus.VERIFIED for record in ctx.goal_records
+                        record.status.is_terminal for record in ctx.goal_records
                     ),
                 ),
             )
@@ -1386,6 +2123,8 @@ class GoalFlowParams(WorkflowParams):
     summarize_model: str = ""
     max_goals: int = _DEFAULT_MAX_GOALS
     max_goal_text_chars: int = _DEFAULT_MAX_GOAL_TEXT_CHARS
+    max_phase_control_reason_chars: int = _DEFAULT_MAX_PHASE_CONTROL_REASON_CHARS
+    max_phase_mutation_receipts: int = _MAX_MUTATION_RECEIPTS
 
     def get_phase_models(self) -> dict[str, str]:
         """Map phase name to configured model override."""
@@ -1438,7 +2177,12 @@ class GoalFlowWorkflow(WorkflowPlugin):
                 "You are in the IMPLEMENT_GOAL phase of goal_flow. Implement the "
                 "current goal. If you discover necessary missing work, call "
                 "append_goal(goal) or insert_goal(index, goal); those tools do not "
-                "change phase. Then call goal_implemented(summary, files) for the "
+                "change phase. You may control any planned phase with "
+                "postpone_phase(phase_id, reason), skip_phase(phase_id, reason), "
+                "bring_forward_phase(phase_id, reason), or delete_phase(phase_id, reason); "
+                "use the exact stable phase_id shown in the ordered list. A control of "
+                "the active phase is applied at a safe boundary, so start no new work "
+                "after requesting it. Then call goal_implemented(summary, files) for the "
                 "active goal; only that successful transition-tool call changes "
                 "phase, never prose."
             ),
@@ -1451,7 +2195,12 @@ class GoalFlowWorkflow(WorkflowPlugin):
                 "You are in the VERIFY_GOAL phase of goal_flow. Verify the current "
                 "goal is satisfied. If verification discovers necessary missing work, "
                 "call append_goal(goal) or insert_goal(index, goal); those tools do not "
-                "change phase. Then call verify_goal(satisfied, evidence); only a "
+                "change phase. You may control a planned phase with "
+                "postpone_phase(phase_id, reason), skip_phase(phase_id, reason), "
+                "bring_forward_phase(phase_id, reason), or delete_phase(phase_id, reason), "
+                "using the exact stable phase_id. Active controls wait for a safe "
+                "boundary, so start no new work after requesting one. Then call "
+                "verify_goal(satisfied, evidence); only a "
                 "successful transition-tool call changes phase, never prose."
             ),
         ),
@@ -1478,7 +2227,13 @@ class GoalFlowWorkflow(WorkflowPlugin):
         records: list[GoalRecord] = []
         completed = set(context.completed_goal_indices)
         for index, source in enumerate(context.goal_records):
-            record = dataclasses.replace(source, files=list(source.files))
+            record = dataclasses.replace(
+                source,
+                files=list(source.files),
+                control_request=(
+                    dict(source.control_request) if source.control_request is not None else None
+                ),
+            )
             if index in completed:
                 record.status = GoalStatus.VERIFIED
             if index < len(context.goal_attempts):
@@ -1494,7 +2249,9 @@ class GoalFlowWorkflow(WorkflowPlugin):
             records.append(record)
         active_goal_id = context.active_goal_id
         if active_goal_id and not any(
-            record.goal_id == active_goal_id and record.status is not GoalStatus.VERIFIED
+            record.goal_id == active_goal_id
+            and not record.status.is_terminal
+            and record.status is not GoalStatus.POSTPONED
             for record in records
         ):
             # Compatibility callers can still update completed_goal_indices
@@ -1502,17 +2259,21 @@ class GoalFlowWorkflow(WorkflowPlugin):
             # a now-verified record; select the first real pending/active
             # record or leave the cursor empty for summary/terminal state.
             active_goal_id = next(
-                (record.goal_id for record in records if record.status is not GoalStatus.VERIFIED),
+                (
+                    record.goal_id
+                    for record in records
+                    if record.status in {GoalStatus.PENDING, GoalStatus.ACTIVE}
+                ),
                 "",
             )
         for record in records:
-            if record.goal_id == active_goal_id and record.status is not GoalStatus.VERIFIED:
+            if record.goal_id == active_goal_id and not record.status.is_terminal:
                 record.status = GoalStatus.ACTIVE
         completed_indices = [
             index for index, record in enumerate(records) if record.status is GoalStatus.VERIFIED
         ]
         return {
-            "goal_list_version": 2,
+            "goal_list_version": 3,
             "intent": context.intent,
             "run_id": context.run_id,
             "state": context.state.name,
@@ -1601,7 +2362,10 @@ class GoalFlowWorkflow(WorkflowPlugin):
             for index, item in enumerate(raw_records):
                 if not isinstance(item, Mapping):
                     raise ValueError(f"goal record at index {index} is not an object")
-                goal_id = item.get("goal_id")
+                goal_id = item.get("goal_id", item.get("phase_id"))
+                raw_phase_id = item.get("phase_id")
+                if raw_phase_id is not None and raw_phase_id != goal_id:
+                    raise ValueError(f"goal record at index {index} has conflicting IDs")
                 text = item.get("text")
                 if not isinstance(goal_id, str) or not goal_id.strip():
                     raise ValueError(f"goal record at index {index} has no valid goal_id")
@@ -1655,6 +2419,34 @@ class GoalFlowWorkflow(WorkflowPlugin):
                     raise ValueError(
                         f"goal record created_phase at index {index} must be a non-empty string"
                     )
+                raw_control_request = item.get("control_request")
+                control_request: dict[str, str] | None = None
+                if raw_control_request is not None:
+                    if not isinstance(raw_control_request, Mapping):
+                        raise ValueError(
+                            f"goal record control_request at index {index} must be an object"
+                        )
+                    raw_operation = raw_control_request.get("operation")
+                    raw_reason = raw_control_request.get("reason")
+                    raw_phase = raw_control_request.get("phase")
+                    if raw_operation not in _PHASE_CONTROL_OPERATIONS:
+                        raise ValueError(
+                            f"unknown goal control operation at index {index}: {raw_operation!r}"
+                        )
+                    if not isinstance(raw_reason, str) or not raw_reason.strip():
+                        raise ValueError(f"goal record control reason at index {index} is invalid")
+                    if not isinstance(raw_phase, str) or raw_phase not in {
+                        GoalState.IMPLEMENT_GOAL.name,
+                        GoalState.VERIFY_GOAL.name,
+                    }:
+                        raise ValueError(f"goal record control phase at index {index} is invalid")
+                    if len(raw_reason.strip()) > _MAX_CONFIGURED_PHASE_CONTROL_REASON_CHARS:
+                        raise ValueError(f"goal record control reason at index {index} is too long")
+                    control_request = {
+                        "operation": str(raw_operation),
+                        "reason": raw_reason.strip(),
+                        "phase": raw_phase,
+                    }
                 records.append(
                     GoalRecord(
                         goal_id=goal_id,
@@ -1666,6 +2458,7 @@ class GoalFlowWorkflow(WorkflowPlugin):
                         files=cleaned_files,
                         created_revision=created_revision,
                         created_phase=created_phase,
+                        control_request=control_request,
                     )
                 )
         else:
@@ -1701,7 +2494,7 @@ class GoalFlowWorkflow(WorkflowPlugin):
         if isinstance(raw_receipts, list):
             previous_revision = 0
             record_ids = {record.goal_id for record in records}
-            for receipt_index, item in enumerate(raw_receipts[-_MAX_MUTATION_RECEIPTS:]):
+            for receipt_index, item in enumerate(raw_receipts[-_MAX_CONFIGURED_MUTATION_RECEIPTS:]):
                 if not isinstance(item, Mapping):
                     raise ValueError(f"goal mutation receipt {receipt_index} is not an object")
                 receipt = {str(key): value for key, value in item.items()}
@@ -1714,9 +2507,19 @@ class GoalFlowWorkflow(WorkflowPlugin):
                         "goal mutation receipts must have increasing positive revisions"
                     )
                 operation = receipt.get("operation")
-                if operation not in {"append", "insert"}:
+                if operation not in {
+                    "append",
+                    "insert",
+                    "postpone",
+                    "skip",
+                    "bring_forward",
+                    "delete",
+                }:
                     raise ValueError(f"unknown goal mutation operation: {operation!r}")
-                goal_id = receipt.get("goal_id")
+                goal_id = receipt.get("goal_id", receipt.get("phase_id"))
+                receipt_phase_id = receipt.get("phase_id")
+                if receipt_phase_id is not None and receipt_phase_id != goal_id:
+                    raise ValueError("goal mutation receipt has conflicting goal/phase IDs")
                 if not isinstance(goal_id, str) or goal_id not in record_ids:
                     raise ValueError("goal mutation receipt references an unknown goal_id")
                 receipt_index_value = _nonnegative(
@@ -1733,6 +2536,18 @@ class GoalFlowWorkflow(WorkflowPlugin):
                     not isinstance(active_receipt_id, str) or active_receipt_id not in record_ids
                 ):
                     raise ValueError("goal mutation receipt has an unknown active_goal_id")
+                previous_status = receipt.get("previous_status")
+                new_status = receipt.get("new_status")
+                reason = receipt.get("reason", "")
+                valid_statuses = {status.value for status in GoalStatus}
+                if previous_status is not None and previous_status not in valid_statuses:
+                    raise ValueError("goal mutation receipt has an invalid previous_status")
+                if new_status is not None and new_status not in valid_statuses:
+                    raise ValueError("goal mutation receipt has an invalid new_status")
+                if not isinstance(reason, str):
+                    raise ValueError("goal mutation receipt reason must be a string")
+                if len(reason) > _MAX_CONFIGURED_PHASE_CONTROL_REASON_CHARS:
+                    raise ValueError("goal mutation receipt reason is too long")
                 receipt["revision"] = revision
                 receipt["index"] = receipt_index_value
                 receipts.append(receipt)
@@ -1747,7 +2562,7 @@ class GoalFlowWorkflow(WorkflowPlugin):
             active_goal_id = ""
         if (
             records
-            and any(record.status is not GoalStatus.VERIFIED for record in records)
+            and any(record.status.is_unresolved for record in records)
             and not active_goal_id
             and state
             in {
@@ -1764,13 +2579,18 @@ class GoalFlowWorkflow(WorkflowPlugin):
             if (
                 legacy_index < 0
                 or legacy_index >= len(records)
-                or records[legacy_index].status is GoalStatus.VERIFIED
+                or records[legacy_index].status.is_terminal
+                or records[legacy_index].status is GoalStatus.POSTPONED
             ):
                 raise ValueError("legacy goal cursor does not identify a pending goal")
             active_goal_id = records[legacy_index].goal_id
         if active_goal_id:
             for record in records:
-                if record.goal_id == active_goal_id and record.status is not GoalStatus.VERIFIED:
+                if (
+                    record.goal_id == active_goal_id
+                    and not record.status.is_terminal
+                    and record.status is not GoalStatus.POSTPONED
+                ):
                     record.status = GoalStatus.ACTIVE
                     break
 
@@ -1802,16 +2622,32 @@ class GoalFlowWorkflow(WorkflowPlugin):
             record.goal_id == restored.active_goal_id for record in restored.goal_records
         ):
             raise ValueError("active_goal_id does not identify a goal record")
-        if (
-            restored.active_goal_id
-            and next(
+        if restored.active_goal_id:
+            active_record = next(
                 record
                 for record in restored.goal_records
                 if record.goal_id == restored.active_goal_id
-            ).status
-            is GoalStatus.VERIFIED
-        ):
-            raise ValueError("active_goal_id cannot identify a verified goal")
+            )
+            if active_record.status.is_terminal or active_record.status is GoalStatus.POSTPONED:
+                raise ValueError("active_goal_id cannot identify a terminal or postponed goal")
+        control_records = [
+            record for record in restored.goal_records if record.control_request is not None
+        ]
+        if len(control_records) > 1:
+            raise ValueError("checkpoint contains multiple active phase control requests")
+        if control_records:
+            request_record = control_records[0]
+            if request_record.status is not GoalStatus.ACTIVE:
+                raise ValueError("active phase control request must belong to an active record")
+            if restored.active_goal_id != request_record.goal_id:
+                raise ValueError("active phase control request must identify active_goal_id")
+            if (
+                request_record.control_request is not None
+                and request_record.control_request.get("phase") != restored.state.name
+            ):
+                raise ValueError(
+                    "active phase control request phase does not match checkpoint state"
+                )
         if restored.goal_records:
             restored._sync_legacy_views()
         return restored
@@ -1837,5 +2673,13 @@ class GoalFlowWorkflow(WorkflowPlugin):
             max_goals=_positive_int(source.get("max_goals"), _DEFAULT_MAX_GOALS),
             max_goal_text_chars=_positive_int(
                 source.get("max_goal_text_chars"), _DEFAULT_MAX_GOAL_TEXT_CHARS
+            ),
+            max_phase_control_reason_chars=_positive_int(
+                source.get("max_phase_control_reason_chars"),
+                _DEFAULT_MAX_PHASE_CONTROL_REASON_CHARS,
+            ),
+            max_phase_mutation_receipts=_positive_int(
+                source.get("max_phase_mutation_receipts"),
+                _MAX_MUTATION_RECEIPTS,
             ),
         )

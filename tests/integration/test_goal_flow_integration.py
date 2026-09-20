@@ -277,3 +277,95 @@ async def test_dynamic_goal_mutation_survives_failure_checkpoint_and_rehydration
         assert len(restored.goal_mutation_receipts) == 1
     finally:
         conversation.close()
+
+
+@pytest.mark.asyncio
+async def test_active_phase_control_rehydrates_and_finalizes_after_provider_failure(
+    tmp_path: Path,
+) -> None:
+    """A crash after request does not replay the controlled active phase."""
+    conversation = SessionConversation.open(
+        "goal-flow-control-recovery",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    try:
+        store = WorkflowCheckpointStore(
+            conversation.conversation_id,
+            root=tmp_path / "checkpoints",
+        )
+        handle = WorkflowRunHandle.create(
+            run_id="goal-control-recovery-run",
+            workflow=GoalFlowWorkflow,
+            conversation=conversation,
+            intent="recover a phase control",
+            checkpoint_store=store,
+        )
+        app = AppState.create()
+        config = SimpleNamespace(
+            app_state=app,
+            processor=SimpleNamespace(),
+            agent_runner=SimpleNamespace(),
+            cfg=AgenthiccConfig(),
+            workflow_handle=handle,
+            session_memory=conversation.memory,
+            params=None,
+            conv_store=app.conversation,
+        )
+        runner = GoalFlowRunner(config, None)
+        from agenthicc.workflows.goal_flow.runner import GoalContext
+
+        context = GoalContext(
+            intent="recover a phase control",
+            run_id=handle.run_id,
+            state=GoalState.IMPLEMENT_GOAL,
+            goals=["skip this", "finish this"],
+            shared_memory=conversation.memory,
+        )
+        handle.attach_context(context)
+        handle.update_phase("implement_goal", 2, 1)
+        active_id = context.active_goal_id
+        requested = await runner._skip_phase(context, active_id, "provider work made this obsolete")
+        assert requested["control_requested"] is True
+
+        handle.finalize_failure(RuntimeError("provider disconnected"), kind="provider_transient")
+        paused = store.load(handle.run_id)
+        assert paused is not None
+        assert paused.status == "paused"
+        assert paused.reason == "provider_transient"
+
+        restored_handle = WorkflowRunHandle.from_checkpoint(
+            paused,
+            workflow=GoalFlowWorkflow,
+            conversation=conversation,
+            checkpoint_store=store,
+        )
+        resumed_config = SimpleNamespace(**vars(config))
+        resumed_config.workflow_handle = restored_handle
+        resumed = GoalFlowRunner(resumed_config, None)
+
+        async def complete_remaining(**kwargs: object) -> None:
+            tools = kwargs["tools"]
+            assert isinstance(tools, list)
+            by_name = {str(getattr(tool, "__name__", "")): tool for tool in tools}
+            context_now = restored_handle.context
+            assert isinstance(context_now, GoalContext)
+            if "IMPLEMENT_GOAL" in str(kwargs["system_prompt"]):
+                await by_name["goal_implemented"](summary="Implemented remaining work.", files=[])
+            elif "VERIFY_GOAL" in str(kwargs["system_prompt"]):
+                await by_name["verify_goal"](satisfied=True, evidence="Recovery checks passed.")
+            elif "SUMMARIZE" in str(kwargs["system_prompt"]):
+                await by_name["complete_workflow"](summary="Recovered safely.", files=[])
+            else:  # pragma: no cover - protects the fake from silently drifting
+                raise AssertionError("unexpected resumed phase")
+
+        resumed.run_phase = complete_remaining  # type: ignore[method-assign]
+        result = await resumed.resume(restored_handle.context)
+
+        assert result.state is GoalState.COMPLETE
+        assert result.goal_records[0].status is GoalStatus.SKIPPED
+        assert result.goal_records[1].status is GoalStatus.VERIFIED
+        assert result.goal_list_revision == 1
+        assert result.active_goal_id == ""
+    finally:
+        conversation.close()

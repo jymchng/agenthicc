@@ -276,3 +276,121 @@ async def test_goal_flow_dynamic_mutations_resume_with_stable_goal_identity(
         )
     finally:
         conversation.close()
+
+
+async def test_goal_flow_phase_control_tool_skips_active_goal_and_resumes_next(
+    tmp_path: Path,
+    processor,
+) -> None:
+    """The real provider loop persists an active control before continuing."""
+    conversation = SessionConversation.open(
+        "goal-flow-phase-control-e2e",
+        max_tokens=10_000,
+        journal_path=tmp_path / "conversation.jsonl",
+    )
+    try:
+        store = WorkflowCheckpointStore(
+            "goal-flow-phase-control-e2e",
+            root=tmp_path / "checkpoints",
+        )
+        handle = WorkflowRunHandle.create(
+            run_id="goal-phase-control-e2e-run",
+            workflow=GoalFlowWorkflow,
+            conversation=conversation,
+            intent="skip unnecessary work and finish the remaining goal",
+            checkpoint_store=store,
+        )
+
+        class DynamicControlTransport(MockTransport):
+            def __init__(self) -> None:
+                super().__init__()
+                self.active_id = ""
+
+            async def complete(self, *args: object, **kwargs: object):
+                if self._queue and self._queue[0].tool_calls:  # type: ignore[union-attr]
+                    queued = self._queue[0]
+                    call = queued.tool_calls[0]  # type: ignore[union-attr]
+                    if call.name == "skip_phase":
+                        call.input["phase_id"] = self.active_id
+                return await super().complete(*args, **kwargs)  # type: ignore[arg-type]
+
+        transport = DynamicControlTransport()
+        for index, step in enumerate(
+            [
+                ("complete_clarification", {"notes": "The ordered goals are clear."}),
+                "Clarification recorded.",
+                ("finalize_goals", {"goals": ["unnecessary goal", "required goal"]}),
+                "Goals recorded.",
+                # The first implementation phase controls its own active record.
+                ("skip_phase", {"phase_id": "__filled_by_test__", "reason": "not needed"}),
+                "The active phase was skipped.",
+                ("goal_implemented", {"summary": "Implemented the required goal.", "files": []}),
+                "Implementation recorded.",
+                ("verify_goal", {"satisfied": True, "evidence": "Focused tests passed."}),
+                "Verification recorded.",
+                (
+                    "complete_workflow",
+                    {"summary": "The required goal was verified.", "files": []},
+                ),
+                "Workflow complete.",
+            ]
+        ):
+            if isinstance(step, tuple):
+                transport.queue_response(_tool_use(index, step[0], step[1]))
+            else:
+                transport.queue_response(_text(index, step))
+        app = TUIAppState.create()
+        config = WorkflowConfig(
+            conv_store=app.conversation,
+            app_state=app,
+            processor=processor,
+            agent_runner=AgentRunnerBase(transport=transport, signals=SignalBus()),
+            approval_svc=None,
+            cfg=AgenthiccConfig(),
+            skills={},
+            plugin_tools=[],
+            mcp_registry=None,
+            mention_cache=MagicMock(),
+            agents_registry=MagicMock(),
+            session_memory=conversation.memory,
+            conversation_id=conversation.conversation_id,
+            workflow_handle=handle,
+        )
+
+        from agenthicc.workflows.goal_flow.runner import GoalFlowRunner
+
+        runner = GoalFlowRunner(config, None)
+        transport.active_id = ""  # populated when the first control call is consumed
+
+        async def sync_active_id() -> None:
+            context = handle.context
+            if context is not None:
+                active = context.active_record()
+                if active is not None:
+                    transport.active_id = active.goal_id
+
+        # The control request is the first implementation call.  The
+        # transport wrapper reads the live handle just before that request.
+        original_complete = transport.complete
+
+        async def complete_with_context(*args: object, **kwargs: object):
+            await sync_active_id()
+            return await original_complete(*args, **kwargs)
+
+        transport.complete = complete_with_context  # type: ignore[method-assign]
+        result = await runner.run("skip unnecessary work and finish the remaining goal")
+
+        assert result.state is GoalState.COMPLETE
+        assert [record.status for record in result.goal_records] == [
+            GoalStatus.SKIPPED,
+            GoalStatus.VERIFIED,
+        ]
+        assert any(receipt["operation"] == "skip" for receipt in result.goal_mutation_receipts)
+        checkpoint = store.load("goal-phase-control-e2e-run")
+        assert checkpoint is not None
+        fields = checkpoint.context["fields"]
+        assert isinstance(fields, dict)
+        assert fields["goal_records"][0]["status"] == "skipped"  # type: ignore[index]
+        assert fields["goal_records"][1]["status"] == "verified"  # type: ignore[index]
+    finally:
+        conversation.close()

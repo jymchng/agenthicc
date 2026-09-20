@@ -391,7 +391,7 @@ behaviour.
 ### `goal_flow` dynamic goal records
 
 `goal_flow` stores its ordered goal list in the normal typed workflow
-checkpoint. The `goal_list_version: 2` section is the canonical representation
+checkpoint. The `goal_list_version: 3` section is the canonical representation
 for new runs:
 
 | Field | Meaning |
@@ -399,20 +399,52 @@ for new runs:
 | `goal_records` | Ordered records with stable `goal_id`, text, status, attempts, implementation summary, verification evidence, and affected files |
 | `active_goal_id` | The current non-verified goal; `goal_index` is only a derived compatibility projection |
 | `goal_list_revision` | Starts at `0` after initial planning and increases once per accepted append/insert |
-| `goal_mutation_receipts` | A bounded audit window containing revision, operation, committed index, phase, and active ID |
+| `goal_mutation_receipts` | A bounded audit window containing revision, operation, committed index, phase, active ID, disposition, and bounded reason |
 
-`GoalStatus` is `pending`, `active`, or `verified`. The checkpoint writer
-persists a new record and receipt through `WorkflowRunHandle.save_checkpoint`
-before `append_goal` or `insert_goal` reports success. The owner lock serializes
-calls in one runner; the checkpoint store's monotonic revision and atomic
-replacement prevent a stale writer from replacing a newer checkpoint. A
-failed validation or write restores the pre-mutation context and does not
-publish a success event.
+`GoalStatus` is `pending`, `active`, `postponed`, `verified`, `skipped`, or
+`deleted`. `verified`, `skipped`, and `deleted` are terminal dispositions;
+`skipped` and `deleted` are never presented as verified work. The checkpoint
+writer persists a new record and receipt through
+`WorkflowRunHandle.save_checkpoint` before any `append_goal`, `insert_goal`,
+or phase-plan control reports success. The owner lock serializes calls in one
+runner; the checkpoint store's monotonic revision and atomic replacement
+prevent a stale writer from replacing a newer checkpoint. A failed validation
+or write restores the pre-mutation context and does not publish a success
+event.
+
+During `IMPLEMENT_GOAL` and `VERIFY_GOAL`, the agent also receives exactly
+these stable-ID controls:
+
+```python
+postpone_phase(phase_id: str, reason: str)
+skip_phase(phase_id: str, reason: str)
+bring_forward_phase(phase_id: str, reason: str)
+delete_phase(phase_id: str, reason: str)
+```
+
+The ordered goal table includes each opaque `phase_id`. Pending and postponed
+records can be changed immediately; a control targeting the active record is
+first checkpointed as `phase_control_requested`, then finalized at the safe
+boundary after the current agent turn. If the process stops between those two
+checkpoints, resume sees the request on the active `GoalRecord` and finalizes
+it exactly once. `bring_forward_phase` moves a pending/postponed record to the
+front of eligible work without interrupting the active record. Postponed work
+is promoted in deterministic list order only after ordinary pending work is
+exhausted. Deleted records remain as logical tombstones so evidence and audit
+history are never erased.
+
+The conversation journal carries bounded `phase_control_requested`,
+`phase_plan_mutated`, and `phase_control_rejected` events. The scroll appender
+renders each request, commit, or rejection as one compact notice; it does not
+print the full plan or unbounded prompt content.
 
 The records remain compact workflow metadata: provider conversation messages,
 memory objects, live tool handles, and artifact bodies are not copied into
 this section. Receipt retention is capped at 128 records
-(`src/agenthicc/workflows/goal_flow/runner.py:63`). Goal text is bounded
+(`src/agenthicc/workflows/goal_flow/runner.py:63`). Phase-control reasons are
+bounded by `GoalFlowParams.max_phase_control_reason_chars` (default 2048),
+and receipts can be bounded with `max_phase_mutation_receipts` (default 128).
+Goal text is bounded
 by `GoalFlowParams.max_goal_text_chars` (default 4096), and the list is bounded
 by `GoalFlowParams.max_goals` (default 1000); invalid values are rejected
 rather than silently truncated or clamped.

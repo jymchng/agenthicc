@@ -224,6 +224,44 @@ class TestSummaryLine:
         assert all("secret-goal-id" not in line for line in lines)
         assert console.print.call_args_list[-1].args == ()
 
+    def test_phase_control_events_render_bounded_notices(self):
+        appender, console = _make_appender()
+        phase_id = "a" * 200
+        reason = "r" * 400
+
+        _flush(
+            appender,
+            [
+                _ev(
+                    "phase_control_requested",
+                    operation="skip",
+                    phase_id=phase_id,
+                    reason=reason,
+                ),
+                _ev(
+                    "phase_plan_mutated",
+                    operation="delete",
+                    phase_id=phase_id,
+                    disposition="deleted",
+                    reason=reason,
+                ),
+                _ev(
+                    "phase_control_rejected",
+                    operation="postpone",
+                    phase_id=phase_id,
+                    error_code="phase_id_unknown",
+                ),
+            ],
+        )
+
+        lines = _str_calls(console)
+        assert any("Skipped phase" in line and "safe boundary" in line for line in lines)
+        assert any("Deleted phase" in line and "checkpointed" in line for line in lines)
+        assert any("Phase control rejected" in line for line in lines)
+        assert all(len(line) < 260 for line in lines)
+        assert "a" * 200 not in "\n".join(lines)
+        assert "r" * 400 not in "\n".join(lines)
+
     def test_second_group_independent(self):
         appender, console = _make_appender()
         # first group: 7 tools → summary on text

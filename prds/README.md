@@ -61,6 +61,7 @@ against the current source before implementing them.
 - [PRD-191 — Idempotent interrupted-tool recovery and MCP startup isolation](prd-191-idempotent-interrupted-tool-recovery-and-mcp-startup-isolation.md)
 - [PRD-192 — Configurable Ask User timeout and best-effort agent fallback](prd-192-configurable-ask-user-timeout-and-agent-fallback.md)
 - [PRD-193 — Session-scoped recurring `/loop` prompts and idle-safe scheduling](prd-193-session-scoped-recurring-loops.md)
+- [PRD-194 — Runtime phase control for `goal_flow`](prd-194-goal-flow-runtime-phase-control.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -349,6 +350,12 @@ defines immediate-but-idle-safe dispatch, coalesced missed intervals, one
 active loop per session, durable state with explicit resume, owner-lease
 protection, finite lifetime and failure bounds, security-policy inheritance,
 owner-safe run-now/deletion, and deterministic unit/integration/E2E coverage.
+
+PRD-194 implements runtime phase control for `goal_flow`. It extends PRD-185's
+stable planned-goal records with agent tools to postpone, skip, bring forward,
+or logically delete a planned phase while preserving the immutable control
+rails, active session conversation, safe tool boundaries, checkpoints, and
+resume semantics.
 
 ## Existing PRDs
 
