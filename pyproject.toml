@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     # PRD-169 requires the canonical transaction-safe tool exchange API.
-    "lauren-ai[anthropic,openai,ollama,litellm]>=1.5.0,<2",
+    "lauren-ai[anthropic,openai,ollama,litellm]>=1.6.0,<2",
     "anyio>=4.0",
     "typing-extensions>=4.11",
     "rich>=13.0",
@@ -24,7 +24,7 @@ book = ["Pillow>=10"]
 cloakbrowser = ["cloakbrowser==0.5.3"]
 playwright = ["playwright>=1.52,<2"]
 mcp = [
-    "lauren-ai[mcp]>=1.5.0,<2",
+    "lauren-ai[mcp]>=1.6.0,<2",
     "lauren-mcp[http,ws]>=1.1.0,<2",
 ]
 dev = [
