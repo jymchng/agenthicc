@@ -659,15 +659,19 @@ You can set the provider, model, base URL, and execution options in `.agenthicc/
 ## Subagents
 
 The built-in `spawn_subagents` tool delegates independent tasks to typed,
-concurrent workers. Workers inherit the parent tool ceiling, capability gate,
-approval service, workspace policy, provider options, and usage accounting;
-each still has isolated short-term memory. The `executor` role supports build
-and compile tasks, while `explorer`, `planner`, `implementer`, `tester`,
+concurrent workers. Workers inherit an immutable snapshot of the parent turn's
+effective mode, tool ceiling, capability gate, approval service, workspace
+policy, provider options, and usage accounting; each still has isolated
+short-term memory. Workers can exchange bounded messages with the main agent
+and same-pool peers, including clarification requests that resume through
+`answer_subagent` and `collect_subagent_results`. The `executor` role supports
+build and compile tasks, while `explorer`, `planner`, `implementer`, `tester`,
 `reviewer`, `documenter`, `verifier`, and `researcher` provide narrower roles.
 Timeouts and partial failures are reported in the aggregate and are not reused
 by resume. Each call accepts `timeout_s` in seconds (default `3600`). See the
 [subagents guide](./docs/guides/subagents.md) for the exact schema, lifecycle,
-security boundaries, cache semantics, and troubleshooting steps.
+communication protocol, security boundaries, cache semantics, and
+troubleshooting steps.
 
 ---
 

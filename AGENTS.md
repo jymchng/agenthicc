@@ -30,6 +30,7 @@ improvement backlog is [`PRD-138`](prds/prd-138-repository-improvement-roadmap.m
 | Terminal portability | `src/agenthicc/tui/terminal/`, `cbreak_reader.py` |
 | Workflow engine | `src/agenthicc/workflows/` |
 | Agent registry | `src/agenthicc/agents/` |
+| Subagent policy and communication | `src/agenthicc/subagents/policy.py`, `communication.py`, `pool.py` |
 | Tools and integrations | `src/agenthicc/tools/`, `agent_tools.py` |
 | Configuration/security | `config.py`, `security.py`, `tools/sandbox.py`, `plugins/trust.py` |
 | Memory and durability | `memory/`, `tools/fs/file_cache.py`, `tui/runtime/session_log.py` |

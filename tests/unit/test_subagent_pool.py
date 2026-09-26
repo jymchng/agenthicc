@@ -18,8 +18,8 @@ from agenthicc.subagents.pool import (
     SubagentResult,
     AggregatedResult,
     SubagentPool,
-    _make_yolo_app_state,
-    _make_yolo_workspace_access,
+    _make_child_app_state,
+    _make_child_workspace_access,
     _aggregate,
     _UnknownTypeWorker,
 )
@@ -31,24 +31,26 @@ from agenthicc.subagents.tool import _find_cached_result, _tasks_fingerprint
 pytestmark = pytest.mark.unit
 
 
-def test_subagent_policy_state_is_yolo_without_mutating_parent_mode() -> None:
+def test_subagent_policy_state_inherits_parent_mode_without_mutating_signal() -> None:
     parent = AppState.create()
     parent.active_mode.set(build_default_registry().get("Plan"))
 
-    child = _make_yolo_app_state(parent)
+    from agenthicc.subagents.policy import SubagentExecutionPolicy
+
+    child = _make_child_app_state(SubagentExecutionPolicy.from_app_state(parent))
 
     assert child is not None
     assert child is not parent
-    assert child.active_mode().name == "Yolo"
+    assert child.active_mode().name == "Plan"
     assert parent.active_mode().name == "Plan"
 
 
 def test_headless_subagent_policy_state_remains_absent() -> None:
-    assert _make_yolo_app_state(None) is None
+    assert _make_child_app_state(None) is None
 
 
 @pytest.mark.asyncio
-async def test_subagent_workspace_policy_uses_yolo_without_changing_parent(tmp_path) -> None:
+async def test_subagent_workspace_policy_inherits_safe_without_changing_parent(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
     workspace.mkdir()
@@ -69,16 +71,17 @@ async def test_subagent_workspace_policy_uses_yolo_without_changing_parent(tmp_p
         mode_provider=parent.active_mode,
         approval_service=DenyApproval(),  # type: ignore[arg-type]
     )
-    child = _make_yolo_app_state(parent)
-    child_policy = _make_yolo_workspace_access(parent_policy, child)
+    from agenthicc.subagents.policy import SubagentExecutionPolicy
+
+    child = _make_child_app_state(SubagentExecutionPolicy.from_app_state(parent))
+    child_policy = _make_child_workspace_access(parent_policy, child, DenyApproval())
 
     assert child is not None
     assert child_policy is not None
     result = await child_policy.authorize_tool("write_file", {"path": str(outside / "created.txt")})
 
-    assert result.allowed is True
-    assert result.code == "yolo_bypass"
-    assert child_policy.mode_name == "Yolo"
+    assert result.allowed is False
+    assert child_policy.mode_name == "Safe"
     assert parent_policy.mode_name == "Safe"
 
 

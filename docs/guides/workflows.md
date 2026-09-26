@@ -758,6 +758,35 @@ deadline; it defaults to `3600` (one hour), for example
 may still rely on `SubagentTypeSpec.max_turn_time_s` when no invocation override
 is supplied.
 
+### Subagent policy inheritance and communication
+
+Each worker receives a frozen `SubagentExecutionPolicy` snapshot captured at
+the parent turn's spawn boundary. It inherits the effective Safe, Plan, or
+Yolo mode, blocked and approval-required capabilities, the parent's visible
+tool ceiling, workspace scope, and stable prompt suffix. The role allow-list
+can narrow that ceiling but cannot broaden it. Workers use isolated reactive
+state and short-term memory; they do not receive the parent's transcript or
+hidden reasoning. Safe approvals continue through the session approval service,
+while Plan remains hard-blocked for side effects.
+
+`AgentMessageBroker` provides the only cross-worker communication path. It is
+created per pool and session, validates sender/recipient membership, bounds
+payloads and mailbox depth, and journals lifecycle transitions. Workers can
+send bounded findings, ask the main agent or a same-pool peer for clarification,
+and poll parent instructions. The parent can answer a pending question,
+deliver an instruction, and collect a pool that returned
+`status="awaiting_clarification"`. The parent provider is never recursively
+re-entered while a tool call is active: the answer and collection are later,
+correlated tool calls against the session-owned continuation handle.
+
+Messages are untrusted context and cannot change mode, approval, workspace,
+visible tools, or recipient. Large research or implementation artifacts must
+use the authorized filesystem/artifact tools and pass a bounded reference.
+Durable message records can be folded by `ConversationJournal` and replayed
+idempotently; missing workers produce an explicit orphaned question rather
+than an indefinite wait. See [the subagent guide](subagents.md) for the
+envelope and state-machine details.
+
 ### Checkpointing a custom runner
 
 #### Phase annotations and completed-boundary checkpoints

@@ -754,6 +754,41 @@ class ConversationJournal:
             }
         )
 
+    def agent_message_event(
+        self,
+        *,
+        pool_id: str,
+        conversation_id: str,
+        parent_run_id: str,
+        policy_revision: str,
+        event_kind: str,
+        payload: Mapping[str, object],
+    ) -> None:
+        """Persist one bounded parent/worker communication lifecycle event.
+
+        Communication records are auxiliary journal entries.  They never enter
+        the provider-message fold, but are durable enough to rehydrate pending
+        mail and questions after a process restart.
+        """
+        safe_payload = dict(payload)
+        self._write(
+            {
+                "seq": self._seq,
+                "kind": "agent_message_event",
+                "schema_version": 1,
+                "pool_id": str(pool_id)[:128],
+                "conversation_id": str(conversation_id)[:128],
+                "parent_run_id": str(parent_run_id)[:128],
+                "policy_revision": str(policy_revision)[:128],
+                "event_kind": str(event_kind)[:64],
+                "payload": safe_payload,
+            }
+        )
+
+    def fold_agent_message_events(self) -> list[dict[str, object]]:
+        """Return durable subagent communication events in journal order."""
+        return self._fold_subagent_kind("agent_message_event")
+
     def fold_subagent_worker_results(self) -> list[dict[str, object]]:
         """Return durable worker result records in journal order.
 

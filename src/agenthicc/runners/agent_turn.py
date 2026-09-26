@@ -1367,7 +1367,9 @@ class AgentTurnRunner:
         # PRD-124: inject spawn_subagents into every turn so any agent can
         # optionally spawn a concurrent subagent pool.
         if ctx.runner is not None:
+            from agenthicc.subagents.pool import _tool_name  # noqa: PLC0415
             from agenthicc.subagents.tool import make_spawn_subagents_tool  # noqa: PLC0415
+            from agenthicc.subagents.policy import SubagentExecutionPolicy  # noqa: PLC0415
             from agenthicc.runners.retry import RetryConfig  # noqa: PLC0415
 
             _ec = ctx.exec_cfg
@@ -1375,6 +1377,16 @@ class AgentTurnRunner:
                 max_retries=int(getattr(_ec, "transport_max_retries", 10)),
                 base_delay_s=float(getattr(_ec, "transport_retry_base_delay_s", 1.0)),
                 max_total_duration_s=float(getattr(_ec, "transport_retry_max_total_s", 0.0)),
+            )
+            _subagent_policy = SubagentExecutionPolicy.from_app_state(
+                ctx.app_state,
+                visible_tool_names=frozenset(_tool_name(item) for item in visible_tools),
+                system_prompt_suffix=ctx.system_prompt_suffix,
+                workspace_scope_identity=(
+                    str(ctx.workspace_access.scope.primary_root)
+                    if ctx.workspace_access is not None
+                    else ""
+                ),
             )
             spawn_tool = make_spawn_subagents_tool(
                 parent_runner=ctx.runner,
@@ -1397,13 +1409,26 @@ class AgentTurnRunner:
                 },
                 approval_svc=ctx.approval_svc,
                 workspace_access=ctx.workspace_access,
+                policy=_subagent_policy,
             )
             registry.register(spawn_tool, source="builtin")
-            spawn_name = getattr(spawn_tool, "__name__", getattr(spawn_tool, "name", ""))
+            spawn_name = _tool_name(spawn_tool)
             if (allowed_tool_names is None or spawn_name in allowed_tool_names) and not (
                 get_tool_capabilities(spawn_tool) & excluded_capabilities
             ):
                 visible_tools.append(spawn_tool)
+                populate_agent_tools(agent_instance, visible_tools)
+
+                communication_tools = vars(spawn_tool).get(
+                    "__agenthicc_subagent_communication_tools__", ()
+                )
+                for communication_tool in communication_tools:
+                    registry.register(communication_tool, source="builtin")
+                    communication_name = _tool_name(communication_tool)
+                    if (
+                        allowed_tool_names is None or communication_name in allowed_tool_names
+                    ) and not (get_tool_capabilities(communication_tool) & excluded_capabilities):
+                        visible_tools.append(communication_tool)
                 populate_agent_tools(agent_instance, visible_tools)
 
                 # The non-contract path embeds the available-tool catalogue

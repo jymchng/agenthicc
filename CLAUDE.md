@@ -100,6 +100,7 @@ user-visible records, not current API documentation.
 | Session orchestration | `runners/session_context.py`, `runners/tui_session.py`, `runners/headless.py` | Runtime construction, turn routing, shutdown |
 | Workflows | `workflows/` | Phase specs, runners, registry, built-in code-plan workflow |
 | Agents | `agents/` | Built-in and filesystem-discovered agent definitions |
+| Subagents | `subagents/policy.py`, `subagents/communication.py`, `subagents/pool.py` | Effective policy snapshots and bounded parent/peer worker communication |
 | Tools | `tools/`, `agent_tools.py` | Tool contracts, capabilities, approvals, MCP, FS/git/exec integrations |
 | Security | `tools/sandbox.py`, `tools/capability_gate.py`, `security.py`, `plugins/trust.py` | Paths, network, capabilities, trust |
 | Memory | `memory/`, `tools/fs/file_cache.py` | Tiers, journal, compaction, semantic index, durable file cache |

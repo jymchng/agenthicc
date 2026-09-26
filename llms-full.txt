@@ -3019,10 +3019,67 @@ class SubagentPool
 
 Runs a set of SubagentTasks concurrently bounded by *max_concurrent*.
 
+### SubagentExecutionPolicy
+
+```python
+@dataclass(frozen=True, slots=True)
+class SubagentExecutionPolicy
+```
+
+Immutable snapshot of the parent turn's effective mode, blocked and
+approval-required capabilities, visible-tool ceiling, workspace identity,
+prompt suffix, workflow coordinates, and policy revision. Workers construct
+isolated local mode and workspace adapters from this value.
+
+### AgentMessageEnvelope
+
+```python
+@dataclass(frozen=True, slots=True)
+class AgentMessageEnvelope
+```
+
+Bounded, correlated parent/child/peer message metadata for one pool.
+
+### AgentMessageBroker
+
+```python
+class AgentMessageBroker
+```
+
+Session-scoped per-pool broker for ordered mailboxes, clarification futures,
+membership validation, bounded payloads, lifecycle journaling, and replay.
+
+### CommunicationError
+
+```python
+class CommunicationError(ValueError)
+```
+
+Validation, ownership, quota, expiry, and cancellation error for agent
+communication calls.
+
+### PoolContinuationRegistry
+
+```python
+class PoolContinuationRegistry
+```
+
+Session-owned registry for pools that temporarily return
+`awaiting_clarification`.
+
+### PoolHandle
+
+```python
+@dataclass
+class PoolHandle
+```
+
+Correlated continuation handle containing the pool broker and live task.
+
 ### run_pool
 
 ```python
-def run_pool(tasks: 'list[SubagentTask]', parent_runner: 'AgentRunnerBase', parent_model: 'str', all_tools: 'list[object]', max_concurrent: 'int' = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: 'SubagentTypeRegistry' = <agenthicc.subagents.types.SubagentTypeRegistry object at 0x7df3d2626120>, tool_registry: 'ToolRegistry | None' = None, usage_ledger: "'UsageLedger | None'" = None, conversation_id: 'str' = '', parent_run_id: 'str' = '', provider_options: 'Mapping[str, object] | None' = None, timeout_s: 'float | None' = None, approval_svc: "'ApprovalService | None'" = None, workspace_access: "'WorkspaceAccessPolicy | None'" = None, conversation_journal: "'ConversationJournal | None'" = None, task_fingerprint: 'str' = '') -> 'AggregatedResult'
+def run_pool(tasks: 'list[SubagentTask]', parent_runner: 'AgentRunnerBase', parent_model: 'str', all_tools: 'list[object]', max_concurrent: 'int' = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: 'SubagentTypeRegistry' = <agenthicc.subagents.types.SubagentTypeRegistry object at 0x7df3d2626120>, tool_registry: 'ToolRegistry | None' = None, usage_ledger: "'UsageLedger | None'" = None, conversation_id: 'str' = '', parent_run_id: 'str' = '', provider_options: 'Mapping[str, object] | None' = None, timeout_s: 'float | None' = None, approval_svc: "'ApprovalService | None'" = None, workspace_access: "'WorkspaceAccessPolicy | None'" = None, conversation_journal: "'ConversationJournal | None'" = None, task_fingerprint: 'str' = '', policy: 'SubagentExecutionPolicy | None' = None, communication: 'AgentMessageBroker | None' = None) -> 'AggregatedResult'
 ```
 
 Create a SubagentPool and run it.  Convenience wrapper.
@@ -3030,7 +3087,7 @@ Create a SubagentPool and run it.  Convenience wrapper.
 ### make_spawn_subagents_tool
 
 ```python
-def make_spawn_subagents_tool(parent_runner: 'AgentRunnerBase', parent_model: str, all_tools: list[object], max_concurrent: int = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: agenthicc.subagents.types.SubagentTypeRegistry | None = None, tool_registry: 'ToolRegistry | None' = None, retry_config: 'RetryConfig | None' = None, usage_ledger: 'UsageLedger | None' = None, conversation_id: str = '', parent_run_id: str = '', provider_options: collections.abc.Mapping[str, object] | None = None, approval_svc: 'ApprovalService | None' = None, workspace_access: 'WorkspaceAccessPolicy | None' = None, conversation_journal: 'ConversationJournal | None' = None) -> collections.abc.Callable[..., object]
+def make_spawn_subagents_tool(parent_runner: 'AgentRunnerBase', parent_model: str, all_tools: list[object], max_concurrent: int = 4, app_state: 'AppState | None' = None, processor: 'EventProcessor | None' = None, conv_store: 'ConversationStore | None' = None, registry: agenthicc.subagents.types.SubagentTypeRegistry | None = None, tool_registry: 'ToolRegistry | None' = None, retry_config: 'RetryConfig | None' = None, usage_ledger: 'UsageLedger | None' = None, conversation_id: str = '', parent_run_id: str = '', provider_options: collections.abc.Mapping[str, object] | None = None, approval_svc: 'ApprovalService | None' = None, workspace_access: 'WorkspaceAccessPolicy | None' = None, conversation_journal: 'ConversationJournal | None' = None, policy: 'SubagentExecutionPolicy | None' = None) -> collections.abc.Callable[..., object]
 ```
 
 Return a ``spawn_subagents`` @tool()-decorated function.

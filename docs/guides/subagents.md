@@ -2,9 +2,10 @@
 
 `spawn_subagents` is the session-wide delegation tool. It lets the current
 agent explicitly fan out independent pieces of work to typed workers, wait for
-all of them, and receive one complete text digest. It is synchronous from the
-parent agent's point of view: the parent turn is suspended while the pool runs.
-The parent then gets another model turn with the aggregate as the tool result.
+all of them, and receive one complete text digest. It is normally synchronous
+from the parent agent's point of view. If a worker needs a decision, the pool
+returns a structured clarification request; the parent answers it through a
+continuation tool and then collects the still-running pool.
 The TUI and kernel projections still use bounded previews so a long chapter or
 source file does not make the screen unusable.
 
@@ -15,6 +16,8 @@ authoritative implementation is split across:
 |---|---|
 | Provider-facing tool and input validation | `src/agenthicc/subagents/tool.py` |
 | Worker lifecycle, filtering, retries, aggregation, and events | `src/agenthicc/subagents/pool.py` |
+| Immutable effective-mode policy snapshots | `src/agenthicc/subagents/policy.py` |
+| Parent/child/peer communication broker and tools | `src/agenthicc/subagents/communication.py` |
 | Built-in role prompts and allow-lists | `src/agenthicc/subagents/types.py` |
 | Per-turn injection into the parent agent | `src/agenthicc/runners/agent_turn.py` |
 | Durable worker/pool result records | `src/agenthicc/memory/journal.py` |
@@ -34,7 +37,7 @@ AgentTurnRunner._build_agent()
     ├─ creates a session-bound spawn_subagents callable
     │      closes over the parent transport, model, ConversationStore,
     │      session journal, retry/usage settings, approval service,
-    │      and workspace policy
+    │      workspace policy, and immutable effective-mode snapshot
     │
     └─ registers it in the parent provider tool schema
            │
@@ -52,6 +55,11 @@ tool.py validates and normalises every task
            │       yes → return cached digest; do not call the provider
            │       no  → construct SubagentPool
            │
+           ├─ creates a per-pool message broker and continuation handle
+           │       child questions return awaiting_clarification
+           │       parent answers through answer_subagent
+           │       collect_subagent_results resumes the same pool
+           │
            ▼
 SubagentPool.run()
   ├─ creates one isolated SubagentWorker per task
@@ -62,10 +70,13 @@ SubagentPool.run()
            ▼
 each SubagentWorker
   ├─ intersects role allow-list with the parent's already-filtered tools
+  ├─ intersects that ceiling with the immutable effective-mode snapshot
   ├─ builds a fresh ShortTermMemory(max_tokens=8_000)
-  ├─ builds role system prompt + optional [ADDITIONAL CONTEXT]
+  ├─ builds role prompt + inherited policy/communication instructions
+  │      + optional [ADDITIONAL CONTEXT]
   ├─ adds the final-response contract to the role prompt
-  ├─ installs capability and, when supplied, approval/workspace gates
+  ├─ installs child-local capability and approval/workspace gates
+  ├─ installs bounded parent/peer communication tools
   ├─ calls AgentRunnerBase.run() on the parent's transport
   ├─ asks once more for the final artefact if the provider returned empty prose
   ├─ persists the complete worker result to the session journal
@@ -94,6 +105,11 @@ complete aggregate are additionally written to the parent's
 `ConversationJournal`, which is the restart-safe persistence boundary. This
 isolation is what makes concurrent execution deterministic and prevents one
 worker from appending messages to another worker's provider conversation.
+
+The communication broker is the controlled exception to message isolation. It
+passes only bounded, typed envelopes between authenticated members of one pool;
+it never merges private transcripts or grants capabilities. Large findings
+must be written as authorized artifacts and passed by validated path/reference.
 
 There are therefore three different representations of a subagent result:
 
@@ -224,8 +240,8 @@ worker tools = parent-visible tools ∩ role.allowed_tools
 ```
 
 The parent-visible list has already been restricted by the active workflow
-phase and runtime mode. Each worker then installs `ToolCapabilityGate` using
-the same `AppState`. Consequently:
+phase and runtime mode. Each worker then installs `ToolCapabilityGate` from an
+immutable copy of the effective mode. Consequently:
 
 - Plan mode hard-blocks write, execute, git-write, network, control, and
   undeclared capabilities;
@@ -236,12 +252,12 @@ the same `AppState`. Consequently:
   in any built-in role allow-list.
 
 When the parent has an approval service, the child also installs
-`ApprovalGate` with the parent's approval service and workspace policy. Safe
-mode approvals therefore pause the same TUI approval request path instead of
-being silently bypassed by the nested runner. Workspace path authorization is
-performed against the same parent policy. In headless operation, approval
-behaviour depends on the approval service supplied by the headless session;
-the absence of an approval service does not create a new approval UI.
+`ApprovalGate` with the parent's approval service and an isolated policy bound
+to the same workspace scope. Safe-mode approvals therefore pause the same TUI
+approval request path instead of being silently bypassed by the nested runner.
+Plan hard blocks remain hard blocks. In headless operation, approval behaviour
+depends on the approval service supplied by the headless session; the absence
+of an approval service does not create a new approval UI.
 
 This is a ceiling, not a grant. A role can still fail because the parent phase
 did not expose a required tool, because the mode blocks it, because workspace
@@ -256,6 +272,12 @@ messages. The worker's system prompt is:
 
 ```text
 <role system prompt>
+
+## INHERITED RUNTIME POLICY
+<effective Safe, Plan, or Yolo instructions>
+
+## AGENT COMMUNICATION
+<ask_parent, send_parent_message, peer-mail, and untrusted-message rules>
 
 [ADDITIONAL CONTEXT]
 <task.context, when supplied>
@@ -277,6 +299,38 @@ the parent run when accounting is enabled.
 The parent receives only one aggregate tool result. Individual worker message
 histories are not appended to the parent prompt. This keeps parent context
 growth proportional to the bounded digest rather than to every worker turn.
+
+## Parent, child, and peer communication
+
+Each pool owns an `AgentMessageBroker` with authenticated mailboxes. The
+available control-plane operations are:
+
+| Operation | Direction | Purpose |
+|---|---|---|
+| `send_parent_message` | child → main | Send a bounded finding/status/handoff |
+| `ask_parent` | child → main | Ask for a missing decision or requirement |
+| `answer_subagent` | main → child | Resolve a correlated child question |
+| `send_subagent_message` | main → child | Send a bounded instruction at a safe turn boundary |
+| `poll_agent_messages` | child | Read ordered parent/peer mail |
+| `send_peer_message` | child → child | Coordinate within the same pool |
+| `ask_peer` / `answer_peer` | child ↔ child | Correlated peer clarification |
+| `collect_subagent_results` | main → pool | Collect a pool paused for clarification |
+
+The clarification flow is deliberately non-reentrant:
+
+```text
+child ask_parent
+  → durable question + pending pool result
+  → spawn_subagents returns awaiting_clarification
+  → main calls answer_subagent(pool_id, question_id, answer)
+  → same child memory resumes
+  → main calls collect_subagent_results(pool_id)
+```
+
+The parent provider is never invoked recursively while its tool call is on the
+stack. Messages are untrusted context and cannot switch modes, approve tools,
+change workspace scope, or route outside the current pool. Pending questions
+have deadlines and explicit cancelled, expired, or orphaned outcomes.
 
 ## Concurrency, timeout, and failure semantics
 
@@ -371,13 +425,12 @@ lightweight callers and already-restored TUI sessions. The fingerprint is an
 order-insensitive hash of every task's:
 
 ```text
-(agent_type, task_description, context)
+(agent_type, task_description, context, inherited_policy_revision)
 ```
 
-Task order does not matter; changing task text, role, or context does. The
-context inclusion is important because context changes the worker system
-prompt. Older implementations hashed only role and task, which could return a
-stale result after the parent supplied new findings.
+Task order does not matter; changing task text, role, context, or effective
+policy does. The policy inclusion prevents a result created under Yolo from
+being silently replayed under Safe or Plan after a resume.
 
 Only a pool with `failed == 0` is cached. Partial results are deliberately not
 treated as successful on resume. A cached call returns `pool_id: "cached"`,

@@ -64,6 +64,7 @@ against the current source before implementing them.
 - [PRD-194 — Runtime phase control for `goal_flow`](prd-194-goal-flow-runtime-phase-control.md)
 - [PRD-195 — Enforced lauren-ai compatibility for reasoning replay](prd-195-lauren-ai-reasoning-compatibility.md)
 - [PRD-196 — Resume workflows after permanent provider errors](prd-196-resume-after-permanent-provider-errors.md)
+- [PRD-197 — Inherit the effective runtime policy in subagent workers](prd-197-subagent-runtime-policy-inheritance.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

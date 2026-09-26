@@ -17,7 +17,7 @@ other per-session artifact lives **inside** it.
 | `~/.agenthicc/sessions/index.json` | `SessionOpenCoordinator` | Session index used by discovery and `--continue` selection | Rebuilt from session directories |
 | `~/.agenthicc/sessions/index.lock` | `SessionOpenCoordinator` | Short session-index read/modify/write critical section | OS advisory lock; never held for a turn or TUI lifetime |
 | `<id>/conversation.jsonl` | `SessionEventLog` | Reactive conversation events | Replay renderer/metrics |
-| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, hashed tool records, idempotent tool-recovery receipts, subagent worker/pool results, and versioned usage records | Rebuild memory, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns without replaying completed side effects, and recover complete subagent results |
+| `<id>/conversation-journal.jsonl` | `ConversationJournal` / `UsageLedger` | Messages, resets, logical-turn/provider-step receipts, bounded partial-fragment diagnostics, hashed tool records, idempotent tool-recovery receipts, subagent worker/pool results, typed parent/child/peer communication events, and versioned usage records | Rebuild memory, preserve committed work after a mid-turn failure, restore usage, resume interrupted turns without replaying completed side effects, recover complete subagent results, and rehydrate pending communication |
 | `<id>/loop.json` | `runners.loop_scheduler.LoopStore` | Versioned recurring prompt/command definition, cadence, lifecycle, counters, and bounded error state | Rehydrate an explicit `/loop` after `--resume`/`--continue`; missed intervals are coalesced and stopped/expired records remain terminal |
 | `<id>/loop.lock` | `runners.loop_scheduler.LoopStore` | Short atomic loop-record write lock | OS advisory lock; never held while an agent turn or scheduler callback runs |
 | `<id>/.owner` | `SessionOwnerLease` | One live process owner for the whole durable session | Atomic claim/release; stale recovery only when process death is proven |
@@ -176,6 +176,19 @@ result boundary is instead recorded in the same
 - each record is flushed and fsync'd before the worker/pool completion reaches
   the parent. This closes the interval in which a parent cancellation could
   otherwise lose output before lauren-ai committed the parent tool result.
+
+Subagent communication uses the same journal without entering provider memory:
+
+- `agent_message_event` records bounded sent, delivered, acknowledged,
+  rejected, and question lifecycle transitions for one authenticated pool;
+- pending `ask_parent`/`ask_peer` requests can be rehydrated by
+  `AgentMessageBroker.rehydrate(active_workers=...)`; workers not present in
+  that live set receive an explicit `orphaned` outcome instead of leaving a
+  continuation future hanging;
+- replay is keyed by message/question ID, so duplicate journal lines do not
+  deliver a message or wake a worker twice; and
+- message payloads are coordination data only. Large artifacts remain in the
+  authorized workspace and are referenced by validated artifact identity.
 
 The full result is intentionally stored here. TUI scroll events and kernel
 events expose only bounded previews, so a short `subagent_worker_done` line is

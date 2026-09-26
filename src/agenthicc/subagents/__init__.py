@@ -18,6 +18,16 @@ from agenthicc.subagents.pool import (
     run_pool,
 )
 from agenthicc.subagents.tool import make_spawn_subagents_tool
+from agenthicc.subagents.policy import SubagentExecutionPolicy
+from agenthicc.subagents.communication import (
+    AgentMessageBroker,
+    AgentMessageEnvelope,
+    CommunicationError,
+    PoolContinuationRegistry,
+    PoolHandle,
+    make_child_communication_tools,
+    make_parent_communication_tools,
+)
 
 __all__ = [
     "DEFAULT_SUBAGENT_TIMEOUT_S",
@@ -32,4 +42,12 @@ __all__ = [
     "SubagentPool",
     "run_pool",
     "make_spawn_subagents_tool",
+    "SubagentExecutionPolicy",
+    "AgentMessageBroker",
+    "AgentMessageEnvelope",
+    "CommunicationError",
+    "PoolContinuationRegistry",
+    "PoolHandle",
+    "make_child_communication_tools",
+    "make_parent_communication_tools",
 ]

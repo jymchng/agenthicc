@@ -306,8 +306,8 @@ async def test_implementer_success_requires_a_successful_mutating_tool_call() ->
 
 
 @pytest.mark.parametrize("parent_mode", ["Safe", "Plan"])
-async def test_subagent_always_uses_isolated_yolo_policy(parent_mode: str) -> None:
-    """A child write is not blocked by the foreground mode or its approval gate."""
+async def test_subagent_inherits_parent_policy(parent_mode: str) -> None:
+    """Safe/Plan policy is enforced in an isolated child state."""
     approvals: list[str] = []
     changed: list[str] = []
 
@@ -321,8 +321,6 @@ async def test_subagent_always_uses_isolated_yolo_policy(parent_mode: str) -> No
     class Approval:
         async def request_approval(self, request: object) -> ApprovalResponse:
             approvals.append(str(getattr(request, "tool_name", "")))
-            # If the worker accidentally reused the parent's Safe gate, this
-            # denial would prevent the write and fail the test.
             return ApprovalResponse(allowed=False)
 
     transport = MockTransport()
@@ -349,10 +347,57 @@ async def test_subagent_always_uses_isolated_yolo_policy(parent_mode: str) -> No
         timeout_s=30,
     )
 
-    assert result["ok"] is True
-    assert changed == ["chapters/01.md:expanded"]
-    assert approvals == []
+    assert result["ok"] is False
+    assert result["failed"] == 1
+    assert changed == []
+    assert approvals == (["approved_change"] if parent_mode == "Safe" else [])
     assert parent_state.active_mode().name == parent_mode
+
+
+async def test_subagent_can_pause_for_parent_clarification_and_resume() -> None:
+    """The child question uses continuation tools instead of re-entering the parent."""
+    transport = MockTransport()
+    transport.queue_tool_use(
+        "ask_parent",
+        {
+            "question": "Which API version should I use?",
+            "context": "Both v1 and v2 exist.",
+        },
+        tool_use_id="question-1",
+    )
+    transport.queue_response(_final("Waiting for the API version.", "question-final"))
+    transport.queue_response(_final("I used the selected API version.", "resumed-final"))
+    runner = AgentRunnerBase(transport=transport)
+    spawn = make_spawn_subagents_tool(
+        runner,
+        "mock-model",
+        [],
+        registry=_registry("not-a-parent-tool"),
+        conversation_id="conversation-clarification",
+        parent_run_id="run-clarification",
+    )
+
+    pending = await spawn(
+        tasks=[{"type": "researcher", "task": "Choose the correct API version."}],
+        timeout_s=30,
+    )
+    assert pending["status"] == "awaiting_clarification"
+    question = pending["pending_questions"][0]
+    communication_tools = getattr(spawn, "__agenthicc_subagent_communication_tools__")
+    answer_tool = next(tool for tool in communication_tools if tool.__name__ == "answer_subagent")
+    collect_tool = next(
+        tool for tool in communication_tools if tool.__name__ == "collect_subagent_results"
+    )
+
+    answered = await answer_tool(
+        pending["pool_id"],
+        question["question_id"],
+        "Use v2.",
+    )
+    assert answered["status"] == "answered"
+    resumed = await collect_tool(pending["pool_id"])
+    assert resumed["ok"] is True
+    assert "selected API version" in resumed["results"]
 
 
 async def test_implementer_rejects_a_mutating_tool_error_result() -> None:

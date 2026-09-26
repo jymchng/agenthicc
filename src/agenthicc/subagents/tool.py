@@ -21,13 +21,20 @@ inspects type annotations at decoration time using ``get_type_hints()``.
 Postponed evaluation (PEP 563) breaks that inspection.
 """
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Literal, TypedDict
 
-from agenthicc.subagents.pool import SubagentTask
+from agenthicc.subagents.pool import SubagentTask, _tool_name
 from agenthicc.subagents.types import SubagentTypeRegistry
+from agenthicc.subagents.communication import (
+    PoolHandle,
+    make_parent_communication_tools,
+    registry_for_session,
+)
+from agenthicc.subagents.policy import SubagentExecutionPolicy
 
 if TYPE_CHECKING:
     from lauren_ai._agents._runner import AgentRunnerBase
@@ -98,6 +105,7 @@ def make_spawn_subagents_tool(
     approval_svc: "ApprovalService | None" = None,
     workspace_access: "WorkspaceAccessPolicy | None" = None,
     conversation_journal: "ConversationJournal | None" = None,
+    policy: SubagentExecutionPolicy | None = None,
 ) -> Callable[..., object]:
     """Return a ``spawn_subagents`` @tool()-decorated function.
 
@@ -169,6 +177,11 @@ def make_spawn_subagents_tool(
     from agenthicc.subagents.types import DEFAULT_REGISTRY, DEFAULT_SUBAGENT_TIMEOUT_S  # noqa: PLC0415
 
     _registry = registry if registry is not None else DEFAULT_REGISTRY
+    effective_policy = policy or SubagentExecutionPolicy.from_app_state(
+        app_state,
+        visible_tool_names=frozenset(_tool_name(item) for item in all_tools),
+    )
+    continuation_registry = registry_for_session(conversation_id, conv_store)
 
     @_tool()
     async def spawn_subagents(
@@ -241,7 +254,10 @@ def make_spawn_subagents_tool(
         # PRD-124 Phase 4: check resume cache before spawning.  The fingerprint
         # includes type, task, and context, while remaining order-insensitive.
         # The same logical set of tasks — even if re-ordered — hits the cache.
-        fp = _tasks_fingerprint(subagent_tasks)
+        fp = _tasks_fingerprint(
+            subagent_tasks,
+            policy_revision=(effective_policy.policy_revision if effective_policy else ""),
+        )
         cached = _find_cached_result(conv_store, fp, journal=conversation_journal)
         if cached is not None:
             if conv_store is not None:
@@ -282,8 +298,38 @@ def make_spawn_subagents_tool(
             workspace_access=workspace_access,
             conversation_journal=conversation_journal,
             task_fingerprint=fp,
+            policy=effective_policy,
         )
-        result = await pool.run()
+        pool_task = asyncio.create_task(pool.run())
+        if pool.communication is not None:
+            pending_task = asyncio.create_task(pool.communication.wait_for_pending())
+            done, _pending = await asyncio.wait(
+                {pool_task, pending_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if pending_task in done and not pool_task.done():
+                questions = pool.communication.pending_questions(recipient="main")
+                continuation_registry.register(
+                    PoolHandle(
+                        pool_id=pool.pool_id,
+                        conversation_id=conversation_id,
+                        broker=pool.communication,
+                        task=pool_task,
+                    )
+                )
+                return {
+                    "ok": False,
+                    "status": "awaiting_clarification",
+                    "pool_id": pool.pool_id,
+                    "pending_questions": questions,
+                    "total": len(subagent_tasks),
+                    "succeeded": 0,
+                    "failed": 0,
+                    "results": "A subagent needs clarification. Answer it with answer_subagent, then collect_subagent_results.",
+                }
+            pending_task.cancel()
+            await asyncio.gather(pending_task, return_exceptions=True)
+        result = await pool_task
 
         # Only a completely successful pool is a safe resume cache entry.
         # Caching a partial result would make a resumed call silently reuse a
@@ -324,13 +370,21 @@ def make_spawn_subagents_tool(
         }
 
     _augment_type_schema(spawn_subagents, _registry)
+    # The turn runner registers these alongside spawn_subagents.  Attaching
+    # them keeps this factory backwards compatible for lightweight callers that
+    # only need the original callable.
+    setattr(
+        spawn_subagents,
+        "__agenthicc_subagent_communication_tools__",
+        make_parent_communication_tools(continuation_registry, conversation_id),
+    )
     return spawn_subagents
 
 
 # ── resume helpers ────────────────────────────────────────────────────────────
 
 
-def _tasks_fingerprint(tasks: list[SubagentTask]) -> str:
+def _tasks_fingerprint(tasks: list[SubagentTask], policy_revision: str = "") -> str:
     """Hash complete task inputs in an order-insensitive form.
 
     Context is part of a worker's effective prompt.  Ignoring it caused a
@@ -344,6 +398,7 @@ def _tasks_fingerprint(tasks: list[SubagentTask]) -> str:
             (item.agent_type, item.task_description, item.context) for item in tasks
         )
     ]
+    entries.append({"policy_revision": policy_revision})
     return hashlib.md5(json.dumps(entries, ensure_ascii=False).encode()).hexdigest()[:16]  # noqa: S324
 
 

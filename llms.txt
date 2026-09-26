@@ -76,6 +76,7 @@ The primary entry point is `agenthicc.__main__:main`.
 | `PromptContract` / `build_workflow_prompt_contract` | `agenthicc.runners.prompt_contract` | Cache-stable system/tool prefix plus append-only dynamic workflow context; emits redacted cache diagnostics |
 | `WorkflowExecutionResult` | `agenthicc.runners.headless` | JSON-safe headless workflow outcome |
 | `DEFAULT_SUBAGENT_TIMEOUT_S` / `SubagentTypeSpec` / `SubagentPool` | `agenthicc.subagents` | Typed concurrent workers with complete-output aggregation; `spawn_subagents(timeout_s=...)` defaults to one hour |
+| `SubagentExecutionPolicy` / `AgentMessageBroker` / `AgentMessageEnvelope` | `agenthicc.subagents` | Immutable effective-mode inheritance and bounded parent/child/peer communication with durable clarification state |
 | `execute_workflow` | `agenthicc.runners.headless` | Execute a registered workflow in a session |
 | `run_headless_workflow` | `agenthicc.runners.headless` | Build, run, and close one headless workflow session |
 | `Workspace` | `agenthicc.tui.workspace` | Rich Live UI root |
@@ -134,6 +135,14 @@ TUI/kernel previews are bounded. Complete aggregates can be reused on resume
 using an order-insensitive key containing role, task, and context. See
 `docs/guides/subagents.md` for the source-level lifecycle, result contract,
 and failure semantics.
+
+The parent turn also snapshots its effective Safe/Plan/Yolo policy into
+`SubagentExecutionPolicy`. A per-pool `AgentMessageBroker` exposes bounded
+`send_parent_message`, `ask_parent`, `answer_subagent`,
+`send_subagent_message`, `ask_peer`, `answer_peer`, and
+`collect_subagent_results` operations. Clarification is a later correlated
+continuation, never a recursive provider call; messages are untrusted context
+and cannot broaden the worker's tools or policy.
 
 ## Module index
 

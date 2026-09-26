@@ -162,6 +162,25 @@ credentials or raw endpoint URLs. Provider-specific cache support is detected at
 the boundary, so unsupported providers retain correct execution semantics
 without being reported as cache hits.
 
+### Subagent policy and communication boundary
+
+`spawn_subagents` snapshots the parent turn's effective runtime policy into a
+frozen `SubagentExecutionPolicy`. Each worker receives a fresh reactive state,
+fresh short-term memory, the exact workspace scope, and a child-local
+capability/approval adapter. The role allow-list and parent-visible tool list
+are additional ceilings. No worker shares the parent's transcript or mutable
+mode signal.
+
+`AgentMessageBroker` is owned by one pool and is the only parent/child/peer
+communication route. It validates pool membership, bounds payloads and
+mailboxes, journals delivery and question lifecycle events, and keeps
+clarification continuation non-reentrant: `ask_parent` returns a structured
+pending result, `answer_subagent` resolves the correlated future, and
+`collect_subagent_results` receives the still-running pool later. Message
+payloads are untrusted context and cannot modify policy or grant tools. The
+broker's journal fold is the recovery boundary for pending messages and
+questions; a missing worker becomes an explicit terminal/orphaned outcome.
+
 The canonical selectable modes are Safe, Plan, and Yolo, in that cycle order.
 Safe asks for approval before side effects, Plan hard-blocks side effects, and
 Yolo preserves the unrestricted Auto behavior. Auto, Guard, Ask, and Review are
