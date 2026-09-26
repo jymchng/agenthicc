@@ -62,6 +62,8 @@ against the current source before implementing them.
 - [PRD-192 — Configurable Ask User timeout and best-effort agent fallback](prd-192-configurable-ask-user-timeout-and-agent-fallback.md)
 - [PRD-193 — Session-scoped recurring `/loop` prompts and idle-safe scheduling](prd-193-session-scoped-recurring-loops.md)
 - [PRD-194 — Runtime phase control for `goal_flow`](prd-194-goal-flow-runtime-phase-control.md)
+- [PRD-195 — Enforced lauren-ai compatibility for reasoning replay](prd-195-lauren-ai-reasoning-compatibility.md)
+- [PRD-196 — Resume workflows after permanent provider errors](prd-196-resume-after-permanent-provider-errors.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -356,6 +358,17 @@ stable planned-goal records with agent tools to postpone, skip, bring forward,
 or logically delete a planned phase while preserving the immutable control
 rails, active session conversation, safe tool boundaries, checkpoints, and
 resume semantics.
+
+PRD-195 addresses the operational compatibility gap around PRD-190. It makes
+the lauren-ai 1.6.0 minimum explicit for base and MCP installations, adds a
+runtime contract check, and defines bounded recovery for sessions whose
+reasoning metadata was irreversibly lost under an older runtime. It does not
+replace PRD-190's transport-level round-trip contract.
+
+PRD-196 separates provider request retryability from workflow resumability.
+It addresses the path where a permanent model/configuration error correctly
+stops retries but is converted into a bare failed phase, bypassing the paused
+workflow checkpoint and making the completed run unavailable to resume.
 
 ## Existing PRDs
 

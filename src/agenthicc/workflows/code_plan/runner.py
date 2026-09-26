@@ -317,6 +317,16 @@ class CodePlanRunner(BaseWorkflowRunner):
             else:
                 final_status = "failed"
 
+            if state == CodePlanState.FAILED and handle is not None:
+                from agenthicc.runners.workflow_handle import classify_workflow_failure
+
+                failure = ctx.fail_reason or "code_plan phase failed"
+                checkpoint = handle.finalize_failure(
+                    failure,
+                    kind=classify_workflow_failure(failure).kind,
+                )
+                final_status = "paused" if checkpoint is not None else "failed"
+
             wf_run = dataclasses.replace(wf_run, status=final_status, current_phase=None)
             self._cfg.app_state.workflow_run.set(wf_run)
 
@@ -347,7 +357,21 @@ class CodePlanRunner(BaseWorkflowRunner):
             raise
         except Exception as exc:
             log.error("CodePlanRunner error: %s", exc, exc_info=True)
-            wf_run = dataclasses.replace(wf_run, status="failed", current_phase=None)
+            from agenthicc.runners.workflow_handle import classify_workflow_failure
+
+            checkpoint = (
+                handle.finalize_failure(
+                    exc,
+                    kind=classify_workflow_failure(exc).kind,
+                )
+                if handle is not None
+                else None
+            )
+            wf_run = dataclasses.replace(
+                wf_run,
+                status="paused" if checkpoint is not None else "failed",
+                current_phase=handle.current_phase if checkpoint and handle is not None else None,
+            )
             self._cfg.app_state.workflow_run.set(wf_run)
             self._cfg.conv_store.append_event("error", {"message": str(exc)})
             # Preserve the session-owned failure boundary. A typed context has
@@ -435,6 +459,15 @@ class CodePlanRunner(BaseWorkflowRunner):
             final = "exited"
         else:
             final = "failed"
+        if final == "failed" and handle is not None:
+            from agenthicc.runners.workflow_handle import classify_workflow_failure
+
+            failure = ctx.fail_reason or "code_plan phase failed"
+            checkpoint = handle.finalize_failure(
+                failure,
+                kind=classify_workflow_failure(failure).kind,
+            )
+            final = "paused" if checkpoint is not None else "failed"
         wf_run = dataclasses.replace(wf_run, status=final, current_phase=None)
         self._cfg.app_state.workflow_run.set(wf_run)
         if handle is not None:

@@ -316,6 +316,15 @@ no safe state from which to resume. Once typed context is attached, ordinary
 startup and phase exceptions are paused and resume the same run instead of
 discarding it for a fresh attempt.
 
+Permanent provider errors follow the same workflow-recovery boundary. A `400`
+model, endpoint, profile, credential, or request error is not retried with the
+same request, but a valid typed workflow context is saved as a paused
+checkpoint. After correcting the provider configuration, use
+`/workflow resume <run-id>`, `--resume <run-id>`, or `--continue`; agenthicc
+rehydrates the same run and conversation at the saved phase instead of
+starting again at `INIT`. The checkpoint stores only bounded provider/model
+diagnostics, never credentials, headers, prompts, or raw request bodies.
+
 ---
 
 ## Background sessions

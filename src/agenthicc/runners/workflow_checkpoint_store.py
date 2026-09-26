@@ -178,6 +178,10 @@ class WorkflowCheckpointStore:
             "phase_index",
             "failure_kind",
             "failure_message",
+            "failure_retryable",
+            "failure_provider",
+            "failure_model",
+            "failure_status_code",
             "record_revision",
             "context_ready",
             "created_at",
@@ -266,6 +270,10 @@ class WorkflowCheckpointStore:
             "phase_index",
             "failure_kind",
             "failure_message",
+            "failure_retryable",
+            "failure_provider",
+            "failure_model",
+            "failure_status_code",
             "record_revision",
             "context_ready",
             "created_at",
@@ -291,9 +299,13 @@ class WorkflowCheckpointStore:
             "intent_digest": 128,
             "failure_kind": 64,
             "failure_message": 512,
+            "failure_provider": 128,
+            "failure_model": 128,
         }
         for field_name, limit in string_limits.items():
             value = payload.get(field_name)
+            if field_name in {"failure_provider", "failure_model"} and value is None:
+                continue
             if not isinstance(value, str):
                 raise CheckpointValidationError(
                     f"workflow recovery error {field_name} must be a string"
@@ -323,6 +335,20 @@ class WorkflowCheckpointStore:
         if not isinstance(context_ready, bool):
             raise CheckpointValidationError(
                 "workflow recovery error context_ready must be a boolean"
+            )
+        retryable = payload.get("failure_retryable")
+        if retryable is not None and not isinstance(retryable, bool):
+            raise CheckpointValidationError(
+                "workflow recovery error failure_retryable must be a boolean or null"
+            )
+        status_code = payload.get("failure_status_code")
+        if status_code is not None and (
+            not isinstance(status_code, int)
+            or isinstance(status_code, bool)
+            or not 100 <= status_code <= 599
+        ):
+            raise CheckpointValidationError(
+                "workflow recovery error failure_status_code must be an HTTP status or null"
             )
         for field_name in ("created_at", "updated_at"):
             value = payload.get(field_name)

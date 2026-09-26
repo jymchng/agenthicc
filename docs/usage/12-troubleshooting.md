@@ -48,6 +48,21 @@ without writing the key to disk.
 profile's `model` in config once you know the right id. Confirm what resolved
 with `agenthicc config show`.
 
+If this happens during a workflow, the invalid request is not retried. When a
+typed workflow context was already attached, the run is paused with its
+current phase, run ID, conversation, and checkpoint intact. Correct the model
+or provider configuration, then resume the saved run rather than starting a
+new workflow:
+
+```text
+/workflow resume <run-id>
+```
+
+The same recovery path is used by `agenthicc --resume <run-id>` and
+`agenthicc --continue`. A diagnostic-only message means checkpointing was not
+possible; in that case the framework will not claim that the run is safely
+resumable.
+
 ## Rate limits
 
 **Symptom:** `429` responses.

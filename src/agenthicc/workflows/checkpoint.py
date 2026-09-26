@@ -568,6 +568,15 @@ class WorkflowCheckpoint:
     pause_reason: str = "none"
     failure_kind: str | None = None
     failure_message: str | None = None
+    # Independent provider disposition metadata. These optional fields are
+    # additive so schema-v1 checkpoints written before PRD-196 remain valid.
+    failure_retryable: bool | None = None
+    failure_provider: str | None = None
+    failure_model: str | None = None
+    failure_status_code: int | None = None
+    # Explicitly records the workflow-recovery axis; request retryability is
+    # independent and stored in ``failure_retryable``.
+    resumable: bool | None = None
     last_safe_boundary: str | None = None
     error_revision: int = 0
     # The topology actually used by the runner.  These optional fields keep
@@ -614,6 +623,11 @@ class WorkflowCheckpoint:
             "pause_reason": self.pause_reason,
             "failure_kind": self.failure_kind,
             "failure_message": self.failure_message,
+            "failure_retryable": self.failure_retryable,
+            "failure_provider": self.failure_provider,
+            "failure_model": self.failure_model,
+            "failure_status_code": self.failure_status_code,
+            "resumable": self.resumable,
             "last_safe_boundary": self.last_safe_boundary,
             "error_revision": self.error_revision,
             "topology_version": self.topology_version,
@@ -718,6 +732,29 @@ class WorkflowCheckpoint:
             raise CheckpointValidationError("failure_message must be a string or null")
         if isinstance(failure_message, str) and len(failure_message) > 512:
             raise CheckpointValidationError("failure_message is too long")
+        failure_retryable = raw.get("failure_retryable")
+        if failure_retryable is not None and not isinstance(failure_retryable, bool):
+            raise CheckpointValidationError("failure_retryable must be a boolean or null")
+        failure_provider = raw.get("failure_provider")
+        failure_model = raw.get("failure_model")
+        for field_name, field_value in (
+            ("failure_provider", failure_provider),
+            ("failure_model", failure_model),
+        ):
+            if field_value is not None and not isinstance(field_value, str):
+                raise CheckpointValidationError(f"{field_name} must be a string or null")
+            if isinstance(field_value, str) and len(field_value) > 128:
+                raise CheckpointValidationError(f"{field_name} is too long")
+        failure_status_code = raw.get("failure_status_code")
+        if failure_status_code is not None and (
+            not isinstance(failure_status_code, int)
+            or isinstance(failure_status_code, bool)
+            or not 100 <= failure_status_code <= 599
+        ):
+            raise CheckpointValidationError("failure_status_code must be an HTTP status or null")
+        resumable = raw.get("resumable")
+        if resumable is not None and not isinstance(resumable, bool):
+            raise CheckpointValidationError("resumable must be a boolean or null")
         last_safe_boundary = raw.get("last_safe_boundary")
         if last_safe_boundary is not None and not isinstance(last_safe_boundary, str):
             raise CheckpointValidationError("last_safe_boundary must be a string or null")
@@ -805,6 +842,11 @@ class WorkflowCheckpoint:
             pause_reason=pause_reason,
             failure_kind=failure_kind,
             failure_message=failure_message,
+            failure_retryable=failure_retryable,
+            failure_provider=failure_provider,
+            failure_model=failure_model,
+            failure_status_code=failure_status_code,
+            resumable=resumable,
             last_safe_boundary=last_safe_boundary,
             error_revision=error_revision,
             topology_version=topology_version,

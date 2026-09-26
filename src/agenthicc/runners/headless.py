@@ -16,6 +16,7 @@ from agenthicc.runners.session_lease import (
     SessionOwnerLease,
     SessionStorageError,
 )
+from agenthicc.runners.workflow_handle import classify_workflow_failure
 
 if TYPE_CHECKING:
     from agenthicc.cli.context import CLIContext
@@ -25,18 +26,18 @@ if TYPE_CHECKING:
 __all__ = ["WorkflowExecutionResult", "execute_workflow", "run_headless_workflow"]
 
 
-def _workflow_failure_kind(exc: BaseException) -> str:
+def _workflow_failure_kind(exc: object) -> str:
     """Map common headless workflow failures to stable recovery categories."""
-    text = f"{type(exc).__name__} {exc}".lower()
-    if "timeout" in text or "timed out" in text:
-        return "timeout"
-    if any(marker in text for marker in ("config", "profile")):
+    disposition = classify_workflow_failure(exc)
+    text = str(exc).lower()
+    # Preserve the pre-provider setup category for compatibility. Once a
+    # provider HTTP status is present, the shared classifier's more precise
+    # provider_configuration/provider_request category wins.
+    if disposition.kind == "workflow_error" and any(
+        marker in text for marker in ("config", "profile")
+    ):
         return "configuration"
-    if any(marker in text for marker in ("rate limit", "429", "provider", "transport")):
-        return "provider_transient"
-    if any(marker in text for marker in ("tool", "mcp", "browser", "subprocess")):
-        return "tool_transient"
-    return "phase_execution"
+    return disposition.kind
 
 
 @dataclass(frozen=True)
@@ -349,6 +350,33 @@ async def execute_workflow(
             if resuming and workflow_handle is not None
             else await runner.run(intent)
         )
+        # Specialized runners may intentionally return a typed FAILED state
+        # after a phase-local agent/provider exception. That is not successful
+        # completion: convert it to the same durable failure boundary used by
+        # the exception path before the normal-return safety net can mark the
+        # handle complete.
+        result_state_value = _optional_request_field(runner_result, "state", "")
+        result_state = _optional_request_field(result_state_value, "name", "")
+        result_failure = _optional_request_field(runner_result, "fail_reason", "")
+        if (
+            workflow_handle is not None
+            and isinstance(result_state, str)
+            and result_state.lower() in {"failed", "failure"}
+        ):
+            error = str(result_failure or "workflow returned unsuccessfully")
+            checkpoint = workflow_handle.finalize_failure(
+                error,
+                kind=_workflow_failure_kind(error),
+            )
+            workflow_run = session.app_state.workflow_run()
+            if is_dataclass(workflow_run):
+                session.app_state.workflow_run.set(
+                    replace(
+                        workflow_run,
+                        status="paused" if checkpoint is not None else "failed",
+                        current_phase=workflow_handle.current_phase if checkpoint else None,
+                    )
+                )
         # Built-in runners persist this boundary themselves, but a plugin
         # runner is allowed to return a successful result without knowing
         # about the session owner's lifecycle bookkeeping.  Do not leave a
@@ -385,7 +413,6 @@ async def execute_workflow(
                         current_phase=workflow_handle.current_phase if checkpoint else None,
                     )
                 )
-
     try:
         await session.processor.drain()
     except BaseException as exc:
@@ -410,7 +437,10 @@ async def execute_workflow(
         else:
             error = "workflow returned unsuccessfully"
         if workflow_handle is not None:
-            checkpoint = workflow_handle.finalize_failure(error, kind="phase_execution")
+            checkpoint = workflow_handle.finalize_failure(
+                error,
+                kind=_workflow_failure_kind(error),
+            )
             status = "paused" if checkpoint is not None else "failed"
             if is_dataclass(workflow_run):
                 session.app_state.workflow_run.set(
@@ -422,6 +452,10 @@ async def execute_workflow(
                 )
     if workflow_handle is not None and workflow_handle.lifecycle == "paused":
         status = "paused"
+        # The handle owns the redacted, bounded diagnostic. Do not expose a
+        # provider exception's raw request dump in the JSON result.
+        if workflow_handle.last_error:
+            error = workflow_handle.last_error
     run_id = str(
         getattr(workflow_run, "run_id", "") or getattr(workflow_handle, "run_id", "") or ""
     )

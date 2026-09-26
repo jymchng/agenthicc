@@ -82,6 +82,44 @@ def test_typed_failure_becomes_error_paused_checkpoint(tmp_path: Path) -> None:
         handle.conversation.close()
 
 
+def test_permanent_provider_error_preserves_run_and_provider_metadata(tmp_path: Path) -> None:
+    """A 400 model failure is non-retryable but remains resumable."""
+    handle, store = _handle(tmp_path)
+    try:
+        context = CodePlanContext(
+            intent=handle.original_intent,
+            run_id=handle.run_id,
+            state=CodePlanState.EXECUTE,
+            plan="approved plan",
+            phase_iteration=4,
+            shared_memory=handle.conversation.memory,
+        )
+        handle.attach_context(context)
+        handle.update_phase("execute", index=1, iteration=4)
+
+        error = (
+            "TransportError: Error code: 400 - {'model': 'deepseek-v4.1-flash'} "
+            "| provider='openai' | status_code=400"
+        )
+        checkpoint = handle.finalize_failure(error, kind="provider_request")
+
+        assert checkpoint is not None
+        assert checkpoint.status == "paused"
+        assert checkpoint.run_id == handle.run_id
+        assert checkpoint.conversation_id == handle.conversation.conversation_id
+        assert checkpoint.current_phase == "execute"
+        assert checkpoint.failure_kind == "provider_configuration"
+        assert checkpoint.failure_retryable is False
+        assert checkpoint.resumable is True
+        assert checkpoint.failure_provider == "openai"
+        assert checkpoint.failure_model == "deepseek-v4.1-flash"
+        assert checkpoint.failure_status_code == 400
+        assert checkpoint.context["fields"]["state"] == {"__enum__": "EXECUTE"}
+        assert store.load(handle.run_id) == checkpoint
+    finally:
+        handle.conversation.close()
+
+
 @pytest.mark.parametrize("exception_type", [ValueError, RuntimeError, OSError, LookupError])
 def test_every_ordinary_exception_type_uses_workflow_resumability(
     tmp_path: Path, exception_type: type[Exception]

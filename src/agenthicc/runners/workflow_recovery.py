@@ -59,6 +59,7 @@ class WorkflowRecoveryRecord:
             self.checkpoint is not None
             and self.checkpoint.status in RECOVERABLE_WORKFLOW_STATUSES
             and self.checkpoint.context_ready
+            and self.checkpoint.resumable is not False
             and self.error_code is None
         )
 
@@ -170,6 +171,38 @@ class WorkflowRecoveryRecord:
             return self.checkpoint.failure_kind
         value = self.fallback_error.get("failure_kind") if self.fallback_error else None
         return value if isinstance(value, str) else None
+
+    @property
+    def failure_retryable(self) -> bool | None:
+        """Return the independent provider retry disposition, if recorded."""
+        if self.checkpoint is not None:
+            return self.checkpoint.failure_retryable
+        value = self.fallback_error.get("failure_retryable") if self.fallback_error else None
+        return value if isinstance(value, bool) else None
+
+    @property
+    def failure_provider(self) -> str | None:
+        """Return the redacted provider identifier, if recorded."""
+        if self.checkpoint is not None:
+            return self.checkpoint.failure_provider
+        value = self.fallback_error.get("failure_provider") if self.fallback_error else None
+        return value if isinstance(value, str) else None
+
+    @property
+    def failure_model(self) -> str | None:
+        """Return the redacted model identifier, if recorded."""
+        if self.checkpoint is not None:
+            return self.checkpoint.failure_model
+        value = self.fallback_error.get("failure_model") if self.fallback_error else None
+        return value if isinstance(value, str) else None
+
+    @property
+    def failure_status_code(self) -> int | None:
+        """Return the provider HTTP status, if recorded."""
+        if self.checkpoint is not None:
+            return self.checkpoint.failure_status_code
+        value = self.fallback_error.get("failure_status_code") if self.fallback_error else None
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     @property
     def display_error(self) -> str:

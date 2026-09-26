@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
@@ -39,6 +40,9 @@ class WorkflowFailureKind(str, Enum):
     """Stable failure categories persisted in workflow checkpoints."""
 
     PROVIDER_TRANSIENT = "provider_transient"
+    PROVIDER_CONFIGURATION = "provider_configuration"
+    PROVIDER_REQUEST = "provider_request"
+    PROVIDER_HISTORY = "provider_history"
     TOOL_TRANSIENT = "tool_transient"
     PHASE_EXECUTION = "phase_execution"
     USER_CANCELLED = "user_cancelled"
@@ -50,6 +54,215 @@ class WorkflowFailureKind(str, Enum):
     WORKFLOW_INVARIANT = "workflow_invariant"
     PLUGIN_INCOMPATIBLE = "plugin_incompatible"
     WORKFLOW_ERROR = "workflow_error"
+
+
+def _optional_attribute(value: object, name: str, default: object = None) -> object:
+    """Read extension metadata without adding an untyped dynamic call."""
+    try:
+        return object.__getattribute__(value, name)
+    except AttributeError:
+        return default
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowFailureDisposition:
+    """Sanitized, two-axis classification of one workflow failure.
+
+    ``retryable`` describes whether the identical provider request may be
+    sent automatically.  It deliberately does not decide whether the
+    workflow can be resumed: that decision remains a property of the typed
+    context and checkpoint store on :class:`WorkflowRunHandle`.
+    """
+
+    kind: str
+    retryable: bool
+    provider: str | None = None
+    model: str | None = None
+    status_code: int | None = None
+
+
+def _exception_chain(error: object) -> tuple[BaseException, ...]:
+    """Return an exception/cause/context chain without following cycles."""
+    if not isinstance(error, BaseException):
+        return ()
+    result: list[BaseException] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(result) < 8:
+        seen.add(id(current))
+        result.append(current)
+        cause = current.__cause__
+        current = cause if cause is not None else current.__context__
+    return tuple(result)
+
+
+def _failure_status_code(error: object) -> int | None:
+    for candidate in _exception_chain(error):
+        value = _optional_attribute(candidate, "status_code")
+        if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+            return value
+        response = _optional_attribute(candidate, "response")
+        response_status = _optional_attribute(response, "status_code")
+        if (
+            isinstance(response_status, int)
+            and not isinstance(response_status, bool)
+            and 100 <= response_status <= 599
+        ):
+            return response_status
+    # Phase contexts often retain only the bounded exception text. Recover a
+    # status from the standard transport prefixes without treating arbitrary
+    # numbers in a prompt or tool result as HTTP metadata.
+    text = str(error)
+    match = re.search(
+        r"(?:status[_ ]?code|error code|transporterror|http)\s*[:=]?\s*(\d{3})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        status = int(match.group(1))
+        if 100 <= status <= 599:
+            return status
+    return None
+
+
+def _safe_identifier(value: object) -> str | None:
+    """Keep only short provider/model identifiers, never request payloads."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > 128:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9._:/@+-]+", value):
+        return None
+    return value
+
+
+def _failure_identifiers(error: object) -> tuple[str | None, str | None]:
+    """Extract safe provider/model labels from exception metadata or text."""
+    import re as _re
+
+    provider: str | None = None
+    model: str | None = None
+    candidates: tuple[object, ...] = _exception_chain(error) or (error,)
+    for candidate in candidates:
+        provider = provider or _safe_identifier(
+            _optional_attribute(candidate, "provider")
+            or _optional_attribute(candidate, "provider_name")
+        )
+        model = model or _safe_identifier(
+            _optional_attribute(candidate, "model") or _optional_attribute(candidate, "model_id")
+        )
+        text = str(candidate)
+        if provider is None:
+            match = _re.search(r"\bprovider\s*=\s*['\"]?([A-Za-z0-9._:/@+-]+)", text)
+            if match:
+                provider = _safe_identifier(match.group(1))
+        if model is None:
+            match = _re.search(
+                r"(?:['\"]model['\"]|\bmodel(?:_id)?)\s*[:=]\s*['\"]?"
+                r"([A-Za-z0-9._:/@+-]+)",
+                text,
+            )
+            if match:
+                model = _safe_identifier(match.group(1))
+    return provider, model
+
+
+def classify_workflow_failure(
+    error: object,
+    *,
+    default_kind: WorkflowFailureKind | str = WorkflowFailureKind.WORKFLOW_ERROR,
+) -> WorkflowFailureDisposition:
+    """Classify provider retryability independently from workflow recovery.
+
+    HTTP 400--499 (except 429) are never retried.  Configuration-shaped
+    failures such as an unsupported model, profile, endpoint, or credentials
+    receive ``provider_configuration``; other non-retryable provider requests
+    receive ``provider_request``.  A malformed provider conversation is
+    classified as ``provider_history`` so callers can apply the stricter
+    history-repair policy.  The function is deliberately wording-tolerant and
+    uses status/exception metadata before bounded text markers.
+    """
+    text = " ".join(str(item).lower() for item in (_exception_chain(error) or (error,)))
+    status = _failure_status_code(error)
+    provider, model = _failure_identifiers(error)
+    requested = (
+        default_kind.value if isinstance(default_kind, WorkflowFailureKind) else str(default_kind)
+    )
+    history_markers = (
+        "conversation history",
+        "tool call history",
+        "tool-call history",
+        "message history",
+        "invalid message",
+        "malformed conversation",
+        "missing tool result",
+    )
+    configuration_markers = (
+        "model not found",
+        "unknown model",
+        "unsupported model",
+        "model_access_denied",
+        "model access denied",
+        "invalid model",
+        "invalid profile",
+        "unknown profile",
+        "invalid endpoint",
+        "unsupported endpoint",
+        "invalid api key",
+        "invalid api_key",
+        "authentication",
+        "unauthorized",
+        "credential",
+        "configuration",
+    )
+    if any(marker in text for marker in history_markers):
+        kind = WorkflowFailureKind.PROVIDER_HISTORY.value
+        retryable = False
+    elif status is not None and 400 <= status < 500 and status != 429:
+        kind = (
+            WorkflowFailureKind.PROVIDER_CONFIGURATION.value
+            if status in {401, 403, 404}
+            or any(marker in text for marker in configuration_markers)
+            or (status == 400 and model is not None)
+            else WorkflowFailureKind.PROVIDER_REQUEST.value
+        )
+        retryable = False
+    elif status == 429 or status is not None and status >= 500:
+        kind = WorkflowFailureKind.PROVIDER_TRANSIENT.value
+        retryable = True
+    elif any(
+        marker in text
+        for marker in (
+            "timeout",
+            "timed out",
+            "connection",
+            "rate limit",
+            "temporarily unavailable",
+        )
+    ):
+        kind = WorkflowFailureKind.PROVIDER_TRANSIENT.value
+        retryable = True
+    elif requested in {
+        WorkflowFailureKind.PROVIDER_TRANSIENT.value,
+        WorkflowFailureKind.TOOL_TRANSIENT.value,
+    }:
+        kind = requested
+        retryable = requested == WorkflowFailureKind.PROVIDER_TRANSIENT.value
+    else:
+        kind = (
+            requested
+            if requested in {item.value for item in WorkflowFailureKind}
+            else WorkflowFailureKind.WORKFLOW_ERROR.value
+        )
+        retryable = False
+    return WorkflowFailureDisposition(
+        kind=kind,
+        retryable=retryable,
+        provider=provider,
+        model=model,
+        status_code=status,
+    )
 
 
 def _normalize_failure_kind(kind: WorkflowFailureKind | str) -> str:
@@ -101,6 +314,10 @@ class WorkflowRunHandle:
     pause_reason: str = "none"
     failure_kind: str | None = None
     failure_message: str | None = None
+    failure_retryable: bool | None = None
+    failure_provider: str | None = None
+    failure_model: str | None = None
+    failure_status_code: int | None = None
     last_safe_boundary: str | None = None
     error_revision: int = 0
     topology_version: str = ""
@@ -355,6 +572,10 @@ class WorkflowRunHandle:
             self.pause_reason = "none"
             self.failure_kind = None
             self.failure_message = None
+            self.failure_retryable = None
+            self.failure_provider = None
+            self.failure_model = None
+            self.failure_status_code = None
             self.last_safe_boundary = None
 
     @staticmethod
@@ -387,6 +608,10 @@ class WorkflowRunHandle:
                     "phase_index": self.phase_index,
                     "failure_kind": kind,
                     "failure_message": error,
+                    "failure_retryable": self.failure_retryable,
+                    "failure_provider": self.failure_provider,
+                    "failure_model": self.failure_model,
+                    "failure_status_code": self.failure_status_code,
                     "record_revision": self.error_revision,
                     "context_ready": self.context_ready,
                     "created_at": time.time(),
@@ -397,6 +622,35 @@ class WorkflowRunHandle:
             # The in-memory fields and UI event still explain the failure when
             # the filesystem cannot accept even the fallback record.
             return
+
+    def _prepare_context_for_failure_resume(self) -> None:
+        """Keep a returned FAILED projection resumable at the active phase.
+
+        Specialized runners commonly use a terminal ``FAILED`` enum as their
+        local return value. That enum is a reporting projection, not the
+        durable resume cursor: if it were serialized unchanged, the next
+        ``resume()`` would see a terminal state and skip the phase loop. The
+        handle's phase cursor is authoritative at this boundary, so restore a
+        matching enum member when one exists and leave the failure reason as
+        diagnostic context.
+        """
+        context = self.context
+        phase = self.current_phase.strip().lower() if isinstance(self.current_phase, str) else ""
+        if context is None or not phase:
+            return
+        current_state = _optional_attribute(context, "state")
+        state_type = type(current_state)
+        members = _optional_attribute(state_type, "__members__", {})
+        candidate = members.get(phase.upper()) if isinstance(members, Mapping) else None
+        if candidate is not None:
+            try:
+                setattr(context, "state", candidate)
+            except (AttributeError, TypeError):
+                pass
+        try:
+            setattr(context, "current_phase", phase)
+        except (AttributeError, TypeError):
+            pass
 
     def finalize_failure(
         self,
@@ -453,6 +707,21 @@ class WorkflowRunHandle:
         self.last_error = safe_error
         self.failure_kind = normalized_kind
         self.failure_message = safe_error
+        disposition = classify_workflow_failure(error, default_kind=normalized_kind)
+        # The exception-derived category is authoritative for generic phase
+        # wrappers. Explicit provider categories remain stable when a caller
+        # already classified the exception before reaching this boundary.
+        if normalized_kind in {
+            WorkflowFailureKind.WORKFLOW_ERROR.value,
+            WorkflowFailureKind.PHASE_EXECUTION.value,
+            WorkflowFailureKind.CONFIGURATION.value,
+        } or normalized_kind.startswith("provider_"):
+            self.failure_kind = disposition.kind
+        self.failure_retryable = disposition.retryable
+        self.failure_provider = disposition.provider
+        self.failure_model = disposition.model
+        self.failure_status_code = disposition.status_code
+        normalized_kind = self.failure_kind or WorkflowFailureKind.WORKFLOW_ERROR.value
         self.last_safe_boundary = boundary or self.current_phase
         self.pause_reason = normalized_kind
         self.error_revision += 1
@@ -463,6 +732,7 @@ class WorkflowRunHandle:
         del recoverable
         can_resume = self.resumable
         if can_resume:
+            self._prepare_context_for_failure_resume()
             self.lifecycle = "paused"
             self.pause_requested = True
             try:
@@ -551,6 +821,14 @@ class WorkflowRunHandle:
             pause_reason=self.pause_reason,
             failure_kind=self.failure_kind,
             failure_message=self.failure_message,
+            failure_retryable=self.failure_retryable,
+            failure_provider=self.failure_provider,
+            failure_model=self.failure_model,
+            failure_status_code=self.failure_status_code,
+            # A typed running checkpoint is also a valid crash-resume
+            # boundary. The status gate in WorkflowRecoveryCoordinator keeps
+            # terminal checkpoints out of the resume picker.
+            resumable=self.resumable,
             last_safe_boundary=self.last_safe_boundary,
             error_revision=self.error_revision,
             topology_version=self.topology_version,
@@ -679,6 +957,10 @@ class WorkflowRunHandle:
             pause_reason=checkpoint.pause_reason,
             failure_kind=checkpoint.failure_kind,
             failure_message=checkpoint.failure_message,
+            failure_retryable=checkpoint.failure_retryable,
+            failure_provider=checkpoint.failure_provider,
+            failure_model=checkpoint.failure_model,
+            failure_status_code=checkpoint.failure_status_code,
             last_safe_boundary=checkpoint.last_safe_boundary,
             error_revision=checkpoint.error_revision,
             topology_version=checkpoint.topology_version,

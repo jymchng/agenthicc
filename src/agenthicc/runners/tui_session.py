@@ -405,18 +405,17 @@ def _fmt_exc(exc: BaseException) -> str:
     return f"{name}: {msg}" if msg else name
 
 
-def _workflow_failure_kind(exc: BaseException) -> str:
+def _workflow_failure_kind(exc: object) -> str:
     """Map common workflow exception classes to stable recovery categories."""
-    text = f"{type(exc).__name__} {exc}".lower()
-    if "timeout" in text or "timed out" in text:
-        return "timeout"
-    if any(marker in text for marker in ("config", "profile")):
+    from agenthicc.runners.workflow_handle import classify_workflow_failure  # noqa: PLC0415
+
+    disposition = classify_workflow_failure(exc)
+    text = str(exc).lower()
+    if disposition.kind == "workflow_error" and any(
+        marker in text for marker in ("config", "profile")
+    ):
         return "configuration"
-    if any(marker in text for marker in ("rate limit", "429", "provider", "transport")):
-        return "provider_transient"
-    if any(marker in text for marker in ("tool", "mcp", "browser", "subprocess")):
-        return "tool_transient"
-    return "phase_execution"
+    return disposition.kind
 
 
 def _build_skill_command(slug: str, skill: "SkillDef") -> "Command":
@@ -1527,6 +1526,37 @@ class TUISession:
 
         self._input_session.set_mode(InputMode.STREAMING)
 
+    def _record_returned_workflow_result(self, result: object | None) -> None:
+        """Project a typed runner failure before normal-return finalization.
+
+        Several specialized runners intentionally return their context with a
+        terminal ``FAILED`` enum after a bounded phase loop. Without this
+        projection the session owner cannot distinguish that result from a
+        successful normal return and may mark the handle complete. The
+        durable failure decision still belongs to ``_finalize_returned_workflow``.
+        """
+        state_value = _optional_field(result, "state", "")
+        state_name = _optional_field(state_value, "name", "")
+        if not isinstance(state_name, str) or state_name.lower() not in {"failed", "failure"}:
+            return
+        workflow_run = self._ctx.app_state.workflow_run()
+        if workflow_run is None:
+            return
+        import dataclasses as _dc  # noqa: PLC0415
+
+        if not _dc.is_dataclass(workflow_run):
+            return
+        handle = self._workflow_handle
+        current_phase = _optional_field(handle, "current_phase")
+        current_phase = current_phase if isinstance(current_phase, str) else None
+        self._ctx.app_state.workflow_run.set(
+            _dc.replace(
+                workflow_run,
+                status="failed",
+                current_phase=current_phase,
+            )
+        )
+
     def _finalize_returned_workflow(self) -> None:
         """Close a custom workflow handle whose runner returned normally.
 
@@ -1538,6 +1568,12 @@ class TUISession:
         """
         handle = self._workflow_handle
         workflow_run = self._ctx.app_state.workflow_run()
+        context_value = _optional_field(handle, "context")
+        context_state = _optional_field(context_value, "state", "")
+        returned_failed = str(_optional_field(context_state, "name", "")).lower() in {
+            "failed",
+            "failure",
+        }
         if (
             handle is None
             or handle.lifecycle in {"complete", "discarded"}
@@ -1547,7 +1583,7 @@ class TUISession:
                 self._release_workflow_claim(handle)
             return
         status = getattr(workflow_run, "status", None)
-        if status == "failed":
+        if status == "failed" or returned_failed:
             # A runner can convert a provider/phase exception into its typed
             # FAILED state and return normally. Keep a valid typed context
             # resumable; only the handle decides whether that is safe.
@@ -1575,9 +1611,7 @@ class TUISession:
                             )
                         )
                 self._ctx.app_state.conversation.notify_transient(
-                    f"⚠ Workflow '{handle.workflow_name}' paused after an error at "
-                    f"{handle.current_phase or 'the current phase'}. Saved run "
-                    f"{handle.run_id}; use /workflow resume {handle.run_id}."
+                    self._workflow_pause_notice(handle)
                 )
                 self._publish_session_event(
                     "workflow_paused_after_error",
@@ -1603,6 +1637,31 @@ class TUISession:
                         kind="checkpoint_storage",
                     )
         self._release_workflow_claim(handle)
+
+    @staticmethod
+    def _workflow_pause_notice(handle: "WorkflowRunHandle") -> str:
+        """Build a bounded, actionable pause message without secrets."""
+        model = _optional_field(handle, "failure_model")
+        provider = _optional_field(handle, "failure_provider")
+        status_code = _optional_field(handle, "failure_status_code")
+        if _optional_field(handle, "failure_retryable") is False:
+            subject = "non-retryable provider error"
+            details = ""
+            if model:
+                details = f" for model '{model}'"
+            if provider:
+                details += f" via {provider}"
+            if status_code is not None:
+                details += f" (HTTP {status_code})"
+            subject += details
+        else:
+            subject = "an error"
+        return (
+            f"⚠ Workflow '{handle.workflow_name}' paused in phase "
+            f"'{handle.current_phase or 'the current phase'}' after {subject}. "
+            f"Saved run {handle.run_id}; fix the provider/model configuration if needed, "
+            f"then use /workflow resume {handle.run_id}."
+        )
 
     def _fail_workflow_run(
         self,
@@ -1660,11 +1719,7 @@ class TUISession:
                     )
                 )
         if checkpoint is not None:
-            self._ctx.app_state.conversation.notify_transient(
-                f"⚠ Workflow '{handle.workflow_name}' paused after an error at "
-                f"{handle.current_phase or 'the current phase'}. Saved run "
-                f"{handle.run_id}; use /workflow resume {handle.run_id}."
-            )
+            self._ctx.app_state.conversation.notify_transient(self._workflow_pause_notice(handle))
             self._publish_session_event(
                 "workflow_paused_after_error",
                 {
@@ -3097,7 +3152,8 @@ class TUISession:
                 )
                 # Plugin owns runner construction — no name-based branching.
                 _wf_runner = _plugin_cls.build_runner(_wf_config, ctx.mode_manager)
-                await _wf_runner.run(text)
+                _runner_result = await _wf_runner.run(text)
+                self._record_returned_workflow_result(_runner_result)
                 self._finalize_returned_workflow()
                 # PRD-155: workflow-bound runs return to Safe after success.
                 _wf_result = ctx.app_state.workflow_run()
@@ -3692,6 +3748,7 @@ class TUISession:
             runner_result = await runner.resume(resume_context)
             if handle is not None and runner_result is not None:
                 handle.attach_context(runner_result)
+            self._record_returned_workflow_result(runner_result)
 
             # A custom runner may catch cancellation internally and return
             # while the session has already moved the handle to PAUSING.  A

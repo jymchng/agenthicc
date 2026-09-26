@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agenthicc.runners.agent_turn import _http_status_code, _is_permanent_error
+from agenthicc.runners.workflow_handle import classify_workflow_failure
 from agenthicc.workflows.code_plan.runner import CodePlanRunner
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 
@@ -93,6 +94,32 @@ def test_is_permanent_detects_via_chained_cause() -> None:
     outer = Exception("TransportError")
     outer.__cause__ = inner  # type: ignore[attr-defined]
     assert _is_permanent_error(outer) is True
+
+
+@pytest.mark.unit
+def test_workflow_failure_classifies_model_400_as_non_retryable_configuration() -> None:
+    """A permanent request error stops retries without making the run terminal."""
+    exc = Exception(
+        "TransportError: Error code: 400 - {'model': 'deepseek-v4.1-flash'} "
+        "| provider='openai' | status_code=400"
+    )
+    disposition = classify_workflow_failure(exc)
+
+    assert disposition.kind == "provider_configuration"
+    assert disposition.retryable is False
+    assert disposition.status_code == 400
+    assert disposition.provider == "openai"
+    assert disposition.model == "deepseek-v4.1-flash"
+
+
+@pytest.mark.unit
+def test_workflow_failure_classifies_rate_limit_as_retryable() -> None:
+    exc = Exception("TransientTransportError: Error code: 429 rate limit")
+    disposition = classify_workflow_failure(exc)
+
+    assert disposition.kind == "provider_transient"
+    assert disposition.retryable is True
+    assert disposition.status_code == 429
 
 
 # ── _stream() re-raises all errors after retry/cleanup ───────────────────────
