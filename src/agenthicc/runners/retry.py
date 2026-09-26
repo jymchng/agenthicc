@@ -19,10 +19,13 @@ Bounds and safety:
 - **reset_fns** — side-effect rollback callbacks (e.g. approval-state reset)
   invoked after the memory restore, before the next attempt.
 - **on_retry** — observability callback (sync or async) fired once per retry.
+- **on_irrecoverable_retry** — separate observability callback for the bounded
+  provider-4xx recovery budget.
 
-``CancelledError`` / ``KeyboardInterrupt`` are never retried.  Permanent
-errors (anything not classified transient by ``_is_transient_network_error``)
-propagate immediately.
+``CancelledError`` / ``KeyboardInterrupt`` are never retried. Permanent
+provider errors may use the separate ``irrecoverable_error_max_retries``
+budget; after that budget is exhausted they propagate to the workflow owner.
+Unknown/local errors propagate immediately.
 """
 
 from __future__ import annotations
@@ -36,7 +39,10 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from agenthicc.runners.agent_turn import _is_transient_network_error
+from agenthicc.runners.agent_turn import (
+    _is_irrecoverable_provider_error,
+    _is_transient_network_error,
+)
 
 if TYPE_CHECKING:
     from lauren_ai._memory import ShortTermMemory
@@ -67,6 +73,9 @@ class RetryConfig:
 
     :param max_retries: Maximum retry attempts after the first try.  ``0``
         disables retry (one attempt only).
+    :param irrecoverable_error_max_retries: Maximum retries for
+        provider-originated permanent HTTP errors. ``0``
+        preserves immediate propagation.
     :param base_delay_s: First backoff delay; doubles each attempt.
     :param max_total_duration_s: Wall-clock ceiling across all attempts.
         ``0.0`` = no cap (bounded only by ``max_retries`` × per-call timeout).
@@ -78,6 +87,9 @@ class RetryConfig:
     base_delay_s: float = 1.0
     max_total_duration_s: float = 0.0
     jitter: bool = True
+    # Appended after the original fields so positional construction remains
+    # compatible with callers of this public dataclass.
+    irrecoverable_error_max_retries: int = 0
 
 
 async def run_with_transport_retry(
@@ -89,8 +101,11 @@ async def run_with_transport_retry(
     on_retry: Callable[[int, int, float, BaseException], Awaitable[None] | None] | None = None,
     reset_fns: Sequence[Callable[[], None]] = (),
     checkpoint_provider: Callable[[], object | None] | None = None,
+    on_irrecoverable_retry: (
+        Callable[[int, int, float, BaseException], Awaitable[None] | None] | None
+    ) = None,
 ) -> None:
-    """Run *turn_fn* with scoped retry on transient network errors.
+    """Run *turn_fn* with scoped retry on transient and permanent provider errors.
 
     :param turn_fn: Zero-arg coroutine performing one full agent turn.  It is
         responsible for any memory mutation. For atomic callables, the
@@ -104,19 +119,25 @@ async def run_with_transport_retry(
     :param deadline_monotonic: Optional absolute ``time.monotonic()`` deadline;
         a retry is skipped (error re-raised) if it could not run before it.
     :param on_retry: Optional callback ``(attempt, max_retries, delay, exc)``
-        fired before each backoff sleep.  May be sync or async.
+        fired before each transient backoff sleep. May be sync or async.
+    :param on_irrecoverable_retry: Optional callback with the same signature
+        for permanent provider retries. Keeping this separate preserves the
+        existing callback contract and allows a distinct UI event.
     :param reset_fns: Side-effect rollback callbacks run after memory restore.
     :param checkpoint_provider: Optional callback returning the latest safe
         snapshot. When supplied, transient retry restores this snapshot rather
         than the snapshot taken before the whole callable. This is required
         when a callable contains multiple internally committed steps.
-    :raises BaseException: The last error when retries are exhausted, or
-        immediately for permanent / cancellation errors.
+    :raises BaseException: The last error when either retry budget is
+        exhausted, or immediately for cancellation/unknown errors.
     """
     start = time.monotonic()
     can_snapshot = memory is not None and hasattr(memory, "snapshot") and hasattr(memory, "restore")
 
-    for attempt in range(config.max_retries + 1):
+    transient_retries = 0
+    irrecoverable_retries = 0
+
+    while True:
         snapshot = memory.snapshot() if can_snapshot else None  # type: ignore[union-attr]
 
         try:
@@ -127,7 +148,22 @@ async def run_with_transport_retry(
             raise
 
         except BaseException as exc:  # noqa: BLE001
-            if not _is_transient_network_error(exc) or attempt >= config.max_retries:
+            is_transient = _is_transient_network_error(exc)
+            is_irrecoverable = _is_irrecoverable_provider_error(exc)
+            if is_transient:
+                retry_number = transient_retries + 1
+                retry_limit = config.max_retries
+                transient_retries += 1
+                callback = on_retry
+            elif is_irrecoverable:
+                retry_number = irrecoverable_retries + 1
+                retry_limit = config.irrecoverable_error_max_retries
+                irrecoverable_retries += 1
+                callback = on_irrecoverable_retry
+            else:
+                raise
+
+            if retry_number > retry_limit:
                 raise
 
             # 1. Roll back only the uncommitted portion. A step-aware caller
@@ -148,7 +184,7 @@ async def run_with_transport_retry(
                     pass
 
             # 3. Compute backoff with optional jitter.
-            delay = config.base_delay_s * (2**attempt)
+            delay = config.base_delay_s * (2 ** (retry_number - 1))
             retry_after = _retry_after_seconds(exc)
             if retry_after is not None:
                 # Providers use this hint to protect rate limits. Never retry
@@ -177,8 +213,8 @@ async def run_with_transport_retry(
                 raise
 
             # 6. Observability / user notification.
-            if on_retry is not None:
-                result = on_retry(attempt + 1, config.max_retries, delay, exc)
+            if callback is not None:
+                result = callback(retry_number, retry_limit, delay, exc)
                 if inspect.isawaitable(result):
                     await result
 

@@ -65,6 +65,7 @@ against the current source before implementing them.
 - [PRD-195 — Enforced lauren-ai compatibility for reasoning replay](prd-195-lauren-ai-reasoning-compatibility.md)
 - [PRD-196 — Resume workflows after permanent provider errors](prd-196-resume-after-permanent-provider-errors.md)
 - [PRD-197 — Inherit the effective runtime policy in subagent workers](prd-197-subagent-runtime-policy-inheritance.md)
+- [PRD-198 — Bounded recovery retries for irrecoverable provider errors and extended `ask_user` timeout](prd-198-bounded-irrecoverable-error-retries-and-ask-user-timeout.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -370,6 +371,13 @@ PRD-196 separates provider request retryability from workflow resumability.
 It addresses the path where a permanent model/configuration error correctly
 stops retries but is converted into a bare failed phase, bypassing the paused
 workflow checkpoint and making the completed run unavailable to resume.
+
+PRD-198 adds a separately bounded recovery budget for provider-originated
+irrecoverable errors (default five retries after the initial request), keeps
+transient transport retry semantics independent, and requires one durable
+paused checkpoint at the same phase after exhaustion. It also raises the
+default `ask_user` wait from 60 to 300 seconds across configuration, TUI,
+background, headless, generated-workflow, and result-documentation paths.
 
 ## Existing PRDs
 

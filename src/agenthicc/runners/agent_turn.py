@@ -307,6 +307,19 @@ def _is_permanent_error(exc: BaseException) -> bool:
     return 400 <= status < 500 and status != 429
 
 
+def _is_irrecoverable_provider_error(exc: BaseException) -> bool:
+    """Return whether *exc* is a provider-originated permanent HTTP error.
+
+    ``_is_permanent_error`` also covers local integrity and context-overflow
+    failures that must propagate immediately. PRD-198's extra retry budget is
+    intentionally narrower: it applies only to an HTTP 4xx response from the
+    provider (except 429), while preserving immediate propagation for local
+    invariants and compaction failures.
+    """
+    status = _http_status_code(exc)
+    return status is not None and 400 <= status < 500 and status != 429
+
+
 def _is_context_overflow_error(exc: BaseException) -> bool:
     """Return whether *exc* is a provider context-length rejection.
 
@@ -1375,6 +1388,9 @@ class AgentTurnRunner:
             _ec = ctx.exec_cfg
             _subagent_retry = RetryConfig(
                 max_retries=int(getattr(_ec, "transport_max_retries", 10)),
+                irrecoverable_error_max_retries=max(
+                    0, int(getattr(_ec, "irrecoverable_error_max_retries", 5))
+                ),
                 base_delay_s=float(getattr(_ec, "transport_retry_base_delay_s", 1.0)),
                 max_total_duration_s=float(getattr(_ec, "transport_retry_max_total_s", 0.0)),
             )
@@ -2146,6 +2162,11 @@ class AgentTurnRunner:
                 # Emit one well-formatted error event with the exception class name.
                 # Do NOT call fail_turn/close_turn here — the finally block handles
                 # state cleanup idempotently, preventing the double-fail bug.
+                error_event_id = f"agent-turn-error:{self._intent_id}"
+                try:
+                    setattr(exc, "_agenthicc_error_event_id", error_event_id)
+                except Exception:  # noqa: BLE001 - third-party exceptions may be slotted
+                    error_event_id = None
                 missing_session_diagnostic = _missing_opencode_session_diagnostic(exc)
                 if missing_session_diagnostic is not None:
                     ctx.conv_store.append_event(
@@ -2154,10 +2175,13 @@ class AgentTurnRunner:
                             "message": "Provider session identity is missing",
                             "detail": missing_session_diagnostic,
                         },
+                        event_id=error_event_id,
                     )
                 else:
                     ctx.conv_store.append_event(
-                        "error", {"message": f"{type(exc).__name__}: {exc}"}
+                        "error",
+                        {"message": f"{type(exc).__name__}: {exc}"},
+                        event_id=error_event_id,
                     )
             # Every exception that survives the provider-step retry policy must
             # cross the agent-turn boundary.  Workflow owners need the original
@@ -2238,6 +2262,9 @@ class AgentTurnRunner:
         # ledger instead of rolling back to the turn start.
         config = RetryConfig(
             max_retries=max(0, int(getattr(exec_cfg, "transport_max_retries", 10))),
+            irrecoverable_error_max_retries=max(
+                0, int(getattr(exec_cfg, "irrecoverable_error_max_retries", 5))
+            ),
             base_delay_s=max(0.0, float(getattr(exec_cfg, "transport_retry_base_delay_s", 1.0))),
             max_total_duration_s=float(getattr(exec_cfg, "transport_retry_max_total_s", 0.0)),
         )
@@ -2277,6 +2304,7 @@ class AgentTurnRunner:
             memory=ctx.session_memory,
             deadline_monotonic=ctx.retry_deadline_monotonic,
             on_retry=self._emit_retry,
+            on_irrecoverable_retry=self._emit_irrecoverable_retry,
             reset_fns=reset_fns,
             checkpoint_provider=checkpoint_provider,
         )
@@ -2300,7 +2328,7 @@ class AgentTurnRunner:
             )
         import logging as _logging  # noqa: PLC0415
 
-        # The scroll appender is the user-facing notification surface.  Keep
+        # The scroll appender is the user-facing notification surface. Keep
         # the full exception for debug logs rather than printing a nested SDK
         # repr into the transcript alongside the compact retry event.
         _logging.getLogger(__name__).debug(
@@ -2324,6 +2352,57 @@ class AgentTurnRunner:
                         "max_retries": max_retries,
                         "delay_s": delay,
                         "error_type": type(exc).__name__,
+                    },
+                )
+            )
+
+    async def _emit_irrecoverable_retry(
+        self, attempt: int, max_retries: int, delay: float, exc: BaseException
+    ) -> None:
+        """Report a bounded retry of a provider-rejected request (PRD-198)."""
+        ctx = self._ctx
+        recovery_id = f"provider-recovery:{self._intent_id}"
+        payload = {
+            "recovery_id": recovery_id,
+            "attempt": attempt,
+            "max_retries": max_retries,
+            "delay_s": delay,
+            "reason": "Provider rejected the request",
+            "detail": _network_retry_detail(exc),
+            "status_code": _http_status_code(exc),
+            "category": "irrecoverable_provider",
+        }
+        if ctx.conv_store is not None:
+            ctx.conv_store.append_event(
+                "provider_recovery_retry",
+                payload,
+                event_id=f"{recovery_id}:retry:{attempt}",
+            )
+        import logging as _logging  # noqa: PLC0415
+
+        _logging.getLogger(__name__).debug(
+            "Irrecoverable provider error on recovery retry %d/%d, retrying in %.1fs: %s: %s",
+            attempt,
+            max_retries,
+            delay,
+            type(exc).__name__,
+            exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        if ctx.processor is not None:
+            from agenthicc.kernel import Event  # noqa: PLC0415
+
+            await ctx.processor.emit(
+                Event.create(
+                    "ProviderRecoveryRetryScheduled",
+                    {
+                        "scope": "agent_turn",
+                        "recovery_id": recovery_id,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "delay_s": delay,
+                        "error_type": type(exc).__name__,
+                        "category": "irrecoverable_provider",
                     },
                 )
             )

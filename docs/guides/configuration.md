@@ -90,6 +90,7 @@ code needing provider-specific branches.
 profile = "modal_kimi"
 max_output_tokens = 32768
 transport_max_retries = 10
+irrecoverable_error_max_retries = 5
 llm_sdk_max_retries = 2
 
 [providers.modal_kimi]
@@ -221,6 +222,7 @@ the code rather than hard-coding them in support material.
 | `transport_retry_base_delay_s` | 1.0 | Exponential transport-retry base delay; provider `retry_after` hints are honored |
 | `transport_retry_max_total_s` | 0 | Optional provider-step retry wall-clock ceiling |
 | `llm_sdk_max_retries` | 2 | Provider SDK retry count |
+| `irrecoverable_error_max_retries` | 5 | Bounded retries for provider-originated permanent 4xx errors before resumable checkpointing |
 
 The live usable context budget is derived from the resolved model window and
 reservations; it is not a second independent `session_memory_max_tokens`

@@ -530,7 +530,8 @@ max_agent_turns = 200
 authoring_max_generation_attempts = 20
 authoring_max_phase_turns = 20
 auto_compact = true
-transport_max_retries = 3
+transport_max_retries = 10
+irrecoverable_error_max_retries = 5
 
 [memory]
 project_memory_path = ".agenthicc/memory"
@@ -545,6 +546,7 @@ network_allow_list = []
 [tools]
 max_live_tool_calls = 5
 group_exploratory_calls = true  # presentation-only grouping of marked reads
+question_timeout_s = 300.0  # five-minute default for ask_user
 browser_backend = "cloakbrowser"  # cloakbrowser, playwright, or none
 
 [loops]

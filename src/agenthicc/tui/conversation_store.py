@@ -63,6 +63,8 @@ EventKind = Literal[
     "mcp_server_failure",
     # Structured transient provider retry notice (PRD-187).
     "network_retry",
+    # Bounded retry for a provider-originated permanent/client error (PRD-198).
+    "provider_recovery_retry",
     # Bounded ask_user lifecycle events (PRD-192).
     "question_wait_started",
     "question_answered",

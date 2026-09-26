@@ -77,7 +77,14 @@ timeout_s = 3600
 transport_max_retries = 10
 transport_retry_base_delay_s = 1.0
 llm_sdk_max_retries = 2
+irrecoverable_error_max_retries = 5
 ```
+
+An HTTP 400 such as an unsupported model is not a transient transport error,
+so it uses `irrecoverable_error_max_retries`, not `transport_max_retries`.
+After that bounded budget is exhausted, the provider error still propagates to
+the workflow owner; a supported workflow is paused at the same phase and can
+be resumed after correcting the provider configuration.
 
 !!! danger "`timeout_s` is the provider timeout"
     It governs the LLM request. `turn_timeout_s` is the separate turn deadline.

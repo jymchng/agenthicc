@@ -25,6 +25,7 @@ from dataclasses import replace
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
+from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
 from agenthicc.tools.context import ToolCallContext
 
 if TYPE_CHECKING:
@@ -90,7 +91,7 @@ class ApprovalService:
     def __init__(
         self,
         app_state: AppState,
-        question_timeout_s: float = 60.0,
+        question_timeout_s: float = DEFAULT_QUESTION_TIMEOUT_S,
         *,
         clock: Callable[[], float] | None = None,
         question_wait_records: Mapping[str, Mapping[str, object]] | None = None,

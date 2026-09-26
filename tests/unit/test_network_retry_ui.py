@@ -87,6 +87,32 @@ def test_scroll_appender_does_not_render_http_zero_for_unknown_status() -> None:
     assert "HTTP 0" not in rendered
 
 
+def test_scroll_appender_renders_provider_recovery_retry() -> None:
+    state = AppState.create()
+    console = Console(record=True, width=100, force_terminal=False)
+    appender = ScrollBufferAppender(state, console)
+
+    appender._render_one(
+        ConversationEvent(
+            "retry",
+            "provider_recovery_retry",
+            {
+                "attempt": 1,
+                "max_retries": 5,
+                "delay_s": 1.0,
+                "detail": "model is not available",
+                "status_code": 400,
+            },
+        )
+    )
+
+    rendered = console.export_text()
+    assert "Provider request rejected" in rendered
+    assert "retry 1/5 in 1.0s" in rendered
+    assert "HTTP 400" in rendered
+    assert "model is not available" in rendered
+
+
 @pytest.mark.asyncio
 async def test_retry_callback_emits_structured_event_for_the_scroll_appender() -> None:
     from agenthicc.runners.agent_turn import AgentTurnRunner

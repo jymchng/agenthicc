@@ -169,6 +169,23 @@ class TestExecutionSettingsRetryFields:
         cfg = ExecutionSettings(transport_max_retries=0)
         assert cfg.transport_max_retries == 0
 
+    def test_irrecoverable_error_retry_default_is_five(self) -> None:
+        assert ExecutionSettings().irrecoverable_error_max_retries == 5
+
+    def test_irrecoverable_error_retry_can_be_disabled(self) -> None:
+        cfg = _dict_to_config({"execution": {"irrecoverable_error_max_retries": 0}})
+        assert cfg.execution.irrecoverable_error_max_retries == 0
+
+    @pytest.mark.parametrize("value", [-1, True, 1.5, 21, "5"])
+    def test_irrecoverable_error_retry_rejects_unsafe_values(self, value: object) -> None:
+        with pytest.raises(ValueError, match="irrecoverable_error_max_retries"):
+            ExecutionSettings(irrecoverable_error_max_retries=value)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("value", [-1, True, 1.5, 21])
+    def test_toml_irrecoverable_error_retry_rejects_unsafe_values(self, value: object) -> None:
+        with pytest.raises(ValueError, match="irrecoverable_error_max_retries"):
+            _dict_to_config({"execution": {"irrecoverable_error_max_retries": value}})
+
 
 # ── run_with_transport_retry (shared helper) ──────────────────────────────────
 
@@ -229,6 +246,81 @@ class TestRunWithTransportRetry:
 
         await run_with_transport_retry(fn, config=self._config(max_retries=2))
         assert calls[0] == 3
+
+    async def test_retries_on_irrecoverable_provider_error_with_separate_budget(self) -> None:
+        from agenthicc.runners.retry import RetryConfig, run_with_transport_retry
+        from lauren_ai._exceptions import TransportError
+
+        calls = [0]
+        recovery_events: list[tuple[int, int]] = []
+
+        async def fn():
+            calls[0] += 1
+            if calls[0] < 3:
+                raise TransportError("unsupported model", status_code=400)
+
+        async def on_recovery(attempt: int, limit: int, _delay: float, _exc: BaseException):
+            recovery_events.append((attempt, limit))
+
+        await run_with_transport_retry(
+            fn,
+            config=RetryConfig(
+                max_retries=0,
+                irrecoverable_error_max_retries=2,
+                base_delay_s=0.0,
+                jitter=False,
+            ),
+            on_irrecoverable_retry=on_recovery,
+        )
+
+        assert calls[0] == 3
+        assert recovery_events == [(1, 2), (2, 2)]
+
+    async def test_irrecoverable_error_exhaustion_propagates_after_budget(self) -> None:
+        from agenthicc.runners.retry import RetryConfig, run_with_transport_retry
+        from lauren_ai._exceptions import TransportError
+
+        calls = [0]
+
+        async def fn():
+            calls[0] += 1
+            raise TransportError("unsupported model", status_code=400)
+
+        with pytest.raises(TransportError):
+            await run_with_transport_retry(
+                fn,
+                config=RetryConfig(
+                    max_retries=10,
+                    irrecoverable_error_max_retries=2,
+                    base_delay_s=0.0,
+                    jitter=False,
+                ),
+            )
+
+        assert calls[0] == 3
+
+    async def test_zero_irrecoverable_retries_propagates_first_error(self) -> None:
+        from agenthicc.runners.retry import RetryConfig, run_with_transport_retry
+        from lauren_ai._exceptions import TransportError
+
+        calls = [0]
+
+        async def fn():
+            calls[0] += 1
+            raise TransportError("unsupported model", status_code=400)
+
+        with pytest.raises(TransportError):
+            await run_with_transport_retry(
+                fn,
+                config=RetryConfig(
+                    max_retries=0,
+                    irrecoverable_error_max_retries=0,
+                    base_delay_s=0.0,
+                    jitter=False,
+                ),
+            )
+
+        assert calls[0] == 1
 
     async def test_memory_restored_on_retry(self) -> None:
         from agenthicc.runners.retry import run_with_transport_retry

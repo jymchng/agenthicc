@@ -76,16 +76,20 @@ A named connection is a `ProviderProfile` (`src/agenthicc/config.py:723`):
     `timeout_s` on a **profile** has no default of its own; the
     `[execution]` table carries `timeout_s = 3600.0` plus
     `provider_capabilities`, `transport_max_retries`, and
-    `transport_retry_base_delay_s`. A profile's `capabilities` are copied into
+    `irrecoverable_error_max_retries`. A profile's `capabilities` are copied into
     `execution.provider_capabilities` when the profile is resolved. Set a value
     in the table that actually owns it.
 
 !!! danger "`timeout_s` is the LLM timeout, not the turn timeout"
     `timeout_s` governs the provider request; `turn_timeout_s` governs a turn
     (default `0.0`, meaning no turn deadline). Set both deliberately, or
-    neither. `transport_max_retries` (default 10),
-    `transport_retry_base_delay_s` (default 1.0), and `llm_sdk_max_retries`
-    (default 2) control retries.
+    neither. `transport_max_retries` (default 10) controls transient provider
+    stream retries, while `irrecoverable_error_max_retries` (default 5)
+    controls bounded retries for provider-originated permanent 4xx errors.
+    `transport_retry_base_delay_s` (default 1.0) controls exponential backoff,
+    and `llm_sdk_max_retries` (default 2) controls SDK retries. Exhaustion
+    crosses the workflow boundary and is saved as a resumable checkpoint when
+    checkpointing is available.
 
 ## Secrets
 

@@ -4206,6 +4206,13 @@ PROVIDER_API_KEY_ENVVAR: dict[str, str]
 # {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", ...}
 ```
 
+### DEFAULT_QUESTION_TIMEOUT_S
+
+```python
+DEFAULT_QUESTION_TIMEOUT_S: float = 300.0
+# Five-minute default deadline for the interactive ask_user tool.
+```
+
 ### ExecutionSettings (updated)
 
 Authoring settings include authoring_max_generation_attempts (default 20) and
@@ -4244,6 +4251,7 @@ class ExecutionSettings:
     max_completion_tokens: int | None = None
     default_headers: dict[str, str] = field(default_factory=dict)
     session_header: str = ""  # dynamic header name; value is conversation_id at transport build
+    irrecoverable_error_max_retries: int = 5  # permanent provider-error retries
     default_query: dict[str, object] = field(default_factory=dict)
     client_options: dict[str, object] = field(default_factory=dict)
     request_options: object | None = None

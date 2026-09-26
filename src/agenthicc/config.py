@@ -62,6 +62,7 @@ __all__ = [
     "StorageSettings",
     "SUPPORTED_PROVIDERS",
     "ToolSettings",
+    "DEFAULT_QUESTION_TIMEOUT_S",
     "build_llm_config",
     "deep_merge",
     "load_config",
@@ -76,6 +77,14 @@ __all__ = [
 
 PROJECT_FILE = "agenthicc.toml"
 USER_FILE = ".agenthicc.toml"
+
+# PRD-198: the default is deliberately finite while allowing enough time for
+# a human to review a long workflow question and return to the terminal.
+DEFAULT_QUESTION_TIMEOUT_S = 300.0
+
+# PRD-198: prevent a typo or unbounded configuration from turning a provider
+# configuration error into an excessively long recovery loop.
+MAX_IRRECOVERABLE_ERROR_RETRIES = 20
 
 # Config file search order — first found wins
 PROJECT_CONFIG_CANDIDATES = [
@@ -1065,6 +1074,24 @@ class ExecutionSettings:
     # Appended after the original fields to preserve positional construction
     # compatibility for downstream callers of this public dataclass.
     session_header: str = ""
+    # Appended after the original fields to preserve positional construction
+    # compatibility. Provider-originated permanent/client errors (for example
+    # an unsupported model) receive this separate bounded recovery budget
+    # before the workflow owner checkpoints the same run and phase (PRD-198).
+    irrecoverable_error_max_retries: int = 5
+
+    def __post_init__(self) -> None:
+        value = self.irrecoverable_error_max_retries
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or value > MAX_IRRECOVERABLE_ERROR_RETRIES
+        ):
+            raise ValueError(
+                "execution.irrecoverable_error_max_retries must be an integer "
+                f"between 0 and {MAX_IRRECOVERABLE_ERROR_RETRIES}"
+            )
 
     def effective_model(self) -> str:
         return self.model or PROVIDER_DEFAULT_MODELS.get(self.provider, self.model)
@@ -1295,7 +1322,7 @@ class ToolSettings:
     group_exploratory_calls: bool = True
     """Render marked contiguous read-only calls as one ``Explored`` block."""
     http_timeout_s: float = 30.0
-    question_timeout_s: float = 60.0
+    question_timeout_s: float = DEFAULT_QUESTION_TIMEOUT_S
     """Maximum wait for one interactive ``ask_user`` request."""
     cloakbrowser: CloakBrowserSettings = field(default_factory=CloakBrowserSettings)
     playwright: PlaywrightSettings = field(default_factory=PlaywrightSettings)
@@ -1841,6 +1868,27 @@ def _as_int(value: object, default: int) -> int:
     return default
 
 
+def _as_retry_count(value: object, default: int, *, path: str) -> int:
+    """Parse a strict non-negative bounded retry count.
+
+    General integer settings historically coerce TOML floats and booleans. A
+    retry budget is safety-sensitive, so silently turning ``1.5`` or ``true``
+    into a different number would make the effective request count unclear.
+    """
+    if value is None:
+        return default
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > MAX_IRRECOVERABLE_ERROR_RETRIES
+    ):
+        raise ValueError(
+            f"{path} must be an integer between 0 and {MAX_IRRECOVERABLE_ERROR_RETRIES}"
+        )
+    return value
+
+
 def _as_float(value: object, default: float) -> float:
     if isinstance(value, bool):
         return float(value)
@@ -2194,6 +2242,11 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         transport_retry_base_delay_s=_as_float(ex.get("transport_retry_base_delay_s"), 1.0),
         transport_retry_max_total_s=_as_float(ex.get("transport_retry_max_total_s"), 0.0),
         llm_sdk_max_retries=_as_int(ex.get("llm_sdk_max_retries"), 2),
+        irrecoverable_error_max_retries=_as_retry_count(
+            ex.get("irrecoverable_error_max_retries"),
+            5,
+            path="execution.irrecoverable_error_max_retries",
+        ),
         profile=_as_str(ex.get("profile"), ""),
         provider=_as_str(ex.get("provider"), "anthropic"),
         model=_as_str(ex.get("model"), ""),
@@ -2249,7 +2302,7 @@ def _dict_to_config(data: dict[str, object]) -> AgenthiccConfig:
         max_live_tool_calls=_as_int(to.get("max_live_tool_calls"), 5),
         group_exploratory_calls=_as_bool(to.get("group_exploratory_calls"), True),
         http_timeout_s=_as_float(to.get("http_timeout_s"), 30.0),
-        question_timeout_s=_as_float(to.get("question_timeout_s"), 60.0),
+        question_timeout_s=_as_float(to.get("question_timeout_s"), DEFAULT_QUESTION_TIMEOUT_S),
         browser_backend=_as_str(to.get("browser_backend"), "cloakbrowser"),
         cloakbrowser=CloakBrowserSettings(
             enabled=_as_bool(_section(to.get("cloakbrowser")).get("enabled"), True),

@@ -667,7 +667,11 @@ class CreateWorkflowRunner(BaseWorkflowRunner):
                 current_phase=handle.current_phase if checkpoint and handle is not None else None,
             )
             self._cfg.app_state.workflow_run.set(wf_run)
-            self._cfg.conv_store.append_event("error", {"message": str(exc)})
+            self._cfg.conv_store.append_event(
+                "error",
+                {"message": str(exc)},
+                event_id=getattr(exc, "_agenthicc_error_event_id", None),
+            )
             # Preserve the session-owned failure boundary. The typed context
             # is already attached, so an unexpected exception remains a
             # resumable checkpoint opportunity rather than a fresh-run signal.

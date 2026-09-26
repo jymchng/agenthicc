@@ -144,7 +144,9 @@ async def test_stream_reraises_permanent_error() -> None:
         max_agent_turns=1,
         conv_store=conv_store,
         app_state=None,
-        exec_cfg=ExecutionSettings(),
+        # Disable PRD-198's bounded recovery budget so this test isolates the
+        # immediate propagation contract of a zero-budget permanent error.
+        exec_cfg=ExecutionSettings(irrecoverable_error_max_retries=0),
         skills={},
         mention_cache=MagicMock(),
         project_plugin_tools=[],

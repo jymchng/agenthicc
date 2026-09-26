@@ -373,7 +373,11 @@ class CodePlanRunner(BaseWorkflowRunner):
                 current_phase=handle.current_phase if checkpoint and handle is not None else None,
             )
             self._cfg.app_state.workflow_run.set(wf_run)
-            self._cfg.conv_store.append_event("error", {"message": str(exc)})
+            self._cfg.conv_store.append_event(
+                "error",
+                {"message": str(exc)},
+                event_id=getattr(exc, "_agenthicc_error_event_id", None),
+            )
             # Preserve the session-owned failure boundary. A typed context has
             # already been attached before phase work, so the owner can pause
             # this exact run for any unexpected exception here.

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Mapping
 from agenthicc.background.model import SessionStatus
 from agenthicc.background.store import BackgroundStore, InvalidSessionTransition
 from agenthicc.cli.context import CLIContext, CLIFlags
+from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
 
 if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
@@ -104,9 +105,13 @@ def _session_question_timeout(session: object) -> float:
     value = _request_attribute(
         _request_attribute(_request_attribute(session, "cfg", None), "tools", None),
         "question_timeout_s",
-        60.0,
+        DEFAULT_QUESTION_TIMEOUT_S,
     )
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 60.0
+    return (
+        float(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else DEFAULT_QUESTION_TIMEOUT_S
+    )
 
 
 class BackgroundApprovalService:
@@ -116,7 +121,7 @@ class BackgroundApprovalService:
         self,
         store: BackgroundStore,
         session_id: str,
-        question_timeout_s: float = 60.0,
+        question_timeout_s: float = DEFAULT_QUESTION_TIMEOUT_S,
         conversation_store: object | None = None,
     ) -> None:
         if (

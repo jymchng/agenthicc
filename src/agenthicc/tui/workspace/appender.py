@@ -759,6 +759,33 @@ def _render_network_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> 
     self._console.print()
 
 
+@register_renderer("provider_recovery_retry")
+def _render_provider_recovery_retry(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
+    """Render a compact retry notice for a provider-rejected request."""
+    from rich.markup import escape as _e  # noqa: PLC0415
+
+    attempt = max(1, int(_number(ev.payload, "attempt", 1)))
+    max_retries = max(attempt, int(_number(ev.payload, "max_retries", attempt)))
+    delay = max(0.0, _number(ev.payload, "delay_s"))
+    detail = _text(ev.payload, "detail")
+    status_code = ev.payload.get("status_code")
+    status = (
+        f"HTTP {status_code}"
+        if isinstance(status_code, int) and not isinstance(status_code, bool)
+        else "provider rejected request"
+    )
+    self._console.print(
+        "[yellow]⚠[/yellow] [bold]Provider request rejected[/bold] "
+        f"[dim]retry {attempt}/{max_retries} in[/dim] [cyan]{delay:.1f}s[/cyan]",
+        markup=True,
+        highlight=False,
+    )
+    self._console.print(f"  [dim]{_e(status)}[/dim]", markup=True, highlight=False)
+    if detail:
+        self._console.print(f"  [dim]{_e(detail)}[/dim]", markup=True, highlight=False)
+    self._console.print()
+
+
 @register_renderer("goal_list_mutated")
 def _render_goal_list_mutated(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
     """Render a compact notice after a durable goal append or insertion."""

@@ -1,11 +1,11 @@
 # Interactive question timeouts
 
 `ask_user` has a bounded wait so an unattended session cannot suspend an agent
-turn forever. The default is 60 seconds:
+turn forever. The default is 300 seconds (five minutes):
 
 ```toml
 [tools]
-question_timeout_s = 60.0
+question_timeout_s = 300.0
 ```
 
 The setting can be overridden for one invocation:
@@ -30,7 +30,7 @@ the pending request is cleared, and `ask_user` returns a structured result:
   "timed_out": true,
   "decision_required": true,
   "request_id": "stable-request-id",
-  "timeout_s": 60.0,
+  "timeout_s": 300.0,
   "message": "The user did not answer before the configured deadline; choose the safest reasonable option, state the assumption, and do not ask the same question again solely because it timed out."
 }
 ```

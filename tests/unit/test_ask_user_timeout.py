@@ -202,7 +202,14 @@ async def test_make_questions_tool_exposes_timeout_without_fabricating_answers()
 
 
 def test_question_timeout_configuration_defaults_and_loads_from_toml(tmp_path) -> None:
-    assert ToolSettings().question_timeout_s == 60.0
+    assert ToolSettings().question_timeout_s == 300.0
+    assert ApprovalService(AppState.create())._question_timeout_s == 300.0  # noqa: SLF001
+    assert (
+        BackgroundApprovalService(
+            BackgroundStore(tmp_path / "background"), "session"
+        ).question_timeout_s
+        == 300.0
+    )
     config_path = tmp_path / "agenthicc.toml"
     config_path.write_text("[tools]\nquestion_timeout_s = 180\n", encoding="utf-8")
     config = load_config(project_path=config_path, user_path=tmp_path / "missing.toml")

@@ -1669,6 +1669,7 @@ class TUISession:
         *,
         kind: str = "workflow_error",
         recoverable: bool = True,
+        error_event_id: str | None = None,
     ) -> None:
         """Publish and finalize a workflow failure that escaped its runner.
 
@@ -1683,7 +1684,7 @@ class TUISession:
         if conv.is_turn_active:
             conv.close_turn(error=error)
         else:
-            conv.append_event("error", {"message": error})
+            conv.append_event("error", {"message": error}, event_id=error_event_id)
 
         handle = self._workflow_handle
         if handle is None:
@@ -3317,14 +3318,19 @@ class TUISession:
         except Exception as exc:
             turn_failed = True
             error = _fmt_exc(exc)
+            error_event_id = getattr(exc, "_agenthicc_error_event_id", None)
             # Workflow startup can fail before an agent turn exists. Publish
             # that failure explicitly instead of silently returning to idle.
             if self._workflow_handle is not None:
-                self._fail_workflow_run(error, kind=_workflow_failure_kind(exc))
+                self._fail_workflow_run(
+                    error,
+                    kind=_workflow_failure_kind(exc),
+                    error_event_id=error_event_id,
+                )
             elif conv.is_turn_active:
                 conv.close_turn(error=error)
             else:
-                conv.append_event("error", {"message": error})
+                conv.append_event("error", {"message": error}, event_id=error_event_id)
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             conv.end_activity()
@@ -3780,12 +3786,17 @@ class TUISession:
         except Exception as exc:
             conv = ctx.app_state.conversation
             error = _fmt_exc(exc)
+            error_event_id = getattr(exc, "_agenthicc_error_event_id", None)
             if self._workflow_handle is not None:
-                self._fail_workflow_run(error, kind=_workflow_failure_kind(exc))
+                self._fail_workflow_run(
+                    error,
+                    kind=_workflow_failure_kind(exc),
+                    error_event_id=error_event_id,
+                )
             elif conv.is_turn_active:
                 conv.close_turn(error=error)
             else:
-                conv.append_event("error", {"message": error})
+                conv.append_event("error", {"message": error}, event_id=error_event_id)
             self._input_session.set_mode(InputMode.IDLE)
         finally:
             ctx.app_state.conversation.end_activity()
