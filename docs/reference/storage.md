@@ -451,6 +451,14 @@ The conversation journal carries bounded `phase_control_requested`,
 renders each request, commit, or rejection as one compact notice; it does not
 print the full plan or unbounded prompt content.
 
+`goal_list_mutated` follows the same projection rule. The runner writes the
+checkpoint first and then appends the bounded event containing the operation,
+zero-based index, list count, revision, and active-goal metadata. The TUI
+converts the index to a human-facing one-based position and renders one
+presentation notice; it never uses the notice to decide whether the mutation
+was committed. Event-ID deduplication and replay preserve exactly-once visible
+presentation without changing the durable goal list.
+
 The records remain compact workflow metadata: provider conversation messages,
 memory objects, live tool handles, and artifact bodies are not copied into
 this section. Receipt retention is capped at 128 records

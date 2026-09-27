@@ -121,6 +121,7 @@ _LANG_MAP: dict[str, str] = {
 
 _MAX_EXPLORATION_ITEMS = 12
 _MAX_EXPLORATION_TARGET = 80
+_MAX_GOAL_DISPLAY_COUNT = 1_000_000
 
 
 def _lang_for_path(path: str) -> str:
@@ -180,6 +181,58 @@ def _tool_display_operation(name: str) -> str:
 def _line_count_label(count: int) -> str:
     word = "line" if count == 1 else "lines"
     return f"{count} {word}"
+
+
+def _goal_mutation_lines(payload: Mapping[str, object]) -> tuple[str, str, str]:
+    """Return bounded, human-facing lines for a committed goal mutation.
+
+    ``insert_goal`` stores a zero-based ``index`` because that is the stable
+    workflow/tool contract.  The TUI deliberately translates it to a
+    one-based position and only displays it when the event contains coherent,
+    bounded values.  This helper is presentation-only: it never reads or
+    modifies workflow state and never renders the opaque goal ID or goal text.
+    """
+
+    operation = payload.get("operation")
+    operation_name = operation if isinstance(operation, str) else ""
+    raw_index = payload.get("index")
+    raw_count = payload.get("goal_count")
+    index = raw_index if isinstance(raw_index, int) and not isinstance(raw_index, bool) else None
+    count = raw_count if isinstance(raw_count, int) and not isinstance(raw_count, bool) else None
+    bounded_count = count is not None and 0 < count <= _MAX_GOAL_DISPLAY_COUNT
+    bounded_index = index is not None and 0 <= index <= _MAX_GOAL_DISPLAY_COUNT
+
+    position: int | None = None
+    total: int | None = None
+    if bounded_count and bounded_index:
+        assert count is not None
+        assert index is not None
+        candidate_count = count
+        candidate_index = index
+        # The event is emitted after the mutation.  Therefore the new record
+        # must occupy [0, goal_count), and an append must occupy the final
+        # position.  Do not display contradictory historical/malformed data.
+        operation_is_coherent = 0 <= candidate_index < candidate_count and (
+            operation_name != "append" or candidate_index == candidate_count - 1
+        )
+        if operation_is_coherent:
+            position = candidate_index + 1
+            total = candidate_count
+
+    if operation_name == "insert":
+        detail = "Inserted a goal"
+    elif operation_name == "append":
+        detail = "Added a goal to the end"
+    else:
+        detail = "Added a goal"
+
+    if position is not None and total is not None:
+        detail += f" · position {position} of {total}"
+    elif bounded_count:
+        assert count is not None
+        detail += f" · plan now has {count} goal{'s' if count != 1 else ''}"
+
+    return ("Plan updated", detail, "↳ Current goal continues")
 
 
 class ScrollBufferAppender:
@@ -788,20 +841,22 @@ def _render_provider_recovery_retry(self: ScrollBufferAppender, ev: Conversation
 
 @register_renderer("goal_list_mutated")
 def _render_goal_list_mutated(self: ScrollBufferAppender, ev: ConversationEvent) -> None:
-    """Render a compact notice after a durable goal append or insertion."""
+    """Render one polished notice after a durable goal append or insertion."""
     from rich.markup import escape as _e
 
-    operation = _text(ev.payload, "operation", "add")
-    index = ev.payload.get("index")
-    count = ev.payload.get("goal_count")
-    if operation == "insert":
-        verb = "Inserted goal"
-    else:
-        verb = "Appended goal"
-    position = f" at {index}" if isinstance(index, int) and not isinstance(index, bool) else ""
-    total = f" ({count} total)" if isinstance(count, int) and not isinstance(count, bool) else ""
+    heading, detail, continuation = _goal_mutation_lines(ev.payload)
     self._console.print(
-        f"  [dim]⎿[/dim] [cyan]{_e(verb)}[/cyan]{position}{total}; continuing the current goal",
+        f"  [dim]⎿[/dim] [cyan]{_e(heading)}[/cyan]",
+        markup=True,
+        highlight=False,
+    )
+    self._console.print(
+        f"    [dim]{_e(detail)}[/dim]",
+        markup=True,
+        highlight=False,
+    )
+    self._console.print(
+        f"    [dim]{_e(continuation)}[/dim]",
         markup=True,
         highlight=False,
     )

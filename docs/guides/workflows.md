@@ -383,6 +383,31 @@ never restarted at the initial clarification phase. The stable cache contract
 contains only the fixed mutation policy and schemas; the current list and
 evidence remain dynamic context.
 
+#### Dynamic-goal notices in the TUI
+
+After a successful append or insert, the scroll appender renders the durable
+`goal_list_mutated` event as a presentation-only plan update:
+
+```text
+  ⎿ Plan updated
+    Inserted a goal · position 8 of 13
+    ↳ Current goal continues
+```
+
+The workflow API continues to use a zero-based `insert_goal(index=...)`
+argument. The notice converts that internal index to a one-based position for
+readability and does not expose the opaque goal ID or full goal text. Appends
+are labelled as additions to the end of the plan. A mutation is not a handoff:
+the active goal and phase remain unchanged, and the continuation line makes
+that explicit.
+
+The notice is derived from the event only after the checkpoint succeeds. It is
+not a second workflow state store, and replaying a journal event does not
+create another mutation. Invalid or legacy numeric metadata is rendered with a
+bounded generic message rather than being displayed as raw implementation
+values. The tool result remains available to the model, while the appender
+uses one polished human-facing mutation notice.
+
 ## Command lifecycle gates
 
 Declare command intent in a phase when a build or development server is part

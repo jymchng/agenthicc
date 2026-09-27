@@ -161,6 +161,13 @@ Idle sessions do not publish animation frames or repaint the unchanged Live stat
 
 Tool completions use the same operation-style header as file updates: reads, searches, commands, and other tools show a `● Operation(...)` header, a result summary, and a bounded numbered output preview. File changes retain their unified diff preview; long contiguous change blocks are abbreviated to six edge rows with a single `...` omission marker. Collapsed tool-group summaries are also flushed to the scroll buffer when an active agent is interrupted.
 
+When `goal_flow` adds work during implementation, the scroll buffer shows a
+human-friendly plan notice such as `Plan updated`, the one-based position of
+the new goal, and `Current goal continues`. The durable workflow API still
+uses zero-based insertion indices; opaque goal IDs and full goal text are not
+printed in the notice, and replaying a saved event does not mutate the plan
+again.
+
 Transient provider failures are rendered as compact retry notices showing the attempt, backoff delay, human-readable cause, and a bounded provider message; the raw nested SDK exception is kept out of the scroll buffer and retained only in debug logs.
 
 ### Built-in slash commands

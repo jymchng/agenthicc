@@ -203,7 +203,7 @@ class TestSummaryLine:
 
         assert console.print.call_args_list == []
 
-    def test_goal_mutation_event_is_a_bounded_compact_notice(self):
+    def test_goal_insert_notice_uses_human_position_and_separate_continuation(self):
         appender, console = _make_appender()
 
         _flush(
@@ -212,17 +212,79 @@ class TestSummaryLine:
                 _ev(
                     "goal_list_mutated",
                     operation="insert",
-                    index=0,
-                    goal_count=4,
+                    index=7,
+                    goal_count=13,
                     goal_id="secret-goal-id",
+                    goal="do not render this goal",
                 )
             ],
         )
 
         lines = _str_calls(console)
-        assert any("Inserted goal" in line and "at 0 (4 total)" in line for line in lines)
+        assert lines[0] == "  [dim]⎿[/dim] [cyan]Plan updated[/cyan]"
+        assert "Inserted a goal · position 8 of 13" in lines[1]
+        assert "↳ Current goal continues" in lines[2]
+        assert all("at 7" not in line for line in lines)
+        assert all("(13 total)" not in line for line in lines)
+        assert all("; continuing" not in line for line in lines)
         assert all("secret-goal-id" not in line for line in lines)
+        assert all("do not render this goal" not in line for line in lines)
         assert console.print.call_args_list[-1].args == ()
+
+    @pytest.mark.parametrize(
+        ("operation", "index", "count", "expected"),
+        [
+            ("append", 12, 13, "Added a goal to the end · position 13 of 13"),
+            ("insert", 0, 1, "Inserted a goal · position 1 of 1"),
+            ("future-operation", 2, 4, "Added a goal · position 3 of 4"),
+        ],
+    )
+    def test_goal_mutation_notice_has_safe_operation_copy(self, operation, index, count, expected):
+        appender, console = _make_appender()
+
+        _flush(
+            appender,
+            [_ev("goal_list_mutated", operation=operation, index=index, goal_count=count)],
+        )
+
+        lines = _str_calls(console)
+        assert expected in lines[1]
+        assert "Current goal continues" in lines[2]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"operation": "insert", "index": -1, "goal_count": 4},
+            {"operation": "append", "index": 0, "goal_count": 4},
+            {"operation": "insert", "index": True, "goal_count": 4},
+            {"operation": "insert", "index": 7, "goal_count": 0},
+            {"operation": "insert", "index": 10_000_001, "goal_count": 10_000_002},
+            {"operation": "insert", "index": "7", "goal_count": "13"},
+        ],
+    )
+    def test_goal_mutation_notice_handles_incoherent_metadata_without_raw_values(self, payload):
+        appender, console = _make_appender()
+
+        _flush(appender, [_ev("goal_list_mutated", **payload)])
+
+        lines = _str_calls(console)
+        assert lines[0] == "  [dim]⎿[/dim] [cyan]Plan updated[/cyan]"
+        assert "Current goal continues" in lines[2]
+        assert all("10_000_001" not in line for line in lines)
+        assert all("at " not in line for line in lines)
+        assert console.print.call_args_list[-1].args == ()
+
+    def test_goal_mutation_notice_never_coalesces_into_tool_group_or_rewrites_state(self):
+        appender, console = _make_appender()
+        event = _ev("goal_list_mutated", operation="insert", index=1, goal_count=3)
+
+        _flush(appender, [_tool(), event, _ev("text", text="continue")])
+
+        lines = _str_calls(console)
+        assert sum("Plan updated" in line for line in lines) == 1
+        assert appender._group_count == 0
+        assert event.payload["index"] == 1
+        assert event.payload["goal_count"] == 3
 
     def test_phase_control_events_render_bounded_notices(self):
         appender, console = _make_appender()
