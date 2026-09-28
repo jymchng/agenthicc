@@ -25,6 +25,14 @@ terminal
 | `$` | Skill-only picker |
 | `@` | Project file/mention picker |
 
+Submitted `@` text is parsed conservatively. Existing files and directories,
+explicit paths such as `@./missing.py`, globs, and `http://`/`https://` URLs
+remain supported. An unresolved bare identifier such as `@bookTicker`,
+`@depth20`, or `@100ms` is ordinary text and does not create a failed read or
+mention warning. Use `./`, a path separator, or the picker when a missing bare
+filename should be treated as a mention. Mentions inside Markdown inline or
+fenced code are treated as literal examples.
+
 ## Modes
 
 Shift+Tab cycles **Safe → Plan → Yolo**. `/mode` switches directly. The aliases

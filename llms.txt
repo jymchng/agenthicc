@@ -189,7 +189,7 @@ Every public module below imports cleanly and is documented in `llms-full.txt`.
 | `agenthicc.agents` | Agents system — named, reusable @agent(...)-decorated classes (PRD-87). |
 | `agenthicc.modes` | Mode system for agenthicc — operating modes that shape agent behaviour. |
 | `agenthicc.agent_tools` | Built-in @tool() functions available to every agenthicc agent session. |
-| `agenthicc.mentions` | @mention parsing and file content injection (PRD-32, PRD-33). |
+| `agenthicc.mentions` | Context-aware @mention parsing and file content injection (PRD-32, PRD-33, PRD-201). |
 | `agenthicc.auth` | OAuth device-flow client, token bundle, and keyring/file-backed token store |
 | `agenthicc.ads` | Rotating sponsor-ad records and TTL cache for the status-line presentation |
 | `agenthicc.project_bootstrap` | Safe project scaffold and guidance bootstrap for ``agenthicc init`` and ``/init``. |

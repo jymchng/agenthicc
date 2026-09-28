@@ -68,6 +68,7 @@ against the current source before implementing them.
 - [PRD-198 — Bounded recovery retries for irrecoverable provider errors and extended `ask_user` timeout](prd-198-bounded-irrecoverable-error-retries-and-ask-user-timeout.md)
 - [PRD-199 — Dynamic turn budgets for `goal_flow`](prd-199-goal-flow-dynamic-turn-budget.md)
 - [PRD-200 — Beautified goal-list mutation notices](prd-200-beautified-goal-mutation-notices.md)
+- [PRD-201 — Context-aware `@`-mention tokenization](prd-201-context-aware-mention-tokenization.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

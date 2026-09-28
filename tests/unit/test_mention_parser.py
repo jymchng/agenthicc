@@ -18,7 +18,7 @@ pytestmark = pytest.mark.unit
         ("@~/project", ["~/project"]),
         (r"@C:\Users\Bob", [r"C:\Users\Bob"]),
         (r"@\\server\share\folder", [r"\\server\share\folder"]),
-        ("@foo@bar", ["foo", "bar"]),
+        ("@foo@bar", []),
     ],
 )
 def test_path_like_mentions_use_single_at_delimiter(tmp_path, text, expected):
@@ -95,8 +95,79 @@ def test_question_mark_after_existing_file_is_sentence_punctuation(tmp_path):
 
 
 def test_mention_stops_at_whitespace(tmp_path):
-    mentions = parse_mentions("@foo bar", cwd=tmp_path)
-    assert mentions[0].path == "foo"
+    assert parse_mentions("@foo bar", cwd=tmp_path) == []
+
+
+@pytest.mark.parametrize("identifier", ["bookTicker", "depth20", "100ms", "dataclass"])
+def test_unresolved_bare_technical_identifier_is_literal(tmp_path, identifier):
+    assert parse_mentions(f"Subscribe to @{identifier}", cwd=tmp_path) == []
+
+
+def test_existing_bare_filename_without_extension_is_still_a_mention(tmp_path):
+    target = tmp_path / "bookTicker"
+    target.write_text("stream details")
+
+    mentions = parse_mentions("Inspect @bookTicker", cwd=tmp_path)
+
+    assert len(mentions) == 1
+    assert mentions[0].path == "bookTicker"
+    assert mentions[0].kind == MentionKind.FILE
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "contact@example.com",
+        "use foo@example.com for support",
+        "call foo/@bar in the protocol",
+        "@@bookTicker",
+        r"escaped \\@bookTicker",
+    ],
+)
+def test_email_and_word_adjacent_at_tokens_are_literal(tmp_path, text):
+    assert parse_mentions(text, cwd=tmp_path) == []
+
+
+def test_inline_code_does_not_trigger_mentions(tmp_path):
+    target = tmp_path / "config.py"
+    target.write_text("DEBUG = True")
+
+    text = "Use `@config.py` as an example, then inspect @config.py."
+    mentions = parse_mentions(text, cwd=tmp_path)
+
+    assert len(mentions) == 1
+    assert mentions[0].path == "config.py"
+    assert text[mentions[0].start : mentions[0].end] == "@config.py"
+
+
+def test_fenced_code_does_not_trigger_mentions(tmp_path):
+    target = tmp_path / "config.py"
+    target.write_text("DEBUG = True")
+
+    text = "```python\n@config.py\n```\nInspect @config.py"
+    mentions = parse_mentions(text, cwd=tmp_path)
+
+    assert len(mentions) == 1
+    assert mentions[0].start == text.rindex("@config.py")
+
+
+def test_unmatched_inline_code_delimiter_fails_closed(tmp_path):
+    target = tmp_path / "config.py"
+    target.write_text("DEBUG = True")
+
+    assert parse_mentions("Example `@config.py and @config.py", cwd=tmp_path) == []
+
+
+def test_mixed_literal_and_valid_mentions_only_injects_valid_target(tmp_path):
+    target = tmp_path / "config.py"
+    target.write_text("DEBUG = True")
+
+    mentions = parse_mentions(
+        "Subscribe to @bookTicker and inspect @config.py",
+        cwd=tmp_path,
+    )
+
+    assert [mention.path for mention in mentions] == ["config.py"]
 
 
 def test_strip_mentions_removes_at_prefix(tmp_path):
@@ -161,6 +232,14 @@ def test_glob_with_question_mark(tmp_path):
     assert mentions[0].kind == MentionKind.GLOB
 
 
+def test_glob_character_class_keeps_its_closing_bracket(tmp_path):
+    mentions = parse_mentions("Check @src/[ab].py", cwd=tmp_path)
+
+    assert len(mentions) == 1
+    assert mentions[0].path == "src/[ab].py"
+    assert mentions[0].kind == MentionKind.GLOB
+
+
 def test_directory_without_trailing_slash(tmp_path):
     """An existing directory referenced without trailing '/' is still DIRECTORY."""
     (tmp_path / "mydir").mkdir()
@@ -178,3 +257,14 @@ def test_strip_mentions_multiple(tmp_path):
     assert len(mentions) == 2
     stripped = strip_mentions(text, mentions)
     assert stripped == "Compare foo.py with bar.py"
+
+
+def test_malformed_nul_input_is_ignored_without_raising(tmp_path):
+    assert parse_mentions("Inspect @./bad\x00path", cwd=tmp_path) == []
+
+
+def test_tilde_fenced_code_does_not_trigger_mentions(tmp_path):
+    target = tmp_path / "config.py"
+    target.write_text("DEBUG = True")
+
+    assert parse_mentions("~~~\n@config.py\n~~~", cwd=tmp_path) == []

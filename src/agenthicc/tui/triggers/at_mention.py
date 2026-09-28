@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from agenthicc.mentions.matcher import filter_and_rank
+from agenthicc.mentions.parser import _is_valid_mention_position
 from agenthicc.tui.trigger import MatchItem, TriggerContext, TriggerHandlerBase, TriggerResult
 
 
@@ -134,9 +135,10 @@ class AtMentionTrigger(TriggerHandlerBase):
         return TriggerResult(buffer=buf + list("@" + item.value))
 
     def can_activate(self, buf: list[str]) -> bool:
-        # Activate at position 0 or immediately after whitespace.
-        # Prevents '@' mid-word (e.g. in an email address) from opening the picker.
-        return not buf or buf[-1].isspace()
+        # Keep picker activation aligned with submitted-message parsing:
+        # valid prose boundary, and not inside an inline/fenced code span.
+        prefix = "".join(buf)
+        return _is_valid_mention_position(prefix + "@", len(prefix))
 
     def on_cancel(self, fragment: str, buf: list[str]) -> list[str]:
         """Restore the literal ``@fragment`` text into *buf* on ESC."""

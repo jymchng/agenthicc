@@ -122,6 +122,32 @@ async def test_build_context_prefix_no_mentions(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_context_prefix_ignores_bare_technical_identifiers(tmp_path: Path) -> None:
+    prefix, resolved = await build_context_prefix(
+        "Subscribe to @bookTicker @depth20 @100ms and contact@example.com",
+        cwd=tmp_path,
+    )
+
+    assert prefix == ""
+    assert resolved == []
+
+
+@pytest.mark.asyncio
+async def test_build_context_prefix_mixes_literal_and_valid_mentions(tmp_path: Path) -> None:
+    (tmp_path / "config.py").write_text("DEBUG = True")
+
+    prefix, resolved = await build_context_prefix(
+        "Ignore @bookTicker but inspect @config.py",
+        cwd=tmp_path,
+    )
+
+    assert len(resolved) == 1
+    assert resolved[0].mention.path == "config.py"
+    assert "DEBUG = True" in prefix
+    assert "bookTicker" not in prefix
+
+
+@pytest.mark.asyncio
 async def test_build_context_prefix_injects_file(tmp_path: Path) -> None:
     (tmp_path / "auth.py").write_text("def login(): pass")
     prefix, resolved = await build_context_prefix("Review @auth.py", cwd=tmp_path)

@@ -3779,7 +3779,13 @@ Run *cassette* through
 
 ## @mention parsing and injection — `agenthicc.mentions`
 
-@mention parsing and file content injection (PRD-32, PRD-33).
+@mention parsing and file content injection (PRD-32, PRD-33, PRD-201).
+
+Mention tokenization is conservative: existing bare files/directories and
+explicit path, glob, and HTTP(S) URL forms are accepted, while unresolved
+bare identifiers such as `@bookTicker` remain literal text. Inline and fenced
+Markdown code is treated as literal input. Accepted filesystem mentions still
+use the workspace scope and existing authorization/injection pipeline.
 
 ### MentionKind
 

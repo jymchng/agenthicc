@@ -343,15 +343,18 @@ def test_slash_command_trigger_activates_on_empty_buf_or_after_newline():
 
 
 def test_at_mention_trigger_activates_after_whitespace_or_at_start():
-    """AtMentionTrigger activates at position 0 or after whitespace only."""
+    """AtMentionTrigger follows the parser's boundary and code rules."""
     from agenthicc.tui.triggers.at_mention import AtMentionTrigger
 
     t = AtMentionTrigger()
     assert t.can_activate([]) is True  # start of line
     assert t.can_activate([" "]) is True  # after space
     assert t.can_activate(list("word ")) is True  # after trailing space
+    assert t.can_activate(list("(")) is True  # after an opening delimiter
     assert t.can_activate(list("word")) is False  # mid-word → literal '@'
     assert t.can_activate(list("foo/")) is False  # path context → literal '@'
+    assert t.can_activate(list("contact@example.com")) is False
+    assert t.can_activate(list("`example ")) is False
 
 
 def test_echo_trigger_default_can_activate():

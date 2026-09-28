@@ -210,6 +210,12 @@ Large bracketed pastes stay condensed in the composer. Backspace removes the who
 
 Use `Ctrl+C` according to the current input state; the input backend owns raw terminal mode and restores it on shutdown. See the [TUI guide](./docs/guides/tui.md) for modes, overlays, input, busy-run command policies, and platform rules. ESC returns the input state to idle immediately after cancelling a run, so the double-Ctrl+C exit sequence remains responsive on Windows.
 
+`@` mentions are parsed conservatively: existing files/directories, explicit
+path-shaped targets, globs, and HTTP(S) URLs are supported, while unresolved
+bare identifiers such as `@bookTicker` remain ordinary text. Markdown inline
+and fenced code examples do not trigger mention reads. See the [TUI guide](./docs/guides/tui.md)
+for the complete mention syntax.
+
 ---
 
 ## Modes

@@ -203,6 +203,18 @@ async def test_no_mention_prefix_is_empty(tmp_path: Path) -> None:
     assert resolved == []
 
 
+async def test_technical_at_identifiers_do_not_appear_as_failed_reads(tmp_path: Path) -> None:
+    """Protocol identifiers remain user text and produce no injection blocks."""
+    cfg = InjectionConfig(cwd=tmp_path)
+    text = "Subscribe to @bookTicker @depth20 @100ms; contact@example.com"
+
+    prefix, resolved = await build_context_prefix(text, cwd=tmp_path, cfg=cfg)
+
+    assert prefix == ""
+    assert resolved == []
+    assert text.endswith("contact@example.com")
+
+
 # ---------------------------------------------------------------------------
 # 9. Cache returns a reference on second identical mention (unchanged file)
 # ---------------------------------------------------------------------------

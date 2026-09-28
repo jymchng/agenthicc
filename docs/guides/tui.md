@@ -116,6 +116,12 @@ paths, `~`-prefixed paths, and platform-native `/` or `\\` separators. A
 second `@` is a delimiter rather than part of the path, so accidental `@@`
 input remains ordinary text. The same boundary rule is used when submitted
 messages are parsed into file, directory, glob, URL, or unresolved mentions.
+Submitted messages use a conservative candidate policy: an existing bare file
+or directory is accepted, while an unresolved bare identifier such as
+`@bookTicker`, `@depth20`, or `@100ms` remains ordinary text. Missing targets
+must use explicit path evidence such as `@./missing.py`, `@docs/missing`, or a
+glob. Mentions inside Markdown inline code and fenced code blocks are also
+literal, so pasted protocol and source examples do not trigger reads.
 
 Large bracketed pastes stay behind a single `[Pasted text #N ...]` composer
 placeholder while the user edits the input. Ordinary typing, whitespace,
