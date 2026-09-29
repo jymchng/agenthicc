@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import signal
@@ -11,9 +12,16 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TypedDict
+from .deletion import DeleteFailure, DeleteResult
 from .model import ACTIVE_STATUSES, BackgroundSession, SessionStatus
-from .store import BackgroundStore, InvalidSessionTransition, default_artifact_dir
+from .store import (
+    BackgroundStore,
+    InvalidSessionTransition,
+    SessionNotFound,
+    default_artifact_dir,
+)
 
 
 class _CancellationMetadata(TypedDict, total=False):
@@ -649,11 +657,162 @@ class BackgroundSupervisor:
             latest_activity="Approval granted" if allowed else "Approval denied",
         )
 
-    def delete(self, session_id: str) -> BackgroundSession:
-        session = self.store.get(session_id)
+    def delete(self, session_id: str, *, operation_id: str = "") -> BackgroundSession:
+        if operation_id:
+            self.store.mark_delete_requested(
+                session_id,
+                operation_id=operation_id,
+                requested_by="sync",
+            )
+        session = self.store.get(session_id, include_deleted=True)
+        if session.status == SessionStatus.DELETED:
+            return session
         if session.status in ACTIVE_STATUSES:
             self.cancel(session_id)
-        return self.store.delete(session_id, force=True)
+        return self.store.delete(session_id, force=True, operation_id=operation_id)
+
+    async def delete_async(
+        self,
+        session_ids: Sequence[str],
+        *,
+        operation_id: str,
+        requested_by: str = "agents",
+        progress: Callable[[str, str], Awaitable[None]] | None = None,
+    ) -> DeleteResult:
+        """Delete exact targets without blocking the caller's event loop.
+
+        The existing synchronous lifecycle remains available to CLI/plugin
+        callers.  Interactive TUI code uses this method so cancellation waits,
+        artifact movement, and JSONL/fsync work are isolated behind the shared
+        async boundary.  Targets are processed serially: this preserves the
+        store's append ordering and makes partial success/retry deterministic.
+        """
+
+        target_ids = tuple(dict.fromkeys(item for item in session_ids if item))
+        if not target_ids:
+            raise ValueError("at least one session ID is required")
+        if not operation_id or not operation_id.replace("-", "").isalnum():
+            raise ValueError("operation_id must be a non-empty identifier")
+
+        deleted: list[str] = []
+        failures: list[DeleteFailure] = []
+
+        # Validate every target before changing any target. This prevents a
+        # typo or stale bulk-selection ID from producing a surprising partial
+        # deletion. State is fetched again when each target is claimed so a
+        # concurrent lifecycle change is still handled safely.
+        validated: dict[str, BackgroundSession] = {}
+        for session_id in target_ids:
+            try:
+                validated[session_id] = await asyncio.to_thread(
+                    self.store.get, session_id, include_deleted=True
+                )
+            except SessionNotFound as exc:
+                failures.append(
+                    DeleteFailure(
+                        session_id=session_id,
+                        code="target_not_found",
+                        message=f"Session not found: {exc}",
+                        retryable=False,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append(
+                    DeleteFailure(
+                        session_id=session_id,
+                        code="target_validation_failed",
+                        message=f"{type(exc).__name__}: {exc}"[:2_000],
+                    )
+                )
+        if failures:
+            return DeleteResult(operation_id=operation_id, failures=tuple(failures))
+
+        async def report(session_id: str, phase: str) -> None:
+            if progress is None:
+                return
+            try:
+                await progress(session_id, phase)
+            except Exception:
+                # Progress is advisory. A UI disconnect must never turn a
+                # durable deletion into a false failure.
+                return
+
+        for session_id in target_ids:
+            try:
+                current = validated[session_id]
+                if current.status == SessionStatus.DELETED:
+                    deleted.append(session_id)
+                    await report(session_id, "completed")
+                    continue
+
+                claimed = await asyncio.to_thread(
+                    self.store.mark_delete_requested,
+                    session_id,
+                    operation_id=operation_id,
+                    requested_by=requested_by,
+                )
+                await report(session_id, "requested")
+
+                if claimed.status in ACTIVE_STATUSES:
+                    await asyncio.to_thread(
+                        self.store.mark_delete_progress,
+                        session_id,
+                        operation_id=operation_id,
+                        phase="stopping_worker",
+                        activity="Stopping worker before deletion",
+                    )
+                    await report(session_id, "stopping_worker")
+                    # cancel() includes its own bounded grace period and
+                    # terminal cleanup. It runs off-loop until the fully
+                    # observed lifecycle state is available.
+                    await asyncio.to_thread(self.cancel, session_id)
+
+                await asyncio.to_thread(
+                    self.store.mark_delete_progress,
+                    session_id,
+                    operation_id=operation_id,
+                    phase="moving_artifacts",
+                    activity="Moving artifacts to recoverable trash",
+                )
+                await report(session_id, "moving_artifacts")
+                await asyncio.to_thread(
+                    self.store.delete,
+                    session_id,
+                    force=True,
+                    operation_id=operation_id,
+                )
+                deleted.append(session_id)
+                await report(session_id, "completed")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                retryable = not isinstance(exc, (ValueError, InvalidSessionTransition))
+                message = f"{type(exc).__name__}: {exc}"[:2_000]
+                try:
+                    await asyncio.to_thread(
+                        self.store.mark_delete_failed,
+                        session_id,
+                        operation_id=operation_id,
+                        error=message,
+                        retryable=retryable,
+                    )
+                except Exception:
+                    # Keep the original failure. The next manager open will
+                    # reconcile the exact target from the artifact/store state.
+                    pass
+                failures.append(
+                    DeleteFailure(
+                        session_id=session_id,
+                        code="invalid_transition" if not retryable else "delete_failed",
+                        message=message,
+                        retryable=retryable,
+                    )
+                )
+                await report(session_id, "failed")
+
+        return DeleteResult(
+            operation_id=operation_id, deleted=tuple(deleted), failures=tuple(failures)
+        )
 
     def restore_deleted(self, session_id: str) -> BackgroundSession:
         return self.store.restore_deleted(session_id)

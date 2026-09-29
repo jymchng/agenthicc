@@ -85,7 +85,7 @@ Useful keys:
 | `a` | Archive a terminal session |
 | `p` | Pin or unpin a session |
 | `y`/`n` | Approve or reject a visible approval request |
-| `Ctrl+X` | Delete after explicit confirmation |
+| `Ctrl+X` | Immediately delete the selected/marked sessions to recoverable trash |
 | `t` | Include recoverable trash in the list |
 | `u` | Restore a selected deleted session |
 | `?` | Show help |
@@ -99,14 +99,17 @@ new directions without concurrent writers or duplicated tool calls. Completed,
 failed, cancelled, and orphaned sessions open directly through the same resume
 path; leaving that TUI does not relaunch a background worker.
 
-Delete is deliberately two-stage. Active work is cancelled first, then only
+Delete is asynchronous and recoverable. Pressing `Ctrl+X` immediately captures
+the selected/marked session IDs and starts one durable operation; no second
+confirmation key is required. Active work is cancelled first, then only
 the exact session directory and its sibling kernel journal are moved to
 `~/.agenthicc/background/trash/`. The tombstone remains in the append-only
 registry, so a stale worker cannot resurrect it. `u` restores the artifacts
-when they are still in recoverable trash. In the interactive manager, the
-confirmed deletion runs off the TUI event loop; the table remains responsive
+when they are still in recoverable trash. In the interactive manager, deletion
+runs off the TUI event loop; the table remains responsive
 while active-worker cancellation and terminal cleanup finish, then refreshes
-automatically.
+automatically. A repeated `Ctrl+X` is ignored while the current operation is
+active, and failures remain visible with durable retry/recovery metadata.
 
 ## Scriptable control
 

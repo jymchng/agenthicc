@@ -12,6 +12,7 @@ from .model import (
     SessionStatus,
     legal_transition,
 )
+from .deletion import DeleteFailure, DeleteResult
 from .store import BackgroundStore, InvalidSessionTransition, SessionNotFound
 from .supervisor import BackgroundSupervisor
 from .settings import BackgroundSettings, background_enabled, load_background_settings
@@ -30,6 +31,8 @@ __all__ = [
     "ACTIVE_STATUSES",
     "TERMINAL_STATUSES",
     "BackgroundSession",
+    "DeleteFailure",
+    "DeleteResult",
     "BackgroundStore",
     "BackgroundSupervisor",
     "BackgroundInputService",

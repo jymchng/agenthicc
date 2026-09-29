@@ -75,6 +75,8 @@ against the current source before implementing them.
 - [PRD-204 — Goal runner and detached orchestration](prd-204-goal-runner-and-detached-orchestration.md)
 - [PRD-205 — Self-terminating detached goal runs and PID reporting](prd-205-goal-detached-process-lifecycle.md)
 - [PRD-206 — Paginated, low-latency `agents` session manager](prd-206-paginated-agents-session-manager.md)
+- [PRD-207 — Async-first runtime and non-blocking operations](prd-207-async-first-runtime-conversion.md)
+- [PRD-208 — Reliable, responsive `CTRL+X` deletion in `agenthicc agents`](prd-208-reliable-ctrl-x-session-deletion.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

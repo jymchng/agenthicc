@@ -209,11 +209,9 @@ def test_interactive_delete_does_not_block_on_worker_cleanup(tmp_path: Path) -> 
 
     supervisor.delete = slow_delete  # type: ignore[method-assign]
     manager = BackgroundManager(Console(), store=store, supervisor=supervisor)
-    manager._interactive_delete = True
 
-    manager.handle_key(Key.CTRL_X)
     started_at = time.monotonic()
-    assert manager.handle_key(Key.CHAR, "y") is None
+    assert manager.handle_key(Key.CTRL_X) is None
     assert time.monotonic() - started_at < 0.5
     assert started.wait(timeout=1.0)
     assert store.get(session.session_id).status is SessionStatus.QUEUED

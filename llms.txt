@@ -234,6 +234,12 @@ the selected session through the same owner-safe path as
 and goal-run discovery uses `agents --run RUN_ID` or explicit
 `attach --run RUN_ID`.
 
+In the interactive manager, `Ctrl+X` immediately dispatches deletion for the
+exact selected or marked session IDs; it does not open a confirmation modal.
+Deletion runs asynchronously, records durable progress, moves artifacts to
+recoverable trash, and preserves failure/recovery metadata. A repeated key is
+ignored while the operation is active, and `u` restores a deleted session.
+
 Durable session attachment is single-owner. `--continue`, `--resume`, the
 session picker, headless workflow execution, and explicit background attaches
 claim `<session-id>/.owner` before restoring journals or constructing providers,

@@ -174,6 +174,13 @@ class BackgroundSession:
     worker_finalization_attempts: int = 0
     worker_cleanup_error: str = ""
     run_id: str = ""
+    # PRD-208 deletion lifecycle metadata. These fields are appended to keep
+    # positional construction of the historical public dataclass compatible.
+    delete_operation_id: str = ""
+    delete_phase: str = ""
+    delete_error: str = ""
+    delete_requested_at: float | None = None
+    delete_attempt: int = 0
 
     @classmethod
     def create(
@@ -307,6 +314,11 @@ class BackgroundSession:
             worktree_id=_str("worktree_id", self.worktree_id),
             branch=_str("branch", self.branch),
             base_commit=_str("base_commit", self.base_commit),
+            delete_operation_id=_str("delete_operation_id", self.delete_operation_id),
+            delete_phase=_str("delete_phase", self.delete_phase),
+            delete_error=_str("delete_error", self.delete_error),
+            delete_requested_at=_float("delete_requested_at", self.delete_requested_at),
+            delete_attempt=_int("delete_attempt", self.delete_attempt) or 0,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -360,6 +372,11 @@ class BackgroundSession:
             "worktree_id": self.worktree_id,
             "branch": self.branch,
             "base_commit": self.base_commit,
+            "delete_operation_id": self.delete_operation_id,
+            "delete_phase": self.delete_phase,
+            "delete_error": self.delete_error,
+            "delete_requested_at": self.delete_requested_at,
+            "delete_attempt": self.delete_attempt,
         }
 
     @classmethod
@@ -445,4 +462,9 @@ class BackgroundSession:
             worktree_id=str(value.get("worktree_id", "")),
             branch=str(value.get("branch", "")),
             base_commit=str(value.get("base_commit", "")),
+            delete_operation_id=str(value.get("delete_operation_id", "")),
+            delete_phase=str(value.get("delete_phase", "")),
+            delete_error=str(value.get("delete_error", "")),
+            delete_requested_at=_float_or_none(value.get("delete_requested_at")),
+            delete_attempt=_int_value(value.get("delete_attempt"), 0),
         )

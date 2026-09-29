@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import time
+import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -14,6 +15,8 @@ from agenthicc.background import (
     BackgroundSession,
     BackgroundStore,
     BackgroundSupervisor,
+    DeleteFailure,
+    DeleteResult,
     SessionStatus,
 )
 
@@ -58,7 +61,9 @@ class ViewportBudget:
         if height <= 6:
             return cls(width, height, 1, 1, compact=True)
 
-        detail_height = 3 if height <= 10 else (4 if height <= 14 else 6)
+        # The normal details panel has enough content rows for identity,
+        # activity, and one phase-history line (Dir is part of identity).
+        detail_height = 3 if height <= 10 else (4 if height <= 14 else 7)
         # Header=1, table header/bottom=2, details panel, footer=1.
         available = max(1, height - 1 - 2 - detail_height - 1)
         if configured_page_size is not None:
@@ -101,12 +106,15 @@ class BackgroundManager:
         self.paused = False
         self.new_activity = False
         self.help_visible = False
-        self.pending_delete = False
-        self.pending_delete_ids: tuple[str, ...] = ()
-        self._interactive_delete = False
-        self._deletion_thread: threading.Thread | None = None
+        self._deletion_task: asyncio.Task[DeleteResult] | None = None
+        # Direct handle_key() callers outside an event loop are a supported
+        # compatibility/testing surface. The real TUI always uses the task.
+        self._deletion_future: Future[DeleteResult] | None = None
+        self._deletion_executor: ThreadPoolExecutor | None = None
         self._deleting_ids: tuple[str, ...] = ()
-        self._deletion_result: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+        self._deletion_operation_id = ""
+        self._deletion_phase = ""
+        self._deletion_error = ""
         self.marked_ids: set[str] = set()
         self.filter_mode = False
         self.filter_buffer = ""
@@ -119,6 +127,17 @@ class BackgroundManager:
         self.maintenance_s = max(1.0, self.refresh_s)
         self._last_render_key: tuple[object, ...] | None = None
         self._last_renderable: RenderableType | None = None
+
+    @property
+    def _deletion_thread(self) -> Future[DeleteResult] | None:
+        """Legacy inspection alias for direct callers during the migration.
+
+        Interactive deletion no longer owns a raw thread. The alias keeps old
+        diagnostics/tests that poll for completion working while exposing the
+        bounded compatibility future, if one exists outside the async TUI.
+        """
+
+        return self._deletion_future
 
     @property
     def selected(self) -> int:
@@ -444,9 +463,10 @@ class BackgroundManager:
             session_key,
             self.query,
             self.help_visible,
-            self.pending_delete,
-            self.pending_delete_ids,
             self._deleting_ids,
+            self._deletion_operation_id,
+            self._deletion_phase,
+            self._deletion_error,
             tuple(sorted(self.marked_ids)),
             self.new_activity,
             self.activity_offset,
@@ -584,7 +604,7 @@ class BackgroundManager:
             # required identity/state/phase/activity lines always win over
             # history or timestamps, so a short viewport cannot hide the
             # useful status behind an overflowed details panel.
-            content_capacity = max(1, budget.detail_height - 2)
+            content_capacity = max(1, budget.detail_height - 1)
             if selected.phase_history and len(detail_lines) < content_capacity:
                 detail_lines.append(
                     "[bold]History[/bold] " + " → ".join(selected.phase_history[-4:])
@@ -600,22 +620,13 @@ class BackgroundManager:
                 and len(detail_lines) < content_capacity
             ):
                 detail_lines.append("[yellow]New activity available[/yellow]")
-        if self.pending_delete:
-            pending_titles = [
-                item.title
-                for item in sessions
-                if item.session_id
-                in (self.pending_delete_ids or (selected.session_id if selected else "",))
-            ]
-            detail_lines.append(
-                "[bold yellow]Delete "
-                f"{len(self.pending_delete_ids) or 1} session(s)"
-                f" ({', '.join(pending_titles)[:160]})? Press y/Enter to confirm, n/Esc to cancel.[/bold yellow]"
-            )
         if self._deleting_ids:
             detail_lines.append(
-                f"[yellow]Deleting {len(self._deleting_ids)} session(s) in the background…[/yellow]"
+                f"[yellow]Deleting {len(self._deleting_ids)} session(s): "
+                f"{self._deletion_phase or 'starting'}…[/yellow]"
             )
+        if self._deletion_error:
+            detail_lines.append(f"[red]Delete failed[/red] {self._deletion_error[:240]}")
         detail = Panel(
             "\n".join(detail_lines) or "Select a session to inspect it.",
             title="Details · selected" if selected is not None else "Details",
@@ -623,77 +634,181 @@ class BackgroundManager:
             padding=(0, 1),
             expand=True,
         )
-        footer = Text(
-            "↑/k ↓/j select  PgUp/PgDn page  Home/End  Enter attach  r refresh  "
-            "c cancel  v mark  Ctrl+X delete  ? help  q quit",
-            style="dim",
+        footer_text = (
+            "Deleting…  Ctrl+C exit"
+            if self._deleting_ids
+            else "↑/k ↓/j select  PgUp/PgDn page  Home/End  Enter attach  r refresh  "
+            "c cancel  v mark  Ctrl+X delete  ? help  q quit"
         )
+        footer = Text(footer_text, style="dim")
         if self.new_activity:
             footer.append("  • new activity", style="yellow")
         rendered = Group(header, table, detail, footer)
         self._last_render_key, self._last_renderable = key, rendered
         return rendered
 
-    def _delete_sessions(self, ids: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def _delete_sessions(
+        self, ids: tuple[str, ...], *, operation_id: str = ""
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         deleted: list[str] = []
         errors: list[str] = []
         for session_id in ids:
             try:
-                self.supervisor.delete(session_id)
+                if operation_id:
+                    try:
+                        self.supervisor.delete(session_id, operation_id=operation_id)
+                    except TypeError as exc:
+                        # Preserve compatibility with older/custom supervisors
+                        # that only expose delete(session_id). Do not mask a
+                        # TypeError raised by the operation itself.
+                        if "operation_id" not in str(exc):
+                            raise
+                        self.supervisor.delete(session_id)
+                else:
+                    self.supervisor.delete(session_id)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{session_id}: {type(exc).__name__}: {exc}")
             else:
                 deleted.append(session_id)
         return tuple(deleted), tuple(errors)
 
-    def _start_async_delete(self, ids: tuple[str, ...]) -> None:
-        self._deleting_ids = ids
-        self._deletion_result = None
-
-        def run_delete() -> None:
-            self._deletion_result = self._delete_sessions(ids)
-
-        self._deletion_thread = threading.Thread(
-            target=run_delete,
-            name="agenthicc-background-delete",
-            daemon=True,
+    def _delete_sessions_result(self, ids: tuple[str, ...], operation_id: str) -> DeleteResult:
+        deleted, errors = self._delete_sessions(ids, operation_id=operation_id)
+        failures = tuple(
+            DeleteFailure(
+                session_id=error.split(":", 1)[0],
+                code="delete_failed",
+                message=error,
+            )
+            for error in errors
         )
-        self._deletion_thread.start()
+        return DeleteResult(operation_id=operation_id, deleted=deleted, failures=failures)
+
+    async def _on_delete_progress(self, _session_id: str, phase: str) -> None:
+        self._deletion_phase = phase
+        self._last_render_key = None
+
+    async def _run_delete_operation(self, ids: tuple[str, ...], operation_id: str) -> DeleteResult:
+        try:
+            delete_async = self.supervisor.delete_async
+        except AttributeError:
+            delete_async = None
+        if delete_async is not None:
+            return await delete_async(
+                ids,
+                operation_id=operation_id,
+                requested_by="agents",
+                progress=self._on_delete_progress,
+            )
+        # A legacy/custom supervisor can still participate while the async
+        # contract is being migrated. The blocking fallback is isolated from
+        # the TUI loop and normalized into the same result type.
+        return await asyncio.to_thread(self._delete_sessions_result, ids, operation_id)
+
+    def _start_async_delete(self, ids: tuple[str, ...]) -> None:
+        if self._deletion_task is not None or self._deletion_future is not None:
+            return
+        self._deleting_ids = ids
+        self._deletion_operation_id = uuid.uuid4().hex
+        self._deletion_phase = "starting"
+        self._deletion_error = ""
+        self._last_render_key = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Compatibility for direct synchronous handle_key() tests and
+            # plugins. This path is never used by BackgroundManager.run().
+            self._deletion_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="agenthicc-background-delete"
+            )
+            self._deletion_future = self._deletion_executor.submit(
+                self._delete_sessions_result, ids, self._deletion_operation_id
+            )
+        else:
+            self._deletion_task = loop.create_task(
+                self._run_delete_operation(ids, self._deletion_operation_id),
+                name=f"agenthicc-delete-{self._deletion_operation_id}",
+            )
 
     def _poll_async_delete(self) -> None:
-        thread = self._deletion_thread
-        if thread is None or thread.is_alive():
+        task = self._deletion_task
+        future = self._deletion_future
+        if task is not None and not task.done():
             return
-        thread.join()
-        deleted, errors = self._deletion_result or ((), ("delete worker stopped unexpectedly",))
-        self._deletion_thread = None
-        self._deletion_result = None
-        self._deleting_ids = ()
-        self.marked_ids.difference_update(deleted)
-        if errors:
-            self.console.print("Delete failed: " + "; ".join(errors)[:2_000])
-        self.refresh(force=True)
-
-    def _confirm_delete(self, session: BackgroundSession) -> ManagerResult | None:
-        ids = self.pending_delete_ids or (session.session_id,)
-        if self._interactive_delete:
-            self.pending_delete = False
-            self.pending_delete_ids = ()
-            self._start_async_delete(ids)
-            return None
+        if future is not None and not future.done():
+            return
+        if task is None and future is None:
+            return
         try:
-            for session_id in ids:
-                self.supervisor.delete(session_id)
+            if task is not None:
+                result = task.result()
+            else:
+                assert future is not None
+                result = future.result()
+        except asyncio.CancelledError:
+            result = DeleteResult(
+                operation_id=self._deletion_operation_id,
+                failures=(
+                    DeleteFailure(
+                        session_id=self._deleting_ids[0] if self._deleting_ids else "",
+                        code="cancelled",
+                        message="Deletion task was cancelled",
+                    ),
+                ),
+            )
         except Exception as exc:  # noqa: BLE001
-            self.pending_delete = False
-            self.pending_delete_ids = ()
-            self.console.print(f"Delete failed: {type(exc).__name__}: {exc}")
-            return ManagerResult("error", session.session_id)
-        self.pending_delete = False
-        self.pending_delete_ids = ()
-        self.marked_ids.difference_update(ids)
+            result = DeleteResult(
+                operation_id=self._deletion_operation_id,
+                failures=(
+                    DeleteFailure(
+                        session_id=self._deleting_ids[0] if self._deleting_ids else "",
+                        code="delete_failed",
+                        message=f"{type(exc).__name__}: {exc}",
+                    ),
+                ),
+            )
+        self._deletion_task = None
+        self._deletion_future = None
+        self._deleting_ids = ()
+        self._deletion_phase = result.phase
+        self.marked_ids.difference_update(result.deleted)
+        if result.failures:
+            self._deletion_error = "; ".join(
+                f"{failure.session_id}: {failure.message}" for failure in result.failures
+            )[:2_000]
+            self.console.print("Delete failed: " + self._deletion_error)
+        else:
+            self._deletion_error = ""
+            self.console.print(
+                f"Deleted {len(result.deleted)} session(s) to recoverable trash "
+                f"(operation {result.operation_id[:12]})."
+            )
+        self._deletion_operation_id = ""
+        self._last_render_key = None
         self.refresh(force=True)
-        return ManagerResult("deleted", session.session_id)
+        if self._deletion_executor is not None:
+            self._deletion_executor.shutdown(wait=False, cancel_futures=True)
+            self._deletion_executor = None
+
+    async def _shutdown_delete(self) -> None:
+        """Drain the owned deletion task before returning from the TUI."""
+
+        task = self._deletion_task
+        if task is None:
+            self._poll_async_delete()
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+        except asyncio.TimeoutError:
+            # The supervisor claims the exact target before moving artifacts.
+            # If a legacy filesystem call cannot be interrupted, cancellation
+            # leaves the durable request for the next manager-open recovery.
+            task.cancel()
+            self._deletion_error = "Deletion continues in recovery state after manager shutdown"
+        except asyncio.CancelledError:
+            task.cancel()
+        finally:
+            self._poll_async_delete()
 
     def handle_key(self, key: object, ch: str = "") -> ManagerResult | None:
         """Handle one logical terminal key; exposed for deterministic TUI tests."""
@@ -702,7 +817,7 @@ class BackgroundManager:
         # The raw terminal backend delivers Ctrl+C as CTRL_C (signals are
         # disabled while the manager owns cbreak mode).  Handle it before any
         # modal state so it always exits the agents screen, including while a
-        # filter or delete confirmation is visible.
+        # filter or deletion is in progress.
         if value == "CTRL_C" or ch == "\x03":
             return ManagerResult("exit")
         if self.filter_mode:
@@ -720,14 +835,6 @@ class BackgroundManager:
                 return None
             if value == "CHAR" and ch:
                 self.filter_buffer += ch
-            return None
-        if self.pending_delete:
-            if value == "ESC" or ch.lower() == "n":
-                self.pending_delete = False
-                return None
-            if value == "ENTER" or ch.lower() == "y":
-                selected = self.selected_session
-                return self._confirm_delete(selected) if selected is not None else None
             return None
         if value in {"UP", "CHAR"} and (value == "UP" or ch.lower() == "k"):
             self.refresh()
@@ -753,9 +860,11 @@ class BackgroundManager:
             selected = self.selected_session
             marked = self.marked_sessions()
             if marked or selected is not None:
-                self.pending_delete = True
                 targets = marked if marked else ([selected] if selected is not None else [])
-                self.pending_delete_ids = tuple(item.session_id for item in targets)
+                ids = tuple(dict.fromkeys(item.session_id for item in targets))
+                self._deletion_error = ""
+                self._last_render_key = None
+                self._start_async_delete(ids)
             return None
         if value == "ENTER":
             # Reconcile immediately before an identity-sensitive action.  A
@@ -874,7 +983,7 @@ class BackgroundManager:
         self.maintain(force=True)
         self.refresh(force=True)
         initial = self.render()
-        self._interactive_delete = True
+        read_future: asyncio.Future[tuple[object, str]] | None = None
         try:
             with Live(initial, console=self.console, auto_refresh=False) as live:
                 live.refresh()
@@ -892,7 +1001,7 @@ class BackgroundManager:
                             read_future = loop.run_in_executor(None, backend.read_key)
 
                         # Polling/recovery is deliberately independent of
-                        # rendering.  An unchanged snapshot returns the cached
+                        # rendering. An unchanged snapshot returns the cached
                         # renderable and does not issue a Rich update.
                         self._poll_async_delete()
                         self.refresh()
@@ -902,7 +1011,12 @@ class BackgroundManager:
                             live.update(rendered, refresh=True)
                             initial = rendered
         finally:
-            self._interactive_delete = False
+            if read_future is not None and not read_future.done():
+                read_future.cancel()
+            await self._shutdown_delete()
+            if self._deletion_executor is not None:
+                self._deletion_executor.shutdown(wait=False, cancel_futures=True)
+                self._deletion_executor = None
 
 
 async def run_background_manager(

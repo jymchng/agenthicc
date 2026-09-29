@@ -2799,6 +2799,28 @@ ACTIVE_STATUSES = frozenset
 TERMINAL_STATUSES = frozenset
 ```
 
+### DeleteFailure
+
+```python
+@dataclass(frozen=True)
+class DeleteFailure
+```
+
+Structured per-session deletion failure containing the target ID, stable error
+code, bounded message, and retryability.
+
+### DeleteResult
+
+```python
+@dataclass(frozen=True)
+class DeleteResult
+```
+
+Structured deletion outcome containing the operation ID, successfully deleted
+session IDs, and per-target failures. Interactive `Ctrl+X` dispatches this
+operation immediately without a confirmation modal; artifacts remain
+recoverable through the background-session trash/restore path.
+
 ### BackgroundSession
 
 ```python
@@ -2807,7 +2829,7 @@ class BackgroundSession
 ```
 
 Fields: `session_id`, `title`, `cwd`, `workflow_name`, `intent`, `status`,
-`created_at`, `started_at`, `last_active`, `state_changed_at`, … (35 fields
+`created_at`, `started_at`, `last_active`, `state_changed_at`, … (54 fields
 total).
 
 ### BackgroundStore

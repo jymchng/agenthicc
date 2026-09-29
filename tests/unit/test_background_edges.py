@@ -217,8 +217,11 @@ async def test_manager_noninteractive_fallback_and_action_errors(
     manager.handle_key("CHAR", "u")
     manager.handle_key("CHAR", "p")
     manager.handle_key("CHAR", "\x18")
-    result = manager.handle_key("CHAR", "y")
-    assert isinstance(result, ManagerResult) and result.action == "error"
+    deadline = time.monotonic() + 2.0
+    while manager._deletion_thread is not None and time.monotonic() < deadline:
+        manager._poll_async_delete()
+        time.sleep(0.01)
+    manager._poll_async_delete()
     assert "controlled action failure" in console.export_text()
 
     backend = SimpleNamespace(is_interactive=lambda: False)
@@ -247,7 +250,6 @@ def test_manager_empty_navigation_and_unavailable_activity(tmp_path: Path) -> No
     store.create(session)
     manager.refresh(force=True)
     assert manager.handle_key("ENTER") is not None
-    manager.pending_delete = True
     console.print(manager.render())
     assert "error summary" in console.export_text()
 
@@ -265,14 +267,14 @@ def test_manager_ctrl_c_exits_agents_screen_even_in_modal_state(tmp_path: Path) 
     manager.filter_mode = True
     assert manager.handle_key(Key.CTRL_C) == ManagerResult("exit")
 
-    manager.pending_delete = True
+    manager._deleting_ids = ("ctrl-c",)
     assert manager.handle_key("CHAR", "\x03") == ManagerResult("exit")
 
 
 def test_manager_full_control_surface_and_activity_redaction(tmp_path: Path) -> None:
     from rich.console import Console
 
-    from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
+    from agenthicc.tui.workspace.background_manager import BackgroundManager
 
     store = BackgroundStore(tmp_path / "background")
     supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
@@ -335,7 +337,12 @@ def test_manager_full_control_surface_and_activity_redaction(tmp_path: Path) -> 
 
     manager.set_filters(status=SessionStatus.COMPLETED)
     manager.handle_key("CTRL_X")
-    assert manager.handle_key("CHAR", "y") == ManagerResult("deleted", complete.session_id)
+    deadline = time.monotonic() + 2.0
+    while manager._deletion_thread is not None and time.monotonic() < deadline:
+        manager._poll_async_delete()
+        time.sleep(0.01)
+    manager._poll_async_delete()
+    assert store.get(complete.session_id, include_deleted=True).status is SessionStatus.DELETED
     manager.include_deleted = True
     manager.status_filter = None
     manager.refresh(force=True)

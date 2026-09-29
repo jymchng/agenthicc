@@ -178,6 +178,11 @@ class BackgroundStore:
                     trash_dir=str(payload.get("trash_dir", current.trash_dir)),
                     artifact_dir="",
                     last_active=timestamp,
+                    delete_operation_id=str(
+                        payload.get("operation_id", current.delete_operation_id)
+                    ),
+                    delete_phase="completed",
+                    delete_error="",
                 )
         self._projection = records
         self._projection_fingerprint = self._events_fingerprint()
@@ -238,6 +243,9 @@ class BackgroundStore:
         *,
         expected_status: SessionStatus | None = None,
         expected_lease_token: str | None = None,
+        # ``object`` keeps ``**changes`` compatible with older dynamic callers
+        # while the deletion methods below always pass a string or ``None``.
+        expected_delete_operation_id: object | None = None,
         **changes: object,
     ) -> BackgroundSession:
         with self._lock():
@@ -248,6 +256,11 @@ class BackgroundStore:
                 )
             if expected_lease_token is not None and current.lease_token != expected_lease_token:
                 raise InvalidSessionTransition("Background worker lease is stale")
+            if (
+                expected_delete_operation_id is not None
+                and current.delete_operation_id != expected_delete_operation_id
+            ):
+                raise InvalidSessionTransition("Delete operation is not the current owner")
             allowed = set(BackgroundSession.__dataclass_fields__) - {"session_id"}
             unknown = set(changes) - allowed
             if unknown:
@@ -267,6 +280,88 @@ class BackgroundStore:
                 {"session_id": session_id, "changes": serialized_changes},
             )
             return updated
+
+    def mark_delete_requested(
+        self,
+        session_id: str,
+        *,
+        operation_id: str,
+        requested_by: str = "",
+    ) -> BackgroundSession:
+        """Durably claim one target for an idempotent delete operation."""
+
+        if not operation_id or not operation_id.replace("-", "").isalnum():
+            raise ValueError("operation_id must be a non-empty identifier")
+        current = self.get(session_id, include_deleted=True)
+        if current.status == SessionStatus.DELETED:
+            return current
+        if current.delete_operation_id and current.delete_operation_id != operation_id:
+            if current.delete_phase not in {"failed", ""}:
+                raise InvalidSessionTransition(
+                    f"Session {session_id} is already being deleted by "
+                    f"{current.delete_operation_id}"
+                )
+        activity = "Delete requested"
+        if requested_by:
+            activity += f" by {requested_by[:80]}"
+        return self.update(
+            session_id,
+            expected_delete_operation_id=current.delete_operation_id,
+            delete_operation_id=operation_id,
+            delete_phase="requested",
+            delete_error="",
+            delete_requested_at=current.delete_requested_at or time.time(),
+            delete_attempt=current.delete_attempt + 1,
+            latest_activity=activity,
+        )
+
+    def mark_delete_progress(
+        self,
+        session_id: str,
+        *,
+        operation_id: str,
+        phase: str,
+        activity: str = "",
+    ) -> BackgroundSession:
+        """Persist a deletion phase without changing worker lifecycle state."""
+
+        current = self.get(session_id, include_deleted=True)
+        if current.status == SessionStatus.DELETED:
+            return current
+        if current.delete_operation_id != operation_id:
+            raise InvalidSessionTransition("Delete operation is not the current owner")
+        return self.update(
+            session_id,
+            expected_delete_operation_id=operation_id,
+            delete_phase=phase[:64],
+            delete_error="",
+            latest_activity=(activity or f"Deleting: {phase}")[:512],
+        )
+
+    def mark_delete_failed(
+        self,
+        session_id: str,
+        *,
+        operation_id: str,
+        error: str,
+        retryable: bool = True,
+    ) -> BackgroundSession:
+        """Persist a recoverable deletion failure for the exact operation."""
+
+        current = self.get(session_id, include_deleted=True)
+        if current.status == SessionStatus.DELETED:
+            return current
+        if current.delete_operation_id != operation_id:
+            raise InvalidSessionTransition("Delete operation is not the current owner")
+        return self.update(
+            session_id,
+            expected_delete_operation_id=operation_id,
+            delete_phase="failed",
+            delete_error=error[:2_000],
+            error=error[:2_000],
+            failure_category="delete_retryable" if retryable else "delete_failed",
+            latest_activity="Deletion failed; retry or inspect trash recovery",
+        )
 
     def transition(
         self,
@@ -405,34 +500,65 @@ class BackgroundStore:
             raise InvalidSessionTransition("Only archived sessions can be restored")
         return self.update(session_id, status=SessionStatus.COMPLETED, latest_activity="Restored")
 
-    def _move_artifacts_to_trash(self, session: BackgroundSession) -> Path:
+    def _move_artifacts_to_trash(
+        self, session: BackgroundSession, *, operation_id: str = ""
+    ) -> Path:
         source = Path(session.artifact_dir).expanduser() if session.artifact_dir else None
-        trash = self.trash_root / f"{session.session_id}-{uuid.uuid4().hex[:10]}"
-        trash.mkdir(parents=True, exist_ok=False)
+        suffix = operation_id or uuid.uuid4().hex[:10]
+        trash = self.trash_root / f"{session.session_id}-{suffix}"
+        trash.mkdir(parents=True, exist_ok=True)
         manifest = {
             "session_id": session.session_id,
             "original_artifact_dir": str(source) if source is not None else "",
         }
+        destination = trash / "session"
         if source is not None and source.name == session.session_id and source.exists():
-            shutil.move(str(source), str(trash / "session"))
+            if destination.exists():
+                raise InvalidSessionTransition(
+                    "Delete artifact destination already exists for this operation"
+                )
+            shutil.move(str(source), str(destination))
             kernel = source.parent / f"{session.session_id}.jsonl"
             if kernel.exists() and kernel.is_file():
                 shutil.move(str(kernel), str(trash / "kernel.jsonl"))
-        (trash / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        manifest_path = trash / "manifest.json"
+        if not manifest_path.exists():
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         return trash
 
-    def delete(self, session_id: str, *, force: bool = False) -> BackgroundSession:
+    def delete(
+        self,
+        session_id: str,
+        *,
+        force: bool = False,
+        operation_id: str = "",
+    ) -> BackgroundSession:
         with self._lock():
-            current = self.get(session_id)
+            current = self.get(session_id, include_deleted=True)
+            if current.status == SessionStatus.DELETED:
+                if not operation_id or current.delete_operation_id in {"", operation_id}:
+                    return current
+                raise InvalidSessionTransition("Session was deleted by another operation")
             if current.status in ACTIVE_STATUSES and not force:
                 raise InvalidSessionTransition("Cancel the active session before deleting it")
-            trash = self._move_artifacts_to_trash(current)
+            if operation_id and current.delete_operation_id not in {"", operation_id}:
+                raise InvalidSessionTransition("Delete operation is not the current owner")
+            trash = self._move_artifacts_to_trash(current, operation_id=operation_id)
             self._append(
                 "deleted",
-                {"session_id": session_id, "trash_dir": str(trash)},
+                {
+                    "session_id": session_id,
+                    "trash_dir": str(trash),
+                    "operation_id": operation_id or current.delete_operation_id,
+                },
             )
             return current.evolve(
-                status=SessionStatus.DELETED, artifact_dir="", trash_dir=str(trash)
+                status=SessionStatus.DELETED,
+                artifact_dir="",
+                trash_dir=str(trash),
+                delete_operation_id=operation_id or current.delete_operation_id,
+                delete_phase="completed",
+                delete_error="",
             )
 
     def restore_deleted(self, session_id: str) -> BackgroundSession:
@@ -460,6 +586,11 @@ class BackgroundStore:
                 status=SessionStatus.COMPLETED,
                 artifact_dir=str(original),
                 trash_dir="",
+                delete_operation_id="",
+                delete_phase="",
+                delete_error="",
+                delete_requested_at=None,
+                delete_attempt=0,
                 latest_activity="Restored from trash",
             )
             self._append(

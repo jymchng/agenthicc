@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -426,8 +427,11 @@ def test_manager_keyboard_delete_restore_and_help(tmp_path: Path, capsys) -> Non
     assert manager.help_visible is True
     manager.handle_key("CHAR", "?")
     manager.handle_key("CHAR", "\x18")
-    assert manager.pending_delete is True
-    manager.handle_key("CHAR", "y")
+    deadline = time.monotonic() + 2.0
+    while manager._deletion_thread is not None and time.monotonic() < deadline:
+        manager._poll_async_delete()
+        time.sleep(0.01)
+    manager._poll_async_delete()
     assert store.get("session-1", include_deleted=True).status is SessionStatus.DELETED
     manager.handle_key("CHAR", "t")
     assert manager.include_deleted is True
@@ -438,7 +442,7 @@ def test_manager_keyboard_delete_restore_and_help(tmp_path: Path, capsys) -> Non
     assert "Background Sessions" in console.export_text()
 
 
-def test_manager_keyboard_ctrl_x_reader_key_opens_and_confirms_delete(tmp_path: Path) -> None:
+def test_manager_keyboard_ctrl_x_reader_key_deletes_without_confirmation(tmp_path: Path) -> None:
     from rich.console import Console
 
     from agenthicc.tui.cbreak_reader import Key
@@ -452,10 +456,11 @@ def test_manager_keyboard_ctrl_x_reader_key_opens_and_confirms_delete(tmp_path: 
     manager = BackgroundManager(Console(), store=store, supervisor=BackgroundSupervisor(store))
 
     manager.handle_key(Key.CTRL_X)
-    assert manager.pending_delete is True
-    assert store.get("session-1").status is SessionStatus.COMPLETED
-
-    manager.handle_key(Key.CHAR, "y")
+    deadline = time.monotonic() + 2.0
+    while manager._deletion_thread is not None and time.monotonic() < deadline:
+        manager._poll_async_delete()
+        time.sleep(0.01)
+    manager._poll_async_delete()
     assert store.get("session-1", include_deleted=True).status is SessionStatus.DELETED
     assert manager.selected_session is None
 
