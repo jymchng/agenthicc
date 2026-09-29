@@ -54,6 +54,14 @@ _LAZY_EXPORTS: Final[dict[str, tuple[str, str]]] = {
     "CodePlanRunner": ("agenthicc.workflows.code_plan", "CodePlanRunner"),
     "CodePlanState": ("agenthicc.workflows.code_plan", "CodePlanState"),
     "CodePlanContext": ("agenthicc.workflows.code_plan", "CodePlanContext"),
+    "ParallelCodePlan": (
+        "agenthicc.workflows.parallel_code_plan",
+        "ParallelCodePlan",
+    ),
+    "ParallelCodePlanRunner": (
+        "agenthicc.workflows.parallel_code_plan",
+        "ParallelCodePlanRunner",
+    ),
     "CreateWorkflow": ("agenthicc.workflows.create_workflow", "CreateWorkflow"),
     "CreateWorkflowContext": ("agenthicc.workflows.create_workflow", "CreateWorkflowContext"),
     "CreateWorkflowParams": ("agenthicc.workflows.create_workflow", "CreateWorkflowParams"),
@@ -158,6 +166,8 @@ __all__ = [
     "CodePlanRunner",
     "CodePlanState",
     "CodePlanContext",
+    "ParallelCodePlan",
+    "ParallelCodePlanRunner",
     "CreateWorkflow",
     "CreateWorkflowContext",
     "CreateWorkflowParams",

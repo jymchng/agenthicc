@@ -2070,6 +2070,17 @@ provider- and browser-independent, validate checkpoint/re-hydration data, and
 allow browser-unavailable runs to fail closed or proceed only through the
 explicit degraded path.
 
+### ParallelCodePlan
+
+The built-in parallel_code_plan workflow coordinates isolated Git worktrees,
+durable worker sessions, review, integration, conflict preservation, and
+recovery.
+
+### ParallelCodePlanRunner
+
+Runs the parallel_code_plan phase state machine while reusing the canonical
+agent-turn and prompt-cache contract.
+
 ### CodePlanRunner
 
 The specialized `code_plan` runner evolves `CodePlanState` through

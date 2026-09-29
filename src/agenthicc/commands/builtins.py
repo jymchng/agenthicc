@@ -588,6 +588,56 @@ def _cmd_ps(ctx: CommandContext) -> bool:
     return True
 
 
+def _cmd_workers(ctx: CommandContext) -> bool:
+    """Show durable parallel worker tasks owned by this session."""
+
+    from agenthicc.worktrees import ManifestStore  # noqa: PLC0415
+
+    manifests = ManifestStore().list()
+    visible = [
+        manifest
+        for manifest in manifests
+        if not ctx.session_id or manifest.parent_session_id == ctx.session_id
+    ]
+    if "--json" in ctx.args.split():
+        import json  # noqa: PLC0415
+
+        ctx.console.print(
+            json.dumps([manifest.to_dict() for manifest in visible], sort_keys=True),
+            markup=False,
+        )
+        return True
+    try:
+        from rich import box as _rbox  # noqa: PLC0415
+        from rich.table import Table  # noqa: PLC0415
+
+        table = Table(title="Parallel Workers", box=_rbox.SIMPLE)
+        table.add_column("Orchestration", style="bold")
+        table.add_column("Task")
+        table.add_column("Status")
+        table.add_column("Worktree")
+        for manifest in visible:
+            for task in manifest.tasks:
+                table.add_row(
+                    manifest.orchestration_id[:16],
+                    task.task_id,
+                    task.status.value,
+                    task.worktree_id[:16] or "—",
+                )
+        if not visible:
+            table.add_row("—", "—", "no worker orchestrations", "—")
+        ctx.console.print(table)
+    except ImportError:
+        if not visible:
+            ctx.console.print("No parallel worker orchestrations.")
+        for manifest in visible:
+            for task in manifest.tasks:
+                ctx.console.print(
+                    f"{manifest.orchestration_id[:16]} {task.task_id} {task.status.value}"
+                )
+    return True
+
+
 def _cmd_stop(ctx: CommandContext) -> bool:
     """Stop all owned terminals, or one explicitly named handle."""
 
@@ -1113,6 +1163,13 @@ BUILTIN_COMMANDS: list[Command] = [
         argument_hint="[terminal-id] [--json]",
         busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
         handler=_cmd_ps,
+    ),
+    Command(
+        name="/workers",
+        description="Show durable parallel worker tasks",
+        argument_hint="[--json]",
+        busy_policy=BusyPolicy.IMMEDIATE_READ_ONLY,
+        handler=_cmd_workers,
     ),
     Command(
         name="/stop",

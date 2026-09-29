@@ -71,6 +71,8 @@ against the current source before implementing them.
 - [PRD-201 — Context-aware `@`-mention tokenization](prd-201-context-aware-mention-tokenization.md)
 - [PRD-202 — Paginated `/ps` background-terminal overlay](prd-202-paginated-ps-terminal-overlay.md)
 
+- [PRD-203 — Parallel coding with isolated Git worktrees](prd-203-parallel-coding-git-worktree-isolation.md)
+
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
 observability, extension APIs, and release gates.

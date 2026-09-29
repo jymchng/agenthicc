@@ -47,6 +47,12 @@ _BUILTIN_WORKFLOW_DESCRIPTORS = (
         "code_plan", "agenthicc.workflows.code_plan.definition", "CodePlan", ("Plan",)
     ),
     BuiltinWorkflowDescriptor(
+        "parallel_code_plan",
+        "agenthicc.workflows.parallel_code_plan.definition",
+        "ParallelCodePlan",
+        ("Plan",),
+    ),
+    BuiltinWorkflowDescriptor(
         "copy_website", "agenthicc.workflows.copy_website", "CopyWebsiteWorkflow"
     ),
     BuiltinWorkflowDescriptor(

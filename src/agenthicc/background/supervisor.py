@@ -162,6 +162,12 @@ class BackgroundSupervisor:
         set_overrides: tuple[str, ...] = (),
         dangerously_skip_permissions: bool = False,
         set_secret_overrides: tuple[str, ...] = (),
+        parent_session_id: str = "",
+        role: str = "",
+        task_id: str = "",
+        worktree_id: str = "",
+        branch: str = "",
+        base_commit: str = "",
     ) -> BackgroundSession:
         """Create and launch a new background session."""
 
@@ -196,6 +202,12 @@ class BackgroundSupervisor:
             workflow_name=workflow_name,
             intent=cleaned_intent,
             artifact_dir=str(self.artifact_root / sid),
+            parent_session_id=parent_session_id,
+            role=role,
+            task_id=task_id,
+            worktree_id=worktree_id,
+            branch=branch,
+            base_commit=base_commit,
         )
         self.store.create(session)
         return self._launch(request, session)

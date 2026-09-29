@@ -102,6 +102,7 @@ def test_load_builtin_workflows_returns_current_builtins() -> None:
     names = {d.name for d in defs}
     assert names == {
         "code_plan",
+        "parallel_code_plan",
         "copy_website",
         "create_workflow",
         "goal_flow",

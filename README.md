@@ -38,10 +38,11 @@ New here? Start with the [quickstart](docs/guides/quickstart.md), browse the [gl
 
 ### Built-in workflows
 
-All eight registered workflows:
+All nine registered workflows, including the parallel_code_plan coordinator:
 
 | Workflow | Purpose |
 |---|---|
+| parallel_code_plan | Split independent tasks into isolated Git workers, review, integrate, and verify |
 | `code_plan` | Plan-and-execute code changes with approval gates |
 | `create_workflow` | Author new workflows interactively |
 | `goal_flow` | Clarify an intent into an ordered goal list, then implement and verify each goal before summarizing |
@@ -728,6 +729,7 @@ Nox contains the CI session definitions (`noxfile.py`), including the embedded `
 - [TUI](./docs/guides/tui.md)
 - [Background sessions](./docs/guides/background-sessions.md)
 - [Workflows](./docs/guides/workflows.md)
+- [Parallel coding workers](./docs/guides/parallel-workers.md)
 - [Custom workflows and TOML configuration](./docs/guides/custom-workflows-and-config.md)
 - [User-defined commands](./docs/guides/commands.md)
 - [User-defined tools](./docs/guides/tools.md)

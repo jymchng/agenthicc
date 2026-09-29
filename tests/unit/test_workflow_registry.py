@@ -125,6 +125,7 @@ class TestBuildWorkflowRegistry:
 
         assert registry.names() == [
             "code_plan",
+            "parallel_code_plan",
             "copy_website",
             "create_workflow",
             "goal_flow",

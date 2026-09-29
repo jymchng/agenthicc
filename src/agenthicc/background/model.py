@@ -152,6 +152,14 @@ class BackgroundSession:
     artifact_dir: str = ""
     trash_dir: str = ""
     original_artifact_dir: str = ""
+    # Parallel orchestration metadata. Empty values preserve the ordinary
+    # background-session contract for non-worker jobs.
+    parent_session_id: str = ""
+    role: str = ""
+    task_id: str = ""
+    worktree_id: str = ""
+    branch: str = ""
+    base_commit: str = ""
 
     @classmethod
     def create(
@@ -164,6 +172,12 @@ class BackgroundSession:
         intent: str,
         artifact_dir: str = "",
         now: float | None = None,
+        parent_session_id: str = "",
+        role: str = "",
+        task_id: str = "",
+        worktree_id: str = "",
+        branch: str = "",
+        base_commit: str = "",
     ) -> "BackgroundSession":
         timestamp = time.time() if now is None else now
         return cls(
@@ -177,6 +191,12 @@ class BackgroundSession:
             state_changed_at=timestamp,
             artifact_dir=artifact_dir,
             original_artifact_dir=artifact_dir,
+            parent_session_id=parent_session_id,
+            role=role,
+            task_id=task_id,
+            worktree_id=worktree_id,
+            branch=branch,
+            base_commit=base_commit,
         )
 
     def evolve(self, **changes: object) -> "BackgroundSession":
@@ -252,6 +272,12 @@ class BackgroundSession:
             artifact_dir=_str("artifact_dir", self.artifact_dir),
             trash_dir=_str("trash_dir", self.trash_dir),
             original_artifact_dir=_str("original_artifact_dir", self.original_artifact_dir),
+            parent_session_id=_str("parent_session_id", self.parent_session_id),
+            role=_str("role", self.role),
+            task_id=_str("task_id", self.task_id),
+            worktree_id=_str("worktree_id", self.worktree_id),
+            branch=_str("branch", self.branch),
+            base_commit=_str("base_commit", self.base_commit),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -291,6 +317,12 @@ class BackgroundSession:
             "artifact_dir": self.artifact_dir,
             "trash_dir": self.trash_dir,
             "original_artifact_dir": self.original_artifact_dir,
+            "parent_session_id": self.parent_session_id,
+            "role": self.role,
+            "task_id": self.task_id,
+            "worktree_id": self.worktree_id,
+            "branch": self.branch,
+            "base_commit": self.base_commit,
         }
 
     @classmethod
@@ -359,4 +391,10 @@ class BackgroundSession:
             artifact_dir=str(value.get("artifact_dir", "")),
             trash_dir=str(value.get("trash_dir", "")),
             original_artifact_dir=str(value.get("original_artifact_dir", "")),
+            parent_session_id=str(value.get("parent_session_id", "")),
+            role=str(value.get("role", "")),
+            task_id=str(value.get("task_id", "")),
+            worktree_id=str(value.get("worktree_id", "")),
+            branch=str(value.get("branch", "")),
+            base_commit=str(value.get("base_commit", "")),
         )
