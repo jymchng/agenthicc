@@ -14,9 +14,37 @@ uv run agenthicc run --background --workflow code_plan --intent "Plan the next r
 ```
 
 The command returns the stable session ID as soon as the worker is accepted.
-Inside an active TUI session, `/bg` and `/background` are equivalent. They
-preserve the current session ID and journal, then return to the shell after the
+Inside an active TUI session, `/bg`, `/background`, and `/detach` are
+equivalent. They preserve the current session ID and journal, then return to the shell after the
 worker lease is established. Both commands appear in the slash-command picker.
+
+For a goal-backed session, `/detach` is the explicit foreground-to-background
+handoff. Agenthicc durably records the request and session first, cancels
+foreground input, releases the foreground owner, and only then lets the
+background worker claim the same session. It does not copy the conversation or
+create a second workflow run. Inspect the product-level run with:
+
+```bash
+agenthicc runs
+agenthicc agents --run RUN_ID
+agenthicc attach RUN_ID
+```
+
+The lower-level `jobs`/`agents` manager remains available for ordinary
+background sessions that do not belong to a goal run.
+
+For `agenthicc --goal GOAL --detach`, the accepted session is owned by a
+detached child worker. Startup reports that worker's PID and the background
+record retains it after exit. The worker finalizes terminal workflow results,
+irrecoverable errors, cancellation, and confirmed idle outcomes before
+returning; it records an exit reason and never signals the launcher or a PID
+read from stale storage. An attached `--goal` TUI does not use this finalizer
+and remains available for another user message after an agent turn is idle.
+
+Recovery does not trust numeric PID liveness alone. Where procfs is available,
+the recorded PID must match the Agenthicc worker module and the exact request
+file/store identity for the session; an unmatchable or reused PID is treated as
+orphaned and surfaced for reconciliation.
 
 ## Open and inspect the manager
 

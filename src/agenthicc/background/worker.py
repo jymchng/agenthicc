@@ -15,14 +15,18 @@ import os
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Mapping, TypedDict
 
-from agenthicc.background.model import SessionStatus
+from agenthicc.background.model import BackgroundSession, SessionStatus
 from agenthicc.background.store import BackgroundStore, InvalidSessionTransition
 from agenthicc.cli.context import CLIContext, CLIFlags
 from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
+
+
+WORKER_FINALIZATION_TIMEOUT_S = 30.0
+"""Maximum time allowed for owned headless resources to close."""
 
 if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
@@ -42,6 +46,8 @@ class WorkerRequest:
     max_activity_bytes: int = 64_000
     source: str = "cli"
     set_secret_overrides: tuple[str, ...] = ()
+    detached_goal: bool = False
+    run_id: str = ""
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "WorkerRequest":
@@ -90,6 +96,8 @@ class WorkerRequest:
             wall_timeout_s=wall_timeout_s,
             max_activity_bytes=max_activity_bytes,
             source=str(value.get("source", "cli")),
+            detached_goal=bool(value.get("detached_goal", False)),
+            run_id=str(value.get("run_id", "")),
         )
 
 
@@ -111,6 +119,338 @@ def _session_question_timeout(session: object) -> float:
         float(value)
         if isinstance(value, (int, float)) and not isinstance(value, bool)
         else DEFAULT_QUESTION_TIMEOUT_S
+    )
+
+
+@dataclass(frozen=True)
+class _WorkerOutcome:
+    """The result which the worker finalizer persists exactly once."""
+
+    status: SessionStatus
+    error: str | None
+    activity: str
+    phase_history: tuple[str, ...] = ()
+    exit_reason: str = "worker_failed"
+    failure_category: str = ""
+    exit_code: int = 1
+
+
+class _FinalizationChanges(TypedDict, total=False):
+    """Keyword fields accepted by ``BackgroundStore`` final transitions."""
+
+    error: str | None
+    latest_activity: str
+    worker_pid: int
+    worker_started_at: float
+    worker_finished_at: float
+    worker_exit_code: int
+    worker_exit_reason: str
+    worker_finalization_attempts: int
+    worker_cleanup_error: str
+    exit_reason: str
+    failure_category: str
+    lease_token: str
+    current_phase: str
+    phase_history: tuple[str, ...]
+
+
+def _signal_value(value: object, default: object = None) -> object:
+    """Return a reactive signal's value, or a plain attribute value."""
+
+    return value() if callable(value) else (value if value is not None else default)
+
+
+def _name(value: object) -> str:
+    raw = getattr(value, "name", value)
+    return str(raw).upper()
+
+
+def _confirmed_idle_after_thinking(session: object) -> bool:
+    """Return whether the canonical session state describes terminal idle.
+
+    This intentionally does not inspect rendered TUI output. A completed
+    turn plus a canonical ``IDLE`` signal is the smallest reliable evidence
+    available to a headless worker; pending waits, tools, compaction, child
+    workers, and active workflows veto the result. The helper is kept pure
+    with respect to the session so it is straightforward to exercise with
+    deterministic fakes.
+    """
+
+    app_state = getattr(session, "app_state", None)
+    conversation = getattr(app_state, "conversation", None)
+    if conversation is None:
+        return False
+    if _name(_signal_value(getattr(conversation, "agent_state", None), "")) != "IDLE":
+        return False
+    if _signal_value(getattr(conversation, "active_tool", None), ""):
+        return False
+    if _signal_value(getattr(conversation, "compaction_active", None), False) is True:
+        return False
+    pool = _signal_value(getattr(conversation, "subagent_pool_state", None), None)
+    if pool is not None:
+        pool_status = _name(_signal_value(getattr(pool, "status", None), ""))
+        raw_workers = getattr(pool, "workers", ())
+        workers = raw_workers if isinstance(raw_workers, (list, tuple)) else ()
+        active_workers = any(
+            _name(getattr(worker, "status", "")) not in {"DONE", "FAILED", "CANCELLED"}
+            for worker in workers
+        )
+        raw_total = getattr(pool, "total", 0)
+        raw_done = getattr(pool, "done", 0)
+        total = raw_total if isinstance(raw_total, int) else 0
+        done = raw_done if isinstance(raw_done, int) else 0
+        if (
+            pool_status not in {"", "DONE", "COMPLETED", "FAILED", "CANCELLED"}
+            or active_workers
+            or total > done
+        ):
+            return False
+
+    for name in (
+        "pending_approval",
+        "pending_question",
+        "continuation_pending",
+        "queued_user_input",
+        "pending_user_input",
+    ):
+        candidate = _signal_value(getattr(app_state, name, None), None)
+        if candidate not in (None, False, "", (), [], {}):
+            return False
+
+    workflow_run = _signal_value(getattr(app_state, "workflow_run", None), None)
+    if workflow_run is not None:
+        workflow_status = _name(_signal_value(getattr(workflow_run, "status", None), ""))
+        if workflow_status not in {"", "COMPLETE", "COMPLETED", "FAILED", "EXITED"}:
+            return False
+
+    turns = _signal_value(getattr(conversation, "turns", None), ())
+    if not isinstance(turns, (list, tuple)) or not turns:
+        return False
+    # A closed COMPLETE/ERROR turn is durable evidence that the worker was
+    # active. Historical turns are acceptable here because this helper is
+    # called only after the current worker operation has returned.
+    return any(_name(getattr(turn, "state", "")) in {"COMPLETE", "ERROR"} for turn in turns)
+
+
+def _outcome_changes(
+    current: object,
+    outcome: _WorkerOutcome,
+    *,
+    lease_token: str,
+    worker_pid: int,
+    finalization_attempts: int,
+    cleanup_error: str = "",
+) -> _FinalizationChanges:
+    """Build the bounded durable fields shared by every finalization path."""
+
+    current_phase = getattr(current, "current_phase", "")
+    phase_history = getattr(current, "phase_history", ())
+    combined_phases = tuple(phase_history) + outcome.phase_history
+    changes: _FinalizationChanges = {
+        "error": outcome.error,
+        "latest_activity": outcome.activity,
+        "worker_pid": worker_pid,
+        "worker_started_at": getattr(current, "worker_started_at", None) or time.time(),
+        "worker_finished_at": time.time(),
+        "worker_exit_code": outcome.exit_code,
+        "worker_exit_reason": outcome.exit_reason,
+        "worker_finalization_attempts": finalization_attempts,
+        "worker_cleanup_error": cleanup_error[:2_000],
+        "exit_reason": outcome.activity,
+        "failure_category": outcome.failure_category,
+        "lease_token": "",
+        "current_phase": outcome.phase_history[-1] if outcome.phase_history else current_phase,
+        "phase_history": combined_phases[-64:],
+    }
+    # The lease argument is consumed by the caller's expected lease check;
+    # naming it here documents that finalization belongs to the process that
+    # claimed the session.
+    _ = lease_token
+    return changes
+
+
+def _finalize_worker(
+    store: BackgroundStore,
+    request: WorkerRequest,
+    *,
+    lease_token: str,
+    outcome: _WorkerOutcome,
+    worker_pid: int,
+    cleanup_error: str = "",
+) -> None:
+    """Persist a worker outcome and an audit event idempotently.
+
+    Normal worker termination is simply the return from ``run_worker``. No
+    launcher or parent process is signalled. This makes the detached-only
+    contract explicit while retaining the safer and portable process-exit
+    path supplied by the module entry point.
+    """
+
+    try:
+        current = store.get(request.session_id, include_deleted=True)
+        if (
+            current.status
+            in {
+                SessionStatus.COMPLETED,
+                SessionStatus.FAILED,
+                SessionStatus.CANCELLED,
+            }
+            and current.worker_finalization_attempts > 0
+        ):
+            return
+        attempts = current.worker_finalization_attempts + 1
+        changes = _outcome_changes(
+            current,
+            outcome,
+            lease_token=lease_token,
+            worker_pid=current.worker_pid or worker_pid,
+            finalization_attempts=attempts,
+            cleanup_error=cleanup_error,
+        )
+        if current.status == SessionStatus.CANCELLING:
+            # A supervisor cancellation may win while the provider call is
+            # unwinding. Complete that durable transition without allowing a
+            # successful provider result to resurrect the run.
+            outcome = _WorkerOutcome(
+                status=SessionStatus.CANCELLED,
+                error=current.cancellation_reason or "Worker cancelled",
+                activity="Worker cancelled",
+                exit_reason="cancelled",
+                failure_category="cancelled",
+                exit_code=130,
+            )
+            changes = _outcome_changes(
+                current,
+                outcome,
+                lease_token=lease_token,
+                worker_pid=current.worker_pid or worker_pid,
+                finalization_attempts=attempts,
+                cleanup_error=cleanup_error,
+            )
+            store.transition(
+                request.session_id,
+                SessionStatus.CANCELLED,
+                expected_status=SessionStatus.CANCELLING,
+                **changes,
+            )
+        elif current.status == SessionStatus.RUNNING and outcome.status == SessionStatus.CANCELLED:
+            current = store.transition(
+                request.session_id,
+                SessionStatus.CANCELLING,
+                expected_status=SessionStatus.RUNNING,
+                expected_lease_token=lease_token,
+                cancellation_reason=outcome.error or "Worker cancelled",
+                latest_activity=outcome.activity,
+            )
+            changes = _outcome_changes(
+                current,
+                outcome,
+                lease_token=lease_token,
+                worker_pid=current.worker_pid or worker_pid,
+                finalization_attempts=attempts,
+                cleanup_error=cleanup_error,
+            )
+            store.transition(
+                request.session_id,
+                SessionStatus.CANCELLED,
+                expected_status=SessionStatus.CANCELLING,
+                **changes,
+            )
+        elif current.status == SessionStatus.RUNNING:
+            store.transition(
+                request.session_id,
+                outcome.status,
+                expected_status=SessionStatus.RUNNING,
+                expected_lease_token=lease_token,
+                **changes,
+            )
+        elif current.status == outcome.status:
+            # A duplicate callback must not turn a terminal result into a
+            # failure. It may only add missing final metadata.
+            store.update(request.session_id, **changes)
+        else:
+            return
+        try:
+            final_session = store.get(request.session_id, include_deleted=True)
+            _persist_goal_run_outcome(request, final_session, outcome)
+        except (KeyError, RuntimeError, ValueError):
+            # The background session is authoritative. A missing/legacy run
+            # registry must not turn a durable session completion into a
+            # worker failure.
+            pass
+        try:
+            store.record_worker_exit(
+                request.session_id,
+                worker_pid=current.worker_pid or worker_pid,
+                exit_reason=outcome.exit_reason,
+                exit_code=outcome.exit_code,
+                cleanup_error=cleanup_error,
+            )
+        except Exception:  # noqa: BLE001 - audit failure must not mask result
+            return
+    except (KeyError, InvalidSessionTransition):
+        # Cancellation/recovery may have won the race. The authoritative
+        # state must remain untouched rather than being resurrected.
+        return
+
+
+def _persist_goal_run_outcome(
+    request: WorkerRequest,
+    session: BackgroundSession,
+    outcome: _WorkerOutcome,
+) -> None:
+    """Project terminal worker metadata into the product-level run store."""
+
+    if not request.run_id:
+        return
+    from agenthicc.runs.model import GoalRunStatus, RunAgentRecord  # noqa: PLC0415
+    from agenthicc.runs.store import RunNotFound, RunStore  # noqa: PLC0415
+
+    status = {
+        SessionStatus.COMPLETED: GoalRunStatus.COMPLETED,
+        SessionStatus.FAILED: GoalRunStatus.FAILED,
+        SessionStatus.CANCELLED: GoalRunStatus.CANCELLED,
+    }.get(outcome.status)
+    if status is None:
+        return
+    run_store = RunStore()
+    try:
+        run_store.update(
+            request.run_id,
+            status=status,
+            completed_at=session.completed_at,
+            exit_code=outcome.exit_code,
+            result_summary=(session.latest_activity if status is GoalRunStatus.COMPLETED else ""),
+            failure_reason=session.error or "",
+            worker_pid=session.worker_pid,
+            worker_started_at=session.worker_started_at,
+            worker_finished_at=session.worker_finished_at,
+            worker_exit_code=session.worker_exit_code,
+            worker_exit_reason=session.worker_exit_reason,
+            worker_finalization_attempts=session.worker_finalization_attempts,
+            worker_cleanup_error=session.worker_cleanup_error,
+        )
+    except RunNotFound:
+        return
+    run_store.link_agent(
+        request.run_id,
+        RunAgentRecord(
+            agent_id=request.session_id,
+            run_id=request.run_id,
+            role=session.role or "main",
+            session_id=request.session_id,
+            process_id=session.worker_pid,
+            status=session.status.value,
+            started_at=session.started_at,
+            completed_at=session.completed_at,
+            last_heartbeat_at=session.last_active,
+            last_activity_at=session.last_active,
+            current_phase=session.current_phase,
+            current_operation=session.latest_activity,
+            attention_reason=session.error or "",
+            exit_code=session.worker_exit_code,
+            exit_reason=session.worker_exit_reason,
+        ),
     )
 
 
@@ -455,6 +795,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
 
     lease = uuid.uuid4().hex
     session = None
+    claimed = False
+    outcome: _WorkerOutcome | None = None
     owner_lease: SessionOwnerLease | None = None
     processor_task: asyncio.Task[object] | None = None
     heartbeat_task: asyncio.Task[None] | None = None
@@ -463,9 +805,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     original_cwd = os.getcwd()
     try:
         os.chdir(request.cwd)
-        claimed = store.claim(request.session_id, pid=os.getpid(), lease_token=lease)
-        if claimed.status != SessionStatus.RUNNING:
-            raise RuntimeError(f"Worker could not claim session: {claimed.status.value}")
+        claimed_session = store.claim(request.session_id, pid=os.getpid(), lease_token=lease)
+        if claimed_session.status != SessionStatus.RUNNING:
+            raise RuntimeError(f"Worker could not claim session: {claimed_session.status.value}")
+        claimed = True
 
         async def _heartbeat() -> None:
             while not heartbeat_stop.is_set():
@@ -550,7 +893,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         processor_task = asyncio.create_task(session.processor.run(), name="background-processor")
         await asyncio.sleep(0)
 
-        async def _execute() -> tuple[SessionStatus, str | None, str, tuple[str, ...]]:
+        async def _execute() -> _WorkerOutcome:
             if request.workflow_name:
                 resume_run_id = _select_headless_workflow_resume(session, request.workflow_name)
                 if resume_run_id is None:
@@ -562,74 +905,82 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         request.intent,
                         resume_run_id=resume_run_id,
                     )
-                status = (
-                    SessionStatus.COMPLETED if result.status == "complete" else SessionStatus.FAILED
-                )
+                completed = result.status == "complete"
+                recoverable = result.status == "paused"
+                status = SessionStatus.COMPLETED if completed else SessionStatus.FAILED
                 raw_phases = getattr(result, "phases", ())
                 phases = (
                     tuple(phase for phase in raw_phases if isinstance(phase, str) and phase)
                     if isinstance(raw_phases, (tuple, list))
                     else ()
                 )
-                return status, result.error, f"Workflow {result.status}", phases
+                return _WorkerOutcome(
+                    status=status,
+                    error=result.error,
+                    activity=f"Workflow {result.status}",
+                    phase_history=phases,
+                    exit_reason=(
+                        "workflow_complete"
+                        if completed
+                        else "recoverable_error"
+                        if recoverable
+                        else "irrecoverable_error"
+                    ),
+                    failure_category=(
+                        ""
+                        if completed
+                        else "recoverable_workflow"
+                        if recoverable
+                        else "irrecoverable_error"
+                    ),
+                    exit_code=0 if completed else 1,
+                )
             await _run_direct_turn(session, request)
             await session.processor.drain()
-            return SessionStatus.COMPLETED, None, "Turn complete", ()
+            idle = request.detached_goal and _confirmed_idle_after_thinking(session)
+            return _WorkerOutcome(
+                status=SessionStatus.COMPLETED,
+                error=None,
+                activity="Turn complete",
+                exit_reason="idle_after_thinking" if idle else "turn_complete",
+                exit_code=0,
+            )
 
         if request.wall_timeout_s > 0:
-            status, error, activity, phase_history = await asyncio.wait_for(
-                _execute(), request.wall_timeout_s
-            )
+            outcome = await asyncio.wait_for(_execute(), request.wall_timeout_s)
         else:
-            status, error, activity, phase_history = await _execute()
-        current = store.get(request.session_id, include_deleted=True)
-        if current.status == SessionStatus.RUNNING:
-            # Keep repeated phase names: a retry/recovery attempt is part of
-            # the durable history, not a duplicate to be silently collapsed.
-            combined_phases = (current.phase_history + phase_history)[-64:]
-            store.transition(
-                request.session_id,
-                status,
-                expected_status=SessionStatus.RUNNING,
-                expected_lease_token=lease,
-                error=error,
-                latest_activity=activity,
-                worker_pid=None,
-                lease_token="",
-                current_phase=phase_history[-1] if phase_history else current.current_phase,
-                phase_history=combined_phases,
-                exit_reason=activity,
-            )
-        heartbeat_stop.set()
-        heartbeat_task.cancel()
-        await asyncio.gather(heartbeat_task, return_exceptions=True)
-        return 0 if status == SessionStatus.COMPLETED else 1
+            outcome = await _execute()
+        return outcome.exit_code
     except asyncio.CancelledError:
-        try:
-            current = store.get(request.session_id, include_deleted=True)
-            if current.status == SessionStatus.RUNNING:
-                store.transition(
-                    request.session_id, SessionStatus.CANCELLED, error="Worker cancelled"
-                )
-        except (KeyError, InvalidSessionTransition):
-            pass
+        # Ordinary background jobs retain the historical cancellation
+        # contract: the supervisor owns the CANCELLING → CANCELLED transition
+        # and an in-process task cancellation alone must not publish a second
+        # terminal result. Detached goal workers, by contrast, must close
+        # their own durable lifecycle before returning.
+        if not request.detached_goal:
+            outcome = None
+            raise
+        outcome = _WorkerOutcome(
+            status=SessionStatus.CANCELLED,
+            error="Worker cancelled",
+            activity="Worker cancelled",
+            exit_reason="cancelled",
+            failure_category="cancelled",
+            exit_code=130,
+        )
         raise
     except Exception as exc:  # noqa: BLE001
-        try:
-            current = store.get(request.session_id, include_deleted=True)
-            if current.status == SessionStatus.RUNNING:
-                store.transition(
-                    request.session_id,
-                    SessionStatus.FAILED,
-                    error=f"{type(exc).__name__}: {exc}",
-                    latest_activity="Worker failed",
-                    worker_pid=None,
-                    lease_token="",
-                )
-        except (KeyError, InvalidSessionTransition):
-            pass
+        outcome = _WorkerOutcome(
+            status=SessionStatus.FAILED,
+            error=f"{type(exc).__name__}: {exc}",
+            activity="Worker failed",
+            exit_reason="irrecoverable_error",
+            failure_category="irrecoverable_error",
+            exit_code=1,
+        )
         return 1
     finally:
+        cleanup_error = ""
         if terminal_token is not None:
             from agenthicc.background.terminals import reset_current_terminal_manager  # noqa: PLC0415
 
@@ -642,9 +993,26 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             try:
                 from agenthicc.runners.headless import _close_headless_session  # noqa: PLC0415
 
-                await _close_headless_session(session, processor_task, None)
-            except Exception:  # noqa: BLE001
-                pass
+                await asyncio.wait_for(
+                    _close_headless_session(session, processor_task, None),
+                    timeout=WORKER_FINALIZATION_TIMEOUT_S,
+                )
+            except Exception as exc:  # noqa: BLE001
+                cleanup_error = f"{type(exc).__name__}: {exc}"
+        if claimed and outcome is not None:
+            final_outcome = (
+                replace(outcome, exit_reason="cleanup_timeout")
+                if cleanup_error.startswith("TimeoutError")
+                else outcome
+            )
+            _finalize_worker(
+                store,
+                request,
+                lease_token=lease,
+                outcome=final_outcome,
+                worker_pid=os.getpid(),
+                cleanup_error=cleanup_error,
+            )
         if owner_lease is not None:
             owner_lease.release()
         try:

@@ -48,11 +48,27 @@ class ParallelCodePlanRunner(BaseWorkflowRunner):
         self._delegate = CodePlanRunner(config, mode_manager)
 
     def _coordinator(self, ctx: ParallelCodePlanContext) -> ParallelCoordinator:
+        goal_run_id = ""
+        if self._cfg.conversation_id:
+            try:
+                from agenthicc.runs import RunStore  # noqa: PLC0415
+
+                goal_run_id = next(
+                    (
+                        run.run_id
+                        for run in RunStore().list()
+                        if run.main_session_id == self._cfg.conversation_id
+                    ),
+                    "",
+                )
+            except (OSError, ValueError):
+                goal_run_id = ""
         return ParallelCoordinator(
             self._cfg.workspace_scope.primary_root
             if self._cfg.workspace_scope is not None
             else ".",
             parent_session_id=self._cfg.conversation_id or ctx.run_id,
+            run_id=goal_run_id,
             store=ManifestStore(),
             supervisor=BackgroundSupervisor(
                 BackgroundStore(),

@@ -2954,6 +2954,91 @@ def legal_transition(current: 'SessionStatus', target: 'SessionStatus') -> 'bool
 
 Return whether *current* may move to *target*.
 
+## Durable goal runs — `agenthicc.runs`
+
+PRD-204's product-level orchestration identity. Goal runs reuse the existing
+background supervisor, session journals, workflow checkpoints, owner leases,
+and PRD-203 worktrees; this package does not create a second agent loop.
+
+Detached goal starts report the child worker PID in both `pid` and
+`worker_pid`. The PID is retained after exit for correlation, but the session
+lease and lifecycle status are authoritative. The detached worker owns one
+idempotent finalization path that durably records completion, irrecoverable
+failure, cancellation, or confirmed `idle_after_thinking`, closes resources,
+releases its lease, and returns. Attached `--goal` execution does not install
+this finalizer and remains an interactive TUI session.
+
+### GoalRun
+
+```python
+@dataclass(frozen=True)
+class GoalRun
+```
+
+Durable goal identity linking the repository, workflow, main session, worker
+agents, lifecycle status, attention reasons, and bounded result metadata.
+
+### GoalRunStatus
+
+```python
+class GoalRunStatus
+```
+
+Members include `CREATED`, `STARTING`, `RUNNING`, `WAITING`,
+`NEEDS_ATTENTION`, `INTEGRATING`, `VERIFYING`, `COMPLETED`, `FAILED`, and
+`CANCELLED`.
+
+### RunAgentRecord
+
+```python
+@dataclass(frozen=True)
+class RunAgentRecord
+```
+
+Redacted projection linking a main or worker agent to its session, task,
+workflow, process, worktree, branch, heartbeat, and attention state.
+The projection includes the detached worker `process_id`/`pid`, `exit_code`,
+and bounded `exit_reason` when the worker has finalized.
+
+### RunTaskRecord
+
+```python
+@dataclass(frozen=True)
+class RunTaskRecord
+```
+
+Bounded projection of a PRD-203 task, its dependencies, worker identity,
+completion evidence, and error state.
+
+### RunWorktreeRecord
+
+```python
+@dataclass(frozen=True)
+class RunWorktreeRecord
+```
+
+Bounded projection of an isolated Git worktree, including branch, immutable
+base commit, head, dirty state, and conflict paths.
+
+### RunStore
+
+```python
+class RunStore
+```
+
+Locked, fsync'd append-only JSONL persistence at `~/.agenthicc/runs/` by
+default. Partial trailing records are ignored during recovery.
+
+### GoalRunManager
+
+```python
+class GoalRunManager
+```
+
+Validates a repository/workflow, creates a run, launches detached work through
+`BackgroundSupervisor`, reconciles authoritative session state, projects worker
+links, and propagates cancellation to linked sessions.
+
 ## Concurrent typed subagents — `agenthicc.subagents`
 
 Concurrent typed subagents for agenthicc (PRD-124).

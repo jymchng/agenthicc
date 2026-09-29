@@ -17,7 +17,10 @@ own (`agenthicc --version`).
 | Option | Meaning |
 |---|---|
 | `--headless` | Run without the TUI; emit JSON-lines to stdout |
-| `--workflow NAME` | Start the TUI with `NAME` selected, or run `NAME` for each stdin line in headless mode |
+| `--goal GOAL` | Select `goal_flow` and start one durable goal run with GOAL as its initial user intent |
+| `--detach` | Return after a `--goal` run is accepted by the background supervisor; the response includes the detached worker PID |
+| `--json` | Emit machine-readable goal/control output |
+| `--workflow NAME` | Start the TUI with `NAME` selected, or run `NAME` for each stdin line in headless mode; cannot be combined with `--goal` |
 | `--mode MODE` | Start with `MODE` selected (for example `Safe`, `Plan`, or `Yolo`); an explicit CLI mode overrides a persisted session mode |
 | `--config PATH` | Path to `agenthicc.toml` |
 | `--version` | Print the package CLI version string (currently `agenthicc 0.1.0`) |
@@ -38,6 +41,20 @@ agenthicc --set-secret execution.default_headers.Modal-Key=MODAL_KEY config show
 
 `--dangerously-skip-permissions` overrides Safe-mode approval requirements but
 **not** Plan mode: Plan mode hard-blocks side effects even with this flag.
+
+### Detached goal output
+
+`agenthicc --goal GOAL --detach` returns after one durable `goal_flow` run and
+one background worker have been accepted. Human output includes `Run ID`,
+`Goal`, `Status`, `Main`, `PID`, `Track`, and `Attach`. JSON output contains
+`detached: true`, `pid`, and `worker_pid` (the latter two identify the child
+worker, never the short-lived launcher). The PID is retained for inspection
+after process exit; lifecycle status and the session lease are authoritative.
+
+Only the detached worker owns the terminal finalization path. It persists the
+workflow outcome, exit code/reason, and worker-exit event before returning.
+Attached `--goal` runs do not install this finalizer and remain normal,
+interactive TUI sessions.
 
 ## Command groups
 
@@ -64,6 +81,8 @@ help string the command registers.
 | Command | Purpose |
 |---|---|
 | `agents` | Open the background sessions manager |
+| `runs` | Inspect and control durable goal runs |
+| `attach RUN_ID` | Attach the normal TUI to an existing goal run |
 | `init [--write] [--force]` | Create `AGENTS.md` and a commented `.agenthicc` configuration template |
 | `run [--background] [--workflow NAME] [--intent TEXT] [--title TEXT]` | Start an agent turn or workflow |
 | `login` | Authenticate with agenthicc.ai |

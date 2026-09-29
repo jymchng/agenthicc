@@ -47,6 +47,7 @@ class WorkerLauncher(Protocol):
         worktree_id: str = "",
         branch: str = "",
         base_commit: str = "",
+        run_id: str = "",
     ) -> BackgroundSession: ...
 
 
@@ -75,6 +76,7 @@ class ParallelCoordinator:
         repository: Path | str,
         *,
         parent_session_id: str,
+        run_id: str = "",
         store: ManifestStore | None = None,
         manager: WorktreeManager | None = None,
         supervisor: WorkerLauncher | None = None,
@@ -88,6 +90,7 @@ class ParallelCoordinator:
         self.manager = manager or WorktreeManager(repository)
         self.store = store or ManifestStore()
         self.parent_session_id = parent_session_id
+        self.run_id = run_id
         self.supervisor = supervisor
         if max_parallel_tasks < 1:
             raise ValueError("max_parallel_tasks must be at least 1")
@@ -104,6 +107,7 @@ class ParallelCoordinator:
         manifest = ParallelManifest(
             orchestration_id=orchestration_id,
             parent_session_id=self.parent_session_id,
+            run_id=self.run_id,
             repository=str(self.manager.repository),
             parent_branch=self.manager.branch(),
             base_commit=base,
@@ -202,6 +206,7 @@ class ParallelCoordinator:
                     worktree_id=record.worktree_id,
                     branch=record.branch,
                     base_commit=record.base_commit,
+                    run_id=self.run_id,
                 )
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"

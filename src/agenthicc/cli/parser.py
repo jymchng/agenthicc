@@ -15,6 +15,26 @@ if TYPE_CHECKING:
 
 def _add_global_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--goal",
+        metavar="GOAL",
+        default=None,
+        help=(
+            "Select goal_flow and submit GOAL as its initial user intent; "
+            "cannot be combined with --workflow."
+        ),
+    )
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="Return after a --goal run is durably accepted by the background supervisor.",
+    )
+    parser.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="Emit machine-readable output for a goal start or control operation.",
+    )
+    parser.add_argument(
         "--headless",
         action="store_true",
         help="Run without the TUI; emit JSON-lines to stdout.",
@@ -25,7 +45,8 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
         default=None,
         dest="workflow_name",
         help=(
-            "Start the TUI with NAME selected, or run NAME for each stdin line in headless mode."
+            "Start the TUI with NAME selected, or run NAME for each stdin line in headless "
+            "mode; unavailable with --goal."
         ),
     )
     parser.add_argument(
@@ -148,6 +169,13 @@ def parse_cli() -> tuple[CLIContext, argparse.Namespace]:
     _wire(parser, _as_tree())
 
     ns = parser.parse_args()
+    ns_values = vars(ns)
+    if ns_values.get("detach", False) and not ns_values.get("goal", None):
+        parser.error("--detach requires --goal GOAL")
+    if ns_values.get("goal", None) and ns_values.get("_entry", None) is not None:
+        parser.error("--goal cannot be combined with a subcommand")
+    if ns_values.get("goal", None) and ns_values.get("workflow_name", None):
+        parser.error("--goal always runs goal_flow and cannot be combined with --workflow")
     ctx = _build_ctx(ns, config=config)
     return ctx, ns
 
@@ -158,8 +186,8 @@ def _fast_help_parser() -> argparse.ArgumentParser:
         prog="agenthicc",
         description="Agenthicc — state-driven agent OS for autonomous software engineering",
         epilog=(
-            "Built-in command groups: agents, auth, config, jobs, mcp, sessions, "
-            "skills, tools, trust, and workflows. Project commands are discovered "
+            "Built-in command groups: agents, attach, auth, config, jobs, mcp, runs, "
+            "sessions, skills, tools, trust, and workflows. Project commands are discovered "
             "after startup."
         ),
     )
@@ -187,6 +215,9 @@ def _build_ctx(
         continue_session=getattr(ns, "continue_session", False),
         workflow_name=getattr(ns, "workflow_name", None),
         mode_name=getattr(ns, "mode_name", None),
+        goal=vars(ns).get("goal"),
+        detach=bool(vars(ns).get("detach", False)),
+        json_output=bool(vars(ns).get("json_output", False)),
         config=typed_config,
     )
 

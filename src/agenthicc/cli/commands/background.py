@@ -114,9 +114,66 @@ async def _open_manager(ctx: CLIContext) -> None:
             )
 
 
+async def _open_goal_manager(ctx: CLIContext, run_id: str) -> None:
+    """Open the run projection while preserving the existing attach path."""
+
+    from rich.console import Console  # noqa: PLC0415
+
+    from agenthicc.runs.cli import _manager  # noqa: PLC0415
+    from agenthicc.tui.workspace.goal_run_manager import (  # noqa: PLC0415
+        run_goal_run_manager,
+    )
+
+    manager = _manager(ctx)
+    try:
+        result = await run_goal_run_manager(
+            Console(highlight=False), manager=manager, run_id=run_id
+        )
+    except KeyError:
+        print(f"Run not found: {run_id}")
+        raise SystemExit(1) from None
+    if result.action != "attach":
+        return
+    try:
+        foreground = manager.attach(run_id)
+        from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+
+        await _run_tui_session(
+            resume_id=foreground.session_id,
+            cli_overrides=list(ctx.set_overrides),
+            cli_secret_overrides=list(ctx.set_secret_overrides),
+            record_cassette=ctx.record_cassette,
+            cli_flags=ctx.flags,
+            config_path=ctx.config_path,
+            cwd=foreground.cwd,
+            config=ctx.config,
+        )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        print(f"Unable to attach {run_id}: {exc}")
+        raise SystemExit(1) from exc
+
+
 @command("agents", help="Open the background sessions manager")
-async def agents(ctx: CLIContext) -> None:
-    """Open the background session manager; this is the memorable manager alias."""
+async def agents(
+    ctx: CLIContext,
+    run: str = "",
+    json: bool = False,
+) -> None:
+    """Open the manager, or inspect agents linked to one goal run."""
+
+    if run:
+        from agenthicc.runs.cli import _manager  # noqa: PLC0415
+
+        try:
+            payload = _manager(ctx).projection(run).to_dict()
+        except KeyError:
+            print(f"Run not found: {run}")
+            raise SystemExit(1) from None
+        if json:
+            print(json_module.dumps(payload.get("agents", []), indent=2, sort_keys=True))
+            return
+        await _open_goal_manager(ctx, run)
+        return
 
     await _open_manager(ctx)
 

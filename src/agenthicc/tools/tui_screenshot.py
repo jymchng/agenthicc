@@ -19,10 +19,14 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lauren_ai import tool
 from lauren_ai._tools import set_metadata
 from agenthicc.tools.capabilities import ToolCapability
+
+if TYPE_CHECKING:
+    from PIL.ImageFont import FreeTypeFont, ImageFont as PillowImageFont
 
 DEPENDENCIES = ["pyte>=0.8.0", "Pillow>=10.0"]
 
@@ -170,7 +174,7 @@ class TuiScreenshotTool:
             if op == "capture":
                 return await self._op_capture(sid, output, style, wait)
             if op == "close":
-                return self._op_close(sid)
+                return await self._op_close(sid)
         except _ToolError as exc:
             return {"ok": False, "error": str(exc), "recoverable": True}
 
@@ -179,7 +183,14 @@ class TuiScreenshotTool:
             "error": f"Unknown operation: {operation!r}",
             "recoverable": True,
             "valid_operations": [
-                "create", "list", "status", "send", "wait", "capture", "render", "close",
+                "create",
+                "list",
+                "status",
+                "send",
+                "wait",
+                "capture",
+                "render",
+                "close",
             ],
         }
 
@@ -215,10 +226,14 @@ class TuiScreenshotTool:
 
         if backend == "tmux":
             await self._tmux_create(sid, command)
+            self._sessions[sid] = _Session(session_id=sid, backend=backend, command=command)
         else:
             await self._pty_create(sid, command)
-
-        self._sessions[sid] = _Session(session_id=sid, backend=backend, command=command)
+            # _pty_create attaches the process and file descriptor to the
+            # registry entry.  Do not replace that entry after it returns.
+            self._sessions.setdefault(
+                sid, _Session(session_id=sid, backend=backend, command=command)
+            )
         return {
             "ok": True,
             "operation": "create",
@@ -274,9 +289,7 @@ class TuiScreenshotTool:
             "wait_spec": wait or "(default idle)",
         }
 
-    async def _op_capture(
-        self, sid: str, output: str, style: str, wait: str
-    ) -> dict[str, object]:
+    async def _op_capture(self, sid: str, output: str, style: str, wait: str) -> dict[str, object]:
         sess = self._require(sid)
         if not self._is_alive(sess):
             raise _ToolError(f"Session {sid!r} is not alive")
@@ -306,12 +319,12 @@ class TuiScreenshotTool:
             "format": fmt,
         }
 
-    def _op_close(self, sid: str) -> dict[str, object]:
+    async def _op_close(self, sid: str) -> dict[str, object]:
         sess = self._sessions.pop(sid, None)
         if sess is None:
             raise _ToolError(f"Session {sid!r} not found")
         if sess.backend == "tmux":
-            self._tmux_kill(sess)
+            await self._tmux_kill(sess)
         else:
             self._pty_kill(sess)
         return {"ok": True, "operation": "close", "session": sid}
@@ -357,13 +370,13 @@ class TuiScreenshotTool:
     @staticmethod
     def _tmux_has_session(sid: str) -> bool:
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["tmux", "has-session", "-t", sid],
                 check=False,
                 capture_output=True,
                 timeout=10,
             )
-            return True
+            return result.returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
 
@@ -386,9 +399,7 @@ class TuiScreenshotTool:
 
     async def _capture_ansi(self, sess: _Session) -> str:
         if sess.backend == "tmux":
-            res = await self._run(
-                ["tmux", "capture-pane", "-p", "-t", sess.session_id, "-J"]
-            )
+            res = await self._run(["tmux", "capture-pane", "-p", "-t", sess.session_id, "-J"])
             return res
         # PTY: drain the raw buffer and normalise to a screen-ish ANSI text.
         raw = bytes(sess.buffer)
@@ -401,6 +412,10 @@ class TuiScreenshotTool:
         import pty
 
         master_fd, slave_fd = pty.openpty()
+        # Keep the async reader from blocking the event loop when the PTY has
+        # no output.  A blocking os.read here would prevent close/cancel and
+        # make the TUI tool appear hung while a session is idle.
+        os.set_blocking(master_fd, False)
         shell = os.environ.get("SHELL", "/bin/bash")
         argv = [shell, "--noprofile", "--norc"]
         if command:
@@ -421,11 +436,15 @@ class TuiScreenshotTool:
         )
         sess.proc = proc
         sess.pty_fd = master_fd
+
         # Background reader draining the PTY into the session buffer.
         async def _reader() -> None:
             while sess.proc is not None and sess.proc.poll() is None:
                 try:
                     data = os.read(master_fd, 4096)
+                except BlockingIOError:
+                    await asyncio.sleep(0.05)
+                    continue
                 except OSError:
                     break
                 if not data:
@@ -464,11 +483,11 @@ class TuiScreenshotTool:
             await asyncio.sleep(float(spec[:-1]))
             return
         if spec.startswith("regex:"):
-            pattern = re.compile(spec[len("regex:"):])
+            pattern = re.compile(spec[len("regex:") :])
             await self._wait_regex(sess, pattern)
             return
         if spec.startswith("idle:"):
-            await self._wait_idle(sess, float(spec[len("idle:"):]))
+            await self._wait_idle(sess, float(spec[len("idle:") :]))
             return
         if spec == "prompt":
             await self._wait_regex(sess, re.compile(r"[$#>]\s*$", re.MULTILINE))
@@ -565,7 +584,7 @@ class TuiScreenshotTool:
         if style in _THEMES:
             merged["theme"] = style
             return merged
-        if style.startswith("{"):
+        if style.startswith(("{", "[")):
             try:
                 data = json.loads(style)
             except json.JSONDecodeError as exc:
@@ -588,7 +607,9 @@ class TuiScreenshotTool:
         try:
             from PIL import Image, ImageDraw
         except ImportError as exc:  # pragma: no cover - dep missing
-            raise _RenderUnavailable("Pillow is not installed (DEPENDENCIES: Pillow>=10.0)") from exc
+            raise _RenderUnavailable(
+                "Pillow is not installed (DEPENDENCIES: Pillow>=10.0)"
+            ) from exc
 
         theme = str(style_map.get("theme") or "modern-dark")
         palette = _THEMES.get(theme, _THEMES["modern-dark"])
@@ -597,12 +618,12 @@ class TuiScreenshotTool:
         border = self._hex(palette.get("border", "#30363D"))
         accent = self._hex(palette.get("accent", "#58A6FF"))
 
-        font_size = int(style_map.get("font_size") or 16)
-        padding = int(style_map.get("padding") or 24)
-        dpi = int(style_map.get("dpi") or 144)
-        line_spacing = float(style_map.get("line_spacing") or 1.2)
-        rounded = int(style_map.get("rounded") or 0)
-        shadow = int(style_map.get("shadow") or 0)
+        font_size = int(str(style_map.get("font_size") or 16))
+        padding = int(str(style_map.get("padding") or 24))
+        dpi = int(str(style_map.get("dpi") or 144))
+        line_spacing = float(str(style_map.get("line_spacing") or 1.2))
+        rounded = int(str(style_map.get("rounded") or 0))
+        shadow = int(str(style_map.get("shadow") or 0))
 
         text = self._ansi_to_text(ansi)
         lines = text.splitlines() or [""]
@@ -625,8 +646,12 @@ class TuiScreenshotTool:
             sh = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
             sh_draw = ImageDraw.Draw(sh)
             sh_draw.rounded_rectangle(
-                [int(shadow), int(shadow), img_w - int(shadow) + int(shadow * 2),
-                 img_h - int(shadow) + int(shadow * 2)],
+                [
+                    int(shadow),
+                    int(shadow),
+                    img_w - int(shadow) + int(shadow * 2),
+                    img_h - int(shadow) + int(shadow * 2),
+                ],
                 radius=rounded,
                 fill=(0, 0, 0, int(shadow * 12)),
             )
@@ -634,7 +659,9 @@ class TuiScreenshotTool:
 
         draw.rounded_rectangle([0, 0, img_w - 1, img_h - 1], radius=rounded, fill=bg)
         if rounded > 0:
-            draw.rounded_rectangle([0, 0, img_w - 1, img_h - 1], radius=rounded, outline=border, width=1)
+            draw.rounded_rectangle(
+                [0, 0, img_w - 1, img_h - 1], radius=rounded, outline=border, width=1
+            )
 
         # Title-bar accent line (subtle, modern)
         if rounded > 0:
@@ -651,8 +678,8 @@ class TuiScreenshotTool:
         theme = str(style_map.get("theme") or "modern-dark")
         palette = _THEMES.get(theme, _THEMES["modern-dark"])
         bg = palette.get("bg", "#0D1117")
-        font_size = int(style_map.get("font_size") or 16)
-        padding = int(style_map.get("padding") or 24)
+        font_size = int(str(style_map.get("font_size") or 16))
+        padding = int(str(style_map.get("padding") or 24))
         text = self._ansi_to_text(ansi)
         lines = text.splitlines() or [""]
         line_h = int(font_size * 1.35)
@@ -671,7 +698,7 @@ class TuiScreenshotTool:
         svg = (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">'
             f'<rect width="100%" height="100%" fill="{bg}"/>'
-            f'{body}</svg>'
+            f"{body}</svg>"
         )
         path.write_text(svg, encoding="utf-8")
 
@@ -687,7 +714,7 @@ class TuiScreenshotTool:
         return ansi
 
     @staticmethod
-    def _load_font(font_size: int, font_spec: object):
+    def _load_font(font_size: int, font_spec: object) -> FreeTypeFont | PillowImageFont:
         from PIL import ImageFont
 
         if isinstance(font_spec, str) and font_spec:

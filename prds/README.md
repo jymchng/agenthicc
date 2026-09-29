@@ -72,10 +72,17 @@ against the current source before implementing them.
 - [PRD-202 — Paginated `/ps` background-terminal overlay](prd-202-paginated-ps-terminal-overlay.md)
 
 - [PRD-203 — Parallel coding with isolated Git worktrees](prd-203-parallel-coding-git-worktree-isolation.md)
+- [PRD-204 — Goal runner and detached orchestration](prd-204-goal-runner-and-detached-orchestration.md)
+- [PRD-205 — Self-terminating detached goal runs and PID reporting](prd-205-goal-detached-process-lifecycle.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
 observability, extension APIs, and release gates.
+
+PRD-205 is implemented by the existing background worker/supervisor and goal
+run projections: detached starts retain the child PID, persist idempotent
+terminal exit metadata/events, and return only after finalization. Attached
+`--goal` runs deliberately do not install that lifecycle finalizer.
 
 PRD-139 is the product-expansion roadmap layered on top of PRD-138. It compares
 the current repository with OpenCode-inspired product surfaces and defines the

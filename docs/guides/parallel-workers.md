@@ -81,3 +81,19 @@ coordinator.
 Worktrees provide repository isolation, not a security sandbox. Worker
 sessions still use Agenthicc's capability, approval, workspace, network, and
 provider controls.
+
+## Goal-run correlation
+
+When the coordinator is running as a detached `--goal` session, the shared
+worker tool records the parent `run_id` on the PRD-203 manifest and each
+background worker session. The run projection then exposes the same task,
+worktree, branch, base commit, and heartbeat evidence as:
+
+```bash
+agenthicc runs show RUN_ID --json
+agenthicc agents --run RUN_ID --json
+```
+
+The run ID is not substituted for a session or orchestration ID. Existing
+worktree controls remain authoritative for Git state, and a completed or dirty
+worktree is never removed merely because its worker process disappeared.

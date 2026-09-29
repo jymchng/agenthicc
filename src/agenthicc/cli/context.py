@@ -38,6 +38,9 @@ class CLIContext:
     continue_session: bool = False
     workflow_name: str | None = None
     mode_name: str | None = None
+    goal: str | None = None
+    detach: bool = False
+    json_output: bool = False
     # The validated snapshot used while parsing this invocation.  Normal
     # runners pass it into session construction so configuration is not parsed
     # a second time.  It remains optional for embedders using the old shape.

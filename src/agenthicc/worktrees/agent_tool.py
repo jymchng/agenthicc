@@ -33,6 +33,7 @@ def make_spawn_worker_agents_tool(
     *,
     repository: Path | str,
     parent_session_id: str,
+    run_id: str = "",
     max_parallel_tasks: int = 4,
     workspace_access: "WorkspaceAccessPolicy | None" = None,
     store: ManifestStore | None = None,
@@ -96,6 +97,7 @@ def make_spawn_worker_agents_tool(
         coordinator = ParallelCoordinator(
             repository,
             parent_session_id=parent_session_id,
+            run_id=run_id,
             store=manifest_store,
             supervisor=supervisor,
             max_parallel_tasks=limit,

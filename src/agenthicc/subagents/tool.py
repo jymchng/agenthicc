@@ -383,10 +383,32 @@ def make_spawn_subagents_tool(
             make_spawn_worker_agents_tool,
         )
 
+        # A goal run has a product-level ID that is distinct from the current
+        # provider turn ID. Resolve it from the durable main-session link so
+        # every workflow-wide worker manifest is correlated with the same run,
+        # including workers summoned by custom workflows. Ordinary sessions
+        # intentionally receive an empty run ID and remain PRD-203 compatible.
+        goal_run_id = ""
+        if conversation_id:
+            try:
+                from agenthicc.runs import RunStore  # noqa: PLC0415
+
+                goal_run_id = next(
+                    (
+                        run.run_id
+                        for run in RunStore().list()
+                        if run.main_session_id == conversation_id
+                    ),
+                    "",
+                )
+            except (OSError, ValueError):
+                goal_run_id = ""
+
         communication_tools.append(
             make_spawn_worker_agents_tool(
                 repository=workspace_access.scope.primary_root,
                 parent_session_id=conversation_id or parent_run_id,
+                run_id=goal_run_id,
                 max_parallel_tasks=max(1, max_concurrent),
                 workspace_access=workspace_access,
             )

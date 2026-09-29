@@ -88,6 +88,7 @@ nav:
       - Project bootstrap: guides/project-bootstrap.md
       - TUI: guides/tui.md
       - Background sessions: guides/background-sessions.md
+      - Goal runs and detached orchestration: guides/goal-runs.md
       - Workflows: guides/workflows.md
       - Parallel coding workers: guides/parallel-workers.md
       - Subagents: guides/subagents.md

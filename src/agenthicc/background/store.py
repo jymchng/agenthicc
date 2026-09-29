@@ -281,6 +281,7 @@ class BackgroundStore:
             lease_token=lease_token,
             attempt=current.attempt + 1,
             started_at=current.started_at or time.time(),
+            worker_started_at=current.worker_started_at or time.time(),
             latest_activity="Worker started",
         )
 
@@ -296,6 +297,38 @@ class BackgroundStore:
             latest_activity=activity or current.latest_activity,
             last_active=time.time(),
         )
+
+    def record_worker_exit(
+        self,
+        session_id: str,
+        *,
+        worker_pid: int | None,
+        exit_reason: str,
+        exit_code: int,
+        cleanup_error: str = "",
+    ) -> BackgroundSession:
+        """Append one bounded worker-exit event after finalization.
+
+        The session record is updated by the finalization transition itself;
+        this event is an audit boundary that remains available even when a
+        later projection or recovery pass folds only state-changing events.
+        """
+
+        with self._lock():
+            current = self.get(session_id, include_deleted=True)
+            self._append(
+                "worker_exited",
+                {
+                    "session_id": session_id,
+                    "run_id": current.run_id,
+                    "worker_pid": worker_pid,
+                    "exit_reason": exit_reason[:128],
+                    "exit_code": exit_code,
+                    "cleanup_error": cleanup_error[:2_000],
+                    "timestamp": time.time(),
+                },
+            )
+            return current
 
     def mark_orphaned(self, session_id: str) -> BackgroundSession:
         current = self.get(session_id)

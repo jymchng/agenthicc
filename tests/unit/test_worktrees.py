@@ -14,11 +14,15 @@ from agenthicc.worktrees import (
     ParallelCoordinator,
     TaskStatus,
     WorktreeDirtyError,
+    WorktreeError,
+    WorktreeNotFound,
     WorktreeManager,
     WorktreeStatus,
 )
 from agenthicc.worktrees.agent_tool import make_spawn_worker_agents_tool
 from agenthicc.background.model import BackgroundSession
+from agenthicc.worktrees.coordinator import _has_cycle, worker_prompt
+from agenthicc.worktrees.model import OrchestrationStatus, ParallelManifest
 
 
 def _git(path: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -187,6 +191,93 @@ def test_merge_conflict_preserves_worker_and_aborts_coordinator_merge(
     assert store.get("orchestration").worktree(record.worktree_id).status == WorktreeStatus.CONFLICT
 
 
+def test_worktree_manager_inspects_validates_rebases_and_removes_workers(
+    repository: tuple[Path, Path],
+) -> None:
+    repo, durable = repository
+    manager = WorktreeManager(repo, root=durable / "worktrees")
+
+    assert manager.head() == _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert manager.branch()
+    assert manager.is_clean()
+    base = manager.validate_base(manager.head())
+    assert len(base) == 40
+    with pytest.raises(WorktreeError, match="base_commit"):
+        manager.validate_base("")
+    with pytest.raises(WorktreeError, match="base_commit"):
+        manager.validate_base("not-a-commit")
+
+    record = manager.create(parent_session_id="parent", task_id="task")
+    worker_path = Path(record.path)
+    (worker_path / "worker.txt").write_text("worker\n", encoding="utf-8")
+    _git(worker_path, "add", ".")
+    _git(worker_path, "commit", "-qm", "worker")
+
+    inspection = manager.inspect(record)
+    assert manager.status(record).result == inspection.result
+    assert manager.validate(record).changed_files == ("worker.txt",)
+    assert manager.complete(record, worker_session_id="worker").worker_session_id == "worker"
+    rebased = manager.rebase(record)
+    assert rebased.ok is True
+    with pytest.raises(WorktreeError, match="only after successful integration"):
+        manager.remove(record)
+    integrated = record.evolve(status=WorktreeStatus.INTEGRATED)
+    removed = manager.remove(integrated)
+    assert removed.status is WorktreeStatus.REMOVED
+    assert not worker_path.exists()
+
+    with pytest.raises(WorktreeNotFound):
+        manager.inspect(record)
+
+
+def test_worktree_manager_rejects_invalid_records_and_recovers_dirty_workers(
+    repository: tuple[Path, Path],
+) -> None:
+    repo, durable = repository
+    manager = WorktreeManager(repo, root=durable / "worktrees")
+    with pytest.raises(Exception, match="not a Git repository"):
+        WorktreeManager(durable / "not-a-repo", root=durable / "other")
+
+    record = manager.create(parent_session_id="parent", task_id="dirty")
+    worker_path = Path(record.path)
+    (worker_path / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
+    result = manager.complete(record, worker_session_id="worker")
+    assert result.status == "dirty"
+    with pytest.raises(WorktreeDirtyError):
+        manager.remove(record)
+    with pytest.raises(WorktreeError, match="different repository"):
+        manager.validate(record.evolve(repository=str(durable)))
+    with pytest.raises(WorktreeNotFound):
+        manager.inspect(record.evolve(path=str(durable / "missing")))
+
+    recovered = manager.recover()
+    assert any(item.worktree_id == record.worktree_id for item in recovered)
+    removed = manager.remove(record, force=True)
+    assert removed.status is WorktreeStatus.REMOVED
+
+
+def test_worktree_manager_rebase_conflict_preserves_worker(
+    repository: tuple[Path, Path],
+) -> None:
+    repo, durable = repository
+    manager = WorktreeManager(repo, root=durable / "worktrees")
+    record = manager.create(parent_session_id="parent", task_id="rebase-conflict")
+    worker_path = Path(record.path)
+    (worker_path / "shared.txt").write_text("worker\n", encoding="utf-8")
+    _git(worker_path, "add", ".")
+    _git(worker_path, "commit", "-qm", "worker")
+    (repo / "shared.txt").write_text("main\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "main")
+
+    result = manager.rebase(record)
+    assert result.ok is False
+    assert result.conflict_paths == ("shared.txt",)
+    assert worker_path.is_dir()
+    assert _git(worker_path, "status", "--porcelain").stdout == ""
+    manager.remove(record, force=True)
+
+
 def test_integration_rejects_a_changed_coordinator_branch(
     repository: tuple[Path, Path],
 ) -> None:
@@ -227,6 +318,71 @@ def test_dependency_graph_rejects_cycles(repository: tuple[Path, Path]) -> None:
             description="B",
             dependencies=("missing",),
         )
+
+
+def test_coordinator_guards_graph_dispatch_rebase_and_recovery(
+    repository: tuple[Path, Path],
+) -> None:
+    repo, durable = repository
+    manager = WorktreeManager(repo, root=durable / "worktrees")
+    store = ManifestStore(durable / "manifests")
+    coordinator = ParallelCoordinator(
+        repo, parent_session_id="parent", manager=manager, store=store, max_parallel_tasks=1
+    )
+    orchestration = coordinator.create(orchestration_id="guards")
+    coordinator.add_task("guards", task_id="a", description="A")
+    with pytest.raises(CoordinatorError, match="already exists"):
+        coordinator.add_task("guards", task_id="a", description="duplicate")
+    coordinator.add_task("guards", task_id="b", description="B", dependencies=("a",))
+    assert [task.task_id for task in coordinator.ready_tasks("guards")] == ["a"]
+    assert worker_prompt("do work", worktree_path="/tmp/wt", base_commit="abc")
+    assert orchestration.status is OrchestrationStatus.PLANNING
+    assert (
+        _has_cycle(
+            ParallelManifest(
+                orchestration_id="cycle",
+                parent_session_id="parent",
+                repository=str(repo),
+                parent_branch=manager.branch(),
+                base_commit=manager.head(),
+                tasks=(),
+            )
+        )
+        is False
+    )
+
+    class _FailingSupervisor:
+        def submit(self, **_kwargs: object) -> BackgroundSession:
+            raise RuntimeError("worker launch failed")
+
+    failing = ParallelCoordinator(
+        repo,
+        parent_session_id="parent-failing",
+        manager=manager,
+        store=ManifestStore(durable / "failing-manifests"),
+        supervisor=_FailingSupervisor(),
+    )
+    failing.create(orchestration_id="failing")
+    failing.add_task("failing", task_id="task", description="fail launch")
+    with pytest.raises(CoordinatorError, match="worker launch failed"):
+        failing.dispatch("failing", "task")
+    assert failing.manifest("failing").task("task").status is TaskStatus.FAILED
+
+    task = coordinator.dispatch("guards", "a")
+    record = coordinator.manifest("guards").worktree(task.worktree_id)
+    worker_path = Path(record.path)
+    (worker_path / "a.txt").write_text("a\n", encoding="utf-8")
+    _git(worker_path, "add", ".")
+    _git(worker_path, "commit", "-qm", "a")
+    coordinator.inspect_task("guards", "a")
+    rebased = coordinator.rebase_task("guards", "a")
+    assert rebased.ok is True
+    with pytest.raises(CoordinatorError, match="only integrated"):
+        coordinator.cleanup_task("guards", "a")
+    _git(repo, "checkout", "-qb", "guards-parent")
+    recovered = coordinator.recover("guards")
+    assert recovered.status is OrchestrationStatus.RECOVERING
+    coordinator.manager.remove(record.evolve(status=WorktreeStatus.INTEGRATED), force=True)
 
 
 @pytest.mark.asyncio

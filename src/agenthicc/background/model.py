@@ -144,6 +144,10 @@ class BackgroundSession:
     input_request: str = ""
     input_value: str | None = None
     worker_pid: int | None = None
+    # PRD-205: detached goal-process lifecycle metadata.  ``worker_pid`` is
+    # intentionally retained after exit so operators can correlate the run
+    # with logs and the launch response; it is not an assertion that the PID
+    # is still alive.
     lease_token: str = ""
     attempt: int = 0
     retry_count: int = 0
@@ -160,6 +164,16 @@ class BackgroundSession:
     worktree_id: str = ""
     branch: str = ""
     base_commit: str = ""
+    # New lifecycle fields are appended so positional construction of the
+    # pre-PRD-205 public dataclass remains source-compatible.
+    detached_goal: bool = False
+    worker_started_at: float | None = None
+    worker_finished_at: float | None = None
+    worker_exit_code: int | None = None
+    worker_exit_reason: str = ""
+    worker_finalization_attempts: int = 0
+    worker_cleanup_error: str = ""
+    run_id: str = ""
 
     @classmethod
     def create(
@@ -178,6 +192,8 @@ class BackgroundSession:
         worktree_id: str = "",
         branch: str = "",
         base_commit: str = "",
+        run_id: str = "",
+        detached_goal: bool = False,
     ) -> "BackgroundSession":
         timestamp = time.time() if now is None else now
         return cls(
@@ -192,7 +208,9 @@ class BackgroundSession:
             artifact_dir=artifact_dir,
             original_artifact_dir=artifact_dir,
             parent_session_id=parent_session_id,
+            run_id=run_id,
             role=role,
+            detached_goal=detached_goal,
             task_id=task_id,
             worktree_id=worktree_id,
             branch=branch,
@@ -264,6 +282,16 @@ class BackgroundSession:
             input_request=_str("input_request", self.input_request),
             input_value=_optional_str("input_value", self.input_value),
             worker_pid=_optional_int("worker_pid", self.worker_pid),
+            detached_goal=_bool("detached_goal", self.detached_goal),
+            worker_started_at=_float("worker_started_at", self.worker_started_at),
+            worker_finished_at=_float("worker_finished_at", self.worker_finished_at),
+            worker_exit_code=_optional_int("worker_exit_code", self.worker_exit_code),
+            worker_exit_reason=_str("worker_exit_reason", self.worker_exit_reason),
+            worker_finalization_attempts=_int(
+                "worker_finalization_attempts", self.worker_finalization_attempts
+            )
+            or 0,
+            worker_cleanup_error=_str("worker_cleanup_error", self.worker_cleanup_error),
             lease_token=_str("lease_token", self.lease_token),
             attempt=_int("attempt", self.attempt) or 0,
             retry_count=_int("retry_count", self.retry_count) or 0,
@@ -273,6 +301,7 @@ class BackgroundSession:
             trash_dir=_str("trash_dir", self.trash_dir),
             original_artifact_dir=_str("original_artifact_dir", self.original_artifact_dir),
             parent_session_id=_str("parent_session_id", self.parent_session_id),
+            run_id=_str("run_id", self.run_id),
             role=_str("role", self.role),
             task_id=_str("task_id", self.task_id),
             worktree_id=_str("worktree_id", self.worktree_id),
@@ -309,6 +338,13 @@ class BackgroundSession:
             "input_request": self.input_request,
             "input_value": self.input_value,
             "worker_pid": self.worker_pid,
+            "detached_goal": self.detached_goal,
+            "worker_started_at": self.worker_started_at,
+            "worker_finished_at": self.worker_finished_at,
+            "worker_exit_code": self.worker_exit_code,
+            "worker_exit_reason": self.worker_exit_reason,
+            "worker_finalization_attempts": self.worker_finalization_attempts,
+            "worker_cleanup_error": self.worker_cleanup_error,
             "lease_token": self.lease_token,
             "attempt": self.attempt,
             "retry_count": self.retry_count,
@@ -318,6 +354,7 @@ class BackgroundSession:
             "trash_dir": self.trash_dir,
             "original_artifact_dir": self.original_artifact_dir,
             "parent_session_id": self.parent_session_id,
+            "run_id": self.run_id,
             "role": self.role,
             "task_id": self.task_id,
             "worktree_id": self.worktree_id,
@@ -382,7 +419,17 @@ class BackgroundSession:
             approval_decision=_optional_bool(value.get("approval_decision")),
             input_request=str(value.get("input_request", "")),
             input_value=_optional_str(value.get("input_value")),
-            worker_pid=_int_or_none(value.get("worker_pid")),
+            # ``pid`` was used by early run projections; accept it when
+            # replaying a legacy background record, while emitting the typed
+            # ``worker_pid`` field for new records.
+            worker_pid=_int_or_none(value.get("worker_pid", value.get("pid"))),
+            detached_goal=bool(value.get("detached_goal", False)),
+            worker_started_at=_float_or_none(value.get("worker_started_at")),
+            worker_finished_at=_float_or_none(value.get("worker_finished_at")),
+            worker_exit_code=_int_or_none(value.get("worker_exit_code")),
+            worker_exit_reason=str(value.get("worker_exit_reason", "")),
+            worker_finalization_attempts=_int_value(value.get("worker_finalization_attempts"), 0),
+            worker_cleanup_error=str(value.get("worker_cleanup_error", "")),
             lease_token=str(value.get("lease_token", "")),
             attempt=_int_value(value.get("attempt"), 0),
             retry_count=_int_value(value.get("retry_count"), 0),
@@ -392,6 +439,7 @@ class BackgroundSession:
             trash_dir=str(value.get("trash_dir", "")),
             original_artifact_dir=str(value.get("original_artifact_dir", "")),
             parent_session_id=str(value.get("parent_session_id", "")),
+            run_id=str(value.get("run_id", "")),
             role=str(value.get("role", "")),
             task_id=str(value.get("task_id", "")),
             worktree_id=str(value.get("worktree_id", "")),

@@ -75,29 +75,86 @@ def _handoff(session: object) -> bool:
         trash_retention_days=settings.trash_retention_days,
     )
     try:
-        record = supervisor.handoff(
-            session_id=ctx.session_id,
-            intent=intent,
-            workflow_name=workflow_name,
-            cwd=str(Path.cwd()),
-            config_path=None,
-            set_overrides=tuple(ctx.cfg_overrides) if hasattr(ctx, "cfg_overrides") else (),
-            set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
-            dangerously_skip_permissions=bool(
-                getattr(
-                    getattr(ctx.app_state, "cli_flags", None), "dangerously_skip_permissions", False
+        goal_run_id = str(vars(ctx).get("goal_run_id", "") or "")
+        prepared = True
+        try:
+            record = supervisor.handoff(
+                session_id=ctx.session_id,
+                intent=intent,
+                workflow_name=workflow_name,
+                cwd=str(Path.cwd()),
+                config_path=None,
+                set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
+                set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
+                dangerously_skip_permissions=bool(
+                    vars(flags).get("dangerously_skip_permissions", False)
+                    if (flags := vars(ctx.app_state).get("cli_flags")) is not None
+                    else False
+                ),
+                run_id=goal_run_id,
+                start=False,
+            )
+        except TypeError as exc:
+            # Keep compatibility with embedders that supplied the pre-204
+            # supervisor seam in tests or plugins. Such a supervisor has
+            # already launched the request, so it cannot use the two-stage
+            # owner-safe handoff below.
+            if "start" not in str(exc):
+                raise
+            prepared = False
+            record = supervisor.handoff(
+                session_id=ctx.session_id,
+                intent=intent,
+                workflow_name=workflow_name,
+                cwd=str(Path.cwd()),
+                config_path=None,
+                set_overrides=tuple(vars(ctx).get("cfg_overrides", ())),
+                set_secret_overrides=tuple(vars(ctx).get("cfg_secret_overrides", ())),
+                dangerously_skip_permissions=bool(
+                    vars(flags).get("dangerously_skip_permissions", False)
+                    if (flags := vars(ctx.app_state).get("cli_flags")) is not None
+                    else False
+                ),
+                run_id=goal_run_id,
+            )
+        task = vars(session).get("_agent_task")
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+        if prepared:
+            prepared_request = supervisor.store.root / "requests" / f"{record.session_id}.json"
+            if not prepared_request.is_file():
+                # A compatibility seam may accept ``start=False`` through a
+                # ``**kwargs`` lambda while still launching immediately.
+                prepared = False
+        if prepared:
+            # The request and session record are durable now. Release the
+            # foreground lease before the worker is allowed to claim it.
+            owner_lease = vars(ctx).get("owner_lease")
+            if owner_lease is not None:
+                owner_lease.release()
+            record = supervisor.start(record.session_id)
+        if goal_run_id:
+            from agenthicc.runs import RunStore  # noqa: PLC0415
+            from agenthicc.runs.model import GoalRunStatus  # noqa: PLC0415
+
+            try:
+                RunStore().update(
+                    goal_run_id,
+                    status=GoalRunStatus.RUNNING,
+                    main_session_id=record.session_id,
+                    main_agent_id=record.session_id,
                 )
-            ),
-        )
+            except KeyError:
+                # The foreground session may have been created by an older
+                # client. The background handoff remains valid, but it is not
+                # safe to fabricate a run record from the slash command.
+                pass
     except Exception as exc:  # noqa: BLE001
         ctx.console.print(f"Unable to background session: {type(exc).__name__}: {exc}")
         return True
     ctx.app_state.conversation.notify_transient(
         f"Backgrounded session {record.session_id[:12]}… ({record.status.value})"
     )
-    task = getattr(session, "_agent_task", None)
-    if isinstance(task, asyncio.Task) and not task.done():
-        task.cancel()
     setattr(getattr(session, "_input_session"), "_background_exit_requested", True)
     return True
 
@@ -124,12 +181,21 @@ def install_tui_handoff() -> None:
                 busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
             )
         )
+    if not any(command.name == "/detach" for command in BUILTIN_COMMANDS):
+        BUILTIN_COMMANDS.append(
+            Command(
+                name="/detach",
+                description="Detach the active session into the background manager",
+                argument_hint="",
+                busy_policy=BusyPolicy.IMMEDIATE_CONTROL,
+            )
+        )
 
     original_dispatch = TUISession.dispatch_slash
 
     def dispatch_slash(self: TUISession, text: str) -> bool:
         command = text.strip().split(maxsplit=1)[0] if text.strip() else ""
-        if command in {"/bg", "/background"}:
+        if command in {"/bg", "/background", "/detach"}:
             return _handoff(self)
         return original_dispatch(self, text)
 
@@ -137,7 +203,11 @@ def install_tui_handoff() -> None:
 
     async def handle_send(self: TUISession, cmd: SendMessageCommand) -> None:
         text = str(getattr(cmd, "text", "")).strip()
-        if text.startswith("/") and text.split(maxsplit=1)[0] in {"/bg", "/background"}:
+        if text.startswith("/") and text.split(maxsplit=1)[0] in {
+            "/bg",
+            "/background",
+            "/detach",
+        }:
             self.dispatch_slash(text)
             return
         if text:

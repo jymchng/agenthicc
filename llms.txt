@@ -186,6 +186,7 @@ Every public module below imports cleanly and is documented in `llms-full.txt`.
 | `agenthicc.skills.web_search` | Lauren-ai web-search tools backed by Brave Search and HTTP page fetching. |
 | `agenthicc.subagents` | Concurrent typed subagents for agenthicc (PRD-124). |
 | `agenthicc.background` | Durable local background-session services (PRD-141). |
+| `agenthicc.runs` | Durable goal-run identities, JSONL persistence, lifecycle projection, and supervisor controls (PRD-204). |
 | `agenthicc.agents` | Agents system — named, reusable @agent(...)-decorated classes (PRD-87). |
 | `agenthicc.modes` | Mode system for agenthicc — operating modes that shape agent behaviour. |
 | `agenthicc.agent_tools` | Built-in @tool() functions available to every agenthicc agent session. |
@@ -211,6 +212,16 @@ Session artifacts are under `~/.agenthicc/sessions/`: kernel JSONL, conversation
 JSONL, and an fsync-backed conversation journal. Project memory/cache/trust
 data lives under `.agenthicc/`; global memory defaults to
 `~/.agenthicc/global.db`.
+Goal-run events are stored under `~/.agenthicc/runs/events.jsonl`. A run links
+one main session to optional worker sessions and PRD-203 worktrees; it is not a
+second conversation store or agent loop. Goal startup uses `--goal`, detached
+execution adds `--detach`, and `runs show`/`attach` operate on the run identity.
+Detached startup reports the child worker PID as `pid`/`worker_pid`; the PID is
+retained for correlation after exit, while the session lease and lifecycle
+status remain authoritative. A detached worker durably finalizes completion,
+irrecoverable failure, cancellation, or confirmed `idle_after_thinking` and
+then returns from its entry point. Attached `--goal` execution never installs
+this finalizer and remains interactive.
 Owned terminal records are stored under `~/.agenthicc/background/terminals/`
 and remain separate from durable agent-session records.
 

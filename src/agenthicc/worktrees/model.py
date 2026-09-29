@@ -251,6 +251,7 @@ class ParallelManifest:
     repository: str
     parent_branch: str
     base_commit: str
+    run_id: str = ""
     status: OrchestrationStatus = OrchestrationStatus.PLANNING
     tasks: tuple[ParallelTask, ...] = ()
     worktrees: tuple[WorktreeRecord, ...] = ()
@@ -277,6 +278,7 @@ class ParallelManifest:
         return ParallelManifest(
             orchestration_id=self.orchestration_id,
             parent_session_id=self.parent_session_id,
+            run_id=_str(changes.get("run_id", self.run_id), self.run_id),
             repository=self.repository,
             parent_branch=self.parent_branch,
             base_commit=self.base_commit,
@@ -297,6 +299,7 @@ class ParallelManifest:
         return {
             "orchestration_id": self.orchestration_id,
             "parent_session_id": self.parent_session_id,
+            "run_id": self.run_id,
             "repository": self.repository,
             "parent_branch": self.parent_branch,
             "base_commit": self.base_commit,

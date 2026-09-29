@@ -212,6 +212,7 @@ def _manifest_from_mapping(value: dict[str, object]) -> ParallelManifest:
     return ParallelManifest(
         orchestration_id=str(value.get("orchestration_id", "")),
         parent_session_id=str(value.get("parent_session_id", "")),
+        run_id=str(value.get("run_id", "")),
         repository=str(value.get("repository", "")),
         parent_branch=str(value.get("parent_branch", "")),
         base_commit=str(value.get("base_commit", "")),

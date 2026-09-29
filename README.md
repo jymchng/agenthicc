@@ -100,6 +100,33 @@ Enter a natural-language request:
 
 The default session discovers built-in and project-local workflows, agents, tools, skills, modes, and MCP servers. New sessions start in **Safe** mode — reads run directly; writes, command execution, git changes, network access, and unannotated tools ask for approval.
 
+Goal runs can be started in the foreground or handed to the durable background
+supervisor:
+
+```bash
+uv run agenthicc --goal "Implement OAuth and its tests"
+uv run agenthicc --goal "Implement OAuth and its tests" --detach
+uv run agenthicc runs show RUN_ID
+uv run agenthicc attach RUN_ID
+```
+
+`--goal DESCRIPTION` is exactly the CLI shorthand for selecting the
+`goal_flow` workflow and submitting `DESCRIPTION` as its initial input—the
+same operation as `/workflow goal_flow` followed by submitting `DESCRIPTION`.
+It cannot be combined with `--workflow`; use `--workflow` on an ordinary TUI or
+headless invocation when a different workflow is required.
+
+The detached response includes the child worker `PID` alongside the run and
+main-session IDs. JSON includes both `pid` and `worker_pid`; this identity is
+retained after exit for inspection and is never a standalone signal/kill
+authority. Detached workers durably record completion, irrecoverable failure,
+cancellation, or confirmed `idle_after_thinking` before returning. The
+attached form does not install this finalizer, so an interactive TUI remains
+alive and can accept another message after a turn becomes idle.
+
+See the [goal-runs guide](./docs/guides/goal-runs.md) for run identity,
+worker correlation, recovery, and JSON control output.
+
 Startup is progressive: the TUI renders its first frame from the local
 session/configuration boundary while optional extensions, remote changelog,
 MCP connections, and browser integrations report readiness in the background.

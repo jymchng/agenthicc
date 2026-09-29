@@ -610,6 +610,26 @@ deletion first cancels live work and moves only the resolved session directory
 and its matching kernel journal into recoverable trash. It never recursively
 targets the project root.
 
+Detached goal workers add the following bounded fields to the background
+session record and the linked goal-run projection:
+
+| Field | Meaning |
+|---|---|
+| `worker_pid` / `pid` | Canonical child-worker PID; retained after exit for correlation, never a kill authorization by itself |
+| `worker_started_at` | Worker claim/launch timestamp |
+| `worker_finished_at` | Finalization timestamp |
+| `worker_exit_code` | Process outcome (`0`, non-zero failure, or `130` cancellation) |
+| `worker_exit_reason` | `workflow_complete`, `recoverable_error`, `irrecoverable_error`, `idle_after_thinking`, `cancelled`, `cleanup_timeout`, or launch/recovery reason |
+| `worker_finalization_attempts` | Idempotency counter for terminal finalization |
+| `worker_cleanup_error` | Bounded optional resource-cleanup diagnostic |
+
+The worker appends a `worker_exited` audit event after the terminal session
+transition. A duplicate finalizer observes the existing attempt and does not
+append another terminal event or overwrite a completed result. The detached
+worker returns normally from its module entry point; it does not signal the
+launcher, parent shell, attached TUI, or a PID obtained from stale metadata.
+Attached goal runs do not use this finalizer.
+
 ### Background-terminal registry
 
 Owned `run_bash`/`run_command` terminals use a separate child registry:

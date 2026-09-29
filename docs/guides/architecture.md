@@ -236,6 +236,23 @@ their existing owners. The manager TUI reads the index and renders safe
 metadata; it does not mutate frozen kernel state directly. `/bg`, `/background`,
 `agenthicc jobs`, and `agenthicc agents` all enter this same boundary.
 
+### Detached goal finalization
+
+`agenthicc --goal GOAL --detach` adds a product-level `GoalRun` around the same
+background session; it does not create another agent loop. The supervisor's
+child PID is persisted as `worker_pid` before the launch response is rendered
+when possible, and the worker retains it after exit for run/agent projections.
+The short-lived CLI launcher is never represented as the worker PID.
+
+The worker entry point owns one idempotent terminal finalizer. It records the
+workflow result or irrecoverable error, final phase history, exit code/reason,
+and a `worker_exited` audit event, then closes owned resources, releases the
+session lease, and returns from the module entry point. Terminal state and
+lease ownership remain authoritative during PID reconciliation; stale or
+reused PIDs are never signalled. Attached `--goal` execution does not install
+this finalizer, so returning to `IDLE` in the normal TUI remains a point at
+which the user can submit another message.
+
 Terminal subprocesses are a child resource of that control plane. The
 session-scoped `background.TerminalManager` owns only process groups it
 created, stores bounded redacted records under the terminal registry, and is

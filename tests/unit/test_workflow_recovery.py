@@ -17,7 +17,7 @@ from agenthicc.runners.workflow_checkpoint_store import (
     WorkflowCheckpointStore,
 )
 from agenthicc.runners.workflow_handle import WorkflowRunHandle
-from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator
+from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator, WorkflowRecoveryRecord
 from agenthicc.workflows.code_plan.definition import CodePlan
 from agenthicc.workflows.code_plan.state import CodePlanContext, CodePlanState
 from agenthicc.workflows.checkpoint import context_from_payload, context_to_payload
@@ -25,6 +25,145 @@ from agenthicc.workflows.plugin import WorkflowContext
 from agenthicc.workflows.registry import WorkflowRegistry
 
 pytestmark = pytest.mark.unit
+
+
+def test_recovery_record_projection_properties_cover_checkpoint_and_diagnostic_paths() -> None:
+    fallback = WorkflowRecoveryRecord(
+        run_id="diagnostic",
+        session_id="session",
+        fallback_error={
+            "workflow_name": "code_plan",
+            "phase_index": 2,
+            "record_revision": 4,
+            "plugin_fingerprint": "fingerprint",
+            "phase": "review",
+            "failure_kind": "transport",
+            "failure_retryable": True,
+            "failure_provider": "provider",
+            "failure_model": "model",
+            "failure_status_code": 429,
+            "failure_message": "provider unavailable",
+        },
+    )
+    assert fallback.diagnostic_only
+    assert fallback.workflow_name == "code_plan"
+    assert fallback.conversation_id == "session"
+    assert fallback.intent == ""
+    assert fallback.phase_index == 2
+    assert fallback.checkpoint_revision == 4
+    assert fallback.activity_timestamp == 0.0
+    assert fallback.journal_cursor == 0
+    assert fallback.plugin_fingerprint == "fingerprint"
+    assert fallback.provider_profile == ""
+    assert fallback.workspace_root == ""
+    assert fallback.current_phase == "review"
+    assert fallback.status == "failed"
+    assert fallback.pause_reason == "diagnostic_only"
+    assert fallback.failure_kind == "transport"
+    assert fallback.failure_retryable is True
+    assert fallback.failure_provider == "provider"
+    assert fallback.failure_model == "model"
+    assert fallback.failure_status_code == 429
+    assert fallback.display_error == "provider unavailable"
+
+    empty = WorkflowRecoveryRecord(run_id="empty")
+    assert empty.activity_timestamp == 0.0
+    assert empty.pause_reason == "none"
+    assert empty.display_error == "workflow checkpoint is not recoverable"
+
+
+def test_recovery_inspection_keeps_corrupt_and_diagnostic_records_visible(tmp_path: Path) -> None:
+    conversation = _conversation(tmp_path)
+    try:
+        real_store, handle = _running_checkpoint(tmp_path, conversation)
+        terminal = handle.mark_terminal("complete")
+        terminal = handle.save_checkpoint(reason="complete")
+        context_not_ready = replace(terminal, status="running", context_ready=False)
+
+        class _Store:
+            session_id = "session-recovery"
+
+            def list_run_ids(self) -> list[str]:
+                return ["corrupt", "diagnostic", "bad-diagnostic", "terminal", "not-ready"]
+
+            def load(self, run_id: str) -> object:
+                if run_id == "corrupt":
+                    raise ValueError("invalid checkpoint")
+                if run_id in {"diagnostic", "bad-diagnostic"}:
+                    return None
+                if run_id == "not-ready":
+                    return context_not_ready
+                return terminal
+
+            def load_recovery_error(self, run_id: str) -> dict[str, object] | None:
+                if run_id == "bad-diagnostic":
+                    raise ValueError("invalid diagnostic")
+                if run_id in {"diagnostic", "terminal"}:
+                    return {"workflow_name": "code_plan", "failure_message": "provider failed"}
+                return None
+
+        records = WorkflowRecoveryCoordinator(
+            "session-recovery", checkpoint_store=_Store()
+        ).inspect()
+        by_id = {record.run_id: record for record in records}
+        assert by_id["corrupt"].error_code == "checkpoint_corrupt"
+        assert by_id["diagnostic"].error_code == "recovery_diagnostic_only"
+        assert by_id["bad-diagnostic"].error_code == "recovery_diagnostic_corrupt"
+        assert by_id["terminal"].error_code == "recovery_diagnostic_only"
+        assert by_id["not-ready"].error_code == "context_not_ready"
+        assert real_store.session_id == "session-recovery"
+    finally:
+        conversation.close()
+
+
+def test_recovery_selection_and_rehydrate_guards_are_fail_closed(tmp_path: Path) -> None:
+    conversation = _conversation(tmp_path)
+    other = SessionConversation.open(
+        "other-session", max_tokens=10_000, journal_path=tmp_path / "other.jsonl"
+    )
+    try:
+        store, handle = _running_checkpoint(tmp_path, conversation)
+        coordinator = WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store)
+        registry = WorkflowRegistry()
+        registry.register(CodePlan)
+        valid = coordinator.inspect(
+            workflow_registry=registry,
+            conversation=conversation,
+            provider_profile="default",
+        )[0]
+        with pytest.raises(ValueError, match="cannot be replaced"):
+            coordinator.select_for_resume(
+                workflow_name="other-workflow",
+                workflow_registry=registry,
+                conversation=conversation,
+            )
+
+        coordinator.inspect = lambda **_kwargs: []  # type: ignore[method-assign]
+        assert coordinator.select_for_resume() is None
+        assert coordinator.select_latest_for_resume() is None
+        invalid = WorkflowRecoveryRecord(run_id="invalid", error="bad", error_code="bad")
+        coordinator.inspect = lambda **_kwargs: [invalid]  # type: ignore[method-assign]
+        with pytest.raises(ValueError, match="workflow recovery is unavailable"):
+            coordinator.select_for_resume()
+        with pytest.raises(ValueError, match="workflow recovery is unavailable"):
+            coordinator.select_latest_for_resume()
+
+        with pytest.raises(ValueError, match="bad"):
+            coordinator.rehydrate(invalid, workflow=CodePlan, conversation=conversation)
+        with pytest.raises(ValueError, match="workflow checkpoint belongs"):
+            WorkflowRecoveryCoordinator("session-recovery", checkpoint_store=store).rehydrate(
+                valid, workflow=CodePlan, conversation=other, owner_id="guard-owner"
+            )
+        mismatched = replace(
+            valid,
+            checkpoint=replace(valid.checkpoint, conversation_id="other-session"),
+        )
+        with pytest.raises(ValueError, match="workflow checkpoint belongs"):
+            coordinator.discard(mismatched, reason="reset", owner_id="discard-owner")
+        assert handle.claim_owner_id is None
+    finally:
+        conversation.close()
+        other.close()
 
 
 def _conversation(tmp_path: Path) -> SessionConversation:

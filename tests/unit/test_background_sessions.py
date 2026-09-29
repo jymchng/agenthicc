@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -67,11 +68,52 @@ def test_session_round_trip_normalizes_and_redacts_none_values(tmp_path: Path) -
         labels=["important", "project"],
         pinned=True,
         worker_pid=42,
+        detached_goal=True,
+        worker_started_at=101.0,
+        worker_finished_at=102.0,
+        worker_exit_code=0,
+        worker_exit_reason="workflow_complete",
+        worker_finalization_attempts=1,
     )
     restored = BackgroundSession.from_mapping(session.to_dict())
     assert restored == session
     assert restored.status is SessionStatus.RUNNING
     assert restored.labels == ("important", "project")
+    assert restored.detached_goal is True
+    assert restored.worker_pid == 42
+    assert restored.worker_exit_reason == "workflow_complete"
+
+
+def test_worker_exit_event_is_bounded_and_replayable(tmp_path: Path) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    store.create(_session(tmp_path))
+    store.claim("session-1", pid=42, lease_token="lease")
+    store.transition(
+        "session-1",
+        SessionStatus.COMPLETED,
+        expected_status=SessionStatus.RUNNING,
+        expected_lease_token="lease",
+        worker_finished_at=102.0,
+        worker_exit_code=0,
+        worker_exit_reason="workflow_complete",
+        worker_finalization_attempts=1,
+        lease_token="",
+    )
+    store.record_worker_exit(
+        "session-1",
+        worker_pid=42,
+        exit_reason="x" * 500,
+        exit_code=0,
+        cleanup_error="y" * 3_000,
+    )
+    restored = store.get("session-1")
+    assert restored.worker_pid == 42
+    events = store._read_events()
+    exit_event = next(item for item in events if item.get("event_type") == "worker_exited")
+    payload = exit_event["payload"]
+    assert isinstance(payload, dict)
+    assert len(str(payload["exit_reason"])) == 128
+    assert len(str(payload["cleanup_error"])) == 2_000
 
 
 def test_store_replays_updates_and_ignores_corrupt_lines(tmp_path: Path) -> None:
@@ -228,12 +270,21 @@ def test_supervisor_submit_writes_private_request_and_enforces_limit(
     monkeypatch.setattr(
         "agenthicc.background.supervisor.subprocess.Popen", lambda *a, **kw: fake_process
     )
-    first = supervisor.submit(intent="first", cwd=str(tmp_path))
+    first = supervisor.submit(
+        intent="first",
+        cwd=str(tmp_path),
+        run_id="run-first",
+        detached_goal=True,
+    )
     assert first.status is SessionStatus.QUEUED
+    assert first.worker_pid == 1234
+    assert first.detached_goal is True
     request = json.loads(
         (tmp_path / "background" / "requests" / f"{first.session_id}.json").read_text()
     )
     assert request["intent"] == "first"
+    assert request["run_id"] == "run-first"
+    assert request["detached_goal"] is True
     assert "first" not in " ".join(supervisor._worker_command(Path("request.json")))
     with pytest.raises(RuntimeError, match="limit"):
         supervisor.submit(intent="second", cwd=str(tmp_path))
@@ -272,6 +323,49 @@ def test_supervisor_cancel_archive_delete_and_restore(tmp_path: Path, monkeypatc
     assert archived.status is SessionStatus.ARCHIVED
     resumed = supervisor.resume(session.session_id)
     assert resumed.status is SessionStatus.STARTING
+
+
+def test_detached_cancel_preserves_worker_identity_and_exit_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+    session = _session(tmp_path).evolve(detached_goal=True, run_id="run-detached")
+    store.create(session)
+    store.transition(session.session_id, SessionStatus.STARTING)
+    store.transition(
+        session.session_id,
+        SessionStatus.RUNNING,
+        worker_pid=4321,
+        lease_token="worker-lease",
+    )
+    monkeypatch.setattr(supervisor, "_terminate", lambda _pid: None)
+    monkeypatch.setattr(supervisor, "_alive", lambda _pid: False)
+
+    cancelled = supervisor.cancel(session.session_id)
+
+    assert cancelled.status is SessionStatus.CANCELLED
+    assert cancelled.worker_pid == 4321
+    assert cancelled.worker_exit_code == 130
+    assert cancelled.worker_exit_reason == "cancelled"
+    assert cancelled.exit_reason == "cancelled"
+    assert cancelled.worker_finished_at is not None
+    assert sum(event.get("event_type") == "worker_exited" for event in store._read_events()) == 1
+
+
+def test_stale_recovery_does_not_trust_a_reused_pid(tmp_path: Path) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    store.create(_session(tmp_path))
+    # The current test process is alive, but it is not the worker represented
+    # by the persisted session.  A liveness-only check would incorrectly keep
+    # this session running after a PID reuse.
+    store.claim("session-1", pid=os.getpid(), lease_token="worker")
+    supervisor = BackgroundSupervisor(store)
+
+    changed = supervisor.recover_stale(stale_after_s=10_000)
+
+    assert [item.session_id for item in changed] == ["session-1"]
+    assert store.get("session-1").status is SessionStatus.ORPHANED
 
 
 def test_supervisor_foreground_attach_stops_worker_and_releases_lease(

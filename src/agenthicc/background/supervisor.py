@@ -11,8 +11,21 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 from .model import ACTIVE_STATUSES, BackgroundSession, SessionStatus
 from .store import BackgroundStore, InvalidSessionTransition, default_artifact_dir
+
+
+class _CancellationMetadata(TypedDict, total=False):
+    """Typed terminal fields accepted by ``BackgroundStore.transition``."""
+
+    worker_pid: int | None
+    worker_finished_at: float
+    worker_exit_code: int
+    worker_exit_reason: str
+    exit_reason: str
+    worker_finalization_attempts: int
+    lease_token: str
 
 
 @dataclass(frozen=True)
@@ -30,6 +43,51 @@ class BackgroundRequest:
     max_activity_bytes: int = 64_000
     source: str = "cli"
     set_secret_overrides: tuple[str, ...] = ()
+    run_id: str = ""
+    detached_goal: bool = False
+
+    @classmethod
+    def from_mapping(cls, value: object) -> "BackgroundRequest":
+        """Decode a persisted request without trusting arbitrary JSON types."""
+
+        if not isinstance(value, dict):
+            raise ValueError("background request must be an object")
+        required = (value.get("session_id"), value.get("intent"), value.get("cwd"))
+        if not all(isinstance(item, str) and item for item in required):
+            raise ValueError("background request requires session_id, intent, and cwd")
+        raw_overrides = value.get("set_overrides", ())
+        raw_secrets = value.get("set_secret_overrides", ())
+        return cls(
+            session_id=str(value["session_id"]),
+            workflow_name=str(value.get("workflow_name", "")),
+            intent=str(value["intent"]),
+            cwd=str(value["cwd"]),
+            config_path=(
+                value.get("config_path") if isinstance(value.get("config_path"), str) else None
+            ),
+            set_overrides=tuple(item for item in raw_overrides if isinstance(item, str))
+            if isinstance(raw_overrides, (list, tuple))
+            else (),
+            dangerously_skip_permissions=bool(value.get("dangerously_skip_permissions", False)),
+            wall_timeout_s=(
+                float(value.get("wall_timeout_s", 0.0))
+                if isinstance(value.get("wall_timeout_s", 0.0), (int, float))
+                and not isinstance(value.get("wall_timeout_s", 0.0), bool)
+                else 0.0
+            ),
+            max_activity_bytes=(
+                int(value.get("max_activity_bytes", 64_000))
+                if isinstance(value.get("max_activity_bytes", 64_000), int)
+                and not isinstance(value.get("max_activity_bytes", 64_000), bool)
+                else 64_000
+            ),
+            source=str(value.get("source", "cli")),
+            set_secret_overrides=tuple(item for item in raw_secrets if isinstance(item, str))
+            if isinstance(raw_secrets, (list, tuple))
+            else (),
+            run_id=str(value.get("run_id", "")),
+            detached_goal=bool(value.get("detached_goal", False)),
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -44,6 +102,8 @@ class BackgroundRequest:
             "wall_timeout_s": self.wall_timeout_s,
             "max_activity_bytes": self.max_activity_bytes,
             "source": self.source,
+            "run_id": self.run_id,
+            "detached_goal": self.detached_goal,
         }
 
 
@@ -84,7 +144,7 @@ class BackgroundSupervisor:
         )
 
     def _request_path(self, session_id: str) -> Path:
-        path = self.store.root / "requests" / f"{session_id}.json"
+        path = (self.store.root / "requests" / f"{session_id}.json").expanduser().resolve()
         if path.name != f"{session_id}.json":
             raise ValueError("invalid background session id")
         return path
@@ -106,7 +166,7 @@ class BackgroundSupervisor:
             "--request-file",
             str(request_path),
             "--store-root",
-            str(self.store.root),
+            str(self.store.root.expanduser().resolve()),
         ]
 
     def _launch(self, request: BackgroundRequest, session: BackgroundSession) -> BackgroundSession:
@@ -135,6 +195,10 @@ class BackgroundSupervisor:
                 SessionStatus.FAILED,
                 error=f"Worker launch failed: {type(exc).__name__}: {exc}",
                 latest_activity="Worker launch failed",
+                worker_exit_reason="launch_failed",
+                exit_reason="Worker launch failed",
+                worker_exit_code=1,
+                worker_finished_at=time.time(),
             )
         finally:
             if "log_handle" in locals():
@@ -146,6 +210,7 @@ class BackgroundSupervisor:
             return self.store.update(
                 session.session_id,
                 worker_pid=process.pid,
+                worker_started_at=time.time(),
                 latest_activity="Worker queued",
             )
         return current
@@ -168,6 +233,8 @@ class BackgroundSupervisor:
         worktree_id: str = "",
         branch: str = "",
         base_commit: str = "",
+        run_id: str = "",
+        detached_goal: bool = False,
     ) -> BackgroundSession:
         """Create and launch a new background session."""
 
@@ -194,6 +261,8 @@ class BackgroundSupervisor:
             wall_timeout_s=self.wall_timeout_s,
             max_activity_bytes=self.max_activity_bytes,
             source="cli",
+            run_id=run_id,
+            detached_goal=detached_goal,
         )
         session = BackgroundSession.create(
             sid,
@@ -203,11 +272,13 @@ class BackgroundSupervisor:
             intent=cleaned_intent,
             artifact_dir=str(self.artifact_root / sid),
             parent_session_id=parent_session_id,
+            run_id=run_id,
             role=role,
             task_id=task_id,
             worktree_id=worktree_id,
             branch=branch,
             base_commit=base_commit,
+            detached_goal=detached_goal,
         )
         self.store.create(session)
         return self._launch(request, session)
@@ -224,6 +295,8 @@ class BackgroundSupervisor:
         set_overrides: tuple[str, ...] = (),
         dangerously_skip_permissions: bool = False,
         set_secret_overrides: tuple[str, ...] = (),
+        run_id: str = "",
+        start: bool = True,
     ) -> BackgroundSession:
         """Detach an existing foreground session into one tracked worker."""
 
@@ -241,6 +314,7 @@ class BackgroundSupervisor:
                 workflow_name=workflow_name,
                 intent=intent,
                 artifact_dir=str(self.artifact_root / session_id),
+                run_id=run_id,
             )
             self.store.create(existing)
         elif existing.status in ACTIVE_STATUSES:
@@ -254,6 +328,7 @@ class BackgroundSupervisor:
             set_overrides=set_overrides,
             dangerously_skip_permissions=dangerously_skip_permissions,
             set_secret_overrides=set_secret_overrides,
+            run_id=run_id,
             wall_timeout_s=self.wall_timeout_s,
             max_activity_bytes=self.max_activity_bytes,
         )
@@ -274,7 +349,29 @@ class BackgroundSupervisor:
                 SessionStatus.STARTING,
                 resume_marker=f"resume:{existing.attempt + 1}",
             )
+        if not start:
+            # Persist the request before a caller releases a foreground owner.
+            # ``start`` then launches this exact request after the owner handoff
+            # has completed, eliminating a foreground/background write race.
+            self._write_request(request)
+            return existing
         return self._launch(request, existing)
+
+    def start(self, session_id: str) -> BackgroundSession:
+        """Launch a request prepared by ``handoff(..., start=False)``."""
+
+        request_path = self._request_path(session_id)
+        try:
+            raw = json.loads(request_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"cannot load prepared background request: {exc}") from exc
+        request = BackgroundRequest.from_mapping(raw)
+        if request.session_id != session_id:
+            raise ValueError("prepared background request session ID does not match")
+        session = self.store.get(session_id, include_deleted=True)
+        if session.status not in ACTIVE_STATUSES:
+            raise InvalidSessionTransition(f"Cannot start prepared {session.status.value} session")
+        return self._launch(request, session)
 
     def resume(self, session_id: str) -> BackgroundSession:
         session = self.store.get(session_id)
@@ -358,14 +455,21 @@ class BackgroundSupervisor:
         )
         current = self.store.get(session_id, include_deleted=True)
         if current.status == SessionStatus.CANCELLING:
-            return self.store.transition(
+            cancelled = self.store.transition(
                 session_id,
                 SessionStatus.CANCELLED,
                 cancellation_reason="foreground handoff requested",
                 latest_activity="Background worker stopped; ready for foreground",
-                worker_pid=None,
-                lease_token="",
+                **self._cancelled_metadata(current),
             )
+            if current.detached_goal:
+                self.store.record_worker_exit(
+                    session_id,
+                    worker_pid=cancelled.worker_pid,
+                    exit_reason="cancelled",
+                    exit_code=130,
+                )
+            return cancelled
         if current.status in ACTIVE_STATUSES:
             raise RuntimeError(
                 f"Background session {session_id} is still active; foreground handoff aborted"
@@ -417,13 +521,20 @@ class BackgroundSupervisor:
         )
         current = self.store.get(session_id, include_deleted=True)
         if current.status == SessionStatus.CANCELLING:
-            return self.store.transition(
+            cancelled = self.store.transition(
                 session_id,
                 SessionStatus.CANCELLED,
                 latest_activity="Cancelled",
-                worker_pid=None,
-                lease_token="",
+                **self._cancelled_metadata(current),
             )
+            if current.detached_goal:
+                self.store.record_worker_exit(
+                    session_id,
+                    worker_pid=cancelled.worker_pid,
+                    exit_reason="cancelled",
+                    exit_code=130,
+                )
+            return cancelled
         return current
 
     def _alive(self, pid: int) -> bool:
@@ -445,6 +556,70 @@ class BackgroundSupervisor:
             except (OSError, UnicodeError):
                 pass
         return True
+
+    def _worker_process_matches(self, session: BackgroundSession) -> bool:
+        """Check that a live PID still belongs to this exact worker.
+
+        ``kill(pid, 0)`` only proves that *some* process owns the number. A
+        reused PID must never be treated as proof that the original worker is
+        alive. Procfs gives us a safe, bounded identity check on POSIX; when
+        the operating system cannot expose a checkable command line, recovery
+        fails closed and marks the session for reconciliation.
+        """
+
+        pid = session.worker_pid
+        if pid is None or not self._alive(pid) or os.name == "nt":
+            return False
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            return False
+        arguments = [part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part]
+        if not any(
+            argument in {"agenthicc.background.worker", "agenthicc/background/worker.py"}
+            or argument.endswith("/agenthicc/background/worker.py")
+            for argument in arguments
+        ):
+            return False
+
+        def _argument_after(flag: str) -> str | None:
+            try:
+                return arguments[arguments.index(flag) + 1]
+            except (ValueError, IndexError):
+                return None
+
+        request_argument = _argument_after("--request-file")
+        store_argument = _argument_after("--store-root")
+        if request_argument is None or store_argument is None:
+            return False
+        request_path = Path(request_argument)
+        store_path = Path(store_argument)
+        if not request_path.is_absolute():
+            request_path = Path(session.cwd) / request_path
+        if not store_path.is_absolute():
+            store_path = Path(session.cwd) / store_path
+        try:
+            return (
+                request_path.resolve() == self._request_path(session.session_id).resolve()
+                and store_path.resolve() == self.store.root.resolve()
+            )
+        except OSError:
+            return False
+
+    @staticmethod
+    def _cancelled_metadata(session: BackgroundSession) -> _CancellationMetadata:
+        """Build cancellation metadata without erasing a detached PID."""
+
+        if not session.detached_goal:
+            return {"worker_pid": None, "lease_token": ""}
+        return {
+            "worker_finished_at": time.time(),
+            "worker_exit_code": 130,
+            "worker_exit_reason": "cancelled",
+            "exit_reason": "cancelled",
+            "worker_finalization_attempts": max(1, session.worker_finalization_attempts),
+            "lease_token": "",
+        }
 
     def _terminate(self, pid: int) -> None:
         try:
@@ -489,7 +664,9 @@ class BackgroundSupervisor:
         for session in self.store.list(include_archived=False):
             if session.status not in ACTIVE_STATUSES:
                 continue
-            worker_missing = session.worker_pid is not None and not self._alive(session.worker_pid)
+            worker_missing = session.worker_pid is not None and not self._worker_process_matches(
+                session
+            )
             lease_expired = session.last_active and now - session.last_active > stale_after_s
             if worker_missing or lease_expired:
                 changed.append(self.store.mark_orphaned(session.session_id))
