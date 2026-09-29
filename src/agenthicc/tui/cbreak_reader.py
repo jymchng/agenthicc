@@ -41,6 +41,7 @@ class Key(str, Enum):
     CTRL_C = "CTRL_C"
     CTRL_D = "CTRL_D"
     CTRL_U = "CTRL_U"
+    CTRL_X = "CTRL_X"
     SHIFT_TAB = "SHIFT_TAB"
     PAGE_UP = "PAGE_UP"
     PAGE_DOWN = "PAGE_DOWN"
@@ -172,6 +173,8 @@ def read_key(fd: int) -> tuple[Key, str]:
         return (Key.CTRL_U, "")
     if b == b"\x16":
         return (Key.CTRL_V, "")
+    if b == b"\x18":
+        return (Key.CTRL_X, "")
     if b == b"@":
         return (Key.AT, "")
 

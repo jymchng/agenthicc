@@ -74,6 +74,7 @@ against the current source before implementing them.
 - [PRD-203 — Parallel coding with isolated Git worktrees](prd-203-parallel-coding-git-worktree-isolation.md)
 - [PRD-204 — Goal runner and detached orchestration](prd-204-goal-runner-and-detached-orchestration.md)
 - [PRD-205 — Self-terminating detached goal runs and PID reporting](prd-205-goal-detached-process-lifecycle.md)
+- [PRD-206 — Paginated, low-latency `agents` session manager](prd-206-paginated-agents-session-manager.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

@@ -236,6 +236,24 @@ their existing owners. The manager TUI reads the index and renders safe
 metadata; it does not mutate frozen kernel state directly. `/bg`, `/background`,
 `agenthicc jobs`, and `agenthicc agents` all enter this same boundary.
 
+### Background-session projection boundary
+
+`agenthicc agents` is a projection over the existing `BackgroundStore` and
+session journals, not a second registry. `BackgroundStore` keeps a rebuildable
+process-local cache keyed by the append-only `events.jsonl` fingerprint; local
+writes invalidate it and external writes are detected by inode/size/mtime.
+The interactive manager consumes a filtered snapshot, computes a terminal
+`ViewportBudget`, and stores the selected session by durable ID.
+
+Selected activity is a separate bounded projection: it reads only the tail of
+`conversation.jsonl`, allows text events, redacts them, and caches the result
+by file fingerprint. Rendering is side-effect-free; stale-process recovery
+runs through the manager's rate-limited maintenance cadence instead of from
+`render()`. An unchanged repaint therefore performs no complete event-log
+fold, journal read, or recovery scan. Enter and `agenthicc attach SESSION_ID`
+share the same supervisor handoff and normal TUI construction path, preserving
+the session owner lease and avoiding duplicate runtimes.
+
 ### Detached goal finalization
 
 `agenthicc --goal GOAL --detach` adds a product-level `GoalRun` around the same

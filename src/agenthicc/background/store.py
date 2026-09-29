@@ -48,6 +48,30 @@ class BackgroundStore:
         self.events_path = self.root / "events.jsonl"
         self.lock_path = self.root / "registry.lock"
         self.trash_root = self.root / "trash"
+        # The event stream remains authoritative.  These process-local
+        # fields are only a rebuildable projection cache: a file fingerprint
+        # invalidates it after another process appends an event, and every
+        # local append invalidates it explicitly.  Keeping this cache here
+        # means all existing store consumers benefit without introducing a
+        # second session registry.
+        self._projection_fingerprint: tuple[int, int, int] | None = None
+        self._projection: dict[str, BackgroundSession] | None = None
+        self._next_sequence = 0
+
+    def _events_fingerprint(self) -> tuple[int, int, int]:
+        """Return a cheap external-change fingerprint for ``events.jsonl``."""
+
+        try:
+            stat = self.events_path.stat()
+        except OSError:
+            return (0, 0, 0)
+        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+    def invalidate_projection(self) -> None:
+        """Invalidate the in-process projection after an external mutation."""
+
+        self._projection = None
+        self._projection_fingerprint = None
 
     @contextmanager
     def _lock(self) -> Iterator[None]:
@@ -88,13 +112,11 @@ class BackgroundStore:
         return events
 
     def _append(self, event_type: str, payload: Mapping[str, object]) -> None:
-        events = self._read_events()
-        sequence_numbers: list[int] = []
-        for event in events:
-            sequence = event.get("seq")
-            if isinstance(sequence, int) and not isinstance(sequence, bool):
-                sequence_numbers.append(sequence)
-        seq = max(sequence_numbers, default=0) + 1
+        # Synchronise the cache before allocating a sequence number.  The
+        # registry lock serialises writers in this process and across local
+        # processes; the append itself remains O_APPEND + fsync'd.
+        self._fold()
+        seq = self._next_sequence + 1
         record = {
             "seq": seq,
             "event_type": event_type,
@@ -108,10 +130,21 @@ class BackgroundStore:
             os.fsync(fd)
         finally:
             os.close(fd)
+        self._next_sequence = seq
+        self.invalidate_projection()
 
     def _fold(self) -> dict[str, BackgroundSession]:
+        fingerprint = self._events_fingerprint()
+        if self._projection is not None and self._projection_fingerprint == fingerprint:
+            return dict(self._projection)
+
         records: dict[str, BackgroundSession] = {}
-        for event in self._read_events():
+        events = self._read_events()
+        max_sequence = 0
+        for event in events:
+            sequence = event.get("seq")
+            if isinstance(sequence, int) and not isinstance(sequence, bool):
+                max_sequence = max(max_sequence, sequence)
             payload = _json_object(event.get("payload"))
             session_id = payload.get("session_id")
             if not isinstance(session_id, str) or not session_id:
@@ -146,7 +179,10 @@ class BackgroundStore:
                     artifact_dir="",
                     last_active=timestamp,
                 )
-        return records
+        self._projection = records
+        self._projection_fingerprint = self._events_fingerprint()
+        self._next_sequence = max_sequence
+        return dict(records)
 
     def get(self, session_id: str, *, include_deleted: bool = False) -> BackgroundSession:
         record = self._fold().get(session_id)

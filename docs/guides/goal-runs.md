@@ -85,7 +85,7 @@ uv run agenthicc agents --run RUN_ID
 uv run agenthicc agents --run RUN_ID --json
 uv run agenthicc runs cancel RUN_ID
 uv run agenthicc runs resume RUN_ID
-uv run agenthicc attach RUN_ID
+uv run agenthicc attach --run RUN_ID
 ```
 
 `runs` is the goal-level projection. `jobs` remains the lower-level
@@ -110,7 +110,7 @@ journal/checkpoint boundary and releases the foreground owner before the
 background worker becomes the sole owner. It does not create a second
 conversation or session.
 
-`agenthicc attach RUN_ID` performs the reverse operation: it stops the
+`agenthicc attach --run RUN_ID` performs the reverse operation: it stops the
 background worker, claims the existing session lease, and opens the normal TUI
 with the same transcript and workflow checkpoint. A live owner conflict is
 reported rather than starting a second writer.

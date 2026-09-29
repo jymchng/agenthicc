@@ -27,6 +27,7 @@ pytestmark = pytest.mark.unit
         (b"\x7f", Key.BACKSPACE),
         (b"\x15", Key.CTRL_U),
         (b"\x16", Key.CTRL_V),
+        (b"\x18", Key.CTRL_X),
         (b"@", Key.AT),
     ],
 )

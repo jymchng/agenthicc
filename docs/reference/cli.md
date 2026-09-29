@@ -80,9 +80,10 @@ help string the command registers.
 
 | Command | Purpose |
 |---|---|
-| `agents` | Open the background sessions manager |
+| `agents [--json]` | Open the paginated background sessions manager, or list all sessions as JSON |
 | `runs` | Inspect and control durable goal runs |
-| `attach RUN_ID` | Attach the normal TUI to an existing goal run |
+| `attach SESSION_ID [--json]` | Attach the normal TUI to one exact background session |
+| `attach --run RUN_ID [--json]` | Explicit compatibility form for attaching a goal run |
 | `init [--write] [--force]` | Create `AGENTS.md` and a commented `.agenthicc` configuration template |
 | `run [--background] [--workflow NAME] [--intent TEXT] [--title TEXT]` | Start an agent turn or workflow |
 | `login` | Authenticate with agenthicc.ai |

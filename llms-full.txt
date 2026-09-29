@@ -2817,6 +2817,22 @@ class BackgroundStore
 ```
 
 Durable registry whose authoritative history is ``events.jsonl``.
+The process-local projection is invalidated by local writes and by external
+inode/size/mtime changes; it does not replace the append-only source of truth.
+
+### BackgroundManager and ViewportBudget
+
+The interactive ``agents``/``jobs`` manager uses a viewport budget to paginate
+session rows while retaining the selected session ID, details, and controls.
+The selected row is marked with ``▶``. Its default activity projection reads a
+bounded journal tail, allows only meaningful text events, redacts them, and
+caches the result by file fingerprint. Rendering does not run stale-worker
+recovery or fold the durable event log; maintenance is rate-limited separately.
+
+``agenthicc attach SESSION_ID`` and Enter from the manager share the canonical
+owner-safe foreground handoff. The positional attach argument is never a
+goal-run or workspace-relative lookup. ``agents --json`` and ``jobs list
+--json`` remain complete machine-readable projections.
 
 ### BackgroundSupervisor
 

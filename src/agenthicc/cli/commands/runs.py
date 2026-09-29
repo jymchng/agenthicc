@@ -5,7 +5,7 @@ from __future__ import annotations
 import json as json_module
 
 from agenthicc.cli.context import CLIContext
-from agenthicc.cli.registry import command, group
+from agenthicc.cli.registry import command, group, optional_positionals
 from agenthicc.runs.cli import _manager
 
 
@@ -84,11 +84,64 @@ def runs_resume(ctx: CLIContext, run_id: str) -> None:
     print(f"resume: {resumed.main_session_id} → {resumed.status.value}")
 
 
-@command("attach", help="Attach the TUI to a goal run")
-async def attach(ctx: CLIContext, run_id: str) -> None:
+@command("attach", help="Attach the TUI to one exact background session")
+@optional_positionals("session_id")
+async def attach(ctx: CLIContext, session_id: str = "", run: str = "", json: bool = False) -> None:
+    """Attach an exact session; goal runs require the explicit ``--run`` form."""
+
+    if run:
+        await _attach_goal_run(ctx, run, json_output=json)
+        return
+    if not session_id:
+        message = "attach requires an exact SESSION_ID (or explicit --run RUN_ID)"
+        if json:
+            print(json_module.dumps({"status": "error", "error": message}))
+        else:
+            print(message)
+        raise SystemExit(2)
+    if session_id.startswith("run_"):
+        message = (
+            f"{session_id} is a goal-run ID, not a session ID; use "
+            f"agenthicc agents --run {session_id} or agenthicc attach SESSION_ID --run {session_id}"
+        )
+        if json:
+            print(json_module.dumps({"status": "error", "error": message}))
+        else:
+            print(message)
+        raise SystemExit(2)
+    from agenthicc.cli.commands.background import attach_background_session  # noqa: PLC0415
+
+    await attach_background_session(ctx, session_id, json_output=json)
+
+
+async def _attach_goal_run(ctx: CLIContext, run_id: str, *, json_output: bool = False) -> None:
+    """Retain goal-run attachment behind an explicit, unambiguous option."""
+
     manager = _manager(ctx)
     try:
         foreground = manager.attach(run_id)
+    except (KeyError, RuntimeError, ValueError) as exc:
+        message = f"Unable to attach goal run {run_id}: {exc}"
+        if json_output:
+            print(json_module.dumps({"run_id": run_id, "status": "error", "error": str(exc)}))
+        else:
+            print(message)
+        raise SystemExit(1) from exc
+
+    if json_output:
+        print(
+            json_module.dumps(
+                {
+                    "run_id": run_id,
+                    "session_id": foreground.session_id,
+                    "status": "handoff_ready",
+                },
+                sort_keys=True,
+            )
+        )
+        return
+
+    try:
         from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
 
         await _run_tui_session(
@@ -102,5 +155,5 @@ async def attach(ctx: CLIContext, run_id: str) -> None:
             config=ctx.config,
         )
     except (KeyError, RuntimeError, ValueError) as exc:
-        print(f"Unable to attach {run_id}: {exc}")
+        print(f"Unable to attach goal run {run_id}: {exc}")
         raise SystemExit(1) from exc

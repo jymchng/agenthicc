@@ -84,34 +84,87 @@ async def _open_manager(ctx: CLIContext) -> None:
         Console(highlight=False), store=store, supervisor=supervisor
     )
     if result.action == "attach" and result.session_id:
-        from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+        await attach_background_session(
+            ctx,
+            result.session_id,
+            store=store,
+            supervisor=supervisor,
+            fail_on_error=False,
+        )
 
-        # Release the worker before constructing the normal TUI.  Both runtimes
-        # use the same session journal, so starting the TUI first would create
-        # concurrent writers and duplicate tool execution.
-        try:
-            foreground = supervisor.attach_foreground(result.session_id)
-        except (KeyError, OSError, RuntimeError, ValueError) as exc:
-            Console(highlight=False).print(
-                f"Unable to foreground session {result.session_id}: {exc}"
+
+async def attach_background_session(
+    ctx: CLIContext,
+    session_id: str,
+    *,
+    json_output: bool = False,
+    fail_on_error: bool = True,
+    store: BackgroundStore | None = None,
+    supervisor: BackgroundSupervisor | None = None,
+) -> bool:
+    """Attach one exact background session through the canonical TUI path.
+
+    Both the manager's Enter action and the public ``attach`` command call
+    this function.  Keeping the handoff here prevents a second session lookup
+    or an accidental goal-run/last-session fallback.
+    """
+
+    from rich.console import Console  # noqa: PLC0415
+
+    if store is None or supervisor is None:
+        store, supervisor = _store_and_supervisor(ctx)
+    try:
+        record = store.get(session_id, include_deleted=True)
+        if record.status.value == "deleted":
+            raise ValueError("deleted background sessions cannot be attached")
+        foreground = supervisor.attach_foreground(session_id)
+    except (KeyError, OSError, RuntimeError, ValueError) as exc:
+        message = f"Unable to attach background session {session_id}: {exc}"
+        if json_output:
+            print(
+                json_module.dumps({"session_id": session_id, "status": "error", "error": str(exc)})
             )
-            return
-        try:
-            await _run_tui_session(
-                resume_id=result.session_id,
-                cli_overrides=list(ctx.set_overrides),
-                cli_secret_overrides=list(ctx.set_secret_overrides),
-                record_cassette=ctx.record_cassette,
-                cli_flags=ctx.flags,
-                config_path=ctx.config_path,
-                cwd=foreground.cwd,
-                config=ctx.config,
+        else:
+            Console(highlight=False).print(message)
+        if fail_on_error:
+            raise SystemExit(1) from exc
+        return False
+
+    if json_output:
+        print(
+            json_module.dumps(
+                {
+                    "session_id": session_id,
+                    "status": "handoff_ready",
+                    "background_status": foreground.status.value,
+                    "cwd": foreground.cwd,
+                },
+                sort_keys=True,
             )
-        except Exception as exc:  # noqa: BLE001
-            Console(highlight=False).print(
-                f"Unable to open foreground session {result.session_id}: "
-                f"{type(exc).__name__}: {exc}"
-            )
+        )
+        return True
+
+    from agenthicc.runners.tui_session import _run_tui_session  # noqa: PLC0415
+
+    try:
+        await _run_tui_session(
+            resume_id=session_id,
+            cli_overrides=list(ctx.set_overrides),
+            cli_secret_overrides=list(ctx.set_secret_overrides),
+            record_cassette=ctx.record_cassette,
+            cli_flags=ctx.flags,
+            config_path=ctx.config_path,
+            cwd=foreground.cwd,
+            config=ctx.config,
+        )
+    except Exception as exc:  # noqa: BLE001
+        Console(highlight=False).print(
+            f"Unable to open foreground session {session_id}: {type(exc).__name__}: {exc}"
+        )
+        if fail_on_error:
+            raise SystemExit(1) from exc
+        return False
+    return True
 
 
 async def _open_goal_manager(ctx: CLIContext, run_id: str) -> None:
@@ -173,6 +226,12 @@ async def agents(
             print(json_module.dumps(payload.get("agents", []), indent=2, sort_keys=True))
             return
         await _open_goal_manager(ctx, run)
+        return
+
+    if json:
+        store, _supervisor = _store_and_supervisor(ctx)
+        session_payload = [_public_session(item) for item in store.list()]
+        print(json_module.dumps(session_payload, indent=2, sort_keys=True))
         return
 
     await _open_manager(ctx)

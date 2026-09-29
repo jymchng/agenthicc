@@ -107,8 +107,16 @@ supervisor:
 uv run agenthicc --goal "Implement OAuth and its tests"
 uv run agenthicc --goal "Implement OAuth and its tests" --detach
 uv run agenthicc runs show RUN_ID
-uv run agenthicc attach RUN_ID
+uv run agenthicc attach SESSION_ID
 ```
+
+`agenthicc agents` opens the paginated background-session manager. It keeps
+the controls visible, marks the selected row with `▶`, and shows only the
+newest meaningful text activity. Press Enter to attach that exact session.
+Use `agenthicc agents --run RUN_ID` for goal-run discovery; positional
+`agenthicc attach` arguments are session IDs and never select a workspace's
+most recent session. `agenthicc attach --run RUN_ID` is the explicit goal-run
+compatibility form.
 
 `--goal DESCRIPTION` is exactly the CLI shorthand for selecting the
 `goal_flow` workflow and submitting `DESCRIPTION` as its initial input—the
@@ -370,7 +378,7 @@ diagnostics, never credentials, headers, prompts, or raw request bodies.
 
 ## Background sessions
 
-Long-running work can be detached from an active session with `/bg` or `/background`. Run `agenthicc agents` (or `agenthicc jobs`) to open the background-session manager, where you can inspect, follow, resume, retry, cancel, and safely delete sessions. `Ctrl+X` deletes the selected session only after confirmation; `u` restores it from recoverable trash. See the [background sessions guide](./docs/guides/background-sessions.md) for workflow support, approvals, input requests, retention, and privacy details.
+Long-running work can be detached from an active session with `/bg` or `/background`. Run `agenthicc agents` (or `agenthicc jobs`) to open the background-session manager, where you can inspect, follow, resume, retry, cancel, and safely delete sessions. `Ctrl+X` deletes the selected session only after confirmation; deletion remains responsive while worker cleanup completes; `u` restores it from recoverable trash. See the [background sessions guide](./docs/guides/background-sessions.md) for workflow support, approvals, input requests, retention, and privacy details.
 
 Execution tools remain foreground by default. Pass `background=true` to `run_bash` or `run_command` to receive an owned `term-...` handle, then call `wait_terminal` when the result is needed. While a wait is active, `/ps`, `/stop`, and `Esc` remain responsive; `/stop` stops all owned background terminals, while `Esc` stops the terminal currently being awaited. Terminal handles and bounded output are local-only and scoped to the originating session.
 

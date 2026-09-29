@@ -27,11 +27,18 @@ create a second workflow run. Inspect the product-level run with:
 ```bash
 agenthicc runs
 agenthicc agents --run RUN_ID
-agenthicc attach RUN_ID
+agenthicc attach SESSION_ID
 ```
 
 The lower-level `jobs`/`agents` manager remains available for ordinary
 background sessions that do not belong to a goal run.
+
+`agenthicc attach SESSION_ID` is deliberately session-only. `SESSION_ID` is an
+exact durable background-session ID, not a workspace-relative lookup and not a
+goal-run ID. A workspace may contain many sessions, so attach never guesses the
+latest record or resubmits its intent. Use `agenthicc agents --run RUN_ID` for
+goal-run discovery, or the explicit `agenthicc attach --run RUN_ID` form when
+attaching by goal-run identity is required.
 
 For `agenthicc --goal GOAL --detach`, the accepted session is owned by a
 detached child worker. Startup reports that worker's PID and the background
@@ -49,9 +56,21 @@ orphaned and surfaced for reconciliation.
 ## Open and inspect the manager
 
 `agenthicc agents` and `agenthicc jobs` open the same manager TUI. The manager
-shows state, workflow, project, phase, recent activity, failure information,
-and approval waits. It can also be rendered safely without a TTY, which is
-useful for scripts and diagnostics.
+is viewport-aware and paginates the session table, keeping the selected
+summary and controls visible even on a short terminal. The header reports the
+current page and visible range; selection is stored by session ID, so refreshes
+cannot retarget an action to a different row. The selected row is marked with
+`▶` and the details panel is labelled `Details · selected`.
+The table's `WS` value and the selected-session details' `Dir:` value contain
+only the workspace directory name, not its full path.
+
+The manager shows state, workflow, workspace, phase, failure information, and
+approval waits. Its default activity field contains only the newest meaningful
+redacted text event; repeated tool/lifecycle events are omitted. It uses a
+cached durable session projection and a cached bounded journal tail, so idle
+repaints do not fold the complete registry or reread the transcript. Stale
+worker recovery runs on a separate maintenance cadence. It can also be
+rendered safely without a TTY, which is useful for scripts and diagnostics.
 
 Useful keys:
 
@@ -60,9 +79,8 @@ Useful keys:
 | `↑`/`k`, `↓`/`j` | Move selection; moving across a boundary changes page |
 | `Home`/`End` | Select the first/last session |
 | `PageUp`/`PageDown` | Move one session page |
-| `Enter` | Resume the selected session in the normal foreground TUI, loading its transcript |
+| `Enter` | Attach the exact selected session in the normal foreground TUI, loading its transcript |
 | `r` | Refresh |
-| `[` and `]` | Scroll the selected transcript |
 | `c` | Cancel the selected worker |
 | `a` | Archive a terminal session |
 | `p` | Pin or unpin a session |
@@ -85,11 +103,15 @@ Delete is deliberately two-stage. Active work is cancelled first, then only
 the exact session directory and its sibling kernel journal are moved to
 `~/.agenthicc/background/trash/`. The tombstone remains in the append-only
 registry, so a stale worker cannot resurrect it. `u` restores the artifacts
-when they are still in recoverable trash.
+when they are still in recoverable trash. In the interactive manager, the
+confirmed deletion runs off the TUI event loop; the table remains responsive
+while active-worker cancellation and terminal cleanup finish, then refreshes
+automatically.
 
 ## Scriptable control
 
 ```bash
+uv run agenthicc agents --json
 uv run agenthicc jobs list --json
 uv run agenthicc jobs status SESSION_ID --json
 uv run agenthicc jobs cancel SESSION_ID
@@ -100,6 +122,9 @@ uv run agenthicc jobs archive SESSION_ID
 uv run agenthicc jobs delete SESSION_ID
 uv run agenthicc jobs restore SESSION_ID
 ```
+
+The JSON manager listing is complete and unpaginated. Pagination applies only
+to the interactive viewport; it never hides or removes a durable session.
 
 JSON status removes the original intent and lease token and applies the same
 secret-pattern redaction used by session inspection. A missing or invalid

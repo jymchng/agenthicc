@@ -252,6 +252,23 @@ def test_manager_empty_navigation_and_unavailable_activity(tmp_path: Path) -> No
     assert "error summary" in console.export_text()
 
 
+def test_manager_ctrl_c_exits_agents_screen_even_in_modal_state(tmp_path: Path) -> None:
+    from rich.console import Console
+
+    from agenthicc.tui.cbreak_reader import Key
+    from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
+
+    store = BackgroundStore(tmp_path / "background")
+    store.create(_record(tmp_path, "ctrl-c"))
+    manager = BackgroundManager(Console(), store=store)
+
+    manager.filter_mode = True
+    assert manager.handle_key(Key.CTRL_C) == ManagerResult("exit")
+
+    manager.pending_delete = True
+    assert manager.handle_key("CHAR", "\x03") == ManagerResult("exit")
+
+
 def test_manager_full_control_surface_and_activity_redaction(tmp_path: Path) -> None:
     from rich.console import Console
 

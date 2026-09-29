@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,43 @@ class ManagerResult:
 
     action: str
     session_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ViewportBudget:
+    """Bounded vertical layout calculated from the current terminal size.
+
+    The manager deliberately budgets the complete ``Group`` rather than
+    budgeting table rows in isolation.  Rich panels and table headers consume
+    vertical space even when the underlying session list is large.
+    """
+
+    width: int
+    height: int
+    table_rows: int
+    detail_height: int
+    compact: bool = False
+
+    @classmethod
+    def from_terminal(
+        cls,
+        width: int,
+        height: int,
+        configured_page_size: int | None = None,
+    ) -> "ViewportBudget":
+        width = max(1, int(width))
+        height = max(1, int(height))
+        # For genuinely tiny terminals a four-line compact projection is the
+        # only honest way to retain both the selected identity and controls.
+        if height <= 6:
+            return cls(width, height, 1, 1, compact=True)
+
+        detail_height = 3 if height <= 10 else (4 if height <= 14 else 6)
+        # Header=1, table header/bottom=2, details panel, footer=1.
+        available = max(1, height - 1 - 2 - detail_height - 1)
+        if configured_page_size is not None:
+            available = min(available, max(1, configured_page_size))
+        return cls(width, height, available, detail_height)
 
 
 def _key_value(key: object) -> str:
@@ -52,7 +90,8 @@ class BackgroundManager:
         self.refresh_s = max(0.1, refresh_s)
         self.input_provider = input_provider
         self._configured_page_size = page_size
-        self.selected = 0
+        self._selected_index = 0
+        self._selected_session_id: str | None = None
         self.query = ""
         self.include_archived = True
         self.include_deleted = False
@@ -64,6 +103,10 @@ class BackgroundManager:
         self.help_visible = False
         self.pending_delete = False
         self.pending_delete_ids: tuple[str, ...] = ()
+        self._interactive_delete = False
+        self._deletion_thread: threading.Thread | None = None
+        self._deleting_ids: tuple[str, ...] = ()
+        self._deletion_result: tuple[tuple[str, ...], tuple[str, ...]] | None = None
         self.marked_ids: set[str] = set()
         self.filter_mode = False
         self.filter_buffer = ""
@@ -71,6 +114,48 @@ class BackgroundManager:
         self._sessions: list[BackgroundSession] = []
         self._seen_activity: dict[str, float] = {}
         self.activity_offset = 0
+        self._activity_cache: dict[str, tuple[tuple[int, int, int], str | None]] = {}
+        self._last_maintenance = 0.0
+        self.maintenance_s = max(1.0, self.refresh_s)
+        self._last_render_key: tuple[object, ...] | None = None
+        self._last_renderable: RenderableType | None = None
+
+    @property
+    def selected(self) -> int:
+        """Compatibility index view; actions are internally ID-targeted."""
+
+        if self._selected_session_id:
+            for index, session in enumerate(self._sessions):
+                if session.session_id == self._selected_session_id:
+                    self._selected_index = index
+                    break
+        if not self._sessions:
+            return 0
+        return min(max(self._selected_index, 0), len(self._sessions) - 1)
+
+    @selected.setter
+    def selected(self, value: int) -> None:
+        self._selected_index = max(0, int(value))
+        if self._sessions:
+            index = min(self._selected_index, len(self._sessions) - 1)
+            self._selected_index = index
+            self._selected_session_id = self._sessions[index].session_id
+
+    @property
+    def selected_session_id(self) -> str | None:
+        """Return the durable identity currently targeted by the UI."""
+
+        _ = self.selected
+        return self._selected_session_id
+
+    @property
+    def viewport_budget(self) -> ViewportBudget:
+        try:
+            width = int(self.console.width)
+            height = int(self.console.height)
+        except (AttributeError, TypeError, ValueError):
+            width, height = 80, 25
+        return ViewportBudget.from_terminal(width, height, self._configured_page_size)
 
     @property
     def page_size(self) -> int:
@@ -81,13 +166,7 @@ class BackgroundManager:
         fixed value to make pagination deterministic.
         """
 
-        if self._configured_page_size is not None:
-            return max(1, self._configured_page_size)
-        try:
-            height = int(self.console.height)
-        except (AttributeError, TypeError, ValueError):
-            height = 25
-        return max(1, min(12, height - 14))
+        return self.viewport_budget.table_rows
 
     @property
     def page_count(self) -> int:
@@ -110,22 +189,60 @@ class BackgroundManager:
 
     @property
     def selected_session(self) -> BackgroundSession | None:
-        sessions = self.sessions
-        if not sessions:
+        # Actions can be invoked immediately after construction, before the
+        # first render has populated the snapshot.  This one bootstrap read is
+        # still cached and does not make render itself impure.
+        if not self._sessions and not self.paused:
+            self.refresh(force=True)
+        if not self._sessions:
             return None
-        self.selected = min(max(self.selected, 0), len(sessions) - 1)
-        return sessions[self.selected]
+        index = self.selected
+        return self._sessions[index]
+
+    def maintain(self, *, force: bool = False) -> list[BackgroundSession]:
+        """Run stale-worker maintenance outside the render hot path.
+
+        Recovery can inspect processes and append lifecycle events.  It is
+        therefore intentionally explicit and rate-limited; ``render`` never
+        calls it.  A caller may use ``force=True`` for an operator-requested
+        refresh.
+        """
+
+        now = time.monotonic()
+        if not force and now - self._last_maintenance < self.maintenance_s:
+            return []
+        self._last_maintenance = now
+        recover = getattr(self.supervisor, "recover_stale", None)
+        if not callable(recover):
+            return []
+        try:
+            changed = recover()
+        except (OSError, RuntimeError, ValueError):
+            return []
+        self.refresh(force=True)
+        return list(changed) if isinstance(changed, list) else []
+
+    def _reconcile_selection(self, previous_id: str | None, previous_index: int) -> None:
+        if not self._sessions:
+            self._selected_session_id = None
+            self._selected_index = 0
+            return
+        if previous_id:
+            for index, session in enumerate(self._sessions):
+                if session.session_id == previous_id:
+                    self._selected_index = index
+                    self._selected_session_id = previous_id
+                    return
+        index = min(max(previous_index, 0), len(self._sessions) - 1)
+        self._selected_index = index
+        self._selected_session_id = self._sessions[index].session_id
 
     def refresh(self, *, force: bool = False) -> list[BackgroundSession]:
         if self.paused and not force:
             return self._sessions
         if force or time.monotonic() - self.last_refresh >= self.refresh_s:
-            recover = getattr(self.supervisor, "recover_stale", None)
-            if callable(recover):
-                try:
-                    recover()
-                except (OSError, RuntimeError, ValueError):
-                    pass
+            previous_id = self._selected_session_id
+            previous_index = self.selected
             previous = {item.session_id: item.last_active for item in self._sessions}
             self._sessions = self.store.list(
                 include_archived=self.include_archived,
@@ -142,13 +259,14 @@ class BackgroundManager:
                     and item.last_active > self._seen_activity[item.session_id]
                 ):
                     self.new_activity = True
-            self.selected = min(self.selected, max(0, len(self._sessions) - 1))
+            self._reconcile_selection(previous_id, previous_index)
             self.last_refresh = time.monotonic()
         return self._sessions
 
     def set_query(self, query: str) -> None:
         self.query = query.strip()
-        self.selected = 0
+        self._selected_session_id = None
+        self._selected_index = 0
         self.refresh(force=True)
 
     def set_input_provider(self, provider: Callable[[str], str] | None) -> None:
@@ -205,7 +323,8 @@ class BackgroundManager:
         self.status_filter = status
         self.project_filter = project
         self.workflow_filter = workflow
-        self.selected = 0
+        self._selected_session_id = None
+        self._selected_index = 0
         self.refresh(force=True)
 
     def mark_selected_seen(self) -> None:
@@ -218,20 +337,36 @@ class BackgroundManager:
             )
 
     def _activity_lines(self, session: BackgroundSession) -> list[str]:
-        """Return bounded, redacted event summaries from the canonical journal."""
+        """Return the newest bounded, redacted text event from the journal.
+
+        Lifecycle and tool events are intentionally excluded.  The journal is
+        append-only and can be very large, so only its bounded tail is read;
+        a size/mtime/inode fingerprint avoids rereading it during idle Rich
+        repaints.
+        """
 
         from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
 
         path = Path(session.artifact_dir).expanduser() / "conversation.jsonl"
-        if not path.exists():
+        try:
+            stat = path.stat()
+        except OSError:
             return []
+        fingerprint = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        cached = self._activity_cache.get(session.session_id)
+        if cached is not None and cached[0] == fingerprint:
+            return [cached[1]] if cached[1] is not None else []
         try:
             raw_lines = path.read_bytes()[-64_000:].decode("utf-8", errors="replace").splitlines()
         except OSError:
             return []
         redactor = _Redactor()
-        summaries: list[str] = []
-        for line in raw_lines[-12:]:
+        latest: str | None = None
+        # ``assistant_message`` is retained for older journals; new journals
+        # use ``text`` and ``user_message``.  No summary/message fallback is
+        # used because those fields commonly contain tool/lifecycle noise.
+        text_kinds = {"text", "user_message", "assistant_message"}
+        for line in reversed(raw_lines):
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
@@ -239,15 +374,17 @@ class BackgroundManager:
             if not isinstance(record, dict):
                 continue
             kind = str(record.get("kind", "event"))
+            if kind not in text_kinds:
+                continue
             payload = record.get("payload")
-            if isinstance(payload, dict):
-                text = payload.get("text") or payload.get("summary") or payload.get("message")
-            else:
-                text = None
-            detail = redactor.value(text, "text") if isinstance(text, str) else ""
-            summaries.append(f"{kind}: {str(detail)[:120]}" if detail else kind)
-        end = max(0, len(summaries) - self.activity_offset)
-        return summaries[max(0, end - 12) : end]
+            text = payload.get("text") if isinstance(payload, dict) else None
+            if not isinstance(text, str) or not text.strip():
+                continue
+            detail = redactor.value(text, "text")
+            latest = f"{kind}: {str(detail)[:512]}"
+            break
+        self._activity_cache[session.session_id] = (fingerprint, latest)
+        return [latest] if latest is not None else []
 
     def _status_style(self, status: SessionStatus) -> str:
         return {
@@ -261,33 +398,132 @@ class BackgroundManager:
             SessionStatus.ARCHIVED: "dim",
         }.get(status, "white")
 
+    def _activity_fingerprint(self, session: BackgroundSession) -> tuple[int, int, int]:
+        path = Path(session.artifact_dir).expanduser() / "conversation.jsonl"
+        try:
+            stat = path.stat()
+        except OSError:
+            return (0, 0, 0)
+        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+    @staticmethod
+    def _workspace_name(cwd: str) -> str:
+        """Return only the workspace directory name for compact UI display."""
+
+        path = Path(cwd)
+        return path.name or path.anchor or cwd
+
+    def _render_key(
+        self,
+        *,
+        all_sessions: bool,
+        budget: ViewportBudget,
+        start: int,
+        end: int,
+        selected: BackgroundSession | None,
+    ) -> tuple[object, ...]:
+        visible = self._sessions if all_sessions else self._sessions[start:end]
+        session_key = tuple(
+            (
+                item.session_id,
+                item.status.value,
+                item.last_active,
+                item.current_phase,
+                item.error,
+                item.latest_activity,
+                item.pinned,
+            )
+            for item in visible
+        )
+        return (
+            all_sessions,
+            budget,
+            start,
+            end,
+            self._selected_session_id,
+            session_key,
+            self.query,
+            self.help_visible,
+            self.pending_delete,
+            self.pending_delete_ids,
+            self._deleting_ids,
+            tuple(sorted(self.marked_ids)),
+            self.new_activity,
+            self.activity_offset,
+            self._activity_fingerprint(selected) if selected is not None else None,
+        )
+
     def render(self, *, all_sessions: bool = False) -> RenderableType:
         from rich.console import Group  # noqa: PLC0415
         from rich.panel import Panel  # noqa: PLC0415
         from rich.table import Table  # noqa: PLC0415
         from rich.text import Text  # noqa: PLC0415
+        from rich import box  # noqa: PLC0415
 
         all_records = self.refresh()
+        budget = self.viewport_budget
         if self.help_visible:
-            return Panel(
-                "↑/k previous   ↓/j next   Enter resume transcript   r refresh\n"
+            help_text = (
+                "↑/k ↓/j select   PgUp/PgDn page   Home/End first/last\n"
+                "Enter attach exact session   r refresh   ? close help\n"
                 "c cancel   a archive   Ctrl+X delete   u restore   t trash\n"
-                "/ filter   v mark   C/A bulk cancel/archive   i input\n"
-                "PageUp/PageDown change session page; [/ ] scroll transcript\n"
-                "p pin   Space pause refresh   q quit   ? close help",
+                "/ filter   v mark   C/A bulk action   i input   q/Esc quit"
+            )
+            if budget.compact:
+                return Text("? help  ↑↓ select  Enter attach  q quit")
+            return Panel(
+                help_text,
                 title="Background Sessions — Keyboard Help",
                 border_style="cyan",
+                height=min(budget.height, 8),
             )
         start, end = self._page_bounds()
         sessions = all_records if all_sessions else all_records[start:end]
-        page_label = "all" if all_sessions else f"{start // self.page_size + 1}/{self.page_count}"
-        table = Table(title=f"Background Sessions (page {page_label})", expand=True)
+        page_number = start // self.page_size + 1
+        if all_sessions:
+            page_label = f"all · {len(all_records)} sessions"
+            range_label = f"showing 1–{len(all_records)} of {len(all_records)}"
+        elif all_records:
+            range_label = f"showing {start + 1}–{end} of {len(all_records)}"
+            page_label = f"page {page_number}/{self.page_count} · {range_label}"
+        else:
+            range_label = "showing 0–0 of 0"
+            page_label = f"page 1/1 · {range_label}"
+
+        selected = self.selected_session
+        key = self._render_key(
+            all_sessions=all_sessions,
+            budget=budget,
+            start=start,
+            end=end,
+            selected=selected,
+        )
+        if key == self._last_render_key and self._last_renderable is not None:
+            return self._last_renderable
+
+        if budget.compact:
+            compact_title = Text(f"Background Sessions · {page_label}", style="bold cyan")
+            if selected is None:
+                row = Text("No background sessions")
+                compact_detail = Text("No selected session")
+            else:
+                row = Text(
+                    f"▸ {selected.status.value}  {selected.title[: max(1, budget.width - 24)]}"
+                )
+                compact_detail = Text(f"{selected.session_id}  {selected.current_phase or '—'}")
+            footer = Text("↑↓ select  Enter attach  ? help  q/Esc quit", style="dim")
+            rendered: RenderableType = Group(compact_title, row, compact_detail, footer)
+            self._last_render_key, self._last_renderable = key, rendered
+            return rendered
+
+        header = Text(f"Background Sessions · {page_label}", style="bold cyan")
+        table = Table(box=box.SIMPLE_HEAD, expand=True, padding=(0, 1), show_edge=False)
         table.add_column("", width=2)
-        table.add_column("State", no_wrap=True)
-        table.add_column("Title")
-        table.add_column("Workflow")
-        table.add_column("Project")
-        table.add_column("Activity")
+        table.add_column("State", no_wrap=True, overflow="ellipsis")
+        table.add_column("Title", no_wrap=True, overflow="ellipsis")
+        table.add_column("Workflow", no_wrap=True, overflow="ellipsis")
+        table.add_column("WS", no_wrap=True, overflow="ellipsis")
+        table.add_column("Activity", no_wrap=True, overflow="ellipsis")
         if not sessions:
             table.add_row(
                 "",
@@ -298,8 +534,7 @@ class BackgroundManager:
                 "Start one with agenthicc run --background",
             )
         for local_index, session in enumerate(sessions):
-            index = local_index if all_sessions else start + local_index
-            marker = "▸" if index == self.selected else " "
+            marker = "▸" if session.session_id == self._selected_session_id else " "
             if session.last_active > self._seen_activity.get(
                 session.session_id, session.last_active
             ):
@@ -309,48 +544,62 @@ class BackgroundManager:
                 title = "★ " + title
             if session.session_id in self.marked_ids:
                 title = "☑ " + title
+            if session.session_id == self._selected_session_id:
+                # Keep selection visible even when Rich compresses the narrow
+                # marker column on a small terminal.
+                title = "▶ " + title
             if session.error:
                 activity = session.error[:80]
             else:
                 activity = session.latest_activity[:80]
+            workspace = self._workspace_name(session.cwd)
             table.add_row(
                 marker,
                 f"[{self._status_style(session.status)}]{session.status.value}[/]",
                 title[:50],
                 session.workflow_name or "direct",
-                session.cwd,
+                workspace,
                 activity,
             )
-        selected = self.selected_session
         detail_lines: list[str] = []
         if selected is not None:
             detail_lines.extend(
                 [
                     f"[bold]ID[/bold] {selected.session_id}",
-                    f"[bold]State[/bold] [{self._status_style(selected.status)}]{selected.status.value}[/]",
-                    f"[bold]Phase[/bold] {selected.current_phase or '—'}",
-                    f"[bold]Updated[/bold] {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(selected.last_active))}",
+                    f"[bold]Dir:[/bold] {self._workspace_name(selected.cwd)}",
+                    f"[bold]State[/bold] [{self._status_style(selected.status)}]{selected.status.value}[/]"
+                    f"  [bold]Phase[/bold] {selected.current_phase or '—'}",
                 ]
             )
             if selected.error:
                 detail_lines.append(f"[red]Error[/red] {selected.error[:180]}")
-            if selected.phase_history:
+            else:
+                activity_lines = self._activity_lines(selected)
+                if activity_lines:
+                    detail_lines.append("[bold]Latest text[/bold] " + activity_lines[0])
+                else:
+                    detail_lines.append("[dim]Latest text: no text activity[/dim]")
+
+            # Optional context is added only when the panel has room.  The
+            # required identity/state/phase/activity lines always win over
+            # history or timestamps, so a short viewport cannot hide the
+            # useful status behind an overflowed details panel.
+            content_capacity = max(1, budget.detail_height - 2)
+            if selected.phase_history and len(detail_lines) < content_capacity:
                 detail_lines.append(
-                    "[bold]Phase history[/bold] " + " → ".join(selected.phase_history[-16:])
+                    "[bold]History[/bold] " + " → ".join(selected.phase_history[-4:])
+                )
+            if len(detail_lines) < content_capacity:
+                detail_lines.append(
+                    "[bold]Updated[/bold] "
+                    + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(selected.last_active))
                 )
             if (
                 selected.session_id in self._seen_activity
                 and selected.last_active > self._seen_activity[selected.session_id]
+                and len(detail_lines) < content_capacity
             ):
                 detail_lines.append("[yellow]New activity available[/yellow]")
-            activity_lines = self._activity_lines(selected)
-            if activity_lines:
-                detail_lines.append("[bold]Recent activity[/bold]")
-                detail_lines.extend(activity_lines)
-                if self.activity_offset:
-                    detail_lines.append(
-                        "[dim]Transcript offset: {}[/dim]".format(self.activity_offset)
-                    )
         if self.pending_delete:
             pending_titles = [
                 item.title
@@ -363,22 +612,75 @@ class BackgroundManager:
                 f"{len(self.pending_delete_ids) or 1} session(s)"
                 f" ({', '.join(pending_titles)[:160]})? Press y/Enter to confirm, n/Esc to cancel.[/bold yellow]"
             )
+        if self._deleting_ids:
+            detail_lines.append(
+                f"[yellow]Deleting {len(self._deleting_ids)} session(s) in the background…[/yellow]"
+            )
         detail = Panel(
-            "\n".join(detail_lines) or "Select a session to inspect it.", title="Details"
+            "\n".join(detail_lines) or "Select a session to inspect it.",
+            title="Details · selected" if selected is not None else "Details",
+            height=budget.detail_height,
+            padding=(0, 1),
+            expand=True,
         )
         footer = Text(
-            "↑/k ↓/j select  PgUp/PgDn page  Enter resume  c cancel  v mark  "
-            "Ctrl+X delete  / filter  i input  ? help  q quit",
+            "↑/k ↓/j select  PgUp/PgDn page  Home/End  Enter attach  r refresh  "
+            "c cancel  v mark  Ctrl+X delete  ? help  q quit",
             style="dim",
         )
-        if not all_sessions and all_records:
-            footer.append(f"  • page {start // self.page_size + 1}/{self.page_count}", style="cyan")
         if self.new_activity:
             footer.append("  • new activity", style="yellow")
-        return Group(table, detail, footer)
+        rendered = Group(header, table, detail, footer)
+        self._last_render_key, self._last_renderable = key, rendered
+        return rendered
 
-    def _confirm_delete(self, session: BackgroundSession) -> ManagerResult:
+    def _delete_sessions(self, ids: tuple[str, ...]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        deleted: list[str] = []
+        errors: list[str] = []
+        for session_id in ids:
+            try:
+                self.supervisor.delete(session_id)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{session_id}: {type(exc).__name__}: {exc}")
+            else:
+                deleted.append(session_id)
+        return tuple(deleted), tuple(errors)
+
+    def _start_async_delete(self, ids: tuple[str, ...]) -> None:
+        self._deleting_ids = ids
+        self._deletion_result = None
+
+        def run_delete() -> None:
+            self._deletion_result = self._delete_sessions(ids)
+
+        self._deletion_thread = threading.Thread(
+            target=run_delete,
+            name="agenthicc-background-delete",
+            daemon=True,
+        )
+        self._deletion_thread.start()
+
+    def _poll_async_delete(self) -> None:
+        thread = self._deletion_thread
+        if thread is None or thread.is_alive():
+            return
+        thread.join()
+        deleted, errors = self._deletion_result or ((), ("delete worker stopped unexpectedly",))
+        self._deletion_thread = None
+        self._deletion_result = None
+        self._deleting_ids = ()
+        self.marked_ids.difference_update(deleted)
+        if errors:
+            self.console.print("Delete failed: " + "; ".join(errors)[:2_000])
+        self.refresh(force=True)
+
+    def _confirm_delete(self, session: BackgroundSession) -> ManagerResult | None:
         ids = self.pending_delete_ids or (session.session_id,)
+        if self._interactive_delete:
+            self.pending_delete = False
+            self.pending_delete_ids = ()
+            self._start_async_delete(ids)
+            return None
         try:
             for session_id in ids:
                 self.supervisor.delete(session_id)
@@ -397,6 +699,12 @@ class BackgroundManager:
         """Handle one logical terminal key; exposed for deterministic TUI tests."""
 
         value = _key_value(key)
+        # The raw terminal backend delivers Ctrl+C as CTRL_C (signals are
+        # disabled while the manager owns cbreak mode).  Handle it before any
+        # modal state so it always exits the agents screen, including while a
+        # filter or delete confirmation is visible.
+        if value == "CTRL_C" or ch == "\x03":
+            return ManagerResult("exit")
         if self.filter_mode:
             if value == "ESC":
                 self.filter_mode = False
@@ -440,6 +748,8 @@ class BackgroundManager:
             self.activity_offset = 0
             return None
         if value == "CTRL_X" or ch == "\x18":
+            if self._deleting_ids:
+                return None
             selected = self.selected_session
             marked = self.marked_sessions()
             if marked or selected is not None:
@@ -448,6 +758,9 @@ class BackgroundManager:
                 self.pending_delete_ids = tuple(item.session_id for item in targets)
             return None
         if value == "ENTER":
+            # Reconcile immediately before an identity-sensitive action.  A
+            # row disappearing must never cause Enter to target its successor.
+            self.refresh(force=True)
             selected = self.selected_session
             self.mark_selected_seen()
             return ManagerResult("attach", selected.session_id) if selected is not None else None
@@ -473,6 +786,7 @@ class BackgroundManager:
             self.help_visible = not self.help_visible
             return None
         if ch.lower() == "r":
+            self.maintain(force=True)
             self.refresh(force=True)
             return None
         if ch == "/":
@@ -557,16 +871,38 @@ class BackgroundManager:
             # retain the historical behavior of printing every record.
             self.console.print(self.render(all_sessions=True))
             return ManagerResult("exit")
-        with Live(self.render(), console=self.console, refresh_per_second=4) as live:
-            with backend.enter_raw_mode():
-                while True:
-                    key, ch = await asyncio.get_running_loop().run_in_executor(
-                        None, backend.read_key
-                    )
-                    result = self.handle_key(key, ch)
-                    live.update(self.render(), refresh=True)
-                    if result is not None:
-                        return result
+        self.maintain(force=True)
+        self.refresh(force=True)
+        initial = self.render()
+        self._interactive_delete = True
+        try:
+            with Live(initial, console=self.console, auto_refresh=False) as live:
+                live.refresh()
+                with backend.enter_raw_mode():
+                    loop = asyncio.get_running_loop()
+                    read_future = loop.run_in_executor(None, backend.read_key)
+                    while True:
+                        done, _ = await asyncio.wait({read_future}, timeout=self.refresh_s)
+                        if read_future in done:
+                            key, ch = read_future.result()
+                            result = self.handle_key(key, ch)
+                            self._poll_async_delete()
+                            if result is not None:
+                                return result
+                            read_future = loop.run_in_executor(None, backend.read_key)
+
+                        # Polling/recovery is deliberately independent of
+                        # rendering.  An unchanged snapshot returns the cached
+                        # renderable and does not issue a Rich update.
+                        self._poll_async_delete()
+                        self.refresh()
+                        self.maintain()
+                        rendered = self.render()
+                        if rendered is not initial:
+                            live.update(rendered, refresh=True)
+                            initial = rendered
+        finally:
+            self._interactive_delete = False
 
 
 async def run_background_manager(

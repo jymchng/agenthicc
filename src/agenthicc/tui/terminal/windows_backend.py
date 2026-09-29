@@ -163,6 +163,8 @@ def _decode_key_event(
             return (Key.CTRL_U, "")
         if cp == 0x16:
             return (Key.CTRL_V, "")
+        if cp == 0x18:
+            return (Key.CTRL_X, "")
         if cp in (0x08, 0x7F):
             return (Key.BACKSPACE, "")
         if cp == 0x0D:

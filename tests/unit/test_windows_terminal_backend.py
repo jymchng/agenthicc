@@ -88,6 +88,7 @@ class TestDecodeKeyEvent:
             (0x04, Key.CTRL_D),
             (0x15, Key.CTRL_U),
             (0x16, Key.CTRL_V),
+            (0x18, Key.CTRL_X),
         ],
     )
     def test_control_chars(self, cp: int, expected: Key) -> None:
