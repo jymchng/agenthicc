@@ -303,7 +303,7 @@ Agenthicc detached run started
 Run ID:  run_01JABC123
 Goal:    Implement OAuth login and integration tests
 Status:  running
-Main:    <main-session-id>
+Session ID: <main-session-id>
 
 Track:   agenthicc agents --run run_01JABC123
 Attach:  agenthicc attach run_01JABC123

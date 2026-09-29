@@ -89,8 +89,11 @@ def test_goal_run_output_and_command_handlers(
         pid_run = manager.run.evolve(worker_pid=12345)
         cli._json_or_text(pid_run, json_output=True, detached=True)
         assert json.loads(capsys.readouterr().out)["pid"] == 12345
+        pid_run = pid_run.evolve(main_session_id="session-cli")
         cli._json_or_text(pid_run, json_output=False, detached=True)
-        assert "PID:     12345" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert "PID:     12345" in output
+        assert "Session ID: session-cli" in output
         cli._json_or_text(manager.run, json_output=False, detached=False)
         assert "Run ID" in capsys.readouterr().out
 

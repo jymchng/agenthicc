@@ -53,7 +53,7 @@ Agenthicc detached run started
 Run ID:  run_a4633f422fe44957905030ca6807c186
 Goal:    Write a PRD that suggests 20 extensive features to greatly enhance this library
 Status:  running
-Main:    89dcaf5be09344789b3d2731c9eb2c93
+Session ID: 89dcaf5be09344789b3d2731c9eb2c93
 PID:     3845622
 
 Track:   agenthicc agents --run run_a4633f422fe44957905030ca6807c186

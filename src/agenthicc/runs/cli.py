@@ -61,7 +61,7 @@ def _json_or_text(run: GoalRun, *, json_output: bool, detached: bool = False) ->
     print(f"Goal:    {run.goal}")
     print(f"Status:  {run.status.value}")
     if run.main_session_id:
-        print(f"Main:    {run.main_session_id}")
+        print(f"Session ID: {run.main_session_id}")
     if detached:
         print(f"PID:     {run.worker_pid if run.worker_pid is not None else 'unknown'}")
         print(f"\nTrack:   agenthicc agents --run {run.run_id}")

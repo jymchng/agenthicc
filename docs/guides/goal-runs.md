@@ -41,7 +41,7 @@ launcher:
 
 ```text
 Run ID:  run_...
-Main:    <session-id>
+Session ID: <session-id>
 PID:     <worker-pid>
 ```
 
