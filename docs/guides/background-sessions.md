@@ -149,6 +149,16 @@ through the manager entry that created its process group; arbitrary PIDs are
 never discovered or attached. Parent background-session cancellation also
 cleans up child terminal records linked to that session.
 
+The interactive `/ps` view is paginated. Its header shows the current page,
+visible range, and total record count, for example `page 1/3 · showing 1–6 of
+15`. Use `↑`/`↓` or `j`/`k` to move through records, `PageUp`/`PageDown` to
+move by a page, and `Home`/`End` to jump to the first or last record. The
+selected terminal ID remains stable when a process completes or the terminal
+is resized. The table and selected-terminal details are bounded to the
+available Live-region height, so the close and stop controls remain visible;
+long labels and output are shortened for narrow terminals. `/ps --json` is
+not paginated and continues to return the complete owned-record projection.
+
 Terminal records are persisted below `~/.agenthicc/background/terminals/` (or
 the configured `store_path`), with mode-600 JSONL events. Commands, labels,
 and captured output are bounded and common credential-shaped values are

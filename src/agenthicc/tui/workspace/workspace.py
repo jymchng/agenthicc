@@ -42,6 +42,20 @@ def _get_cols() -> int:
         return 80
 
 
+def _get_rows(console: Console) -> int:
+    """Return the current terminal height with a deterministic fallback."""
+
+    try:
+        return max(1, int(console.height))
+    except (AttributeError, TypeError, ValueError):
+        try:
+            import os
+
+            return max(1, os.get_terminal_size().lines)
+        except OSError:
+            return 24
+
+
 class Workspace:
     """Root component — owns the terminal for the application lifetime."""
 
@@ -237,6 +251,13 @@ class Workspace:
         from rich.text import Text  # noqa: PLC0415
 
         cols = _get_cols()
+
+        if self.overlays.active:
+            # Workspace owns the complete Live layout.  Publish only the
+            # remaining overlay region so responsive overlays do not count
+            # status, borders, or the permanent footer as available rows.
+            fixed_rows = self.status.height(cols) + self.footer.height(cols) + 3
+            self.overlays.set_viewport(cols, max(1, _get_rows(self._console) - fixed_rows))
 
         parts: list[RenderableType] = []
 

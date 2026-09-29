@@ -179,7 +179,7 @@ Transient provider failures are rendered as compact retry notices showing the at
 | `/status`, `/history` | Inspect runtime status and session events |
 | `/loop [interval] <prompt-or-command>` | Schedule a local recurring prompt; use `status`, `pause`, `resume`, or `stop` to control it |
 | `/loops` | Open the table of all persisted schedule jobs; Enter runs the selected job and `d` deletes it after confirmation |
-| `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/stop` stops all |
+| `/ps [terminal-id]`, `/stop [terminal-id\|all]` | Inspect or stop owned background terminals; `/ps` is paginated and `/ps --json` returns all records; `/stop` stops all |
 | `/mode [name]` | Show or change the operating mode |
 | `/workflow <name> \| resume [run-id] \| reset [run-id]` | Select a workflow, resume the latest eligible run when `run-id` is omitted, or reset a workflow; use `/workflow create_workflow` to author one directly in `.agenthicc/workflows/` |
 | `/model [provider] [model]` | Inspect or switch the model selection |

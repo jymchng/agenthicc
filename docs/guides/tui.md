@@ -197,6 +197,17 @@ registries and keep the results in the overlay rather than appending them to
 the conversation scroll buffer. Approval requests are stored in reactive state
 and route to the overlay registry in `TUISession`.
 
+The `/ps` background-terminal overlay is a responsive paginated projection.
+`Workspace` measures the Live layout and gives the active overlay its
+available width and height through `OverlayHost`; the terminal overlay uses
+that viewport to reserve its table header, bounded detail area, and footer.
+It renders only the current page, preserves selection by terminal ID across
+refreshes and resize, and uses `PageUp`/`PageDown`, `Home`, and `End` for
+navigation. Overlay viewport delivery is an optional no-op hook on the base
+`Overlay` contract so existing overlays remain compatible. The interactive
+view is presentation-only: the terminal manager remains the source of truth,
+and `/ps --json` still returns all owned records.
+
 An overlay must not write directly to the terminal outside the workspace. It
 should update its state/callback and let the workspace redraw. New approval
 kinds need an overlay class, registry entry, and tests for approve/reject,

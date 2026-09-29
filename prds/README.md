@@ -69,6 +69,7 @@ against the current source before implementing them.
 - [PRD-199 — Dynamic turn budgets for `goal_flow`](prd-199-goal-flow-dynamic-turn-budget.md)
 - [PRD-200 — Beautified goal-list mutation notices](prd-200-beautified-goal-mutation-notices.md)
 - [PRD-201 — Context-aware `@`-mention tokenization](prd-201-context-aware-mention-tokenization.md)
+- [PRD-202 — Paginated `/ps` background-terminal overlay](prd-202-paginated-ps-terminal-overlay.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

@@ -23,6 +23,14 @@ class Overlay(ABC):
     def on_unmount(self) -> None:
         """Called when overlay is dismissed."""
 
+    def set_viewport(self, width: int, height: int) -> None:
+        """Receive the available Live-region viewport before rendering.
+
+        Overlays that need responsive layout may override this hook.  The
+        default is intentionally a no-op so existing overlays and plugins keep
+        the original ``render()`` contract.
+        """
+
     @abstractmethod
     def render(self) -> RenderableType:
         """Return a Rich renderable for the Live region."""
@@ -39,6 +47,7 @@ class OverlayHost:
         self._state: AppState = app_state
         self._overlay: Overlay | None = None
         self._redraw: Callable[[], None] | None = None
+        self._viewport = (80, 12)
 
     def set_redraw_callback(self, fn: Callable[[], None]) -> None:
         self._redraw = fn
@@ -55,6 +64,7 @@ class OverlayHost:
         if self._overlay:
             self._overlay.on_unmount()
         self._overlay = overlay
+        overlay.set_viewport(*self._viewport)
         overlay.on_mount()
         self._state.overlay.set(overlay.name)
         self._state.modal_open.set(True)
@@ -74,6 +84,13 @@ class OverlayHost:
         if self._overlay:
             return self._overlay.render()
         return None
+
+    def set_viewport(self, width: int, height: int) -> None:
+        """Publish the current available Live-region viewport to the overlay."""
+
+        self._viewport = (max(1, width), max(1, height))
+        if self._overlay:
+            self._overlay.set_viewport(*self._viewport)
 
     def handle_key(self, key: Key, ch: str) -> bool:
         """Return True if the overlay consumed the key.
