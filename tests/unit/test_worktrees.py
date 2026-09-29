@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from agenthicc.worktrees import (
     WorktreeManager,
     WorktreeStatus,
 )
+from agenthicc.worktrees.agent_tool import make_spawn_worker_agents_tool
 from agenthicc.background.model import BackgroundSession
 
 
@@ -63,6 +65,22 @@ def test_manifest_store_round_trips_tasks_and_worktrees(repository: tuple[Path, 
     assert [task.task_id for task in restored.tasks] == ["api", "ui"]
     assert restored.tasks[1].dependencies == ("api",)
     assert restored.base_commit == _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_spawn_worker_agents_schema_exposes_resolved_task_fields() -> None:
+    from lauren_ai._tools._schema import generate_tool_schema
+
+    tool = make_spawn_worker_agents_tool(repository=".", parent_session_id="parent")
+    schema = generate_tool_schema(tool)[2]["input_schema"]
+    task_schema = schema["properties"]["tasks"]["items"]
+
+    assert task_schema["properties"]["task_id"] == {"type": "string"}
+    assert task_schema["properties"]["description"] == {"type": "string"}
+    assert task_schema["properties"]["dependencies"] == {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    assert schema["properties"]["max_concurrent"]["default"] == 4
 
 
 def test_background_worker_metadata_round_trips_without_affecting_normal_jobs() -> None:
@@ -209,3 +227,52 @@ def test_dependency_graph_rejects_cycles(repository: tuple[Path, Path]) -> None:
             description="B",
             dependencies=("missing",),
         )
+
+
+@pytest.mark.asyncio
+async def test_workflow_wide_worker_tool_dispatches_durable_agents(
+    repository: tuple[Path, Path],
+) -> None:
+    repo, durable = repository
+    store = ManifestStore(durable / "manifests")
+
+    class FakeSupervisor:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def submit(self, **kwargs: object) -> BackgroundSession:
+            self.calls.append(kwargs)
+            return BackgroundSession.create(
+                str(kwargs["session_id"]),
+                title=str(kwargs.get("title", "worker")),
+                cwd=str(kwargs["cwd"]),
+                workflow_name=str(kwargs.get("workflow_name", "")),
+                intent=str(kwargs["intent"]),
+            )
+
+    supervisor = FakeSupervisor()
+    tool = make_spawn_worker_agents_tool(
+        repository=repo,
+        parent_session_id="parent",
+        max_parallel_tasks=2,
+        store=store,
+        supervisor=supervisor,
+        workspace_access=SimpleNamespace(
+            scope=SimpleNamespace(primary_root=repo),
+        ),
+    )
+
+    result = await tool(
+        tasks=[
+            {"task_id": "api", "description": "Implement the API", "dependencies": None},
+            {"task_id": "ui", "description": "Implement the UI", "dependencies": None},
+        ]
+    )
+
+    assert result["ok"] is True
+    assert result["dispatched"] == ["api", "ui"]
+    assert len(supervisor.calls) == 2
+    assert all(call["workflow_name"] == "" for call in supervisor.calls)
+    manifest = store.get(str(result["orchestration_id"]))
+    assert {task.status for task in manifest.tasks} == {TaskStatus.RUNNING}
+    assert all(Path(str(call["cwd"])).is_dir() for call in supervisor.calls)

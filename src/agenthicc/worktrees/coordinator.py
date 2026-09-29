@@ -79,6 +79,11 @@ class ParallelCoordinator:
         manager: WorktreeManager | None = None,
         supervisor: WorkerLauncher | None = None,
         max_parallel_tasks: int = 4,
+        # Preserve the original parallel_code_plan worker contract. Generic
+        # workflow-wide dispatch explicitly selects the direct-turn worker
+        # mode when it constructs this coordinator.
+        worker_workflow_name: str = "code_plan",
+        worker_dangerously_skip_permissions: bool = False,
     ) -> None:
         self.manager = manager or WorktreeManager(repository)
         self.store = store or ManifestStore()
@@ -87,6 +92,8 @@ class ParallelCoordinator:
         if max_parallel_tasks < 1:
             raise ValueError("max_parallel_tasks must be at least 1")
         self.max_parallel_tasks = max_parallel_tasks
+        self.worker_workflow_name = worker_workflow_name
+        self.worker_dangerously_skip_permissions = worker_dangerously_skip_permissions
 
     def create(self, *, orchestration_id: str | None = None) -> ParallelManifest:
         """Create a manifest from a clean coordinator worktree."""
@@ -184,10 +191,11 @@ class ParallelCoordinator:
                         worktree_path=record.path,
                         base_commit=record.base_commit,
                     ),
-                    workflow_name="code_plan",
+                    workflow_name=self.worker_workflow_name,
                     title=f"Worker {task.task_id}",
                     cwd=record.path,
                     session_id=worker_session_id,
+                    dangerously_skip_permissions=self.worker_dangerously_skip_permissions,
                     parent_session_id=self.parent_session_id,
                     role="worker",
                     task_id=task.task_id,

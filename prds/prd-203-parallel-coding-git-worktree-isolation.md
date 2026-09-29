@@ -102,6 +102,24 @@ The next phase is persisted after each successful boundary. A worker that
 completed but was not integrated remains visible and recoverable after a
 coordinator crash.
 
+## Workflow-wide dispatch surface
+
+Worker dispatch is available to every workflow through the shared
+session-bound `spawn_worker_agents` tool. The tool is injected at the
+canonical agent-turn boundary, so a custom workflow does not need to import
+`parallel_code_plan` or duplicate its coordinator setup. Each invocation
+creates a durable orchestration from the current workspace-scoped repository,
+creates one isolated worker session/worktree per ready task, and returns
+durable identifiers for later control operations.
+
+The tool's task contract is intentionally small: `task_id`, `description`, and
+`dependencies`; an empty dependency list denotes an independent task. Worker
+execution uses the ordinary approval/capability boundary unless the calling
+workflow explicitly opts into `dangerously_skip_permissions`. This shared
+surface makes worker agents available to all workflows; the built-in
+`parallel_code_plan` workflow remains the richer end-to-end planner/integrator
+experience, not the only way to dispatch a worker.
+
 ## Acceptance criteria
 
 - A clean temporary repository can create two independent workers from one
@@ -127,4 +145,3 @@ security boundary, does not infer arbitrary shell verification commands, and
 does not delete stale worktrees automatically. Merge is the default strategy;
 cherry-pick, squash, and rebase policies can be added without changing the
 manifest identity contract.
-

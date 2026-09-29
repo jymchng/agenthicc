@@ -2081,6 +2081,16 @@ recovery.
 Runs the parallel_code_plan phase state machine while reusing the canonical
 agent-turn and prompt-cache contract.
 
+### make_spawn_worker_agents_tool
+
+Builds the session-bound `spawn_worker_agents` tool. The shared agent-turn
+runner injects this durable Git-worktree worker capability into every
+workspace-scoped workflow, including custom workflows. Each task requires a
+task ID, description, and dependency list; the tool returns durable
+orchestration/task identifiers for later review and integration. Normal
+approval and capability policy remains enabled unless the caller explicitly
+opts into dangerous permission bypass.
+
 ### CodePlanRunner
 
 The specialized `code_plan` runner evolves `CodePlanState` through

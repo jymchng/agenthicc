@@ -4,6 +4,27 @@ The parallel_code_plan workflow lets one coordinator split an implementation
 request into independent tasks. Each task runs in a separate Git worktree and
 branch, then the coordinator reviews and integrates the result.
 
+## Available to every workflow
+
+`spawn_worker_agents` is a session-bound tool injected by the shared
+agent-turn runner. It is not exclusive to `parallel_code_plan`: built-in and
+custom workflows receive the same tool whenever they execute in a normal
+workspace-scoped Agenthicc session. A workflow can therefore delegate an
+independent coding task without importing or reimplementing the parallel
+workflow runner.
+
+The tool accepts tasks with `task_id`, `description`, and a `dependencies` list
+(use `[]` for an independent task), plus an optional concurrency limit. It
+returns the durable orchestration ID, task IDs, base commit, and dispatch
+state. The parent workflow remains responsible for inspecting, integrating,
+verifying, and cleaning up the workers. Worker sessions receive only their
+task description; the parent conversation is not copied into each worker.
+
+Workers use the normal approval and capability policy by default. A workflow
+must explicitly pass `dangerously_skip_permissions=true` when it has obtained
+the appropriate approval for autonomous worker tool execution; the default is
+deliberately safe.
+
 ## Start and inspect
 
 Select the workflow in the TUI or run it headlessly:
@@ -60,4 +81,3 @@ coordinator.
 Worktrees provide repository isolation, not a security sandbox. Worker
 sessions still use Agenthicc's capability, approval, workspace, network, and
 provider controls.
-

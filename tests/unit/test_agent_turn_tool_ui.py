@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -59,7 +60,7 @@ def test_phase_allowlist_builds_agent_with_write_file_but_not_shell() -> None:
     assert "path and complete content" in meta.system
 
 
-def test_default_turn_prompt_mentions_injected_spawn_subagents() -> None:
+def test_default_turn_prompt_mentions_injected_spawn_subagents(tmp_path: Path) -> None:
     """The parent prompt and provider schema expose the session-bound tool."""
     from lauren_ai._agents import AGENT_META
 
@@ -73,6 +74,10 @@ def test_default_turn_prompt_mentions_injected_spawn_subagents() -> None:
         active_agent="default",
         project_plugin_tools=[],
         mcp_registry=None,
+        conversation_id="parent-session",
+        workspace_access=SimpleNamespace(
+            scope=SimpleNamespace(primary_root=tmp_path),
+        ),
     )
     runner = AgentTurnRunner(context)
     runner._model_id = "mock-model"
@@ -82,6 +87,8 @@ def test_default_turn_prompt_mentions_injected_spawn_subagents() -> None:
 
     assert "spawn_subagents" in meta.tools
     assert "spawn_subagents" in meta.system
+    assert "spawn_worker_agents" in meta.tools
+    assert "spawn_worker_agents" in meta.system
 
 
 def test_tool_output_preview_prefers_file_content_and_counts_omitted_lines() -> None:

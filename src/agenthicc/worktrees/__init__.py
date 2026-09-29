@@ -1,6 +1,7 @@
 """Parallel coding orchestration with isolated Git worktrees (PRD-203)."""
 
 from .coordinator import CoordinatorError, ParallelCoordinator, worker_prompt
+from .agent_tool import make_spawn_worker_agents_tool
 from .manager import (
     IntegrationResult,
     RepositoryError,
@@ -27,6 +28,7 @@ __all__ = [
     "IntegrationResult",
     "ManifestNotFound",
     "ManifestStore",
+    "make_spawn_worker_agents_tool",
     "OrchestrationStatus",
     "ParallelCoordinator",
     "ParallelManifest",

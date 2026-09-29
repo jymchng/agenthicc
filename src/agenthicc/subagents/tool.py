@@ -373,10 +373,28 @@ def make_spawn_subagents_tool(
     # The turn runner registers these alongside spawn_subagents.  Attaching
     # them keeps this factory backwards compatible for lightweight callers that
     # only need the original callable.
+    communication_tools = make_parent_communication_tools(continuation_registry, conversation_id)
+    # The shared agent-turn runner already injects this factory into every
+    # workflow. Attach the durable worktree worker alongside the existing
+    # parent/subagent communication tools so custom workflows receive it too,
+    # without creating a second injection path in the runner.
+    if workspace_access is not None:
+        from agenthicc.worktrees.agent_tool import (  # noqa: PLC0415
+            make_spawn_worker_agents_tool,
+        )
+
+        communication_tools.append(
+            make_spawn_worker_agents_tool(
+                repository=workspace_access.scope.primary_root,
+                parent_session_id=conversation_id or parent_run_id,
+                max_parallel_tasks=max(1, max_concurrent),
+                workspace_access=workspace_access,
+            )
+        )
     setattr(
         spawn_subagents,
         "__agenthicc_subagent_communication_tools__",
-        make_parent_communication_tools(continuation_registry, conversation_id),
+        communication_tools,
     )
     return spawn_subagents
 
