@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import threading
 import time
@@ -58,7 +59,7 @@ def test_manager_keeps_complete_render_inside_normal_and_short_viewports(
         rendered_text = console.export_text(clear=False)
         lines = rendered_text.splitlines()
         assert len(lines) <= height
-        assert "Enter attach" in rendered_text
+        assert "Enter details" in rendered_text
         assert "▶" in rendered_text
         assert "Details · selected" in rendered_text
         if height >= 15:
@@ -96,11 +97,54 @@ def test_enter_refuses_a_deleted_selection_instead_of_shifting_target(tmp_path: 
     manager.refresh(force=True)
     selected_id = manager.selected_session_id
     assert selected_id is not None
+
+    # Opening details does not attach; the target vanishes before the second
+    # Enter, which must not shift the attach action to its former neighbour.
+    assert manager.handle_key("ENTER") is None
     store.delete(selected_id, force=True)
+    result = manager.handle_key("ENTER")
+    assert result is None or result.session_id != selected_id
+
+
+def test_enter_opens_a_detailed_page_then_attaches_on_second_enter(tmp_path: Path) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    session = _session(tmp_path, "inspect-me", 1_780_000_000.0).evolve(
+        provider="openai",
+        model="test-model",
+        latest_activity="Phase completed",
+        phase_history=("design", "implement"),
+    )
+    store.create(session)
+    console = Console(width=120, height=25, record=True)
+    manager = BackgroundManager(console, store=store)
+    manager.refresh(force=True)
+
+    assert manager.handle_key("ENTER") is None
+    assert manager._detail_session_id == session.session_id
+    console.print(manager.render())
+    details = console.export_text()
+    assert "Session Details" in details
+    assert f"Session ID: {session.session_id}" in details
+    assert f"Dir: {tmp_path.name}" in details
+    assert "Provider: openai" in details
+    assert "Updated:" in details
+    assert "Enter attach" in details
 
     result = manager.handle_key("ENTER")
+    assert result is not None
+    assert (result.action, result.session_id) == ("attach", session.session_id)
 
-    assert result is None or result.session_id != selected_id
+
+def test_escape_returns_from_details_to_session_list(tmp_path: Path) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    store.create(_session(tmp_path, "back-to-list", 1.0))
+    manager = BackgroundManager(Console(), store=store)
+    manager.refresh(force=True)
+
+    manager.handle_key("ENTER")
+    assert manager._detail_session_id == "back-to-list"
+    assert manager.handle_key("ESC") is None
+    assert manager._detail_session_id is None
 
 
 def test_latest_activity_ignores_tool_rows_and_caches_tail_reads(
@@ -122,14 +166,15 @@ def test_latest_activity_ignores_tool_rows_and_caches_tail_reads(
     manager = BackgroundManager(Console(), store=store)
 
     reads = 0
-    original_read = Path.read_bytes
+    original_open = Path.open
 
-    def counted_read(target: Path) -> bytes:
+    def counted_open(target: Path, *args: object, **kwargs: object):
         nonlocal reads
-        reads += 1
-        return original_read(target)
+        if target == path and args and args[0] == "rb":
+            reads += 1
+        return original_open(target, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    monkeypatch.setattr(Path, "open", counted_open)
     first = manager._activity_lines(session)
     second = manager._activity_lines(session)
 
@@ -151,22 +196,31 @@ def test_store_projection_avoids_repeated_full_folds_and_detects_external_append
     store.create(_session(tmp_path, "one", 1.0))
     assert len(store.list()) == 1
 
-    reads = 0
-    original_read = store._read_events
+    tail_reads = 0
+    original_tail = store._read_event_tail
+    full_replays = 0
+    original_events = store._iter_events
 
-    def counted_read() -> list[dict[str, object]]:
-        nonlocal reads
-        reads += 1
-        return original_read()
+    def counted_events() -> Iterator[dict[str, object]]:
+        nonlocal full_replays
+        full_replays += 1
+        yield from original_events()
 
-    monkeypatch.setattr(store, "_read_events", counted_read)
+    def counted_tail(offset: int):
+        nonlocal tail_reads
+        tail_reads += 1
+        return original_tail(offset)
+
+    monkeypatch.setattr(store, "_iter_events", counted_events)
+    monkeypatch.setattr(store, "_read_event_tail", counted_tail)
     assert len(store.list()) == 1
-    assert reads == 0
+    assert full_replays == 0
 
     other = BackgroundStore(root)
     other.create(_session(tmp_path, "two", 2.0))
     assert {item.session_id for item in store.list()} == {"one", "two"}
-    assert reads == 1
+    assert full_replays == 0
+    assert tail_reads == 1
 
 
 def test_render_and_maintenance_have_separate_side_effect_boundaries(

@@ -8,6 +8,7 @@ from pathlib import Path
 from agenthicc.background import (
     BackgroundStore,
     BackgroundSupervisor,
+    BackgroundSettings,
     background_enabled,
     load_background_settings,
 )
@@ -33,18 +34,20 @@ def _config(ctx: CLIContext) -> object:
     )
 
 
-def _store_and_supervisor(ctx: CLIContext) -> tuple[BackgroundStore, BackgroundSupervisor]:
-    cfg = _config(ctx)
-    settings = load_background_settings(
-        config_path=ctx.config_path,
-        overrides=ctx.set_overrides,
-        config=getattr(cfg, "background", None),
-    )
+def _store_and_supervisor(
+    ctx: CLIContext,
+    *,
+    settings: BackgroundSettings | None = None,
+) -> tuple[BackgroundStore, BackgroundSupervisor]:
+    settings = settings or _background_settings(ctx)
     if not background_enabled(settings):
         raise RuntimeError("Background sessions are disabled by configuration")
     root_value = settings.store_path
     root = Path(root_value).expanduser() if isinstance(root_value, str) and root_value else None
-    store = BackgroundStore(root)
+    store = BackgroundStore(
+        root,
+        projection_batch_size=settings.manager.projection_batch_size,
+    )
     supervisor = BackgroundSupervisor(
         store,
         max_workers=settings.max_workers,
@@ -55,6 +58,15 @@ def _store_and_supervisor(ctx: CLIContext) -> tuple[BackgroundStore, BackgroundS
         trash_retention_days=settings.trash_retention_days,
     )
     return store, supervisor
+
+
+def _background_settings(ctx: CLIContext) -> BackgroundSettings:
+    cfg = _config(ctx)
+    return load_background_settings(
+        config_path=ctx.config_path,
+        overrides=ctx.set_overrides,
+        config=getattr(cfg, "background", None),
+    )
 
 
 def _public_session(session: object) -> dict[str, object]:
@@ -79,9 +91,13 @@ async def _open_manager(ctx: CLIContext) -> None:
 
     from agenthicc.tui.workspace.background_manager import run_background_manager  # noqa: PLC0415
 
+    settings = _background_settings(ctx)
     store, supervisor = _store_and_supervisor(ctx)
     result = await run_background_manager(
-        Console(highlight=False), store=store, supervisor=supervisor
+        Console(highlight=False),
+        store=store,
+        supervisor=supervisor,
+        manager_settings=settings.manager,
     )
     if result.action == "attach" and result.session_id:
         await attach_background_session(

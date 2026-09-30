@@ -2842,6 +2842,36 @@ Durable registry whose authoritative history is ``events.jsonl``.
 The process-local projection is invalidated by local writes and by external
 inode/size/mtime changes; it does not replace the append-only source of truth.
 
+### BackgroundPage
+
+```python
+@dataclass(frozen=True)
+class BackgroundPage
+```
+
+Bounded background-session rows, matching count, page metadata, and the
+durable projection generation used by the interactive manager.
+
+### BackgroundManagerService
+
+```python
+class BackgroundManagerService
+```
+
+Owns the bounded executor adapter for interactive projection, maintenance,
+activity, and lifecycle operations. Scriptable CLI callers retain synchronous
+store/supervisor APIs.
+
+### ManagerOperationResult
+
+```python
+@dataclass(frozen=True)
+class ManagerOperationResult
+```
+
+Structured exact-target operation identity, phase, success/failure category,
+and bounded redacted message.
+
 ### BackgroundManager and ViewportBudget
 
 The interactive ``agents``/``jobs`` manager uses a viewport budget to paginate
@@ -2882,6 +2912,17 @@ class BackgroundSettings
 Fields: `enabled`, `store_path`, `max_workers`, `max_workers_per_project`,
 `cancel_grace_s`, `stale_after_s`, `wall_timeout_s`, `max_activity_bytes`,
 `trash_retention_days`, `terminals_enabled`, … (16 fields total).
+
+### BackgroundManagerSettings
+
+```python
+@dataclass(frozen=True)
+class BackgroundManagerSettings
+```
+
+Validated bounded manager refresh and maintenance cadence, projection snapshot
+batch floor, journal-tail byte budget, frame debounce, operation concurrency,
+and opt-in redacted latency metrics.
 
 ### InvalidSessionTransition
 

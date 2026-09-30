@@ -112,7 +112,8 @@ uv run agenthicc attach SESSION_ID
 
 `agenthicc agents` opens the paginated background-session manager. It keeps
 the controls visible, marks the selected row with `▶`, and shows only the
-newest meaningful text activity. Press Enter to attach that exact session.
+newest meaningful text activity. Press Enter to inspect a session's details,
+then press Enter again there to attach that exact session.
 Use `agenthicc agents --run RUN_ID` for goal-run discovery; positional
 `agenthicc attach` arguments are session IDs and never select a workspace's
 most recent session. `agenthicc attach --run RUN_ID` is the explicit goal-run

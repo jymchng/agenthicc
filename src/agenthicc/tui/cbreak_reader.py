@@ -148,14 +148,34 @@ def raw_mode(fd: int) -> Generator[int, None, None]:
 # ── Keystroke reader ──────────────────────────────────────────────────────────
 
 
-def read_key(fd: int) -> tuple[Key, str]:
+def _wait_readable(fd: int, timeout: float | None, cancel_fd: int | None) -> bool:
+    """Wait for input, raising promptly if the optional cancellation pipe fires."""
+    watched = [fd] if cancel_fd is None else [fd, cancel_fd]
+    ready, _, _ = select.select(watched, [], [], timeout)
+    if cancel_fd is not None and cancel_fd in ready:
+        # Drain the wake byte so a backend may safely reuse its cancellation
+        # pipe for another read after resetting its lifecycle.
+        os.read(cancel_fd, 1)
+        raise OSError("terminal input stopped")
+    return fd in ready
+
+
+def _read_input(fd: int, size: int, cancel_fd: int | None) -> bytes:
+    if cancel_fd is not None:
+        _wait_readable(fd, None, cancel_fd)
+    return os.read(fd, size)
+
+
+def read_key(fd: int, *, cancel_fd: int | None = None) -> tuple[Key, str]:
     """Read one keystroke from *fd* and return ``(Key, char_or_empty)``.
 
-    Uses ``os.read(fd, 1)`` for raw bytes.  Escape sequences are parsed with a
+    Uses ``os.read(fd, 1)`` for raw bytes. Escape sequences are parsed with a
     50 ms peek timeout so a lone ESC is distinguished from cursor-key sequences.
-    Bracketed paste payloads are read in full (up to a 2 s timeout).
+    Bracketed paste payloads are read in full (up to a 2 s timeout). When
+    ``cancel_fd`` is supplied, it is watched alongside input so shutdown can
+    interrupt an otherwise idle blocking read.
     """
-    b = os.read(fd, 1)
+    b = _read_input(fd, 1, cancel_fd)
 
     if b == b"\x03":
         return (Key.CTRL_C, "")
@@ -179,20 +199,18 @@ def read_key(fd: int) -> tuple[Key, str]:
         return (Key.AT, "")
 
     if b == b"\x1b":
-        r, _, _ = select.select([fd], [], [], 0.05)
-        if not r:
+        if not _wait_readable(fd, 0.05, cancel_fd):
             return (Key.ESC, "")
-        b2 = os.read(fd, 1)
+        b2 = _read_input(fd, 1, cancel_fd)
         if b2 != b"[":
             return (Key.ESC, "")
 
         # CSI sequence — read until the final byte (letter or '~').
         seq = b""
         while True:
-            r_s, _, _ = select.select([fd], [], [], 0.05)
-            if not r_s:
+            if not _wait_readable(fd, 0.05, cancel_fd):
                 break
-            b_s = os.read(fd, 1)
+            b_s = _read_input(fd, 1, cancel_fd)
             seq += b_s
             if b_s[-1:] in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz~":
                 break
@@ -230,10 +248,9 @@ def read_key(fd: int) -> tuple[Key, str]:
             _TERM = b"\x1b[201~"
             paste_bytes = b""
             while True:
-                r_p, _, _ = select.select([fd], [], [], 2.0)
-                if not r_p:
+                if not _wait_readable(fd, 2.0, cancel_fd):
                     break
-                paste_bytes += os.read(fd, 4096)
+                paste_bytes += _read_input(fd, 4096, cancel_fd)
                 if _TERM in paste_bytes:
                     paste_bytes = paste_bytes[: paste_bytes.index(_TERM)]
                     break
@@ -258,9 +275,8 @@ def read_key(fd: int) -> tuple[Key, str]:
         n_extra = 0
 
     for _ in range(n_extra):
-        r, _, _ = select.select([fd], [], [], 0.05)
-        if r:
-            raw += os.read(fd, 1)
+        if _wait_readable(fd, 0.05, cancel_fd):
+            raw += _read_input(fd, 1, cancel_fd)
 
     try:
         ch = raw.decode("utf-8")

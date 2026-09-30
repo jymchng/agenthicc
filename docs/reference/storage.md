@@ -591,17 +591,30 @@ Background execution adds a local registry at `~/.agenthicc/background/`
 
 | Path | Owner | Contents | Recovery |
 |---|---|---|---|
-| `events.jsonl` | `background.BackgroundStore` | Ordered create/update/delete lifecycle events | Replayed on every read |
+| `events.jsonl` | `background.BackgroundStore` | Authoritative ordered create/update/delete lifecycle events | Full rebuild when the derived projection is missing or incompatible; same-inode appends replay only the complete tail |
+| `projection-v1.json` | `background.BackgroundStore` | Versioned derived session projection, ordering indexes, and event offset/sequence | Atomically replaced and fsync'd; rejected on schema/inode mismatch, truncation, invalid offset, or same-size mtime mismatch; safely rebuilt from `events.jsonl` |
 | `registry.lock` | `BackgroundStore` | Cross-process advisory lock | Recreated automatically |
 | `requests/<id>.json` | `BackgroundSupervisor` | Mode-600 worker launch request | Read once by the owned worker |
 | `trash/<id>-<nonce>/` | `BackgroundStore` | Exact deleted artifacts plus `manifest.json` | `agenthicc jobs restore <id>` |
 
 The background registry is a rebuildable index, not a second conversation or
-workflow journal. Session artifacts remain under `~/.agenthicc/sessions/<id>/`
-and are consumed by the existing session/kernel persistence code. Events are
-written with append and fsync semantics; malformed trailing records are
-ignored, while a deletion tombstone prevents an old worker from resurrecting a
-deleted session.
+workflow journal. `projection-v1.json` is only a cache: `events.jsonl` remains
+authoritative and recovery replays it whenever the cached schema or file
+identity no longer matches. A larger same-inode event log is compatible: only
+its appended tail is applied. Truncation, rotation, sequence gaps, or invalid
+snapshot metadata trigger a safe rebuild. Local writes and cross-process
+appends update the in-memory ordered projection incrementally. When replay
+detects a sequence mismatch, recovery bypasses the suspect snapshot and folds
+the authoritative event log once; it does not retry the same snapshot in a
+recursive loop. Snapshot cadence
+grows with the number of records to avoid rewriting a large projection after
+every small event batch. Session artifacts remain under
+`~/.agenthicc/sessions/<id>/` and
+are consumed by the existing session/kernel persistence code. Events are
+written with append and fsync semantics; an incomplete trailing line is not
+applied, and the next writer truncates only that partial tail before appending
+a new sequence. A deletion tombstone prevents an old worker from resurrecting
+a deleted session.
 
 Workers claim a lease before execution and heartbeat while active. A missing
 worker or expired heartbeat is shown as `orphaned`; the default restart policy

@@ -144,6 +144,7 @@ class BackgroundSupervisor:
             raise ValueError("trash_retention_days must be non-negative")
         self.trash_retention_days = trash_retention_days
         self.artifact_root = (artifact_root or Path.home() / ".agenthicc" / "sessions").expanduser()
+        self._recovery_cursor = ""
 
     def _active_count(self, cwd: str | None = None) -> int:
         return sum(
@@ -817,10 +818,14 @@ class BackgroundSupervisor:
     def restore_deleted(self, session_id: str) -> BackgroundSession:
         return self.store.restore_deleted(session_id)
 
-    def recover_stale(self, *, stale_after_s: float = 30.0) -> list[BackgroundSession]:
+    def _recover_stale_records(
+        self,
+        sessions: tuple[BackgroundSession, ...] | list[BackgroundSession],
+        stale_after_s: float,
+    ) -> list[BackgroundSession]:
         now = time.time()
         changed: list[BackgroundSession] = []
-        for session in self.store.list(include_archived=False):
+        for session in sessions:
             if session.status not in ACTIVE_STATUSES:
                 continue
             worker_missing = session.worker_pid is not None and not self._worker_process_matches(
@@ -830,6 +835,23 @@ class BackgroundSupervisor:
             if worker_missing or lease_expired:
                 changed.append(self.store.mark_orphaned(session.session_id))
         return changed
+
+    def recover_stale(self, *, stale_after_s: float = 30.0) -> list[BackgroundSession]:
+        """Reconcile every active record for explicit CLI/run-manager callers."""
+
+        return self._recover_stale_records(self.store.list(include_archived=False), stale_after_s)
+
+    def recover_stale_batch(
+        self, *, stale_after_s: float = 30.0, max_sessions: int = 1_024
+    ) -> list[BackgroundSession]:
+        """Inspect one bounded stable-ID slice for periodic TUI maintenance."""
+
+        if max_sessions < 1:
+            raise ValueError("max_sessions must be at least 1")
+        sessions, self._recovery_cursor = self.store._lifecycle_page_after(
+            self._recovery_cursor, max_sessions
+        )
+        return self._recover_stale_records(sessions, stale_after_s)
 
     def purge_expired_trash(self) -> list[str]:
         """Apply the configured recoverable-trash retention policy."""

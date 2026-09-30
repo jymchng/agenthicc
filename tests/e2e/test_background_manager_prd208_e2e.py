@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +21,7 @@ from agenthicc.background import (
 )
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
+from agenthicc.background.settings import BackgroundManagerSettings
 
 pytestmark = pytest.mark.e2e
 
@@ -42,12 +45,27 @@ async def test_ctrl_x_dispatches_without_confirmation_and_keeps_tui_responsive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = BackgroundStore(tmp_path / "background")
+    projection_ready = threading.Event()
+    query_page = store.query_page
+
+    def query_page_and_signal(**kwargs: object):
+        page = query_page(**kwargs)
+        projection_ready.set()
+        return page
+
+    store.query_page = query_page_and_signal  # type: ignore[method-assign]
     session = _session(tmp_path)
     store.create(session)
     deletion_started = asyncio.Event()
     deletion_finished = asyncio.Event()
+    attach_calls = 0
 
     class SlowSupervisor(BackgroundSupervisor):
+        def attach_foreground(self, session_id: str) -> BackgroundSession:
+            nonlocal attach_calls
+            attach_calls += 1
+            return super().attach_foreground(session_id)
+
         async def delete_async(
             self,
             session_ids: Sequence[str],
@@ -80,6 +98,8 @@ async def test_ctrl_x_dispatches_without_confirmation_and_keeps_tui_responsive(
             yield
 
         def read_key(self) -> tuple[Key, str]:
+            if self.keys and not projection_ready.wait(timeout=2.0):
+                raise TimeoutError("initial background projection did not load")
             return self.keys.pop(0)
 
         def restore(self) -> None:
@@ -112,5 +132,76 @@ async def test_ctrl_x_dispatches_without_confirmation_and_keeps_tui_responsive(
     assert deletion_started.is_set()
     assert deletion_finished.is_set()
     assert ticks > 0
+    assert attach_calls == 0
     assert store.get(session.session_id, include_deleted=True).status is SessionStatus.DELETED
     assert "confirm" not in console.export_text().lower()
+
+
+@pytest.mark.asyncio
+async def test_navigation_is_processed_while_projection_read_is_slow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    store.create(_session(tmp_path))
+    original_query = store.query_page
+    query_started = threading.Event()
+    query_finished = threading.Event()
+    key_processed_during_query = threading.Event()
+
+    def slow_query(**kwargs: object):
+        query_started.set()
+        time.sleep(0.2)
+        try:
+            return original_query(**kwargs)
+        finally:
+            query_finished.set()
+
+    store.query_page = slow_query  # type: ignore[method-assign]
+
+    class ScriptedBackend:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def is_interactive(self) -> bool:
+            return True
+
+        @contextmanager
+        def enter_raw_mode(self):
+            yield
+
+        def read_key(self) -> tuple[Key, str]:
+            self.calls += 1
+            if self.calls == 1:
+                if not query_started.wait(timeout=2.0):
+                    raise TimeoutError("projection query did not start")
+                return Key.CHAR, "j"
+            if not query_finished.wait(timeout=2.0):
+                raise TimeoutError("projection query did not finish")
+            return Key.ESC, ""
+
+        def restore(self) -> None:
+            return None
+
+    class RecordingManager(BackgroundManager):
+        def handle_key(self, key: object, ch: str = "") -> ManagerResult | None:
+            if ch == "j" and not query_finished.is_set():
+                key_processed_during_query.set()
+            return super().handle_key(key, ch)
+
+    backend = ScriptedBackend()
+    monkeypatch.setattr("agenthicc.tui.terminal.backend.get_backend", lambda: backend)
+    manager = RecordingManager(
+        Console(width=100, height=20, record=True),
+        store=store,
+        refresh_s=0.05,
+        manager_settings=BackgroundManagerSettings(
+            refresh_interval_s=0.05,
+            maintenance_interval_s=10.0,
+            frame_debounce_ms=0,
+        ),
+    )
+
+    result = await manager.run()
+
+    assert result == ManagerResult("exit")
+    assert key_processed_during_query.is_set()

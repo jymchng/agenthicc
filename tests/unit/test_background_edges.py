@@ -249,6 +249,7 @@ def test_manager_empty_navigation_and_unavailable_activity(tmp_path: Path) -> No
     Path(session.artifact_dir, "conversation.jsonl").write_text("bad\n{}\n", encoding="utf-8")
     store.create(session)
     manager.refresh(force=True)
+    assert manager.handle_key("ENTER") is None
     assert manager.handle_key("ENTER") is not None
     console.print(manager.render())
     assert "error summary" in console.export_text()

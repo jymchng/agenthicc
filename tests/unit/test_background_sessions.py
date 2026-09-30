@@ -258,6 +258,8 @@ def test_manager_paginates_sessions_and_enter_resumes_selected_record(tmp_path: 
     assert "session-2" in second_page
 
     manager.handle_key("END")
+    assert manager.handle_key("ENTER") is None
+    assert manager._detail_session_id == "session-4"
     result = manager.handle_key("ENTER")
     assert result == ManagerResult("attach", "session-4")
 

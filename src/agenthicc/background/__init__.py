@@ -13,9 +13,15 @@ from .model import (
     legal_transition,
 )
 from .deletion import DeleteFailure, DeleteResult
-from .store import BackgroundStore, InvalidSessionTransition, SessionNotFound
+from .store import BackgroundPage, BackgroundStore, InvalidSessionTransition, SessionNotFound
+from .manager_service import BackgroundManagerService, ManagerOperationResult
 from .supervisor import BackgroundSupervisor
-from .settings import BackgroundSettings, background_enabled, load_background_settings
+from .settings import (
+    BackgroundManagerSettings,
+    BackgroundSettings,
+    background_enabled,
+    load_background_settings,
+)
 from .worker import BackgroundInputService
 from .terminals import (
     TerminalManager,
@@ -31,12 +37,16 @@ __all__ = [
     "ACTIVE_STATUSES",
     "TERMINAL_STATUSES",
     "BackgroundSession",
+    "BackgroundPage",
+    "BackgroundManagerService",
     "DeleteFailure",
     "DeleteResult",
+    "ManagerOperationResult",
     "BackgroundStore",
     "BackgroundSupervisor",
     "BackgroundInputService",
     "BackgroundSettings",
+    "BackgroundManagerSettings",
     "InvalidSessionTransition",
     "SessionNotFound",
     "SessionStatus",

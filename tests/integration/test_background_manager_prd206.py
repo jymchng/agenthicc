@@ -94,19 +94,19 @@ def test_external_session_change_invalidates_projection_without_rebuilding_twice
     manager = BackgroundManager(Console(), store=store)
     manager.refresh(force=True)
 
-    reads = 0
-    original_read = store._read_events
+    tail_reads = 0
+    original_read = store._read_event_tail
 
-    def counted_read() -> list[dict[str, object]]:
-        nonlocal reads
-        reads += 1
-        return original_read()
+    def counted_read(offset: int) -> tuple[list[dict[str, object]], int, bytes]:
+        nonlocal tail_reads
+        tail_reads += 1
+        return original_read(offset)
 
-    monkeypatch.setattr(store, "_read_events", counted_read)
+    monkeypatch.setattr(store, "_read_event_tail", counted_read)
     other = BackgroundStore(store.root)
     other.update("session-0000", latest_activity="changed externally")
     manager.refresh(force=True)
     manager.refresh(force=True)
 
-    assert reads == 1
+    assert tail_reads == 1
     assert store.get("session-0000").latest_activity == "changed externally"

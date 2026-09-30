@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+import os
+import threading
 import types
 from types import SimpleNamespace
 
@@ -152,10 +154,44 @@ def test_posix_backend_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr(posix, "_resolve_fd", lambda: 4)
     monkeypatch.setattr(
-        "agenthicc.tui.terminal.posix_backend._read_key", lambda fd: (Key.CHAR, "x")
+        "agenthicc.tui.terminal.posix_backend._read_key",
+        lambda fd, **_kwargs: (Key.CHAR, "x"),
     )
     assert posix.is_interactive() is True
     assert posix.read_key() == (Key.CHAR, "x")
+    posix.close()
+
+
+def test_posix_backend_restore_interrupts_idle_key_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_fd, input_writer = os.pipe()
+    backend_instance = PosixBackend()
+    monkeypatch.setattr(backend_instance, "_resolve_fd", lambda: input_fd)
+    backend_instance._ensure_cancel_pipe()
+    finished = threading.Event()
+    errors: list[OSError] = []
+
+    def read_key() -> None:
+        try:
+            backend_instance.read_key()
+        except OSError as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    reader = threading.Thread(target=read_key)
+    reader.start()
+    backend_instance.restore()
+    reader.join(timeout=0.5)
+    try:
+        assert finished.is_set()
+        assert not reader.is_alive()
+        assert errors and "stopped" in str(errors[0])
+    finally:
+        backend_instance.close()
+        os.close(input_fd)
+        os.close(input_writer)
 
 
 def test_backend_factory_and_posix_fd_failure(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -62,15 +62,28 @@ current page and visible range; selection is stored by session ID, so refreshes
 cannot retarget an action to a different row. The selected row is marked with
 `▶` and the details panel is labelled `Details · selected`.
 The table's `WS` value and the selected-session details' `Dir:` value contain
-only the workspace directory name, not its full path.
+only the workspace directory name, not its full path. Press Enter on a row to
+open a dedicated details page; it shows the workspace directory name, lifecycle
+timestamps, workflow and phase history, provider/model, recent activity, and
+failure information. Press Enter again there to attach that exact session.
+Press Esc to return to the table. `[ ]` scrolls the detail fields when they do
+not fit in the terminal.
 
-The manager shows state, workflow, workspace, phase, failure information, and
-approval waits. Its default activity field contains only the newest meaningful
-redacted text event; repeated tool/lifecycle events are omitted. It uses a
-cached durable session projection and a cached bounded journal tail, so idle
-repaints do not fold the complete registry or reread the transcript. Stale
-worker recovery runs on a separate maintenance cadence. It can also be
-rendered safely without a TTY, which is useful for scripts and diagnostics.
+The manager paints a loading viewport immediately, then loads a page through a
+bounded background service. Navigation and lifecycle operations do not wait
+for registry reads, process checks, artifact moves, or journal parsing. Its
+projection uses an atomic versioned snapshot and incrementally replays newer
+JSONL events; the event log remains authoritative and malformed or incompatible
+snapshots are rebuilt. The selected activity tail is read asynchronously and
+redacted before it reaches the details panel. Long activity is shortened to one
+visible line so `Updated` and identity details remain visible. Refreshes and
+terminal frames are coalesced, and stale worker recovery runs independently of
+the repaint cadence. Projection folding is serialized per store so refresh and
+maintenance threads cannot race while rebuilding shared indexes. Startup
+maintenance waits until the first session page is ready. If an index read
+fails, the manager shows the error and retry hint; automatic retries back off
+instead of repeatedly hammering the store. The non-TTY listing and JSON output
+remain complete.
 
 Useful keys:
 
@@ -79,7 +92,10 @@ Useful keys:
 | `↑`/`k`, `↓`/`j` | Move selection; moving across a boundary changes page |
 | `Home`/`End` | Select the first/last session |
 | `PageUp`/`PageDown` | Move one session page |
-| `Enter` | Attach the exact selected session in the normal foreground TUI, loading its transcript |
+| `Enter` | Open the selected session's detailed page |
+| `Enter` (details page) | Attach that exact session in the normal foreground TUI, loading its transcript |
+| `Esc` (details page) | Return to the session table |
+| `[`/`]` (details page) | Scroll the detail fields |
 | `r` | Refresh |
 | `c` | Cancel the selected worker |
 | `a` | Archive a terminal session |
@@ -89,7 +105,15 @@ Useful keys:
 | `t` | Include recoverable trash in the list |
 | `u` | Restore a selected deleted session |
 | `?` | Show help |
-| `q`/`Esc` | Leave the manager without stopping workers |
+| `q` | Leave the manager without stopping workers |
+| `Esc` (session table) | Leave the manager without stopping workers |
+
+If a session is deleted while its details page is open, the second Enter never
+attaches the row that shifted into its place. The manager validates the exact
+session ID against the durable store before handoff; deleted or missing
+sessions are rejected in place, and a validation read never stops or
+foregrounds a worker. Only after validation does the CLI perform the normal
+single-owner foreground handoff.
 
 Foregrounding is an ownership handoff, not a second observer. For an active
 session the manager stops that session's worker and owned terminals, verifies
@@ -156,11 +180,24 @@ terminal_max_output_bytes = 64000
 terminal_wall_timeout_s = 0.0
 terminal_cancel_grace_s = 5.0
 terminal_retention_days = 30
+
+[background.manager]
+refresh_interval_s = 0.25
+maintenance_interval_s = 5.0
+projection_batch_size = 256
+activity_tail_bytes = 64000
+frame_debounce_ms = 16
+max_in_flight_operations = 4
+metrics = false
 ```
 
 Defaults are conservative. Invalid values fail closed before a worker is
 created. `--set background.max_workers=1` is supported for one invocation, and
 `AGENTHICC_DISABLE_BACKGROUND=1` is an emergency local disable switch.
+Manager settings are independently validated and bounded; they control only
+refresh, display, and concurrency cadence, not locking, ownership, or durable
+event recording. Set `metrics = true` to collect redacted timing aggregates
+while diagnosing latency.
 
 The background registry is an append-only, fsync'd JSONL event stream. It is a
 derived lifecycle index; the canonical conversation, workflow, kernel, and
