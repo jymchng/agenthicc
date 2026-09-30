@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import signal
@@ -11,11 +12,17 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TypedDict
 from .deletion import DeleteFailure, DeleteResult
-from .model import ACTIVE_STATUSES, BackgroundSession, SessionStatus
+from .model import (
+    ACTIVE_STATUSES,
+    BackgroundSession,
+    ModeApplicationStatus,
+    SessionStatus,
+)
 from .store import (
     BackgroundStore,
     InvalidSessionTransition,
@@ -34,6 +41,13 @@ class _CancellationMetadata(TypedDict, total=False):
     exit_reason: str
     worker_finalization_attempts: int
     lease_token: str
+
+
+class _WorkerProcessState(str, Enum):
+    LIVE = "live"
+    DEAD = "dead"
+    MISMATCHED = "mismatched"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -99,7 +113,7 @@ class BackgroundRequest:
             else (),
             run_id=str(value.get("run_id", "")),
             detached_goal=bool(value.get("detached_goal", False)),
-            mode_name=raw_mode_name if isinstance(raw_mode_name, str) else None,
+            mode_name=raw_mode_name[:128] if isinstance(raw_mode_name, str) else None,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -117,7 +131,7 @@ class BackgroundRequest:
             "source": self.source,
             "run_id": self.run_id,
             "detached_goal": self.detached_goal,
-            "mode_name": self.mode_name,
+            "mode_name": self.mode_name[:128] if isinstance(self.mode_name, str) else None,
         }
 
 
@@ -296,6 +310,7 @@ class BackgroundSupervisor:
             branch=branch,
             base_commit=base_commit,
             detached_goal=detached_goal,
+            requested_mode_name=mode_name,
         )
         self.store.create(session)
         return self._launch(request, session)
@@ -333,6 +348,7 @@ class BackgroundSupervisor:
                 intent=intent,
                 artifact_dir=str(self.artifact_root / session_id),
                 run_id=run_id,
+                requested_mode_name=mode_name,
             )
             self.store.create(existing)
         elif existing.status in ACTIVE_STATUSES:
@@ -368,6 +384,16 @@ class BackgroundSupervisor:
                 SessionStatus.STARTING,
                 resume_marker=f"resume:{existing.attempt + 1}",
             )
+        existing = self.store.update(
+            session_id,
+            expected_status=existing.status,
+            expected_attempt=existing.attempt,
+            requested_mode_name=mode_name,
+            mode_name="",
+            mode_application_status="pending",
+            mode_application_attempt=existing.attempt + 1,
+            mode_application_error="",
+        )
         if not start:
             # Persist the request before a caller releases a foreground owner.
             # ``start`` then launches this exact request after the owner handoff
@@ -399,6 +425,24 @@ class BackgroundSupervisor:
             return explicit_mode_name
         from agenthicc.tui.runtime.session_log import load_session_mode  # noqa: PLC0415
 
+        try:
+            session = self.store.get(session_id, include_deleted=True)
+        except KeyError:
+            session = None
+        if session is not None:
+            if (
+                session.mode_application_status is ModeApplicationStatus.APPLIED
+                and session.mode_name
+            ):
+                # Normally session metadata already contains this value. If
+                # it was lost/corrupted, the attested canonical mode remains
+                # sufficient to recover the worker's runtime selection.
+                return None if load_session_mode(session_id) is not None else session.mode_name
+            if session.requested_mode_name is not None:
+                # New-format records distinguish an unconsumed explicit
+                # request from placeholder metadata such as register_session's
+                # initial Safe value. Do not let that placeholder erase it.
+                return session.requested_mode_name
         if load_session_mode(session_id) is not None:
             return None
         try:
@@ -603,20 +647,53 @@ class BackgroundSupervisor:
         fails closed and marks the session for reconciliation.
         """
 
+        return self._worker_process_state(session) is _WorkerProcessState.LIVE
+
+    def _worker_process_state(self, session: BackgroundSession) -> _WorkerProcessState:
+        """Distinguish verified liveness from death and uninspectable PIDs."""
+
         pid = session.worker_pid
-        if pid is None or not self._alive(pid) or os.name == "nt":
-            return False
+        if pid is None:
+            return _WorkerProcessState.UNKNOWN
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return _WorkerProcessState.DEAD
+        except PermissionError:
+            return _WorkerProcessState.UNKNOWN
+        except OSError as exc:
+            return (
+                _WorkerProcessState.DEAD
+                if exc.errno == errno.ESRCH
+                else _WorkerProcessState.UNKNOWN
+            )
+        if os.name == "nt":
+            # PID existence alone does not prove this is the worker for this
+            # session. Keep it unknown until a platform identity adapter exists.
+            return _WorkerProcessState.UNKNOWN
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+            end_comm = stat.rfind(")")
+            fields = stat[end_comm + 2 :].split()
+            if fields and fields[0] == "Z":
+                return _WorkerProcessState.DEAD
+        except FileNotFoundError:
+            return _WorkerProcessState.DEAD
+        except (OSError, UnicodeError):
+            return _WorkerProcessState.UNKNOWN
         try:
             raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except FileNotFoundError:
+            return _WorkerProcessState.DEAD
         except OSError:
-            return False
+            return _WorkerProcessState.UNKNOWN
         arguments = [part.decode("utf-8", errors="replace") for part in raw.split(b"\0") if part]
         if not any(
             argument in {"agenthicc.background.worker", "agenthicc/background/worker.py"}
             or argument.endswith("/agenthicc/background/worker.py")
             for argument in arguments
         ):
-            return False
+            return _WorkerProcessState.MISMATCHED
 
         def _argument_after(flag: str) -> str | None:
             try:
@@ -627,7 +704,7 @@ class BackgroundSupervisor:
         request_argument = _argument_after("--request-file")
         store_argument = _argument_after("--store-root")
         if request_argument is None or store_argument is None:
-            return False
+            return _WorkerProcessState.MISMATCHED
         request_path = Path(request_argument)
         store_path = Path(store_argument)
         if not request_path.is_absolute():
@@ -635,12 +712,13 @@ class BackgroundSupervisor:
         if not store_path.is_absolute():
             store_path = Path(session.cwd) / store_path
         try:
-            return (
+            matches = (
                 request_path.resolve() == self._request_path(session.session_id).resolve()
                 and store_path.resolve() == self.store.root.resolve()
             )
         except OSError:
-            return False
+            return _WorkerProcessState.UNKNOWN
+        return _WorkerProcessState.LIVE if matches else _WorkerProcessState.MISMATCHED
 
     @staticmethod
     def _cancelled_metadata(session: BackgroundSession) -> _CancellationMetadata:
@@ -855,12 +933,79 @@ class BackgroundSupervisor:
         for session in sessions:
             if session.status not in ACTIVE_STATUSES:
                 continue
-            worker_missing = session.worker_pid is not None and not self._worker_process_matches(
-                session
+            heartbeat_expired = bool(
+                session.last_active and now - session.last_active > stale_after_s
             )
-            lease_expired = session.last_active and now - session.last_active > stale_after_s
-            if worker_missing or lease_expired:
-                changed.append(self.store.mark_orphaned(session.session_id))
+            process_state = self._worker_process_state(session)
+            if process_state in {_WorkerProcessState.DEAD, _WorkerProcessState.MISMATCHED}:
+                try:
+                    changed.append(
+                        self.store.mark_orphaned(
+                            session.session_id,
+                            expected_attempt=session.attempt,
+                            expected_lease_token=session.lease_token or None,
+                            expected_status=session.status,
+                            expected_last_active=session.last_active,
+                        )
+                    )
+                except InvalidSessionTransition:
+                    # A heartbeat or a new attempt won the race with process
+                    # inspection. Its newer state is reconciled next pass.
+                    continue
+                continue
+
+            if heartbeat_expired:
+                if session.worker_pid is None and session.status in {
+                    SessionStatus.QUEUED,
+                    SessionStatus.STARTING,
+                    SessionStatus.RETRYING,
+                }:
+                    try:
+                        changed.append(
+                            self.store.mark_orphaned(
+                                session.session_id,
+                                expected_attempt=session.attempt,
+                                expected_status=session.status,
+                                expected_last_active=session.last_active,
+                            )
+                        )
+                    except InvalidSessionTransition:
+                        continue
+                    continue
+                if not session.heartbeat_stale:
+                    try:
+                        changed.append(
+                            self.store.update(
+                                session.session_id,
+                                expected_attempt=session.attempt,
+                                expected_lease_token=session.lease_token or None,
+                                expected_status=session.status,
+                                expected_last_active=session.last_active,
+                                heartbeat_stale=True,
+                            )
+                        )
+                    except InvalidSessionTransition:
+                        continue
+                # A verified live worker is not orphaned for a delayed
+                # heartbeat. Unknown identity is also insufficient evidence
+                # for a terminal transition; retain the active record and
+                # surface the stale-heartbeat health flag instead.
+                continue
+
+            if session.heartbeat_stale:
+                try:
+                    changed.append(
+                        self.store.update(
+                            session.session_id,
+                            expected_attempt=session.attempt,
+                            expected_lease_token=session.lease_token or None,
+                            expected_status=session.status,
+                            expected_last_active=session.last_active,
+                            heartbeat_stale=False,
+                        )
+                    )
+                except InvalidSessionTransition:
+                    continue
         return changed
 
     def recover_stale(self, *, stale_after_s: float = 30.0) -> list[BackgroundSession]:

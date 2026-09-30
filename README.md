@@ -135,9 +135,16 @@ alive and can accept another message after a turn becomes idle.
 
 An explicit `--mode MODE` also applies to detached goals and background jobs,
 for example `agenthicc --mode Yolo --goal "Implement OAuth" --detach`. The
-worker selects that mode through normal session initialization; the background
-session details show the effective canonical mode. On resume, the persisted
-session mode is used unless another `--mode` is explicitly supplied.
+requested mode is stored before the child starts; session and run status show
+it as pending until normal session initialization resolves and durably applies
+the canonical mode. For example, `YOLO` is displayed as effective `Yolo` only
+after application. Startup fails closed if mode resolution or its durable
+attestation fails. Inspect the requested/effective/status fields with
+`agenthicc jobs status SESSION_ID --json` or `agenthicc runs show RUN_ID --json`.
+On retry, an unconsumed explicit mode is retained even if startup created
+placeholder Safe metadata. After successful initialization, the persisted
+session mode is used unless another `--mode` is explicitly supplied. Choosing
+Yolo does not enable `--dangerously-skip-permissions`.
 
 See the [goal-runs guide](./docs/guides/goal-runs.md) for run identity,
 worker correlation, recovery, and JSON control output.

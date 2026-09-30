@@ -109,9 +109,13 @@ def test_enter_refuses_a_deleted_selection_instead_of_shifting_target(tmp_path: 
 def test_enter_opens_a_detailed_page_then_attaches_on_second_enter(tmp_path: Path) -> None:
     store = BackgroundStore(tmp_path / "background")
     session = _session(tmp_path, "inspect-me", 1_780_000_000.0).evolve(
+        attempt=1,
         provider="openai",
         model="test-model",
         mode_name="Yolo",
+        requested_mode_name="Yolo",
+        mode_application_status="applied",
+        mode_application_attempt=1,
         latest_activity="Phase completed",
         phase_history=("design", "implement"),
     )

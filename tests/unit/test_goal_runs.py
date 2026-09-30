@@ -46,6 +46,31 @@ def test_goal_run_identity_is_separate_and_round_trips() -> None:
     assert restored.agents[0].exit_reason == "workflow_complete"
 
 
+def test_run_agent_projection_never_exposes_unattested_mode_as_effective() -> None:
+    pending = RunAgentRecord.from_mapping(
+        {
+            "agent_id": "main-session",
+            "run_id": "run_mode",
+            "requested_mode_name": "YOLO",
+            "mode_name": "Yolo",
+            "mode_application_status": "pending",
+        }
+    )
+    assert pending.requested_mode_name == "YOLO"
+    assert pending.mode_name == ""
+    assert pending.mode_application_status == "pending"
+
+    malformed_applied = RunAgentRecord.from_mapping(
+        {
+            "agent_id": "main-session",
+            "run_id": "run_mode",
+            "mode_application_status": "applied",
+        }
+    )
+    assert malformed_applied.mode_name == ""
+    assert malformed_applied.mode_application_status == "pending"
+
+
 def test_goal_run_projection_records_tasks_and_worktrees() -> None:
     run = GoalRun.create("Build an API", repository="/repo", run_id="run_projection")
     updated = run.evolve(

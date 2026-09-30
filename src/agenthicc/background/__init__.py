@@ -8,7 +8,9 @@ existing runners and workflow registry.
 from .model import (
     ACTIVE_STATUSES,
     TERMINAL_STATUSES,
+    BackgroundAttempt,
     BackgroundSession,
+    ModeApplicationStatus,
     SessionStatus,
     legal_transition,
 )
@@ -36,7 +38,9 @@ from .terminals import (
 __all__ = [
     "ACTIVE_STATUSES",
     "TERMINAL_STATUSES",
+    "BackgroundAttempt",
     "BackgroundSession",
+    "ModeApplicationStatus",
     "BackgroundPage",
     "BackgroundManagerService",
     "DeleteFailure",

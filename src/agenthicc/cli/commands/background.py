@@ -79,9 +79,35 @@ def _public_session(session: object) -> dict[str, object]:
         result.pop("lease_token", None)
         redactor = _Redactor()
         result.pop("input_value", None)
-        for key in ("title", "latest_activity", "error", "approval_request", "input_request"):
+        for key in (
+            "title",
+            "latest_activity",
+            "error",
+            "approval_request",
+            "input_request",
+            "mode_application_error",
+        ):
             if key in result:
                 result[key] = redactor.value(result[key], key)
+        history = result.get("attempt_history")
+        if isinstance(history, list):
+            sanitized_history: list[dict[str, object]] = []
+            for entry in history:
+                if not isinstance(entry, dict):
+                    continue
+                sanitized = dict(entry)
+                for key in (
+                    "error",
+                    "latest_activity",
+                    "failure_category",
+                    "exit_reason",
+                    "mode_application_error",
+                ):
+                    value = sanitized.get(key)
+                    if isinstance(value, str):
+                        sanitized[key] = redactor.value(value, key)
+                sanitized_history.append(sanitized)
+            result["attempt_history"] = sanitized_history
         return result
     return {}
 
@@ -336,8 +362,31 @@ def jobs_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
         print(f"Session: {payload.get('session_id', session_id)}")
         print(f"State: {payload.get('status', 'not_found')}")
         print(f"Title: {payload.get('title', '')}")
-        if payload.get("mode_name"):
+        mode_application = payload.get("mode_application_status", "pending")
+        if mode_application == "applied" and payload.get("mode_name"):
             print(f"Mode: {payload['mode_name']}")
+        elif mode_application == "failed":
+            requested_mode = payload.get("requested_mode_name")
+            print(
+                "Mode: failed"
+                + (
+                    f" (requested: {requested_mode or '<empty>'})"
+                    if requested_mode is not None
+                    else ""
+                )
+            )
+        else:
+            requested_mode = payload.get("requested_mode_name")
+            print(
+                "Mode: pending"
+                + (
+                    f" (requested: {requested_mode or '<empty>'})"
+                    if requested_mode is not None
+                    else " (default/persisted resolution)"
+                )
+            )
+        if payload.get("mode_application_error"):
+            print(f"Mode error: {payload['mode_application_error']}")
         print(f"Activity: {payload.get('latest_activity', '')}")
         if payload.get("error"):
             print(f"Error: {payload['error']}")

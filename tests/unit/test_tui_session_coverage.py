@@ -875,3 +875,25 @@ async def test_build_session_context_fresh_and_resume_paths(
     assert explicit_mode.mode_manager.active_name == "Safe"
     explicit_mode.session_log.close()
     explicit_mode.session_memory.close()
+
+    uppercase_yolo = await _build_session_context(
+        session_id,
+        [],
+        headless=True,
+        mode_name="YOLO",
+    )
+    assert uppercase_yolo.mode_manager.active_name == "Yolo"
+    assert uppercase_yolo.app_state.active_mode().name == "Yolo"
+    uppercase_yolo.session_log.close()
+    uppercase_yolo.session_memory.close()
+
+    default_mode = await _build_session_context(
+        None,
+        [],
+        headless=True,
+        workflow_name="startup_workflow",
+    )
+    assert default_mode.mode_manager.active_name == "Safe"
+    assert default_mode.app_state.active_mode().name == "Safe"
+    default_mode.session_log.close()
+    default_mode.session_memory.close()

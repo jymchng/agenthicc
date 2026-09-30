@@ -51,15 +51,37 @@ def _manager(ctx: CLIContext) -> GoalRunManager:
 
 
 def _json_or_text(run: GoalRun, *, json_output: bool, detached: bool = False) -> None:
+    main_agent = next((agent for agent in run.agents if agent.role == "main"), None)
+    mode_summary: dict[str, object] | None = None
+    if main_agent is not None:
+        mode_summary = {
+            "requested": main_agent.requested_mode_name,
+            "effective": main_agent.mode_name or None,
+            "status": main_agent.mode_application_status,
+        }
     if json_output:
         payload = run.to_dict()
         payload["detached"] = detached
+        if mode_summary is not None:
+            payload["mode"] = mode_summary
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
     print("Agenthicc detached run started" if detached else "Agenthicc goal run started")
     print(f"\nRun ID:  {run.run_id}")
     print(f"Goal:    {run.goal}")
     print(f"Status:  {run.status.value}")
+    if mode_summary is not None:
+        mode_status = str(mode_summary["status"])
+        if mode_status == "applied":
+            print(f"Mode:    {mode_summary['effective']}")
+        else:
+            raw_requested = mode_summary["requested"]
+            requested = (
+                "default/persisted resolution"
+                if raw_requested is None
+                else str(raw_requested) or "<empty>"
+            )
+            print(f"Mode:    {mode_status} ({requested})")
     if run.main_session_id:
         print(f"Session ID: {run.main_session_id}")
     if detached:
@@ -140,6 +162,7 @@ async def _run_attached_goal(ctx: CLIContext, manager: GoalRunManager, run: Goal
                     session_id = str(session_ctx.session_id)
                     if session_id:
                         setattr(session_ctx, "goal_run_id", run.run_id)
+                        effective_mode = session_ctx.mode_manager.active_name
                         manager.store.update(
                             run.run_id,
                             status=GoalRunStatus.RUNNING,
@@ -155,6 +178,9 @@ async def _run_attached_goal(ctx: CLIContext, manager: GoalRunManager, run: Goal
                                 role="main",
                                 session_id=session_id,
                                 status="running",
+                                requested_mode_name=ctx.mode_name,
+                                mode_name=effective_mode,
+                                mode_application_status="applied",
                                 started_at=run.created_at,
                                 last_heartbeat_at=run.created_at,
                                 last_activity_at=run.created_at,
@@ -182,6 +208,9 @@ async def _run_attached_goal(ctx: CLIContext, manager: GoalRunManager, run: Goal
                         role="main",
                         session_id=session_id,
                         status="completed",
+                        requested_mode_name=ctx.mode_name,
+                        mode_name=session._ctx.mode_manager.active_name,
+                        mode_application_status="applied",
                         completed_at=completed_at,
                         last_activity_at=completed_at,
                     ),

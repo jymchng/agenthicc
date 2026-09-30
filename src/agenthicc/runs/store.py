@@ -129,6 +129,31 @@ class RunStore:
                         )
                     except ValueError:
                         continue
+            elif kind == "session_attempt_projected" and run_id in runs:
+                raw_attempt = payload.get("attempt")
+                session_id = payload.get("session_id")
+                raw_agent = payload.get("agent")
+                raw_changes = payload.get("changes")
+                if (
+                    not isinstance(raw_attempt, int)
+                    or isinstance(raw_attempt, bool)
+                    or not isinstance(session_id, str)
+                    or not isinstance(raw_agent, Mapping)
+                    or not isinstance(raw_changes, Mapping)
+                ):
+                    continue
+                current = runs[run_id]
+                previous = next(
+                    (item for item in current.agents if item.session_id == session_id), None
+                )
+                if previous is not None and previous.attempt > raw_attempt:
+                    continue
+                try:
+                    runs[run_id] = current.evolve(**dict(raw_changes)).with_agent(
+                        RunAgentRecord.from_mapping(raw_agent)
+                    )
+                except (TypeError, ValueError):
+                    continue
         return runs
 
     def create(self, run: GoalRun) -> GoalRun:
@@ -184,3 +209,39 @@ class RunStore:
                 {"run_id": run_id, "agent": agent.to_dict()},
             )
         return updated
+
+    def project_session_attempt(
+        self,
+        run_id: str,
+        session_id: str,
+        attempt: int,
+        *,
+        agent: RunAgentRecord,
+        **changes: object,
+    ) -> GoalRun:
+        """Atomically project one session attempt unless a newer one won."""
+
+        if not session_id or attempt < 0:
+            raise ValueError("session attempt projection requires a valid identity")
+        if agent.session_id != session_id or agent.attempt != attempt:
+            raise ValueError("agent identity/attempt does not match session projection")
+        with self._lock():
+            current = self.get(run_id)
+            previous = next(
+                (item for item in current.agents if item.session_id == session_id), None
+            )
+            if previous is not None and previous.attempt > attempt:
+                return current
+            updated = current.evolve(**changes).with_agent(agent)
+            serialized = updated.to_dict(include_agents=False)
+            self._append(
+                "session_attempt_projected",
+                {
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "attempt": attempt,
+                    "changes": serialized,
+                    "agent": agent.to_dict(),
+                },
+            )
+            return updated

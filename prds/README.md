@@ -79,6 +79,8 @@ against the current source before implementing them.
 - [PRD-208 — Reliable, responsive `CTRL+X` deletion in `agenthicc agents`](prd-208-reliable-ctrl-x-session-deletion.md)
 - [PRD-209 — Low-latency, non-blocking `agenthicc agents` TUI](prd-209-low-latency-agents-tui.md)
 - [PRD-210 — Preserve explicit modes in detached background runs](prd-210-preserve-explicit-mode-in-detached-runs.md)
+- [PRD-211 — Keep resumed session status and activity attempt-consistent](prd-211-session-attempt-status-and-activity-consistency.md)
+- [PRD-212 — Make detached goal mode authoritative before execution](prd-212-authoritative-mode-before-detached-goal-execution.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -396,6 +398,19 @@ transient transport retry semantics independent, and requires one durable
 paused checkpoint at the same phase after exhaustion. It also raises the
 default `ask_user` wait from 60 to 300 seconds across configuration, TUI,
 background, headless, generated-workflow, and result-documentation paths.
+
+PRD-211 investigates and specifies an attempt-aware fix for background
+sessions and goal runs that display stale errors or `orphaned` state after a
+worker has resumed. It separates `session_id` execution identity from
+`run_id` aggregation, preserves old errors as attempt history, prevents a
+late heartbeat alone from orphaning a verified-live process, and makes
+session/run/TUI projections reflect current-attempt state.
+
+PRD-212 implements attempt-scoped mode attestation for detached runs. The
+requested mode is durable before launch; the canonical effective mode is
+recorded only after production session initialization and before worker
+dispatch. CLI/TUI projections distinguish pending, applied, and failed mode
+state, and startup fails closed if the mode cannot be attested.
 
 ## Existing PRDs
 

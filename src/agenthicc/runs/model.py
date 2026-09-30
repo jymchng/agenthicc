@@ -82,6 +82,12 @@ class RunAgentRecord:
     attention_reason: str = ""
     exit_code: int | None = None
     exit_reason: str = ""
+    attempt: int = 0
+    heartbeat_stale: bool = False
+    requested_mode_name: str | None = None
+    mode_name: str = ""
+    mode_application_status: str = "pending"
+    mode_application_error: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -108,6 +114,12 @@ class RunAgentRecord:
             "attention_reason": self.attention_reason,
             "exit_code": self.exit_code,
             "exit_reason": self.exit_reason,
+            "attempt": self.attempt,
+            "heartbeat_stale": self.heartbeat_stale,
+            "requested_mode_name": self.requested_mode_name,
+            "mode_name": self.mode_name,
+            "mode_application_status": self.mode_application_status,
+            "mode_application_error": self.mode_application_error,
         }
 
     @classmethod
@@ -123,6 +135,21 @@ class RunAgentRecord:
             if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool)
             else None
         )
+        raw_attempt = value.get("attempt")
+        attempt = (
+            raw_attempt if isinstance(raw_attempt, int) and not isinstance(raw_attempt, bool) else 0
+        )
+        raw_heartbeat_stale = value.get("heartbeat_stale")
+        heartbeat_stale = raw_heartbeat_stale if isinstance(raw_heartbeat_stale, bool) else False
+        raw_requested_mode = value.get("requested_mode_name")
+        mode_status = _text(value.get("mode_application_status"), "pending", limit=32)
+        if mode_status not in {"pending", "applied", "failed"}:
+            mode_status = "pending"
+        mode_name = _text(value.get("mode_name"), limit=128)
+        if mode_status != "applied" or not mode_name:
+            mode_name = ""
+            if mode_status == "applied":
+                mode_status = "pending"
         return cls(
             agent_id=agent_id,
             run_id=_text(value.get("run_id")),
@@ -146,6 +173,16 @@ class RunAgentRecord:
             attention_reason=_text(value.get("attention_reason"), limit=2_000),
             exit_code=exit_code,
             exit_reason=_text(value.get("exit_reason"), limit=128),
+            attempt=attempt,
+            heartbeat_stale=heartbeat_stale,
+            requested_mode_name=(
+                _text(raw_requested_mode, limit=128)
+                if isinstance(raw_requested_mode, str)
+                else None
+            ),
+            mode_name=mode_name,
+            mode_application_status=mode_status,
+            mode_application_error=_text(value.get("mode_application_error"), limit=1_024),
         )
 
 

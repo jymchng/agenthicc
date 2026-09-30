@@ -101,6 +101,7 @@ def test_finalizer_completes_a_racing_cancellation(tmp_path: Path) -> None:
         store,
         request,
         lease_token="lease",
+        expected_attempt=store.get("cancel-race").attempt,
         outcome=_WorkerOutcome(
             status=SessionStatus.COMPLETED,
             error=None,
@@ -147,6 +148,7 @@ def test_finalizer_projects_terminal_metadata_to_goal_run(
         store,
         request,
         lease_token="lease",
+        expected_attempt=store.get(request.session_id).attempt,
         outcome=_WorkerOutcome(
             status=SessionStatus.COMPLETED,
             error=None,
@@ -303,6 +305,7 @@ async def test_detached_worker_retains_pid_and_writes_one_exit_event(
         store,
         request,
         lease_token="stale",
+        expected_attempt=completed.attempt,
         outcome=worker._WorkerOutcome(
             status=SessionStatus.COMPLETED,
             error=None,

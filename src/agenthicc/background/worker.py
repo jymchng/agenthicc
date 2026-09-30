@@ -19,7 +19,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Mapping, TypedDict
 
-from agenthicc.background.model import BackgroundSession, SessionStatus
+from agenthicc.background.model import (
+    BackgroundSession,
+    ModeApplicationStatus,
+    SessionStatus,
+)
 from agenthicc.background.store import BackgroundStore, InvalidSessionTransition
 from agenthicc.cli.context import CLIContext, CLIFlags
 from agenthicc.config import DEFAULT_QUESTION_TIMEOUT_S
@@ -102,7 +106,7 @@ class WorkerRequest:
             source=str(value.get("source", "cli")),
             detached_goal=bool(value.get("detached_goal", False)),
             run_id=str(value.get("run_id", "")),
-            mode_name=raw_mode_name if isinstance(raw_mode_name, str) else None,
+            mode_name=raw_mode_name[:128] if isinstance(raw_mode_name, str) else None,
         )
 
 
@@ -157,6 +161,8 @@ class _FinalizationChanges(TypedDict, total=False):
     lease_token: str
     current_phase: str
     phase_history: tuple[str, ...]
+    mode_application_status: ModeApplicationStatus
+    mode_application_error: str
 
 
 def _signal_value(value: object, default: object = None) -> object:
@@ -279,6 +285,7 @@ def _finalize_worker(
     request: WorkerRequest,
     *,
     lease_token: str,
+    expected_attempt: int,
     outcome: _WorkerOutcome,
     worker_pid: int,
     cleanup_error: str = "",
@@ -303,6 +310,8 @@ def _finalize_worker(
             and current.worker_finalization_attempts > 0
         ):
             return
+        if current.attempt != expected_attempt or current.lease_token != lease_token:
+            return
         attempts = current.worker_finalization_attempts + 1
         changes = _outcome_changes(
             current,
@@ -312,6 +321,17 @@ def _finalize_worker(
             finalization_attempts=attempts,
             cleanup_error=cleanup_error,
         )
+        if (
+            outcome.status is SessionStatus.FAILED
+            and current.mode_application_status is ModeApplicationStatus.PENDING
+            and current.mode_application_attempt == expected_attempt
+        ):
+            from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+
+            raw_mode_error = outcome.error or "Mode resolution failed"
+            safe_mode_error = str(_Redactor().value(raw_mode_error, "mode_application_error"))
+            changes["mode_application_status"] = ModeApplicationStatus.FAILED
+            changes["mode_application_error"] = safe_mode_error[:1_024]
         if current.status == SessionStatus.CANCELLING:
             # A supervisor cancellation may win while the provider call is
             # unwinding. Complete that durable transition without allowing a
@@ -336,6 +356,8 @@ def _finalize_worker(
                 request.session_id,
                 SessionStatus.CANCELLED,
                 expected_status=SessionStatus.CANCELLING,
+                expected_attempt=expected_attempt,
+                expected_lease_token=lease_token,
                 **changes,
             )
         elif current.status == SessionStatus.RUNNING and outcome.status == SessionStatus.CANCELLED:
@@ -344,6 +366,7 @@ def _finalize_worker(
                 SessionStatus.CANCELLING,
                 expected_status=SessionStatus.RUNNING,
                 expected_lease_token=lease_token,
+                expected_attempt=expected_attempt,
                 cancellation_reason=outcome.error or "Worker cancelled",
                 latest_activity=outcome.activity,
             )
@@ -359,6 +382,8 @@ def _finalize_worker(
                 request.session_id,
                 SessionStatus.CANCELLED,
                 expected_status=SessionStatus.CANCELLING,
+                expected_attempt=expected_attempt,
+                expected_lease_token=lease_token,
                 **changes,
             )
         elif current.status == SessionStatus.RUNNING:
@@ -367,17 +392,28 @@ def _finalize_worker(
                 outcome.status,
                 expected_status=SessionStatus.RUNNING,
                 expected_lease_token=lease_token,
+                expected_attempt=expected_attempt,
                 **changes,
             )
         elif current.status == outcome.status:
             # A duplicate callback must not turn a terminal result into a
             # failure. It may only add missing final metadata.
-            store.update(request.session_id, **changes)
+            store.update(
+                request.session_id,
+                expected_attempt=expected_attempt,
+                expected_lease_token=lease_token,
+                **changes,
+            )
         else:
             return
         try:
             final_session = store.get(request.session_id, include_deleted=True)
-            _persist_goal_run_outcome(request, final_session, outcome)
+            _persist_goal_run_outcome(
+                request,
+                final_session,
+                outcome,
+                expected_attempt=expected_attempt,
+            )
         except (KeyError, RuntimeError, ValueError):
             # The background session is authoritative. A missing/legacy run
             # registry must not turn a durable session completion into a
@@ -390,6 +426,7 @@ def _finalize_worker(
                 exit_reason=outcome.exit_reason,
                 exit_code=outcome.exit_code,
                 cleanup_error=cleanup_error,
+                expected_attempt=expected_attempt,
             )
         except Exception:  # noqa: BLE001 - audit failure must not mask result
             return
@@ -403,6 +440,8 @@ def _persist_goal_run_outcome(
     request: WorkerRequest,
     session: BackgroundSession,
     outcome: _WorkerOutcome,
+    *,
+    expected_attempt: int,
 ) -> None:
     """Project terminal worker metadata into the product-level run store."""
 
@@ -416,7 +455,11 @@ def _persist_goal_run_outcome(
         SessionStatus.FAILED: GoalRunStatus.FAILED,
         SessionStatus.CANCELLED: GoalRunStatus.CANCELLED,
     }.get(outcome.status)
-    if status is None:
+    if (
+        status is None
+        or session.attempt != expected_attempt
+        or session.status is not outcome.status
+    ):
         return
     run_store = RunStore()
     try:
@@ -455,6 +498,11 @@ def _persist_goal_run_outcome(
             attention_reason=session.error or "",
             exit_code=session.worker_exit_code,
             exit_reason=session.worker_exit_reason,
+            attempt=session.attempt,
+            requested_mode_name=session.requested_mode_name,
+            mode_name=session.mode_name,
+            mode_application_status=session.mode_application_status.value,
+            mode_application_error=session.mode_application_error,
         ),
     )
 
@@ -803,6 +851,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
     claimed = False
     outcome: _WorkerOutcome | None = None
     owner_lease: SessionOwnerLease | None = None
+    claimed_attempt: int | None = None
     processor_task: asyncio.Task[object] | None = None
     heartbeat_task: asyncio.Task[None] | None = None
     terminal_token: contextvars.Token[TerminalManager | None] | None = None
@@ -814,6 +863,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         if claimed_session.status != SessionStatus.RUNNING:
             raise RuntimeError(f"Worker could not claim session: {claimed_session.status.value}")
         claimed = True
+        claimed_attempt = claimed_session.attempt
 
         async def _heartbeat() -> None:
             while not heartbeat_stop.is_set():
@@ -824,6 +874,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     store.heartbeat(
                         request.session_id,
                         lease_token=lease,
+                        attempt=claimed_attempt,
                         activity="Worker active",
                     )
                 except (KeyError, InvalidSessionTransition):
@@ -875,8 +926,22 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             owner_lease=owner_lease,
         )
         effective_mode = session.mode_manager.active_name
-        if effective_mode:
-            store.update(request.session_id, mode_name=effective_mode)
+        if not effective_mode:
+            raise RuntimeError("Session initialization produced no effective runtime mode")
+        if request.mode_name is not None:
+            requested_effective_mode = session.mode_manager.resolve_name(request.mode_name)
+            if requested_effective_mode != effective_mode:
+                raise RuntimeError(
+                    "Requested mode was not active after session construction: "
+                    f"requested {requested_effective_mode!r}, got {effective_mode!r}"
+                )
+        store.record_mode_application(
+            request.session_id,
+            requested_mode_name=request.mode_name,
+            effective_mode_name=effective_mode,
+            attempt=claimed_attempt,
+            lease_token=lease,
+        )
         session.app_state.cli_flags = ctx.flags
         from agenthicc.background.terminals import set_current_terminal_manager  # noqa: PLC0415
 
@@ -904,6 +969,19 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         await asyncio.sleep(0)
 
         async def _execute() -> _WorkerOutcome:
+            current = store.get(request.session_id, include_deleted=True)
+            if (
+                current.status is not SessionStatus.RUNNING
+                or current.attempt != claimed_attempt
+                or current.lease_token != lease
+                or current.mode_application_status is not ModeApplicationStatus.APPLIED
+                or current.mode_application_attempt != claimed_attempt
+                or current.mode_name != session.mode_manager.active_name
+            ):
+                raise RuntimeError(
+                    "Worker refused agent execution because this attempt's runtime mode "
+                    "was not durably attested"
+                )
             if request.workflow_name:
                 resume_run_id = _select_headless_workflow_resume(session, request.workflow_name)
                 if resume_run_id is None:
@@ -1019,6 +1097,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 store,
                 request,
                 lease_token=lease,
+                expected_attempt=claimed_attempt or 0,
                 outcome=final_outcome,
                 worker_pid=os.getpid(),
                 cleanup_error=cleanup_error,

@@ -13,6 +13,10 @@ The primary entry point is `agenthicc.__main__:main`.
   workflow selections; `--workflow NAME` also selects the headless stdin workflow.
 - `agenthicc --headless` reads non-empty stdin lines and emits JSON-lines.
 - `agenthicc --headless --workflow NAME` executes NAME for each stdin line.
+- `agenthicc --mode MODE --goal GOAL --detach` persists the requested mode
+  before launch and attests its canonical effective value before worker
+  execution; inspect pending/applied startup state with `jobs status` or
+  `runs show`.
 - `kernel.AppState` is frozen domain state reduced from `Event` objects.
 - `tui.conversation_store.AppState` is a separate reactive presentation model.
 - `workflows/` contains `WorkflowPlugin`, phase specs, generic runners, and the

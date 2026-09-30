@@ -43,7 +43,9 @@ def test_projection_joins_worker_session_by_parent_session(tmp_path: Path) -> No
 
     projection = manager.projection(run.run_id)
 
-    assert projection.status == GoalRunStatus.RUNNING
+    # The fake supervisor records the session but does not start its worker;
+    # startup remains visible until the worker claims and initializes it.
+    assert projection.status == GoalRunStatus.STARTING
     assert {item.task_id for item in projection.agents} == {"", "api"}
     assert any(item.role == "worker" and item.worktree_id == "wt-api" for item in projection.agents)
 

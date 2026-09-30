@@ -37,10 +37,24 @@ bounded machine-readable startup response:
 uv run agenthicc --json --goal "Implement OAuth" --detach
 ```
 
-An explicit `--mode MODE` is preserved in the durable worker request and
-applied through normal session initialization. The background session detail
-view reports the resulting canonical mode. On resume, the stored mode remains
-authoritative unless that resume invocation supplies a new explicit `--mode`.
+An explicit `--mode MODE` is persisted as `requested_mode_name` in the
+background session before the worker launches. Until the normal production
+session builder resolves it through `ModeManager`, the status is `pending` and
+the effective `mode_name` remains unset. The worker durably records the
+canonical mode (for example, `YOLO` becomes `Yolo`) with status `applied` and
+the current attempt identity before the first provider, workflow, tool, or
+subagent work can begin. If applying or attesting the mode fails, the worker
+fails closed and does not start agent work. A stale attempt cannot attest a
+newer attempt's mode.
+
+The launch JSON and run/session projections distinguish `requested`,
+`effective`, and `status`; a pending startup is never shown as though Safe or
+Yolo were already active. The `jobs status`, `agents`, `runs show`, and
+`agents --run` surfaces use this same durable state. Omitting `--mode` keeps
+the existing persisted-mode-or-Safe resolution. On resume, an explicit mode
+for that invocation takes precedence; without one, the persisted canonical
+mode remains authoritative. Selecting Yolo does not turn on
+`dangerously_skip_permissions`.
 
 Detached startup prints the PID of the child worker, not the short-lived CLI
 launcher:

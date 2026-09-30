@@ -180,3 +180,115 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
     )
     assert status.returncode == 0
     assert json.loads(status.stdout)["session_id"] == session_id
+
+
+def test_detached_goal_yolo_mode_is_visible_and_attested_across_cli_projections(
+    tmp_path: Path,
+) -> None:
+    env = dict(os.environ)
+    env["HOME"] = str(tmp_path)
+    env["PYTHONPATH"] = str(Path(__file__).parents[2] / "src")
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+        env.pop(key, None)
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "Agenthicc Test"], cwd=repository, check=True)
+    (repository / "README.md").write_text("test repository\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+
+    started = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agenthicc",
+            "--json",
+            "--mode",
+            "YOLO",
+            "--goal",
+            "Check detached mode initialization",
+            "--detach",
+        ],
+        cwd=repository,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert started.returncode == 0, started.stderr + started.stdout
+    launch_payload = json.loads(started.stdout)
+    run_id = launch_payload["run_id"]
+    session_id = launch_payload["main_session_id"]
+    assert launch_payload["mode"]["requested"] == "YOLO"
+    if launch_payload["mode"]["status"] == "applied":
+        assert launch_payload["mode"]["effective"] == "Yolo"
+    else:
+        assert launch_payload["mode"]["status"] == "pending"
+        assert launch_payload["mode"]["effective"] is None
+
+    store = BackgroundStore(tmp_path / ".agenthicc" / "background")
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        session = store.get(session_id)
+        if session.mode_application_status.value != "pending":
+            break
+        time.sleep(0.05)
+    assert session.mode_application_status.value == "applied"
+    assert session.requested_mode_name == "YOLO"
+    assert session.mode_name == "Yolo"
+
+    jobs_status = subprocess.run(
+        [sys.executable, "-m", "agenthicc", "jobs", "status", session_id, "--json"],
+        cwd=repository,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert jobs_status.returncode == 0, jobs_status.stderr
+    jobs_payload = json.loads(jobs_status.stdout)
+    assert jobs_payload["requested_mode_name"] == "YOLO"
+    assert jobs_payload["mode_name"] == "Yolo"
+    assert jobs_payload["mode_application_status"] == "applied"
+
+    run_status = subprocess.run(
+        [sys.executable, "-m", "agenthicc", "runs", "show", run_id, "--json"],
+        cwd=repository,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert run_status.returncode == 0, run_status.stderr
+    main_agent = next(
+        item for item in json.loads(run_status.stdout)["agents"] if item["role"] == "main"
+    )
+    assert main_agent["requested_mode_name"] == "YOLO"
+    assert main_agent["mode_name"] == "Yolo"
+    assert main_agent["mode_application_status"] == "applied"
+
+    agents_status = subprocess.run(
+        [sys.executable, "-m", "agenthicc", "agents", "--run", run_id, "--json"],
+        cwd=repository,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert agents_status.returncode == 0, agents_status.stderr
+    agents_payload = json.loads(agents_status.stdout)
+    assert any(
+        item["role"] == "main"
+        and item["mode_name"] == "Yolo"
+        and item["mode_application_status"] == "applied"
+        for item in agents_payload
+    )

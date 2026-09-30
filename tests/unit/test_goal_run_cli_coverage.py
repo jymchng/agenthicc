@@ -231,6 +231,7 @@ async def test_attached_goal_adapter_submits_once_and_records_completion(tmp_pat
             self._ctx = SimpleNamespace(
                 session_id="attached-session",
                 command_bus=SimpleNamespace(_handlers={SendMessageCommand: object()}),
+                mode_manager=SimpleNamespace(active_name="Safe"),
             )
 
         async def run(self) -> None:
@@ -275,6 +276,7 @@ async def test_attached_goal_adapter_records_provider_failure(tmp_path: Path) ->
             self._ctx = SimpleNamespace(
                 session_id="failed-session",
                 command_bus=SimpleNamespace(_handlers={SendMessageCommand: object()}),
+                mode_manager=SimpleNamespace(active_name="Safe"),
             )
 
         async def run(self) -> None:

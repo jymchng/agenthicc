@@ -8,7 +8,12 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from agenthicc.background import BackgroundSession, BackgroundStore, BackgroundSupervisor
+from agenthicc.background import (
+    BackgroundSession,
+    BackgroundStore,
+    BackgroundSupervisor,
+    SessionStatus,
+)
 
 from .model import GoalRun, GoalRunStatus, RunAgentRecord, RunTaskRecord, RunWorktreeRecord
 from .store import RunStore
@@ -179,6 +184,14 @@ class GoalRunManager:
                 exit_code=1,
             )
             raise
+        # A short worker can apply its mode or even finish before submit()
+        # returns. Refresh from the authoritative session store before writing
+        # the product-level projection; never overwrite newer startup state with
+        # the supervisor's potentially stale return snapshot.
+        try:
+            session = self.background_store.get(session.session_id, include_deleted=True)
+        except KeyError:
+            pass
         updated = self.store.update(
             run.run_id,
             status={
@@ -221,6 +234,12 @@ class GoalRunManager:
                 last_heartbeat_at=session.last_active,
                 last_activity_at=session.last_active,
                 current_phase=session.current_phase,
+                attempt=session.attempt,
+                heartbeat_stale=session.heartbeat_stale,
+                requested_mode_name=session.requested_mode_name,
+                mode_name=session.mode_name,
+                mode_application_status=session.mode_application_status.value,
+                mode_application_error=session.mode_application_error,
                 exit_code=session.worker_exit_code,
                 exit_reason=session.worker_exit_reason,
             ),
@@ -248,6 +267,10 @@ class GoalRunManager:
             if item.parent_session_id == run.main_session_id or item.run_id == run_id
         ]
         mapping = {
+            "queued": GoalRunStatus.STARTING,
+            "starting": GoalRunStatus.STARTING,
+            "running": GoalRunStatus.RUNNING,
+            "retrying": GoalRunStatus.STARTING,
             "completed": GoalRunStatus.COMPLETED,
             "failed": GoalRunStatus.FAILED,
             "cancelled": GoalRunStatus.CANCELLED,
@@ -256,7 +279,11 @@ class GoalRunManager:
             "waiting_approval": GoalRunStatus.WAITING,
             "waiting_input": GoalRunStatus.WAITING,
         }
-        status = mapping.get(session.status.value, GoalRunStatus.RUNNING)
+        if session.status is SessionStatus.ARCHIVED and session.attempt_history:
+            prior_status = session.attempt_history[-1].status.value
+            status = mapping.get(prior_status, run.status)
+        else:
+            status = mapping.get(session.status.value, GoalRunStatus.NEEDS_ATTENTION)
         if status == GoalRunStatus.COMPLETED and any(
             item.status.value
             in {
@@ -275,12 +302,19 @@ class GoalRunManager:
             item.status.value in {"failed", "orphaned"} for item in children
         ):
             status = GoalRunStatus.NEEDS_ATTENTION
-        reasons = (session.error,) if session.error else ()
+        current_error = (
+            session.error
+            if session.status in {SessionStatus.FAILED, SessionStatus.CANCELLED}
+            else ""
+        )
+        reasons = (current_error,) if current_error else ()
+        if session.heartbeat_stale:
+            reasons = (*reasons, "main worker heartbeat is delayed")
         attention_reasons = tuple(reason for reason in reasons if reason)
         if (
             run.status == status
             and run.completed_at == session.completed_at
-            and run.failure_reason == (session.error or run.failure_reason)
+            and run.failure_reason == current_error
             and run.attention_reasons == attention_reasons
             and run.worker_pid == session.worker_pid
             and run.worker_started_at == session.worker_started_at
@@ -289,13 +323,20 @@ class GoalRunManager:
             and run.worker_exit_reason == session.worker_exit_reason
             and run.worker_finalization_attempts == session.worker_finalization_attempts
             and run.worker_cleanup_error == session.worker_cleanup_error
+            and run.exit_code
+            == (
+                session.worker_exit_code
+                if status
+                in {GoalRunStatus.COMPLETED, GoalRunStatus.FAILED, GoalRunStatus.CANCELLED}
+                else None
+            )
         ):
             return run
         return self.store.update(
             run_id,
             status=status,
             completed_at=session.completed_at,
-            failure_reason=session.error or run.failure_reason,
+            failure_reason=current_error,
             attention_reasons=attention_reasons,
             worker_pid=session.worker_pid,
             worker_started_at=session.worker_started_at,
@@ -304,9 +345,12 @@ class GoalRunManager:
             worker_exit_reason=session.worker_exit_reason,
             worker_finalization_attempts=session.worker_finalization_attempts,
             worker_cleanup_error=session.worker_cleanup_error,
-            exit_code=session.worker_exit_code
-            if session.worker_exit_code is not None
-            else run.exit_code,
+            exit_code=(
+                session.worker_exit_code
+                if status
+                in {GoalRunStatus.COMPLETED, GoalRunStatus.FAILED, GoalRunStatus.CANCELLED}
+                else None
+            ),
         )
 
     @staticmethod
@@ -572,12 +616,23 @@ class GoalRunManager:
                 or (workflow_phase if session.session_id == run.main_session_id else ""),
                 current_operation=session.latest_activity,
                 attention_reason=(
-                    session.error
+                    (
+                        session.error
+                        if session.status in {SessionStatus.FAILED, SessionStatus.CANCELLED}
+                        else ""
+                    )
                     or (worktree.last_error if worktree is not None else "")
                     or ("dirty worktree" if worktree is not None and worktree.dirty else "")
+                    or ("heartbeat delayed" if session.heartbeat_stale else "")
                 ),
                 exit_code=session.worker_exit_code,
                 exit_reason=session.worker_exit_reason,
+                attempt=session.attempt,
+                heartbeat_stale=session.heartbeat_stale,
+                requested_mode_name=session.requested_mode_name,
+                mode_name=session.mode_name,
+                mode_application_status=session.mode_application_status.value,
+                mode_application_error=session.mode_application_error,
             )
             run = run.with_agent(agent)
         return run

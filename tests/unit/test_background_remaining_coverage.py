@@ -176,6 +176,7 @@ async def test_worker_cancel_path_cleans_up_without_resurrecting_session(
     session = SimpleNamespace(
         processor=Processor(),
         app_state=SimpleNamespace(conversation=SimpleNamespace(cli_flags=None), cli_flags=None),
+        mode_manager=SimpleNamespace(active_name="Safe", resolve_name=lambda name: name),
         agent_runner=object(),
         cfg=SimpleNamespace(
             execution=SimpleNamespace(max_agent_turns=1),

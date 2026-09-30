@@ -72,7 +72,13 @@ class _Session:
         self.approval_svc = object()
         self.memory_router = None
         self.semantic_index = None
-        self.mode_manager = SimpleNamespace(active_name="Yolo")
+
+        def resolve_name(name: str) -> str:
+            if name.casefold() == "yolo":
+                return "Yolo"
+            raise ValueError(f"Unknown mode {name!r}")
+
+        self.mode_manager = SimpleNamespace(active_name="Yolo", resolve_name=resolve_name)
 
 
 @pytest.mark.asyncio
@@ -87,6 +93,11 @@ async def test_worker_uses_canonical_direct_turn_and_finalizes(monkeypatch, tmp_
 
     async def direct(session: object, request: WorkerRequest) -> None:
         assert request.intent == "do deterministic work"
+        current = store.get(request.session_id)
+        assert current.mode_application_status.value == "applied"
+        assert current.mode_name == "Yolo"
+        assert current.mode_application_attempt == current.attempt
+        assert getattr(getattr(session, "mode_manager"), "active_name") == current.mode_name
 
     async def close(*args: object, **kwargs: object) -> None:
         return None
@@ -104,10 +115,114 @@ async def test_worker_uses_canonical_direct_turn_and_finalizes(monkeypatch, tmp_
         dangerously_skip_permissions=False,
         mode_name="Yolo",
     )
-    assert await run_worker(request, store) == 0
+    exit_code = await run_worker(request, store)
+    assert exit_code == 0, store.get("worker-session").error
     completed = store.get("worker-session")
     assert completed.status is SessionStatus.COMPLETED
     assert completed.mode_name == "Yolo"
+    assert completed.requested_mode_name == "Yolo"
+
+
+@pytest.mark.asyncio
+async def test_worker_first_turn_sees_attested_mode_from_production_session_builder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The real turn adapter sees attested AppState before fake provider dispatch."""
+    from agenthicc.agents import registry as agents_registry
+    from agenthicc.agents.registry import AgentsRegistry
+    from agenthicc.commands import plugin_loader
+    from agenthicc.memory import journal as memory_journal
+    from agenthicc.memory import layers
+    from agenthicc.plugins import discovery
+    from agenthicc.plugins.discovery import PluginToolSet
+    from agenthicc.commands.plugin_loader import CommandPluginSet
+    from agenthicc.runners import tui_session
+    from agenthicc.skills import bootstrap, loader
+    from agenthicc.skills.loader import SkillDiscoveryResult
+    from agenthicc.session_service import SessionService
+    from agenthicc.workflows import registry as workflows_registry
+    from agenthicc.workflows.registry import WorkflowRegistry
+
+    home = tmp_path / "home"
+    home.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_root = home / ".agenthicc" / "sessions"
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(tui_session, "_SESSIONS_DIR", session_root)
+    monkeypatch.setattr("agenthicc.tui.runtime.session_log._SESSIONS_DIR", session_root)
+    monkeypatch.setattr(
+        "agenthicc.tui.runtime.session_log._SESSION_INDEX", session_root / "index.json"
+    )
+    monkeypatch.setattr(memory_journal, "_SESSIONS_DIR", session_root)
+    monkeypatch.setattr(
+        "agenthicc.session_service.SessionService",
+        lambda: SessionService(store_root=tmp_path / "service"),
+    )
+    monkeypatch.chdir(workspace)
+    fake_agent_runner = object()
+    monkeypatch.setattr(
+        tui_session, "_build_agent_runner", lambda *args, **kwargs: fake_agent_runner
+    )
+    monkeypatch.setattr(bootstrap, "bootstrap_default_skills", lambda **kwargs: 0)
+    monkeypatch.setattr(
+        loader, "discover_skills_with_diagnostics", lambda **kwargs: SkillDiscoveryResult({}, ())
+    )
+    workflow_registry = WorkflowRegistry()
+    monkeypatch.setattr(
+        workflows_registry, "build_workflow_registry", lambda **kwargs: workflow_registry
+    )
+    monkeypatch.setattr(agents_registry, "build_agents_registry", lambda **kwargs: AgentsRegistry())
+    monkeypatch.setattr(discovery, "discover_project_tools", lambda **kwargs: PluginToolSet())
+    monkeypatch.setattr(discovery, "warn_conflicts", lambda tools: None)
+    monkeypatch.setattr(
+        plugin_loader, "discover_command_plugins", lambda **kwargs: CommandPluginSet()
+    )
+    monkeypatch.setattr(layers, "GlobalMemoryLayer", lambda: layers.SessionMemoryLayer())
+
+    config_file = workspace / "agenthicc.toml"
+    config_file.write_text("[tools]\n", encoding="utf-8")
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    first_turn_observations: list[tuple[str, str, str, bool]] = []
+
+    async def fake_provider_turn(*args: object, **kwargs: object) -> None:
+        app_state = kwargs["app_state"]
+        mode_manager = getattr(app_state, "active_mode")()
+        active_mode = getattr(mode_manager, "name")
+        durable = store.get("worker-session")
+        assert args[0] == "deterministic first turn"
+        assert args[1] is fake_agent_runner
+        assert durable.mode_application_status.value == "applied"
+        assert durable.mode_application_attempt == durable.attempt
+        first_turn_observations.append(
+            (
+                active_mode,
+                getattr(mode_manager, "name"),
+                durable.mode_name,
+                getattr(getattr(app_state, "cli_flags"), "dangerously_skip_permissions"),
+            )
+        )
+
+    monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", fake_provider_turn)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="deterministic first turn",
+        cwd=str(workspace),
+        config_path=str(config_file),
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+        mode_name="YOLO",
+    )
+
+    exit_code = await run_worker(request, store)
+    assert exit_code == 0, store.get("worker-session").error
+    assert first_turn_observations == [("Yolo", "Yolo", "Yolo", False)]
+    persisted = BackgroundStore(store.root).get("worker-session")
+    assert persisted.requested_mode_name == "YOLO"
+    assert persisted.mode_name == "Yolo"
+    assert persisted.mode_application_status.value == "applied"
 
 
 @pytest.mark.asyncio
@@ -152,12 +267,17 @@ async def test_invalid_requested_mode_is_a_durable_startup_failure(
 ) -> None:
     store = BackgroundStore(tmp_path / "background")
     _queued(tmp_path, store)
+    agent_invocations: list[str] = []
 
     async def build(*args: object, **kwargs: object) -> _Session:
         assert kwargs["mode_name"] == requested_mode
         raise ValueError(f"Unknown mode {requested_mode!r}. Choose one of: Safe, Plan, Yolo.")
 
+    async def direct(session: object, request: WorkerRequest) -> None:
+        agent_invocations.append(request.session_id)
+
     monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
 
     request = WorkerRequest(
         session_id="worker-session",
@@ -174,6 +294,54 @@ async def test_invalid_requested_mode_is_a_durable_startup_failure(
     failed = store.get("worker-session")
     assert failed.status is SessionStatus.FAILED
     assert f"Unknown mode {requested_mode!r}" in (failed.error or "")
+    assert failed.mode_application_status.value == "failed"
+    assert failed.mode_name == ""
+    assert agent_invocations == []
+
+
+@pytest.mark.asyncio
+async def test_worker_refuses_first_turn_when_mode_attestation_cannot_be_persisted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    agent_invocations: list[str] = []
+    fake_session = _Session()
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def direct(session: object, request: WorkerRequest) -> None:
+        agent_invocations.append(request.session_id)
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    def fail_attestation(*args: object, **kwargs: object) -> object:
+        raise OSError("durable store unavailable")
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    monkeypatch.setattr(store, "record_mode_application", fail_attestation)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="must not execute before attestation",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+        mode_name="Yolo",
+    )
+
+    assert await run_worker(request, store) == 1
+    failed = store.get("worker-session")
+    assert failed.status is SessionStatus.FAILED
+    assert failed.mode_application_status.value == "failed"
+    assert failed.mode_name == ""
+    assert "durable store unavailable" in failed.mode_application_error
+    assert agent_invocations == []
 
 
 @pytest.mark.asyncio

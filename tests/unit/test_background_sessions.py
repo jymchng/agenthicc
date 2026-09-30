@@ -15,6 +15,7 @@ from agenthicc.background import (
     BackgroundStore,
     BackgroundSupervisor,
     InvalidSessionTransition,
+    ModeApplicationStatus,
     SessionStatus,
     legal_transition,
 )
@@ -67,6 +68,7 @@ def test_background_settings_validate_files_and_cli_overrides(tmp_path: Path) ->
 def test_session_round_trip_normalizes_and_redacts_none_values(tmp_path: Path) -> None:
     session = _session(tmp_path).evolve(
         status="running",
+        attempt=1,
         labels=["important", "project"],
         pinned=True,
         worker_pid=42,
@@ -77,6 +79,8 @@ def test_session_round_trip_normalizes_and_redacts_none_values(tmp_path: Path) -
         worker_exit_reason="workflow_complete",
         worker_finalization_attempts=1,
         mode_name="Yolo",
+        mode_application_status=ModeApplicationStatus.APPLIED,
+        mode_application_attempt=1,
     )
     restored = BackgroundSession.from_mapping(session.to_dict())
     assert restored == session
@@ -86,6 +90,7 @@ def test_session_round_trip_normalizes_and_redacts_none_values(tmp_path: Path) -
     assert restored.worker_pid == 42
     assert restored.worker_exit_reason == "workflow_complete"
     assert restored.mode_name == "Yolo"
+    assert restored.mode_application_status is ModeApplicationStatus.APPLIED
     legacy = session.to_dict()
     legacy.pop("mode_name")
     assert BackgroundSession.from_mapping(legacy).mode_name == ""
@@ -101,6 +106,34 @@ def test_session_round_trip_normalizes_and_redacts_none_values(tmp_path: Path) -
         BackgroundRequest.from_mapping(
             {"session_id": "malformed", "intent": "resume", "cwd": str(tmp_path), "mode_name": 3}
         )
+
+
+def test_mode_name_is_not_effective_without_applied_attestation(tmp_path: Path) -> None:
+    pending = _session(tmp_path).evolve(mode_name="Yolo")
+    assert pending.mode_name == ""
+    assert pending.mode_application_status is ModeApplicationStatus.PENDING
+
+    malformed_pending = BackgroundSession.from_mapping(
+        {
+            **_session(tmp_path, "malformed-mode").to_dict(),
+            "mode_name": "Yolo",
+            "mode_application_status": "pending",
+        }
+    )
+    assert malformed_pending.mode_name == ""
+    assert malformed_pending.mode_application_status is ModeApplicationStatus.PENDING
+
+    legacy_data = _session(tmp_path, "legacy-mode").to_dict()
+    for key in (
+        "requested_mode_name",
+        "mode_application_status",
+        "mode_application_attempt",
+        "mode_application_error",
+    ):
+        legacy_data.pop(key)
+    legacy_applied = BackgroundSession.from_mapping({**legacy_data, "mode_name": "Yolo"})
+    assert legacy_applied.mode_name == "Yolo"
+    assert legacy_applied.mode_application_status is ModeApplicationStatus.APPLIED
 
 
 def test_worker_exit_event_is_bounded_and_replayable(tmp_path: Path) -> None:
@@ -164,6 +197,56 @@ def test_store_enforces_expected_state_and_lease(tmp_path: Path) -> None:
         store.heartbeat("session-1", lease_token="lease-2")
 
 
+def test_mode_application_is_durable_and_attempt_and_lease_scoped(tmp_path: Path) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    store.create(_session(tmp_path).evolve(requested_mode_name="YOLO"))
+    first = store.claim("session-1", pid=42, lease_token="lease-one")
+
+    with pytest.raises(InvalidSessionTransition, match="current running worker attempt"):
+        store.update(
+            first.session_id,
+            mode_name="Yolo",
+            mode_application_status=ModeApplicationStatus.APPLIED,
+            mode_application_attempt=first.attempt,
+        )
+
+    applied = store.record_mode_application(
+        first.session_id,
+        requested_mode_name="YOLO",
+        effective_mode_name="Yolo",
+        attempt=first.attempt,
+        lease_token="lease-one",
+    )
+    assert applied.requested_mode_name == "YOLO"
+    assert applied.mode_name == "Yolo"
+    assert applied.mode_application_status is ModeApplicationStatus.APPLIED
+    assert applied.mode_application_attempt == first.attempt
+
+    failed = store.transition(
+        first.session_id,
+        SessionStatus.FAILED,
+        expected_status=SessionStatus.RUNNING,
+        expected_attempt=first.attempt,
+        expected_lease_token="lease-one",
+        lease_token="",
+    )
+    retrying = store.transition(failed.session_id, SessionStatus.RETRYING)
+    second = store.claim(retrying.session_id, pid=43, lease_token="lease-two")
+    assert second.mode_name == ""
+    assert second.mode_application_status is ModeApplicationStatus.PENDING
+    assert second.requested_mode_name == "YOLO"
+
+    with pytest.raises(InvalidSessionTransition, match="stale"):
+        store.record_mode_application(
+            second.session_id,
+            requested_mode_name="YOLO",
+            effective_mode_name="Yolo",
+            attempt=first.attempt,
+            lease_token="lease-one",
+        )
+    assert store.get(second.session_id).mode_application_status is ModeApplicationStatus.PENDING
+
+
 def test_claim_and_orphan_recovery(tmp_path: Path) -> None:
     store = BackgroundStore(tmp_path / "background")
     store.create(_session(tmp_path))
@@ -177,11 +260,15 @@ def test_claim_and_orphan_recovery(tmp_path: Path) -> None:
 
 
 def test_stale_recovery_marks_dead_worker_immediately(tmp_path: Path, monkeypatch) -> None:
+    from agenthicc.background.supervisor import _WorkerProcessState
+
     store = BackgroundStore(tmp_path / "background")
     store.create(_session(tmp_path))
     store.claim("session-1", pid=9876, lease_token="worker")
     supervisor = BackgroundSupervisor(store)
-    monkeypatch.setattr(supervisor, "_alive", lambda pid: False)
+    monkeypatch.setattr(
+        supervisor, "_worker_process_state", lambda _session: _WorkerProcessState.DEAD
+    )
     changed = supervisor.recover_stale(stale_after_s=10_000)
     assert [item.session_id for item in changed] == ["session-1"]
     assert store.get("session-1").status is SessionStatus.ORPHANED
@@ -288,9 +375,15 @@ def test_supervisor_submit_writes_private_request_and_enforces_limit(
     store = BackgroundStore(tmp_path / "background")
     supervisor = BackgroundSupervisor(store, max_workers=1, artifact_root=tmp_path / "sessions")
     fake_process = SimpleNamespace(pid=1234)
-    monkeypatch.setattr(
-        "agenthicc.background.supervisor.subprocess.Popen", lambda *a, **kw: fake_process
-    )
+
+    def inspect_before_launch(*args: object, **kwargs: object) -> SimpleNamespace:
+        durable = store.list()[0]
+        assert durable.requested_mode_name == "Yolo"
+        assert durable.mode_name == ""
+        assert durable.mode_application_status is ModeApplicationStatus.PENDING
+        return fake_process
+
+    monkeypatch.setattr("agenthicc.background.supervisor.subprocess.Popen", inspect_before_launch)
     first = supervisor.submit(
         intent="first",
         cwd=str(tmp_path),
@@ -301,6 +394,9 @@ def test_supervisor_submit_writes_private_request_and_enforces_limit(
     assert first.status is SessionStatus.QUEUED
     assert first.worker_pid == 1234
     assert first.detached_goal is True
+    assert first.requested_mode_name == "Yolo"
+    assert first.mode_name == ""
+    assert first.mode_application_status is ModeApplicationStatus.PENDING
     request = json.loads(
         (tmp_path / "background" / "requests" / f"{first.session_id}.json").read_text()
     )
@@ -360,6 +456,31 @@ def test_resume_preserves_unconsumed_mode_but_respects_persisted_or_explicit_mod
         json.loads(supervisor._request_path(session.session_id).read_text(encoding="utf-8"))
     )
     assert persisted_request.mode_name == expected_request_mode
+
+
+def test_resume_does_not_confuse_placeholder_safe_metadata_with_applied_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+    session = _session(tmp_path, "pending-yolo").evolve(requested_mode_name="YOLO")
+    store.create(session)
+    supervisor._write_request(
+        BackgroundRequest(
+            session_id=session.session_id,
+            workflow_name=session.workflow_name,
+            intent=session.intent,
+            cwd=session.cwd,
+            mode_name="YOLO",
+        )
+    )
+    monkeypatch.setattr(
+        "agenthicc.tui.runtime.session_log.load_session_mode",
+        lambda _session_id: "Safe",
+    )
+
+    assert supervisor._mode_name_for_resume(session.session_id, None) == "YOLO"
+    assert supervisor._mode_name_for_resume(session.session_id, "Plan") == "Plan"
 
 
 def test_supervisor_enforces_per_project_limit(tmp_path: Path, monkeypatch) -> None:

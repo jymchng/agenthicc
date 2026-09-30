@@ -61,15 +61,27 @@ class GoalRunManagerView:
         agents = Table(title=f"Agents — {run.run_id}", expand=True)
         agents.add_column("Role")
         agents.add_column("Status")
+        agents.add_column("Mode")
         agents.add_column("Task")
         agents.add_column("Phase")
         agents.add_column("PID")
         agents.add_column("Exit")
         agents.add_column("Worktree")
         for agent in run.agents:
+            requested_mode = (
+                "<empty>"
+                if agent.requested_mode_name == ""
+                else agent.requested_mode_name or "default/persisted"
+            )
+            mode_label = (
+                agent.mode_name
+                if agent.mode_application_status == "applied"
+                else f"{agent.mode_application_status}: {requested_mode}"
+            )
             agents.add_row(
                 agent.role,
                 agent.status,
+                mode_label,
                 agent.task_id or "—",
                 agent.current_phase or "—",
                 str(agent.process_id) if agent.process_id is not None else "—",
@@ -80,6 +92,7 @@ class GoalRunManagerView:
             agents.add_row(
                 "main",
                 run.status.value,
+                "—",
                 "—",
                 "—",
                 str(run.worker_pid) if run.worker_pid is not None else "—",

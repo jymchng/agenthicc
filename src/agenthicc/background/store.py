@@ -14,7 +14,15 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Iterator, List, Mapping
 
-from .model import ACTIVE_STATUSES, BackgroundSession, SessionStatus, legal_transition
+from .model import (
+    ACTIVE_STATUSES,
+    ATTEMPT_HISTORY_LIMIT,
+    BackgroundAttempt,
+    BackgroundSession,
+    ModeApplicationStatus,
+    SessionStatus,
+    legal_transition,
+)
 
 
 class SessionNotFound(KeyError):
@@ -859,6 +867,8 @@ class BackgroundStore:
         *,
         expected_status: SessionStatus | None = None,
         expected_lease_token: str | None = None,
+        expected_attempt: int | None = None,
+        expected_last_active: float | None = None,
         # ``object`` keeps ``**changes`` compatible with older dynamic callers
         # while the deletion methods below always pass a string or ``None``.
         expected_delete_operation_id: object | None = None,
@@ -872,6 +882,12 @@ class BackgroundStore:
                 )
             if expected_lease_token is not None and current.lease_token != expected_lease_token:
                 raise InvalidSessionTransition("Background worker lease is stale")
+            if expected_attempt is not None and current.attempt != expected_attempt:
+                raise InvalidSessionTransition("Background worker attempt is stale")
+            if expected_last_active is not None and current.last_active != expected_last_active:
+                raise InvalidSessionTransition(
+                    "Background session activity changed during recovery"
+                )
             if (
                 expected_delete_operation_id is not None
                 and current.delete_operation_id != expected_delete_operation_id
@@ -881,6 +897,29 @@ class BackgroundStore:
             unknown = set(changes) - allowed
             if unknown:
                 raise ValueError(f"Unknown background session fields: {sorted(unknown)}")
+            raw_mode_status = changes.get("mode_application_status")
+            if (
+                raw_mode_status is ModeApplicationStatus.APPLIED
+                or raw_mode_status == ModeApplicationStatus.APPLIED.value
+            ):
+                applied_name = changes.get("mode_name")
+                applied_attempt = changes.get("mode_application_attempt")
+                if (
+                    current.status is not SessionStatus.RUNNING
+                    or expected_status is not SessionStatus.RUNNING
+                    or not isinstance(expected_attempt, int)
+                    or isinstance(expected_attempt, bool)
+                    or expected_lease_token is None
+                    or not expected_lease_token
+                    or not isinstance(applied_name, str)
+                    or not applied_name
+                    or not isinstance(applied_attempt, int)
+                    or isinstance(applied_attempt, bool)
+                    or applied_attempt != expected_attempt
+                ):
+                    raise InvalidSessionTransition(
+                        "Mode application must be attested by the current running worker attempt"
+                    )
             if "status" in changes and changes["status"] != current.status:
                 changes.setdefault("state_changed_at", time.time())
             if "latest_activity" in changes and isinstance(changes["latest_activity"], str):
@@ -896,6 +935,39 @@ class BackgroundStore:
                 {"session_id": session_id, "changes": serialized_changes},
             )
             return updated
+
+    def record_mode_application(
+        self,
+        session_id: str,
+        *,
+        requested_mode_name: str | None,
+        effective_mode_name: str,
+        attempt: int,
+        lease_token: str,
+    ) -> BackgroundSession:
+        """Durably attest the canonical runtime mode for the owning attempt."""
+
+        if not isinstance(effective_mode_name, str) or not effective_mode_name.strip():
+            raise ValueError("effective_mode_name must be a non-empty canonical mode")
+        effective_mode_name = effective_mode_name.strip()
+        if (
+            not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt < 1
+            or not lease_token
+        ):
+            raise ValueError("mode application requires a current attempt and worker lease")
+        return self.update(
+            session_id,
+            expected_status=SessionStatus.RUNNING,
+            expected_attempt=attempt,
+            expected_lease_token=lease_token,
+            requested_mode_name=requested_mode_name,
+            mode_name=effective_mode_name,
+            mode_application_status=ModeApplicationStatus.APPLIED,
+            mode_application_attempt=attempt,
+            mode_application_error="",
+        )
 
     def mark_delete_requested(
         self,
@@ -986,6 +1058,8 @@ class BackgroundStore:
         *,
         expected_status: SessionStatus | None = None,
         expected_lease_token: str | None = None,
+        expected_attempt: int | None = None,
+        expected_last_active: float | None = None,
         **changes: object,
     ) -> BackgroundSession:
         current = self.get(session_id, include_deleted=True)
@@ -994,6 +1068,8 @@ class BackgroundStore:
                 session_id,
                 expected_status=expected_status,
                 expected_lease_token=expected_lease_token,
+                expected_attempt=expected_attempt,
+                expected_last_active=expected_last_active,
                 **changes,
             )
         if current.status == SessionStatus.DELETED:
@@ -1005,10 +1081,48 @@ class BackgroundStore:
         changes["status"] = target
         if target in {SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED}:
             changes.setdefault("completed_at", time.time())
+        if (
+            target
+            in {
+                SessionStatus.COMPLETED,
+                SessionStatus.FAILED,
+                SessionStatus.CANCELLED,
+                SessionStatus.ORPHANED,
+            }
+            and current.attempt > 0
+            and not any(item.attempt == current.attempt for item in current.attempt_history)
+        ):
+            snapshot = current.evolve(**changes)
+            changes["attempt_history"] = (
+                *current.attempt_history,
+                BackgroundAttempt.from_session(snapshot),
+            )[-ATTEMPT_HISTORY_LIMIT:]
+        elif (
+            target in {SessionStatus.STARTING, SessionStatus.RETRYING}
+            and current.status
+            in {
+                SessionStatus.COMPLETED,
+                SessionStatus.FAILED,
+                SessionStatus.CANCELLED,
+                SessionStatus.ORPHANED,
+                SessionStatus.ARCHIVED,
+            }
+            and current.attempt > 0
+            and not any(item.attempt == current.attempt for item in current.attempt_history)
+        ):
+            # Compatibility path for legacy terminal records written before
+            # attempt history existed. Preserve the outcome before its status
+            # changes; the subsequent successful claim clears live fields.
+            changes["attempt_history"] = (
+                *current.attempt_history,
+                BackgroundAttempt.from_session(current),
+            )[-ATTEMPT_HISTORY_LIMIT:]
         return self.update(
             session_id,
             expected_status=expected_status,
             expected_lease_token=expected_lease_token,
+            expected_attempt=expected_attempt,
+            expected_last_active=expected_last_active,
             **changes,
         )
 
@@ -1020,29 +1134,56 @@ class BackgroundStore:
             current = self.transition(session_id, SessionStatus.STARTING)
         elif current.status not in {SessionStatus.STARTING, SessionStatus.ORPHANED}:
             raise InvalidSessionTransition(f"Cannot claim {current.status.value} session")
+        now = time.time()
         return self.transition(
             session_id,
             SessionStatus.RUNNING,
             expected_status=current.status,
+            expected_attempt=current.attempt,
             worker_pid=pid,
             lease_token=lease_token,
             attempt=current.attempt + 1,
             started_at=current.started_at or time.time(),
             worker_started_at=current.worker_started_at or time.time(),
+            worker_finished_at=None,
+            worker_exit_code=None,
+            worker_exit_reason="",
+            worker_finalization_attempts=0,
+            worker_cleanup_error="",
+            completed_at=None,
+            error=None,
+            failure_category="",
+            cancellation_reason="",
+            exit_reason="",
+            attempt_started_at=now,
+            heartbeat_stale=False,
+            mode_name="",
+            mode_application_status=ModeApplicationStatus.PENDING,
+            mode_application_attempt=current.attempt + 1,
+            mode_application_error="",
             latest_activity="Worker started",
+            last_active=now,
         )
 
     def heartbeat(
-        self, session_id: str, *, lease_token: str, phase: str = "", activity: str = ""
+        self,
+        session_id: str,
+        *,
+        lease_token: str,
+        attempt: int | None = None,
+        phase: str = "",
+        activity: str = "",
     ) -> BackgroundSession:
         current = self.get(session_id)
         return self.update(
             session_id,
             expected_status=current.status,
             expected_lease_token=lease_token,
+            expected_attempt=attempt,
             current_phase=phase or current.current_phase,
             latest_activity=activity or current.latest_activity,
             last_active=time.time(),
+            heartbeat_stale=False,
         )
 
     def record_worker_exit(
@@ -1053,6 +1194,7 @@ class BackgroundStore:
         exit_reason: str,
         exit_code: int,
         cleanup_error: str = "",
+        expected_attempt: int | None = None,
     ) -> BackgroundSession:
         """Append one bounded worker-exit event after finalization.
 
@@ -1063,11 +1205,14 @@ class BackgroundStore:
 
         with self._lock():
             current = self.get(session_id, include_deleted=True)
+            if expected_attempt is not None and current.attempt != expected_attempt:
+                raise InvalidSessionTransition("Background worker attempt is stale")
             self._append(
                 "worker_exited",
                 {
                     "session_id": session_id,
                     "run_id": current.run_id,
+                    "attempt": current.attempt,
                     "worker_pid": worker_pid,
                     "exit_reason": exit_reason[:128],
                     "exit_code": exit_code,
@@ -1077,15 +1222,35 @@ class BackgroundStore:
             )
             return current
 
-    def mark_orphaned(self, session_id: str) -> BackgroundSession:
+    def mark_orphaned(
+        self,
+        session_id: str,
+        *,
+        expected_attempt: int | None = None,
+        expected_lease_token: str | None = None,
+        expected_status: SessionStatus | None = None,
+        expected_last_active: float | None = None,
+    ) -> BackgroundSession:
         current = self.get(session_id)
         if current.status in ACTIVE_STATUSES and current.status != SessionStatus.CANCELLING:
             return self.transition(
-                session_id, SessionStatus.ORPHANED, latest_activity="Worker disappeared"
+                session_id,
+                SessionStatus.ORPHANED,
+                expected_attempt=expected_attempt,
+                expected_lease_token=expected_lease_token,
+                expected_status=expected_status,
+                expected_last_active=expected_last_active,
+                latest_activity="Worker disappeared",
             )
         if current.status == SessionStatus.CANCELLING:
             return self.transition(
-                session_id, SessionStatus.ORPHANED, latest_activity="Cancellation cleanup expired"
+                session_id,
+                SessionStatus.ORPHANED,
+                expected_attempt=expected_attempt,
+                expected_lease_token=expected_lease_token,
+                expected_status=expected_status,
+                expected_last_active=expected_last_active,
+                latest_activity="Cancellation cleanup expired",
             )
         return current
 

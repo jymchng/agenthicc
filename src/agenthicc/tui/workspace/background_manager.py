@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, cast
 
 from agenthicc.background import (
+    ACTIVE_STATUSES,
     BackgroundManagerService,
     ManagerOperationResult,
     BackgroundPage,
@@ -147,7 +148,7 @@ class BackgroundManager:
         self._sessions: list[BackgroundSession] = []
         self._seen_activity: dict[str, float] = {}
         self.activity_offset = 0
-        self._activity_cache: dict[str, tuple[tuple[int, int, int], str | None]] = {}
+        self._activity_cache: dict[str, tuple[tuple[int, int, int, int, str], str | None]] = {}
         self._last_maintenance = 0.0
         self.maintenance_s = (
             self.manager_settings.maintenance_interval_s
@@ -640,6 +641,8 @@ class BackgroundManager:
             session.last_active,
             session.error,
             session.latest_activity,
+            session.attempt,
+            session.heartbeat_stale,
             session.pinned,
         )
 
@@ -913,7 +916,7 @@ class BackgroundManager:
             stat = path.stat()
         except OSError:
             return []
-        fingerprint = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        fingerprint = self._activity_fingerprint(session)
         cached = self._activity_cache.get(session.session_id)
         if cached is not None and cached[0] == fingerprint:
             return [cached[1]] if cached[1] is not None else []
@@ -968,13 +971,19 @@ class BackgroundManager:
             SessionStatus.ARCHIVED: "dim",
         }.get(status, "white")
 
-    def _activity_fingerprint(self, session: BackgroundSession) -> tuple[int, int, int]:
+    def _activity_fingerprint(self, session: BackgroundSession) -> tuple[int, int, int, int, str]:
         path = Path(session.artifact_dir).expanduser() / "conversation.jsonl"
         try:
             stat = path.stat()
         except OSError:
-            return (0, 0, 0)
-        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            return (0, 0, 0, session.attempt, session.lease_token)
+        return (
+            stat.st_ino,
+            stat.st_size,
+            stat.st_mtime_ns,
+            session.attempt,
+            session.lease_token,
+        )
 
     @staticmethod
     def _workspace_name(cwd: str) -> str:
@@ -1006,6 +1015,9 @@ class BackgroundManager:
                 item.phase_history,
                 item.error,
                 item.latest_activity,
+                item.attempt,
+                item.heartbeat_stale,
+                item.attempt_history[-1] if item.attempt_history else None,
                 item.pinned,
                 item.created_at,
                 item.started_at,
@@ -1022,6 +1034,11 @@ class BackgroundManager:
                 item.task_id,
                 item.branch,
                 item.base_commit,
+                item.requested_mode_name,
+                item.mode_name,
+                item.mode_application_status,
+                item.mode_application_attempt,
+                item.mode_application_error,
             )
             for item in visible
         )
@@ -1061,6 +1078,19 @@ class BackgroundManager:
             return "—"
         return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(timestamp))
 
+    @staticmethod
+    def _mode_label(session: BackgroundSession) -> str:
+        if session.mode_application_status.value == "applied":
+            return session.mode_name or "applied"
+        requested = (
+            session.requested_mode_name
+            if session.requested_mode_name is not None
+            else "default/persisted"
+        )
+        if requested == "":
+            requested = "<empty>"
+        return f"{session.mode_application_status.value}: {requested}"
+
     def _render_detail_page(
         self,
         session: BackgroundSession | None,
@@ -1079,13 +1109,24 @@ class BackgroundManager:
         else:
             activity = self._activity_text.get(session.session_id) or session.latest_activity
             history = " → ".join(session.phase_history) or "—"
+            requested_mode = (
+                "<empty>"
+                if session.requested_mode_name == ""
+                else session.requested_mode_name or "—"
+            )
             rows = [
                 ("Title", session.title or "—"),
                 ("Session ID", session.session_id),
                 ("State", session.status.value),
                 ("Dir", self._workspace_name(session.cwd)),
                 ("Workflow", session.workflow_name or "direct"),
-                ("Mode", session.mode_name or "—"),
+                ("Mode", self._mode_label(session)),
+                ("Requested mode", requested_mode),
+                (
+                    "Mode application",
+                    f"{session.mode_application_status.value} · attempt "
+                    f"{session.mode_application_attempt}",
+                ),
                 ("Current phase", session.current_phase or "—"),
                 ("Phase history", history),
                 ("Provider", session.provider or "—"),
@@ -1098,10 +1139,28 @@ class BackgroundManager:
                 ("Attempt / retries", f"{session.attempt} / {session.retry_count}"),
                 ("Latest activity", " ".join(activity.split()) or "—"),
             ]
-            if session.error:
+            if session.heartbeat_stale:
+                rows.append(("Heartbeat", "Delayed; worker identity is being reconciled"))
+            if session.error and session.status in {SessionStatus.FAILED, SessionStatus.CANCELLED}:
                 rows.append(("Error", session.error))
-            if session.failure_category:
+            if session.mode_application_error:
+                rows.append(("Mode error", session.mode_application_error))
+            if session.failure_category and session.status in {
+                SessionStatus.FAILED,
+                SessionStatus.CANCELLED,
+            }:
                 rows.append(("Failure category", session.failure_category))
+            if session.attempt_history and session.attempt_history[-1].attempt < session.attempt:
+                previous = session.attempt_history[-1]
+                previous_text = previous.error or previous.latest_activity or "No error details"
+                rows.append(
+                    (
+                        f"Previous attempt {previous.attempt} ({previous.status.value})",
+                        previous_text,
+                    )
+                )
+            elif session.error and session.status in ACTIVE_STATUSES:
+                rows.append(("Legacy prior error", session.error))
             if session.exit_reason:
                 rows.append(("Exit reason", session.exit_reason))
             if session.run_id:
@@ -1285,6 +1344,7 @@ class BackgroundManager:
         table.add_column("Title", no_wrap=True, overflow="ellipsis")
         table.add_column("Workflow", no_wrap=True, overflow="ellipsis")
         table.add_column("WS", no_wrap=True, overflow="ellipsis")
+        table.add_column("Mode", no_wrap=True, overflow="ellipsis")
         table.add_column("Activity", no_wrap=True, overflow="ellipsis")
         if not sessions:
             if self._async_mode and not self._projection_ready and self._projection_error:
@@ -1297,6 +1357,7 @@ class BackgroundManager:
                 "",
                 "—",
                 empty_title,
+                "",
                 "",
                 "",
                 "Start one with agenthicc run --background",
@@ -1316,7 +1377,7 @@ class BackgroundManager:
                 # Keep selection visible even when Rich compresses the narrow
                 # marker column on a small terminal.
                 title = "▶ " + title
-            if session.error:
+            if session.error and session.status in {SessionStatus.FAILED, SessionStatus.CANCELLED}:
                 activity = session.error[:80]
             else:
                 activity = session.latest_activity[:80]
@@ -1327,6 +1388,7 @@ class BackgroundManager:
                 title[:50],
                 session.workflow_name or "direct",
                 workspace,
+                self._mode_label(session),
                 activity,
             )
         detail_lines: list[str] = []
@@ -1355,27 +1417,71 @@ class BackgroundManager:
             # placed before it. A long/multiline agent response must never
             # push stable session metadata below the details-panel viewport.
             content_capacity = max(1, budget.detail_height - 2)
-            if selected.error and len(detail_lines) < content_capacity:
-                detail_lines.append(f"[red]Error[/red] {selected.error[:120]}")
+            if selected.heartbeat_stale and len(detail_lines) < content_capacity:
+                detail_lines.append(
+                    "[yellow]Heartbeat delayed; worker is not yet classified as dead[/yellow]"
+                )
+            current_error = (
+                selected.error
+                if selected.status in {SessionStatus.FAILED, SessionStatus.CANCELLED}
+                else None
+            )
+            activity_lines: list[str] = []
+            if current_error and len(detail_lines) < content_capacity:
+                detail_lines.append(f"[red]Error[/red] {current_error[:120]}")
             else:
-                activity_lines: list[str] = []
-                if not selected.error:
-                    if self._async_mode:
-                        cached_activity = self._activity_text.get(selected.session_id)
-                        activity_lines = [cached_activity] if cached_activity else []
-                    else:
-                        activity_lines = self._activity_lines(selected)
+                if self._async_mode:
+                    cached_activity = self._activity_text.get(selected.session_id)
+                    activity_lines = [cached_activity] if cached_activity else []
+                else:
+                    activity_lines = self._activity_lines(selected)
                 if activity_lines and len(detail_lines) < content_capacity:
                     latest = " ".join(activity_lines[0].split())
                     # The detail panel is narrower than the terminal due to
                     # borders and padding; reserve room for the label and
                     # always crop rather than wrapping the transcript text.
-                    latest = latest[: max(1, budget.width - 32)]
                     from rich.markup import escape  # noqa: PLC0415
 
+                    legacy_error = (
+                        " ".join(selected.error.split())[: max(8, min(48, budget.width // 3))]
+                        if selected.error and selected.status in ACTIVE_STATUSES
+                        else ""
+                    )
+                    if legacy_error and not (
+                        selected.attempt_history
+                        and selected.attempt_history[-1].attempt < selected.attempt
+                    ):
+                        suffix = f" · Legacy prior error: {legacy_error}"
+                        latest = latest[: max(1, budget.width - 32 - len(suffix))] + suffix
+                    else:
+                        latest = latest[: max(1, budget.width - 32)]
                     detail_lines.append("[bold]Latest text[/bold] " + escape(latest))
                 elif len(detail_lines) < content_capacity:
                     detail_lines.append("[dim]Latest text: no text activity[/dim]")
+            if (
+                selected.attempt_history
+                and selected.attempt_history[-1].attempt < selected.attempt
+                and len(detail_lines) < content_capacity
+            ):
+                previous = selected.attempt_history[-1]
+                previous_text = previous.error or previous.latest_activity or "No error details"
+                previous_text = " ".join(previous_text.split())[: max(1, budget.width - 42)]
+                from rich.markup import escape  # noqa: PLC0415
+
+                detail_lines.append(
+                    f"[dim]Previous attempt {previous.attempt} ({previous.status.value}): "
+                    f"{escape(previous_text)}[/dim]"
+                )
+            elif (
+                selected.error
+                and selected.status in ACTIVE_STATUSES
+                and not activity_lines
+                and len(detail_lines) < content_capacity
+            ):
+                from rich.markup import escape  # noqa: PLC0415
+
+                legacy_error = " ".join(selected.error.split())[: max(1, budget.width - 40)]
+                detail_lines.append(f"[dim]Legacy prior error: {escape(legacy_error)}[/dim]")
             if (
                 selected.session_id in self._seen_activity
                 and selected.last_active > self._seen_activity[selected.session_id]

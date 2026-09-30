@@ -24,6 +24,27 @@ class SessionStatus(str, Enum):
     DELETED = "deleted"
 
 
+class ModeApplicationStatus(str, Enum):
+    """Resolution state for a session's requested/effective runtime mode."""
+
+    PENDING = "pending"
+    APPLIED = "applied"
+    FAILED = "failed"
+
+
+def _mode_application_status(
+    value: object, default: ModeApplicationStatus
+) -> ModeApplicationStatus:
+    if isinstance(value, ModeApplicationStatus):
+        return value
+    if isinstance(value, str):
+        try:
+            return ModeApplicationStatus(value)
+        except ValueError:
+            pass
+    return default
+
+
 ACTIVE_STATUSES = frozenset(
     {
         SessionStatus.QUEUED,
@@ -45,6 +66,7 @@ TERMINAL_STATUSES = frozenset(
         SessionStatus.DELETED,
     }
 )
+ATTEMPT_HISTORY_LIMIT = 16
 
 _TRANSITIONS: dict[SessionStatus, frozenset[SessionStatus]] = {
     SessionStatus.QUEUED: frozenset(
@@ -111,6 +133,118 @@ def _status(value: object) -> SessionStatus:
         except ValueError:
             pass
     return SessionStatus.FAILED
+
+
+@dataclass(frozen=True)
+class BackgroundAttempt:
+    """Bounded summary of one finished attempt for a background session."""
+
+    attempt: int
+    status: SessionStatus
+    started_at: float | None = None
+    completed_at: float | None = None
+    error: str | None = None
+    failure_category: str = ""
+    exit_reason: str = ""
+    worker_exit_code: int | None = None
+    latest_activity: str = ""
+    requested_mode_name: str | None = None
+    mode_name: str = ""
+    mode_application_status: ModeApplicationStatus = ModeApplicationStatus.PENDING
+    mode_application_error: str = ""
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> "BackgroundAttempt":
+        attempt = value.get("attempt", 0)
+        started_at = value.get("started_at")
+        completed_at = value.get("completed_at")
+        error = value.get("error")
+        exit_code = value.get("worker_exit_code")
+        raw_failure_category = value.get("failure_category")
+        raw_exit_reason = value.get("exit_reason")
+        raw_latest_activity = value.get("latest_activity")
+        raw_requested_mode = value.get("requested_mode_name")
+        raw_mode_error = value.get("mode_application_error")
+        raw_mode_name = value.get("mode_name")
+        mode_name = raw_mode_name[:128] if isinstance(raw_mode_name, str) else ""
+        mode_status = _mode_application_status(
+            value.get("mode_application_status"),
+            ModeApplicationStatus.APPLIED if mode_name else ModeApplicationStatus.PENDING,
+        )
+        if mode_status is not ModeApplicationStatus.APPLIED or not mode_name:
+            mode_name = ""
+            if mode_status is ModeApplicationStatus.APPLIED:
+                mode_status = ModeApplicationStatus.PENDING
+        return cls(
+            attempt=attempt if isinstance(attempt, int) and not isinstance(attempt, bool) else 0,
+            status=_status(value.get("status")),
+            started_at=(
+                float(started_at)
+                if isinstance(started_at, (int, float)) and not isinstance(started_at, bool)
+                else None
+            ),
+            completed_at=(
+                float(completed_at)
+                if isinstance(completed_at, (int, float)) and not isinstance(completed_at, bool)
+                else None
+            ),
+            error=error[:2_000] if isinstance(error, str) else None,
+            failure_category=raw_failure_category[:128]
+            if isinstance(raw_failure_category, str)
+            else "",
+            exit_reason=raw_exit_reason[:128] if isinstance(raw_exit_reason, str) else "",
+            worker_exit_code=(
+                exit_code
+                if isinstance(exit_code, int) and not isinstance(exit_code, bool)
+                else None
+            ),
+            latest_activity=raw_latest_activity[:512]
+            if isinstance(raw_latest_activity, str)
+            else "",
+            requested_mode_name=raw_requested_mode[:128]
+            if isinstance(raw_requested_mode, str)
+            else None,
+            mode_name=mode_name,
+            mode_application_status=mode_status,
+            mode_application_error=raw_mode_error[:1_024]
+            if isinstance(raw_mode_error, str)
+            else "",
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "attempt": self.attempt,
+            "status": self.status.value,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "error": self.error,
+            "failure_category": self.failure_category,
+            "exit_reason": self.exit_reason,
+            "worker_exit_code": self.worker_exit_code,
+            "latest_activity": self.latest_activity,
+            "requested_mode_name": self.requested_mode_name,
+            "mode_name": self.mode_name,
+            "mode_application_status": self.mode_application_status.value,
+            "mode_application_error": self.mode_application_error,
+        }
+
+    @classmethod
+    def from_session(cls, session: "BackgroundSession") -> "BackgroundAttempt":
+        return cls(
+            attempt=session.attempt,
+            status=session.status,
+            started_at=session.attempt_started_at or session.started_at,
+            completed_at=session.completed_at,
+            error=session.error,
+            failure_category=session.failure_category,
+            exit_reason=session.exit_reason or session.worker_exit_reason,
+            worker_exit_code=session.worker_exit_code,
+            latest_activity=session.latest_activity,
+            requested_mode_name=session.requested_mode_name,
+            mode_name=session.mode_name,
+            mode_application_status=session.mode_application_status,
+            mode_application_error=session.mode_application_error,
+        )
 
 
 @dataclass(frozen=True)
@@ -184,6 +318,17 @@ class BackgroundSession:
     # Canonical mode used to construct the session runtime. Appended to retain
     # source compatibility for positional construction of older records.
     mode_name: str = ""
+    # Attempt-local fields are appended for compatibility with positional
+    # construction and legacy event records.
+    attempt_started_at: float | None = None
+    attempt_history: tuple[BackgroundAttempt, ...] = ()
+    heartbeat_stale: bool = False
+    # Requested invocation state is kept separate from the canonical effective
+    # mode. Application state is scoped to ``mode_application_attempt``.
+    requested_mode_name: str | None = None
+    mode_application_status: ModeApplicationStatus = ModeApplicationStatus.PENDING
+    mode_application_attempt: int = 0
+    mode_application_error: str = ""
 
     @classmethod
     def create(
@@ -204,6 +349,7 @@ class BackgroundSession:
         base_commit: str = "",
         run_id: str = "",
         detached_goal: bool = False,
+        requested_mode_name: str | None = None,
     ) -> "BackgroundSession":
         timestamp = time.time() if now is None else now
         return cls(
@@ -225,6 +371,10 @@ class BackgroundSession:
             worktree_id=worktree_id,
             branch=branch,
             base_commit=base_commit,
+            requested_mode_name=(
+                requested_mode_name[:128] if isinstance(requested_mode_name, str) else None
+            ),
+            mode_application_status=ModeApplicationStatus.PENDING,
         )
 
     def evolve(self, **changes: object) -> "BackgroundSession":
@@ -234,8 +384,22 @@ class BackgroundSession:
             value = changes.get(name, current)
             return value if isinstance(value, str) else current
 
+        def _bounded_str(name: str, current: str, limit: int) -> str:
+            value = changes.get(name, current)
+            return value[:limit] if isinstance(value, str) else current
+
         def _float(name: str, current: float | None) -> float | None:
             value = changes.get(name, current)
+            return (
+                float(value)
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+                else current
+            )
+
+        def _clearable_float(name: str, current: float | None) -> float | None:
+            value = changes.get(name, current)
+            if value is None:
+                return None
             return (
                 float(value)
                 if isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -260,9 +424,38 @@ class BackgroundSession:
             value = changes.get(name, current)
             return value if isinstance(value, bool) else current
 
+        effective_mode = _bounded_str("mode_name", self.mode_name, 128)
+        mode_status = _mode_application_status(
+            changes.get("mode_application_status", self.mode_application_status),
+            self.mode_application_status,
+        )
+        if (
+            "mode_name" in changes
+            and "mode_application_status" not in changes
+            and effective_mode != self.mode_name
+        ):
+            # Changing a name is a request to change runtime state, not proof
+            # that the worker resolved and durably applied it.
+            mode_status = ModeApplicationStatus.PENDING
+        if mode_status is not ModeApplicationStatus.APPLIED:
+            effective_mode = ""
+        elif not effective_mode:
+            # An applied state without a canonical mode is not meaningful.
+            mode_status = ModeApplicationStatus.PENDING
+
         def _optional_bool(name: str, current: bool | None) -> bool | None:
             value = changes.get(name, current)
             return value if isinstance(value, bool) or value is None else current
+
+        raw_history = changes.get("attempt_history", self.attempt_history)
+        history_items: list[BackgroundAttempt] = []
+        if isinstance(raw_history, (list, tuple)):
+            for item in raw_history:
+                if isinstance(item, BackgroundAttempt):
+                    history_items.append(item)
+                elif isinstance(item, Mapping):
+                    history_items.append(BackgroundAttempt.from_mapping(item))
+        history = tuple(history_items[-ATTEMPT_HISTORY_LIMIT:])
 
         return BackgroundSession(
             session_id=self.session_id,
@@ -272,10 +465,10 @@ class BackgroundSession:
             intent=_str("intent", self.intent),
             status=_status(changes.get("status", self.status)),
             created_at=_float("created_at", self.created_at) or 0.0,
-            started_at=_float("started_at", self.started_at),
+            started_at=_clearable_float("started_at", self.started_at),
             last_active=_float("last_active", self.last_active) or 0.0,
             state_changed_at=_float("state_changed_at", self.state_changed_at) or 0.0,
-            completed_at=_float("completed_at", self.completed_at),
+            completed_at=_clearable_float("completed_at", self.completed_at),
             provider=_str("provider", self.provider),
             model=_str("model", self.model),
             source=_str("source", self.source),
@@ -293,8 +486,8 @@ class BackgroundSession:
             input_value=_optional_str("input_value", self.input_value),
             worker_pid=_optional_int("worker_pid", self.worker_pid),
             detached_goal=_bool("detached_goal", self.detached_goal),
-            worker_started_at=_float("worker_started_at", self.worker_started_at),
-            worker_finished_at=_float("worker_finished_at", self.worker_finished_at),
+            worker_started_at=_clearable_float("worker_started_at", self.worker_started_at),
+            worker_finished_at=_clearable_float("worker_finished_at", self.worker_finished_at),
             worker_exit_code=_optional_int("worker_exit_code", self.worker_exit_code),
             worker_exit_reason=_str("worker_exit_reason", self.worker_exit_reason),
             worker_finalization_attempts=_int(
@@ -320,9 +513,23 @@ class BackgroundSession:
             delete_operation_id=_str("delete_operation_id", self.delete_operation_id),
             delete_phase=_str("delete_phase", self.delete_phase),
             delete_error=_str("delete_error", self.delete_error),
-            delete_requested_at=_float("delete_requested_at", self.delete_requested_at),
+            delete_requested_at=_clearable_float("delete_requested_at", self.delete_requested_at),
             delete_attempt=_int("delete_attempt", self.delete_attempt) or 0,
-            mode_name=_str("mode_name", self.mode_name),
+            mode_name=effective_mode,
+            attempt_started_at=_clearable_float("attempt_started_at", self.attempt_started_at),
+            attempt_history=history,
+            heartbeat_stale=_bool("heartbeat_stale", self.heartbeat_stale),
+            requested_mode_name=(
+                _bounded_str("requested_mode_name", self.requested_mode_name or "", 128)
+                if changes.get("requested_mode_name", self.requested_mode_name) is not None
+                else None
+            ),
+            mode_application_status=mode_status,
+            mode_application_attempt=_int("mode_application_attempt", self.mode_application_attempt)
+            or 0,
+            mode_application_error=_bounded_str(
+                "mode_application_error", self.mode_application_error, 1_024
+            ),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -382,6 +589,13 @@ class BackgroundSession:
             "delete_requested_at": self.delete_requested_at,
             "delete_attempt": self.delete_attempt,
             "mode_name": self.mode_name,
+            "attempt_started_at": self.attempt_started_at,
+            "attempt_history": [item.to_dict() for item in self.attempt_history],
+            "heartbeat_stale": self.heartbeat_stale,
+            "requested_mode_name": self.requested_mode_name,
+            "mode_application_status": self.mode_application_status.value,
+            "mode_application_attempt": self.mode_application_attempt,
+            "mode_application_error": self.mode_application_error,
         }
 
     @classmethod
@@ -413,6 +627,38 @@ class BackgroundSession:
 
         def _optional_bool(item: object) -> bool | None:
             return item if isinstance(item, bool) or item is None else None
+
+        raw_attempt_history = value.get("attempt_history", ())
+        attempt_history = (
+            tuple(
+                BackgroundAttempt.from_mapping(item)
+                for item in raw_attempt_history[-ATTEMPT_HISTORY_LIMIT:]
+                if isinstance(item, Mapping)
+            )
+            if isinstance(raw_attempt_history, (list, tuple))
+            else ()
+        )
+        raw_mode_name = value.get("mode_name")
+        mode_name = raw_mode_name[:128] if isinstance(raw_mode_name, str) else ""
+        raw_requested_mode = value.get("requested_mode_name")
+        raw_mode_error = value.get("mode_application_error")
+        raw_mode_status = value.get("mode_application_status")
+        legacy_mode_status = (
+            ModeApplicationStatus.APPLIED if mode_name else ModeApplicationStatus.PENDING
+        )
+        mode_status = _mode_application_status(raw_mode_status, legacy_mode_status)
+        if mode_status is not ModeApplicationStatus.APPLIED:
+            mode_name = ""
+        elif not mode_name:
+            mode_status = ModeApplicationStatus.PENDING
+        raw_mode_attempt = value.get("mode_application_attempt")
+        mode_attempt = (
+            raw_mode_attempt
+            if isinstance(raw_mode_attempt, int) and not isinstance(raw_mode_attempt, bool)
+            else _int_value(value.get("attempt"), 0)
+            if mode_status is ModeApplicationStatus.APPLIED
+            else 0
+        )
 
         return cls(
             session_id=session_id,
@@ -472,5 +718,16 @@ class BackgroundSession:
             delete_error=str(value.get("delete_error", "")),
             delete_requested_at=_float_or_none(value.get("delete_requested_at")),
             delete_attempt=_int_value(value.get("delete_attempt"), 0),
-            mode_name=str(value.get("mode_name", "")),
+            mode_name=mode_name,
+            attempt_started_at=_float_or_none(value.get("attempt_started_at")),
+            attempt_history=attempt_history,
+            heartbeat_stale=bool(value.get("heartbeat_stale", False)),
+            requested_mode_name=raw_requested_mode[:128]
+            if isinstance(raw_requested_mode, str)
+            else None,
+            mode_application_status=mode_status,
+            mode_application_attempt=mode_attempt,
+            mode_application_error=raw_mode_error[:1_024]
+            if isinstance(raw_mode_error, str)
+            else "",
         )

@@ -105,12 +105,32 @@ returning; it records an exit reason and never signals the launcher or a PID
 read from stale storage. An attached `--goal` TUI does not use this finalizer
 and remains available for another user message after an agent turn is idle.
 
-Global `--mode MODE` is carried into detached goal and `run --background`
-requests and applied by the normal `ModeManager` during session construction.
-The session details page displays the effective canonical mode. If a worker
-fails before that mode has been persisted, resume/retry retains the original
-request; after session metadata contains a canonical mode, that stored mode is
-used unless the resume command explicitly supplies a new `--mode`.
+Global `--mode MODE` is written into the durable background-session record
+before the child process is launched. The session projection keeps the
+invocation value (`requested_mode_name`) separate from the effective canonical
+value (`mode_name`): before startup succeeds, the mode status is `pending` and
+the effective value is empty. After the production session builder resolves
+the request through `ModeManager`, the worker writes the canonical value and
+`applied` status, tagged with the owning worker attempt. A mode cannot be
+reported as effective merely because it appeared in the launch request.
+
+The worker must durably attest that mode before dispatching a provider turn,
+workflow phase, tool, or subagent. If resolution or the durable attestation
+fails, the attempt is marked failed and agent work is not started. Application
+updates are checked against the current session lease and attempt so that a
+late worker cannot replace newer state. `jobs status SESSION_ID --json`, the
+interactive `agents` manager, `agenthicc runs show RUN_ID --json`, and
+`agenthicc agents --run RUN_ID --json` expose the requested/effective/status
+fields. The manager shows `pending: YOLO`, for example, instead of presenting
+the unvalidated value as an active mode. A no-explicit-mode launch reports
+pending default/persisted resolution until normal session construction
+completes.
+
+Mode application does not enable `dangerously_skip_permissions`; that flag
+continues to be controlled independently. On resume/retry, an explicit mode
+on that invocation takes precedence. Without one, an unconsumed request is
+preserved until applied; after successful initialization, the canonical mode
+persisted with the session is used.
 
 For example:
 

@@ -2824,13 +2824,41 @@ recoverable through the background-session trash/restore path.
 ### BackgroundSession
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class BackgroundSession
 ```
 
 Fields: `session_id`, `title`, `cwd`, `workflow_name`, `intent`, `status`,
-`created_at`, `started_at`, `last_active`, `state_changed_at`, … (54 fields
+`created_at`, `started_at`, `last_active`, `state_changed_at`, … (62 fields
 total).
+
+The mode fields distinguish requested invocation state from the canonical
+effective mode. `requested_mode_name` is persisted when the background record
+is created; `mode_name` is exposed as effective only after the current worker
+attempt attests mode application. `mode_application_status` is `pending`,
+`applied`, or `failed`; `mode_application_attempt` and the worker lease fence
+stale updates. Legacy records with a non-empty `mode_name` and no application
+status are decoded as previously applied.
+
+### ModeApplicationStatus
+
+```python
+class ModeApplicationStatus(str, Enum)
+```
+
+Durable resolution state for a background session's requested/effective mode.
+The enum values are `PENDING`, `APPLIED`, and `FAILED`. A pending or failed
+state must not be rendered as an effective mode.
+
+### BackgroundAttempt
+
+```python
+@dataclass(frozen=True)
+class BackgroundAttempt
+```
+
+Bounded history for one finished worker attempt, including its requested and
+effective mode, application state, and bounded diagnostic when present.
 
 ### BackgroundStore
 
