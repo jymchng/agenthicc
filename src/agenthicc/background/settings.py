@@ -72,8 +72,8 @@ class BackgroundSettings:
 
     enabled: bool = True
     store_path: str = ""
-    max_workers: int = 2
-    max_workers_per_project: int = 2
+    max_workers: int = 4
+    max_workers_per_project: int = 4
     cancel_grace_s: float = 5.0
     stale_after_s: float = 30.0
     wall_timeout_s: float = 0.0
@@ -126,8 +126,8 @@ class BackgroundSettings:
         return cls(
             enabled=enabled,
             store_path=store_path,
-            max_workers=positive_int("max_workers", 2),
-            max_workers_per_project=positive_int("max_workers_per_project", 2),
+            max_workers=positive_int("max_workers", 4),
+            max_workers_per_project=positive_int("max_workers_per_project", 4),
             cancel_grace_s=nonnegative_float("cancel_grace_s", 5.0),
             stale_after_s=nonnegative_float("stale_after_s", 30.0),
             wall_timeout_s=nonnegative_float("wall_timeout_s", 0.0),

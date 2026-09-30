@@ -336,7 +336,11 @@ def test_cli_background_config_mutations_and_redaction(
     cfg = SimpleNamespace(background=BackgroundSettings(store_path=str(tmp_path / "store")))
     monkeypatch.setattr(background, "_config", lambda _ctx: cfg)
     store, supervisor = background._store_and_supervisor(CLIContext())
-    assert store.root == tmp_path / "store" and supervisor.max_workers == 2
+    assert (
+        store.root == tmp_path / "store"
+        and supervisor.max_workers == 4
+        and supervisor.max_workers_per_project == 4
+    )
     monkeypatch.setattr(background, "background_enabled", lambda _settings: False)
     with pytest.raises(RuntimeError, match="disabled"):
         background._store_and_supervisor(CLIContext())

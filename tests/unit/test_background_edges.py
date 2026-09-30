@@ -73,7 +73,8 @@ def test_background_settings_ignore_bad_toml_and_support_disable_switch(
     bad = tmp_path / "bad.toml"
     bad.write_text("[background\n", encoding="utf-8")
     settings = load_background_settings(config_path=str(bad), overrides=("unrelated=true",))
-    assert settings.max_workers == 2
+    assert settings.max_workers == 4
+    assert settings.max_workers_per_project == 4
     disabled = BackgroundSettings(enabled=False)
     assert not background_enabled(disabled)
     monkeypatch.setenv("AGENTHICC_DISABLE_BACKGROUND", "1")

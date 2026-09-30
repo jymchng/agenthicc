@@ -15,14 +15,71 @@ uv run agenthicc run --background --workflow code_plan --intent "Plan the next r
 
 The command returns the stable session ID as soon as the worker is accepted.
 Inside an active TUI session, `/bg`, `/background`, and `/detach` are
-equivalent. They preserve the current session ID and journal, then return to the shell after the
-worker lease is established. Both commands appear in the slash-command picker.
+equivalent. They preserve the current session ID and durable journal, then
+return to the shell after starting a background worker. Both commands appear
+in the slash-command picker.
+
+### What `/detach` does end to end
+
+The command hands the current session to a separate local worker process; it
+does not merely hide the TUI while the foreground model request continues.
+The path through the runtime is:
+
+1. **The command is routed immediately.** CLI command discovery installs
+   `/detach` and the `/bg`/`/background` aliases. They use an immediate-control
+   busy policy, so the command can be handled while an agent turn is running
+   instead of waiting in the ordinary message queue. The integration bridge
+   intercepts the command before it is treated as a new user request.
+2. **The handoff chooses the work to continue.** It uses the most recently
+   accepted user text as the worker intent—not the literal `/detach` command.
+   It also carries the active or configured workflow name. If there is no
+   prior user request, or background execution is disabled, the handoff is
+   rejected and the TUI stays open.
+3. **The request is persisted before launch.** The bridge asks the background
+   supervisor to prepare a request containing the existing session ID, intent,
+   workflow, workspace, and relevant run/configuration metadata. This reuses
+   the session; it does not copy the transcript or create a second workflow
+   run.
+4. **Foreground execution is asked to stop.** If the TUI owns an active agent
+   task, `/detach` calls `task.cancel()`. This is an asynchronous cancellation
+   request, not proof that the task has already finished unwinding.
+5. **Ownership is handed over and the worker is launched.** The prepared path
+   releases the foreground session-owner lease, then starts the supervisor.
+   The supervisor launches `python -m agenthicc.background.worker` as a
+   separate process, with its own background log and the persisted request.
+6. **The worker claims and reconstructs the session.** It claims the background
+   record, acquires session ownership, rebuilds session context using the same
+   session ID, and starts the event processor. If a recoverable workflow is
+   present, it resumes that workflow; otherwise it runs the saved intent as a
+   direct turn. Progress and terminal status are written to the background
+   store.
+7. **The foreground input loop exits.** The TUI shows a transient
+   `Backgrounded session …` notice and signals its input loop to exit. During
+   TUI shutdown, it awaits the foreground agent task while closing its other
+   resources; after cleanup, control returns to the shell. The background
+   worker is independent of that terminal shutdown.
+
+There is an important ordering detail in the current implementation: step 4
+requests cancellation, but does not await the agent task before steps 5–6
+release ownership and launch the worker. TUI teardown later awaits that task,
+but that later wait is not a quiescence barrier before worker startup. Thus the
+handoff is durable, but there can be a short interval in which foreground
+cancellation is still unwinding as the worker starts. This is a potential
+race around session/workflow state, not a guarantee that every detach loses
+state.
+
+When the cancelled foreground task belongs to a running workflow, its
+cancellation handler currently records a workflow failure with reason
+`cancelled` and closes the foreground turn. The scroll appender can therefore
+show `ERROR cancelled` even though the background worker has been launched.
+The subsequent `Total wall clock time since last IDLE` line is emitted when
+the foreground activity ends; it describes that activity's elapsed duration,
+not necessarily additional work after cancellation. A plain non-workflow turn
+can take the cancellation path without emitting the same workflow failure.
 
 For a goal-backed session, `/detach` is the explicit foreground-to-background
-handoff. Agenthicc durably records the request and session first, cancels
-foreground input, releases the foreground owner, and only then lets the
-background worker claim the same session. It does not copy the conversation or
-create a second workflow run. Inspect the product-level run with:
+handoff. It does not copy the conversation or create a second workflow run.
+Inspect the product-level run with:
 
 ```bash
 agenthicc runs
@@ -166,8 +223,8 @@ The optional `[background]` section may be placed in the project or global
 ```toml
 [background]
 enabled = true
-max_workers = 2
-max_workers_per_project = 2
+max_workers = 4
+max_workers_per_project = 4
 cancel_grace_s = 5.0
 stale_after_s = 30.0
 wall_timeout_s = 0.0       # 0 means no wall-clock timeout

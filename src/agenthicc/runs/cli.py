@@ -65,7 +65,10 @@ def _json_or_text(run: GoalRun, *, json_output: bool, detached: bool = False) ->
     if detached:
         print(f"PID:     {run.worker_pid if run.worker_pid is not None else 'unknown'}")
         print(f"\nTrack:   agenthicc agents --run {run.run_id}")
-        print(f"Attach:  agenthicc attach {run.run_id}")
+        if run.main_session_id:
+            print(f"Attach:  agenthicc attach {run.main_session_id}")
+        else:
+            print(f"Attach:  agenthicc attach --run {run.run_id}")
 
 
 def run_goal_cli(ctx: CLIContext) -> None:

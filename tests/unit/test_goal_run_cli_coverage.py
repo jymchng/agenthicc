@@ -86,6 +86,9 @@ def test_goal_run_output_and_command_handlers(
         detached_payload = json.loads(capsys.readouterr().out)
         assert detached_payload["detached"] is True
         assert detached_payload["pid"] is None
+        cli._json_or_text(manager.run, json_output=False, detached=True)
+        output = capsys.readouterr().out
+        assert "Attach:  agenthicc attach --run run_cli" in output
         pid_run = manager.run.evolve(worker_pid=12345)
         cli._json_or_text(pid_run, json_output=True, detached=True)
         assert json.loads(capsys.readouterr().out)["pid"] == 12345
@@ -94,6 +97,8 @@ def test_goal_run_output_and_command_handlers(
         output = capsys.readouterr().out
         assert "PID:     12345" in output
         assert "Session ID: session-cli" in output
+        assert "Attach:  agenthicc attach session-cli" in output
+        assert "Attach:  agenthicc attach run_cli" not in output
         cli._json_or_text(manager.run, json_output=False, detached=False)
         assert "Run ID" in capsys.readouterr().out
 
