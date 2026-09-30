@@ -105,6 +105,23 @@ returning; it records an exit reason and never signals the launcher or a PID
 read from stale storage. An attached `--goal` TUI does not use this finalizer
 and remains available for another user message after an agent turn is idle.
 
+Global `--mode MODE` is carried into detached goal and `run --background`
+requests and applied by the normal `ModeManager` during session construction.
+The session details page displays the effective canonical mode. If a worker
+fails before that mode has been persisted, resume/retry retains the original
+request; after session metadata contains a canonical mode, that stored mode is
+used unless the resume command explicitly supplies a new `--mode`.
+
+For example:
+
+```bash
+agenthicc --mode Yolo --goal "Implement OAuth" --detach
+agenthicc --mode Plan run --background --workflow code_plan --intent "Plan the migration"
+```
+
+Workflow phase-specific mode overrides remain in effect for their declared
+phases; the CLI mode selects the session's initial/default runtime mode.
+
 Recovery does not trust numeric PID liveness alone. Where procfs is available,
 the recorded PID must match the Agenthicc worker module and the exact request
 file/store identity for the session; an unmatchable or reused PID is treated as

@@ -146,7 +146,17 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
     assert "Background Sessions" in manager.stdout
 
     accepted = subprocess.run(
-        [sys.executable, "-m", "agenthicc", "run", "--background", "--intent", "no provider"],
+        [
+            sys.executable,
+            "-m",
+            "agenthicc",
+            "--mode",
+            "Yolo",
+            "run",
+            "--background",
+            "--intent",
+            "no provider",
+        ],
         cwd=tmp_path,
         env=env,
         text=True,
@@ -157,6 +167,8 @@ def test_cli_manager_alias_and_background_acceptance(tmp_path: Path) -> None:
     assert accepted.returncode == 0
     assert "Background session" in accepted.stdout
     session_id = accepted.stdout.split("Background session ", 1)[1].split()[0]
+    request_file = tmp_path / ".agenthicc" / "background" / "requests" / f"{session_id}.json"
+    assert json.loads(request_file.read_text(encoding="utf-8"))["mode_name"] == "Yolo"
     status = subprocess.run(
         [sys.executable, "-m", "agenthicc", "jobs", "status", session_id, "--json"],
         cwd=tmp_path,

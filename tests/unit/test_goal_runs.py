@@ -168,8 +168,10 @@ class _FakeSupervisor:
         from agenthicc.background import BackgroundStore
 
         self.store = BackgroundStore(root / "background")
+        self.submitted: dict[str, object] = {}
 
     def submit(self, **kwargs: object) -> BackgroundSession:
+        self.submitted = dict(kwargs)
         session = BackgroundSession.create(
             str(kwargs["session_id"]),
             title=str(kwargs["title"]),
@@ -202,13 +204,14 @@ def test_manager_starts_detached_run_through_supervisor(tmp_path: Path) -> None:
         store=RunStore(tmp_path / "runs"), supervisor=supervisor, require_git=True
     )
 
-    run = manager.start_detached("Implement the API", repository=repository)
+    run = manager.start_detached("Implement the API", repository=repository, mode_name="Yolo")
 
     assert run.run_id.startswith("run_")
     assert run.status == GoalRunStatus.RUNNING
     assert run.workflow_name == "goal_flow"
     assert run.main_session_id
     assert supervisor.store.get(run.main_session_id).run_id == run.run_id
+    assert supervisor.submitted["mode_name"] == "Yolo"
 
 
 def test_manager_rejects_non_repository(tmp_path: Path) -> None:

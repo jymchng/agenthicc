@@ -91,6 +91,7 @@ def run_goal_cli(ctx: CLIContext) -> None:
                 set_overrides=ctx.set_overrides,
                 set_secret_overrides=ctx.set_secret_overrides,
                 dangerously_skip_permissions=ctx.flags.dangerously_skip_permissions,
+                mode_name=ctx.mode_name,
             )
             _json_or_text(run, json_output=ctx.json_output, detached=True)
             return

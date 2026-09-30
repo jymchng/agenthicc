@@ -658,6 +658,7 @@ async def test_background_cli_manager_attach_and_handler_errors(
             "cli_flags": CLIFlags(dangerously_skip_permissions=True),
             "config_path": str(tmp_path / "agenthicc.toml"),
             "config": None,
+            "mode_name": None,
         }
     ]
     assert handoffs == ["attach-edge"]

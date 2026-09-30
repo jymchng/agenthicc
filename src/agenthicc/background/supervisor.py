@@ -53,6 +53,7 @@ class BackgroundRequest:
     set_secret_overrides: tuple[str, ...] = ()
     run_id: str = ""
     detached_goal: bool = False
+    mode_name: str | None = None
 
     @classmethod
     def from_mapping(cls, value: object) -> "BackgroundRequest":
@@ -65,6 +66,9 @@ class BackgroundRequest:
             raise ValueError("background request requires session_id, intent, and cwd")
         raw_overrides = value.get("set_overrides", ())
         raw_secrets = value.get("set_secret_overrides", ())
+        raw_mode_name = value.get("mode_name")
+        if raw_mode_name is not None and not isinstance(raw_mode_name, str):
+            raise ValueError("background request mode_name must be a string or null")
         return cls(
             session_id=str(value["session_id"]),
             workflow_name=str(value.get("workflow_name", "")),
@@ -95,6 +99,7 @@ class BackgroundRequest:
             else (),
             run_id=str(value.get("run_id", "")),
             detached_goal=bool(value.get("detached_goal", False)),
+            mode_name=raw_mode_name if isinstance(raw_mode_name, str) else None,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -112,6 +117,7 @@ class BackgroundRequest:
             "source": self.source,
             "run_id": self.run_id,
             "detached_goal": self.detached_goal,
+            "mode_name": self.mode_name,
         }
 
 
@@ -244,6 +250,7 @@ class BackgroundSupervisor:
         base_commit: str = "",
         run_id: str = "",
         detached_goal: bool = False,
+        mode_name: str | None = None,
     ) -> BackgroundSession:
         """Create and launch a new background session."""
 
@@ -272,6 +279,7 @@ class BackgroundSupervisor:
             source="cli",
             run_id=run_id,
             detached_goal=detached_goal,
+            mode_name=mode_name,
         )
         session = BackgroundSession.create(
             sid,
@@ -306,6 +314,7 @@ class BackgroundSupervisor:
         set_secret_overrides: tuple[str, ...] = (),
         run_id: str = "",
         start: bool = True,
+        mode_name: str | None = None,
     ) -> BackgroundSession:
         """Detach an existing foreground session into one tracked worker."""
 
@@ -340,6 +349,7 @@ class BackgroundSupervisor:
             run_id=run_id,
             wall_timeout_s=self.wall_timeout_s,
             max_activity_bytes=self.max_activity_bytes,
+            mode_name=mode_name,
         )
         if existing.status == SessionStatus.FAILED:
             existing = self.store.transition(
@@ -382,7 +392,23 @@ class BackgroundSupervisor:
             raise InvalidSessionTransition(f"Cannot start prepared {session.status.value} session")
         return self._launch(request, session)
 
-    def resume(self, session_id: str) -> BackgroundSession:
+    def _mode_name_for_resume(self, session_id: str, explicit_mode_name: str | None) -> str | None:
+        """Preserve a requested mode only until canonical session state exists."""
+
+        if explicit_mode_name is not None:
+            return explicit_mode_name
+        from agenthicc.tui.runtime.session_log import load_session_mode  # noqa: PLC0415
+
+        if load_session_mode(session_id) is not None:
+            return None
+        try:
+            raw = json.loads(self._request_path(session_id).read_text(encoding="utf-8"))
+            request = BackgroundRequest.from_mapping(raw)
+            return request.mode_name if request.session_id == session_id else None
+        except (OSError, json.JSONDecodeError, ValueError):
+            return None
+
+    def resume(self, session_id: str, *, mode_name: str | None = None) -> BackgroundSession:
         session = self.store.get(session_id)
         if session.status not in {
             SessionStatus.ORPHANED,
@@ -396,10 +422,11 @@ class BackgroundSupervisor:
             intent=session.intent,
             workflow_name=session.workflow_name,
             cwd=session.cwd,
+            mode_name=self._mode_name_for_resume(session_id, mode_name),
         )
 
-    def retry(self, session_id: str) -> BackgroundSession:
-        return self.resume(session_id)
+    def retry(self, session_id: str, *, mode_name: str | None = None) -> BackgroundSession:
+        return self.resume(session_id, mode_name=mode_name)
 
     def attach_foreground(self, session_id: str) -> BackgroundSession:
         """Stop background execution and release *session_id* to the TUI.

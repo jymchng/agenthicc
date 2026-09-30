@@ -16,6 +16,7 @@ class _Supervisor:
     def __init__(self, root: Path) -> None:
         self.store = BackgroundStore(root / "background")
         self.cancelled: list[str] = []
+        self.resumed_mode: str | None = None
 
     def submit(self, **kwargs: object) -> BackgroundSession:
         session = BackgroundSession.create(
@@ -35,8 +36,9 @@ class _Supervisor:
         updated = session.evolve(status=SessionStatus.CANCELLED)
         return self.store.update(session_id, status=updated.status)
 
-    def resume(self, session_id: str) -> BackgroundSession:
+    def resume(self, session_id: str, *, mode_name: str | None = None) -> BackgroundSession:
         self.store.get(session_id)
+        self.resumed_mode = mode_name
         return self.store.update(session_id, status=SessionStatus.RUNNING)
 
     def attach_foreground(self, session_id: str) -> BackgroundSession:
@@ -147,8 +149,9 @@ def test_manager_controls_runs_and_projects_linked_agents(tmp_path: Path) -> Non
 
     projected = manager.projection(run.run_id)
     assert projected.agents[0].role == "main"
-    resumed = manager.resume(run.run_id)
+    resumed = manager.resume(run.run_id, mode_name="Yolo")
     assert resumed.status is GoalRunStatus.RUNNING
+    assert supervisor.resumed_mode == "Yolo"
     assert supervisor.store.get("main").status is SessionStatus.RUNNING
     assert manager.attach(run.run_id).session_id == "main"
     cancelled = manager.cancel(run.run_id)

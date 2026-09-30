@@ -26,6 +26,7 @@ accepted the main session:
 
 ```bash
 uv run agenthicc --goal "Implement OAuth and its tests" --detach
+uv run agenthicc --mode Yolo --goal "Implement OAuth and its tests" --detach
 ```
 
 The command's success means that durable execution was accepted; it does not
@@ -35,6 +36,11 @@ bounded machine-readable startup response:
 ```bash
 uv run agenthicc --json --goal "Implement OAuth" --detach
 ```
+
+An explicit `--mode MODE` is preserved in the durable worker request and
+applied through normal session initialization. The background session detail
+view reports the resulting canonical mode. On resume, the stored mode remains
+authoritative unless that resume invocation supplies a new explicit `--mode`.
 
 Detached startup prints the PID of the child worker, not the short-lived CLI
 launcher:

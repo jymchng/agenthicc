@@ -19,6 +19,7 @@ from agenthicc.background import (
     legal_transition,
 )
 from agenthicc.background.settings import BackgroundSettings, load_background_settings
+from agenthicc.background.supervisor import BackgroundRequest
 
 pytestmark = pytest.mark.unit
 
@@ -75,6 +76,7 @@ def test_session_round_trip_normalizes_and_redacts_none_values(tmp_path: Path) -
         worker_exit_code=0,
         worker_exit_reason="workflow_complete",
         worker_finalization_attempts=1,
+        mode_name="Yolo",
     )
     restored = BackgroundSession.from_mapping(session.to_dict())
     assert restored == session
@@ -83,6 +85,22 @@ def test_session_round_trip_normalizes_and_redacts_none_values(tmp_path: Path) -
     assert restored.detached_goal is True
     assert restored.worker_pid == 42
     assert restored.worker_exit_reason == "workflow_complete"
+    assert restored.mode_name == "Yolo"
+    legacy = session.to_dict()
+    legacy.pop("mode_name")
+    assert BackgroundSession.from_mapping(legacy).mode_name == ""
+    legacy_request = BackgroundRequest.from_mapping(
+        {"session_id": "legacy", "intent": "resume", "cwd": str(tmp_path)}
+    )
+    assert legacy_request.mode_name is None
+    empty_mode_request = BackgroundRequest.from_mapping(
+        {"session_id": "empty", "intent": "resume", "cwd": str(tmp_path), "mode_name": ""}
+    )
+    assert empty_mode_request.mode_name == ""
+    with pytest.raises(ValueError, match="mode_name must be a string"):
+        BackgroundRequest.from_mapping(
+            {"session_id": "malformed", "intent": "resume", "cwd": str(tmp_path), "mode_name": 3}
+        )
 
 
 def test_worker_exit_event_is_bounded_and_replayable(tmp_path: Path) -> None:
@@ -278,6 +296,7 @@ def test_supervisor_submit_writes_private_request_and_enforces_limit(
         cwd=str(tmp_path),
         run_id="run-first",
         detached_goal=True,
+        mode_name="Yolo",
     )
     assert first.status is SessionStatus.QUEUED
     assert first.worker_pid == 1234
@@ -288,9 +307,59 @@ def test_supervisor_submit_writes_private_request_and_enforces_limit(
     assert request["intent"] == "first"
     assert request["run_id"] == "run-first"
     assert request["detached_goal"] is True
+    assert request["mode_name"] == "Yolo"
+    assert request["dangerously_skip_permissions"] is False
     assert "first" not in " ".join(supervisor._worker_command(Path("request.json")))
     with pytest.raises(RuntimeError, match="limit"):
         supervisor.submit(intent="second", cwd=str(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("persisted_mode", "explicit_mode", "expected_request_mode"),
+    ((None, None, "Yolo"), ("Plan", None, None), ("Plan", "Yolo", "Yolo")),
+)
+def test_resume_preserves_unconsumed_mode_but_respects_persisted_or_explicit_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    persisted_mode: str | None,
+    explicit_mode: str | None,
+    expected_request_mode: str | None,
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
+    session = _session(tmp_path, "mode-resume")
+    store.create(session)
+    store.transition(session.session_id, SessionStatus.STARTING)
+    store.transition(session.session_id, SessionStatus.ORPHANED)
+    supervisor._write_request(
+        BackgroundRequest(
+            session_id=session.session_id,
+            workflow_name=session.workflow_name,
+            intent=session.intent,
+            cwd=session.cwd,
+            mode_name="Yolo",
+        )
+    )
+    monkeypatch.setattr(
+        "agenthicc.tui.runtime.session_log.load_session_mode",
+        lambda _session_id: persisted_mode,
+    )
+    captured: list[BackgroundRequest] = []
+
+    def launch(request: BackgroundRequest, resumed: BackgroundSession) -> BackgroundSession:
+        captured.append(request)
+        supervisor._write_request(request)
+        return resumed
+
+    monkeypatch.setattr(supervisor, "_launch", launch)
+
+    supervisor.resume(session.session_id, mode_name=explicit_mode)
+
+    assert captured[0].mode_name == expected_request_mode
+    persisted_request = BackgroundRequest.from_mapping(
+        json.loads(supervisor._request_path(session.session_id).read_text(encoding="utf-8"))
+    )
+    assert persisted_request.mode_name == expected_request_mode
 
 
 def test_supervisor_enforces_per_project_limit(tmp_path: Path, monkeypatch) -> None:

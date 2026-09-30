@@ -111,6 +111,7 @@ def test_enter_opens_a_detailed_page_then_attaches_on_second_enter(tmp_path: Pat
     session = _session(tmp_path, "inspect-me", 1_780_000_000.0).evolve(
         provider="openai",
         model="test-model",
+        mode_name="Yolo",
         latest_activity="Phase completed",
         phase_history=("design", "implement"),
     )
@@ -127,6 +128,7 @@ def test_enter_opens_a_detailed_page_then_attaches_on_second_enter(tmp_path: Pat
     assert f"Session ID: {session.session_id}" in details
     assert f"Dir: {tmp_path.name}" in details
     assert "Provider: openai" in details
+    assert "Mode: Yolo" in details
     assert "Updated:" in details
     assert "Enter attach" in details
 

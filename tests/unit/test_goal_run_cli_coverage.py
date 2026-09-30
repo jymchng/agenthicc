@@ -26,6 +26,7 @@ class _GoalManager:
         )
         self.created = False
         self.detached = False
+        self.detached_kwargs: dict[str, object] = {}
 
     def create(self, goal: str, **_kwargs: object) -> GoalRun:
         self.created = True
@@ -33,6 +34,7 @@ class _GoalManager:
 
     def start_detached(self, goal: str, **_kwargs: object) -> GoalRun:
         self.detached = True
+        self.detached_kwargs = dict(_kwargs)
         return self.run.evolve(goal=goal, status=GoalRunStatus.RUNNING)
 
 
@@ -172,8 +174,11 @@ def test_goal_cli_routes_goal_flow_for_attached_and_detached_starts(
         assert attached == ["attached goal"]
         assert "Agenthicc goal run started" not in capsys.readouterr().out
 
-        cli.run_goal_cli(CLIContext(goal="detached goal", detach=True, json_output=False))
+        cli.run_goal_cli(
+            CLIContext(goal="detached goal", detach=True, mode_name="Yolo", json_output=False)
+        )
         assert manager.detached
+        assert manager.detached_kwargs["mode_name"] == "Yolo"
         output = capsys.readouterr().out
         assert "Agenthicc detached run started" in output
 

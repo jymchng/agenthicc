@@ -133,6 +133,12 @@ cancellation, or confirmed `idle_after_thinking` before returning. The
 attached form does not install this finalizer, so an interactive TUI remains
 alive and can accept another message after a turn becomes idle.
 
+An explicit `--mode MODE` also applies to detached goals and background jobs,
+for example `agenthicc --mode Yolo --goal "Implement OAuth" --detach`. The
+worker selects that mode through normal session initialization; the background
+session details show the effective canonical mode. On resume, the persisted
+session mode is used unless another `--mode` is explicitly supplied.
+
 See the [goal-runs guide](./docs/guides/goal-runs.md) for run identity,
 worker correlation, recovery, and JSON control output.
 

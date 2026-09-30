@@ -78,6 +78,7 @@ against the current source before implementing them.
 - [PRD-207 — Async-first runtime and non-blocking operations](prd-207-async-first-runtime-conversion.md)
 - [PRD-208 — Reliable, responsive `CTRL+X` deletion in `agenthicc agents`](prd-208-reliable-ctrl-x-session-deletion.md)
 - [PRD-209 — Low-latency, non-blocking `agenthicc agents` TUI](prd-209-low-latency-agents-tui.md)
+- [PRD-210 — Preserve explicit modes in detached background runs](prd-210-preserve-explicit-mode-in-detached-runs.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,

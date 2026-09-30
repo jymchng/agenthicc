@@ -181,6 +181,9 @@ class BackgroundSession:
     delete_error: str = ""
     delete_requested_at: float | None = None
     delete_attempt: int = 0
+    # Canonical mode used to construct the session runtime. Appended to retain
+    # source compatibility for positional construction of older records.
+    mode_name: str = ""
 
     @classmethod
     def create(
@@ -319,6 +322,7 @@ class BackgroundSession:
             delete_error=_str("delete_error", self.delete_error),
             delete_requested_at=_float("delete_requested_at", self.delete_requested_at),
             delete_attempt=_int("delete_attempt", self.delete_attempt) or 0,
+            mode_name=_str("mode_name", self.mode_name),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -377,6 +381,7 @@ class BackgroundSession:
             "delete_error": self.delete_error,
             "delete_requested_at": self.delete_requested_at,
             "delete_attempt": self.delete_attempt,
+            "mode_name": self.mode_name,
         }
 
     @classmethod
@@ -467,4 +472,5 @@ class BackgroundSession:
             delete_error=str(value.get("delete_error", "")),
             delete_requested_at=_float_or_none(value.get("delete_requested_at")),
             delete_attempt=_int_value(value.get("delete_attempt"), 0),
+            mode_name=str(value.get("mode_name", "")),
         )

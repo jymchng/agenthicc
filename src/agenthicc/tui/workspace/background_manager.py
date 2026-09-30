@@ -1085,6 +1085,7 @@ class BackgroundManager:
                 ("State", session.status.value),
                 ("Dir", self._workspace_name(session.cwd)),
                 ("Workflow", session.workflow_name or "direct"),
+                ("Mode", session.mode_name or "—"),
                 ("Current phase", session.current_phase or "—"),
                 ("Phase history", history),
                 ("Provider", session.provider or "—"),

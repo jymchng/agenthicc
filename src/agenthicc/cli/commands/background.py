@@ -172,6 +172,7 @@ async def attach_background_session(
             config_path=ctx.config_path,
             cwd=foreground.cwd,
             config=ctx.config,
+            mode_name=ctx.mode_name,
         )
     except Exception as exc:  # noqa: BLE001
         Console(highlight=False).print(
@@ -216,6 +217,7 @@ async def _open_goal_manager(ctx: CLIContext, run_id: str) -> None:
             config_path=ctx.config_path,
             cwd=foreground.cwd,
             config=ctx.config,
+            mode_name=ctx.mode_name,
         )
     except (KeyError, RuntimeError, ValueError) as exc:
         print(f"Unable to attach {run_id}: {exc}")
@@ -284,6 +286,7 @@ async def run(
             set_overrides=ctx.set_overrides,
             dangerously_skip_permissions=ctx.flags.dangerously_skip_permissions,
             set_secret_overrides=ctx.set_secret_overrides,
+            mode_name=ctx.mode_name,
         )
     except (RuntimeError, ValueError) as exc:
         print(f"Unable to start background session: {exc}")
@@ -333,6 +336,8 @@ def jobs_status(ctx: CLIContext, session_id: str, json: bool = False) -> None:
         print(f"Session: {payload.get('session_id', session_id)}")
         print(f"State: {payload.get('status', 'not_found')}")
         print(f"Title: {payload.get('title', '')}")
+        if payload.get("mode_name"):
+            print(f"Mode: {payload['mode_name']}")
         print(f"Activity: {payload.get('latest_activity', '')}")
         if payload.get("error"):
             print(f"Error: {payload['error']}")
@@ -344,9 +349,17 @@ def _mutate(ctx: CLIContext, session_id: str, action: str) -> None:
         if action == "cancel":
             session = supervisor.cancel(session_id)
         elif action == "resume":
-            session = supervisor.resume(session_id)
+            session = (
+                supervisor.resume(session_id)
+                if ctx.mode_name is None
+                else supervisor.resume(session_id, mode_name=ctx.mode_name)
+            )
         elif action == "retry":
-            session = supervisor.retry(session_id)
+            session = (
+                supervisor.retry(session_id)
+                if ctx.mode_name is None
+                else supervisor.retry(session_id, mode_name=ctx.mode_name)
+            )
         elif action == "archive":
             session = supervisor.archive(session_id)
         elif action == "delete":

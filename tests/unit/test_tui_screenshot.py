@@ -113,7 +113,9 @@ async def test_pty_session_lifecycle_and_status(
         operation="capture",
         session="pty-test",
         output=str(tmp_path / "capture.png"),
-        wait="0s",
+        # The PTY reader is asynchronous; require a short quiet period so the
+        # capture assertion is synchronized with the echoed input.
+        wait="idle:0.1",
     )
     assert captured["ok"] is True
     status = await tool.run(operation="status", session="pty-test")

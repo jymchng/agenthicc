@@ -77,7 +77,11 @@ def runs_cancel(ctx: CLIContext, run_id: str) -> None:
 def runs_resume(ctx: CLIContext, run_id: str) -> None:
     manager = _manager(ctx)
     try:
-        resumed = manager.resume(run_id)
+        resumed = (
+            manager.resume(run_id)
+            if ctx.mode_name is None
+            else manager.resume(run_id, mode_name=ctx.mode_name)
+        )
     except (KeyError, RuntimeError, ValueError) as exc:
         print(f"Unable to resume {run_id}: {exc}")
         raise SystemExit(1) from exc
@@ -153,6 +157,7 @@ async def _attach_goal_run(ctx: CLIContext, run_id: str, *, json_output: bool = 
             config_path=ctx.config_path,
             cwd=foreground.cwd,
             config=ctx.config,
+            mode_name=ctx.mode_name,
         )
     except (KeyError, RuntimeError, ValueError) as exc:
         print(f"Unable to attach goal run {run_id}: {exc}")

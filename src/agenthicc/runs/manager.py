@@ -44,11 +44,12 @@ class _Supervisor(Protocol):
         base_commit: str = "",
         run_id: str = "",
         detached_goal: bool = False,
+        mode_name: str | None = None,
     ) -> BackgroundSession: ...
 
     def cancel(self, session_id: str) -> BackgroundSession: ...
 
-    def resume(self, session_id: str) -> BackgroundSession: ...
+    def resume(self, session_id: str, *, mode_name: str | None = None) -> BackgroundSession: ...
 
     def attach_foreground(self, session_id: str) -> BackgroundSession: ...
 
@@ -144,6 +145,7 @@ class GoalRunManager:
         set_overrides: tuple[str, ...] = (),
         set_secret_overrides: tuple[str, ...] = (),
         dangerously_skip_permissions: bool = False,
+        mode_name: str | None = None,
     ) -> GoalRun:
         run = self.create(
             goal,
@@ -166,6 +168,7 @@ class GoalRunManager:
                 run_id=run.run_id,
                 role="main",
                 detached_goal=True,
+                mode_name=mode_name,
             )
         except Exception as exc:
             self.store.update(
@@ -455,14 +458,18 @@ class GoalRunManager:
             exit_code=130,
         )
 
-    def resume(self, run_id: str) -> GoalRun:
+    def resume(self, run_id: str, *, mode_name: str | None = None) -> GoalRun:
         """Resume the existing main session after evidence reconciliation."""
 
         run = self.projection(run_id)
         if not run.main_session_id:
             raise ValueError("goal run has no main session")
         session = self.background_store.get(run.main_session_id)
-        resumed = self.supervisor.resume(session.session_id)
+        resumed = (
+            self.supervisor.resume(session.session_id)
+            if mode_name is None
+            else self.supervisor.resume(session.session_id, mode_name=mode_name)
+        )
         self.store.update(
             run_id,
             status=GoalRunStatus.RUNNING,

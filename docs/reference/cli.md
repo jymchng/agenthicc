@@ -45,7 +45,11 @@ agenthicc --set-secret execution.default_headers.Modal-Key=MODAL_KEY config show
 ### Detached goal output
 
 `agenthicc --goal GOAL --detach` returns after one durable `goal_flow` run and
-one background worker have been accepted. Human output includes `Run ID`,
+one background worker have been accepted. An explicit global `--mode MODE` is
+persisted in the worker request and applied through normal session startup;
+the background session detail view shows the canonical effective mode. On
+resume, stored mode metadata wins unless that invocation explicitly provides a
+new `--mode`. Human output includes `Run ID`,
 `Goal`, `Status`, `Main`, `PID`, `Track`, and `Attach`. JSON output contains
 `detached: true`, `pid`, and `worker_pid` (the latter two identify the child
 worker, never the short-lived launcher). The PID is retained for inspection

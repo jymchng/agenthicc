@@ -72,6 +72,7 @@ class _Session:
         self.approval_svc = object()
         self.memory_router = None
         self.semantic_index = None
+        self.mode_manager = SimpleNamespace(active_name="Yolo")
 
 
 @pytest.mark.asyncio
@@ -81,6 +82,7 @@ async def test_worker_uses_canonical_direct_turn_and_finalizes(monkeypatch, tmp_
     fake_session = _Session()
 
     async def build(*args: object, **kwargs: object) -> _Session:
+        assert kwargs["mode_name"] == "Yolo"
         return fake_session
 
     async def direct(session: object, request: WorkerRequest) -> None:
@@ -100,9 +102,12 @@ async def test_worker_uses_canonical_direct_turn_and_finalizes(monkeypatch, tmp_
         config_path=None,
         set_overrides=(),
         dangerously_skip_permissions=False,
+        mode_name="Yolo",
     )
     assert await run_worker(request, store) == 0
-    assert store.get("worker-session").status is SessionStatus.COMPLETED
+    completed = store.get("worker-session")
+    assert completed.status is SessionStatus.COMPLETED
+    assert completed.mode_name == "Yolo"
 
 
 @pytest.mark.asyncio
@@ -138,6 +143,37 @@ async def test_worker_records_failure_without_resurrecting_cancelled_job(
     failed = store.get("worker-session")
     assert failed.status is SessionStatus.FAILED
     assert failed.error == "RuntimeError: controlled failure"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested_mode", ["DefinitelyNotAMode", ""])
+async def test_invalid_requested_mode_is_a_durable_startup_failure(
+    monkeypatch, tmp_path: Path, requested_mode: str
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        assert kwargs["mode_name"] == requested_mode
+        raise ValueError(f"Unknown mode {requested_mode!r}. Choose one of: Safe, Plan, Yolo.")
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="do deterministic work",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+        mode_name=requested_mode,
+    )
+
+    assert await run_worker(request, store) == 1
+    failed = store.get("worker-session")
+    assert failed.status is SessionStatus.FAILED
+    assert f"Unknown mode {requested_mode!r}" in (failed.error or "")
 
 
 @pytest.mark.asyncio
@@ -192,11 +228,13 @@ async def test_worker_uses_headless_workflow_result(monkeypatch, tmp_path: Path)
     fake_session = _Session()
 
     async def build(*args: object, **kwargs: object) -> _Session:
+        assert kwargs["mode_name"] == "Yolo"
         return fake_session
 
     async def execute(session: object, workflow_name: str, intent: str) -> object:
         assert workflow_name == "demo"
         assert intent == "run workflow"
+        assert getattr(getattr(session, "mode_manager"), "active_name") == "Yolo"
         return SimpleNamespace(status="complete", error=None)
 
     async def close(*args: object, **kwargs: object) -> None:
@@ -213,9 +251,12 @@ async def test_worker_uses_headless_workflow_result(monkeypatch, tmp_path: Path)
         config_path=None,
         set_overrides=(),
         dangerously_skip_permissions=False,
+        mode_name="Yolo",
     )
     assert await run_worker(request, store) == 0
-    assert store.get("workflow-session").status is SessionStatus.COMPLETED
+    completed = store.get("workflow-session")
+    assert completed.status is SessionStatus.COMPLETED
+    assert completed.mode_name == "Yolo"
 
 
 @pytest.mark.asyncio
@@ -338,7 +379,7 @@ async def test_project_workflow_runs_through_background_worker(monkeypatch, tmp_
     fake_session.app_state = TUIAppState.create()
     fake_session.workflow_registry = registry
     fake_session.agents_registry = object()
-    fake_session.mode_manager = None
+    fake_session.mode_manager = SimpleNamespace(active_name="Safe")
 
     async def build(*args: object, **kwargs: object) -> _Session:
         return fake_session

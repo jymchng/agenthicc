@@ -46,6 +46,7 @@ def _fake_context() -> SimpleNamespace:
         processor=Processor(),
         app_state=SimpleNamespace(cli_flags=None),
         cfg=SimpleNamespace(),
+        mode_manager=SimpleNamespace(active_name="Safe"),
     )
 
 
@@ -72,9 +73,15 @@ def test_worker_request_round_trips_detached_marker() -> None:
             "intent": "goal",
             "cwd": "/tmp",
             "detached_goal": True,
+            "mode_name": "Yolo",
         }
     )
     assert request.detached_goal is True
+    assert request.mode_name == "Yolo"
+    empty_mode = WorkerRequest.from_mapping(
+        {"session_id": "empty", "intent": "goal", "cwd": "/tmp", "mode_name": ""}
+    )
+    assert empty_mode.mode_name == ""
 
 
 def test_finalizer_completes_a_racing_cancellation(tmp_path: Path) -> None:

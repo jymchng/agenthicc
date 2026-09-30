@@ -48,6 +48,7 @@ class WorkerRequest:
     set_secret_overrides: tuple[str, ...] = ()
     detached_goal: bool = False
     run_id: str = ""
+    mode_name: str | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> "WorkerRequest":
@@ -84,6 +85,9 @@ class WorkerRequest:
             if isinstance(raw_activity_bytes, int) and not isinstance(raw_activity_bytes, bool)
             else 64_000
         )
+        raw_mode_name = value.get("mode_name")
+        if raw_mode_name is not None and not isinstance(raw_mode_name, str):
+            raise ValueError("background request mode_name must be a string or null")
         return cls(
             session_id=session_id,
             workflow_name=str(value.get("workflow_name", "")),
@@ -98,6 +102,7 @@ class WorkerRequest:
             source=str(value.get("source", "cli")),
             detached_goal=bool(value.get("detached_goal", False)),
             run_id=str(value.get("run_id", "")),
+            mode_name=raw_mode_name if isinstance(raw_mode_name, str) else None,
         )
 
 
@@ -836,6 +841,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
 
         ctx = CLIContext(
             resume_id=request.session_id,
+            mode_name=request.mode_name,
             config_path=request.config_path,
             set_overrides=request.set_overrides,
             set_secret_overrides=request.set_secret_overrides,
@@ -865,8 +871,12 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             config_path=request.config_path,
             cli_secret_overrides=list(request.set_secret_overrides),
             headless=True,
+            mode_name=request.mode_name,
             owner_lease=owner_lease,
         )
+        effective_mode = session.mode_manager.active_name
+        if effective_mode:
+            store.update(request.session_id, mode_name=effective_mode)
         session.app_state.cli_flags = ctx.flags
         from agenthicc.background.terminals import set_current_terminal_manager  # noqa: PLC0415
 

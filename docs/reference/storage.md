@@ -624,7 +624,8 @@ and its matching kernel journal into recoverable trash. It never recursively
 targets the project root.
 
 Detached goal workers add the following bounded fields to the background
-session record and the linked goal-run projection:
+session record; lifecycle fields are projected to the linked goal run where
+applicable:
 
 | Field | Meaning |
 |---|---|
@@ -635,6 +636,7 @@ session record and the linked goal-run projection:
 | `worker_exit_reason` | `workflow_complete`, `recoverable_error`, `irrecoverable_error`, `idle_after_thinking`, `cancelled`, `cleanup_timeout`, or launch/recovery reason |
 | `worker_finalization_attempts` | Idempotency counter for terminal finalization |
 | `worker_cleanup_error` | Bounded optional resource-cleanup diagnostic |
+| `mode_name` | Background-session field containing the canonical mode used to construct its runtime; empty for legacy or not-yet-initialized sessions |
 
 The worker appends a `worker_exited` audit event after the terminal session
 transition. A duplicate finalizer observes the existing attempt and does not
