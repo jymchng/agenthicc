@@ -81,6 +81,7 @@ against the current source before implementing them.
 - [PRD-210 — Preserve explicit modes in detached background runs](prd-210-preserve-explicit-mode-in-detached-runs.md)
 - [PRD-211 — Keep resumed session status and activity attempt-consistent](prd-211-session-attempt-status-and-activity-consistency.md)
 - [PRD-212 — Make detached goal mode authoritative before execution](prd-212-authoritative-mode-before-detached-goal-execution.md)
+- [PRD-213 — Select the resumed workflow as the active workflow](prd-213-select-resumed-workflow-as-active.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -411,6 +412,14 @@ requested mode is durable before launch; the canonical effective mode is
 recorded only after production session initialization and before worker
 dispatch. CLI/TUI projections distinguish pending, applied, and failed mode
 state, and startup fails closed if the mode cannot be attested.
+
+PRD-213 is implemented: accepted `/workflow resume` and ordinary continuation
+resumes select the validated checkpoint workflow in both TUI session state and
+the footer projection. The selection persists through completion and governs
+the next ordinary turn; unsuccessful or ambiguous attempts preserve the prior
+selection. Evidence is recorded in
+[`prd-213-select-resumed-workflow-as-active.md`](prd-213-select-resumed-workflow-as-active.md),
+with unit, integration, and end-to-end coverage.
 
 ## Existing PRDs
 

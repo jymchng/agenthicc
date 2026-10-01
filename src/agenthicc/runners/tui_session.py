@@ -1380,7 +1380,7 @@ class TUISession:
             ctx, "initial_workflow", None
         )  # PRD-114: /workflow command
         if self._workflow_override is not None:
-            ctx.app_state.conversation.workflow_override.set(self._workflow_override)
+            self._set_workflow_override(self._workflow_override)
         self._workflow_handle: WorkflowRunHandle | None = None
         from agenthicc.runners.workflow_recovery import WorkflowRecoveryCoordinator  # noqa: PLC0415
 
@@ -1512,8 +1512,52 @@ class TUISession:
         its workflow from the active mode, even when recovery inspection has
         found a saved run that still needs an explicit run-id decision.
         """
-        self._workflow_override = None
-        self._ctx.app_state.conversation.workflow_override.set(None)
+        self._set_workflow_override(None)
+
+    def _set_workflow_override(self, name: str | None) -> None:
+        """Keep the session's workflow selector and its reactive projection in sync."""
+        self._workflow_override = name
+        self._ctx.app_state.conversation.workflow_override.set(name)
+
+    def _dispatch_workflow_resume(
+        self,
+        definition: type[WorkflowPlugin],
+        handle: "WorkflowRunHandle",
+        context: object,
+        *,
+        continuation: str | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        """Publish and schedule an already accepted resume transition.
+
+        Callers must validate the checkpoint, acquire its claim, and durably
+        persist ``resuming`` before reaching this boundary. Keeping selection
+        here ensures every interactive resume path updates dispatch state and
+        the footer projection before the runner task can yield.
+        """
+        self._set_workflow_override(handle.workflow_name)
+        if continuation is not None and turn_id is not None:
+            self._publish_session_event(
+                "turn_queued", {"text": continuation, "client_id": "tui"}, turn_id=turn_id
+            )
+        self._publish_session_event(
+            "workflow_resume_started",
+            {
+                "run_id": handle.run_id,
+                "workflow": handle.workflow_name,
+                "phase": handle.current_phase or "",
+            },
+        )
+        self._activate_streaming_input()
+        self._agent_task = asyncio.create_task(
+            self._resume_workflow_task(
+                definition,
+                context,
+                continuation=continuation,
+                turn_id=turn_id,
+            ),
+            name=f"resume-workflow-{handle.run_id}",
+        )
 
     def _activate_streaming_input(self) -> None:
         """Enable interruption before a newly created agent task can await.
@@ -2384,8 +2428,7 @@ class TUISession:
         registry.replace_with(discovered)
 
         if self._workflow_override is not None and self._workflow_override not in new_names:
-            self._workflow_override = None
-            self._ctx.app_state.conversation.workflow_override.set(None)
+            self._set_workflow_override(None)
 
         changes: list[str] = []
         added = sorted(new_names - old_names)
@@ -2603,8 +2646,7 @@ class TUISession:
                 f"⚠ '{self._workflow_handle.workflow_name}' is paused. Resume or reset it before switching workflows."
             )
             return True
-        self._workflow_override = name
-        conv.workflow_override.set(name)
+        self._set_workflow_override(name)
         conv.notify_transient(f"⚡ Workflow → {name}")
         return True
 
@@ -2762,19 +2804,9 @@ class TUISession:
                 f"{type(exc).__name__}: {exc}"
             )
             return True
-        self._activate_streaming_input()
-        self._publish_session_event(
-            "workflow_resume_started",
-            {
-                "run_id": handle.run_id,
-                "workflow": handle.workflow_name,
-                "phase": handle.current_phase or "",
-            },
-        )
-        self._agent_task = asyncio.create_task(
-            self._resume_workflow_task(definition, handle.context),
-            name=f"resume-workflow-{handle.run_id}",
-        )
+        context = handle.context
+        assert context is not None  # validated above; narrows the runner input
+        self._dispatch_workflow_resume(definition, handle, context)
         conv.notify_transient(f"↻ Resuming workflow '{handle.workflow_name}'…")
         return True
 
@@ -2935,27 +2967,15 @@ class TUISession:
             )
             self._msg_queue.insert(0, text)
             return True
+        context = handle.context
+        assert context is not None  # validated above; narrows the runner input
         turn_id = f"turn_{uuid.uuid4().hex}"
-        self._publish_session_event(
-            "turn_queued", {"text": text, "client_id": "tui"}, turn_id=turn_id
-        )
-        self._publish_session_event(
-            "workflow_resume_started",
-            {
-                "run_id": handle.run_id,
-                "workflow": handle.workflow_name,
-                "phase": handle.current_phase or "",
-            },
-        )
-        self._activate_streaming_input()
-        self._agent_task = asyncio.create_task(
-            self._resume_workflow_task(
-                definition,
-                handle.context,
-                continuation=text,
-                turn_id=turn_id,
-            ),
-            name=f"resume-workflow-{handle.run_id}",
+        self._dispatch_workflow_resume(
+            definition,
+            handle,
+            context,
+            continuation=text,
+            turn_id=turn_id,
         )
         return True
 

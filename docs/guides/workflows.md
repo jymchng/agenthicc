@@ -94,6 +94,15 @@ checkpoint.conversation_id
   → runner.resume(typed_context)
 ```
 
+A successful interactive `/workflow resume [run-id]` also selects the workflow
+stored in that validated checkpoint for the rest of the current TUI session.
+The footer shows the same `⬡ workflow-name` selection, and subsequent ordinary
+messages use it instead of a different invocation selection or mode default.
+This selection remains after the resumed run completes, pauses again, or
+fails. Choose another workflow with `/workflow <name>` or clear the override
+with `/workflow reset`. Merely discovering a checkpoint, an ambiguous lookup,
+or a failed claim/restore does not change the current selection.
+
 Corrupt checkpoints, incompatible plugins/profiles/workspaces, cursor drift,
 and unrecoverable tool tails stay on disk for diagnosis and produce a stable
 error plus a reset/reload action. They are never replaced by a new run.
