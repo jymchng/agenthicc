@@ -1380,20 +1380,22 @@ class BackgroundSupervisor:
         """Restart only sessions with an accepted, unconsumed deferred input."""
 
         changed: dict[str, BackgroundSession] = {}
-        recoverable = {
-            SessionStatus.COMPLETED,
-            SessionStatus.FAILED,
-            SessionStatus.CANCELLED,
-            SessionStatus.ORPHANED,
-            SessionStatus.ARCHIVED,
-        }
         inbox = BackgroundInputInbox(self.store)
         for snapshot in sessions:
             try:
                 current = self.store.get(snapshot.session_id, include_deleted=True)
             except SessionNotFound:
                 continue
-            if current.status not in recoverable:
+            if current.status is SessionStatus.COMPLETED:
+                input_start_recovery = True
+            elif current.status in {SessionStatus.FAILED, SessionStatus.ORPHANED}:
+                # Only retry failures/orphans created after this input-driven
+                # transition. Never override an explicit cancellation or
+                # treat an unrelated stale session as a new input request.
+                input_start_recovery = current.resume_marker.startswith("input:")
+            else:
+                input_start_recovery = False
+            if not input_start_recovery or current.cancellation_reason:
                 continue
             pending = tuple(
                 item
@@ -1408,18 +1410,12 @@ class BackgroundSupervisor:
             ):
                 continue
             try:
-                if current.status is SessionStatus.COMPLETED or (
-                    current.status in {SessionStatus.FAILED, SessionStatus.ORPHANED}
-                    and current.resume_marker.startswith("input:")
-                ):
-                    self._start_deferred_input_attempt(
-                        current,
-                        message_id=pending[0].message_id,
-                        expected_attempt=current.attempt,
-                        expected_lease_token=current.lease_token,
-                    )
-                else:
-                    self._resume_for_queued_input(current.session_id)
+                self._start_deferred_input_attempt(
+                    current,
+                    message_id=pending[0].message_id,
+                    expected_attempt=current.attempt,
+                    expected_lease_token=current.lease_token,
+                )
             except (InvalidSessionTransition, OSError, RuntimeError, ValueError):
                 # The inbox is the durable record. A later maintenance pass
                 # retries after a competing owner, capacity, or launch issue.

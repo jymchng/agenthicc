@@ -211,6 +211,24 @@ manager's own session. Accepted composer payloads, including whitespace and
 newlines, are preserved exactly; blank or oversized input is rejected rather
 than silently modified.
 
+Recovery changes only how the target worker is started; it does not add a
+second user turn. For a stale or completed session, the exact accepted inbox
+payload is delivered before the old launch intent is considered, and ordinary
+text is sent as a direct target-session turn. Recovery does not synthesize a
+“Workflow continuation” message, select a checkpoint, or resume a workflow.
+Only an explicit command submitted by the user—such as `/workflow resume`—is
+handled as a workflow command by the target session. Inbox retries retain the
+same message ID and body, so an uncertain manager response does not require
+resending or create a duplicate turn.
+
+This is intentionally distinct from the attached foreground TUI's ordinary
+text continuation behavior for a paused workflow. Input sent from `agenthicc
+agents` does not invoke that implicit continuation path; send an explicit
+`/workflow resume` command when checkpoint recovery is intended. The model may
+still answer in its own words, so diagnose a displayed “Workflow continuation”
+assistant message by inspecting its transcript event/source rather than
+assuming it was inserted by the input transport.
+
 - `/workflow <name>` stores the selected workflow durably. If sent alone to a
   recoverable session, the session remains recoverable for the next input.
   Ordinary text submitted afterward is still forwarded as a normal target

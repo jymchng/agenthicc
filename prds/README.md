@@ -85,6 +85,7 @@ against the current source before implementing them.
 - [PRD-214 — Reliable Subagent Findings and File-Backed Handoff](prd-214-reliable-subagent-findings-handoff.md)
 - [PRD-215 — Send Input to a Selected Background Session from its Details View](prd-215-targeted-input-from-agents-session-details.md)
 - [PRD-216 — Send New Input to Completed Background Sessions](prd-216-input-to-completed-background-sessions.md)
+- [PRD-217 — Forward Agents Session Input Without Interpretation](prd-217-opaque-agents-session-input-forwarding.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -447,6 +448,12 @@ conversation, delivering the exact message before considering any old launch
 intent. It supersedes PRD-215's completed-session rejection rule only; deleted
 sessions remain ineligible, and workflow recovery is never inferred from the
 message.
+
+PRD-217 implements the end-to-end pass-through contract for input from the
+agents details composer. The exact submitted payload reaches the selected
+session's target input router; recovery does not inject a continuation turn or
+infer workflow intent. Unit, integration, and details-view regression tests
+cover live, recoverable, and completed sessions.
 
 ## Existing PRDs
 

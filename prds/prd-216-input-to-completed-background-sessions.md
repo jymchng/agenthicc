@@ -1,7 +1,7 @@
 ---
 title: "PRD-216: Send New Input to Completed Background Sessions"
-status: Proposed
-version: 1.0.0
+status: Implemented
+version: 1.1.0
 date: 2026-10-02
 repository: jymchng/agenthicc
 related_prds:
@@ -382,3 +382,29 @@ intent or performs implicit workflow recovery. Deleted sessions remain
 unavailable. Input and worker status are recoverable and accurately visible
 across process failures. Unit, integration, and end-to-end tests verify the
 acceptance criteria above.
+
+## 15. Implementation and verification record
+
+Implemented across the existing background-session lifecycle, durable input
+inbox, supervisor, worker bootstrap, and `agents` Details composer. Completed
+input uses a compare-and-set transition to `starting`, records an
+`input:<message-id>` resume marker, preserves the saved launch configuration
+while clearing detached goal-run bookkeeping, and routes accepted input before
+any prior intent. Periodic stale-session maintenance recovers accepted input
+left pending across a manager restart. The input inbox rebinds an accepted but
+undelivered live-owner message to deferred delivery, while terminal receipts
+remain idempotent and do not start empty workers.
+
+Verification in the implementation checkout:
+
+- `uv run pytest tests/ -q` — **4,105 passed, 16 skipped**.
+- Focused background-session unit, integration, and Details-page E2E tests —
+  **91 passed**.
+- `uv run ruff check src/ tests/ scripts/` — passed.
+- `uv run python scripts/type_audit.py --check docs/reference/type-safety-baseline.json`
+  — passed.
+- `uv run mypy` on the five changed runtime modules — passed.
+- Repository-wide `uv run mypy src/agenthicc` remains blocked by 250 errors in
+  existing unrelated modules. Repository-wide `ruff format --check` identifies
+  eight unrelated files requiring formatting; the changed implementation and
+  test files are formatted.

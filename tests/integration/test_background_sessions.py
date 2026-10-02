@@ -328,7 +328,7 @@ async def test_forwarded_workflow_command_and_following_text_reach_target_sessio
         names=lambda: ["goal_flow"],
     )
     observed: list[tuple[str, str, str | None]] = []
-    delivered: list[str] = []
+    delivered_to_agent_turn: list[str] = []
 
     async def build(*args: object, **kwargs: object) -> _Session:
         return fake_session
@@ -343,8 +343,8 @@ async def test_forwarded_workflow_command_and_following_text_reach_target_sessio
         observed.append((workflow_name, intent, resume_run_id))
         return SimpleNamespace(status="complete", error=None, phases=("intake",))
 
-    async def direct(_session: object, direct_request: WorkerRequest) -> None:
-        delivered.append(direct_request.intent)
+    async def agent_turn(text: str, *_args: object, **_kwargs: object) -> None:
+        delivered_to_agent_turn.append(text)
 
     async def close(*args: object, **kwargs: object) -> None:
         return None
@@ -352,7 +352,7 @@ async def test_forwarded_workflow_command_and_following_text_reach_target_sessio
     monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
     monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", execute)
     monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
-    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", agent_turn)
     request = WorkerRequest(
         session_id="worker-session",
         workflow_name="",
@@ -369,10 +369,25 @@ async def test_forwarded_workflow_command_and_following_text_reach_target_sessio
     assert saved.status is SessionStatus.COMPLETED
     assert saved.workflow_name == "goal_flow"
     assert observed == []
-    assert delivered == ["implement the requested goal"]
-    assert any(
-        kind == "user_message" and payload.get("text") == "/workflow goal_flow"
-        for kind, payload, _id in fake_session.app_state.conversation.events
+    assert delivered_to_agent_turn == ["implement the requested goal"]
+    user_events = [
+        (payload, event_id)
+        for kind, payload, event_id in fake_session.app_state.conversation.events
+        if kind == "user_message"
+    ]
+    assert user_events == [
+        (
+            {"text": "/workflow goal_flow", "source": "agents-manager"},
+            "select-workflow",
+        ),
+        (
+            {"text": "implement the requested goal", "source": "agents-manager"},
+            "workflow-intent",
+        ),
+    ]
+    assert not any(
+        kind == "system" and "[WORKFLOW RESUME]" in str(payload.get("text", ""))
+        for kind, payload, _event_id in fake_session.app_state.conversation.events
     )
     receipts = inbox.receipts("worker-session")
     assert [(receipt.message_id, receipt.state) for receipt in receipts] == [
@@ -459,7 +474,7 @@ async def test_recovered_workflow_input_is_forwarded_as_a_normal_session_turn(
         message_id="deferred-workflow-recovery",
     )
     fake_session = _Session()
-    delivered: list[str] = []
+    delivered_to_agent_turn: list[str] = []
 
     async def build(*args: object, **kwargs: object) -> _Session:
         return fake_session
@@ -475,8 +490,8 @@ async def test_recovered_workflow_input_is_forwarded_as_a_normal_session_turn(
     ) -> object:
         raise AssertionError("ordinary input must not start or resume a workflow")
 
-    async def direct(_session: object, direct_request: WorkerRequest) -> None:
-        delivered.append(direct_request.intent)
+    async def agent_turn(text: str, *_args: object, **_kwargs: object) -> None:
+        delivered_to_agent_turn.append(text)
 
     async def close(*args: object, **kwargs: object) -> None:
         return None
@@ -484,7 +499,10 @@ async def test_recovered_workflow_input_is_forwarded_as_a_normal_session_turn(
     monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
     monkeypatch.setattr("agenthicc.runners.headless._select_headless_workflow_resume", select)
     monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", execute)
-    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    # Keep the real worker -> _run_direct_turn -> canonical agent-turn path in
+    # this test. Capturing at the LLM boundary proves the opaque inbox payload,
+    # not merely a reconstructed WorkerRequest, reaches the target unchanged.
+    monkeypatch.setattr("agenthicc.runners.agent_turn._run_agent_turn", agent_turn)
     monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
     request = WorkerRequest(
         session_id="worker-session",
@@ -498,13 +516,21 @@ async def test_recovered_workflow_input_is_forwarded_as_a_normal_session_turn(
 
     exit_code = await run_worker(request, store)
     assert exit_code == 0, store.get("worker-session").error
-    assert delivered == ["  continue at the saved phase \ninclude this too\t"]
+    submitted = "  continue at the saved phase \ninclude this too\t"
+    assert delivered_to_agent_turn == [submitted]
     assert inbox.receipts("worker-session")[0].state == "completed"
     assert store.get("worker-session").status is SessionStatus.COMPLETED
-    assert any(
-        kind == "user_message"
-        and payload.get("text") == "  continue at the saved phase \ninclude this too\t"
-        for kind, payload, _id in fake_session.app_state.conversation.events
+    user_events = [
+        (payload, event_id)
+        for kind, payload, event_id in fake_session.app_state.conversation.events
+        if kind == "user_message"
+    ]
+    assert user_events == [
+        ({"text": submitted, "source": "agents-manager"}, "deferred-workflow-recovery")
+    ]
+    assert not any(
+        kind == "system" and "[WORKFLOW RESUME]" in str(payload.get("text", ""))
+        for kind, payload, _event_id in fake_session.app_state.conversation.events
     )
 
 
@@ -719,9 +745,77 @@ async def test_forwarded_workflow_resume_without_checkpoint_does_not_fail_sessio
     assert saved.status is SessionStatus.ORPHANED
     assert saved.worker_exit_reason == "target_input_handled"
     assert any(
+        kind == "user_message"
+        and payload.get("text") == "/workflow resume"
+        and event_id == "workflow-resume-no-checkpoint"
+        for kind, payload, event_id in fake_session.app_state.conversation.events
+    )
+    assert any(
         kind == "assistant_message" and "durable session conversation" in str(payload.get("text"))
         for kind, payload, _id in fake_session.app_state.conversation.events
     )
+
+
+@pytest.mark.asyncio
+async def test_invalid_workflow_command_is_delivered_unchanged_and_handled_by_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    text = "/workflow no_such_workflow"
+    message_id = "unknown-workflow-input"
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue_deferred(
+        "worker-session",
+        text,
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id=message_id,
+    )
+    fake_session = _Session()
+    fake_session.workflow_registry = SimpleNamespace(
+        get=lambda _name: None,
+        names=lambda: ["goal_flow"],
+    )
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="old launch intent must not replay",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    assert await run_worker(request, store) == 0
+    receipt = inbox.receipts("worker-session")[0]
+    assert (receipt.message_id, receipt.text, receipt.state) == (
+        message_id,
+        text,
+        "completed",
+    )
+    user_events = [
+        (payload, event_id)
+        for kind, payload, event_id in fake_session.app_state.conversation.events
+        if kind == "user_message"
+    ]
+    assert user_events == [({"text": text, "source": "agents-manager"}, message_id)]
+    assert any(
+        kind == "assistant_message" and "Unknown workflow" in str(payload.get("text"))
+        for kind, payload, _event_id in fake_session.app_state.conversation.events
+    )
+    assert store.get("worker-session").status is SessionStatus.ORPHANED
 
 
 @pytest.mark.asyncio
