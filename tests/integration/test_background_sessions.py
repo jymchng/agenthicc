@@ -187,6 +187,129 @@ async def test_recovered_worker_processes_deferred_input_without_replaying_origi
 
 
 @pytest.mark.asyncio
+async def test_background_workflow_command_selects_workflow_for_following_input(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stale-session `/workflow name` command is applied before queued prose."""
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue_deferred(
+        "worker-session",
+        "/workflow goal_flow",
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id="select-workflow",
+    )
+    inbox.enqueue_deferred(
+        "worker-session",
+        "implement the requested goal",
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id="workflow-intent",
+    )
+    fake_session = _Session()
+    fake_session.workflow_registry = SimpleNamespace(
+        get=lambda name: SimpleNamespace(name=name) if name == "goal_flow" else None,
+        names=lambda: ["goal_flow"],
+    )
+    observed: list[tuple[str, str, str | None]] = []
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def execute(
+        _session: object,
+        workflow_name: str,
+        intent: str,
+        *,
+        resume_run_id: str | None = None,
+    ) -> object:
+        observed.append((workflow_name, intent, resume_run_id))
+        return SimpleNamespace(status="complete", error=None, phases=("intake",))
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", execute)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="old launch intent must not replay",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+        mode_name="Yolo",
+    )
+
+    assert await run_worker(request, store) == 0, store.get("worker-session").error
+    saved = store.get("worker-session")
+    assert saved.status is SessionStatus.COMPLETED
+    assert saved.workflow_name == "goal_flow"
+    assert observed == [("goal_flow", "implement the requested goal", None)]
+    receipts = inbox.receipts("worker-session")
+    assert [(receipt.message_id, receipt.state) for receipt in receipts] == [
+        ("select-workflow", "completed"),
+        ("workflow-intent", "completed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_selection_alone_leaves_session_recoverable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Selecting a workflow is configuration, not a completed user task."""
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue_deferred(
+        "worker-session",
+        "/workflow goal_flow",
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id="select-only",
+    )
+    fake_session = _Session()
+    fake_session.workflow_registry = SimpleNamespace(
+        get=lambda name: SimpleNamespace(name=name) if name == "goal_flow" else None,
+        names=lambda: ["goal_flow"],
+    )
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="old launch intent must not replay",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+        mode_name="Yolo",
+    )
+
+    assert await run_worker(request, store) == 0
+    saved = store.get("worker-session")
+    assert saved.status is SessionStatus.ORPHANED
+    assert saved.workflow_name == "goal_flow"
+    assert saved.worker_exit_reason == "workflow_selected"
+    assert inbox.receipts("worker-session")[0].state == "completed"
+
+
+@pytest.mark.asyncio
 async def test_recovered_workflow_input_resumes_checkpoint_not_init(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -261,7 +384,7 @@ async def test_recovered_workflow_input_resumes_checkpoint_not_init(
 
 
 @pytest.mark.asyncio
-async def test_recovered_workflow_without_checkpoint_is_rejected_not_restarted(
+async def test_recovered_workflow_without_checkpoint_runs_submitted_input_as_new_turn(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from agenthicc.background.input_inbox import BackgroundInputInbox
@@ -295,8 +418,16 @@ async def test_recovered_workflow_without_checkpoint_is_rejected_not_restarted(
     def select(*args: object, **kwargs: object) -> str | None:
         return None
 
-    async def execute(*args: object, **kwargs: object) -> object:
-        raise AssertionError("workflow without a checkpoint must not restart")
+    workflow_calls: list[tuple[str, str, dict[str, object]]] = []
+
+    async def execute(
+        _session: object,
+        workflow_name: str,
+        intent: str,
+        **kwargs: object,
+    ) -> object:
+        workflow_calls.append((workflow_name, intent, kwargs))
+        return SimpleNamespace(status="complete", error=None)
 
     async def direct(*args: object, **kwargs: object) -> None:
         raise AssertionError("workflow recovery must not become a direct turn")
@@ -319,11 +450,13 @@ async def test_recovered_workflow_without_checkpoint_is_rejected_not_restarted(
         dangerously_skip_permissions=False,
     )
 
-    assert await run_worker(request, store) == 1
+    assert await run_worker(request, store) == 0, store.get("worker-session").error
     receipt = inbox.receipts("worker-session")[0]
-    assert receipt.state == "rejected"
-    assert "No resumable workflow checkpoint" in receipt.error
-    assert store.get("worker-session").status is SessionStatus.FAILED
+    assert receipt.state == "completed"
+    assert workflow_calls == [("demo", "resume where I left off", {})]
+    saved = store.get("worker-session")
+    assert saved.status is SessionStatus.COMPLETED
+    assert saved.error is None
 
 
 @pytest.mark.asyncio

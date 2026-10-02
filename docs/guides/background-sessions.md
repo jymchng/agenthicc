@@ -174,12 +174,18 @@ does not attach to the foreground. For a live worker, the manager durably queues
 it for the exact owner attempt; the worker consumes it at an agent-safe
 boundary, or runs it as a follow-up turn if it arrived after the previous turn's
 last tool boundary. For an orphaned, failed, cancelled, or archived recoverable
-session, the manager persists the input first, then resumes that same session
-in the background. The new worker adopts the pending input under its own lease
-before replaying the original launch intent. A direct session continues its
-existing conversation; a workflow resumes its saved checkpoint. If no workflow
-checkpoint exists, the input is rejected rather than restarting at `INIT`. If
-worker startup fails, the accepted message remains visibly pending/recoverable.
+session, the manager persists the exact input first, then resumes that same
+session in the background. The manager does not infer whether the text is a
+continuation, a new task, or a command. The target session routes it as though
+it arrived through that session's own input path. A direct session continues
+its existing conversation. A workflow session resumes a valid matching
+checkpoint with the submitted text as its continuation; with no recoverable
+checkpoint, it starts a fresh workflow run using that exact text, never the
+older launch intent. If a checkpoint exists but is invalid or unsafe, the
+target session records a user-visible warning and leaves the input delivered
+and the session recoverable; it does not turn that target-side warning into a
+manager-side `not delivered` result. If worker startup fails, the accepted
+message remains visibly pending/recoverable.
 A live worker that finishes before consuming an input leaves a visible
 rejection receipt rather than silently dropping the text.
 
@@ -188,11 +194,31 @@ The detail page's `Latest input` field shows the newest receipt (`queued`,
 short message ID, never the message body. The same message ID fences retries
 and duplicate Enter events.
 
-Target-side non-interactive commands and skills use the worker's command and
-skill registries; a command is never evaluated by the manager's own session.
-Commands that require a foreground overlay, and `/workflow` recovery controls,
-must be run after attaching so their session-owned UI/checkpoint semantics are
-preserved. A text entry sent while the worker is running is not an approval:
+The manager treats `/workflow` like any other submitted text: it forwards the
+unchanged input to the target. The target session's command router applies the
+same workflow controls as the foreground TUI. Other commands and skills also
+use the target's registries; no submitted command is evaluated by the
+manager's own session.
+
+- `/workflow <name>` stores the selected workflow durably. A following queued
+  text input runs under that workflow. If sent alone to a recoverable session,
+  the session remains recoverable for the next input.
+- `/workflow` and `/workflow reset` restore the active mode's default workflow.
+- `/workflow resume [run-id]` validates and resumes a saved checkpoint through
+  the normal recovery coordinator and ownership claim path.
+- `/workflow reset <run-id>` marks that checkpoint discarded through the
+  checkpoint store's guarded discard path, then restores the mode default.
+
+Target-side command feedback (including an invalid name, unknown subcommand,
+missing checkpoint, or unsafe resume) is the result of delivered input. It must
+not fail the background session merely because the target router displayed a
+warning. Ordinary text is routed by the target too: a matching checkpoint
+resumes with that exact text as a continuation; with no checkpoint, the
+selected workflow starts with that exact text. The original launch intent is
+never substituted. Only transport/owner-fencing failures mean the target did
+not receive the input. Commands that need an interactive overlay may explain
+that the target has no interactive surface; the manager still forwards them
+unchanged. A text entry sent while the worker is running is not an approval:
 use the existing `y`/`n` controls for approval requests.
 
 The manager paints a loading viewport immediately, then loads a page through a

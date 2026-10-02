@@ -179,13 +179,17 @@ async def execute_workflow(
     *,
     completed_turns: int = 0,
     resume_run_id: str | None = None,
+    continuation: str | None = None,
 ) -> WorkflowExecutionResult:
     """Execute one registered workflow using an existing session context.
 
-    The processor must already be running before this function is called.  It
-    deliberately uses ``WorkflowPlugin.build_runner`` so specialized workflows
-    such as ``code_plan`` and user-defined runners share the same construction
-    path as the TUI.
+    The processor must already be running before this function is called. A
+    *continuation* is new user text supplied while resuming a checkpoint; it is
+    added to the resumed workflow context exactly as the foreground TUI does.
+    It is ignored for fresh runs. The function deliberately uses
+    ``WorkflowPlugin.build_runner`` so specialized workflows such as
+    ``code_plan`` and user-defined runners share the same construction path as
+    the TUI.
     """
     from agenthicc.workflows.config import WorkflowConfig  # noqa: PLC0415
     from agenthicc.runners.workflow_checkpoint_store import WorkflowCheckpointStore  # noqa: PLC0415
@@ -300,6 +304,26 @@ async def execute_workflow(
         elif workflow_handle is not None:
             workflow_handle.mark_resuming()
             workflow_handle.persist_checkpoint(reason="resuming")
+            memory = getattr(session, "session_memory", None)
+            if memory is not None:
+                from agenthicc.runners.agent_turn import (  # noqa: PLC0415
+                    _preserve_interrupted_memory,
+                )
+
+                _preserve_interrupted_memory(memory)
+                phase = workflow_handle.current_phase or "current"
+                resume_prompt = (
+                    "[WORKFLOW RESUME]\n"
+                    f"Workflow: {workflow_cls.name}\n"
+                    f"Current phase: {phase}\n"
+                    "The prior agent turn was interrupted safely; preserve completed work "
+                    "and continue from the saved phase.\n"
+                    f"Original intent: {workflow_handle.original_intent}\n"
+                    + (f"User continuation: {continuation}" if continuation else "Continue.")
+                )
+                if continuation:
+                    workflow_handle.append_continuation(continuation)
+                memory.add_user(resume_prompt)
 
         try:
             workspace_scope = session.workspace_scope

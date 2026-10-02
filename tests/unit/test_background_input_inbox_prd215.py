@@ -395,7 +395,275 @@ def test_background_command_router_uses_target_registry_and_rejects_ui_only_comm
         "/workflow resume",
         message_id="workflow-command",
     )
-    assert "foreground session UI" in error
+    assert "background workflow controller" in error
+
+
+@pytest.mark.asyncio
+async def test_background_workflow_selection_is_persisted_under_current_owner(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from agenthicc.background.worker import _handle_background_workflow_command
+
+    store, session_record = _running_store(tmp_path)
+
+    class Workflows:
+        def get(self, name: str) -> object | None:
+            return SimpleNamespace(name="goal_flow") if name == "goal_flow" else None
+
+        def names(self) -> list[str]:
+            return ["goal_flow"]
+
+    session = SimpleNamespace(
+        session_id=session_record.session_id,
+        workflow_registry=Workflows(),
+        session_conversation=None,
+        cfg=SimpleNamespace(execution=SimpleNamespace(profile="")),
+        app_state=SimpleNamespace(active_mode=lambda: SimpleNamespace(default_workflow=None)),
+    )
+
+    result = await _handle_background_workflow_command(
+        session,
+        "goal_flow",
+        store=store,
+        attempt=session_record.attempt,
+        lease_token=session_record.lease_token,
+    )
+
+    assert result.error == ""
+    assert result.workflow_name == "goal_flow"
+    assert result.selection_only
+    saved = store.get(session_record.session_id)
+    assert saved.workflow_name == "goal_flow"
+    assert saved.latest_activity == "Workflow selected · goal_flow"
+
+
+@pytest.mark.asyncio
+async def test_background_workflow_selector_fails_closed_for_stale_owner(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from agenthicc.background.worker import _handle_background_workflow_command
+
+    store, session_record = _running_store(tmp_path)
+
+    class Workflows:
+        def get(self, name: str) -> object | None:
+            return SimpleNamespace(name=name) if name == "goal_flow" else None
+
+        def names(self) -> list[str]:
+            return ["goal_flow"]
+
+    session = SimpleNamespace(
+        session_id=session_record.session_id,
+        workflow_registry=Workflows(),
+        session_conversation=None,
+        cfg=SimpleNamespace(execution=SimpleNamespace(profile="")),
+        app_state=SimpleNamespace(active_mode=lambda: SimpleNamespace(default_workflow=None)),
+    )
+    result = await _handle_background_workflow_command(
+        session,
+        "goal_flow",
+        store=store,
+        attempt=session_record.attempt - 1,
+        lease_token=session_record.lease_token,
+    )
+
+    assert "attempt is stale" in result.error
+    assert store.get(session_record.session_id).workflow_name == session_record.workflow_name
+
+
+@pytest.mark.asyncio
+async def test_background_workflow_reset_restores_mode_default(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from agenthicc.background.worker import _handle_background_workflow_command
+
+    store, session_record = _running_store(tmp_path)
+    store.update(
+        session_record.session_id,
+        expected_status=SessionStatus.RUNNING,
+        expected_attempt=session_record.attempt,
+        expected_lease_token=session_record.lease_token,
+        workflow_name="other_flow",
+    )
+
+    class Workflows:
+        def get(self, name: str) -> object | None:
+            return SimpleNamespace(name=name) if name == "goal_flow" else None
+
+        def names(self) -> list[str]:
+            return ["goal_flow"]
+
+    session = SimpleNamespace(
+        session_id=session_record.session_id,
+        workflow_registry=Workflows(),
+        session_conversation=None,
+        cfg=SimpleNamespace(execution=SimpleNamespace(profile="")),
+        app_state=SimpleNamespace(active_mode=lambda: SimpleNamespace(default_workflow="goal_flow")),
+    )
+    result = await _handle_background_workflow_command(
+        session,
+        "reset",
+        store=store,
+        attempt=session_record.attempt,
+        lease_token=session_record.lease_token,
+    )
+
+    assert result.error == ""
+    assert result.workflow_name == "goal_flow"
+    assert result.selection_only
+    assert store.get(session_record.session_id).workflow_name == "goal_flow"
+
+
+@pytest.mark.asyncio
+async def test_background_workflow_resume_uses_recovery_coordinator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from agenthicc.background.worker import _handle_background_workflow_command
+
+    store, session_record = _running_store(tmp_path)
+    checkpoint = SimpleNamespace(
+        run_id="recoverable-run",
+        workflow_name="goal_flow",
+        intent="continue the saved task",
+        recoverable=True,
+        display_error="",
+    )
+
+    class Workflows:
+        def get(self, name: str) -> object | None:
+            return SimpleNamespace(name=name) if name == "goal_flow" else None
+
+        def names(self) -> list[str]:
+            return ["goal_flow"]
+
+    class RecoveryCoordinator:
+        def __init__(self, _session_id: str) -> None:
+            pass
+
+        def select_latest_for_resume(self, **kwargs: object) -> object:
+            assert kwargs["workflow_registry"] is registry
+            return checkpoint
+
+    async def execute(
+        _session: object,
+        workflow_name: str,
+        intent: str,
+        *,
+        resume_run_id: str | None = None,
+    ) -> object:
+        assert (workflow_name, intent, resume_run_id) == (
+            "goal_flow",
+            "continue the saved task",
+            "recoverable-run",
+        )
+        return SimpleNamespace(status="complete", error=None)
+
+    registry = Workflows()
+    session = SimpleNamespace(
+        session_id=session_record.session_id,
+        workflow_registry=registry,
+        session_conversation=object(),
+        workspace_scope=SimpleNamespace(primary_root=str(tmp_path)),
+        cfg=SimpleNamespace(execution=SimpleNamespace(profile="test-profile")),
+        app_state=SimpleNamespace(active_mode=lambda: SimpleNamespace(default_workflow=None)),
+    )
+    monkeypatch.setattr(
+        "agenthicc.runners.workflow_recovery.WorkflowRecoveryCoordinator",
+        RecoveryCoordinator,
+    )
+    monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", execute)
+
+    result = await _handle_background_workflow_command(
+        session,
+        "resume",
+        store=store,
+        attempt=session_record.attempt,
+        lease_token=session_record.lease_token,
+    )
+
+    assert result.error == ""
+    assert result.workflow_name == "goal_flow"
+    assert result.selection_only
+    assert result.message == "Workflow goal_flow resumed and completed."
+    assert store.get(session_record.session_id).workflow_name == "goal_flow"
+
+
+@pytest.mark.asyncio
+async def test_background_workflow_reset_run_discards_checkpoint_and_resets_selector(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from agenthicc.background.worker import _handle_background_workflow_command
+
+    store, session_record = _running_store(tmp_path)
+    record = SimpleNamespace(
+        run_id="saved-run-123",
+        checkpoint=object(),
+        display_error="",
+    )
+    discarded: list[str] = []
+    emitted: list[object] = []
+
+    class RecoveryCoordinator:
+        def __init__(self, _session_id: str) -> None:
+            pass
+
+        def inspect(self, **kwargs: object) -> list[object]:
+            assert kwargs["include_terminal"] is True
+            return [record]
+
+        def discard(self, selected: object, *, owner_id: str) -> object:
+            assert selected is record
+            assert owner_id.endswith(":saved-run-123")
+            discarded.append(owner_id)
+            return SimpleNamespace(run_id="saved-run-123", workflow_name="goal_flow")
+
+    class Processor:
+        async def emit(self, event: object) -> None:
+            emitted.append(event)
+
+    class Workflows:
+        def get(self, name: str) -> object | None:
+            return None
+
+        def names(self) -> list[str]:
+            return []
+
+    session = SimpleNamespace(
+        session_id=session_record.session_id,
+        workflow_registry=Workflows(),
+        session_conversation=object(),
+        workspace_scope=SimpleNamespace(primary_root=str(tmp_path)),
+        cfg=SimpleNamespace(execution=SimpleNamespace(profile="")),
+        app_state=SimpleNamespace(active_mode=lambda: SimpleNamespace(default_workflow=None)),
+        processor=Processor(),
+    )
+    monkeypatch.setattr(
+        "agenthicc.runners.workflow_recovery.WorkflowRecoveryCoordinator",
+        RecoveryCoordinator,
+    )
+
+    result = await _handle_background_workflow_command(
+        session,
+        "reset saved-run-123",
+        store=store,
+        attempt=session_record.attempt,
+        lease_token=session_record.lease_token,
+    )
+
+    assert result.error == ""
+    assert result.workflow_name == ""
+    assert result.selection_only
+    assert discarded
+    assert emitted
+    assert store.get(session_record.session_id).workflow_name == ""
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 ---
 title: "PRD-215: Send Input to a Selected Background Session from its Details View"
 status: Implemented
-version: 1.1.0
+version: 1.3.0
 date: 2026-10-02
 repository: jymchng/agenthicc
 related_prds:
@@ -118,16 +118,18 @@ mention, a slash command, or several lines.
 > input using the regular session input features, and submit it to that exact
 > session without attaching to the foreground. Live workers receive it in
 > place; stale recoverable sessions resume in the background before processing
-> it.
+> it. The manager forwards the exact text without inferring its purpose; the
+> selected session's own router decides how to handle it.
 
 ## 4. Goals
 
 1. Enable general input from the `agents` session-details view.
 2. Preserve parity with the canonical input editor and all currently registered
    input triggers.
-3. Deliver input to the selected session's live owner process, or persist it
-   before resuming a stale/recoverable session in the background; route it
-   through the target session's existing message and command semantics.
+3. Forward the submitted text unchanged to the selected session's live owner,
+   or persist it before resuming that same stale/recoverable session in the
+   background. The manager must not infer the user's purpose or reinterpret
+   commands; the target session alone routes and handles the input.
 4. Preserve message ordering, idempotency, transcript/journal behavior, workflow
    state, and the selected session's identity across the manager/worker boundary.
 5. Keep the manager responsive while input is composed, submitted, accepted, or
@@ -217,13 +219,20 @@ behavior must be explicit and consistent:
 | Session attempt/owner changes while composer is open | Reject with a stale-target notice, retain the draft, and require reopening details. Never redirect to a newer attempt or another session. |
 
 Deferred recovery input is persisted before the resume operation begins. The
-new worker binds it to its own attempt and lease, then processes it before
-replaying the original launch intent. Direct sessions run the submitted text
-against their existing conversation. Workflow sessions require a saved
-checkpoint and resume that exact checkpoint; if none exists, reject the input
-with an explanation and do not restart from `INIT`. If worker startup fails,
-the inbox entry remains durable and visibly pending/recoverable so the user is
-not encouraged to resend and accidentally duplicate it.
+new worker binds it to its own attempt and lease, then forwards the exact text
+through the target session's normal input-routing semantics before considering
+the old launch intent. The manager and inbox are purpose-agnostic: ordinary
+text, slash commands, skills, and other registered triggers use the same
+session-owned routing path as attached input. A target-side command warning or
+workflow-recovery refusal is still a delivered/handled input, not a manager
+transport failure. For ordinary workflow text, resume a validated matching
+checkpoint with the submitted text as the continuation; if no recoverable
+checkpoint exists, start a new workflow run with the submitted text. Never
+substitute the old launch intent. Explicit `/workflow resume [run-id]` remains
+a command handled by the target router and must fail closed when no valid
+checkpoint exists. If worker startup fails, the inbox entry remains durable
+and visibly pending/recoverable so the user is not encouraged to resend and
+accidentally duplicate it.
 
 If the implementation supports queueing before the worker is ready, a message
 accepted in `starting` state must remain durable and be processed once the
@@ -266,22 +275,28 @@ append by itself is not delivery. Use existing local ownership and storage
 primitives, adding a bounded per-session inbox/IPC mechanism if required. Do
 not introduce a second agent runtime.
 
-### FR-5 — Canonical target message routing
+### FR-5 — Opaque forwarding and canonical target routing
 
-After receipt, ordinary text is passed into the target session's shared message
-router, equivalent to the normal `TUISession.handle_send()` path. The target
-runtime, not the manager, handles:
+The manager submits the exact composed text and stable message ID without
+parsing its intent, classifying it as a resume request, or interpreting slash
+commands. After receipt, every input is routed by the target session through
+the same session-owned command/skill/turn semantics as normal
+`TUISession.handle_send()`. The target runtime, not the manager, handles:
 
 - busy/streaming queue policy;
 - slash-command and skill routing;
-- workflow continuation and recovery rules;
+- workflow selection, continuation, reset, and recovery rules;
 - mention resolution and tool execution;
 - appending the user message to the correct conversation journal;
 - session-service/event projections and resulting turn activity.
 
-Inputs must not restart a workflow from its initial phase, create a new
-conversation/session ID, or bypass mode, capability, workspace, approval, or
-subagent policy.
+Inputs must not create a new conversation/session ID or bypass mode,
+capability, workspace, approval, or subagent policy. For a matching safe
+checkpoint, ordinary text resumes with that text as a continuation. With no
+recoverable checkpoint, newly submitted ordinary text starts a fresh workflow
+run using that text; the previous launch intent is never replayed in place of
+it. Unsafe recovery is surfaced by the target session as a handled warning,
+and must not be reported as though the manager failed to deliver the input.
 
 ### FR-6 — Queueing, ordering, and idempotency
 
@@ -472,9 +487,12 @@ the manager or maintaining separate TUI and headless command registries.
    the receipt remains pending until a worker claims the input. It never
    attaches or switches to the foreground TUI.
 8. A recovered direct session processes the submitted text against its existing
-   conversation without replaying the original request first. A recovered
-   workflow resumes its saved checkpoint; if none exists, the input is
-   explicitly rejected and the workflow is not restarted from `INIT`.
+   conversation without replaying the original request first. Ordinary input
+   for a workflow session resumes a valid saved checkpoint when one matches;
+   otherwise it starts a new workflow turn using the exact newly submitted
+   text. It never silently replays the original launch intent. Explicit
+   `/workflow resume [run-id]` remains a strict checkpoint-resume operation and
+   fails closed when no valid checkpoint is available.
 9. If background recovery cannot start, accepted input remains visibly
    pending/recoverable and is not falsely reported as delivered.
 10. Messages sent in quick succession preserve FIFO ordering and are not
@@ -501,6 +519,22 @@ the manager or maintaining separate TUI and headless command registries.
 18. No message is accepted merely because a durable projection event exists;
     the manager shows a delivery claim only when the target owner acknowledges
     it.
+19. Every `/workflow` subcommand works from the selected background session's
+    input composer: workflow-name selection, default reset, checkpoint resume
+    with optional run ID, and checkpoint discard via `reset <run-id>`. All
+    mutations are performed by the owning worker with attempt/lease fencing and
+    the canonical workflow recovery/checkpoint APIs; they are never executed
+    by the manager process or passed to the LLM as ordinary text.
+20. A selection-only `/workflow <name>` or reset command records its result,
+    leaves the session recoverable for a later manager input, and does not
+    replay the old launch intent. If a following input is already queued, that
+    input runs under the selected workflow. Invalid selectors and unsafe
+    checkpoint operations produce explicit rejected receipts.
+21. An ordinary message sent to a workflow-backed stale/recoverable session is
+    routed as a normal user turn. It resumes a validated matching checkpoint
+    when available, or starts a new run using that message when none exists;
+    it is not rejected merely because the checkpoint list is empty and never
+    substitutes the session's original intent for the submitted message.
 
 ## 12. Verification plan
 

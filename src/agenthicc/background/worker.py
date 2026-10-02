@@ -37,6 +37,7 @@ WORKER_FINALIZATION_TIMEOUT_S = 30.0
 
 if TYPE_CHECKING:
     from agenthicc.background.terminals import TerminalManager
+    from agenthicc.runners.workflow_recovery import WorkflowRecoveryRecord
     from agenthicc.runners.session_context import SessionContext
     from agenthicc.runners.session_lease import SessionOwnerLease
 
@@ -146,6 +147,17 @@ class _WorkerOutcome:
     exit_reason: str = "worker_failed"
     failure_category: str = ""
     exit_code: int = 1
+
+
+@dataclass(frozen=True)
+class _BackgroundWorkflowCommandResult:
+    """Target-router result for a workflow command handled without a TUI."""
+
+    workflow_name: str | None = None
+    message: str = ""
+    error: str = ""
+    selection_only: bool = False
+    fatal: bool = False
 
 
 class _FinalizationChanges(TypedDict, total=False):
@@ -857,8 +869,9 @@ def _dispatch_background_command(
 
     The manager process never executes commands. The worker uses its own
     command and skill registries and runtime state. Commands that require an
-    interactive overlay or the TUI's workflow-control surface fail explicitly
-    instead of being sent to the LLM as ordinary prose.
+    interactive overlay fail explicitly instead of being sent to the LLM as
+    ordinary prose. `/workflow` is handled by the stateful async controller in
+    the worker loop, not by this synchronous dispatcher.
 
     Returns ``(error, skill_body)``; an empty error means the command was
     handled. Captured command output is projected into the target transcript.
@@ -873,7 +886,7 @@ def _dispatch_background_command(
     token = normalized.split(None, 1)[0] if normalized else ""
     if token == "/workflow":
         return (
-            "/workflow requires the foreground session UI; attach to preserve its recovery controls.",
+            "/workflow must be routed through the background workflow controller.",
             None,
         )
     registry = session.cmd_registry
@@ -924,6 +937,342 @@ def _dispatch_background_command(
             event_id=f"background-command-output:{message_id}",
         )
     return ("", skill_bodies[-1] if skill_bodies else None)
+
+
+def _persist_background_workflow_selection(
+    store: BackgroundStore,
+    session_id: str,
+    *,
+    workflow_name: str,
+    attempt: int,
+    lease_token: str,
+    activity: str,
+) -> str:
+    """Persist a workflow selector only while this worker still owns the run."""
+    try:
+        store.update(
+            session_id,
+            expected_status=SessionStatus.RUNNING,
+            expected_attempt=attempt,
+            expected_lease_token=lease_token,
+            workflow_name=workflow_name,
+            latest_activity=activity,
+        )
+    except (KeyError, InvalidSessionTransition) as exc:
+        return f"Cannot update workflow selection: {exc}"
+    return ""
+
+
+async def _handle_background_workflow_command(
+    session: SessionContext,
+    args: str,
+    *,
+    store: BackgroundStore,
+    attempt: int,
+    lease_token: str,
+) -> _BackgroundWorkflowCommandResult:
+    """Handle one forwarded `/workflow` input in the target session runtime.
+
+    The manager and inbox treat input as opaque text. This is the background
+    equivalent of ``TUISession.route()``: command feedback is a handled target
+    response, while only a lost/stale worker lease is a delivery failure.
+    """
+    from agenthicc.runners.headless import execute_workflow  # noqa: PLC0415
+    from agenthicc.runners.workflow_recovery import (  # noqa: PLC0415
+        WorkflowRecoveryCoordinator,
+    )
+
+    parts = args.strip().split()
+    subcommand = parts[0] if parts else ""
+    registry = session.workflow_registry
+    conversation = getattr(session, "session_conversation", None)
+    execution_config = getattr(session.cfg, "execution", None)
+    profile = str(getattr(execution_config, "profile", "") or "")
+    workspace_scope = getattr(session, "workspace_scope", None)
+    workspace_root = str(getattr(workspace_scope, "primary_root", "") or "")
+
+    def default_workflow_name() -> tuple[str, str]:
+        active_mode = session.app_state.active_mode()
+        default_name = str(getattr(active_mode, "default_workflow", None) or "")
+        if not default_name:
+            return "", ""
+        workflow = registry.get(default_name)
+        if workflow is None:
+            return "", f"Mode default workflow {default_name!r} is not loaded."
+        return str(workflow.name), ""
+
+    async def persist_selection(name: str, activity: str) -> str:
+        return _persist_background_workflow_selection(
+            store,
+            session.session_id,
+            workflow_name=name,
+            attempt=attempt,
+            lease_token=lease_token,
+            activity=activity,
+        )
+
+    def inspect_run_records(
+        *,
+        include_terminal: bool,
+    ) -> tuple[list[WorkflowRecoveryRecord], str]:
+        if conversation is None:
+            return [], ""
+        coordinator = WorkflowRecoveryCoordinator(session.session_id)
+        try:
+            records = coordinator.inspect(
+                workflow_registry=registry,
+                conversation=conversation,
+                provider_profile=profile,
+                workspace_root=workspace_root,
+                include_terminal=include_terminal,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return [], f"Cannot inspect workflow runs: {type(exc).__name__}: {exc}"
+        return records, ""
+
+    def find_run_record(
+        run_id: str,
+        *,
+        include_terminal: bool,
+    ) -> tuple[WorkflowRecoveryRecord | None, str]:
+        records, error = inspect_run_records(include_terminal=include_terminal)
+        if error:
+            return None, error
+        requested = run_id.strip().strip("`'\"")
+        exact = [record for record in records if record.run_id == requested]
+        matches = exact or [
+            record for record in records if record.run_id.casefold().startswith(requested.casefold())
+        ]
+        if len(matches) > 1:
+            choices = ", ".join(record.run_id for record in matches[:8])
+            return None, f"Workflow run ID {requested!r} is ambiguous: {choices}."
+        if not matches:
+            return None, f"No workflow run matches {requested!r}."
+        return matches[0], ""
+
+    try:
+        # Match TUISession: a bare reset clears the selector immediately, but
+        # does not discard a saved run unless its ID is explicitly supplied.
+        if subcommand in {"", "reset"}:
+            if subcommand == "reset" and len(parts) > 2:
+                return _BackgroundWorkflowCommandResult(
+                    error="Usage: /workflow reset [run-id]"
+                )
+            workflow_name, error = default_workflow_name()
+            if error:
+                return _BackgroundWorkflowCommandResult(error=error)
+            if subcommand == "reset" and len(parts) == 2:
+                record, error = find_run_record(parts[1], include_terminal=True)
+                if error:
+                    return _BackgroundWorkflowCommandResult(error=error)
+                if record is None:
+                    return _BackgroundWorkflowCommandResult(
+                        error=f"No workflow run matches {parts[1]!r}."
+                    )
+                checkpoint = record.checkpoint
+                if checkpoint is None:
+                    diagnostic = record.display_error
+                    return _BackgroundWorkflowCommandResult(
+                        error=f"Cannot discard workflow run {parts[1]!r}: {diagnostic}"
+                    )
+                coordinator = WorkflowRecoveryCoordinator(session.session_id)
+                discarded = coordinator.discard(
+                    record,
+                    owner_id=f"background:{os.getpid()}:{record.run_id}",
+                )
+                from agenthicc.kernel import Event  # noqa: PLC0415
+
+                try:
+                    await session.processor.emit(
+                        Event.create(
+                            "WorkflowRunDiscarded",
+                            {
+                                "run_id": discarded.run_id,
+                                "workflow_name": discarded.workflow_name,
+                            },
+                        )
+                    )
+                except Exception:  # noqa: BLE001 - checkpoint is authoritative
+                    logger.debug("could not project workflow discard event", exc_info=True)
+                selection_error = await persist_selection(
+                    workflow_name,
+                    f"Workflow reset to mode default · {workflow_name or 'none'}",
+                )
+                if selection_error:
+                    return _BackgroundWorkflowCommandResult(
+                        error=selection_error,
+                        fatal=True,
+                    )
+                return _BackgroundWorkflowCommandResult(
+                    workflow_name=workflow_name,
+                    message=(
+                        f"Workflow run {discarded.run_id} discarded; selector reset to "
+                        f"{workflow_name or 'the mode default'}."
+                    ),
+                    selection_only=True,
+                )
+            selection_error = await persist_selection(
+                workflow_name,
+                f"Workflow reset to mode default · {workflow_name or 'none'}",
+            )
+            if selection_error:
+                return _BackgroundWorkflowCommandResult(error=selection_error, fatal=True)
+            records, inspection_error = inspect_run_records(include_terminal=False)
+            if inspection_error:
+                return _BackgroundWorkflowCommandResult(
+                    workflow_name=workflow_name,
+                    error=inspection_error,
+                    selection_only=True,
+                )
+            if records:
+                choices = ", ".join(record.run_id for record in records[:8])
+                suffix = " …" if len(records) > 8 else ""
+                return _BackgroundWorkflowCommandResult(
+                    workflow_name=workflow_name,
+                    error=(
+                        "Select a recoverable workflow explicitly before resetting: "
+                        f"/workflow reset <run-id> ({choices}{suffix})"
+                    ),
+                    selection_only=True,
+                )
+            return _BackgroundWorkflowCommandResult(
+                workflow_name=workflow_name,
+                message=f"Workflow reset to {workflow_name or 'the mode default'}.",
+                selection_only=True,
+            )
+
+        if subcommand == "resume":
+            if len(parts) > 2:
+                return _BackgroundWorkflowCommandResult(
+                    error="Usage: /workflow resume [run-id]"
+                )
+            if conversation is None:
+                return _BackgroundWorkflowCommandResult(
+                    error="Workflow resume requires the durable session conversation.",
+                    selection_only=True,
+                )
+            coordinator = WorkflowRecoveryCoordinator(session.session_id)
+            try:
+                if len(parts) == 2:
+                    record, error = find_run_record(parts[1], include_terminal=False)
+                    if error:
+                        return _BackgroundWorkflowCommandResult(error=error)
+                else:
+                    record = coordinator.select_latest_for_resume(
+                        workflow_registry=registry,
+                        conversation=conversation,
+                        provider_profile=profile,
+                        workspace_root=workspace_root,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                return _BackgroundWorkflowCommandResult(
+                    error=f"Cannot select a workflow to resume: {type(exc).__name__}: {exc}",
+                    selection_only=True,
+                )
+            if record is None:
+                return _BackgroundWorkflowCommandResult(
+                    error=(
+                        "No recoverable workflow run is available. Use /workflow reset only "
+                        "if you intend to discard a saved run."
+                    ),
+                    selection_only=True,
+                )
+            if not record.recoverable:
+                return _BackgroundWorkflowCommandResult(
+                    error=(
+                        f"Workflow run {record.run_id!r} is not recoverable: "
+                        f"{record.display_error}"
+                    ),
+                    selection_only=True,
+                )
+            workflow_name = record.workflow_name
+            if not workflow_name:
+                return _BackgroundWorkflowCommandResult(
+                    error="The selected workflow checkpoint has no workflow name.",
+                    selection_only=True,
+                )
+            selection_error = await persist_selection(
+                workflow_name,
+                f"Resuming workflow · {workflow_name}",
+            )
+            if selection_error:
+                return _BackgroundWorkflowCommandResult(error=selection_error, fatal=True)
+            intent = record.intent
+            if not intent.strip():
+                return _BackgroundWorkflowCommandResult(
+                    error="The selected workflow checkpoint has no resumable intent."
+                )
+            result = await execute_workflow(
+                session,
+                workflow_name,
+                intent,
+                resume_run_id=record.run_id,
+            )
+            status = str(getattr(result, "status", "failed"))
+            if status == "complete":
+                return _BackgroundWorkflowCommandResult(
+                    workflow_name=workflow_name,
+                    message=f"Workflow {workflow_name} resumed and completed.",
+                )
+            if status == "paused":
+                return _BackgroundWorkflowCommandResult(
+                    workflow_name=workflow_name,
+                    message=f"Workflow {workflow_name} remains paused and recoverable.",
+                    selection_only=True,
+                )
+            return _BackgroundWorkflowCommandResult(
+                workflow_name=workflow_name,
+                error=str(getattr(result, "error", None) or f"Workflow resume ended with {status}."),
+                selection_only=True,
+            )
+
+        if len(parts) != 1:
+            return _BackgroundWorkflowCommandResult(
+                error="Usage: /workflow <name> | resume [run-id] | reset [run-id]"
+            )
+        definition = registry.get(subcommand)
+        if definition is None:
+            available = ", ".join(sorted(registry.names())) or "none"
+            return _BackgroundWorkflowCommandResult(
+                error=f"Unknown workflow: {subcommand!r} (available: {available})"
+            )
+        workflow_name = str(definition.name)
+        records, inspection_error = inspect_run_records(include_terminal=False)
+        if inspection_error:
+            return _BackgroundWorkflowCommandResult(error=inspection_error)
+        paused_workflows = [
+            record
+            for record in records
+            if record.recoverable and record.workflow_name != workflow_name
+        ]
+        if paused_workflows:
+            current_names = ", ".join(sorted({record.workflow_name for record in paused_workflows}))
+            return _BackgroundWorkflowCommandResult(
+                error=(
+                    f"{current_names!r} is paused. Resume or reset its saved run before "
+                    "switching workflows."
+                ),
+                selection_only=True,
+            )
+        selection_error = await persist_selection(
+            workflow_name,
+            f"Workflow selected · {workflow_name}",
+        )
+        if selection_error:
+            return _BackgroundWorkflowCommandResult(error=selection_error, fatal=True)
+        return _BackgroundWorkflowCommandResult(
+            workflow_name=workflow_name,
+            message=f"Workflow → {workflow_name}",
+            selection_only=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
+
+        error = str(_Redactor().value(f"{type(exc).__name__}: {exc}", "message"))[:400]
+        return _BackgroundWorkflowCommandResult(
+            error=f"/workflow failed: {error}",
+            selection_only=True,
+        )
 
 
 async def _compact_background_session(session: SessionContext) -> None:
@@ -1085,6 +1434,9 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
         await asyncio.sleep(0)
 
         input_inbox = BackgroundInputInbox(store)
+        active_workflow_name = request.workflow_name
+        session_waiting_for_next_input = False
+        workflow_command_failure: str | None = None
 
         def _record_input_delivery(item: object, *, starts_turn: bool) -> None:
             message_id = str(_request_attribute(item, "message_id", ""))
@@ -1147,18 +1499,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     )
                     if item is None:
                         return None
-                    input_inbox.reject(
-                        request.session_id,
-                        item.message_id,
-                        owner_attempt=claimed_attempt or 0,
-                        lease_token=lease,
-                        reason="This command is not allowed while the worker is busy.",
-                    )
-                    session.app_state.conversation.append_event(
-                        "user_message",
-                        {"text": item.text, "source": "agents-manager"},
-                        event_id=item.message_id,
-                    )
+                    _record_input_delivery(item, starts_turn=False)
+                    completed_command_ids.add(item.message_id)
                     session.app_state.conversation.append_event(
                         "assistant_message",
                         {
@@ -1185,14 +1527,11 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 if skill_body is not None:
                     error = "Skill execution waits for the current turn to finish."
                 if error:
-                    input_inbox.reject(
-                        request.session_id,
-                        item.message_id,
-                        owner_attempt=claimed_attempt or 0,
-                        lease_token=lease,
-                        reason=error,
-                    )
-                    delivered_input_ids.discard(item.message_id)
+                    # This is a target-side routing result (for example an
+                    # unknown command or a command requiring an interactive
+                    # overlay), not a transport failure. The owning session
+                    # received and handled the user's exact input.
+                    completed_command_ids.add(item.message_id)
                     session.app_state.conversation.append_event(
                         "assistant_message",
                         {"text": error, "source": "agents-manager-command"},
@@ -1208,7 +1547,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
             return item.text
 
         async def _drain_idle_inputs() -> None:
-            """Route messages left after the last active turn boundary."""
+            """Route every queued message through the target session's input path."""
+            nonlocal active_workflow_name
+            nonlocal session_waiting_for_next_input
+            nonlocal workflow_command_failure
             from dataclasses import replace as dataclass_replace  # noqa: PLC0415
 
             while True:
@@ -1235,6 +1577,55 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 )
                 if item.text.startswith("/") or is_registered_skill:
                     _record_input_delivery(item, starts_turn=False)
+                    if token == "/workflow":
+                        workflow_parts = item.text.strip().split(None, 1)
+                        result = await _handle_background_workflow_command(
+                            session,
+                            workflow_parts[1] if len(workflow_parts) == 2 else "",
+                            store=store,
+                            attempt=claimed_attempt or 0,
+                            lease_token=lease,
+                        )
+                        if result.fatal:
+                            input_inbox.reject(
+                                request.session_id,
+                                item.message_id,
+                                owner_attempt=claimed_attempt or 0,
+                                lease_token=lease,
+                                reason=result.error,
+                            )
+                            delivered_input_ids.discard(item.message_id)
+                            workflow_command_failure = result.error
+                            session.app_state.conversation.append_event(
+                                "assistant_message",
+                                {
+                                    "text": result.error,
+                                    "source": "agents-manager-command",
+                                },
+                                event_id=f"background-command-error:{item.message_id}",
+                            )
+                            continue
+                        if result.workflow_name is not None:
+                            active_workflow_name = result.workflow_name
+                        session_waiting_for_next_input = (
+                            result.selection_only or bool(result.error)
+                        )
+                        completed_command_ids.add(item.message_id)
+                        response = result.error or result.message
+                        if response:
+                            session.app_state.conversation.append_event(
+                                "assistant_message",
+                                {
+                                    "text": response,
+                                    "source": "agents-manager-command",
+                                },
+                                event_id=(
+                                    f"background-command-error:{item.message_id}"
+                                    if result.error
+                                    else f"background-command-output:{item.message_id}"
+                                ),
+                            )
+                        continue
                     if token == "/compact":
                         try:
                             await _compact_background_session(session)
@@ -1244,14 +1635,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                             error = str(
                                 _Redactor().value(f"{type(exc).__name__}: {exc}", "message")
                             )[:200]
-                            input_inbox.reject(
-                                request.session_id,
-                                item.message_id,
-                                owner_attempt=claimed_attempt or 0,
-                                lease_token=lease,
-                                reason=f"/compact failed: {error}",
-                            )
-                            delivered_input_ids.discard(item.message_id)
+                            completed_command_ids.add(item.message_id)
+                            session_waiting_for_next_input = True
                             session.app_state.conversation.append_event(
                                 "assistant_message",
                                 {
@@ -1262,6 +1647,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                             )
                         else:
                             completed_command_ids.add(item.message_id)
+                            session_waiting_for_next_input = True
                             session.app_state.conversation.append_event(
                                 "assistant_message",
                                 {
@@ -1277,14 +1663,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         message_id=item.message_id,
                     )
                     if error:
-                        input_inbox.reject(
-                            request.session_id,
-                            item.message_id,
-                            owner_attempt=claimed_attempt or 0,
-                            lease_token=lease,
-                            reason=error,
-                        )
-                        delivered_input_ids.discard(item.message_id)
+                        completed_command_ids.add(item.message_id)
+                        session_waiting_for_next_input = True
                         session.app_state.conversation.append_event(
                             "assistant_message",
                             {"text": error, "source": "agents-manager-command"},
@@ -1293,13 +1673,20 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         continue
                     if skill_body is None:
                         completed_command_ids.add(item.message_id)
+                        session_waiting_for_next_input = True
                     if skill_body is not None:
                         await _run_direct_turn(
                             session,
                             dataclass_replace(request, intent=skill_body),
                         )
+                        session_waiting_for_next_input = False
                     continue
-                workflow_name = request.workflow_name
+                workflow_name = active_workflow_name
+                # Claiming the inbox entry is the delivery boundary. Any
+                # checkpoint/recovery decision below is made by this target
+                # session and must not turn an already delivered message into
+                # a manager-side "not delivered" result.
+                _record_input_delivery(item, starts_turn=True)
                 try:
                     resume_run_id = (
                         _select_headless_workflow_resume(session, workflow_name)
@@ -1310,14 +1697,8 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
 
                     reason = str(_Redactor().value(f"{type(exc).__name__}: {exc}", "message"))[:200]
-                    delivered_input_ids.discard(item.message_id)
-                    input_inbox.reject(
-                        request.session_id,
-                        item.message_id,
-                        owner_attempt=claimed_attempt or 0,
-                        lease_token=lease,
-                        reason=f"Workflow continuation was not safe: {reason}",
-                    )
+                    completed_command_ids.add(item.message_id)
+                    session_waiting_for_next_input = True
                     session.app_state.conversation.append_event(
                         "assistant_message",
                         {
@@ -1327,58 +1708,89 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         event_id=f"background-workflow-input-error:{item.message_id}",
                     )
                     continue
-                if workflow_name and resume_run_id is None:
-                    # Recovery input continues an existing checkpoint. It
-                    # must never cause a stale workflow to restart at INIT.
-                    input_inbox.reject(
-                        request.session_id,
-                        item.message_id,
-                        owner_attempt=claimed_attempt or 0,
-                        lease_token=lease,
-                        reason=("No resumable workflow checkpoint exists; input was not run."),
-                    )
-                    session.app_state.conversation.append_event(
-                        "assistant_message",
-                        {
-                            "text": (
-                                "Input was not run because this session has no resumable "
-                                "workflow checkpoint."
-                            ),
-                            "source": "agents-manager-command",
-                        },
-                        event_id=f"background-workflow-input-error:{item.message_id}",
-                    )
-                    continue
-                _record_input_delivery(item, starts_turn=True)
                 if workflow_name and resume_run_id is not None:
                     # Match TUISession's ordinary-text continuation behavior:
-                    # a late message resumes the durable workflow checkpoint
-                    # instead of starting an unrelated direct turn or a new
-                    # workflow from its first phase.
-                    result = await execute_workflow(
+                    # a late message resumes the durable checkpoint rather
+                    # than replaying the original launch intent.
+                    workflow_result = await execute_workflow(
                         session,
                         workflow_name,
                         item.text,
                         resume_run_id=resume_run_id,
+                        continuation=item.text,
                     )
-                    if result.status != "complete":
-                        delivered_input_ids.discard(item.message_id)
-                        input_inbox.reject(
-                            request.session_id,
-                            item.message_id,
-                            owner_attempt=claimed_attempt or 0,
-                            lease_token=lease,
-                            reason=(
-                                result.error or f"Workflow continuation ended with {result.status}"
-                            ),
+                    if workflow_result.status == "paused":
+                        completed_command_ids.add(item.message_id)
+                        session_waiting_for_next_input = True
+                        session.app_state.conversation.append_event(
+                            "assistant_message",
+                            {
+                                "text": workflow_result.error
+                                or "Workflow paused with a recoverable checkpoint.",
+                                "source": "agents-manager-command",
+                            },
+                            event_id=f"background-workflow-paused:{item.message_id}",
                         )
                         continue
+                    if workflow_result.status != "complete":
+                        workflow_command_failure = (
+                            workflow_result.error
+                            or f"Workflow continuation ended with {workflow_result.status}"
+                        )
+                        session.app_state.conversation.append_event(
+                            "assistant_message",
+                            {
+                                "text": workflow_command_failure,
+                                "source": "agents-manager-command",
+                            },
+                            event_id=f"background-workflow-error:{item.message_id}",
+                        )
+                        continue
+                    session_waiting_for_next_input = False
+                    completed_command_ids.add(item.message_id)
+                    continue
+                if workflow_name:
+                    # A message to a workflow-backed session is itself a new
+                    # user turn. If no resumable checkpoint exists, route that
+                    # exact text through the selected workflow; never
+                    # substitute or replay the original launch intent.
+                    workflow_result = await execute_workflow(
+                        session,
+                        workflow_name,
+                        item.text,
+                    )
+                    if workflow_result.status == "paused":
+                        completed_command_ids.add(item.message_id)
+                        session_waiting_for_next_input = True
+                        session.app_state.conversation.append_event(
+                            "assistant_message",
+                            {
+                                "text": workflow_result.error
+                                or "Workflow paused with a recoverable checkpoint.",
+                                "source": "agents-manager-command",
+                            },
+                            event_id=f"background-workflow-paused:{item.message_id}",
+                        )
+                        continue
+                    if workflow_result.status != "complete":
+                        reason = workflow_result.error or (
+                            f"Workflow execution ended with {workflow_result.status}"
+                        )
+                        workflow_command_failure = reason
+                        session.app_state.conversation.append_event(
+                            "assistant_message",
+                            {"text": reason, "source": "agents-manager-command"},
+                            event_id=f"background-workflow-error:{item.message_id}",
+                        )
+                        continue
+                    session_waiting_for_next_input = False
                     completed_command_ids.add(item.message_id)
                     continue
                 await _run_direct_turn(
                     session,
                     dataclass_replace(request, intent=item.text),
                 )
+                session_waiting_for_next_input = False
                 completed_command_ids.add(item.message_id)
 
         queued_source = QueuedMessageSource(claim=_claim_session_input)
@@ -1421,6 +1833,23 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         failure_category="recovery_input_failed",
                         exit_code=1,
                     )
+                if workflow_command_failure is not None:
+                    return _WorkerOutcome(
+                        status=SessionStatus.FAILED,
+                        error=workflow_command_failure,
+                        activity="Background workflow command needs attention",
+                        exit_reason="workflow_command_failed",
+                        failure_category="workflow_command_failed",
+                        exit_code=1,
+                    )
+                if session_waiting_for_next_input:
+                    return _WorkerOutcome(
+                        status=SessionStatus.ORPHANED,
+                        error=None,
+                        activity="Input handled by target session · awaiting next message",
+                        exit_reason="target_input_handled",
+                        exit_code=0,
+                    )
                 return _WorkerOutcome(
                     status=SessionStatus.COMPLETED,
                     error=None,
@@ -1428,14 +1857,14 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                     exit_reason="recovery_input_complete",
                     exit_code=0,
                 )
-            if request.workflow_name:
-                resume_run_id = _select_headless_workflow_resume(session, request.workflow_name)
+            if active_workflow_name:
+                resume_run_id = _select_headless_workflow_resume(session, active_workflow_name)
                 if resume_run_id is None:
-                    result = await execute_workflow(session, request.workflow_name, request.intent)
+                    result = await execute_workflow(session, active_workflow_name, request.intent)
                 else:
                     result = await execute_workflow(
                         session,
-                        request.workflow_name,
+                        active_workflow_name,
                         request.intent,
                         resume_run_id=resume_run_id,
                     )
@@ -1485,8 +1914,28 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 outcome = await asyncio.wait_for(_execute(), request.wall_timeout_s)
             else:
                 outcome = await _execute()
-            if outcome.status is SessionStatus.COMPLETED:
-                await _drain_idle_inputs()
+        if outcome.status is SessionStatus.COMPLETED:
+            await _drain_idle_inputs()
+            if workflow_command_failure is not None:
+                outcome = replace(
+                    outcome,
+                    status=SessionStatus.FAILED,
+                    error=workflow_command_failure,
+                    activity="Background workflow command needs attention",
+                    exit_reason="workflow_command_failed",
+                    failure_category="workflow_command_failed",
+                    exit_code=1,
+                )
+            elif session_waiting_for_next_input:
+                outcome = replace(
+                    outcome,
+                    status=SessionStatus.ORPHANED,
+                    error=None,
+                    activity="Input handled by target session · awaiting next message",
+                    exit_reason="target_input_handled",
+                    failure_category="",
+                    exit_code=0,
+                )
         return outcome.exit_code
     except asyncio.CancelledError:
         # Ordinary background jobs retain the historical cancellation
