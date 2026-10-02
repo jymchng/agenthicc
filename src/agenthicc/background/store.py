@@ -1144,7 +1144,7 @@ class BackgroundStore:
             lease_token=lease_token,
             attempt=current.attempt + 1,
             started_at=current.started_at or time.time(),
-            worker_started_at=current.worker_started_at or time.time(),
+            worker_started_at=time.time(),
             worker_finished_at=None,
             worker_exit_code=None,
             worker_exit_reason="",

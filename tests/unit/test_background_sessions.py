@@ -44,8 +44,57 @@ def test_lifecycle_transition_contract() -> None:
     assert legal_transition(SessionStatus.QUEUED, SessionStatus.STARTING)
     assert legal_transition(SessionStatus.RUNNING, SessionStatus.WAITING_APPROVAL)
     assert legal_transition(SessionStatus.CANCELLING, SessionStatus.CANCELLED)
+    assert legal_transition(SessionStatus.COMPLETED, SessionStatus.STARTING)
     assert not legal_transition(SessionStatus.COMPLETED, SessionStatus.RUNNING)
     assert not legal_transition(SessionStatus.DELETED, SessionStatus.RUNNING)
+
+
+def test_input_reactivation_preserves_prior_attempt_and_resets_live_metadata(
+    tmp_path: Path,
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    completed = _session(tmp_path).evolve(
+        status=SessionStatus.COMPLETED,
+        attempt=7,
+        completed_at=200.0,
+        error="previous attempt error",
+        exit_reason="previous attempt exit",
+        worker_exit_reason="previous worker exit",
+        worker_exit_code=1,
+        worker_started_at=101.0,
+        worker_finished_at=200.0,
+    )
+    store.create(completed)
+
+    starting = store.transition(
+        completed.session_id,
+        SessionStatus.STARTING,
+        expected_status=SessionStatus.COMPLETED,
+        expected_attempt=completed.attempt,
+        resume_marker="input:followup",
+        completed_at=None,
+        error=None,
+        exit_reason="",
+        worker_exit_reason="",
+        worker_exit_code=None,
+        worker_finished_at=None,
+    )
+    assert starting.status is SessionStatus.STARTING
+    assert starting.attempt_history[-1].status is SessionStatus.COMPLETED
+    assert starting.attempt_history[-1].error == "previous attempt error"
+
+    claimed = store.claim(completed.session_id, pid=42, lease_token="next-worker")
+    assert claimed.status is SessionStatus.RUNNING
+    assert claimed.attempt == completed.attempt + 1
+    assert claimed.completed_at is None
+    assert claimed.error is None
+    assert claimed.exit_reason == ""
+    assert claimed.worker_exit_reason == ""
+    assert claimed.worker_exit_code is None
+    assert claimed.worker_finished_at is None
+    assert claimed.worker_started_at is not None
+    assert claimed.worker_started_at > completed.worker_started_at
+    assert claimed.attempt_history[-1].status is SessionStatus.COMPLETED
 
 
 def test_background_settings_validate_files_and_cli_overrides(tmp_path: Path) -> None:

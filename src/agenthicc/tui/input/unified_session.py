@@ -65,6 +65,7 @@ class UnifiedInputSession:
         history: list[str] | None = None,
         busy: bool = False,
         clear_after_acceptance: bool = False,
+        preserve_submission_text: bool = False,
     ) -> None:
         self._state: AppState = app_state
         self._bus: CommandBus = command_bus
@@ -75,6 +76,7 @@ class UnifiedInputSession:
         self._cfg: AgenthiccConfig | None = cfg
         self._busy = busy
         self._clear_after_acceptance = clear_after_acceptance
+        self._preserve_submission_text = preserve_submission_text
 
         self._mode: InputMode = InputMode.IDLE
         self._capabilities: list[Capability] = IDLE_CAPABILITIES  # switched by set_mode()

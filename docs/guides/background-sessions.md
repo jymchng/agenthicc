@@ -165,8 +165,8 @@ fields so its navigation/action hints remain on-screen. Use `↑`/`↓` or `j`/`
 `PageUp`/`PageDown`, `Home`/`End`, or `[`/`]` to scroll without changing the
 selected session; the view does not dump the session's complete tool history.
 
-Press `i` on a live or stale-but-recoverable session's detail page to open a
-target-pinned composer.
+Press `i` on a live, stale-but-recoverable, or completed session's detail page
+to open a target-pinned composer.
 It uses the normal `UnifiedInputSession` editing and trigger pipeline, with
 mentions rooted at the target workspace and command/skill suggestions built
 from that session's launch configuration and project. Submitting ordinary text
@@ -177,17 +177,26 @@ last tool boundary. For an orphaned, failed, cancelled, or archived recoverable
 session, the manager persists the exact input first, then resumes that same
 session in the background. The manager does not infer whether the text is a
 continuation, a new task, or a command. The target session routes it as though
-it arrived through that session's own input path. A direct session continues
-its existing conversation. A workflow session resumes a valid matching
-checkpoint with the submitted text as its continuation; with no recoverable
-checkpoint, it starts a fresh workflow run using that exact text, never the
-older launch intent. If a checkpoint exists but is invalid or unsafe, the
-target session records a user-visible warning and leaves the input delivered
-and the session recoverable; it does not turn that target-side warning into a
-manager-side `not delivered` result. If worker startup fails, the accepted
-message remains visibly pending/recoverable.
+it arrived through that session's own input path. Ordinary text always becomes
+a normal turn in the existing target conversation. Even when the session has
+a selected workflow or saved workflow checkpoints, the worker does not inspect
+or resume them, start a new workflow, or replay the old launch intent on behalf
+of ordinary input. Send an explicit target-side command such as
+`/workflow resume [run-id]` when workflow recovery is intended. If worker
+startup fails, the accepted message remains visibly pending/recoverable.
 A live worker that finishes before consuming an input leaves a visible
 rejection receipt rather than silently dropping the text.
+
+For a completed session, the accepted message starts a new background attempt
+for the same session and conversation. The worker processes that message first;
+it does not replay the completed attempt's original intent or detached goal-run
+bookkeeping. The session's effective configuration and security settings are
+retained, and the new worker is subject to the normal background concurrency
+limits. If the manager exits after persisting the message but before launch,
+background maintenance finds the still-pending receipt and starts recovery
+when capacity is available. This does not resume a workflow: slash commands,
+including `/workflow ...`, are forwarded unchanged and handled by the target's
+normal command router.
 
 The detail page's `Latest input` field shows the newest receipt (`queued`,
 `waiting for recovery`, `delivered`, `processed`, or `not delivered`) and a
@@ -198,11 +207,14 @@ The manager treats `/workflow` like any other submitted text: it forwards the
 unchanged input to the target. The target session's command router applies the
 same workflow controls as the foreground TUI. Other commands and skills also
 use the target's registries; no submitted command is evaluated by the
-manager's own session.
+manager's own session. Accepted composer payloads, including whitespace and
+newlines, are preserved exactly; blank or oversized input is rejected rather
+than silently modified.
 
-- `/workflow <name>` stores the selected workflow durably. A following queued
-  text input runs under that workflow. If sent alone to a recoverable session,
-  the session remains recoverable for the next input.
+- `/workflow <name>` stores the selected workflow durably. If sent alone to a
+  recoverable session, the session remains recoverable for the next input.
+  Ordinary text submitted afterward is still forwarded as a normal target
+  turn; it does not implicitly launch or resume that workflow.
 - `/workflow` and `/workflow reset` restore the active mode's default workflow.
 - `/workflow resume [run-id]` validates and resumes a saved checkpoint through
   the normal recovery coordinator and ownership claim path.
@@ -212,14 +224,14 @@ manager's own session.
 Target-side command feedback (including an invalid name, unknown subcommand,
 missing checkpoint, or unsafe resume) is the result of delivered input. It must
 not fail the background session merely because the target router displayed a
-warning. Ordinary text is routed by the target too: a matching checkpoint
-resumes with that exact text as a continuation; with no checkpoint, the
-selected workflow starts with that exact text. The original launch intent is
-never substituted. Only transport/owner-fencing failures mean the target did
-not receive the input. Commands that need an interactive overlay may explain
-that the target has no interactive surface; the manager still forwards them
-unchanged. A text entry sent while the worker is running is not an approval:
-use the existing `y`/`n` controls for approval requests.
+warning. The manager forwards every input unchanged and does not infer intent;
+the target's normal input/command path decides what it means. In particular,
+ordinary text never implicitly resumes or starts a workflow. Only
+transport/owner-fencing failures mean the target did not receive the input.
+Commands that need an interactive overlay may explain that the target has no
+interactive surface; the manager still forwards them unchanged. A text entry
+sent while the worker is running is not an approval: use the existing `y`/`n`
+controls for approval requests.
 
 The manager paints a loading viewport immediately, then loads a page through a
 bounded background service. Navigation and lifecycle operations do not wait
@@ -246,7 +258,7 @@ Useful keys:
 | `PageUp`/`PageDown` | Move one session page |
 | `Enter` | Open the selected session's detailed page |
 | `Enter` (details page) | Attach that exact session in the normal foreground TUI, loading its transcript |
-| `i` (details page) | Open the composer for that exact live or recoverable session; stale sessions resume in the background without attaching |
+| `i` (details page) | Open the composer for that exact live, recoverable, or completed session; stale/completed sessions process accepted input in the background without attaching |
 | `Esc` (details page) | Return to the session table |
 | `↑`/`↓`, `j`/`k` (details page) | Scroll one detail row without changing the selected session |
 | `PageUp`/`PageDown` (details page) | Scroll one detail viewport |

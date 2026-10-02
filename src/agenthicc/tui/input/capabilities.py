@@ -267,12 +267,14 @@ class SubmitCapability:
             return _PASS
         from agenthicc.tui.runtime.commands import SendMessageCommand  # noqa: PLC0415
 
-        text = session._buf.text.strip()
+        raw_text = session._buf.text
+        has_text = bool(raw_text.strip())
+        text = raw_text if session._preserve_submission_text else raw_text.strip()
         try:
             clear_after_acceptance = object.__getattribute__(session, "_clear_after_acceptance")
         except AttributeError:
             clear_after_acceptance = False
-        if clear_after_acceptance and text:
+        if clear_after_acceptance and has_text:
             result = await session._bus.dispatch_async(SendMessageCommand(text=text))
             try:
                 accepted = object.__getattribute__(result, "ok")
@@ -291,7 +293,7 @@ class SubmitCapability:
         session._paste.condensed = False
         session._ctrl_c_count = 0
         session._push()
-        if text:
+        if has_text:
             if self._commit_history:
                 session._hist.commit(text)
             await session._bus.dispatch_async(SendMessageCommand(text=text))

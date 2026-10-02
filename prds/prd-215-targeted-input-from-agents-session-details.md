@@ -1,7 +1,7 @@
 ---
 title: "PRD-215: Send Input to a Selected Background Session from its Details View"
 status: Implemented
-version: 1.3.0
+version: 1.4.0
 date: 2026-10-02
 repository: jymchng/agenthicc
 related_prds:
@@ -74,7 +74,7 @@ workspace, configuration, and history. Its capability pipeline implements
 paste handling, cursor and multiline editing, trigger pickers, history,
 submission, and cleanup. Submission emits a `SendMessageCommand`; the owning
 `TUISession.handle_send()` then applies the target session's busy policy,
-command routing, workflow continuation behavior, and turn queue.
+command routing, explicit workflow recovery commands, and turn queue.
 
 The `agents` manager has none of those target-session-owned objects. Copying a
 small subset of the editor or resolving target-specific triggers in the
@@ -215,7 +215,8 @@ behavior must be explicit and consistent:
 | Worker waiting for an explicit `ask_user` response | Preserve the existing answer contract. A normal text submission may satisfy the outstanding request only when it is explicitly identified as its answer; it must not create a duplicate turn. |
 | Worker waiting for approval | Do not treat composer text as approval/rejection. Keep it queued for normal target-session dispatch or explain why it cannot yet be consumed. Existing approval controls remain authoritative. |
 | Recoverable session without a live input consumer (`orphaned`, `failed`, `cancelled`, or `archived`) | Durably queue the input against the displayed session revision, then resume that same session in the background. Show the message as pending recovery until a new worker claims it. Never attach or transfer it to the foreground. |
-| Completed or deleted session | Reject input and retain the draft. A completed or deleted session is not made resumable merely by typing into the composer. |
+| Completed session | PRD-216 supersedes this PRD's original rejection rule: persist input, then start a new input-driven attempt for the same conversation without replaying the old intent. |
+| Deleted session | Reject input and retain the draft; never recreate or launch the deleted session. |
 | Session attempt/owner changes while composer is open | Reject with a stale-target notice, retain the draft, and require reopening details. Never redirect to a newer attempt or another session. |
 
 Deferred recovery input is persisted before the resume operation begins. The
@@ -225,14 +226,13 @@ the old launch intent. The manager and inbox are purpose-agnostic: ordinary
 text, slash commands, skills, and other registered triggers use the same
 session-owned routing path as attached input. A target-side command warning or
 workflow-recovery refusal is still a delivered/handled input, not a manager
-transport failure. For ordinary workflow text, resume a validated matching
-checkpoint with the submitted text as the continuation; if no recoverable
-checkpoint exists, start a new workflow run with the submitted text. Never
-substitute the old launch intent. Explicit `/workflow resume [run-id]` remains
-a command handled by the target router and must fail closed when no valid
-checkpoint exists. If worker startup fails, the inbox entry remains durable
-and visibly pending/recoverable so the user is not encouraged to resend and
-accidentally duplicate it.
+transport failure. Ordinary text is always a normal target-session turn. It
+does not inspect workflow checkpoints, resume a workflow, start a new workflow,
+or replay the old launch intent. Only an explicit target-side workflow command
+such as `/workflow resume [run-id]` requests checkpoint recovery and fails
+closed when no valid checkpoint exists. If worker startup fails, the inbox
+entry remains durable and visibly pending/recoverable so the user is not
+encouraged to resend and accidentally duplicate it.
 
 If the implementation supports queueing before the worker is ready, a message
 accepted in `starting` state must remain durable and be processed once the
@@ -285,18 +285,19 @@ the same session-owned command/skill/turn semantics as normal
 
 - busy/streaming queue policy;
 - slash-command and skill routing;
-- workflow selection, continuation, reset, and recovery rules;
+- explicitly submitted workflow selection, reset, and recovery commands;
 - mention resolution and tool execution;
 - appending the user message to the correct conversation journal;
 - session-service/event projections and resulting turn activity.
 
 Inputs must not create a new conversation/session ID or bypass mode,
-capability, workspace, approval, or subagent policy. For a matching safe
-checkpoint, ordinary text resumes with that text as a continuation. With no
-recoverable checkpoint, newly submitted ordinary text starts a fresh workflow
-run using that text; the previous launch intent is never replayed in place of
-it. Unsafe recovery is surfaced by the target session as a handled warning,
-and must not be reported as though the manager failed to deliver the input.
+capability, workspace, approval, or subagent policy. Ordinary text is submitted
+verbatim as a normal target-session turn, even when a workflow is selected or
+saved checkpoints exist. This path must not inspect workflow checkpoints,
+resume a workflow, start a new workflow, or replay the previous launch intent.
+An explicit target-side workflow command is routed by the target's normal
+command path and may perform its documented workflow operation. A command
+warning is handled target output, not a manager delivery failure.
 
 ### FR-6 — Queueing, ordering, and idempotency
 
@@ -476,8 +477,8 @@ the manager or maintaining separate TUI and headless command registries.
    manager process cwd differs. A submitted mention is resolved by the target
    session's policy.
 5. Slash commands, skills, and other registered triggers are executed by the
-   target session's normal router. The manager's own command handlers are not
-   invoked for the submitted text.
+   target session's normal router. The manager does not inspect or interpret
+   the submitted text, and its own command handlers are never invoked.
 6. Sending while a worker is running reaches that worker without changing its
    PID, session ID, owner lease, workflow run ID, or current checkpoint. The
    message is processed once at a safe session boundary under existing busy
@@ -486,13 +487,11 @@ the manager or maintaining separate TUI and headless command registries.
    durably queues the input and resumes the same session in the background;
    the receipt remains pending until a worker claims the input. It never
    attaches or switches to the foreground TUI.
-8. A recovered direct session processes the submitted text against its existing
-   conversation without replaying the original request first. Ordinary input
-   for a workflow session resumes a valid saved checkpoint when one matches;
-   otherwise it starts a new workflow turn using the exact newly submitted
-   text. It never silently replays the original launch intent. Explicit
-   `/workflow resume [run-id]` remains a strict checkpoint-resume operation and
-   fails closed when no valid checkpoint is available.
+8. A recovered session processes ordinary submitted text as a normal turn in
+   its existing conversation, without replaying the original launch request,
+   selecting a workflow checkpoint, or starting/restarting a workflow. The
+   input is forwarded unchanged; only an explicit target-side command such as
+   `/workflow resume [run-id]` may request workflow recovery.
 9. If background recovery cannot start, accepted input remains visibly
    pending/recoverable and is not falsely reported as delivered.
 10. Messages sent in quick succession preserve FIFO ordering and are not
@@ -523,18 +522,33 @@ the manager or maintaining separate TUI and headless command registries.
     input composer: workflow-name selection, default reset, checkpoint resume
     with optional run ID, and checkpoint discard via `reset <run-id>`. All
     mutations are performed by the owning worker with attempt/lease fencing and
-    the canonical workflow recovery/checkpoint APIs; they are never executed
-    by the manager process or passed to the LLM as ordinary text.
+    the canonical workflow recovery/checkpoint APIs. The exact command text is
+    forwarded to the target unchanged; the target's native workflow command
+    handler processes it rather than the manager rewriting it or sending it as
+    ordinary LLM prose.
 20. A selection-only `/workflow <name>` or reset command records its result,
     leaves the session recoverable for a later manager input, and does not
-    replay the old launch intent. If a following input is already queued, that
-    input runs under the selected workflow. Invalid selectors and unsafe
-    checkpoint operations produce explicit rejected receipts.
+    replay the old launch intent. Any following queued input is still delivered
+    unchanged and is not rewritten into a workflow start or resume. Invalid
+    selectors and unsafe checkpoint operations produce target-side warning
+    output and a completed input receipt, not a false `not delivered` result.
 21. An ordinary message sent to a workflow-backed stale/recoverable session is
-    routed as a normal user turn. It resumes a validated matching checkpoint
-    when available, or starts a new run using that message when none exists;
-    it is not rejected merely because the checkpoint list is empty and never
-    substitutes the session's original intent for the submitted message.
+    forwarded verbatim as a normal user turn in the existing session. It does
+    not inspect checkpoints, resume a workflow, start a new workflow, or replay
+    the session's original intent. A checkpoint validation error cannot be
+    generated by this ordinary-input path.
+22. The manager/inbox is purpose-agnostic for all accepted text: it does not
+    classify a message as "resume", "continue", or "command". The target
+    session receives the exact text and its existing input/command path owns
+    any interpretation. In particular, workflow continuation is never
+    inferred from ordinary text. A target-side command warning is observable
+    in the session transcript and does not become a manager-side delivery
+    failure.
+23. The composed payload is preserved exactly from editor submission through
+    inbox persistence and target dispatch, including leading/trailing
+    whitespace, tabs, and newlines. Validation may reject blank or oversized
+    input, but accepted input is never silently trimmed, truncated, or rewritten;
+    this applies equally to slash commands and ordinary text.
 
 ## 12. Verification plan
 
@@ -551,12 +565,17 @@ the manager or maintaining separate TUI and headless command registries.
   unknown session, stale owner/attempt, and queue capacity.
 - FIFO, idempotency-key replay, acknowledge/consume transitions, and stale
   attempt fencing are tested without a real provider.
+- Exact-payload tests cover editor submission, live/deferred inbox persistence,
+  ask-user answers, command delivery, and worker dispatch with surrounding
+  whitespace and multiline text.
 - State-specific tests cover live, waiting-input, waiting-approval, recoverable
   stale, completed, and deleted sessions.
 - Deferred-input tests verify enqueue-before-resume, attempt/lease rebinding,
   background-only recovery, and pending receipts when launch fails.
-- Workflow recovery tests prove the saved checkpoint is resumed and that a
-  missing checkpoint rejects input rather than replaying `INIT`.
+- Workflow-input tests prove ordinary text reaches the existing session turn
+  unchanged and does not inspect, resume, or start a workflow regardless of
+  whether a compatible checkpoint exists. Explicit `/workflow resume` tests
+  separately verify checkpoint selection and target-side warnings.
 - Pagination tests verify the interactive table is capped at ten sessions per
   page and excludes deleted sessions, including after refresh.
 - Failure tests verify a failed submission retains the draft and does not
@@ -589,9 +608,10 @@ the manager or maintaining separate TUI and headless command registries.
   workspace; assert target-side routing and resolution.
 - Send to two sessions in succession while projections reorder; each command
   must remain pinned to the session whose details opened its composer.
-- Exercise a running workflow and verify the incoming message does not restart
-  its first phase, alter its checkpoint, or change its session ID. Exercise a
-  stale workflow and verify background recovery resumes that same checkpoint.
+- Exercise a running and stale workflow session with ordinary text; verify the
+  exact text reaches a normal target turn and does not inspect, resume, start,
+  or mutate a workflow checkpoint. Separately exercise explicit
+  `/workflow resume` and verify its checkpoint semantics.
 - Exercise pending question, pending approval, worker exit, full queue, stale
   owner states, and a stale recoverable session; verify correct feedback and
   that recovery never attaches to the foreground.
@@ -641,9 +661,18 @@ session's details, compose input with the same editor features used by the
 regular TUI, and submit to that exact session without attaching it to the
 foreground. Live workers process input once through their normal routing and
 policy path. Stale recoverable sessions persist input before background
-recovery, resume workflow checkpoints rather than restarting at `INIT`, and
-retain pending input if startup fails. The interactive table shows at most ten
+recovery and deliver ordinary text as a normal turn without implicit workflow
+resume/restart; explicit workflow commands retain their target-side behavior.
+Pending input is retained if startup fails. The interactive table shows at most ten
 rows per page and omits deleted sessions. Delivery is durable across process
 boundaries, recoverable at crash boundaries, and compatible with existing
 attach, question, approval, and workflow-resume behavior. Unit, integration,
 and end-to-end evidence must cover those claims.
+
+## 16. Supersession note
+
+[PRD-216](prd-216-input-to-completed-background-sessions.md) supersedes this
+PRD's completed-session rejection rule only. Completed sessions may accept an
+explicit new target-bound input and start a new input-driven attempt; deleted
+sessions remain unavailable. All other PRD-215 requirements continue to
+apply.

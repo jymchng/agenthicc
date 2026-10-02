@@ -445,11 +445,12 @@ async def test_background_input_round_trip_and_explicit_supervisor_route(tmp_pat
         await asyncio.sleep(0.01)
     assert store.get("input-session").input_request == "Questions"
     supervisor = BackgroundSupervisor(store, artifact_root=tmp_path / "sessions")
-    waiting = supervisor.provide_input("input-session", '{"choice":"yes"}')
+    submitted_answer = '  {"choice":"yes"}\n'
+    waiting = supervisor.provide_input("input-session", submitted_answer)
     assert waiting.status is SessionStatus.WAITING_INPUT
     response = await asyncio.wait_for(task, timeout=2)
     assert response.allowed is True
-    assert response.message == '{"choice":"yes"}'
+    assert response.message == submitted_answer
     assert store.get("input-session").status is SessionStatus.RUNNING
 
 

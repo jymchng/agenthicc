@@ -84,6 +84,7 @@ against the current source before implementing them.
 - [PRD-213 — Select the resumed workflow as the active workflow](prd-213-select-resumed-workflow-as-active.md)
 - [PRD-214 — Reliable Subagent Findings and File-Backed Handoff](prd-214-reliable-subagent-findings-handoff.md)
 - [PRD-215 — Send Input to a Selected Background Session from its Details View](prd-215-targeted-input-from-agents-session-details.md)
+- [PRD-216 — Send New Input to Completed Background Sessions](prd-216-input-to-completed-background-sessions.md)
 
 PRD-138 is the current cross-cutting roadmap for documentation truth,
 packaging, state boundaries, security, workflow correctness, persistence,
@@ -434,10 +435,18 @@ delivery design while preserving explorer read-only access to project files.
 PRD-215 specifies a target-bound composer on the `agenthicc agents` details
 page, with canonical editor parity and owner-side cross-process delivery. Live
 sessions receive input through their current owner. Input to stale recoverable
-sessions is durably queued and triggers a background resume of the same session
-without foreground attachment; workflow recovery must resume its saved
-checkpoint rather than restarting at `INIT`. The interactive table is capped
-at ten rows per page and excludes deleted sessions.
+sessions is durably queued and triggers background recovery of the same session
+without foreground attachment. Ordinary text is forwarded as a normal target
+turn and never implicitly selects, resumes, or restarts a workflow; explicit
+target-side workflow commands remain available. The interactive table is
+capped at ten rows per page and excludes deleted sessions.
+
+PRD-216 implements the completed-session extension to that composer. A user
+submission creates a new input-driven background attempt for the same
+conversation, delivering the exact message before considering any old launch
+intent. It supersedes PRD-215's completed-session rejection rule only; deleted
+sessions remain ineligible, and workflow recovery is never inferred from the
+message.
 
 ## Existing PRDs
 

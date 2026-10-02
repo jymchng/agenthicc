@@ -295,7 +295,7 @@ async def execute_workflow(
                 initial_context = initializer(
                     effective_intent,
                     workflow_handle.run_id,
-                    getattr(session, "session_memory", None),
+                    session.session_memory,
                 )
                 if initial_context is not None:
                     workflow_handle.attach_context(initial_context)
@@ -304,7 +304,7 @@ async def execute_workflow(
         elif workflow_handle is not None:
             workflow_handle.mark_resuming()
             workflow_handle.persist_checkpoint(reason="resuming")
-            memory = getattr(session, "session_memory", None)
+            memory = session.session_memory
             if memory is not None:
                 from agenthicc.runners.agent_turn import (  # noqa: PLC0415
                     _preserve_interrupted_memory,

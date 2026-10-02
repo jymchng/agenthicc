@@ -31,6 +31,8 @@ from .store import (
     default_artifact_dir,
 )
 
+_MAX_ASK_USER_INPUT_CHARS = 8_000
+
 
 class _CancellationMetadata(TypedDict, total=False):
     """Typed terminal fields accepted by ``BackgroundStore.transition``."""
@@ -569,6 +571,8 @@ class BackgroundSupervisor:
 
         if not isinstance(value, str) or not value.strip():
             raise ValueError("Input must not be empty")
+        if len(value) > _MAX_ASK_USER_INPUT_CHARS:
+            raise ValueError(f"Input exceeds {_MAX_ASK_USER_INPUT_CHARS} characters")
         session = self.store.get(session_id)
         if session.status != SessionStatus.WAITING_INPUT:
             raise InvalidSessionTransition("Session is not waiting for input")
@@ -577,7 +581,7 @@ class BackgroundSupervisor:
             expected_status=SessionStatus.WAITING_INPUT,
             expected_attempt=expected_attempt,
             expected_lease_token=expected_lease_token,
-            input_value=value[:8_000],
+            input_value=value,
             latest_activity="Input received",
         )
 
@@ -612,9 +616,11 @@ class BackgroundSupervisor:
         """Queue input for a live worker or recover a stale session in background.
 
         Recoverable terminal sessions receive a durable deferred inbox item
-        before ``resume`` starts their next worker attempt. That worker rebinds
-        the message to its lease and consumes it instead of replaying the
-        session's original request. No foreground handoff or attachment occurs.
+        before a worker attempt starts. Completed sessions use an explicit
+        input-driven transition; stale sessions retain their recovery path.
+        Workers rebind the message to their lease and consume it instead of
+        replaying the session's original request. No foreground handoff or
+        attachment occurs.
         """
 
         inbox = BackgroundInputInbox(self.store)
@@ -624,6 +630,29 @@ class BackgroundSupervisor:
         if current.status in {SessionStatus.WAITING_INPUT, SessionStatus.CANCELLING}:
             raise InvalidSessionTransition(
                 f"Session is {current.status.value}; this input path is unavailable"
+            )
+
+        if current.status is SessionStatus.STARTING:
+            # A starting worker has not claimed its new lease yet. Bind the
+            # message to the still-current revision as deferred input so the
+            # worker will rebind and consume it after claim. Do not attach it
+            # to the previous attempt's lease during this startup window.
+            return inbox.enqueue_deferred(
+                session_id,
+                text,
+                expected_attempt=expected_attempt,
+                expected_lease_token=expected_lease_token,
+                message_id=message_id,
+            )
+
+        if current.status is SessionStatus.COMPLETED:
+            return self._defer_and_reactivate_completed(
+                inbox,
+                session_id,
+                text,
+                expected_attempt=expected_attempt,
+                expected_lease_token=expected_lease_token,
+                message_id=message_id,
             )
 
         if current.status in {
@@ -695,6 +724,105 @@ class BackgroundSupervisor:
             message_id=message_id,
         )
 
+    def _input_reactivation_request(self, session: BackgroundSession) -> BackgroundRequest:
+        """Build a new-turn request while preserving the session's runtime config."""
+
+        mode_name = self._mode_name_for_resume(session.session_id, None)
+        try:
+            raw = json.loads(self._request_path(session.session_id).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            previous = None
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise RuntimeError("Cannot load the saved session launch configuration") from exc
+        else:
+            previous = BackgroundRequest.from_mapping(raw)
+            if previous.session_id != session.session_id:
+                raise RuntimeError("Saved session launch configuration has a mismatched ID")
+
+        if previous is None:
+            return BackgroundRequest(
+                session_id=session.session_id,
+                workflow_name=session.workflow_name,
+                intent=session.intent,
+                cwd=str(Path(session.cwd).expanduser().resolve()),
+                wall_timeout_s=self.wall_timeout_s,
+                max_activity_bytes=self.max_activity_bytes,
+                mode_name=mode_name,
+            )
+
+        # A new input is not a retry of a detached goal run. Keep the original
+        # provider/configuration/security settings, but prevent old run
+        # bookkeeping from treating this turn as a workflow continuation.
+        return replace(
+            previous,
+            workflow_name=session.workflow_name,
+            intent=session.intent,
+            cwd=str(Path(session.cwd).expanduser().resolve()),
+            run_id="",
+            detached_goal=False,
+            mode_name=mode_name,
+        )
+
+    def _start_deferred_input_attempt(
+        self,
+        session: BackgroundSession,
+        *,
+        message_id: str,
+        expected_attempt: int,
+        expected_lease_token: str,
+    ) -> BackgroundSession:
+        """Start one owner-fenced worker solely to process deferred input."""
+
+        current = self.store.get(session.session_id, include_deleted=True)
+        self._validate_input_target(current, expected_attempt, expected_lease_token)
+        recovering_interrupted_input_start = current.status in {
+            SessionStatus.FAILED,
+            SessionStatus.ORPHANED,
+        } and current.resume_marker.startswith("input:")
+        if current.status is not SessionStatus.COMPLETED and not recovering_interrupted_input_start:
+            raise InvalidSessionTransition(
+                f"Cannot start an input-driven attempt from {current.status.value}"
+            )
+        if self._active_count() >= self.max_workers:
+            raise RuntimeError(f"Background worker limit reached ({self.max_workers})")
+        if self._active_count(current.cwd) >= self.max_workers_per_project:
+            raise RuntimeError(
+                f"Background worker limit reached for project ({self.max_workers_per_project})"
+            )
+
+        request = self._input_reactivation_request(current)
+        # Write the complete worker request before changing the lifecycle
+        # record. If the process stops here, maintenance can retry from the
+        # still-completed record and its already durable inbox item.
+        self._write_request(request)
+        starting = self.store.transition(
+            current.session_id,
+            SessionStatus.STARTING,
+            expected_status=current.status,
+            expected_attempt=expected_attempt,
+            expected_lease_token=expected_lease_token,
+            resume_marker=f"input:{message_id}",
+            requested_mode_name=request.mode_name,
+            mode_name="",
+            mode_application_status=ModeApplicationStatus.PENDING,
+            mode_application_attempt=current.attempt + 1,
+            mode_application_error="",
+            worker_pid=None,
+            worker_started_at=None,
+            worker_finished_at=None,
+            worker_exit_code=None,
+            worker_exit_reason="",
+            worker_finalization_attempts=0,
+            worker_cleanup_error="",
+            completed_at=None,
+            error=None,
+            failure_category="",
+            cancellation_reason="",
+            exit_reason="",
+            latest_activity="Starting worker for accepted input",
+        )
+        return self._launch(request, starting)
+
     def _defer_and_resume(
         self,
         inbox: BackgroundInputInbox,
@@ -712,6 +840,11 @@ class BackgroundSupervisor:
             expected_lease_token=expected_lease_token,
             message_id=message_id,
         )
+        if receipt.state != "accepted" or not receipt.deferred:
+            # An idempotent retry of an already delivered or terminal receipt
+            # must not create a worker that has no deferred user input (and
+            # would otherwise fall back to the original request intent).
+            return receipt
         try:
             resumed = self._resume_for_queued_input(session_id)
         except Exception as exc:  # noqa: BLE001
@@ -725,6 +858,59 @@ class BackgroundSupervisor:
             return replace(
                 receipt,
                 recovery_error=(resumed.error or "Background recovery did not start")[:240],
+            )
+        return receipt
+
+    def _defer_and_reactivate_completed(
+        self,
+        inbox: BackgroundInputInbox,
+        session_id: str,
+        text: str,
+        *,
+        expected_attempt: int,
+        expected_lease_token: str,
+        message_id: str,
+    ) -> BackgroundInput:
+        """Persist input, then start a fresh attempt for a completed session."""
+
+        receipt = inbox.enqueue_deferred(
+            session_id,
+            text,
+            expected_attempt=expected_attempt,
+            expected_lease_token=expected_lease_token,
+            message_id=message_id,
+        )
+        if receipt.state != "accepted" or not receipt.deferred:
+            return receipt
+        try:
+            started = self._start_deferred_input_attempt(
+                self.store.get(session_id, include_deleted=True),
+                message_id=message_id,
+                expected_attempt=expected_attempt,
+                expected_lease_token=expected_lease_token,
+            )
+        except InvalidSessionTransition:
+            # Another submitter or maintenance pass may already have won the
+            # completed→starting compare-and-set. The message is durable and
+            # the winning worker will consume the deferred inbox in FIFO order.
+            current = self.store.get(session_id, include_deleted=True)
+            if current.status in ACTIVE_STATUSES:
+                return receipt
+            return replace(
+                receipt,
+                recovery_error="Session changed; accepted input needs recovery"[:240],
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Acceptance preceded startup. Preserve the receipt and avoid
+            # encouraging a duplicate user message after a launch failure.
+            return replace(
+                receipt,
+                recovery_error=f"{type(exc).__name__}: background recovery did not start"[:240],
+            )
+        if started.status is SessionStatus.FAILED:
+            return replace(
+                receipt,
+                recovery_error=(started.error or "Background recovery did not start")[:240],
             )
         return receipt
 
@@ -1187,10 +1373,76 @@ class BackgroundSupervisor:
                     continue
         return changed
 
-    def recover_stale(self, *, stale_after_s: float = 30.0) -> list[BackgroundSession]:
-        """Reconcile every active record for explicit CLI/run-manager callers."""
+    def _recover_pending_input_records(
+        self,
+        sessions: tuple[BackgroundSession, ...] | list[BackgroundSession],
+    ) -> list[BackgroundSession]:
+        """Restart only sessions with an accepted, unconsumed deferred input."""
 
-        return self._recover_stale_records(self.store.list(include_archived=False), stale_after_s)
+        changed: dict[str, BackgroundSession] = {}
+        recoverable = {
+            SessionStatus.COMPLETED,
+            SessionStatus.FAILED,
+            SessionStatus.CANCELLED,
+            SessionStatus.ORPHANED,
+            SessionStatus.ARCHIVED,
+        }
+        inbox = BackgroundInputInbox(self.store)
+        for snapshot in sessions:
+            try:
+                current = self.store.get(snapshot.session_id, include_deleted=True)
+            except SessionNotFound:
+                continue
+            if current.status not in recoverable:
+                continue
+            pending = tuple(
+                item
+                for item in inbox.receipts(current.session_id)
+                if item.state == "accepted" and item.deferred
+            )
+            if not pending:
+                continue
+            if (
+                self._active_count() >= self.max_workers
+                or self._active_count(current.cwd) >= self.max_workers_per_project
+            ):
+                continue
+            try:
+                if current.status is SessionStatus.COMPLETED or (
+                    current.status in {SessionStatus.FAILED, SessionStatus.ORPHANED}
+                    and current.resume_marker.startswith("input:")
+                ):
+                    self._start_deferred_input_attempt(
+                        current,
+                        message_id=pending[0].message_id,
+                        expected_attempt=current.attempt,
+                        expected_lease_token=current.lease_token,
+                    )
+                else:
+                    self._resume_for_queued_input(current.session_id)
+            except (InvalidSessionTransition, OSError, RuntimeError, ValueError):
+                # The inbox is the durable record. A later maintenance pass
+                # retries after a competing owner, capacity, or launch issue.
+                continue
+            try:
+                updated = self.store.get(current.session_id, include_deleted=True)
+            except SessionNotFound:
+                continue
+            if (
+                updated.status != current.status
+                or updated.attempt != current.attempt
+                or updated.worker_pid != current.worker_pid
+            ):
+                changed[updated.session_id] = updated
+        return list(changed.values())
+
+    def recover_stale(self, *, stale_after_s: float = 30.0) -> list[BackgroundSession]:
+        """Reconcile stale workers and resume accepted deferred input records."""
+
+        sessions = self.store.list(include_archived=True)
+        changed = self._recover_stale_records(sessions, stale_after_s)
+        changed.extend(self._recover_pending_input_records(sessions))
+        return list({item.session_id: item for item in changed}.values())
 
     def recover_stale_batch(
         self, *, stale_after_s: float = 30.0, max_sessions: int = 1_024
@@ -1202,7 +1454,9 @@ class BackgroundSupervisor:
         sessions, self._recovery_cursor = self.store._lifecycle_page_after(
             self._recovery_cursor, max_sessions
         )
-        return self._recover_stale_records(sessions, stale_after_s)
+        changed = self._recover_stale_records(sessions, stale_after_s)
+        changed.extend(self._recover_pending_input_records(sessions))
+        return list({item.session_id: item for item in changed}.values())
 
     def purge_expired_trash(self) -> list[str]:
         """Apply the configured recoverable-trash retention policy."""

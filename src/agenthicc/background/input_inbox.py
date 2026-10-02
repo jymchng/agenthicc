@@ -107,6 +107,7 @@ class BackgroundInputInbox:
                     "failed",
                     "rejected",
                     "rebound",
+                    "deferred",
                 }
                 and message_id in records
             ):
@@ -161,10 +162,9 @@ class BackgroundInputInbox:
         message_id: str | None = None,
     ) -> BackgroundInput:
         """Durably accept input only for the currently live session owner."""
-        cleaned = text.strip() if isinstance(text, str) else ""
-        if not cleaned:
+        if not isinstance(text, str) or not text.strip():
             raise ValueError("Input must not be empty")
-        if len(cleaned) > MAX_INPUT_CHARS:
+        if len(text) > MAX_INPUT_CHARS:
             raise ValueError(f"Input exceeds {MAX_INPUT_CHARS} characters")
         if (
             isinstance(owner_attempt, bool)
@@ -187,7 +187,7 @@ class BackgroundInputInbox:
                 if (
                     previous.get("session_id") != session_id
                     or previous.get("owner_attempt") != owner_attempt
-                    or previous.get("text") != cleaned
+                    or previous.get("text") != text
                 ):
                     raise ValueError("message_id was already used for different input")
                 return self._as_input(previous)
@@ -207,7 +207,7 @@ class BackgroundInputInbox:
                 "session_id": session_id,
                 "owner_attempt": owner_attempt,
                 "owner_hash": self._owner_hash(lease_token),
-                "text": cleaned,
+                "text": text,
                 "accepted_at": now,
                 "state": "accepted",
                 "state_changed_at": now,
@@ -227,14 +227,13 @@ class BackgroundInputInbox:
         """Durably queue input for a recoverable session without a live owner.
 
         The next worker attempt rebinds this unowned message to its lease
-        before delivery. This lets a user submit a continuation while viewing
-        an orphaned/recoverable session without falsely claiming it is live or
+        before delivery. This lets a user submit to a completed or
+        orphaned/recoverable session without falsely claiming a live owner or
         racing a stale process.
         """
-        cleaned = text.strip() if isinstance(text, str) else ""
-        if not cleaned:
+        if not isinstance(text, str) or not text.strip():
             raise ValueError("Input must not be empty")
-        if len(cleaned) > MAX_INPUT_CHARS:
+        if len(text) > MAX_INPUT_CHARS:
             raise ValueError(f"Input exceeds {MAX_INPUT_CHARS} characters")
         if (
             isinstance(expected_attempt, bool)
@@ -255,8 +254,25 @@ class BackgroundInputInbox:
             records = self._projection(self._events(path))
             previous = records.get(identifier)
             if previous is not None:
-                if previous.get("session_id") != session_id or previous.get("text") != cleaned:
+                if previous.get("session_id") != session_id or previous.get("text") != text:
                     raise ValueError("message_id was already used for different input")
+                if previous.get("state") == "accepted" and previous.get("deferred") is not True:
+                    # An accepted but not-yet-delivered live-owner message may
+                    # outlive that owner. Rebind it to the unowned deferred
+                    # queue only after the current session revision was
+                    # validated above; delivered/terminal messages are never
+                    # replayed by an idempotent retry.
+                    deferred = {
+                        "action": "deferred",
+                        "message_id": identifier,
+                        "owner_attempt": expected_attempt,
+                        "owner_hash": "",
+                        "deferred": True,
+                        "state": "accepted",
+                        "state_changed_at": time.time(),
+                    }
+                    self._append(path, deferred)
+                    previous.update(deferred)
                 return self._as_input(previous)
             pending = sum(
                 record.get("state") in {"accepted", "claimed"} for record in records.values()
@@ -277,7 +293,7 @@ class BackgroundInputInbox:
                 "session_id": session_id,
                 "owner_attempt": expected_attempt,
                 "owner_hash": "",
-                "text": cleaned,
+                "text": text,
                 "accepted_at": now,
                 "state": "accepted",
                 "state_changed_at": now,

@@ -206,6 +206,89 @@ async def test_details_input_composer_targets_live_owner_without_attach(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_completed_details_input_opens_and_starts_new_background_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    session = BackgroundSession.create(
+        "completed-input-target",
+        title="Completed target",
+        cwd=str(tmp_path),
+        workflow_name="goal_flow",
+        intent="the previous goal must not be replayed",
+    ).evolve(
+        status=SessionStatus.COMPLETED,
+        attempt=4,
+        lease_token="previous-attempt-lease",
+        completed_at=1_780_000_000.0,
+        worker_finished_at=1_780_000_000.0,
+    )
+    store.create(session)
+    supervisor = BackgroundSupervisor(store)
+    manager = BackgroundManager(
+        Console(width=100, height=30, record=True),
+        store=store,
+        supervisor=supervisor,
+    )
+    manager._sessions = [session]
+    manager._visible_sessions = [session]
+    manager._total_count = 1
+    manager._selected_session_id = session.session_id
+    manager._detail_session_id = session.session_id
+
+    def prepare_editor(_target: BackgroundSession) -> None:
+        manager._composer_input = object()  # type: ignore[assignment]
+
+    monkeypatch.setattr(manager, "_build_target_input_editor", prepare_editor)
+    launches: list[tuple[object, BackgroundSession]] = []
+
+    def capture_launch(request: object, starting: BackgroundSession) -> BackgroundSession:
+        launches.append((request, starting))
+        return starting
+
+    monkeypatch.setattr(supervisor, "_launch", capture_launch)
+    monkeypatch.setattr(
+        supervisor,
+        "attach_foreground",
+        lambda _session_id: (_ for _ in ()).throw(
+            AssertionError("completed-session input must not attach to foreground")
+        ),
+    )
+
+    manager.handle_key(Key.CHAR, "i")
+    assert manager._composer_open
+    assert manager._composer_target is not None
+    assert manager._composer_target.session_id == session.session_id
+
+    from agenthicc.tui.runtime.commands import SendMessageCommand
+
+    command_text = "  /workflow goal_flow  \n"
+    result = await manager._submit_target_input(
+        session,
+        (session.session_id, session.attempt),
+        SendMessageCommand(text=command_text),
+    )
+    assert result.ok
+    assert len(launches) == 1
+    request, starting = launches[0]
+    assert getattr(request, "run_id") == ""
+    assert not getattr(request, "detached_goal")
+    assert starting.status is SessionStatus.STARTING
+    assert starting.session_id == session.session_id
+    assert starting.resume_marker.startswith("input:")
+    assert starting.completed_at is None
+    assert manager._detail_session_id == session.session_id
+
+    receipt = BackgroundInputInbox(store).receipts(session.session_id)
+    assert len(receipt) == 1
+    assert receipt[0].text == command_text
+    assert receipt[0].state == "accepted"
+    assert receipt[0].deferred
+    assert "background recovery" in manager._composer_receipt.casefold()
+    await manager._service.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "status",
     [
@@ -276,6 +359,31 @@ async def test_details_input_recovers_stale_session_without_foreground_attach(
         assert store.get(session.session_id).status is status
     finally:
         await manager._service.close()
+
+
+@pytest.mark.asyncio
+async def test_deleted_session_input_stays_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    session = BackgroundSession.create(
+        "deleted-input-target",
+        title="Deleted target",
+        cwd=str(tmp_path),
+        workflow_name="",
+        intent="do not revive",
+    ).evolve(status=SessionStatus.DELETED)
+    store.create(session)
+    manager = BackgroundManager(Console(width=100, height=30, record=True), store=store)
+    manager._build_target_input_editor = lambda _target: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        AssertionError("deleted session must not construct an input editor")
+    )
+
+    manager._open_input_composer(session)
+
+    assert not manager._composer_open
+    assert "deleted" in manager._notice
+    await manager._service.close()
 
 
 def test_agents_pages_show_at_most_ten_non_deleted_sessions(tmp_path: Path) -> None:

@@ -55,6 +55,10 @@ class _SessionLog:
 class _SessionMemory:
     def __init__(self) -> None:
         self.closed = False
+        self.user_messages: list[str] = []
+
+    def add_user(self, text: str) -> None:
+        self.user_messages.append(text)
 
     def close(self) -> None:
         self.closed = True
@@ -233,6 +237,7 @@ async def test_execute_workflow_resume_uses_existing_run_and_runner_resume(
             ResumeWorkflow.name,
             "continue",
             resume_run_id="resume-run",
+            continuation="please finish the remaining migration",
         )
     finally:
         await session.processor.stop()
@@ -244,6 +249,15 @@ async def test_execute_workflow_resume_uses_existing_run_and_runner_resume(
     assert len(resumed_contexts) == 1
     assert isinstance(resumed_contexts[0], WorkflowContext)
     assert resumed_contexts[0].current_phase == "plan"
+    assert session.session_memory.user_messages == [
+        "[WORKFLOW RESUME]\n"
+        "Workflow: resume_demo\n"
+        "Current phase: plan\n"
+        "The prior agent turn was interrupted safely; preserve completed work "
+        "and continue from the saved phase.\n"
+        "Original intent: original intent\n"
+        "User continuation: please finish the remaining migration"
+    ]
     checkpoint = store.load("resume-run")
     assert checkpoint is not None
     assert checkpoint.status == "complete"

@@ -130,6 +130,7 @@ class _FakeSession:
         self._ctrl_c_count = 0
         self._overlay = None
         self._registry = None
+        self._preserve_submission_text = False
         self._modes = SimpleNamespace(cycle=lambda: SimpleNamespace(name="Plan"))
         self._bus = SimpleNamespace(dispatch_async=self._dispatch)
         self.sent: list[object] = []
@@ -177,6 +178,11 @@ async def test_input_capabilities_cover_idle_streaming_and_editing_paths() -> No
     session._buf.set(list("send"))
     assert await SubmitCapability(commit_history=True).handle(Key.ENTER, "", session) is _CONSUMED
     assert session.sent
+    exact_text = "  /workflow resume run-1  \nsecond line\t"
+    session._preserve_submission_text = True
+    session._buf.set(list(exact_text))
+    assert await SubmitCapability().handle(Key.ENTER, "", session) is _CONSUMED
+    assert session.sent[-1].text == exact_text
     assert await SubmitCapability().handle(Key.CHAR, "", session) is False
     assert await InterruptCapability().handle(Key.CHAR, "", session) is False
     assert await NewlineCapability().handle(Key.CTRL_ENTER, "", session) is _CONSUMED

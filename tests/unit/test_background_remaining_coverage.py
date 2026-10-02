@@ -68,9 +68,11 @@ async def test_approval_and_input_services_accept_and_validate_values(tmp_path: 
         input_service.request_input(SimpleNamespace(tool_name="question"))
     )
     await _wait_for(store, "input", SessionStatus.WAITING_INPUT)
-    input_service.provide_input("answer")
+    with pytest.raises(ValueError, match="exceeds 8000"):
+        input_service.provide_input("x" * 8_001)
+    input_service.provide_input("  answer\n")
     answer = await input_task
-    assert answer.allowed is True and answer.message == "answer"
+    assert answer.allowed is True and answer.message == "  answer\n"
 
     store.create(_record(tmp_path, "approval-race"))
     store.claim("approval-race", pid=1, lease_token="race")

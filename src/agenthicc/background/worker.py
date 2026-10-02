@@ -801,10 +801,12 @@ class BackgroundApprovalService:
 
         if not isinstance(value, str) or not value.strip():
             raise ValueError("Input must not be empty")
+        if len(value) > 8_000:
+            raise ValueError("Input exceeds 8000 characters")
         current = self.store.get(self.session_id)
         if current.status != SessionStatus.WAITING_INPUT:
             raise InvalidSessionTransition("Session is not waiting for input")
-        self.store.update(self.session_id, input_value=value[:8_000])
+        self.store.update(self.session_id, input_value=value)
 
     def reset_turn_memory(self) -> None:
         return None
@@ -985,15 +987,14 @@ async def _handle_background_workflow_command(
     parts = args.strip().split()
     subcommand = parts[0] if parts else ""
     registry = session.workflow_registry
-    conversation = getattr(session, "session_conversation", None)
-    execution_config = getattr(session.cfg, "execution", None)
-    profile = str(getattr(execution_config, "profile", "") or "")
-    workspace_scope = getattr(session, "workspace_scope", None)
-    workspace_root = str(getattr(workspace_scope, "primary_root", "") or "")
+    conversation = session.session_conversation
+    profile = str(session.cfg.execution.profile or "")
+    workspace_scope = session.workspace_scope
+    workspace_root = str(workspace_scope.primary_root or "") if workspace_scope else ""
 
     def default_workflow_name() -> tuple[str, str]:
         active_mode = session.app_state.active_mode()
-        default_name = str(getattr(active_mode, "default_workflow", None) or "")
+        default_name = str(active_mode.default_workflow or "")
         if not default_name:
             return "", ""
         workflow = registry.get(default_name)
@@ -1041,7 +1042,9 @@ async def _handle_background_workflow_command(
         requested = run_id.strip().strip("`'\"")
         exact = [record for record in records if record.run_id == requested]
         matches = exact or [
-            record for record in records if record.run_id.casefold().startswith(requested.casefold())
+            record
+            for record in records
+            if record.run_id.casefold().startswith(requested.casefold())
         ]
         if len(matches) > 1:
             choices = ", ".join(record.run_id for record in matches[:8])
@@ -1055,9 +1058,7 @@ async def _handle_background_workflow_command(
         # does not discard a saved run unless its ID is explicitly supplied.
         if subcommand in {"", "reset"}:
             if subcommand == "reset" and len(parts) > 2:
-                return _BackgroundWorkflowCommandResult(
-                    error="Usage: /workflow reset [run-id]"
-                )
+                return _BackgroundWorkflowCommandResult(error="Usage: /workflow reset [run-id]")
             workflow_name, error = default_workflow_name()
             if error:
                 return _BackgroundWorkflowCommandResult(error=error)
@@ -1124,9 +1125,10 @@ async def _handle_background_workflow_command(
                     error=inspection_error,
                     selection_only=True,
                 )
-            if records:
-                choices = ", ".join(record.run_id for record in records[:8])
-                suffix = " …" if len(records) > 8 else ""
+            recoverable_records = [record for record in records if record.recoverable]
+            if recoverable_records:
+                choices = ", ".join(record.run_id for record in recoverable_records[:8])
+                suffix = " …" if len(recoverable_records) > 8 else ""
                 return _BackgroundWorkflowCommandResult(
                     workflow_name=workflow_name,
                     error=(
@@ -1143,9 +1145,7 @@ async def _handle_background_workflow_command(
 
         if subcommand == "resume":
             if len(parts) > 2:
-                return _BackgroundWorkflowCommandResult(
-                    error="Usage: /workflow resume [run-id]"
-                )
+                return _BackgroundWorkflowCommandResult(error="Usage: /workflow resume [run-id]")
             if conversation is None:
                 return _BackgroundWorkflowCommandResult(
                     error="Workflow resume requires the durable session conversation.",
@@ -1180,8 +1180,7 @@ async def _handle_background_workflow_command(
             if not record.recoverable:
                 return _BackgroundWorkflowCommandResult(
                     error=(
-                        f"Workflow run {record.run_id!r} is not recoverable: "
-                        f"{record.display_error}"
+                        f"Workflow run {record.run_id!r} is not recoverable: {record.display_error}"
                     ),
                     selection_only=True,
                 )
@@ -1208,7 +1207,7 @@ async def _handle_background_workflow_command(
                 intent,
                 resume_run_id=record.run_id,
             )
-            status = str(getattr(result, "status", "failed"))
+            status = result.status
             if status == "complete":
                 return _BackgroundWorkflowCommandResult(
                     workflow_name=workflow_name,
@@ -1222,7 +1221,7 @@ async def _handle_background_workflow_command(
                 )
             return _BackgroundWorkflowCommandResult(
                 workflow_name=workflow_name,
-                error=str(getattr(result, "error", None) or f"Workflow resume ended with {status}."),
+                error=result.error or f"Workflow resume ended with {status}.",
                 selection_only=True,
             )
 
@@ -1477,6 +1476,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 asyncio.get_running_loop().create_task(_publish_input_event())
 
         def _claim_session_input() -> str | None:
+            nonlocal session_waiting_for_next_input
             pending = input_inbox.peek_next(
                 request.session_id,
                 owner_attempt=claimed_attempt or 0,
@@ -1501,6 +1501,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         return None
                     _record_input_delivery(item, starts_turn=False)
                     completed_command_ids.add(item.message_id)
+                    session_waiting_for_next_input = True
                     session.app_state.conversation.append_event(
                         "assistant_message",
                         {
@@ -1519,6 +1520,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 return None
             if item.text.startswith(("/", "$")):
                 _record_input_delivery(item, starts_turn=False)
+                session_waiting_for_next_input = True
                 error, skill_body = _dispatch_background_command(
                     session,
                     item.text,
@@ -1607,9 +1609,7 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                             continue
                         if result.workflow_name is not None:
                             active_workflow_name = result.workflow_name
-                        session_waiting_for_next_input = (
-                            result.selection_only or bool(result.error)
-                        )
+                        session_waiting_for_next_input = result.selection_only or bool(result.error)
                         completed_command_ids.add(item.message_id)
                         response = result.error or result.message
                         if response:
@@ -1681,111 +1681,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         )
                         session_waiting_for_next_input = False
                     continue
-                workflow_name = active_workflow_name
-                # Claiming the inbox entry is the delivery boundary. Any
-                # checkpoint/recovery decision below is made by this target
-                # session and must not turn an already delivered message into
-                # a manager-side "not delivered" result.
+                # Claiming the inbox entry is the delivery boundary. Ordinary
+                # text is always a normal turn in this target session; do not
+                # infer workflow continuation or inspect/select checkpoints.
                 _record_input_delivery(item, starts_turn=True)
-                try:
-                    resume_run_id = (
-                        _select_headless_workflow_resume(session, workflow_name)
-                        if workflow_name
-                        else None
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    from agenthicc.tui.runtime.session_export import _Redactor  # noqa: PLC0415
-
-                    reason = str(_Redactor().value(f"{type(exc).__name__}: {exc}", "message"))[:200]
-                    completed_command_ids.add(item.message_id)
-                    session_waiting_for_next_input = True
-                    session.app_state.conversation.append_event(
-                        "assistant_message",
-                        {
-                            "text": f"Workflow continuation was not safe: {reason}",
-                            "source": "agents-manager-command",
-                        },
-                        event_id=f"background-workflow-input-error:{item.message_id}",
-                    )
-                    continue
-                if workflow_name and resume_run_id is not None:
-                    # Match TUISession's ordinary-text continuation behavior:
-                    # a late message resumes the durable checkpoint rather
-                    # than replaying the original launch intent.
-                    workflow_result = await execute_workflow(
-                        session,
-                        workflow_name,
-                        item.text,
-                        resume_run_id=resume_run_id,
-                        continuation=item.text,
-                    )
-                    if workflow_result.status == "paused":
-                        completed_command_ids.add(item.message_id)
-                        session_waiting_for_next_input = True
-                        session.app_state.conversation.append_event(
-                            "assistant_message",
-                            {
-                                "text": workflow_result.error
-                                or "Workflow paused with a recoverable checkpoint.",
-                                "source": "agents-manager-command",
-                            },
-                            event_id=f"background-workflow-paused:{item.message_id}",
-                        )
-                        continue
-                    if workflow_result.status != "complete":
-                        workflow_command_failure = (
-                            workflow_result.error
-                            or f"Workflow continuation ended with {workflow_result.status}"
-                        )
-                        session.app_state.conversation.append_event(
-                            "assistant_message",
-                            {
-                                "text": workflow_command_failure,
-                                "source": "agents-manager-command",
-                            },
-                            event_id=f"background-workflow-error:{item.message_id}",
-                        )
-                        continue
-                    session_waiting_for_next_input = False
-                    completed_command_ids.add(item.message_id)
-                    continue
-                if workflow_name:
-                    # A message to a workflow-backed session is itself a new
-                    # user turn. If no resumable checkpoint exists, route that
-                    # exact text through the selected workflow; never
-                    # substitute or replay the original launch intent.
-                    workflow_result = await execute_workflow(
-                        session,
-                        workflow_name,
-                        item.text,
-                    )
-                    if workflow_result.status == "paused":
-                        completed_command_ids.add(item.message_id)
-                        session_waiting_for_next_input = True
-                        session.app_state.conversation.append_event(
-                            "assistant_message",
-                            {
-                                "text": workflow_result.error
-                                or "Workflow paused with a recoverable checkpoint.",
-                                "source": "agents-manager-command",
-                            },
-                            event_id=f"background-workflow-paused:{item.message_id}",
-                        )
-                        continue
-                    if workflow_result.status != "complete":
-                        reason = workflow_result.error or (
-                            f"Workflow execution ended with {workflow_result.status}"
-                        )
-                        workflow_command_failure = reason
-                        session.app_state.conversation.append_event(
-                            "assistant_message",
-                            {"text": reason, "source": "agents-manager-command"},
-                            event_id=f"background-workflow-error:{item.message_id}",
-                        )
-                        continue
-                    session_waiting_for_next_input = False
-                    completed_command_ids.add(item.message_id)
-                    continue
                 await _run_direct_turn(
                     session,
                     dataclass_replace(request, intent=item.text),
@@ -1815,9 +1714,10 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 if item.state == "accepted" and item.deferred
             )
             if deferred_inputs:
-                # A user submitted against a stale/recoverable session. Apply
-                # that continuation before considering the original launch
-                # intent, otherwise a restart would replay old work first.
+                # A user submitted against a stale/recoverable session. Forward
+                # accepted text as target-session turns before considering the
+                # original launch intent; never reinterpret it as a workflow
+                # continuation or replay old work first.
                 await _drain_idle_inputs()
                 failed_inputs = tuple(
                     pending

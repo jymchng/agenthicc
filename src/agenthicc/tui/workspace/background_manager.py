@@ -1436,6 +1436,7 @@ class BackgroundManager:
             history=history,
             busy=True,
             clear_after_acceptance=True,
+            preserve_submission_text=True,
         )
         # Mode changes must be applied by the target owner. Until the target
         # context exposes a live mode command, keep the shift-tab capability
@@ -1547,6 +1548,7 @@ class BackgroundManager:
 
     def _open_input_composer(self, target: BackgroundSession) -> None:
         recoverable = target.status in {
+            SessionStatus.COMPLETED,
             SessionStatus.ORPHANED,
             SessionStatus.FAILED,
             SessionStatus.CANCELLED,

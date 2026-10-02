@@ -97,7 +97,7 @@ _TRANSITIONS: dict[SessionStatus, frozenset[SessionStatus]] = {
         {SessionStatus.STARTING, SessionStatus.CANCELLING, SessionStatus.ORPHANED}
     ),
     SessionStatus.CANCELLING: frozenset({SessionStatus.CANCELLED, SessionStatus.ORPHANED}),
-    SessionStatus.COMPLETED: frozenset({SessionStatus.ARCHIVED}),
+    SessionStatus.COMPLETED: frozenset({SessionStatus.STARTING, SessionStatus.ARCHIVED}),
     SessionStatus.FAILED: frozenset(
         {SessionStatus.RETRYING, SessionStatus.STARTING, SessionStatus.ARCHIVED}
     ),
