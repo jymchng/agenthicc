@@ -14,7 +14,7 @@ from typing import Literal
 
 from agenthicc.runners.process_lease import InterProcessLock
 
-from .model import ACTIVE_STATUSES, BackgroundSession
+from .model import ACTIVE_STATUSES, BackgroundSession, SessionStatus
 from .store import BackgroundStore, InvalidSessionTransition
 
 InputState = Literal["accepted", "claimed", "delivered", "completed", "failed", "rejected"]
@@ -35,6 +35,8 @@ class BackgroundInput:
     state: InputState = "accepted"
     state_changed_at: float = 0.0
     error: str = ""
+    deferred: bool = False
+    recovery_error: str = ""
 
 
 class BackgroundInputInbox:
@@ -104,6 +106,7 @@ class BackgroundInputInbox:
                     "completed",
                     "failed",
                     "rejected",
+                    "rebound",
                 }
                 and message_id in records
             ):
@@ -145,6 +148,7 @@ class BackgroundInputInbox:
             state=state,
             state_changed_at=changed_at if isinstance(changed_at, (int, float)) else 0.0,
             error=str(record.get("error", ""))[:240],
+            deferred=record.get("deferred") is True,
         )
 
     def enqueue(
@@ -211,6 +215,77 @@ class BackgroundInputInbox:
             self._append(path, event)
             return self._as_input(event)
 
+    def enqueue_deferred(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        expected_attempt: int,
+        expected_lease_token: str | None,
+        message_id: str | None = None,
+    ) -> BackgroundInput:
+        """Durably queue input for a recoverable session without a live owner.
+
+        The next worker attempt rebinds this unowned message to its lease
+        before delivery. This lets a user submit a continuation while viewing
+        an orphaned/recoverable session without falsely claiming it is live or
+        racing a stale process.
+        """
+        cleaned = text.strip() if isinstance(text, str) else ""
+        if not cleaned:
+            raise ValueError("Input must not be empty")
+        if len(cleaned) > MAX_INPUT_CHARS:
+            raise ValueError(f"Input exceeds {MAX_INPUT_CHARS} characters")
+        if (
+            isinstance(expected_attempt, bool)
+            or not isinstance(expected_attempt, int)
+            or expected_attempt < 0
+        ):
+            raise ValueError("expected_attempt must be a non-negative integer")
+        identifier = message_id or uuid.uuid4().hex
+        if not _SAFE_ID.fullmatch(identifier):
+            raise ValueError("message_id must be a safe identifier")
+        path, lock_path = self._paths(session_id)
+        with InterProcessLock(lock_path):
+            current = self.store.get(session_id, include_deleted=True)
+            if current.status is SessionStatus.DELETED:
+                raise InvalidSessionTransition("Deleted sessions cannot receive input")
+            if current.attempt != expected_attempt or current.lease_token != expected_lease_token:
+                raise InvalidSessionTransition("Session changed; reopen details and retry")
+            records = self._projection(self._events(path))
+            previous = records.get(identifier)
+            if previous is not None:
+                if previous.get("session_id") != session_id or previous.get("text") != cleaned:
+                    raise ValueError("message_id was already used for different input")
+                return self._as_input(previous)
+            pending = sum(
+                record.get("state") in {"accepted", "claimed"} for record in records.values()
+            )
+            if pending >= MAX_PENDING_MESSAGES:
+                raise InvalidSessionTransition("Background input queue is full")
+            current = self.store.get(session_id, include_deleted=True)
+            if (
+                current.status is SessionStatus.DELETED
+                or current.attempt != expected_attempt
+                or current.lease_token != expected_lease_token
+            ):
+                raise InvalidSessionTransition("Session changed; reopen details and retry")
+            now = time.time()
+            event: dict[str, object] = {
+                "action": "accepted",
+                "message_id": identifier,
+                "session_id": session_id,
+                "owner_attempt": expected_attempt,
+                "owner_hash": "",
+                "text": cleaned,
+                "accepted_at": now,
+                "state": "accepted",
+                "state_changed_at": now,
+                "deferred": True,
+            }
+            self._append(path, event)
+            return self._as_input(event)
+
     @staticmethod
     def _validate_current_owner(
         session: BackgroundSession,
@@ -238,12 +313,26 @@ class BackgroundInputInbox:
         """Claim the oldest accepted command for the current worker attempt."""
         path, lock_path = self._paths(session_id)
         with InterProcessLock(lock_path):
+            current = self.store.get(session_id, include_deleted=True)
+            self._validate_current_owner(current, owner_attempt, lease_token)
             records = self._projection(self._events(path))
             owner_hash = self._owner_hash(lease_token)
             ordered = sorted(records.values(), key=self._accepted_at)
             for record in ordered:
                 if record.get("state") != "accepted":
                     continue
+                if record.get("deferred") is True:
+                    rebound = {
+                        "action": "rebound",
+                        "message_id": record.get("message_id"),
+                        "owner_attempt": owner_attempt,
+                        "owner_hash": owner_hash,
+                        "deferred": False,
+                        "state": "accepted",
+                        "state_changed_at": time.time(),
+                    }
+                    self._append(path, rebound)
+                    record.update(rebound)
                 if (
                     record.get("owner_attempt") != owner_attempt
                     or record.get("owner_hash") != owner_hash
@@ -277,11 +366,15 @@ class BackgroundInputInbox:
         """Inspect the FIFO head without claiming it, under the current lease."""
         path, lock_path = self._paths(session_id)
         with InterProcessLock(lock_path):
+            current = self.store.get(session_id, include_deleted=True)
+            self._validate_current_owner(current, owner_attempt, lease_token)
             records = self._projection(self._events(path))
             owner_hash = self._owner_hash(lease_token)
             for record in sorted(records.values(), key=self._accepted_at):
                 if record.get("state") != "accepted":
                     continue
+                if record.get("deferred") is True:
+                    return self._as_input(record)
                 if (
                     record.get("owner_attempt") == owner_attempt
                     and record.get("owner_hash") == owner_hash
@@ -405,6 +498,8 @@ class BackgroundInputInbox:
                     error = reason
                 if next_state is None:
                     continue
+                if record.get("deferred") is True and state in {"accepted", "claimed"}:
+                    continue
                 event: dict[str, object] = {
                     "action": next_state,
                     "message_id": message_id,
@@ -442,6 +537,18 @@ class BackgroundInputInbox:
                 now = time.time()
                 for message_id, record in records.items():
                     if record.get("state") not in {"accepted", "claimed", "delivered"}:
+                        continue
+                    if record.get("deferred") is True:
+                        if current.status is SessionStatus.DELETED:
+                            deleted_event = {
+                                "action": "rejected",
+                                "message_id": message_id,
+                                "state": "rejected",
+                                "state_changed_at": now,
+                                "error": "The session was deleted before this input could be delivered.",
+                            }
+                            self._append(path, deleted_event)
+                            record.update(deleted_event)
                         continue
                     owner_changed = record.get("owner_attempt") != current.attempt or record.get(
                         "owner_hash"

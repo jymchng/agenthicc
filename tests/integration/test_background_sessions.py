@@ -138,6 +138,195 @@ async def test_worker_uses_canonical_direct_turn_and_finalizes(monkeypatch, tmp_
 
 
 @pytest.mark.asyncio
+async def test_recovered_worker_processes_deferred_input_without_replaying_original_intent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+
+    store = BackgroundStore(tmp_path / "background")
+    _queued(tmp_path, store)
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue_deferred(
+        "worker-session",
+        "continue from the last saved point",
+        expected_attempt=0,
+        expected_lease_token="",
+        message_id="deferred-direct-recovery",
+    )
+    fake_session = _Session()
+    observed_intents: list[str] = []
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    async def direct(_session: object, request: WorkerRequest) -> None:
+        observed_intents.append(request.intent)
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="",
+        intent="original request must not replay first",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    exit_code = await run_worker(request, store)
+    assert exit_code == 0, store.get("worker-session").error
+    assert observed_intents == ["continue from the last saved point"]
+    receipt = inbox.receipts("worker-session")[0]
+    assert receipt.state == "completed"
+    assert store.get("worker-session").status is SessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_recovered_workflow_input_resumes_checkpoint_not_init(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+
+    store = BackgroundStore(tmp_path / "background")
+    artifact = tmp_path / "sessions" / "worker-session"
+    artifact.mkdir(parents=True)
+    store.create(
+        BackgroundSession.create(
+            "worker-session",
+            title="Recover workflow",
+            cwd=str(tmp_path),
+            workflow_name="demo",
+            intent="original workflow intent must not replay",
+            artifact_dir=str(artifact),
+        ).evolve(status=SessionStatus.STARTING, attempt=2)
+    )
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue_deferred(
+        "worker-session",
+        "continue at the saved phase",
+        expected_attempt=2,
+        expected_lease_token="",
+        message_id="deferred-workflow-recovery",
+    )
+    fake_session = _Session()
+    workflow_calls: list[tuple[str, dict[str, object]]] = []
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    def select(*args: object, **kwargs: object) -> str | None:
+        return "saved-workflow-checkpoint"
+
+    async def execute(
+        _session: object,
+        _workflow_name: str,
+        intent: str,
+        **kwargs: object,
+    ) -> object:
+        workflow_calls.append((intent, kwargs))
+        return SimpleNamespace(status="complete", error=None)
+
+    async def direct(*args: object, **kwargs: object) -> None:
+        raise AssertionError("workflow recovery must not become a direct turn")
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.runners.headless._select_headless_workflow_resume", select)
+    monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", execute)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="demo",
+        intent="original workflow intent must not replay",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    exit_code = await run_worker(request, store)
+    assert exit_code == 0, store.get("worker-session").error
+    assert workflow_calls == [
+        ("continue at the saved phase", {"resume_run_id": "saved-workflow-checkpoint"})
+    ]
+    assert inbox.receipts("worker-session")[0].state == "completed"
+
+
+@pytest.mark.asyncio
+async def test_recovered_workflow_without_checkpoint_is_rejected_not_restarted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from agenthicc.background.input_inbox import BackgroundInputInbox
+
+    store = BackgroundStore(tmp_path / "background")
+    artifact = tmp_path / "sessions" / "worker-session"
+    artifact.mkdir(parents=True)
+    store.create(
+        BackgroundSession.create(
+            "worker-session",
+            title="No checkpoint",
+            cwd=str(tmp_path),
+            workflow_name="demo",
+            intent="never restart from INIT",
+            artifact_dir=str(artifact),
+        ).evolve(status=SessionStatus.STARTING, attempt=1)
+    )
+    inbox = BackgroundInputInbox(store)
+    inbox.enqueue_deferred(
+        "worker-session",
+        "resume where I left off",
+        expected_attempt=1,
+        expected_lease_token="",
+        message_id="deferred-without-checkpoint",
+    )
+    fake_session = _Session()
+
+    async def build(*args: object, **kwargs: object) -> _Session:
+        return fake_session
+
+    def select(*args: object, **kwargs: object) -> str | None:
+        return None
+
+    async def execute(*args: object, **kwargs: object) -> object:
+        raise AssertionError("workflow without a checkpoint must not restart")
+
+    async def direct(*args: object, **kwargs: object) -> None:
+        raise AssertionError("workflow recovery must not become a direct turn")
+
+    async def close(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("agenthicc.runners.tui_session._build_session_context", build)
+    monkeypatch.setattr("agenthicc.runners.headless._select_headless_workflow_resume", select)
+    monkeypatch.setattr("agenthicc.runners.headless.execute_workflow", execute)
+    monkeypatch.setattr("agenthicc.background.worker._run_direct_turn", direct)
+    monkeypatch.setattr("agenthicc.runners.headless._close_headless_session", close)
+    request = WorkerRequest(
+        session_id="worker-session",
+        workflow_name="demo",
+        intent="never restart from INIT",
+        cwd=str(tmp_path),
+        config_path=None,
+        set_overrides=(),
+        dangerously_skip_permissions=False,
+    )
+
+    assert await run_worker(request, store) == 1
+    receipt = inbox.receipts("worker-session")[0]
+    assert receipt.state == "rejected"
+    assert "No resumable workflow checkpoint" in receipt.error
+    assert store.get("worker-session").status is SessionStatus.FAILED
+
+
+@pytest.mark.asyncio
 async def test_worker_binds_live_input_to_shared_agent_turn_boundary(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

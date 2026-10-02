@@ -68,7 +68,7 @@ grep -rn 'Path.home() / ".agenthicc"' src/agenthicc --include=*.py
 | `~/.agenthicc/sessions/index.json`, `index.lock` | `src/agenthicc/runners/session_lease.py:492-493` |
 | `~/.agenthicc/session-service/` | `src/agenthicc/session_service/store.py:56` |
 | `~/.agenthicc/background/` | `src/agenthicc/background/store.py:25-26` |
-| `~/.agenthicc/background/input-inbox/<session-id>.jsonl` and `.lock` | `background.input_inbox.BackgroundInputInbox` | Owner-attempt-fenced manager input commands and delivery receipts | Append-only, fsynced, deduplicated FIFO; submitted text is sensitive and separate from lifecycle logs |
+| `~/.agenthicc/background/input-inbox/<session-id>.jsonl` and `.lock` | `background.input_inbox.BackgroundInputInbox` | Owner-attempt-fenced live input, deferred stale-session recovery input, and delivery receipts | Append-only, fsynced, deduplicated FIFO; deferred items are rebound to the next worker lease only after that worker claims the same session; submitted text is sensitive and separate from lifecycle logs |
 | `~/.agenthicc/background/terminals/` | `src/agenthicc/background/terminals.py:349` |
 | `~/.agenthicc/cassettes` (default `--record-cassette`) | `src/agenthicc/cli/parser.py:61` |
 

@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Sequence
@@ -599,6 +599,156 @@ class BackgroundSupervisor:
             lease_token=lease_token,
             message_id=message_id,
         )
+
+    def enqueue_input_or_recover(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        expected_attempt: int,
+        expected_lease_token: str,
+        message_id: str,
+    ) -> BackgroundInput:
+        """Queue input for a live worker or recover a stale session in background.
+
+        Recoverable terminal sessions receive a durable deferred inbox item
+        before ``resume`` starts their next worker attempt. That worker rebinds
+        the message to its lease and consumes it instead of replaying the
+        session's original request. No foreground handoff or attachment occurs.
+        """
+
+        inbox = BackgroundInputInbox(self.store)
+        current = self.store.get(session_id, include_deleted=True)
+        self._validate_input_target(current, expected_attempt, expected_lease_token)
+
+        if current.status in {SessionStatus.WAITING_INPUT, SessionStatus.CANCELLING}:
+            raise InvalidSessionTransition(
+                f"Session is {current.status.value}; this input path is unavailable"
+            )
+
+        if current.status in {
+            SessionStatus.ORPHANED,
+            SessionStatus.FAILED,
+            SessionStatus.CANCELLED,
+            SessionStatus.ARCHIVED,
+        }:
+            return self._defer_and_resume(
+                inbox,
+                session_id,
+                text,
+                expected_attempt=expected_attempt,
+                expected_lease_token=expected_lease_token,
+                message_id=message_id,
+            )
+
+        if current.status not in ACTIVE_STATUSES:
+            raise InvalidSessionTransition(
+                f"Session is {current.status.value}; background input is unavailable"
+            )
+
+        if current.worker_pid is None or not current.lease_token:
+            raise InvalidSessionTransition(
+                "Background worker has not claimed this session yet; retry input shortly"
+            )
+
+        process_state = self._worker_process_state(current)
+        if process_state in {_WorkerProcessState.DEAD, _WorkerProcessState.MISMATCHED}:
+            try:
+                self.store.mark_orphaned(
+                    session_id,
+                    expected_attempt=expected_attempt,
+                    expected_lease_token=expected_lease_token,
+                    expected_status=current.status,
+                    expected_last_active=current.last_active,
+                )
+            except InvalidSessionTransition:
+                # A heartbeat, owner change, or worker completion raced the
+                # liveness check. Re-read and route only if the original
+                # session revision is still current.
+                current = self.store.get(session_id, include_deleted=True)
+                self._validate_input_target(current, expected_attempt, expected_lease_token)
+            else:
+                current = self.store.get(session_id, include_deleted=True)
+
+            if current.status in {
+                SessionStatus.ORPHANED,
+                SessionStatus.FAILED,
+                SessionStatus.CANCELLED,
+                SessionStatus.ARCHIVED,
+            }:
+                return self._defer_and_resume(
+                    inbox,
+                    session_id,
+                    text,
+                    expected_attempt=expected_attempt,
+                    expected_lease_token=expected_lease_token,
+                    message_id=message_id,
+                )
+
+        # A verified-live owner (or an owner whose identity cannot safely be
+        # disproved) remains the only process allowed to consume this input.
+        return inbox.enqueue(
+            session_id,
+            text,
+            owner_attempt=expected_attempt,
+            lease_token=expected_lease_token,
+            message_id=message_id,
+        )
+
+    def _defer_and_resume(
+        self,
+        inbox: BackgroundInputInbox,
+        session_id: str,
+        text: str,
+        *,
+        expected_attempt: int,
+        expected_lease_token: str,
+        message_id: str,
+    ) -> BackgroundInput:
+        receipt = inbox.enqueue_deferred(
+            session_id,
+            text,
+            expected_attempt=expected_attempt,
+            expected_lease_token=expected_lease_token,
+            message_id=message_id,
+        )
+        try:
+            resumed = self._resume_for_queued_input(session_id)
+        except Exception as exc:  # noqa: BLE001
+            # Input is already durable. Do not report it as rejected and
+            # invite a duplicate submission; expose a bounded recovery note.
+            return replace(
+                receipt,
+                recovery_error=f"{type(exc).__name__}: background recovery did not start"[:240],
+            )
+        if resumed.status is SessionStatus.FAILED:
+            return replace(
+                receipt,
+                recovery_error=(resumed.error or "Background recovery did not start")[:240],
+            )
+        return receipt
+
+    @staticmethod
+    def _validate_input_target(
+        session: BackgroundSession,
+        expected_attempt: int,
+        expected_lease_token: str,
+    ) -> None:
+        if session.status is SessionStatus.DELETED:
+            raise InvalidSessionTransition("Deleted sessions cannot receive input")
+        if session.attempt != expected_attempt or session.lease_token != expected_lease_token:
+            raise InvalidSessionTransition("Session changed; reopen details and retry")
+
+    def _resume_for_queued_input(self, session_id: str) -> BackgroundSession:
+        """Start recovery once; tolerate a competing submit that won the race."""
+
+        try:
+            return self.resume(session_id)
+        except InvalidSessionTransition:
+            current = self.store.get(session_id, include_deleted=True)
+            if current.status in ACTIVE_STATUSES:
+                return current
+            raise
 
     def cancel(self, session_id: str) -> BackgroundSession:
         session = self.store.get(session_id)

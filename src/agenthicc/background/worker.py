@@ -1299,7 +1299,6 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                             dataclass_replace(request, intent=skill_body),
                         )
                     continue
-                _record_input_delivery(item, starts_turn=True)
                 workflow_name = request.workflow_name
                 try:
                     resume_run_id = (
@@ -1328,6 +1327,29 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                         event_id=f"background-workflow-input-error:{item.message_id}",
                     )
                     continue
+                if workflow_name and resume_run_id is None:
+                    # Recovery input continues an existing checkpoint. It
+                    # must never cause a stale workflow to restart at INIT.
+                    input_inbox.reject(
+                        request.session_id,
+                        item.message_id,
+                        owner_attempt=claimed_attempt or 0,
+                        lease_token=lease,
+                        reason=("No resumable workflow checkpoint exists; input was not run."),
+                    )
+                    session.app_state.conversation.append_event(
+                        "assistant_message",
+                        {
+                            "text": (
+                                "Input was not run because this session has no resumable "
+                                "workflow checkpoint."
+                            ),
+                            "source": "agents-manager-command",
+                        },
+                        event_id=f"background-workflow-input-error:{item.message_id}",
+                    )
+                    continue
+                _record_input_delivery(item, starts_turn=True)
                 if workflow_name and resume_run_id is not None:
                     # Match TUISession's ordinary-text continuation behavior:
                     # a late message resumes the durable workflow checkpoint
@@ -1374,6 +1396,37 @@ async def run_worker(request: WorkerRequest, store: BackgroundStore) -> int:
                 raise RuntimeError(
                     "Worker refused agent execution because this attempt's runtime mode "
                     "was not durably attested"
+                )
+            deferred_inputs = tuple(
+                item
+                for item in input_inbox.receipts(request.session_id)
+                if item.state == "accepted" and item.deferred
+            )
+            if deferred_inputs:
+                # A user submitted against a stale/recoverable session. Apply
+                # that continuation before considering the original launch
+                # intent, otherwise a restart would replay old work first.
+                await _drain_idle_inputs()
+                failed_inputs = tuple(
+                    pending
+                    for pending in deferred_inputs
+                    if pending.message_id not in delivered_input_ids
+                )
+                if failed_inputs:
+                    return _WorkerOutcome(
+                        status=SessionStatus.FAILED,
+                        error=("One or more queued recovery inputs could not be safely processed"),
+                        activity="Background recovery input needs attention",
+                        exit_reason="recovery_input_failed",
+                        failure_category="recovery_input_failed",
+                        exit_code=1,
+                    )
+                return _WorkerOutcome(
+                    status=SessionStatus.COMPLETED,
+                    error=None,
+                    activity="Background recovery input complete",
+                    exit_reason="recovery_input_complete",
+                    exit_code=0,
                 )
             if request.workflow_name:
                 resume_run_id = _select_headless_workflow_resume(session, request.workflow_name)

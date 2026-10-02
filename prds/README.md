@@ -431,11 +431,13 @@ session-scoped Markdown findings artifacts, parent-readable references, and
 an explicit incomplete state. It complements PRD-180's general artifact
 delivery design while preserving explorer read-only access to project files.
 
-PRD-215 proposes a target-bound composer on the `agenthicc agents` details
-page. It requires parity with the canonical TUI input editor and an owner-side
-cross-process delivery path; the current `i`/`provide_input` behavior only
-answers a pending ask-user request and does not submit a general turn to a live
-background worker.
+PRD-215 specifies a target-bound composer on the `agenthicc agents` details
+page, with canonical editor parity and owner-side cross-process delivery. Live
+sessions receive input through their current owner. Input to stale recoverable
+sessions is durably queued and triggers a background resume of the same session
+without foreground attachment; workflow recovery must resume its saved
+checkpoint rather than restarting at `INIT`. The interactive table is capped
+at ten rows per page and excludes deleted sessions.
 
 ## Existing PRDs
 

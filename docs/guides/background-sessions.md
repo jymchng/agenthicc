@@ -165,18 +165,28 @@ fields so its navigation/action hints remain on-screen. Use `↑`/`↓` or `j`/`
 `PageUp`/`PageDown`, `Home`/`End`, or `[`/`]` to scroll without changing the
 selected session; the view does not dump the session's complete tool history.
 
-Press `i` on a live session's detail page to open a target-pinned composer.
+Press `i` on a live or stale-but-recoverable session's detail page to open a
+target-pinned composer.
 It uses the normal `UnifiedInputSession` editing and trigger pipeline, with
 mentions rooted at the target workspace and command/skill suggestions built
 from that session's launch configuration and project. Submitting ordinary text
-does not attach, restart, or change the worker lease. The manager durably queues
+does not attach to the foreground. For a live worker, the manager durably queues
 it for the exact owner attempt; the worker consumes it at an agent-safe
 boundary, or runs it as a follow-up turn if it arrived after the previous turn's
-last tool boundary. A worker that finishes first leaves a visible rejection
-receipt with a resend instruction rather than silently dropping the text.
+last tool boundary. For an orphaned, failed, cancelled, or archived recoverable
+session, the manager persists the input first, then resumes that same session
+in the background. The new worker adopts the pending input under its own lease
+before replaying the original launch intent. A direct session continues its
+existing conversation; a workflow resumes its saved checkpoint. If no workflow
+checkpoint exists, the input is rejected rather than restarting at `INIT`. If
+worker startup fails, the accepted message remains visibly pending/recoverable.
+A live worker that finishes before consuming an input leaves a visible
+rejection receipt rather than silently dropping the text.
+
 The detail page's `Latest input` field shows the newest receipt (`queued`,
-`delivered`, `processed`, or `not delivered`) and a short message ID, never the
-message body. The same message ID fences retries and duplicate Enter events.
+`waiting for recovery`, `delivered`, `processed`, or `not delivered`) and a
+short message ID, never the message body. The same message ID fences retries
+and duplicate Enter events.
 
 Target-side non-interactive commands and skills use the worker's command and
 skill registries; a command is never evaluated by the manager's own session.
@@ -210,7 +220,7 @@ Useful keys:
 | `PageUp`/`PageDown` | Move one session page |
 | `Enter` | Open the selected session's detailed page |
 | `Enter` (details page) | Attach that exact session in the normal foreground TUI, loading its transcript |
-| `i` (details page) | Open the composer for that exact live session; accepted input continues asynchronously |
+| `i` (details page) | Open the composer for that exact live or recoverable session; stale sessions resume in the background without attaching |
 | `Esc` (details page) | Return to the session table |
 | `↑`/`↓`, `j`/`k` (details page) | Scroll one detail row without changing the selected session |
 | `PageUp`/`PageDown` (details page) | Scroll one detail viewport |
@@ -222,8 +232,6 @@ Useful keys:
 | `p` | Pin or unpin a session |
 | `y`/`n` | Approve or reject a visible approval request |
 | `Ctrl+X` | Immediately delete the selected/marked sessions to recoverable trash |
-| `t` | Include recoverable trash in the list |
-| `u` | Restore a selected deleted session |
 | `?` | Show help |
 | `q` | Leave the manager without stopping workers |
 | `Esc` (session table) | Leave the manager without stopping workers |
@@ -248,9 +256,11 @@ the selected/marked session IDs and starts one durable operation; no second
 confirmation key is required. Active work is cancelled first, then only
 the exact session directory and its sibling kernel journal are moved to
 `~/.agenthicc/background/trash/`. The tombstone remains in the append-only
-registry, so a stale worker cannot resurrect it. `u` restores the artifacts
-when they are still in recoverable trash. In the interactive manager, deletion
-runs off the TUI event loop; the table remains responsive
+registry, so a stale worker cannot resurrect it. Deleted sessions are excluded
+from the interactive `agenthicc agents` table; use the existing jobs/store
+recovery interface to restore one. The table displays at most ten sessions per
+page (fewer when the terminal viewport requires it). In the interactive
+manager, deletion runs off the TUI event loop; the table remains responsive
 while active-worker cancellation and terminal cleanup finish, then refreshes
 automatically. A repeated `Ctrl+X` is ignored while the current operation is
 active, and failures remain visible with durable retry/recovery metadata.

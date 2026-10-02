@@ -1,7 +1,7 @@
 ---
 title: "PRD-215: Send Input to a Selected Background Session from its Details View"
-status: Proposed
-version: 1.0.0
+status: Implemented
+version: 1.1.0
 date: 2026-10-02
 repository: jymchng/agenthicc
 related_prds:
@@ -29,8 +29,10 @@ provide the same text-editing and registered-trigger capabilities as the
 regular session input: ordinary and multiline text, bracketed/condensed paste,
 paste expansion and deletion, cursor editing, history where applicable,
 `@`-mentions, slash commands, skills, and other registered input triggers.
-Submitting sends the composed input to the exact selected session, as if the
-user had attached to that session and entered the text there.
+Submitting sends the composed input to the exact selected session. For a live
+worker it queues input to that owner. For a stale but recoverable session, the
+input triggers recovery of that same session in the background; it does not
+attach the session to the foreground.
 
 This is not merely a second text box and not an attach shortcut. The `agents`
 manager is a separate process from the selected background worker. Input must
@@ -114,14 +116,17 @@ mention, a slash command, or several lines.
 
 > As an operator inspecting a background session, I can press `i`, compose
 > input using the regular session input features, and submit it to that exact
-> session without attaching, restarting, or interrupting its worker.
+> session without attaching to the foreground. Live workers receive it in
+> place; stale recoverable sessions resume in the background before processing
+> it.
 
 ## 4. Goals
 
 1. Enable general input from the `agents` session-details view.
 2. Preserve parity with the canonical input editor and all currently registered
    input triggers.
-3. Deliver input to the selected session's live owner process and route it
+3. Deliver input to the selected session's live owner process, or persist it
+   before resuming a stale/recoverable session in the background; route it
    through the target session's existing message and command semantics.
 4. Preserve message ordering, idempotency, transcript/journal behavior, workflow
    state, and the selected session's identity across the manager/worker boundary.
@@ -138,7 +143,7 @@ mention, a slash command, or several lines.
 - Broadcasting one input to multiple selected or marked sessions.
 - Allowing typed input to approve/reject a pending approval implicitly.
 - Executing a target session's slash command in the `agents` manager process.
-- Making terminal sessions live again without an explicit attach/resume action.
+- Attaching or transferring a recovered session to the foreground TUI.
 - Exposing the session's secrets, provider credentials, or private state to the
   manager in order to render a composer.
 - Adding a general remote-control/network service; the initial feature remains
@@ -207,8 +212,18 @@ behavior must be explicit and consistent:
 | Live worker starting or running | Accept a bounded, durable message into that session's ordered inbox; wake the owner when possible. |
 | Worker waiting for an explicit `ask_user` response | Preserve the existing answer contract. A normal text submission may satisfy the outstanding request only when it is explicitly identified as its answer; it must not create a duplicate turn. |
 | Worker waiting for approval | Do not treat composer text as approval/rejection. Keep it queued for normal target-session dispatch or explain why it cannot yet be consumed. Existing approval controls remain authoritative. |
-| Recoverable paused session with no live input consumer | Do not claim immediate delivery. Either reject and retain the draft or report that a queued message will be available only after explicit resume; choose one policy and test it. Never silently resume or spawn a worker from `i`. |
-| Completed, failed, cancelled, archived, deleted, or orphaned session without a live owner | Reject live delivery with a clear status and keep the draft. Offer the existing attach/resume route where appropriate; do not start work implicitly. |
+| Recoverable session without a live input consumer (`orphaned`, `failed`, `cancelled`, or `archived`) | Durably queue the input against the displayed session revision, then resume that same session in the background. Show the message as pending recovery until a new worker claims it. Never attach or transfer it to the foreground. |
+| Completed or deleted session | Reject input and retain the draft. A completed or deleted session is not made resumable merely by typing into the composer. |
+| Session attempt/owner changes while composer is open | Reject with a stale-target notice, retain the draft, and require reopening details. Never redirect to a newer attempt or another session. |
+
+Deferred recovery input is persisted before the resume operation begins. The
+new worker binds it to its own attempt and lease, then processes it before
+replaying the original launch intent. Direct sessions run the submitted text
+against their existing conversation. Workflow sessions require a saved
+checkpoint and resume that exact checkpoint; if none exists, reject the input
+with an explanation and do not restart from `INIT`. If worker startup fails,
+the inbox entry remains durable and visibly pending/recoverable so the user is
+not encouraged to resend and accidentally duplicate it.
 
 If the implementation supports queueing before the worker is ready, a message
 accepted in `starting` state must remain durable and be processed once the
@@ -319,7 +334,8 @@ unconsumed inputs after manager or worker restart.
 Every command is addressed by session ID plus current owner/attempt identity,
 not row number, page offset, title, or mutable selection index. A stale worker
 attempt must not consume a newer attempt's message. A no-longer-owned or
-terminal session returns an explicit failure. The feature cannot steal the
+non-recoverable terminal session returns an explicit failure. Recoverable
+terminal sessions use deferred-input recovery; the feature cannot steal the
 session lease or alter the single-owner invariant.
 
 ### FR-12 — Non-interactive compatibility
@@ -434,7 +450,7 @@ the manager or maintaining separate TUI and headless command registries.
 ## 11. Acceptance criteria
 
 1. Opening a session's details and pressing `i` displays an input panel with a
-   visible target identity; it does not attach or stop the background worker.
+   visible target identity; it does not attach or stop a live background worker.
 2. `Esc` returns to details, retains an unsubmitted draft for the manager visit,
    and has no cancellation effect on the target worker.
 3. The composer supports all normal registered input capabilities, including
@@ -451,24 +467,38 @@ the manager or maintaining separate TUI and headless command registries.
    PID, session ID, owner lease, workflow run ID, or current checkpoint. The
    message is processed once at a safe session boundary under existing busy
    policy.
-7. Messages sent in quick succession preserve FIFO ordering and are not
+7. Sending to an orphaned, failed, cancelled, or archived recoverable session
+   durably queues the input and resumes the same session in the background;
+   the receipt remains pending until a worker claims the input. It never
+   attaches or switches to the foreground TUI.
+8. A recovered direct session processes the submitted text against its existing
+   conversation without replaying the original request first. A recovered
+   workflow resumes its saved checkpoint; if none exists, the input is
+   explicitly rejected and the workflow is not restarted from `INIT`.
+9. If background recovery cannot start, accepted input remains visibly
+   pending/recoverable and is not falsely reported as delivered.
+10. Messages sent in quick succession preserve FIFO ordering and are not
    duplicated by retries, repeated Enter events, or worker recovery.
-8. A pending ask-user response is resolved once by the existing response path;
+11. A pending ask-user response is resolved once by the existing response path;
    the same text is not also queued as a new turn. Pending approval remains
    unresolved unless the user uses the established approval action.
-9. Sending to terminal/unowned/deleted sessions produces a bounded actionable
+12. Sending to completed/deleted sessions produces a bounded actionable
    error, keeps the draft, and never silently launches a worker.
-10. A status/attempt change after opening the composer cannot redirect the
+13. A status/attempt change after opening the composer cannot redirect the
     message to another list row or session.
-11. Enqueue/delivery does not freeze navigation or rendering under a slow
+14. Enqueue/delivery does not freeze navigation or rendering under a slow
     worker, full queue, or session-store contention.
-12. Accepted-but-unconsumed messages survive a manager restart and are either
+15. Accepted-but-unconsumed messages survive a manager restart and are either
     consumed once by the valid owner or explicitly shown as pending/rejected;
     they are never silently lost.
-13. Existing Enter-to-attach, list view, ask-user response, `jobs input`,
+16. Existing Enter-to-attach, list view, ask-user response, `jobs input`,
     cancellation/approval keys, JSON listing, and non-interactive output remain
     compatible.
-14. No message is accepted merely because a durable projection event exists;
+17. The interactive session table displays no more than ten sessions per page
+    and never includes deleted sessions. Recovery from trash remains available
+    through the existing jobs/store recovery interface rather than a deleted
+    row in this table.
+18. No message is accepted merely because a durable projection event exists;
     the manager shows a delivery claim only when the target owner acknowledges
     it.
 
@@ -487,8 +517,14 @@ the manager or maintaining separate TUI and headless command registries.
   unknown session, stale owner/attempt, and queue capacity.
 - FIFO, idempotency-key replay, acknowledge/consume transitions, and stale
   attempt fencing are tested without a real provider.
-- State-specific tests cover running, starting, waiting-input, waiting-
-  approval, paused, and terminal sessions.
+- State-specific tests cover live, waiting-input, waiting-approval, recoverable
+  stale, completed, and deleted sessions.
+- Deferred-input tests verify enqueue-before-resume, attempt/lease rebinding,
+  background-only recovery, and pending receipts when launch fails.
+- Workflow recovery tests prove the saved checkpoint is resumed and that a
+  missing checkpoint rejects input rather than replaying `INIT`.
+- Pagination tests verify the interactive table is capped at ten sessions per
+  page and excludes deleted sessions, including after refresh.
 - Failure tests verify a failed submission retains the draft and does not
   clear it until acceptance.
 
@@ -520,12 +556,17 @@ the manager or maintaining separate TUI and headless command registries.
 - Send to two sessions in succession while projections reorder; each command
   must remain pinned to the session whose details opened its composer.
 - Exercise a running workflow and verify the incoming message does not restart
-  its first phase, alter its checkpoint, or change its session ID.
-- Exercise pending question, pending approval, worker exit, full queue, and
-  stale owner states; verify correct feedback and no implicit attach/restart.
+  its first phase, alter its checkpoint, or change its session ID. Exercise a
+  stale workflow and verify background recovery resumes that same checkpoint.
+- Exercise pending question, pending approval, worker exit, full queue, stale
+  owner states, and a stale recoverable session; verify correct feedback and
+  that recovery never attaches to the foreground.
 - Keep existing detail attach E2E coverage passing unchanged.
 
 ## 13. Implementation sequence
+
+The implementation sequence below was completed against the existing session,
+workflow, and TUI ownership boundaries.
 
 1. **Input contract audit:** map every `UnifiedInputSession` capability,
    registered trigger, render dependency, and `TUISession.handle_send()` side
@@ -561,10 +602,14 @@ the manager or maintaining separate TUI and headless command registries.
 
 ## 15. Definition of done
 
-The feature is complete when a user can open a live session's details, compose
-input with the same editor features used by the regular TUI, submit to that
-exact live session without attaching, and observe that the worker processed
-the input once through its own normal routing/policy path. Delivery must be
-durable across process boundaries, recoverable at crash boundaries, and
-compatible with existing attach, question, approval, and workflow-resume
-behavior. Unit, integration, and end-to-end evidence must cover those claims.
+The feature is complete when a user can open a live or stale-recoverable
+session's details, compose input with the same editor features used by the
+regular TUI, and submit to that exact session without attaching it to the
+foreground. Live workers process input once through their normal routing and
+policy path. Stale recoverable sessions persist input before background
+recovery, resume workflow checkpoints rather than restarting at `INIT`, and
+retain pending input if startup fails. The interactive table shows at most ten
+rows per page and omits deleted sessions. Delivery is durable across process
+boundaries, recoverable at crash boundaries, and compatible with existing
+attach, question, approval, and workflow-resume behavior. Unit, integration,
+and end-to-end evidence must cover those claims.

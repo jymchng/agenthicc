@@ -626,8 +626,10 @@ def test_manager_keyboard_delete_restore_and_help(tmp_path: Path, capsys) -> Non
     manager._poll_async_delete()
     assert store.get("session-1", include_deleted=True).status is SessionStatus.DELETED
     manager.handle_key("CHAR", "t")
-    assert manager.include_deleted is True
-    manager.handle_key("CHAR", "u")
+    manager.refresh(force=True)
+    assert all(item.status is not SessionStatus.DELETED for item in manager.sessions)
+    assert "t trash" not in str(manager.render())
+    store.restore_deleted("session-1")
     assert store.get("session-1").status is SessionStatus.COMPLETED
     console = Console(record=True)
     console.print(manager.render())

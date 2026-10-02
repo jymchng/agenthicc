@@ -2903,10 +2903,15 @@ and bounded redacted message.
 ### BackgroundManager and ViewportBudget
 
 The interactive ``agents``/``jobs`` manager uses a viewport budget to paginate
-session rows while retaining the selected session ID, details, and controls.
-The selected row is marked with ``▶``. Its default activity projection reads a
-bounded journal tail, allows only meaningful text events, redacts them, and
-caches the result by file fingerprint. Rendering does not run stale-worker
+session rows (at most ten per page) while retaining the selected session ID,
+details, and controls; deleted sessions are excluded. The selected row is
+marked with ``▶``. Its default activity projection reads a bounded journal
+tail, allows only meaningful text events, redacts them, and caches the result
+by file fingerprint. Pressing ``i`` on a details page opens a target-bound
+composer. Live-worker input is delivered through its owner; input to a stale
+recoverable session is durably queued before background recovery. Workflow
+recovery resumes a saved checkpoint and rejects input if no checkpoint exists,
+without attaching to the foreground. Rendering does not run stale-worker
 recovery or fold the durable event log; maintenance is rate-limited separately.
 
 ``agenthicc attach SESSION_ID`` and Enter from the manager share the canonical

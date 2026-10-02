@@ -13,6 +13,7 @@ from rich.console import Console
 
 from agenthicc.background import BackgroundSession, BackgroundStore, SessionStatus
 from agenthicc.background.input_inbox import BackgroundInputInbox
+from agenthicc.background.supervisor import BackgroundSupervisor
 from agenthicc.tui.cbreak_reader import Key
 from agenthicc.tui.workspace.background_manager import BackgroundManager, ManagerResult
 
@@ -119,7 +120,8 @@ async def test_enter_opens_session_details_then_second_enter_attaches(
     assert pending_read_finished.is_set()
 
 
-def test_details_input_composer_targets_live_owner_without_attach(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_details_input_composer_targets_live_owner_without_attach(tmp_path: Path) -> None:
     store = BackgroundStore(tmp_path / "background")
     session = BackgroundSession.create(
         "composer-target",
@@ -135,6 +137,9 @@ def test_details_input_composer_targets_live_owner_without_attach(tmp_path: Path
     )
     store.create(session)
     manager = BackgroundManager(Console(width=100, height=30, record=True), store=store)
+    from agenthicc.background.supervisor import _WorkerProcessState
+
+    manager.supervisor._worker_process_state = lambda _session: _WorkerProcessState.LIVE  # type: ignore[method-assign]
     manager._sessions = [session]
     manager._visible_sessions = [session]
     manager._total_count = 1
@@ -145,18 +150,43 @@ def test_details_input_composer_targets_live_owner_without_attach(tmp_path: Path
     assert manager._composer_open
     assert manager._composer_target is not None
     assert manager._composer_target.session_id == session.session_id
-    manager.handle_key(Key.CHAR, "please continue from the current phase")
+    assert manager._composer_input is not None
+    from agenthicc.tui.runtime.commands import SendMessageCommand
+
+    editor = manager._composer_input
+    editor.set_text("/workflow goal_flow")
+    first = await editor._bus.dispatch_async(SendMessageCommand(text="/workflow goal_flow"))
+    assert first.ok
+    assert not manager._composer_open
+    # Trigger-picker submissions clear their editor after the target accepts;
+    # model that final input cleanup while exercising the async bus path above.
+    editor.set_text("")
+
+    # Opening the same target again must start a fresh composer lifecycle.
+    # Previously `_composer_submitted` remained true after the first send, so
+    # the first character of this second message closed the composer and
+    # returned to the details view.
+    manager.handle_key(Key.CHAR, "i")
+    assert manager._composer_open
+    manager.handle_key(Key.CHAR, "s")
+    assert manager._composer_task is not None
+    await manager._composer_task
+    assert manager._composer_open
+    assert editor._buf.text == "s"
+    editor.set_text("second input")
     manager.handle_key(Key.ENTER)
+    assert manager._composer_task is not None
+    await manager._composer_task
 
     receipts = BackgroundInputInbox(store).receipts(session.session_id)
     current = store.get(session.session_id)
-    assert len(receipts) == 1
-    assert receipts[0].text == "please continue from the current phase"
-    assert receipts[0].state == "accepted"
+    assert [receipt.text for receipt in receipts] == ["/workflow goal_flow", "second input"]
+    assert all(receipt.state == "accepted" for receipt in receipts)
     assert manager._composer_history[f"{session.session_id}:{session.attempt}"] == [
-        "please continue from the current phase"
+        "second input",
     ]
     assert not manager._composer_open
+    assert manager._detail_session_id == session.session_id
     assert current.worker_pid == session.worker_pid
     assert current.lease_token == session.lease_token
     assert current.status == SessionStatus.RUNNING
@@ -165,13 +195,112 @@ def test_details_input_composer_targets_live_owner_without_attach(tmp_path: Path
     assert activity == []
     assert history == []
     assert latest_receipt is not None and "queued" in latest_receipt
-    assert receipts[0].text not in latest_receipt
+    assert all(receipt.text not in latest_receipt for receipt in receipts)
     manager._input_receipt_text[session.session_id] = latest_receipt
     manager.console.print(manager._render_detail_page(session, manager.viewport_budget))
     details = manager.console.export_text()
     assert "Latest input" in details
     assert "queued" in details
-    assert receipts[0].text not in details
+    assert all(receipt.text not in details for receipt in receipts)
+    await manager._service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        SessionStatus.ORPHANED,
+        SessionStatus.FAILED,
+        SessionStatus.CANCELLED,
+        SessionStatus.ARCHIVED,
+    ],
+)
+async def test_details_input_recovers_stale_session_without_foreground_attach(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: SessionStatus,
+) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    session = BackgroundSession.create(
+        f"recover-{status.value}",
+        title="Recover without attach",
+        cwd=str(tmp_path),
+        workflow_name="code_plan",
+        intent="original request",
+    ).evolve(
+        status=status,
+        attempt=4,
+        lease_token="previous-owner-lease",
+    )
+    store.create(session)
+    supervisor = BackgroundSupervisor(store)
+    manager = BackgroundManager(
+        Console(width=100, height=30, record=True),
+        store=store,
+        supervisor=supervisor,
+    )
+
+    def prepare_editor(_target: BackgroundSession) -> None:
+        manager._composer_input = object()  # type: ignore[assignment]
+
+    monkeypatch.setattr(manager, "_build_target_input_editor", prepare_editor)
+    resumed: list[str] = []
+
+    def resume(session_id: str) -> BackgroundSession:
+        resumed.append(session_id)
+        return store.get(session_id)
+
+    def attach(_session_id: str) -> BackgroundSession:
+        raise AssertionError("background recovery must not attach to the foreground")
+
+    monkeypatch.setattr(supervisor, "resume", resume)
+    monkeypatch.setattr(supervisor, "attach_foreground", attach)
+    manager._open_input_composer(session)
+    assert manager._composer_open
+
+    from agenthicc.tui.runtime.commands import SendMessageCommand
+
+    result = await manager._submit_target_input(
+        session,
+        (session.session_id, session.attempt),
+        SendMessageCommand(text="continue this recoverable session"),
+    )
+    try:
+        assert result.ok
+        assert resumed == [session.session_id]
+        receipt = BackgroundInputInbox(store).receipts(session.session_id)[0]
+        assert receipt.text == "continue this recoverable session"
+        assert receipt.state == "accepted"
+        assert receipt.deferred
+        assert "background recovery" in manager._composer_receipt.casefold()
+        assert store.get(session.session_id).status is status
+    finally:
+        await manager._service.close()
+
+
+def test_agents_pages_show_at_most_ten_non_deleted_sessions(tmp_path: Path) -> None:
+    store = BackgroundStore(tmp_path / "background")
+    for index in range(12):
+        status = SessionStatus.DELETED if index == 0 else SessionStatus.COMPLETED
+        session = BackgroundSession.create(
+            f"page-session-{index:02d}",
+            title=f"Session {index:02d}",
+            cwd=str(tmp_path),
+            workflow_name="",
+            intent="pagination test",
+        ).evolve(status=status)
+        store.create(session)
+
+    manager = BackgroundManager(Console(width=120, height=40, record=True), store=store)
+    sessions = manager.refresh(force=True)
+
+    assert manager.page_size == 10
+    assert manager.page_count == 2
+    assert len(sessions) == 11
+    assert all(item.status is not SessionStatus.DELETED for item in sessions)
+    assert manager._page_bounds() == (0, 10)
+    manager.selected = 10
+    assert manager._page_bounds() == (10, 11)
 
 
 def test_details_page_footer_stays_visible_while_metadata_scrolls(

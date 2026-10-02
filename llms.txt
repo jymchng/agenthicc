@@ -231,9 +231,14 @@ this finalizer and remains interactive.
 Owned terminal records are stored under `~/.agenthicc/background/terminals/`
 and remain separate from durable agent-session records.
 
-`agenthicc agents` is a viewport-aware, paginated manager. It marks the
-selected row with `▶`, shows only the newest meaningful text activity, and
-keeps selection tied to the exact session ID across refreshes. `agents --json`
+`agenthicc agents` is a viewport-aware, paginated manager. Its interactive
+table shows at most ten sessions per page and excludes deleted sessions. It
+marks the selected row with `▶`, shows only the newest meaningful text
+activity, and keeps selection tied to the exact session ID across refreshes.
+Press `i` on a details page to send input to the live worker or queue it before
+recovering a stale session in the background; workflow recovery requires and
+resumes its saved checkpoint without attaching to the foreground. Restore
+deleted sessions with `agenthicc jobs restore SESSION_ID`. `agents --json`
 and `jobs list --json` remain complete, unpaginated projections. Enter attaches
 the selected session through the same owner-safe path as
 `agenthicc attach SESSION_ID`; a positional `run_...` identifier is rejected
@@ -244,7 +249,8 @@ In the interactive manager, `Ctrl+X` immediately dispatches deletion for the
 exact selected or marked session IDs; it does not open a confirmation modal.
 Deletion runs asynchronously, records durable progress, moves artifacts to
 recoverable trash, and preserves failure/recovery metadata. A repeated key is
-ignored while the operation is active, and `u` restores a deleted session.
+ignored while the operation is active. Deleted records are not shown in the
+interactive table and are restored through the `jobs restore` command.
 
 Durable session attachment is single-owner. `--continue`, `--resume`, the
 session picker, headless workflow execution, and explicit background attaches

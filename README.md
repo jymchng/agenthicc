@@ -112,8 +112,11 @@ uv run agenthicc attach SESSION_ID
 
 `agenthicc agents` opens the paginated background-session manager. It keeps
 the controls visible, marks the selected row with `▶`, and shows only the
-newest meaningful text activity. Press Enter to inspect a session's details,
-then press Enter again there to attach that exact session.
+newest meaningful text activity. The interactive table shows at most ten
+sessions per page and omits deleted sessions. Press Enter to inspect a
+session's details, then press Enter again there to attach that exact session;
+press `i` to send input to its live worker or recover a stale session in the
+background without attaching it.
 Use `agenthicc agents --run RUN_ID` for goal-run discovery; positional
 `agenthicc attach` arguments are session IDs and never select a workspace's
 most recent session. `agenthicc attach --run RUN_ID` is the explicit goal-run
@@ -392,7 +395,7 @@ diagnostics, never credentials, headers, prompts, or raw request bodies.
 
 ## Background sessions
 
-Long-running work can be detached from an active session with `/bg` or `/background`. Run `agenthicc agents` (or `agenthicc jobs`) to open the background-session manager, where you can inspect, follow, resume, retry, cancel, and safely delete sessions. `Ctrl+X` immediately deletes the selected or marked sessions to recoverable trash; deletion remains responsive while worker cleanup completes, and `u` restores a deleted session from trash. See the [background sessions guide](./docs/guides/background-sessions.md) for workflow support, approvals, input requests, retention, and privacy details.
+Long-running work can be detached from an active session with `/bg` or `/background`. Run `agenthicc agents` (or `agenthicc jobs`) to open the background-session manager, where you can inspect, follow, resume, retry, cancel, and safely delete sessions. Its interactive table shows at most ten sessions per page and hides deleted sessions. On a session's details page, `i` sends input to its live worker or queues it before recovering a stale session in the background; workflow recovery resumes a saved checkpoint and never attaches to the foreground. `Ctrl+X` immediately deletes the selected or marked sessions to recoverable trash; deletion remains responsive while worker cleanup completes. Restore deleted sessions with `agenthicc jobs restore SESSION_ID`. See the [background sessions guide](./docs/guides/background-sessions.md) for workflow support, approvals, input requests, retention, and privacy details.
 
 Execution tools remain foreground by default. Pass `background=true` to `run_bash` or `run_command` to receive an owned `term-...` handle, then call `wait_terminal` when the result is needed. While a wait is active, `/ps`, `/stop`, and `Esc` remain responsive; `/stop` stops all owned background terminals, while `Esc` stops the terminal currently being awaited. Terminal handles and bounded output are local-only and scoped to the originating session.
 

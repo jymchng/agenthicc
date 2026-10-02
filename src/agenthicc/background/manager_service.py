@@ -148,17 +148,17 @@ class BackgroundManagerService:
         session_id: str,
         text: str,
         *,
-        owner_attempt: int,
-        lease_token: str,
+        expected_attempt: int,
+        expected_lease_token: str,
         message_id: str,
     ) -> ManagerOperationResult:
         result = await self._invoke(
             session_id,
-            self.supervisor.enqueue_input,
+            self.supervisor.enqueue_input_or_recover,
             session_id,
             text,
-            owner_attempt=owner_attempt,
-            lease_token=lease_token,
+            expected_attempt=expected_attempt,
+            expected_lease_token=expected_lease_token,
             message_id=message_id,
         )
         if result.ok and not isinstance(result.value, BackgroundInput):

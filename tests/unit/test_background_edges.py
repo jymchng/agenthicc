@@ -345,15 +345,11 @@ def test_manager_full_control_surface_and_activity_redaction(tmp_path: Path) -> 
         time.sleep(0.01)
     manager._poll_async_delete()
     assert store.get(complete.session_id, include_deleted=True).status is SessionStatus.DELETED
-    manager.include_deleted = True
     manager.status_filter = None
     manager.refresh(force=True)
-    manager.selected = next(
-        index
-        for index, item in enumerate(manager.sessions)
-        if item.session_id == complete.session_id
-    )
+    assert all(item.session_id != complete.session_id for item in manager.sessions)
     manager.handle_key("CHAR", "u")
+    assert store.get(complete.session_id, include_deleted=True).status is SessionStatus.DELETED
     assert "secret-value" not in console.export_text()
 
 

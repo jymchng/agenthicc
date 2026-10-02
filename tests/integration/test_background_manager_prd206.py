@@ -52,15 +52,15 @@ def test_large_store_renders_one_interactive_page_but_keeps_projection_complete(
     rendered = manager.render()
 
     assert len(manager.sessions) == 1_000
-    # The interactive projection contains only the current page, while the
-    # backing store/list API remains complete.
+    # The public manager projection remains complete, but the interactive
+    # table shows only ten rows per page while the backing store stays intact.
     assert manager.page_count > 1
     output = Console(width=140, height=25, record=True)
     output.print(rendered)
     text = output.export_text(clear=False)
     assert "session-0999" in text  # selected row/detail on the newest page
-    assert "Session 988" in text
-    assert "Session 984" not in text
+    assert "Session 990" in text
+    assert "Session 989" not in text
 
 
 def test_unchanged_repaints_do_not_fold_or_read_journals(tmp_path: Path, monkeypatch) -> None:

@@ -11,6 +11,7 @@ import pytest
 from agenthicc.background.input_inbox import BackgroundInputInbox, MAX_INPUT_CHARS
 from agenthicc.background.model import BackgroundSession, SessionStatus
 from agenthicc.background.store import BackgroundStore, InvalidSessionTransition
+from agenthicc.background.supervisor import BackgroundSupervisor
 from agenthicc.runners.agent_turn_context import (
     AgentTurnContext,
     QueuedMessageSource,
@@ -209,6 +210,129 @@ def test_receipts_reject_input_from_a_stale_worker_attempt(tmp_path: Path) -> No
     receipt = inbox.receipts(session.session_id)[0]
     assert receipt.state == "rejected"
     assert "changed" in receipt.error
+
+
+def test_deferred_input_rebinds_to_recovered_worker_attempt(tmp_path: Path) -> None:
+    store, session = _running_store(tmp_path)
+    orphaned = store.mark_orphaned(
+        session.session_id,
+        expected_attempt=session.attempt,
+        expected_lease_token=session.lease_token,
+        expected_status=SessionStatus.RUNNING,
+    )
+    inbox = BackgroundInputInbox(store)
+    queued = inbox.enqueue_deferred(
+        session.session_id,
+        "continue from the saved state",
+        expected_attempt=orphaned.attempt,
+        expected_lease_token=orphaned.lease_token,
+        message_id="recover-me",
+    )
+
+    assert queued.deferred
+    assert inbox.receipts(session.session_id)[0].state == "accepted"
+
+    store.transition(
+        session.session_id,
+        SessionStatus.STARTING,
+        expected_status=SessionStatus.ORPHANED,
+        expected_attempt=orphaned.attempt,
+    )
+    recovered = store.claim(
+        session.session_id,
+        pid=os.getpid(),
+        lease_token="recovered-owner-lease",
+    )
+    delivered = inbox.claim_next(
+        session.session_id,
+        owner_attempt=recovered.attempt,
+        lease_token=recovered.lease_token,
+    )
+
+    assert delivered is not None
+    assert delivered.text == "continue from the saved state"
+    assert delivered.owner_attempt == recovered.attempt
+    assert delivered.state == "delivered"
+    assert not delivered.deferred
+
+
+def test_supervisor_queues_recoverable_input_before_resuming_in_background(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, session = _running_store(tmp_path)
+    orphaned = store.mark_orphaned(
+        session.session_id,
+        expected_attempt=session.attempt,
+        expected_lease_token=session.lease_token,
+        expected_status=SessionStatus.RUNNING,
+    )
+    supervisor = BackgroundSupervisor(store)
+    resumed: list[str] = []
+
+    def resume(session_id: str) -> BackgroundSession:
+        resumed.append(session_id)
+        return store.get(session_id)
+
+    monkeypatch.setattr(supervisor, "resume", resume)
+    receipt = supervisor.enqueue_input_or_recover(
+        orphaned.session_id,
+        "recover this session",
+        expected_attempt=orphaned.attempt,
+        expected_lease_token=orphaned.lease_token,
+        message_id="recover-input",
+    )
+
+    assert resumed == [orphaned.session_id]
+    assert receipt.deferred
+    assert receipt.recovery_error == ""
+    assert BackgroundInputInbox(store).receipts(orphaned.session_id)[0].deferred
+    assert store.get(orphaned.session_id).status is SessionStatus.ORPHANED
+
+
+def test_deferred_input_remains_durable_if_background_recovery_cannot_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, session = _running_store(tmp_path)
+    failed = store.transition(
+        session.session_id,
+        SessionStatus.FAILED,
+        expected_status=SessionStatus.RUNNING,
+        expected_attempt=session.attempt,
+        expected_lease_token=session.lease_token,
+    )
+    supervisor = BackgroundSupervisor(store)
+
+    def fail_resume(_session_id: str) -> BackgroundSession:
+        raise RuntimeError("worker capacity reached")
+
+    monkeypatch.setattr(supervisor, "resume", fail_resume)
+    receipt = supervisor.enqueue_input_or_recover(
+        failed.session_id,
+        "do not lose this recovery input",
+        expected_attempt=failed.attempt,
+        expected_lease_token=failed.lease_token,
+        message_id="persist-on-launch-error",
+    )
+
+    assert receipt.deferred
+    assert "background recovery did not start" in receipt.recovery_error
+    persisted = BackgroundInputInbox(store).receipts(failed.session_id)[0]
+    assert persisted.state == "accepted"
+    assert persisted.deferred
+
+
+def test_deleted_session_rejects_deferred_input(tmp_path: Path) -> None:
+    store, session = _running_store(tmp_path)
+    deleted = session.evolve(status=SessionStatus.DELETED)
+    deleted_store = BackgroundStore(tmp_path / "deleted-background")
+    deleted_store.create(deleted)
+    with pytest.raises(InvalidSessionTransition, match="Deleted"):
+        BackgroundInputInbox(deleted_store).enqueue_deferred(
+            session.session_id,
+            "must not resurrect",
+            expected_attempt=session.attempt,
+            expected_lease_token=session.lease_token,
+        )
 
 
 def test_agent_turn_context_inherits_worker_input_source() -> None:

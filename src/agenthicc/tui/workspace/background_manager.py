@@ -27,6 +27,8 @@ from agenthicc.background import (
 )
 from agenthicc.background.settings import BackgroundManagerSettings
 
+MAX_SESSION_ROWS_PER_PAGE = 10
+
 if TYPE_CHECKING:
     from rich.console import Console, RenderableType
     from agenthicc.tui.conversation_store import AppState
@@ -86,6 +88,7 @@ class ViewportBudget:
         detail_height = 3 if height <= 10 else (4 if height <= 14 else 7)
         # Header=1, table header/bottom=2, details panel, footer=1.
         available = max(1, height - 1 - 2 - detail_height - 1)
+        available = min(available, MAX_SESSION_ROWS_PER_PAGE)
         if configured_page_size is not None:
             available = min(available, max(1, configured_page_size))
         return cls(width, height, available, detail_height)
@@ -128,7 +131,6 @@ class BackgroundManager:
         self._detail_scroll = 0
         self.query = ""
         self.include_archived = True
-        self.include_deleted = False
         self.status_filter: SessionStatus | None = None
         self.project_filter: str | None = None
         self.workflow_filter: str | None = None
@@ -481,7 +483,6 @@ class BackgroundManager:
             previous = {item.session_id: item.last_active for item in self._sessions}
             self._sessions = self.store.list(
                 include_archived=self.include_archived,
-                include_deleted=self.include_deleted,
                 cwd=self.project_filter,
                 workflow_name=self.workflow_filter,
                 query=self.query,
@@ -526,7 +527,6 @@ class BackgroundManager:
         query_key: tuple[object, ...] = (
             page,
             self.include_archived,
-            self.include_deleted,
             self.project_filter,
             self.workflow_filter,
             self.query,
@@ -560,7 +560,6 @@ class BackgroundManager:
                 page=page,
                 page_size=self.page_size,
                 include_archived=self.include_archived,
-                include_deleted=self.include_deleted,
                 cwd=self.project_filter,
                 workflow_name=self.workflow_filter,
                 query=self.query,
@@ -875,7 +874,7 @@ class BackgroundManager:
             return activity, None, history
         receipt = receipts[-1]
         labels = {
-            "accepted": "queued",
+            "accepted": "waiting for recovery" if receipt.deferred else "queued",
             "claimed": "processing",
             "delivered": "delivered",
             "completed": "processed",
@@ -1415,7 +1414,15 @@ class BackgroundManager:
             self._composer_history[history_key] = history
 
         async def submit(command: SendMessageCommand) -> ManagerOperationResult:
-            return await self._submit_target_input(target, target_key, command)
+            result = await self._submit_target_input(target, target_key, command)
+            # Trigger-picker submissions dispatch through this handler from a
+            # separate task rather than through `_dispatch_composer_key`'s
+            # normal Enter path. Close on acceptance here as well, so an
+            # accepted `/workflow ...` selection cannot leave a hidden-open
+            # composer whose stale submitted flag consumes the next keystroke.
+            if result.ok:
+                self._close_input_composer()
+            return result
 
         bus.register(SendMessageCommand, submit)
         editor = UnifiedInputSession(
@@ -1506,14 +1513,28 @@ class BackgroundManager:
                 accepted = await self._service.enqueue_input_async(
                     target.session_id,
                     command.text,
-                    owner_attempt=target.attempt,
-                    lease_token=target.lease_token,
+                    expected_attempt=target.attempt,
+                    expected_lease_token=target.lease_token,
                     message_id=command.command_id,
                 )
                 if accepted.ok:
-                    self._composer_receipt = (
-                        f"Queued for {target.session_id[:12]} · {command.command_id[:12]}"
-                    )
+                    from agenthicc.background.input_inbox import BackgroundInput  # noqa: PLC0415
+
+                    receipt = accepted.value
+                    if isinstance(receipt, BackgroundInput) and receipt.deferred:
+                        if receipt.recovery_error:
+                            self._composer_receipt = (
+                                "Input saved; background recovery needs attention · "
+                                f"{command.command_id[:12]}"
+                            )
+                        else:
+                            self._composer_receipt = (
+                                f"Accepted for background recovery · {command.command_id[:12]}"
+                            )
+                    else:
+                        self._composer_receipt = (
+                            f"Queued for {target.session_id[:12]} · {command.command_id[:12]}"
+                        )
             self._composer_submitted = accepted.ok
             if not accepted.ok:
                 self._notice = accepted.message or "Input was rejected; draft retained"
@@ -1525,23 +1546,33 @@ class BackgroundManager:
             self._mark_dirty("composer_submission_finished")
 
     def _open_input_composer(self, target: BackgroundSession) -> None:
-        if (
+        recoverable = target.status in {
+            SessionStatus.ORPHANED,
+            SessionStatus.FAILED,
+            SessionStatus.CANCELLED,
+            SessionStatus.ARCHIVED,
+        }
+        live_owner = (
             target.status
-            not in {
+            in {
                 SessionStatus.STARTING,
                 SessionStatus.RUNNING,
                 SessionStatus.WAITING_APPROVAL,
                 SessionStatus.WAITING_INPUT,
             }
-            or target.worker_pid is None
-            or not target.lease_token
-        ):
-            self._notice = (
-                f"Input unavailable while session is {target.status.value}; "
-                "attach or resume it explicitly"
-            )
+            and target.worker_pid is not None
+            and bool(target.lease_token)
+        )
+        if not (recoverable or live_owner):
+            self._notice = f"Input unavailable while session is {target.status.value}"
             self._mark_dirty("composer_rejected")
             return
+        # A previous accepted submission closes the modal asynchronously but
+        # leaves its acceptance flag set. Reset that per-open state before the
+        # next editor key is dispatched, or the first character in a reopened
+        # composer is mistaken for the tail of the prior submission.
+        self._composer_submitted = False
+        self._composer_submitting = False
         same_target = (
             self._composer_target is not None
             and self._composer_target.session_id == target.session_id
@@ -1710,7 +1741,7 @@ class BackgroundManager:
             help_text = (
                 "↑/k ↓/j select   PgUp/PgDn page   Home/End first/last\n"
                 "Enter details   Enter again to attach   r refresh   ? close help\n"
-                "c cancel   a archive   Ctrl+X delete   u restore   t trash\n"
+                "c cancel   a archive   Ctrl+X delete\n"
                 "[ ] scroll details   / filter   v mark   C/A bulk action   i input\n"
                 "Esc backs out of details; q quits without stopping workers"
             )
@@ -2370,10 +2401,6 @@ class BackgroundManager:
         if value == "SPACE" or ch == " ":
             self.paused = not self.paused
             return None
-        if ch.lower() == "t":
-            self.include_deleted = not self.include_deleted
-            self._input_refresh()
-            return None
         selected = self.selected_session
         if selected is None:
             return None
@@ -2447,19 +2474,6 @@ class BackgroundManager:
                     self.supervisor.archive(selected.session_id)
                 except Exception as exc:  # noqa: BLE001
                     self.console.print(f"Archive failed: {type(exc).__name__}: {exc}")
-                self.refresh(force=True)
-        elif ch.lower() == "u":
-            if self._async_mode:
-                self._start_operation(
-                    selected.session_id,
-                    "restore",
-                    lambda: self._service.restore_async(selected.session_id),
-                )
-            else:
-                try:
-                    self.supervisor.restore_deleted(selected.session_id)
-                except Exception:
-                    return None
                 self.refresh(force=True)
         elif ch.lower() == "p":
             if self._async_mode:
